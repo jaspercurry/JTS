@@ -32,6 +32,7 @@ import contextlib
 import logging
 import re
 import subprocess
+import time
 from types import ModuleType
 from typing import Any, Optional
 
@@ -53,6 +54,14 @@ logger = logging.getLogger(__name__)
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
 POST_RETRY_CEILING_SEC = 5.0
+# Equals jasper.active_speaker.session_volume_plan.MAX_WALL_CLOCK_CEILING_S
+# (not imported here — a test pin ties the two): the hard ceiling of any
+# guided measurement, so a slider move during one is still re-presented once
+# the hold lifts. The OTHER decline producer — jasper.volume_coordinator's
+# inactive-source gate — has no ceiling of its own; this cap is what bounds
+# it too. Remove when the coordinator answers a decline with a reason code
+# the bridge can act on.
+POST_RETRY_MAX_SEC = 3600.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -152,8 +161,8 @@ class VolumeBridge:
     cross-process write within the persistence echo window; NOT the
     coordinator's own-echo window, which is never stamped for USB) is
     retried with a capped exponential backoff until the controller
-    acknowledges it. Accepted values are deduplicated locally, while
-    the coordinator owns source and echo policy.
+    acknowledges it. Accepted values are deduplicated locally, while the
+    coordinator owns source and echo policy.
     """
 
     def __init__(
@@ -197,6 +206,10 @@ class VolumeBridge:
         # move back to the startup value is still intent.
         self._last_observed_pct: Optional[int] = None
         self._host_moved: bool = False
+        # Raw step index + mute state behind the most recent _last_observed_pct,
+        # carried to _post() purely for the usbsink.volume_observed log fields.
+        self._last_raw: Optional[int] = None
+        self._last_muted: bool = False
         # Re-presents one declined host slider move; see the retry constants.
         self._retry_task: Optional[asyncio.Task[None]] = None
 
@@ -424,9 +437,16 @@ class VolumeBridge:
         """Read the mixer once and publish the value if it is new."""
         mixer = self._mixer
         assert mixer is not None and self._alsa is not None
-        values = mixer.getvolume(units=self._alsa.VOLUME_UNITS_RAW)
+        # The merged "PCM" simple element also has a playback half whenever
+        # the USB mic export is on (p_chmask=1); an unqualified getvolume()
+        # then defaults to PCM_PLAYBACK and returns the kernel's playback
+        # default (80/100) instead of this capture control's value.
+        values = mixer.getvolume(
+            units=self._alsa.VOLUME_UNITS_RAW, pcmtype=self._alsa.PCM_CAPTURE,
+        )
         if not values:
             return
+        raw = int(values[0])
         muted = False
         if self._switch_numid is not None:
             # getrec() reports the capture switch: 0 on a muted channel, and
@@ -434,12 +454,14 @@ class VolumeBridge:
             # better to underrepresent volume than to let a channel through
             # when the user expected silence.
             muted = any(int(v) == 0 for v in mixer.getrec())
-        pct = 0 if muted else self._raw_to_pct(int(values[0]))
+        pct = 0 if muted else self._raw_to_pct(raw)
         if pct == self._last_observed_pct:
             return
         if self._last_observed_pct is not None:
             self._host_moved = True
         self._last_observed_pct = pct
+        self._last_raw = raw
+        self._last_muted = muted
         await self._publish(pct)
 
     async def _publish(self, pct: int) -> None:
@@ -459,14 +481,25 @@ class VolumeBridge:
             self._retry_task = asyncio.create_task(self._retry_declined(pct))
 
     async def _retry_declined(self, pct: int) -> None:
-        """Re-present one unacknowledged value until the controller takes it."""
+        """Re-present one unacknowledged value until the controller takes it,
+        or the cap elapses — see POST_RETRY_MAX_SEC."""
+        started = time.monotonic()
         delay = POST_RETRY_INTERVAL_SEC
-        while True:
+        attempts = 0
+        while time.monotonic() - started < POST_RETRY_MAX_SEC:
             await asyncio.sleep(delay)
+            attempts += 1
             if await self._post(pct) is True:
                 self._last_published_pct = pct
                 return
             delay = min(delay * POST_RETRY_BACKOFF_FACTOR, POST_RETRY_CEILING_SEC)
+        log_event(
+            logger,
+            "usbsink.volume_retry_abandoned",
+            pct=pct,
+            attempts=attempts,
+            level=logging.DEBUG,
+        )
 
     async def _cancel_retry_and_wait(self) -> None:
         task, self._retry_task = self._retry_task, None
@@ -586,6 +619,8 @@ class VolumeBridge:
             "usbsink.volume_observed",
             pct=pct,
             source="host_slider",
+            raw=self._last_raw,
+            muted=self._last_muted,
         )
         return True
 

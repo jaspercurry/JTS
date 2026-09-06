@@ -147,10 +147,16 @@ def doctor_check(
             ownership reads). Empty string means no exclusive lane.
         core: True iff ``--core`` runs this check. The defining module
             must be in ``CORE_MODULES``, or ``--core`` would never import
-            it.
+            it, and the check may not take ``needs_cfg``: a ``--core`` run
+            builds no ``Config``.
     """
 
     def _register(fn: F) -> F:
+        if core and needs_cfg:
+            raise ValueError(
+                f"{fn.__name__} is core=True and needs_cfg=True; --core runs "
+                "with no Config built (jasper/cli/doctor/_cli.py)."
+            )
         module = fn.__module__.rsplit(".", 1)[-1]
         if module not in _ROSTER_POSITION:
             raise ValueError(

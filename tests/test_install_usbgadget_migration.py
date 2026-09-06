@@ -176,10 +176,10 @@ def test_usbnet_install_reloads_policy_and_bounds_existing_device_activation():
     assert "jasper.usb_network stage" not in body
     assert "jasper.usb_network promote" not in body
     nm_snapshot = body.index(
-        '_snapshot_full_unit_install_destination "${nm_path}"'
+        '_snapshot_unit_install_destination "${nm_path}"'
     )
     dnsmasq_snapshot = body.index(
-        '_snapshot_full_unit_install_destination "${dnsmasq_path}"'
+        '_snapshot_unit_install_destination "${dnsmasq_path}"'
     )
     converge = body.index("jasper.usb_network converge")
     assert nm_snapshot < dnsmasq_snapshot < converge

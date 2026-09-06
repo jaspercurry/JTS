@@ -917,6 +917,15 @@ def physical_output_count_for(profile_id: str) -> int | None:
     return profile.physical_output_count
 
 
+def kind_for(profile_id: str) -> DacKind | None:
+    """Return the declared shape — single or composite — for a known profile."""
+
+    profile = by_id(profile_id)
+    if profile is None:
+        return None
+    return profile.kind
+
+
 def label_for(profile_id: str) -> str | None:
     """Return the display label for a known profile."""
 
@@ -1089,40 +1098,24 @@ def mixer_control_groups_for(
     return tuple(groups)
 
 
-__all__ = [
-    "APPLE_HEADPHONE_CONTROL",
-    "APPLE_USB_C_DONGLE",
-    "APPLE_USB_C_DONGLE_ID",
-    "ChannelMapEntry",
-    "ClockDomainContract",
-    "DAC8X_OUTPUTD_STABILITY_PROFILE",
-    "DUAL_APPLE_USB_C_DAC_4CH",
-    "DUAL_APPLE_USB_C_DAC_4CH_ID",
-    "DacKind",
-    "DacProfile",
-    "HIFIBERRY_DAC8X",
-    "HIFIBERRY_DAC8X_ID",
-    "HIFIBERRY_DAC8X_STUDIO",
-    "HIFIBERRY_DAC8X_STUDIO_ID",
-    "HIFIBERRY_STUDIO_MIXER_CONTROLS",
-    "INNOMAKER_HIFI_AMP_PRO",
-    "INNOMAKER_HIFI_AMP_PRO_ID",
-    "LatencyFloor",
-    "MixerControl",
-    "REGISTRY",
-    "all_profiles",
-    "active_outputd_lane_channels_for",
-    "by_id",
-    "camilla_floor_for",
-    "clock_domain_contract_for",
-    "clock_domain_label_for",
-    "final_edge_format_for",
-    "is_boot_managed_i2s_profile",
-    "is_known_profile_id",
-    "label_for",
-    "latency_floor_for",
-    "mixer_control_groups_for",
-    "profile_for_card_label",
-    "profile_for_hat",
-    "physical_output_count_for",
-]
+def percent_pinned_control_for(profile_id: str) -> str | None:
+    """The simple-mixer control a drift monitor re-pins for this profile.
+
+    The one ``target_percent`` control name declared across every child
+    group, or None when the profile declares none or its children disagree
+    on which: ``jasper-headphone-monitor`` watches exactly one name, and the
+    reconciler reads the absence of one as "this DAC needs no monitor".
+    """
+
+    groups = mixer_control_groups_for(profile_id)
+    if groups is None:
+        return None
+    names = {
+        control.name
+        for group in groups
+        for control in group
+        if control.target_percent is not None
+    }
+    if len(names) != 1:
+        return None
+    return names.pop()

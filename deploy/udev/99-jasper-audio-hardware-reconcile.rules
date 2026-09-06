@@ -10,8 +10,11 @@
 # also has a USB-device RUN helper below: on some remove paths the
 # disappearing ALSA control node does not activate SYSTEMD_WANTS, and the
 # output role would otherwise stay stale until reboot.
+#
+# The kernel formats the USB uevent as `PRODUCT=%x/%x/%x`, so the ids carry
+# NO leading zeros: vendor 0x05ac reaches udev as `5ac`, and a `05ac` match
+# never fires.
 
 ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"
 
 ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="5ac/110a/*", RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"
-ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="05ac/110a/*", RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"

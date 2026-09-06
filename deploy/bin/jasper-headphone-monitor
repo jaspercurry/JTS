@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Watch the Apple dongle's Headphone mixer control and ACTIVELY
+# Watch the armed DAC's percent-pinned mixer control and ACTIVELY
 # self-heal it back to 100% when something drives it down.
 #
 # Usage: jasper-headphone-monitor [card|auto] [control]
@@ -25,15 +25,19 @@
 # polls log only on change. Resets are also logged so the journal
 # shows what self-healing happened and when.
 #
-# WHICH attached cards are Apple is the classifier's answer, asked
-# through its env emitter (ADR-0235 R2). That emitter is a Python
-# spawn and the reconciler deliberately never re-execs this unit, so
-# the set is re-asked on a card change, not per poll (ADR-0226).
+# WHICH attached cards are Apple, and WHICH control they pin, are the
+# classifier's answer, asked through its env emitter (ADR-0235 R2).
+# That emitter is a Python spawn and the reconciler deliberately never
+# re-execs this unit, so both are re-asked on a card change, not per
+# poll (ADR-0226).
 
 set -uo pipefail
 
 CONFIGURED_CARD="${1:-auto}"
-CONTROL="${2:-Headphone}"
+# An explicit control is the operator override that goes with an
+# explicit card; otherwise the emitter names it off the armed profile.
+CONTROL_OVERRIDE="${2:-}"
+CONTROL="$CONTROL_OVERRIDE"
 # The same board seams the classifier itself reads through.
 SYS_CLASS_SOUND="${JASPER_SYS_CLASS_SOUND:-/sys/class/sound}"
 PROC_ASOUND="${JASPER_PROC_ASOUND:-/proc/asound}"
@@ -45,6 +49,13 @@ PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_PYTHON}"
 
 if [[ "$CONFIGURED_CARD" == "auto" ]] && ! command -v "$PYTHON" >/dev/null 2>&1; then
     echo "event=apple_dongle.headphone_monitor.failed reason=python_unavailable" >&2
+    exit 1
+fi
+
+# The card override skips the emitter entirely, so it carries no control
+# either: naming one card means naming the control on it.
+if [[ "$CONFIGURED_CARD" != "auto" && -z "$CONTROL" ]]; then
+    echo "event=apple_dongle.headphone_monitor.failed reason=control_required" >&2
     exit 1
 fi
 
@@ -108,18 +119,22 @@ refresh_apple_cards() {
     fi
     # Every value is shlex-quoted by the emitter, so the payload evals as-is.
     OBSERVED_OUTPUT_APPLE_CARD_IDS=""
+    OBSERVED_OUTPUT_HEADPHONE_CONTROL=""
     if ! eval "$payload"; then
         APPLE_CARDS=()
         LAST_POPULATION="unprobed"
         return 1
     fi
+    CONTROL="${CONTROL_OVERRIDE:-$OBSERVED_OUTPUT_HEADPHONE_CONTROL}"
     APPLE_CARDS=()
-    [[ -n "$OBSERVED_OUTPUT_APPLE_CARD_IDS" ]] &&
+    # No control named, nothing to pin: an Apple card the armed profile does
+    # not pin is not this monitor's card.
+    [[ -n "$CONTROL" && -n "$OBSERVED_OUTPUT_APPLE_CARD_IDS" ]] &&
         read -r -a APPLE_CARDS <<<"$OBSERVED_OUTPUT_APPLE_CARD_IDS"
     return 0
 }
 
-echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CARD} control=${CONTROL}"
+echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CARD}"
 
 # bash 3.2 (macOS, where this is tested) has neither `mapfile` nor
 # `declare -A`, so per-card state lives in parallel indexed arrays. At most

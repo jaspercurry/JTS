@@ -37,6 +37,7 @@ from ...install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )
+from ...log_event import render_logfmt
 from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
@@ -58,26 +59,33 @@ from ._shared import (
 )
 
 
-def render(results: list[CheckResult]) -> int:
+def render(results: list[CheckResult], *, core: bool = False) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    fails = warns = 0
-    silent = False
     for r in results:
         if r.status == "ok":
             color, mark = GREEN, "✓"
         elif r.status == "skipped":
             color, mark = DIM, "-"
+        elif r.status == "warn":
+            color, mark = YELLOW, "!"
         else:
-            silent = silent or r.speaker_silent
-            if r.status == "warn":
-                color, mark = YELLOW, "!"
-                warns += 1
-            else:
-                color, mark = RED, "✗"
-                fails += 1
+            color, mark = RED, "✗"
         print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
     print()
+    counts = summarize(results)
+    fails, warns, silent = (
+        counts["fails"], counts["warns"], counts["speaker_silent"],
+    )
+    if core:
+        # The deploy gates on the exit code; this is the journal's copy.
+        print(render_logfmt("deploy.health", {
+            "status": "fail" if fails else "ok",
+            "fail": fails,
+            "warn": warns,
+            "rows": len(results),
+            "speaker_silent": silent,
+        }))
     # Silence leads the summary line, in the same phrase for a warn and a
     # fail: the household outcome is the same either way. Severity rides the
     # WORDS — colour and exit code keep their single meaning (red / 1 =
@@ -274,7 +282,11 @@ def main() -> None:
     _load_env_files()
     try:
         install_profile = read_install_profile()
-        cfg = _doctor_config_from_env(install_profile)
+        # --core needs no cfg, and Config.from_env() fails a provider-less box.
+        cfg: Config | SimpleNamespace = (
+            SimpleNamespace() if args.core
+            else _doctor_config_from_env(install_profile)
+        )
     except (RuntimeError, ValueError) as e:
         if args.json:
             _emit_json(
@@ -314,4 +326,4 @@ def main() -> None:
             out_path=args.out,
             duration_sec=time.monotonic() - started_at,
         ))
-    sys.exit(render(results))
+    sys.exit(render(results, core=args.core))

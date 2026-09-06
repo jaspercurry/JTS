@@ -361,7 +361,7 @@ def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():
     ]
     assert body.count("seed_speaker_name_env") == 1
     assert body.index("seed_speaker_name_env") < body.index(
-        "/usr/local/sbin/jasper-apply-airplay-mode"
+        'bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"'
     )
     assert body.index("seed_speaker_name_env") < body.index(
         'bash "${REPO_DIR}/deploy/configure-bluez.sh"'
@@ -565,6 +565,77 @@ def test_persist_install_profile_does_not_rechmod_an_existing_state_dir(tmp_path
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o770
 
 
+def _run_install_streambox_jasper(
+    tmp_path: Path,
+    *,
+    stubs: tuple[str, ...] = ("install",),
+    state_dir_mode: int | None = None,
+    env_file_text: str | None = None,
+    epilogue: str = "",
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
+    """Run install_streambox_jasper against a scratch root.
+
+    `install` is always stubbed: its `-o root -g root` needs privileges CI
+    lacks. Stubbing `rsync` too lets the run reach the env step; leaving it
+    real makes rsync fail on the empty REPO_DIR, so only dir-prep has run.
+    Every stub appends its argv to the returned `calls` path.
+    """
+    paths = {
+        "state": tmp_path / "state",
+        "env": tmp_path / "etc",
+        "install": tmp_path / "opt/jasper",
+        "repo": tmp_path / "repo",
+        "calls": tmp_path / "stub.calls",
+    }
+    for key in ("state", "env", "repo"):
+        paths[key].mkdir()
+    if state_dir_mode is not None:
+        # mkdir(mode=...) is masked by umask; chmod isn't.
+        paths["state"].chmod(state_dir_mode)
+    (paths["install"] / ".venv/bin").mkdir(parents=True)
+    pip = paths["install"] / ".venv/bin/pip"
+    pip.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    pip.chmod(0o755)
+    if env_file_text is not None:
+        env_file = paths["env"] / "jasper.env"
+        env_file.write_text(env_file_text, encoding="utf-8")
+        env_file.chmod(0o600)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in stubs:
+        stub = bin_dir / name
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf \'%s\\n\' "$*" >> "$JTS_STUB_CALLS"\nexit 0\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["JTS_STUB_CALLS"] = str(paths["calls"])
+    env["JASPER_HOSTNAME"] = "jts.local"
+    steps = [
+        f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+        f"REPO_DIR={shlex.quote(str(paths['repo']))}",
+        f"STATE_DIR={shlex.quote(str(paths['state']))}",
+        f"ENV_DIR={shlex.quote(str(paths['env']))}",
+        f"INSTALL_DIR={shlex.quote(str(paths['install']))}",
+        "install_streambox_jasper >/dev/null",
+    ]
+    if epilogue:
+        steps.append(epilogue)
+    result = subprocess.run(
+        ["bash", "-c", " && ".join(steps)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    return result, paths
+
+
 def test_install_streambox_jasper_does_not_rechmod_an_existing_state_dir(tmp_path):
     """`install_streambox_jasper` used to run `install -d -m 0750
     "${STATE_DIR}"` unconditionally before rsync/pip — the same re-chmod
@@ -573,67 +644,45 @@ def test_install_streambox_jasper_does_not_rechmod_an_existing_state_dir(tmp_pat
     already-widened 0770 STATE_DIR back to 0750 on every streambox
     install/upgrade. Fixed by delegating to ensure_state_dir, same as
     install_jasper. Pin that an existing STATE_DIR survives the streambox
-    dir-prep step untouched and is never passed to `install -d` directly,
-    via a fake `install` on PATH. REPO_DIR points at an empty tmp tree so
-    rsync fails right after dir-prep — this test only exercises that prep
-    step, not the rest of the heavy install (venv/pip/network)."""
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    state_dir.chmod(0o770)  # mkdir(mode=...) is masked by umask; chmod isn't
-    env_dir = tmp_path / "etc"
-    install_dir = tmp_path / "opt/jasper"
-    fake_repo = tmp_path / "repo"
-    fake_repo.mkdir()
+    dir-prep step untouched and is never passed to `install -d` directly."""
+    result, paths = _run_install_streambox_jasper(tmp_path, state_dir_mode=0o770)
 
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    calls = tmp_path / "install.calls"
-    fake_install = bin_dir / "install"
-    fake_install.write_text(
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> "
-        + shlex.quote(str(calls))
-        + "\nexit 0\n",
-        encoding="utf-8",
-    )
-    fake_install.chmod(0o755)
-
-    env = os.environ.copy()
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            "source "
-            + shlex.quote(str(_INSTALL_SH))
-            + " >/dev/null && "
-            + "REPO_DIR="
-            + shlex.quote(str(fake_repo))
-            + " && STATE_DIR="
-            + shlex.quote(str(state_dir))
-            + " && ENV_DIR="
-            + shlex.quote(str(env_dir))
-            + " && INSTALL_DIR="
-            + shlex.quote(str(install_dir))
-            + " && install_streambox_jasper",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env=env,
-    )
-
-    # rsync fails past dir-prep (fake_repo has no jasper/ to copy) — expected
-    # and irrelevant here; only the dir-prep step is under test.
+    # rsync is real here and fails past dir-prep — expected, and irrelevant.
     assert result.returncode != 0
 
-    assert stat.S_IMODE(state_dir.stat().st_mode) == 0o770
+    assert stat.S_IMODE(paths["state"].stat().st_mode) == 0o770
     call_lines = (
-        calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+        paths["calls"].read_text(encoding="utf-8").splitlines()
+        if paths["calls"].exists()
+        else []
     )
-    assert all(line.split()[-1] != str(state_dir) for line in call_lines), (
+    assert all(line.split()[-1] != str(paths["state"]) for line in call_lines), (
         "install_streambox_jasper called `install -d` directly on STATE_DIR: "
         f"{call_lines}"
     )
+
+
+def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_path):
+    """The streambox refresh re-asserts JASPER_INSTALL_PROFILE on an EXISTING
+    jasper.env. It used to `sed -i` the key out and append it back unquoted,
+    leaving a window with the key absent from a file systemd reads via
+    EnvironmentFile=; it now goes through jasper_env_file_set, so the key must
+    land parsable by `source`, keep every other key, and keep mode 0640."""
+    result, paths = _run_install_streambox_jasper(
+        tmp_path,
+        stubs=("install", "rsync"),
+        env_file_text="JASPER_HOSTNAME=jts.local\nJASPER_INSTALL_PROFILE=full\n",
+        epilogue=(
+            'source "$ENV_DIR/jasper.env" && '
+            'printf "%s|%s" "$JASPER_INSTALL_PROFILE" "$JASPER_HOSTNAME"'
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "streambox|jts.local"
+    env_file = paths["env"] / "jasper.env"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
+    assert not list(paths["env"].glob(".JASPER_INSTALL_PROFILE.*"))
 
 
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
@@ -905,6 +954,122 @@ def test_tune_nginx_worker_processes_pins_one_worker(tmp_path, packaged):
     ]
     assert len(directives) == 1
     assert directives[0].startswith("worker_processes 1;")
+
+
+def _run_install_nginx_site_conf(
+    tmp_path: Path, root: Path, src: Path, nginx_t_rc: int
+) -> subprocess.CompletedProcess[str]:
+    """Drive install_nginx_site_conf against a throwaway nginx root, with
+    `nginx` (whose -t verdict the caller picks) and `systemctl` stubbed."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, rc in (("nginx", nginx_t_rc), ("systemctl", 0)):
+        stub = bin_dir / name
+        stub.write_text(f"#!/usr/bin/env bash\nexit {rc}\n", encoding="utf-8")
+        stub.chmod(0o755)
+    script = "\n".join(
+        [
+            f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+            "install_nginx_site_conf "
+            f"{shlex.quote(str(src))} {shlex.quote(str(root))}",
+        ]
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+
+_PRIOR_CONF = "server { listen 80; }\n"
+_PRIOR_SNIPPET = "proxy_set_header X-Prior 1;\n"
+_NEW_CONF = "server { listen 81; }\n"
+
+
+@pytest.mark.parametrize(
+    "nginx_t_rc,prior",
+    [(1, _PRIOR_CONF), (1, None), (0, _PRIOR_CONF)],
+)
+def test_install_nginx_site_conf_never_leaves_a_rejected_conf_live(
+    tmp_path, nginx_t_rc, prior
+):
+    """A conf `nginx -t` rejects must not survive in sites-enabled, and
+    neither must the snippet it includes. The running nginx keeps the last
+    good config in memory, so rejected files left on disk only bite on its
+    next Restart=always bounce — taking the whole management surface down
+    with no web recovery path."""
+    root = tmp_path / "etc" / "nginx"
+    dest = root / "sites-enabled" / "jasper.conf"
+    snippet = root / "snippets" / "jts-proxy-headers.conf"
+    dest.parent.mkdir(parents=True)
+    if prior is not None:
+        dest.write_text(prior, encoding="utf-8")
+        snippet.parent.mkdir(parents=True)
+        snippet.write_text(_PRIOR_SNIPPET, encoding="utf-8")
+    src = tmp_path / "site.conf"
+    src.write_text(_NEW_CONF, encoding="utf-8")
+
+    result = _run_install_nginx_site_conf(tmp_path, root, src, nginx_t_rc)
+
+    assert result.returncode == (1 if nginx_t_rc else 0), result.stderr
+    if nginx_t_rc:
+        assert "event=install.nginx_conf_rejected" in result.stderr
+        if prior is None:
+            assert not dest.exists()
+            assert not snippet.exists()
+        else:
+            assert dest.read_text(encoding="utf-8") == prior
+            assert snippet.read_text(encoding="utf-8") == _PRIOR_SNIPPET
+    else:
+        assert dest.read_text(encoding="utf-8") == _NEW_CONF
+        assert snippet.read_text(encoding="utf-8") == (
+            REPO_ROOT / "deploy" / "nginx-proxy-headers.conf"
+        ).read_text(encoding="utf-8")
+    assert not (root / ".jasper-site-prev").exists()
+
+
+def test_install_nginx_site_aborts_before_touching_the_live_conf(tmp_path):
+    """Every step that can fail runs before the conf swap, and a failure
+    aborts under `set -e` instead of reaching the swap and the reload. The
+    stubs keep this off the host's real /etc/nginx: nothing is installed at
+    all, which is how a failed static-asset render leaves sites-enabled."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "install.calls"
+    for name, body in (
+        ("install", f"printf '%s\\n' \"$*\" >> {shlex.quote(str(calls))}\n"),
+        ("nginx", ""),
+        ("systemctl", ""),
+        ("rm", ""),
+        ("cp", ""),
+    ):
+        stub = bin_dir / name
+        stub.write_text(f"#!/usr/bin/env bash\n{body}exit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
+    script = "\n".join(
+        [
+            f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+            "install_management_static_assets() { return 1; }",
+            "install_nginx_site",
+        ]
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "JTS_NGINX_MAIN_CONF": str(tmp_path / "absent-nginx.conf"),
+        },
+    )
+
+    assert result.returncode != 0
+    assert not calls.exists(), calls.read_text(encoding="utf-8")
 
 
 def _run_reconcile_headless_boot_config(cfg_path: Path) -> None:
@@ -1649,6 +1814,46 @@ def test_write_build_manifest_is_atomic_tempfile_rename():
     assert 'mv -f "${tmp}" "${STATE_DIR}/build.txt"' in text
 
 
+@pytest.mark.parametrize(
+    "seeded,preserved",
+    [
+        (None, False),
+        ("", False),
+        ("   \n", False),
+        ("3f2a91c4-88de-4b0c-9a71-2d5e6f70a1b2\r\n", True),
+        ("not-a-uuid\n", True),
+    ],
+)
+def test_ensure_peer_id_publishes_a_valid_id(tmp_path, seeded, preserved):
+    """peer_id is the evidence the deploy direction guard reads
+    (scripts/_lib.sh verify_or_record_peer_id), and it and
+    jasper/peering/config.py both accept ANY non-empty id — so replacing one
+    that merely looks odd is what would abort the next deploy blaming a
+    re-image. Only an absent or blank id is generated, atomically; anything
+    with content survives byte for byte, trailing CR included."""
+    state = tmp_path / "state"
+    state.mkdir()
+    peer_id = state / "peer_id"
+    if seeded is not None:
+        # Bytes, not write_text/read_text: universal-newline translation would
+        # hide whether a seeded CR actually survived.
+        peer_id.write_bytes(seeded.encode())
+
+    result = _run_install_snippet("ensure_peer_id", state_dir=state)
+
+    assert result.returncode == 0, result.stderr
+    written = peer_id.read_bytes().decode()
+    assert not list(state.glob(".peer_id.*")), "tempfile left behind"
+    if preserved:
+        assert written == seeded
+    else:
+        assert re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            written.strip(),
+        )
+        assert stat.S_IMODE(peer_id.stat().st_mode) == 0o644
+
+
 def test_resolve_build_sha_short_prefers_deploy_env(tmp_path):
     result = _run_install_snippet(
         "resolve_build_sha_short",
@@ -1788,12 +1993,15 @@ def test_build_manifest_is_the_final_main_mutation():
         "write_build_manifest"
     )
     # run_doctor_summary is the TERMINAL step: nothing mutating follows the
-    # manifest stamp. After the last run_doctor_summary call, only branch-
-    # closing tokens remain (return 0 / fi / comments / whitespace).
+    # manifest stamp. On its own line only the advisory swallow may trail it;
+    # after that line, only branch-closing tokens (return 0 / fi / comments /
+    # whitespace).
     tail = body[body.rindex("run_doctor_summary") + len("run_doctor_summary"):]
+    call_line, _, rest = tail.partition("\n")
+    assert call_line.split("#", 1)[0].strip() == "|| true", call_line
     leftover = [
         ln.strip()
-        for ln in tail.splitlines()
+        for ln in rest.splitlines()
         if ln.strip()
         and not ln.strip().startswith("#")
         and ln.strip() not in {"return 0", "fi"}
@@ -2086,16 +2294,51 @@ def test_low_memory_build_parks_runtime_units_before_python_and_rust_builds():
     )
 
 
-def test_low_memory_install_uses_lightweight_health_probe_instead_of_doctor():
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    start = text.index("run_doctor_summary()")
-    end = text.index("\n}\n\nmain()", start)
-    body = text[start:end]
+def _systemd_run_stub(tmp_path: Path, rc: int) -> tuple[dict[str, str], Path]:
+    """A `systemd-run` first on PATH that records its argv and exits `rc`."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    argv_log = tmp_path / "systemd-run.argv"
+    stub = fake_bin / "systemd-run"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" > {shlex.quote(str(argv_log))}\n'
+        f"exit {rc}\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}, argv_log
 
-    assert "build_swap_required" in body
-    assert "jasper-deploy-health" in body
-    low_memory_body = body[body.index("if build_swap_required; then"):body.index("fi\n\n    echo \"=== jasper-doctor")]
-    assert "jasper-doctor" not in low_memory_body
+
+def test_run_doctor_summary_bounds_the_core_doctor_and_returns_its_code(tmp_path):
+    env, argv_log = _systemd_run_stub(tmp_path, 3)
+
+    r = _run_contained_build("run_doctor_summary", extra_env=env)
+
+    assert r.returncode == 3, r.stderr + r.stdout
+    argv = argv_log.read_text(encoding="utf-8").split()
+    assert "/opt/jasper/.venv/bin/jasper-doctor" in argv
+    assert "--core" in argv
+    assert "MemoryMax=96M" in argv
+    assert "RuntimeMaxSec=60" in argv  # not TimeoutStartSec; See ADR-0242.
+
+
+@pytest.mark.parametrize("profile", ["streambox", "full"])
+def test_a_failed_core_doctor_does_not_abort_either_install_profile(tmp_path, profile):
+    """Removal condition: expect a non-zero rc here once the swallow at both
+    run_doctor_summary call sites goes (ADR-0242)."""
+    env, _ = _systemd_run_stub(tmp_path, 1)
+    # Neuter every install step so only main()'s control flow, the profile
+    # branch and run_doctor_summary run for real.
+    r = _run_contained_build(
+        "for f in $(declare -F | awk '{print $3}'); do "
+        'case "$f" in main|run_doctor_summary|_is_truthy|_is_falsey_or_empty) '
+        'continue ;; esac; eval "${f}() { :; }"; done; '
+        f"resolve_install_profile() {{ printf '%s\\n' {profile}; }}; main",
+        extra_env=env,
+    )
+
+    assert r.returncode == 0, r.stderr + r.stdout
 
 
 # --- run_contained_build: graceful degradation, no double-run ----------

@@ -81,6 +81,7 @@ def _run_reconcile(
     board_model: str = "Raspberry Pi 5 Model B Rev 1.0",
     active_usb_role: str = "peripheral",
     extra_env: dict[str, str] | None = None,
+    script: Path = SCRIPT,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
@@ -162,7 +163,7 @@ def _run_reconcile(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(SCRIPT), *args],
+        ["bash", str(script), *args],
         check=False,
         cwd=ROOT,
         env=env,
@@ -567,10 +568,9 @@ _SCRIPT_STATES = (
     # root:jasper jasper.env into root:root (jasper-control needs group read
     # for fresh /state), and must repair generated /var/lib/jasper env-file
     # permissions on no-op runs.
-    'jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750',
     'jasper_env_file_set "$file" "$key" "$value" 0640 0750',
-    'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750',
-    'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750',
+    'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640',
+    'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640',
     # The latency floor and the endpoint contract are the runtime plan's
     # answers, fetched over the CLI with the fan-in env and BOTH camilla
     # statefiles — never a second copy of the registry in bash.
@@ -887,6 +887,97 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert not (tmp_path / "output_hardware.json").exists()
 
 
+def _pythonpath_recording_python(tmp_path: Path) -> Path:
+    """The real interpreter, with the PYTHONPATH of each emitter spawn logged."""
+    fake = tmp_path / "recording-python"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${2:-}" == "jasper.cli.output_hardware" ]]; then\n'
+        '  printf \'%s\\n\' "${PYTHONPATH:-}" >> "$JASPER_FAKE_PYTHONPATH_LOG"\n'
+        "fi\n"
+        'exec "$JASPER_FAKE_PYTHON_REAL" "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def test_the_emitter_is_pinned_to_the_checkout_the_script_ran_from(tmp_path: Path):
+    """install.sh runs `--print-env` from the rsynced checkout BEFORE the venv
+    is refreshed, so an unpinned spawn pairs the NEW shell with the PREVIOUS
+    build's emitter and every key that build never emitted reads as empty."""
+    log = tmp_path / "pythonpath.log"
+    # An inherited PYTHONPATH that is NOT the checkout, so the pin below can
+    # only be satisfied by the script prepending its own tree.
+    inherited = str(tmp_path / "inherited-site")
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--print-env",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _pythonpath_recording_python(tmp_path)
+            ),
+            "JASPER_FAKE_PYTHON_REAL": sys.executable,
+            "JASPER_FAKE_PYTHONPATH_LOG": str(log),
+            "PYTHONPATH": inherited,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded, "the emitter never ran"
+    assert recorded == [os.pathsep.join((str(ROOT), inherited))] * len(recorded)
+    assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
+
+
+def _pythonpath_recording_python_for_usb_port_role(tmp_path: Path) -> Path:
+    """The real interpreter, with the PYTHONPATH of the usb_port_role spawn
+    logged. A sibling of `_pythonpath_recording_python` for the boot-config
+    probe `reconcile_i2s_hat_boot` calls on every full (non-`--print-env`)
+    pass, proving the checkout pin is not the emitter's alone."""
+    fake = tmp_path / "recording-python-usb-port-role"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${2:-}" == "jasper.audio_hardware.usb_port_role" ]]; then\n'
+        '  printf \'%s\\n\' "${PYTHONPATH:-}" >> "$JASPER_FAKE_PYTHONPATH_LOG"\n'
+        "fi\n"
+        'exec "$JASPER_FAKE_PYTHON_REAL" "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def test_the_usb_port_role_probe_is_pinned_to_the_checkout_the_script_ran_from(
+    tmp_path: Path,
+):
+    """The checkout pin above is not the emitter's alone -- every spawn of
+    `$OUTPUT_HARDWARE_PYTHON` this script makes must resolve `jasper` from the
+    same tree during install's `--print-env` window and after. usb_port_role
+    is `reconcile_i2s_hat_boot`'s probe, which runs on every full pass."""
+    log = tmp_path / "pythonpath.log"
+    inherited = str(tmp_path / "inherited-site")
+    result = _run_reconcile(
+        tmp_path,
+        "",
+        "--reason", "test",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _pythonpath_recording_python_for_usb_port_role(tmp_path)
+            ),
+            "JASPER_FAKE_PYTHON_REAL": sys.executable,
+            "JASPER_FAKE_PYTHONPATH_LOG": str(log),
+            "PYTHONPATH": inherited,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded, "the usb_port_role probe never ran"
+    assert recorded == [os.pathsep.join((str(ROOT), inherited))] * len(recorded)
+
+
 def test_no_interpreter_leaves_every_observed_fact_at_its_absent_value(
     tmp_path: Path,
 ):
@@ -990,6 +1081,38 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "reset-failed jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+@pytest.mark.parametrize(
+    "locked_env,initial_fanin_env",
+    [
+        ("jasper.env", None),
+        # The route actions are all `unset` on fanin.env, so seeding one of
+        # their keys reaches apply_route_env's drop branch. That function runs
+        # in an `if` CONDITION, which disables set -e for its whole body — a
+        # refused lock there was discarded and the caller restarted anyway.
+        ("fanin.env", "JASPER_FANIN_INPUT_RESAMPLER=1\n"),
+    ],
+)
+def test_a_refused_env_lock_fails_the_pass_without_restarting(
+    tmp_path: Path, locked_env: str, initial_fanin_env: str | None
+):
+    """A refused lock returns 1 from the shared writer WITHOUT writing. The
+    `… && changed=1` / `file_changed=1` idioms would otherwise read that as
+    "changed" and restart jasper-outputd onto the OLD lane/PCM/format while
+    the unit exited 0. Removal condition: the bash env writers are gone."""
+    os.mkfifo(tmp_path / f".{locked_env}.lock")
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_fanin_env=initial_fanin_env,
+    )
+
+    assert result.returncode != 0
+    assert "restart" not in _systemctl_log(tmp_path)
 
 
 def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
@@ -1447,6 +1570,38 @@ def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    ("starting_content", "active_usb_role"),
+    [
+        # A verdict that would REMOVE the marker if --print-env mutated.
+        pytest.param("sentinel\n", "host", id="marker-present"),
+        # A verdict that would CREATE the marker if --print-env mutated.
+        pytest.param(None, "peripheral", id="marker-absent"),
+    ],
+)
+def test_print_env_leaves_the_management_transport_marker_untouched(
+    tmp_path: Path, starting_content: str | None, active_usb_role: str,
+):
+    """--print-env's usage text promises no mutations -- this pin does not
+    expire. (Today's motivation is install.sh's mid-install probe of the
+    PREVIOUS build, #4123, which would flip the gadget's management-transport
+    gate off a stale verdict; that motivation lapses if --print-env ever
+    moves after the source sync, but the no-mutations contract stays.)"""
+    marker = tmp_path / "management-transport.ok"
+    if starting_content is not None:
+        marker.write_text(starting_content, encoding="utf-8")
+
+    result = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--print-env", active_usb_role=active_usb_role,
+    )
+
+    assert result.returncode == 0, result.stderr
+    if starting_content is None:
+        assert not marker.exists()
+    else:
+        assert marker.read_text(encoding="utf-8") == starting_content
+
+
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):
@@ -1482,6 +1637,17 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
         "management_transport_available=true reason=available"
     ) in result.stderr
     _assert_publications_agree(tmp_path)
+    # --print-env's DONGLE_CARD truncates OBSERVED_OUTPUT_APPLE_CARD_IDS to
+    # its first id ("A", not "A_1") on this same dual-Apple pair.
+    print_env_dir = tmp_path / "print_env"
+    print_env_dir.mkdir()
+    print_env_result = _run_reconcile(
+        print_env_dir,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        extra_env=_dual_apple_cards(print_env_dir),
+    )
+    assert "DONGLE_CARD=A" in print_env_result.stdout
 
 
 def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path):
@@ -1503,6 +1669,9 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path)
     assert "JASPER_AUDIO_DAC_ID=dual_apple_usb_c_dac_4ch" in _jasper_env(tmp_path)
     outputd_env = _outputd_env(tmp_path)
     assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    # The armed composite names ITSELF on the DAC_PCM key — outputd reads it
+    # back as the composite's label, not as a PCM to open.
+    assert "JASPER_OUTPUTD_DAC_PCM=dual_apple_usb_c_dac_4ch" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=hw:CARD=A,DEV=0" in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_B_PCM=hw:CARD=B,DEV=0" in outputd_env
     # The COMPOSITE's own declaration reaches outputd, not its children's.
@@ -1565,13 +1734,13 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     commands = _systemctl_log(tmp_path)
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" not in commands
-    assert "event=audio_hardware_reconcile.runtime_env reason=test mode=parked" in (
+    assert "event=audio_hardware_reconcile.runtime_env pass_reason=test mode=parked" in (
         result.stderr
     )
     # The reason reaches the JOURNAL, not just the record: an operator reading
     # `output_parked` sees WHY, not only `recognized=0`.
     assert (
-        "event=audio_hardware_reconcile.output_parked reason=test "
+        "event=audio_hardware_reconcile.output_parked pass_reason=test "
         "output_dac_id=unknown output_dac_card=A recognized=0 "
         "observed_blockers=saved_composite_partially_present"
     ) in result.stderr
@@ -2296,6 +2465,62 @@ def _stub_render_lib(tmp_path: Path, body: str) -> Path:
     return stub
 
 
+def _copy_script_with_sibling_render_lib(tmp_path: Path, sentinel: str) -> Path:
+    """A `bin/` + `lib/` layout mirroring the installed tree, with a sibling
+    render lib recognizable by `sentinel` -- distinct from the real one, so a
+    test can tell whether `load_asound_render_lib`'s own sibling-vs-installed
+    resolution found it, rather than `JASPER_ASOUND_RENDER_LIB` shortcutting
+    the decision (every other test in this file sets that override)."""
+    bin_dir = tmp_path / "layout" / "bin"
+    lib_dir = tmp_path / "layout" / "lib"
+    bin_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
+    script_copy = bin_dir / "jasper-audio-hardware-reconcile"
+    script_copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    script_copy.chmod(0o755)
+    (lib_dir / "jasper-asound-render.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"jasper_asound_log_token() {{ printf '%s' '{sentinel}'; }}\n",
+        encoding="utf-8",
+    )
+    return script_copy
+
+
+def test_print_env_dual_apple_ready_resolves_its_own_sibling_render_lib(
+    tmp_path: Path,
+):
+    """Every other --print-env test pins JASPER_ASOUND_RENDER_LIB to the real
+    lib, so load_asound_render_lib's own sibling-vs-installed resolution
+    never runs. Unset it here and give the copied script only a sibling lib
+    to find, with a jasper_asound_log_token distinct enough that its answer
+    can only have come from that copy."""
+    sentinel = "SIBLING-LIB-TOKEN"
+    script_copy = _copy_script_with_sibling_render_lib(tmp_path, sentinel)
+    topology_path = _dual_apple_topology(tmp_path, active=True)
+
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        script=script_copy,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+            "JASPER_ASOUND_RENDER_LIB": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "OUTPUT_DAC_ID=dual_apple_usb_c_dac_4ch" in result.stdout
+    _assert_states(
+        result.stderr,
+        "event=audio_hardware_reconcile.dual_apple_detected ",
+        "action=outputd_dual_sink",
+        f"dac_a_pcm={sentinel} dac_b_pcm={sentinel}",
+    )
+
+
 @pytest.mark.parametrize(
     ("stub_body", "good", "reason", "expected_detail"),
     [
@@ -2440,7 +2665,7 @@ def test_reconcile_emits_the_declared_latency_floor(
         outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
     )
     assert (
-        f"event=audio_hardware_reconcile.latency_floor reason=test "
+        f"event=audio_hardware_reconcile.latency_floor pass_reason=test "
         f"output_dac_id={dac_id} camilla_chunksize=256 "
         "camilla_target_level=1536 outputd_period_frames=128 "
         "outputd_dac_buffer_frames=256"
@@ -2718,7 +2943,7 @@ def declare_slot_floor(monkeypatch):
     [
         pytest.param(
             APPLE_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
             "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
             "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
             "ring_b_channels=2 ring_active_channels=2 topology=",
@@ -2726,7 +2951,8 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             DAC8X_STUDIO_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
+            "result=skipped "
             "output_dac_id=hifiberry_dac8x_studio period_frames=none "
             "previous_period_frames=none sample_format=none ring_a_channels=none "
             "ring_b_channels=none ring_active_channels=none topology=none "
@@ -2735,7 +2961,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             DAC8X_AND_APPLE_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
             "result=unchanged output_dac_id=hifiberry_dac8x period_frames=128 "
             "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
             "ring_b_channels=2 ring_active_channels=2 topology=",
@@ -2743,7 +2969,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             "",
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
             "result=skipped reason=dac_unrecognized",
             id="dac-unrecognized",
         ),
@@ -2927,19 +3153,15 @@ def test_render_subcommand_reports_the_wire_and_the_topology_it_resolved(
 
 
 def _flat_cutover_event(stderr: str) -> dict[str, str]:
-    """The flat_cutover log line, parsed into its `key=value` fields.
-
-    `log_event` emits `event=<name> reason=$REASON <rest>`, so the run reason
-    is interleaved ahead of the function's own keys and an adjacent
-    `flat_cutover result=...` substring silently never matches.
-    """
+    """The flat_cutover log line, parsed into its `key=value` fields."""
     prefix = "event=audio_hardware_reconcile.flat_cutover "
     lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
     assert len(lines) == 1, f"expected exactly one flat_cutover event, got {lines}"
     fields: dict[str, str] = {}
     for token in lines[0][len(prefix):].split():
         key, _, value = token.partition("=")
-        fields.setdefault(key, value)  # first `reason=` is the run reason
+        assert key not in fields, key
+        fields[key] = value
     return fields
 
 
@@ -3092,9 +3314,36 @@ def test_reconcile_without_the_sound_cli_skips_the_render_instead_of_failing(
     )
 
     assert result.returncode == 0, result.stderr
-    assert _flat_cutover_event(result.stderr)["result"] == "skipped"
-    # The run reason wins the first `reason=`; the skip cause trails it.
-    assert "reason=cli_unavailable" in result.stderr
+    fields = _flat_cutover_event(result.stderr)
+    assert fields["result"] == "skipped"
+    assert fields["reason"] == "cli_unavailable"
+    assert fields["pass_reason"] == "test"
+
+
+def test_reconcile_degraded_marker_path_matches_the_output_hardware_helper(
+    monkeypatch, tmp_path: Path
+):
+    """``RECONCILE_DEGRADED_MARKER`` (this script) and
+    ``output_hardware.degraded_marker_path`` (the doctor's evidence) must
+    resolve to the same file under the same
+    ``JASPER_OUTPUT_HARDWARE_STATE_PATH`` -- one path for one fact."""
+    from jasper.output_hardware import degraded_marker_path
+
+    state_path = tmp_path / "output_hardware.json"
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SOUND_CLI": str(tmp_path / "absent"),
+            "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(state_path),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
+    assert degraded_marker_path().is_file()
 
 
 # --- the content-lane format axis ---------------------------------------------
@@ -3543,3 +3792,50 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
     assert _render_log(tmp_path) == rendered_before
     assert _systemctl_log(tmp_path).splitlines()[issued_before:] == []
     _assert_omits(check.stderr, "event=audio_hardware_reconcile.complete")
+
+
+def test_changed_check_reruns_while_the_degraded_marker_is_present(
+    tmp_path: Path,
+) -> None:
+    """A probe outage during ``--print-env`` (install.sh's mid-install call)
+    can set the degraded marker WITHOUT going through a full pass's own
+    stamp/marker reset (that reset only runs on the mutating path) -- so an
+    OLD stamp an earlier successful full pass left behind survives, and would
+    otherwise still match the now-unchanged fingerprint. Without the marker
+    check, the doctor's remedy (`systemctl start
+    jasper-audio-hardware-reconcile`) would be skipped instead of re-running
+    the pass."""
+    common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
+    healthy = _run_reconcile(
+        tmp_path, APPLE_LISTING, "--reason", "seed-healthy", extra_env=common
+    )
+    assert healthy.returncode == 0, healthy.stderr
+    assert (tmp_path / "reconcile.stamp").exists()
+
+    print_env = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--print-env",
+        initial_boot_config=(tmp_path / "config.txt").read_text(encoding="utf-8"),
+        extra_env={
+            **common,
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(tmp_path / "absent-python"),
+        },
+    )
+    assert print_env.returncode == 0, print_env.stderr
+    assert (tmp_path / "reconcile.degraded").exists()
+    # The stamp from the earlier full pass is left as-is: --print-env never
+    # touches it either way.
+    assert (tmp_path / "reconcile.stamp").exists()
+
+    check = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "unit-start",
+        "--changed",
+        initial_boot_config=(tmp_path / "config.txt").read_text(encoding="utf-8"),
+        extra_env=common,
+    )
+    assert check.returncode == 0, check.stderr
+    _assert_states(check.stderr, "event=audio_hardware_reconcile.changed ")

@@ -459,7 +459,7 @@ def test_streambox_install_and_runtime_cover_the_accessory_bridge():
     for the NEXT boot, while deploy health checks THIS one, so every
     streambox deploy would report a missing bridge until someone rebooted.
     """
-    install_path = _installer_function_body("install_streambox_systemd_units")
+    install_path = _installer_function_body("_stage_streambox_unit_files")
     assert "install_hid_accessory_unit_files" in install_path
 
     runtime = _installer_function_body("start_streambox_runtime_units")
@@ -694,7 +694,7 @@ def test_streambox_stages_the_voice_unit_without_boot_enabling_it():
     Boot-enabling would leave a remote-less streambox running an assistant
     it has no microphone for, which is the state ADR-0217 exists to prevent.
     """
-    install_path = _installer_function_body("install_streambox_systemd_units")
+    install_path = _installer_function_body("_stage_streambox_unit_files")
     assert "install_voice_unit_files" in install_path
 
     runtime = _installer_function_body("start_streambox_runtime_units")

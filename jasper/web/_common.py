@@ -85,6 +85,7 @@ from ..control.restart_broker import manage_units
 from ..env_load import parse_env_file, read_env_file_or_warn
 from ..http_security import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ..voice.provider_state import read_active_provider
 
 logger = logging.getLogger(__name__)
@@ -1416,6 +1417,26 @@ def send_see_other(
     if flash:
         handler.send_header("Set-Cookie", _flash_set_cookie_header(flash))
     handler.end_headers()
+
+
+# Cap on the provider/OS text a failure flash quotes: the whole message is
+# percent-quoted into one Set-Cookie header value, so keep it far short of any
+# header-size limit.
+_FLASH_DETAIL_CAP = 220
+
+
+def flash_error(
+    handler: BaseHTTPRequestHandler,
+    prefix: str,
+    exc: BaseException,
+) -> None:
+    """Redirect to `./` with a failure banner built from `exc`.
+
+    A provider token-endpoint rejection or an `OSError` can quote the very
+    credential it was handed, so the text is scrubbed and bounded before it
+    reaches the flash cookie and the rendered banner."""
+    detail = redact_secrets(str(exc))[:_FLASH_DETAIL_CAP]
+    send_see_other(handler, "./", flash=f"{prefix}: {detail}")
 
 
 def send_rejected_form(

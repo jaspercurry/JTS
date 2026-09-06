@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.mics.xvf3800 import ALSA_CARD_NAMES
 from jasper.wake_ports import DEFAULT_AEC_ON_PORT
 
 
@@ -140,7 +141,11 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
         denoised=False,
         beamformed=False,
         gain_controlled=False,
-        provenance="operator" if mic_device and mic_device != "Array" else "default",
+        provenance=(
+            "operator"
+            if mic_device and mic_device not in ALSA_CARD_NAMES
+            else "default"
+        ),
     )
 
 

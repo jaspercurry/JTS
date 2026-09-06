@@ -1104,7 +1104,7 @@ def check_usbgadget_composition() -> CheckResult:
             f"transition ({usb_role.reason}); restart {USBGADGET_UNIT}.",
             reason=REASON_COMPOSITION_AUDIO_DURING_TRANSITION,
         )
-    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"))
+    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR))
     try:
         has_udc = udc_dir.is_dir() and any(udc_dir.iterdir())
     except OSError:

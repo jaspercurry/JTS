@@ -81,6 +81,7 @@ REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE = "output_hardware_state_unavailable"
 REASON_OUTPUT_HARDWARE_BLOCKED = "output_hardware_blocked"
 REASON_OUTPUT_HARDWARE_MISMATCH = "output_hardware_mismatch"
 REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED = "output_hardware_clock_blocked"
+REASON_OUTPUT_HARDWARE_DEGRADED = "output_hardware_degraded"
 
 REASON_TOPOLOGY_NOT_CONFIGURED = "output_topology_not_configured"
 
@@ -538,6 +539,25 @@ def check_output_hardware_state() -> CheckResult:
         "Output hardware state",
         "ok",
         detail,
+    )
+
+
+@doctor_check()
+def check_output_hardware_reconcile_degraded() -> CheckResult:
+    """Surface a reconcile pass that skipped a probe it depends on.
+
+    The marker is a sentinel only (no content beyond existing) — set when a
+    pass could not read something it needed and cleared at the start of the
+    next pass (see ``deploy/bin/jasper-audio-hardware-reconcile``)."""
+
+    if not evidence.output_hardware_degraded():
+        return CheckResult("Output hardware reconcile", "ok", "last pass completed cleanly")
+    return CheckResult(
+        "Output hardware reconcile",
+        "warn",
+        "last reconcile pass skipped a probe it depends on and left state "
+        "stale — run `sudo systemctl start jasper-audio-hardware-reconcile`",
+        reason=REASON_OUTPUT_HARDWARE_DEGRADED,
     )
 
 

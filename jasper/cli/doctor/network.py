@@ -18,7 +18,7 @@ from pathlib import Path
 
 from jasper.identity import resolve_hostname
 from jasper.output_hardware import current_usb_data_role
-from jasper.usbgadget import network_wanted
+from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, network_wanted
 from jasper.usb_network import (
     DEFAULT_DNSMASQ_PATH,
     DEFAULT_NM_PATH,
@@ -729,7 +729,7 @@ def _udc_present() -> bool:
     ``u_ether`` registers the ``usb0`` netdev at bind time — regardless of
     whether a host cable is attached (carrier reflects the cable, existence
     reflects the bind)."""
-    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"))
+    udc_dir = Path(os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR))
     try:
         return udc_dir.is_dir() and any(udc_dir.iterdir())
     except OSError:
