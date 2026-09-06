@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -172,20 +173,59 @@ def test_stale_assets_absent_from_the_manifest_are_pruned(tmp_path: Path, make_s
         assert (assets_root / rel).is_file(), f"{rel} missing on disk"
 
 
-@pytest.mark.parametrize(
-    "lang",
-    [pytest.param("en_GB.UTF-8", id="ssh-forwarded-utf8")],
-)
-def test_prune_survives_ambient_utf8_locale(tmp_path: Path, lang: str):
+def _comm_expresses_utf8_collation_bug(lang: str) -> bool:
+    """True if bare `comm` under ambient LANG=<lang> (no LC_ALL pin)
+    misreads a C-sorted merge and reports a line present in both
+    inputs as unique to the first — the failure the pruner's LC_ALL=C
+    pin on comm exists to prevent. Seeded with the real failure's
+    names: a leading-dot manifest name collates differently from
+    `airplay/airplay.css` and `app.css` under UTF-8 than under C.
+    """
+    disk = sorted([".install-manifest", "airplay/airplay.css", "app.css"])
+    shared = {"airplay/airplay.css", "app.css"}
+    manifest = sorted(shared)
+    with (
+        tempfile.NamedTemporaryFile("w", suffix=".disk") as f1,
+        tempfile.NamedTemporaryFile("w", suffix=".manifest") as f2,
+    ):
+        f1.write("\n".join(disk) + "\n")
+        f1.flush()
+        f2.write("\n".join(manifest) + "\n")
+        f2.flush()
+        result = subprocess.run(
+            ["comm", "-23", f1.name, f2.name],
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": lang},
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        return True
+    return bool(set(result.stdout.splitlines()) & shared)
+
+
+def test_prune_survives_ambient_utf8_locale(tmp_path: Path):
     """comm must diff under its own C collation, not the caller's locale.
 
     ssh forwards the laptop's LANG to the Pi. Both comm inputs are
     C-sorted, but comm collates in the ambient locale by default; under
     UTF-8 collation the manifest's leading dot sorts differently than
     under C, desyncing the merge against a live manifest and pruning
-    freshly installed files. LC_ALL is deliberately left unset (env=
-    replaces the child's environment rather than inheriting it).
+    freshly installed files.
+
+    The probe below proves this platform's `comm` can actually express
+    that desync before trusting a pass here as a regression guard (BSD
+    `comm` never collates by locale; glibc falls back to C silently
+    when the candidate locale isn't generated) — on-box proof against
+    the real pruner is recorded on #4236 (GNU coreutils 9.7, jts3,
+    en_GB.UTF-8: unfixed exit 1, 3/5 live files deleted; fixed exit 0,
+    5/5 present).
     """
+    for lang in ("en_GB.UTF-8", "en_US.UTF-8"):
+        if _comm_expresses_utf8_collation_bug(lang):
+            break
+    else:
+        pytest.skip("platform cannot express glibc UTF-8 collation of comm")
+
     repo = _fake_repo(tmp_path)
     web_root = tmp_path / "web"
     r = _run(repo, web_root, extra_env={"LANG": lang})
