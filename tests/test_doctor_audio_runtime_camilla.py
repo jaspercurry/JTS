@@ -8,11 +8,13 @@ import pytest
 
 from jasper import audio_runtime_plan
 from jasper.cli.doctor import (
+    _shared,
     audio_runtime_camilla,
     audio_runtime_fanin,
     audio_runtime_outputd,
 )
 from jasper.cli.doctor._evidence import evidence
+from jasper.doctor_contract import summarize
 from jasper.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
 
 from ._doctor_audio_runtime_fixtures import (
@@ -84,6 +86,60 @@ def test_status_consumers_classify_non_object_root_without_crashing(
 
     assert result.status == expected_status
     assert result.reason == expected_reason
+
+
+# The output chain's three unit checks, in chain order, each with the reason
+# their one systemd ladder (`_shared._service_state_failure`) reports for an
+# enabled-but-not-active unit. The guards below pin that ladder; delete them
+# when it is replaced.
+_OUTPUT_CHAIN_CHECKS = (
+    (audio_runtime_fanin.check_fanin_service,
+     audio_runtime_fanin.REASON_FANIN_INACTIVE),
+    (audio_runtime_camilla.check_camilla_service,
+     audio_runtime_camilla.REASON_CAMILLA_INACTIVE),
+    (audio_runtime_outputd.check_outputd_service,
+     audio_runtime_outputd.REASON_OUTPUTD_INACTIVE),
+)
+_OUTPUT_CHAIN_IDS = [check.__name__ for check, _ in _OUTPUT_CHAIN_CHECKS]
+
+
+@pytest.mark.parametrize(
+    "check, reason", _OUTPUT_CHAIN_CHECKS, ids=_OUTPUT_CHAIN_IDS,
+)
+def test_a_stopped_output_chain_unit_reads_speaker_silent(check, reason):
+    """Renderer → ring → fan-in → CamillaDSP → outputd → DAC is the only path
+    out, so a unit of it that is enabled and not active means no source can be
+    heard now."""
+    _seed_units(active="inactive")
+
+    result = check()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "fail", reason, True,
+    )
+
+
+@pytest.mark.parametrize(
+    "check", [check for check, _ in _OUTPUT_CHAIN_CHECKS], ids=_OUTPUT_CHAIN_IDS,
+)
+def test_no_systemd_claims_nothing_about_the_speaker(check):
+    """Nothing was observed at all, so the row may assert no silence."""
+    evidence.seed("units", None)
+
+    result = check()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, False,
+    )
+
+
+def test_a_broken_output_chain_makes_the_whole_report_read_silent():
+    """The report-level consequence an operator sees at the top of a run."""
+    _seed_units(active="inactive")
+
+    assert summarize([check() for check, _ in _OUTPUT_CHAIN_CHECKS]) == {
+        "fails": 3, "warns": 0, "speaker_silent": True,
+    }
 
 
 def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):

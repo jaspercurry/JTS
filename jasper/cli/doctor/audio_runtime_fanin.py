@@ -378,7 +378,7 @@ def check_fanin_service() -> CheckResult:
         "jasper-fanin.service",
         missing=REASON_FANIN_UNIT_MISSING,
         not_enabled=REASON_FANIN_UNIT_NOT_ENABLED,
-        inactive=REASON_FANIN_INACTIVE,
+        inactive=REASON_FANIN_INACTIVE, speaker_silent=True,
     )
     if service_failure is not None:
         return service_failure
@@ -392,7 +392,7 @@ def check_fanin_service() -> CheckResult:
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
-            reason=REASON_FANIN_STATUS_UNREACHABLE,
+            reason=REASON_FANIN_STATUS_UNREACHABLE, speaker_silent=True,
         )
     data = status.payload
     if data is None:
@@ -425,7 +425,7 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
-            reason=REASON_FANIN_TRANSPORT_NOT_RING,
+            reason=REASON_FANIN_TRANSPORT_NOT_RING, speaker_silent=True,
         )
     ring = output.get("ring")
     if not isinstance(ring, dict):

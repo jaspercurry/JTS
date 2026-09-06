@@ -17,7 +17,13 @@ import time
 import pytest
 
 from jasper import service_units
-from jasper.cli.doctor import _evidence, _shared, resilience, web
+from jasper.cli.doctor import (
+    _evidence,
+    _shared,
+    audio_runtime_camilla,
+    resilience,
+    web,
+)
 from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,
@@ -112,7 +118,7 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
     """The same `activating` state on a long-running daemon still is a
     finding — only the tracked oneshot is exempt."""
     _systemctl_show(
-        monkeypatch, _unit_block("jasper-fanin.service", "activating", "start"),
+        monkeypatch, _unit_block("jasper-voice.service", "activating", "start"),
     )
 
     r = resilience.check_service_runtime_state()
@@ -123,6 +129,26 @@ def test_check_service_runtime_state_flags_a_non_oneshot_stuck_activating(
 
 def test_runtime_state_units_track_the_coupling_reconciler_oneshot():
     assert "jasper-fanin-coupling-auto.service" in _shared._RUNTIME_STATE_UNITS
+
+
+def test_a_failed_camilla_is_exactly_one_fail_row(monkeypatch):
+    """One fact, one row: this check no longer tracks the units
+    `_shared._service_state_failure` already owns, and that row is the one
+    that reports the silence. Goes when the ladder does."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-camilla.service": {
+            "active_state": "failed", "sub_state": "failed", "result": "exit-code",
+        }}),
+    )
+
+    camilla = audio_runtime_camilla.check_camilla_service()
+    generic = resilience.check_service_runtime_state()
+
+    assert (camilla.status, camilla.reason, camilla.speaker_silent) == (
+        "fail", audio_runtime_camilla.REASON_CAMILLA_INACTIVE, True,
+    )
+    assert generic.status == "ok"
 
 
 # ------------------------------------------------ check_required_units_active
