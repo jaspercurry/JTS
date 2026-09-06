@@ -162,11 +162,14 @@ hw:CARD=DAC8XStudio,DEV=0
     assert cards[1].device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
 
 
-def test_probe_aplay_listing_bounds_a_hung_aplay(tmp_path: Path) -> None:
+def test_probe_aplay_listing_bounds_a_hung_aplay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The only caller runs on the DAC-vanished path under a unit with a 50 s
     TimeoutStartSec; a wedged USB stack must not block it indefinitely."""
+    monkeypatch.setattr(output_hardware, "_APLAY_LISTING_TIMEOUT_SEC", 0.2)
     stub = tmp_path / "aplay"
-    stub.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    stub.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
     stub.chmod(0o755)
 
     started = time.monotonic()
@@ -174,7 +177,7 @@ def test_probe_aplay_listing_bounds_a_hung_aplay(tmp_path: Path) -> None:
     elapsed = time.monotonic() - started
 
     assert result == ""
-    assert elapsed < output_hardware._APLAY_LISTING_TIMEOUT_SEC + 2.0
+    assert elapsed < 2.0
 
 
 def test_probe_system_cards_uses_usb_device_path_as_stable_path(

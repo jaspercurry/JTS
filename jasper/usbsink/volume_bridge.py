@@ -32,6 +32,7 @@ import contextlib
 import logging
 import re
 import subprocess
+import time
 from types import ModuleType
 from typing import Any, Optional
 
@@ -53,17 +54,14 @@ logger = logging.getLogger(__name__)
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
 POST_RETRY_CEILING_SEC = 5.0
-# A live measurement's hold renews for the whole session without losing
-# identity (jasper/control/measurement_hold.py: "a 30-minute session renews
-# ~30 times and is still one hold"), and jasper/control/handlers/volume.py
-# names 30 minutes as this decline path's ORDINARY case, not an edge one.
-# 1800 s covers that without truncating a real measurement, while still
-# bounding what was previously an indefinite retry for the OTHER decline
-# producer — jasper.volume_coordinator's inactive-source gate, which has no
-# natural expiry at all. Remove when the coordinator answers a decline with
-# a reason code the bridge can act on (distinguish "still measuring, keep
-# retrying" from "switched away, stop retrying").
-POST_RETRY_MAX_SEC = 1800.0
+# Equals jasper.active_speaker.session_volume_plan.MAX_WALL_CLOCK_CEILING_S
+# (not imported here — a test pin ties the two): the hard ceiling of any
+# guided measurement, so a slider move during one is still re-presented once
+# the hold lifts. The OTHER decline producer — jasper.volume_coordinator's
+# inactive-source gate — has no ceiling of its own; this cap is what bounds
+# it too. Remove when the coordinator answers a decline with a reason code
+# the bridge can act on.
+POST_RETRY_MAX_SEC = 3600.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -163,9 +161,8 @@ class VolumeBridge:
     cross-process write within the persistence echo window; NOT the
     coordinator's own-echo window, which is never stamped for USB) is
     retried with a capped exponential backoff until the controller
-    acknowledges it or POST_RETRY_MAX_SEC elapses, whichever comes first.
-    Accepted values are deduplicated locally, while the coordinator owns
-    source and echo policy.
+    acknowledges it. Accepted values are deduplicated locally, while the
+    coordinator owns source and echo policy.
     """
 
     def __init__(
@@ -485,14 +482,12 @@ class VolumeBridge:
 
     async def _retry_declined(self, pct: int) -> None:
         """Re-present one unacknowledged value until the controller takes it,
-        or until POST_RETRY_MAX_SEC of retrying has passed with no
-        acceptance — see the constant's derivation above."""
+        or the cap elapses — see POST_RETRY_MAX_SEC."""
+        started = time.monotonic()
         delay = POST_RETRY_INTERVAL_SEC
-        elapsed = 0.0
         attempts = 0
-        while elapsed < POST_RETRY_MAX_SEC:
+        while time.monotonic() - started < POST_RETRY_MAX_SEC:
             await asyncio.sleep(delay)
-            elapsed += delay
             attempts += 1
             if await self._post(pct) is True:
                 self._last_published_pct = pct
