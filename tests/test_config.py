@@ -460,6 +460,28 @@ def test_response_stall_timeout_default_matches_env_example(monkeypatch):
     assert Config.from_env().response_stall_timeout_sec == env_value
 
 
+@pytest.mark.parametrize("render", [repr, str])
+def test_secret_fields_excluded_from_repr(monkeypatch, render):
+    """`repr=False` on the five secret-bearing fields must hold under both
+    `repr()` and `str()` (a frozen dataclass's default `__str__` is its
+    `__repr__`) — a future `logger.debug("cfg=%r", cfg)` must not be able
+    to dump all five secrets from one call."""
+    secrets = {
+        "GEMINI_API_KEY": "gemini-secret-Z1",
+        "OPENAI_API_KEY": "openai-secret-Z2",
+        "XAI_API_KEY": "grok-secret-Z3",
+        "GOOGLE_CLIENT_SECRET": "google-secret-Z4",
+        "JASPER_HA_TOKEN": "ha-secret-Z5",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+
+    cfg = Config.from_env()
+    rendered = render(cfg)
+    for value in secrets.values():
+        assert value not in rendered
+
+
 def test_config_import_chain_does_not_require_httpx():
     """`import jasper.config` must not pull in httpx.
 

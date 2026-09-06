@@ -15,7 +15,8 @@ from .session import AudioOutChunk, LiveTurn
 
 logger = logging.getLogger("jasper.voice_daemon")
 
-# First-audio telemetry is useful but cannot be allowed to hold up speech.
+# The response observer awaits a SQLite write until Wave 3.1 moves that off
+# the loop; first-audio telemetry cannot be allowed to hold up speech.
 _RESPONSE_OBSERVER_TIMEOUT_SEC = 0.1
 
 
@@ -121,6 +122,7 @@ async def _play_responses(
     *,
     barge_in_enabled: bool = False,
     on_response_started: Callable[[], Awaitable[None]] | None = None,
+    on_first_write: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -151,6 +153,7 @@ async def _play_responses(
     drain_task: asyncio.Task | None = None
     flush_failed = False
     response_started = False
+    first_write_seen = False
     try:
         async for chunk in _turn_audio_chunks(turn):
             # This is the one provider-neutral response boundary: the first
@@ -168,10 +171,7 @@ async def _play_responses(
                     except asyncio.TimeoutError:
                         logger.warning("turn response observer timed out")
                     except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "turn response observer failed: %s",
-                            e,
-                        )
+                        logger.warning("turn response observer failed: %s", e)
             if interrupt_task is None or interrupt_task.done():
                 interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
             write_task = asyncio.create_task(
@@ -199,7 +199,7 @@ async def _play_responses(
                 interrupt_task = None
             elif write_task in done:
                 try:
-                    await write_task
+                    accepted = await write_task
                 except Exception as e:  # noqa: BLE001
                     log_event(
                         logger,
@@ -211,6 +211,17 @@ async def _play_responses(
                     raise
                 finally:
                     write_task = None
+                # Accepted by the admission seam, not merely attempted: a
+                # refused write drops the PCM, so nothing reached fan-in.
+                if not first_write_seen and chunk.pcm and accepted:
+                    first_write_seen = True
+                    if on_first_write is not None:
+                        try:
+                            await on_first_write()
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "turn first_write observer failed: %s", e,
+                            )
             if write_task is not None and write_task.done():
                 write_task = None
         await tts.end_segment()
