@@ -763,8 +763,14 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             FAKE_DOCTOR_RC="1",
         )
 
+        calls = fake.calls()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("jasper-doctor\\ --core", fake.calls())
+        self.assertIn("jasper-doctor\\ --core", calls)
+        # The remote run carries install.sh's bound: a Type=simple transient
+        # unit is "started" once it forks, so RuntimeMaxSec is what bounds it.
+        self.assertIn("systemd-run", calls)
+        self.assertIn("MemoryMax=96M", calls)
+        self.assertIn("RuntimeMaxSec=60", calls)
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)

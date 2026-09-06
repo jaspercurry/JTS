@@ -612,9 +612,15 @@ EOF
     exit 1
 }
 
+# Same bound as install.sh's run_doctor_summary, spelled again because this
+# side builds a remote command string. RuntimeMaxSec, not TimeoutStartSec:
+# a Type=simple transient unit finishes starting at fork. MemoryMax is inert
+# until the box has rebooted with the memory cgroup controller enabled.
 gate_core_health() {
     echo "==> Post-deploy core health (jasper-doctor --core; advisory)"
-    run_remote_sudo "/opt/jasper/.venv/bin/jasper-doctor --core" || return 1
+    run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
+-p MemoryMax=96M -p RuntimeMaxSec=60 \
+/opt/jasper/.venv/bin/jasper-doctor --core" || return 1
 }
 
 # Capture git info BEFORE rsync (which excludes .git/).

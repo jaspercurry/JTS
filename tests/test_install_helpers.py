@@ -1993,13 +1993,15 @@ def test_build_manifest_is_the_final_main_mutation():
         "write_build_manifest"
     )
     # run_doctor_summary is the TERMINAL step: nothing mutating follows the
-    # manifest stamp. After the last run_doctor_summary LINE, only branch-
-    # closing tokens remain (return 0 / fi / comments / whitespace).
-    lines = body.splitlines()
-    last = max(i for i, ln in enumerate(lines) if "run_doctor_summary" in ln)
+    # manifest stamp. On its own line only the advisory swallow may trail it;
+    # after that line, only branch-closing tokens (return 0 / fi / comments /
+    # whitespace).
+    tail = body[body.rindex("run_doctor_summary") + len("run_doctor_summary"):]
+    call_line, _, rest = tail.partition("\n")
+    assert call_line.split("#", 1)[0].strip() == "|| true", call_line
     leftover = [
         ln.strip()
-        for ln in lines[last + 1:]
+        for ln in rest.splitlines()
         if ln.strip()
         and not ln.strip().startswith("#")
         and ln.strip() not in {"return 0", "fi"}
@@ -2318,6 +2320,9 @@ def test_run_doctor_summary_bounds_the_core_doctor_and_returns_its_code(tmp_path
     assert "/opt/jasper/.venv/bin/jasper-doctor" in argv
     assert "--core" in argv
     assert "MemoryMax=96M" in argv
+    # RuntimeMaxSec, not TimeoutStartSec: a Type=simple transient unit has
+    # finished starting once it forks, so only RuntimeMaxSec bounds the run.
+    assert "RuntimeMaxSec=60" in argv
 
 
 @pytest.mark.parametrize("profile", ["streambox", "full"])

@@ -2044,15 +2044,20 @@ install_camillagui() {
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 
-# MemoryMax bounds the doctor next to freshly restarted services on a
-# 1 GB box; the deploy gate reads the exit code. See ADR-0240.
+# Bounds the doctor next to freshly restarted services on a 1 GB box, and
+# the deploy gate reads the exit code. RuntimeMaxSec, not TimeoutStartSec:
+# systemd-run without --service-type makes a Type=simple unit, whose start
+# completes at fork, so only RuntimeMaxSec bounds the run. MemoryMax needs
+# the memory cgroup controller, which migrate_cgroup_memory_enabled puts in
+# cmdline.txt in this same run — so the ceiling bites from the first install
+# after that reboot onward, not on a first install. See ADR-0240.
 run_doctor_summary() {
     echo; echo "=== jasper-doctor --core ==="
     local rc=0
     systemd-run --quiet --wait --pipe --collect \
-        -p MemoryMax=96M -p TimeoutStartSec=60 \
+        -p MemoryMax=96M -p RuntimeMaxSec=60 \
         /opt/jasper/.venv/bin/jasper-doctor --core || rc=$?
-    logger -t jasper-install -- "event=deploy.health rc=${rc}" 2>/dev/null || true
+    logger -t jasper-install -- "event=install.doctor_core rc=${rc}" 2>/dev/null || true
     return "${rc}"
 }
 

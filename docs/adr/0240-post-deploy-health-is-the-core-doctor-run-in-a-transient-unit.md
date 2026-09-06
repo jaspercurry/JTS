@@ -26,28 +26,41 @@ no-provider-configured skip, and a `--core` run that builds no voice `Config`).
 
 **One health surface on every box and every tier: `jasper-doctor --core`.**
 
-1. The installer's `run_doctor_summary` runs it under
+1. **Both runs carry the same bound**, spelled twice because one is a local
+   command and one is a remote command string:
    `systemd-run --quiet --wait --pipe --collect -p MemoryMax=96M -p
-   TimeoutStartSec=60`. The bound is a TRANSIENT unit, not the shipped oneshot
-   ADR-0233 rule 5 described: nothing new enters `SYSTEMD_SUPPORT_FILES`, the
-   caller keeps the exit code, and the memory ceiling that motivated the
-   low-memory branch now applies on every box instead of below 1.2 GB. The
-   memory threshold survives only in the build sandbox, which is where it
-   describes a real cost.
-2. The deploy wrapper's `gate_core_health` runs the same subset over
-   `run_remote_sudo` and returns its exit code. `--core`'s contract is
-   warn-tolerant by construction (`jasper/doctor_contract.py` `summarize`,
-   `jasper/cli/doctor/_cli.py`): fails exit 1, warns exit 0, skips count for
-   neither — so a bare exit-code gate needs no reason allow-list. The doctor
-   itself prints `event=deploy.health status= fail= warn= rows= speaker_silent=`
-   under `--core`; the installer adds `event=deploy.health rc=` for the run it
-   bounded.
-3. **The gate is advisory in this change.** Both installer call sites and the
+   RuntimeMaxSec=60`. The installer's `run_doctor_summary` runs it directly;
+   the deploy wrapper's `gate_core_health` runs it through `run_remote_sudo`
+   after the restarts, where an unbounded doctor would otherwise sit beside
+   freshly restarted daemons immediately before the OOM scan reads the kernel
+   log.
+   `RuntimeMaxSec`, not `TimeoutStartSec`: `systemd-run` without
+   `--service-type` creates a `Type=simple` unit, which has finished starting
+   the moment it forks, so a start timeout bounds nothing. `MemoryMax` needs
+   the memory cgroup controller, which `migrate_cgroup_memory_enabled` writes
+   into `cmdline.txt` in this same install — so on a box that has never
+   rebooted with it enabled the ceiling is inert, and it bites from the first
+   install after that reboot onward.
+2. The bound is a TRANSIENT unit, not the shipped oneshot ADR-0233 rule 5
+   described: nothing new enters `SYSTEMD_SUPPORT_FILES`, and each caller
+   keeps the exit code. The memory ceiling that motivated the low-memory
+   branch now applies on every box instead of below 1.2 GB; the 1.2 GB
+   threshold survives only in the build sandbox, which is where it describes a
+   real cost.
+3. `--core`'s contract is warn-tolerant by construction
+   (`jasper/doctor_contract.py` `summarize`, `jasper/cli/doctor/_cli.py`):
+   fails exit 1, warns exit 0, skips count for neither — so a bare exit-code
+   gate needs no reason allow-list. **Two surfaces, two lines, two names:** the
+   doctor prints `event=deploy.health status= fail= warn= rows= speaker_silent=`
+   to stdout, which is the deploy transcript the operator reads; the installer
+   logs `event=install.doctor_core rc=` to the journal for the run it bounded.
+   One event name per schema.
+4. **The gate is advisory in this change.** Both installer call sites and the
    wrapper call site swallow the result with `|| true`. Deleting the wrapper's
    swallow is ADR-0173's removal condition firing, and waits on the three-box
    hardware read. ADR-0173's decision otherwise stands, under the wrapper
    function's new name: `surface_system_health` is `gate_core_health`.
-4. The streambox voice expectation that was decision 5 of ADR-0217 is now
+5. The streambox voice expectation that was decision 5 of ADR-0217 is now
    `resilience.check_voice_unit_running`, which skips on an unpaired box and
    warns on a paired one. The gap ADR-0217 recorded in its consequences — a
    dead `jasper-voice.service` visible only to the health script — is closed by
