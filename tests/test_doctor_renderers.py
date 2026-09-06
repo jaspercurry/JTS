@@ -151,6 +151,82 @@ def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypat
     assert r.reason == renderers.REASON_BT_PAIRING_WINDOW_OPEN
 
 
+def test_check_bluetooth_pairing_policy_skips_when_bluetoothctl_missing(
+    monkeypatch,
+):
+    """`bluetoothctl` absent means the adapter gate was never observed —
+    skipped, not warn."""
+    _seed_bt_agent_running()
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            raise FileNotFoundError("bluetoothctl")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(renderers, "_run", fake_run)
+
+    r = renderers.check_bluetooth_pairing_policy()
+
+    assert r.status == "skipped"
+    assert r.reason == renderers.REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE
+
+
+def test_check_bluetooth_pairing_policy_skips_when_show_fails(monkeypatch):
+    """`bluetoothctl show` exiting non-zero is the evidence channel failing,
+    not an observation of the adapter's state — skipped, not warn."""
+    _seed_bt_agent_running()
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="no default controller")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(renderers, "_run", fake_run)
+
+    r = renderers.check_bluetooth_pairing_policy()
+
+    assert r.status == "skipped"
+    assert r.reason == renderers.REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN
+
+
+def test_check_bluetooth_pairing_policy_skips_when_state_not_reported(
+    monkeypatch,
+):
+    """`bluetoothctl show` succeeds but omits Discoverable/Pairable — still
+    nothing observed about the adapter gate, so skipped rather than warn."""
+    _seed_bt_agent_running()
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
+                stderr="",
+            )
+        if cmd == ["bluetoothctl", "show"]:
+            return SimpleNamespace(returncode=0, stdout="\tPowered: yes\n", stderr="")
+        raise AssertionError(cmd)
+
+    monkeypatch.setattr(renderers, "_run", fake_run)
+
+    r = renderers.check_bluetooth_pairing_policy()
+
+    assert r.status == "skipped"
+    assert r.reason == renderers.REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN
+
+
 def _patch_lane_map(monkeypatch, tmp_path: Path, armed):
     """Pin the renderer-lane map the shairport conf check consults.
 
@@ -409,6 +485,29 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
     _patch_shairport_conf(monkeypatch, conf, tmp_path)
     r = renderers.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
+
+
+def test_shairport_check_conf_unreadable_is_skipped(monkeypatch):
+    """An existing conf the doctor can't read (permissions, transient I/O
+    error) is the evidence channel failing, not an observation about
+    output_device — skipped, not warn."""
+
+    class _UnreadableConf:
+        def exists(self):
+            return True
+
+        def read_text(self):
+            raise OSError("Permission denied")
+
+        def __str__(self):
+            return "/etc/shairport-sync.conf"
+
+    monkeypatch.setattr(renderers, "Path", lambda _arg: _UnreadableConf())
+
+    r = renderers.check_shairport_sync_loopback_plughw()
+
+    assert r.status == "skipped"
+    assert r.reason == renderers.REASON_SHAIRPORT_CONF_UNREADABLE
 
 
 # ---- renderer ALSA device resolvable (PR #223 — the bug-class catch) ---
@@ -1593,6 +1692,17 @@ def test_classify_mux_mode_verdicts(tmp_path, payload, status, reason):
 
     assert res.status == status
     assert res.reason == reason
+
+
+def test_classify_mux_mode_unreadable_is_skipped(tmp_path):
+    """An OSError other than FileNotFoundError (permissions, I/O fault) is
+    the evidence channel failing, not an observed mux-mode value — skipped,
+    not warn. A directory in place of the pin file raises IsADirectoryError,
+    a real OSError, with no monkeypatching needed."""
+    res = _classify_mux_mode(tmp_path)
+
+    assert res.status == "skipped"
+    assert res.reason == renderers.REASON_MUX_MODE_UNREADABLE
 
 
 def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):

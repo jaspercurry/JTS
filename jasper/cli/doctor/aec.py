@@ -420,7 +420,7 @@ def check_enhanced_aec() -> CheckResult:
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return CheckResult(
             "Enhanced AEC",
-            "warn",
+            "skipped",
             "requested optional enhancement status could not be inspected "
             f"({type(exc).__name__}); standard echo cancellation remains "
             "available — retry from /system/",
@@ -1280,7 +1280,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     )
     if proc.returncode != 0:
         return CheckResult(
-            "AEC bridge output", "warn",
+            "AEC bridge output", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
             reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
         )
@@ -1672,7 +1672,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     )
     if proc.returncode != 0:
         return CheckResult(
-            "DTLN-aec engine", "warn",
+            "DTLN-aec engine", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
             reason=REASON_DTLN_JOURNAL_UNREADABLE,
         )
@@ -1778,7 +1778,7 @@ def check_xvf_mixer_state() -> CheckResult:
     vol = _run(["amixer", "-c", card, "cget",
                 f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
     if sw.returncode != 0 or vol.returncode != 0:
-        return CheckResult("XVF mixer state", "warn", "amixer cget failed",
+        return CheckResult("XVF mixer state", "skipped", "amixer cget failed",
                            reason=REASON_XVF_MIXER_CGET_FAILED)
 
     def _extract_values(out: str) -> str | None:

@@ -386,7 +386,7 @@ def check_wifi_link_local_ipv6() -> CheckResult:
     method = method_proc.stdout.strip().splitlines()[0] if method_proc.stdout.strip() else ""
     if method_proc.returncode != 0 or not method:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"could not read ipv6.method for active WiFi profile {profile!r}",
             reason=REASON_IPV6_METHOD_UNREADABLE,
         )
@@ -540,7 +540,7 @@ def check_hostname_avahi_consistency() -> CheckResult:
     parts = proc.stdout.strip().split()
     if len(parts) < 2:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"unexpected avahi-resolve output: {proc.stdout.strip()!r}",
             reason=REASON_AVAHI_RESOLVE_UNEXPECTED_OUTPUT,
         )
@@ -883,7 +883,7 @@ def check_usbnet_interface() -> CheckResult:
     addr_proc = _run(["ip", "-4", "-o", "addr", "show", "dev", USBNET_IFACE])
     if addr_proc.returncode != 0:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"{USBNET_IFACE} present but `ip addr show` failed: "
             f"{addr_proc.stderr.strip() or 'no output'}",
             reason=REASON_USBNET_ADDR_PROBE_FAILED,
@@ -954,7 +954,7 @@ def check_usbnet_nm_profile() -> CheckResult:
     proc = _cached_nmcli_active(nmcli)
     if proc.returncode != 0:
         return CheckResult(
-            label, "warn",
+            label, "skipped",
             f"`nmcli connection show --active` failed: "
             f"{proc.stderr.strip() or 'no output'}",
             reason=REASON_USBNET_NM_QUERY_FAILED,

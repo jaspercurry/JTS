@@ -5,6 +5,7 @@
 """Unit tests for the jasper-doctor voice domain."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -122,7 +123,7 @@ def test_provider_key_checks_the_ssot_provider_not_the_environments(
             doctor_voice.REASON_PROVIDER_SELECTION_INVALID,
         ),
         (
-            _state("unreadable"), "warn",
+            _state("unreadable"), "skipped",
             doctor_voice.REASON_PROVIDER_SELECTION_UNREADABLE,
         ),
         (_state("missing"), "warn", doctor_voice.REASON_PROVIDER_NOT_CONFIGURED),
@@ -186,6 +187,23 @@ def test_provider_imports_status_when_it_probed_nothing(
 
     assert r.status == status
     assert r.reason == reason
+
+
+def test_provider_imports_timeout_is_skipped(monkeypatch):
+    """The import probe subprocess timing out means nothing was verified —
+    skipped, not warn."""
+    state = _state("configured", provider="gemini")
+    monkeypatch.setattr(doctor_voice, "read_active_provider_state", lambda: state)
+
+    def fake_run(cmd, timeout=None):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(doctor_voice, "_run", fake_run)
+
+    r = doctor_voice.check_provider_importable()
+
+    assert r.status == "skipped"
+    assert r.reason == doctor_voice.REASON_PROVIDER_IMPORTS_TIMEOUT
 
 
 # The manifest gates jasper-aec-reconcile's start of jasper-voice, so a
@@ -306,6 +324,22 @@ def test_pricing_skips_when_it_could_not_ask_which_model_is_active(
     assert r.reason == getattr(doctor_voice, reason)
 
 
+def test_pricing_unreadable_is_skipped(monkeypatch, tmp_path: Path):
+    """Any exception loading pricing data or resolving the active model's
+    rate is the evidence channel failing, not an observation about pricing
+    — skipped, not warn."""
+    _ssot(monkeypatch, tmp_path, "gemini")
+    monkeypatch.setattr(
+        doctor_voice, "read_active_model_from_env_files",
+        lambda provider: (_ for _ in ()).throw(RuntimeError("env file corrupt")),
+    )
+
+    r = doctor_voice.check_pricing()
+
+    assert r.status == "skipped"
+    assert r.reason == doctor_voice.REASON_PRICING_UNREADABLE
+
+
 def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
     monkeypatch, tmp_path: Path,
 ):
@@ -384,6 +418,24 @@ def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
 
     r = doctor_voice.check_spend_cap(cfg)
     assert r.reason == doctor_voice.REASON_SPEND_CAP_OK
+
+
+def test_check_spend_cap_unreadable_is_skipped(monkeypatch, tmp_path: Path):
+    """Any exception reading the usage ledger (corrupt DB, permissions
+    fault) means the cap could not be assessed — skipped, not warn."""
+    import jasper.usage as usage
+
+    cfg = _spend_cap_cfg(monkeypatch, tmp_path, "1.00")
+    Path(cfg.usage_db).touch()  # past the no-usage-recorded-yet path
+    monkeypatch.setattr(
+        usage, "household_usage_reader",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("db locked")),
+    )
+
+    r = doctor_voice.check_spend_cap(cfg)
+
+    assert r.status == "skipped"
+    assert r.reason == doctor_voice.REASON_SPEND_CAP_UNREADABLE
 
 
 # ------------------------------------------------------------- tool packs

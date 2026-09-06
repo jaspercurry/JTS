@@ -318,7 +318,9 @@ def test_child_output_is_length_capped(monkeypatch, probe):
     assert result.detail.count("x") <= doctor_voice._EXCEPTION_DETAIL_LIMIT
 
 
-def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
+def test_timeout_is_skipped_not_a_failure(monkeypatch, probe):
+    """A timed-out probe verified nothing — skipped, not warn (ADR-0233
+    rule 3: the doctor's own evidence channel failed, not an observation)."""
     monkeypatch.setattr(
         doctor_voice,
         "read_active_provider_state",
@@ -326,7 +328,7 @@ def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
     )
     probe["raises"] = subprocess.TimeoutExpired(cmd=["python"], timeout=30.0)
     result = doctor_voice.check_provider_importable()
-    assert result.status == "warn"
+    assert result.status == "skipped"
     assert "timed out" in result.detail
 
 

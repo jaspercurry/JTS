@@ -301,7 +301,7 @@ def check_usb_data_role() -> CheckResult:
         state = _usb_data_role()
     except (OSError, RuntimeError, ValueError) as exc:
         return CheckResult(
-            "USB data role", "warn", f"capability state unavailable: {exc}",
+            "USB data role", "skipped", f"capability state unavailable: {exc}",
             reason=REASON_DATA_ROLE_UNAVAILABLE,
         )
     detail = (
@@ -978,7 +978,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             )
     except OSError as exc:
         return CheckResult(
-            "usbsink name", "warn",
+            "usbsink name", "skipped",
             f"can't read {override}: {exc}",
             reason=REASON_NAME_OVERRIDE_UNREADABLE,
         )

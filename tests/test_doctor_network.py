@@ -452,6 +452,21 @@ def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
     assert r.reason == doctor_network.REASON_IPV6_LINK_LOCAL_MISSING
 
 
+def test_check_wifi_link_local_ipv6_skips_when_method_unreadable(monkeypatch):
+    """`nmcli -g ipv6.method` failing is the evidence channel breaking, not
+    an observation of the profile's ipv6.method — skipped, not warn."""
+    _patch_doctor_nmcli(
+        monkeypatch,
+        [
+            "802-11-wireless:wlan0:Home\n",
+            _completed(["nmcli"], returncode=1, stdout=""),
+        ],
+    )
+    r = doctor_network.check_wifi_link_local_ipv6()
+    assert r.status == "skipped"
+    assert r.reason == doctor_network.REASON_IPV6_METHOD_UNREADABLE
+
+
 def test_check_wifi_link_local_ipv6_registered_in_sync_checks():
     assert "check_wifi_link_local_ipv6" in _registered_check_names()
 
@@ -547,7 +562,7 @@ def _patch_avahi_resolve(
         ({"resolve": ("", 1)}, "warn", "REASON_AVAHI_RESOLVE_FAILED"),
         (
             {"resolve": ("jts.local", 0)},
-            "warn",
+            "skipped",
             "REASON_AVAHI_RESOLVE_UNEXPECTED_OUTPUT",
         ),
         (
@@ -566,10 +581,10 @@ def test_check_hostname_avahi_consistency_verdicts(
 ):
     """Two boxes on one name breaks `<hostname>.local` for the whole
     household, so the collision fails; the arms that resolved nothing at all
-    (no hostname, no avahi-utils) skip, a daemon that answered but could not
-    resolve our own name warns (an observation, not nothing — check_avahi_daemon
-    only catches not-found/inactive, not this), and output that arrived but
-    did not parse is still an observation."""
+    (no hostname, no avahi-utils, or output that arrived but did not parse)
+    skip, and a daemon that answered but could not resolve our own name
+    warns (an observation, not nothing — check_avahi_daemon only catches
+    not-found/inactive, not this)."""
     _patch_avahi_resolve(monkeypatch, **kwargs)
 
     r = doctor_network.check_hostname_avahi_consistency()
@@ -1046,7 +1061,7 @@ def test_usbnet_interface_present_missing_address_is_fail(monkeypatch, tmp_path)
     assert r.reason == doctor_network.REASON_USBNET_ADDR_MISSING
 
 
-def test_usbnet_interface_ip_command_failure_is_warn(monkeypatch, tmp_path):
+def test_usbnet_interface_ip_command_failure_is_skipped(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)
@@ -1057,7 +1072,7 @@ def test_usbnet_interface_ip_command_failure_is_warn(monkeypatch, tmp_path):
         ),
     })
     r = doctor_network.check_usbnet_interface()
-    assert r.status == "warn"
+    assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_ADDR_PROBE_FAILED
 
 
@@ -1134,7 +1149,7 @@ def test_usbnet_nm_profile_wrong_profile_on_usb0_is_fail(monkeypatch, tmp_path):
     assert r.reason == doctor_network.REASON_USBNET_NM_PROFILE_MISMATCH
 
 
-def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
+def test_usbnet_nm_profile_nmcli_failure_is_skipped(monkeypatch, tmp_path):
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
         ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
@@ -1142,7 +1157,7 @@ def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
         ),
     })
     r = doctor_network.check_usbnet_nm_profile()
-    assert r.status == "warn"
+    assert r.status == "skipped"
     assert r.reason == doctor_network.REASON_USBNET_NM_QUERY_FAILED
 
 

@@ -80,6 +80,10 @@ def _pending_reboot_role() -> UsbPortRoleState:
     )
 
 
+def _role_read_error() -> UsbPortRoleState:
+    raise RuntimeError("usb port role probe failed")
+
+
 @pytest.fixture(autouse=True)
 def _available_usb_role(monkeypatch):
     monkeypatch.setattr(usbsink, "current_usb_data_role", _role)
@@ -91,8 +95,9 @@ def _available_usb_role(monkeypatch):
         (_role, "ok", ""),
         (_zero_host_role, "ok", usbsink.REASON_DATA_ROLE_HOST_ONLY),
         (_pending_reboot_role, "ok", usbsink.REASON_DATA_ROLE_REBOOT_REQUIRED),
+        (_role_read_error, "skipped", usbsink.REASON_DATA_ROLE_UNAVAILABLE),
     ],
-    ids=["available", "zero-host", "pending-reboot"],
+    ids=["available", "zero-host", "pending-reboot", "role-probe-failed"],
 )
 def test_check_usb_data_role_verdicts(monkeypatch, role, status, reason):
     monkeypatch.setattr(usbsink, "current_usb_data_role", role)
@@ -667,6 +672,22 @@ def test_check_usbsink_name_verdicts(
 
     assert r.status == status
     assert r.reason == reason
+
+
+def test_check_usbsink_name_override_unreadable_is_skipped(monkeypatch, tmp_path):
+    """The override existing as something `read_bytes()` can't open (a
+    directory, standing in for a permissions/I-O fault) is the evidence
+    channel failing, not an observation about the patch — skipped, not
+    warn."""
+    _name_env(monkeypatch, active=True, speaker="Kitchen")
+    updates = tmp_path / _KVER / "updates"
+    updates.mkdir(parents=True)
+    (updates / "usb_f_uac2.ko").mkdir()  # exists() is True; read_bytes() raises
+
+    r = usbsink.check_usbsink_name(modules_root=str(tmp_path))
+
+    assert r.status == "skipped"
+    assert r.reason == usbsink.REASON_NAME_OVERRIDE_UNREADABLE
 
 
 # ----------------------------------------------------------------------

@@ -442,6 +442,23 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
 
 
+def test_check_aec_output_health_skips_when_journal_unreadable(monkeypatch):
+    """`journalctl` failing is the evidence channel breaking, not an
+    observation about bridge output — skipped, not warn."""
+    _stage_bridge_journal(monkeypatch, _healthy_journal())
+    monkeypatch.setattr(
+        aec, "_run",
+        lambda *a, **k: SimpleNamespace(  # noqa: ARG005
+            stdout="", stderr="journalctl: failed", returncode=1,
+        ),
+    )
+
+    result = aec.check_aec_bridge_output_health()
+
+    assert result.status == "skipped"
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE
+
+
 def _stage_bridge_journal(monkeypatch, journal: str) -> None:
     def fake_run(command, **_kwargs):
         return SimpleNamespace(stdout=journal, stderr="", returncode=0)
@@ -1438,6 +1455,29 @@ def test_check_dtln_uses_configured_model_size(monkeypatch, tmp_path: Path):
     assert r.reason == aec.REASON_DTLN_BRIDGE_NOT_RUNNING
 
 
+def test_check_dtln_skips_when_journal_unreadable(monkeypatch, tmp_path: Path):
+    """`journalctl` failing (with no live stats snapshot to fall back on)
+    is the evidence channel breaking, not an observation about the DTLN
+    engine — skipped, not warn."""
+    _install_fake_dtln_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_DTLN_ENABLED", "1")
+    (tmp_path / "dtln_aec_256_1.onnx").write_bytes(b"model")
+    (tmp_path / "dtln_aec_256_2.onnx").write_bytes(b"model")
+    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
+    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
+    monkeypatch.setattr(
+        aec, "_run",
+        lambda *a, **k: SimpleNamespace(  # noqa: ARG005
+            stdout="", stderr="journalctl: failed", returncode=1,
+        ),
+    )
+
+    r = aec.check_aec_bridge_dtln_engine()
+
+    assert r.status == "skipped"
+    assert r.reason == aec.REASON_DTLN_JOURNAL_UNREADABLE
+
+
 @pytest.mark.parametrize(
     ("dtln_size", "files", "reason"),
     [
@@ -1731,6 +1771,26 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
     assert admitted.status == "fail"
     assert withheld.reason == aec.REASON_BRIDGE_DOWN_READY_ABSENT
     assert admitted.reason == aec.REASON_BRIDGE_DOWN_READY_PRESENT
+
+
+def test_check_xvf_mixer_state_skips_when_cget_fails(monkeypatch):
+    """`amixer cget` failing on a present card is the evidence channel
+    breaking, not an observation about the mixer slots — skipped, not
+    warn."""
+    from jasper.mics import xvf3800
+
+    monkeypatch.setattr(xvf3800, "is_present", lambda: True)
+    monkeypatch.setattr(xvf3800, "alsa_card_name", lambda: "Array")
+
+    def fake_run(cmd, *args, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="no such control")
+
+    monkeypatch.setattr(aec, "_run", fake_run)
+
+    r = aec.check_xvf_mixer_state()
+
+    assert r.status == "skipped"
+    assert r.reason == aec.REASON_XVF_MIXER_CGET_FAILED
 
 
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
@@ -2091,6 +2151,33 @@ def test_enhanced_aec_doctor_is_quiet_and_cheap_when_not_requested(monkeypatch):
 
     assert result.status == "ok"
     assert result.reason == aec.REASON_ENHANCED_AEC_NOT_REQUESTED
+
+
+def test_enhanced_aec_status_inspection_failure_is_skipped(monkeypatch):
+    """An exception inspecting the requested enhancement's status means
+    nothing was observed — skipped, not warn. Standard AEC is unaffected
+    either way."""
+    monkeypatch.setattr(
+        aec.enhanced_aec,
+        "read_intent",
+        lambda: {"requested": True},
+    )
+    monkeypatch.setattr(
+        aec,
+        "_audio_profile_status_for_doctor",
+        lambda: {"audio_profile": {"active": "xvf_software_aec3"}},
+    )
+    _stub_unit_active_states(monkeypatch, {})
+
+    def _raise_status(**_kwargs):
+        raise RuntimeError("status probe failed")
+
+    monkeypatch.setattr(aec.enhanced_aec, "status", _raise_status)
+
+    result = aec.check_enhanced_aec()
+
+    assert result.status == "skipped"
+    assert result.reason == aec.REASON_ENHANCED_AEC_STATUS_UNAVAILABLE
 
 
 @pytest.mark.parametrize(
