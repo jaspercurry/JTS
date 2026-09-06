@@ -190,11 +190,10 @@ jobs:
         # anywhere under deploy/ should auto-gate — enumerating deploy
         # subdirs individually is how deploy/usbsink sat uncovered for a
         # month (2026-07-04 review). The filter skips deploy's python3
-        # entry points (deploy/bin's jasper-deploy-health, deploy/usbsink's
-        # uac2_name_patch.py) and never matches shebang-less
-        # configs/units/assets; it keeps shebang-less .sh source libraries
-        # and scripts/use. shellcheck is preinstalled on ubuntu-latest
-        # runners.
+        # entry points (deploy/usbsink's uac2_name_patch.py) and never
+        # matches shebang-less configs/units/assets; it keeps shebang-less
+        # .sh source libraries and scripts/use. shellcheck is preinstalled
+        # on ubuntu-latest runners.
         run: |
           set -euo pipefail
           shell_files=()

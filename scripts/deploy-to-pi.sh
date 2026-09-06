@@ -612,41 +612,9 @@ EOF
     exit 1
 }
 
-# Broadened post-deploy health (ADVISORY — does not gate the deploy).
-# The management-surface probe only exercises the web path; this surfaces
-# voice / AEC bridge / renderer health via jasper-doctor so a daemon that
-# is down — for a real bug OR because its hardware is absent — is never
-# silently hidden behind a green deploy (problems #5/#7). Non-gating on
-# purpose: the broken-vs-idle reclassification of a missing-hardware
-# daemon (e.g. no mic → jasper-voice cleanly parked) lands in Workstream
-# C; until it does, a doctor ✗ here is informational, not a deploy abort.
-# Runs post-restart/reconcile (the authoritative runtime state), unlike
-# install.sh's own pre-restart doctor summary.
-surface_system_health() {
-    echo "==> Post-deploy system health (advisory; does not gate the deploy)"
-    echo "    Covers voice, AEC bridge, and renderers. A function idle"
-    echo "    because its hardware is absent (e.g. no mic) may read ! or ✗"
-    echo "    here today; Workstream C reclassifies those as expected-idle."
-    local health_cmd
-    printf -v health_cmd '%s\n' \
-        'set -euo pipefail' \
-        "mem_kb=\$(awk '/^MemTotal:/ { print \$2; exit }' /proc/meminfo 2>/dev/null || true)" \
-        'case "${mem_kb}" in' \
-        '    ""|*[!0-9]*) low_memory=0 ;;' \
-        '    *) if (( mem_kb < 1200000 )); then low_memory=1; else low_memory=0; fi ;;' \
-        'esac' \
-        'if [[ "${low_memory}" == "1" ]]; then' \
-        '    probe=__JASPER_DEPLOY_HEALTH_PROBE__' \
-        '    if [[ ! -x "${probe}" ]]; then' \
-        '        exit 127' \
-        '    fi' \
-        '    "${probe}"' \
-        'else' \
-        '    /opt/jasper/.venv/bin/jasper-doctor' \
-        'fi'
-    health_cmd="${health_cmd/__JASPER_DEPLOY_HEALTH_PROBE__/$(shell_quote "${REMOTE_REPO_DIR}/deploy/bin/jasper-deploy-health")}"
-    run_remote_sudo "bash -lc $(shell_quote "${health_cmd}") 2>/dev/null || true" \
-        2>/dev/null || echo "    (post-deploy health probe unavailable — skipped)"
+gate_core_health() {
+    echo "==> Post-deploy core health (jasper-doctor --core; advisory)"
+    run_remote_sudo "/opt/jasper/.venv/bin/jasper-doctor --core" || return 1
 }
 
 # Capture git info BEFORE rsync (which excludes .git/).
@@ -1039,7 +1007,7 @@ fi
 verify_manifest_advanced
 HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
-surface_system_health
+gate_core_health || true  # advisory; removal condition in ADR-0240
 if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
     report_oom_collateral "$HEALTH_START_EPOCH"
 fi

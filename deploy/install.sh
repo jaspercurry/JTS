@@ -2046,50 +2046,16 @@ install_camillagui() {
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 
+# MemoryMax bounds the doctor next to freshly restarted services on a
+# 1 GB box; the deploy gate reads the exit code. See ADR-0240.
 run_doctor_summary() {
-    # Final pre-flight: run jasper-doctor so the operator sees status of
-    # every subsystem (env file, mic, firmware, AEC bridge, renderers,
-    # provider keys, …) at install time. Non-blocking — install is done
-    # by the time we get here; this is just a status report.
-    #
-    # Critical for catching the "silent productization gaps" — e.g. an
-    # XVF chip on 6-ch firmware but with the ALSA mixer's ch2-5 muted,
-    # otherwise invisible until a wake-word test fails days later.
-    if [[ ! -x /opt/jasper/.venv/bin/jasper-doctor ]]; then
-        return 0
-    fi
-    echo
-    if build_swap_required; then
-        echo "=== low-memory deploy health pre-flight ==="
-        if "${REPO_DIR}/deploy/bin/jasper-deploy-health"; then
-            echo "✓ low-memory deploy health checks pass."
-        else
-            echo
-            echo "─────────────────────────────────────────────────────────────"
-            echo " low-memory deploy health reports failures (see above)."
-            echo " Install finished, but core runtime health isn't clean."
-            echo " Re-run after fixing: sudo ${REPO_DIR}/deploy/bin/jasper-deploy-health"
-            echo "─────────────────────────────────────────────────────────────"
-        fi
-        return 0
-    fi
-
-    echo "=== jasper-doctor pre-flight ==="
-    local doctor_status
-    set +e
-    /opt/jasper/.venv/bin/jasper-doctor
-    doctor_status=$?
-    set -e
-    if (( doctor_status == 0 )); then
-        echo "✓ all critical doctor checks pass."
-    else
-        echo
-        echo "─────────────────────────────────────────────────────────────"
-        echo " jasper-doctor reports failures (see above)."
-        echo " Install finished, but at least one subsystem isn't healthy."
-        echo " Re-run after fixing: sudo /opt/jasper/.venv/bin/jasper-doctor"
-        echo "─────────────────────────────────────────────────────────────"
-    fi
+    echo; echo "=== jasper-doctor --core ==="
+    local rc=0
+    systemd-run --quiet --wait --pipe --collect \
+        -p MemoryMax=96M -p TimeoutStartSec=60 \
+        /opt/jasper/.venv/bin/jasper-doctor --core || rc=$?
+    logger -t jasper-install -- "event=deploy.health rc=${rc}" 2>/dev/null || true
+    return "${rc}"
 }
 
 main() {
@@ -2177,7 +2143,7 @@ main() {
         # state change so a failure anywhere above leaves the prior good
         # manifest. See ADR-0172.
         write_build_manifest
-        run_doctor_summary
+        run_doctor_summary || true  # advisory; removal condition in ADR-0240
         return 0
     fi
     require_root
@@ -2225,7 +2191,7 @@ main() {
     # change so a failure anywhere above leaves the prior good manifest.
     # See ADR-0172.
     write_build_manifest
-    run_doctor_summary
+    run_doctor_summary || true  # advisory; removal condition in ADR-0240
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests

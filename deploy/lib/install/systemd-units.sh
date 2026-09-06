@@ -1192,13 +1192,15 @@ PY
     # Remove the old acknowledgement immediately, then again under the
     # coordinator lock. The long lock wait drains any legitimate in-flight
     # pass (bounded by the unit's 2693 s ceiling); a failed/timeout path removes
-    # the file once more so deploy health cannot accept an older generation.
+    # the file once more so no reader can mistake an older generation for this
+    # install's.
     rm -f /run/jasper-source-intent/status.json
     if ! /usr/bin/timeout --foreground --kill-after=5s 2703s \
         /opt/jasper/.venv/bin/jasper-source-intent-reconcile \
             --reason install --invalidate-status-before; then
         rm -f /run/jasper-source-intent/status.json
         echo "  WARN: source intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
+        logger -t jasper-install -- "event=source_intent.replay_failed" 2>/dev/null || true
     fi
 }
 
