@@ -443,19 +443,25 @@ def request_unplanned_reopen(conn: SupervisedConnection) -> None:
     conn._reconnect_event.set()
 
 
-def hand_off_first_connect(conn: SupervisedConnection, exc: Exception) -> None:
+def hand_off_first_connect(
+    conn: SupervisedConnection, exc: Exception, *, literals: tuple[str, ...] = (),
+) -> None:
     """Give up a failed first connect to the reconnect supervisor.
 
     A first connect fails for the reasons a reconnect does and is
     retried the same way, so nothing here classifies it or exits: the
     daemon stays up — wake word, cues and local tools alive, ``/state``
-    reporting the outage — until the provider answers. See ADR-0238."""
+    reporting the outage — until the provider answers. See ADR-0238.
+
+    ``literals`` isn't on the ``SupervisedConnection`` Protocol — the
+    caller passes its own ``_secret_literals()`` rather than this
+    function reaching for it, so the Protocol stays narrow."""
     log_event(
         logger,
         "voice.initial_connect.failed",
         provider=conn.PROVIDER_NAME,
         exc=type(exc).__name__,
-        reason=failure_detail(exc),
+        reason=failure_detail(exc, literals=literals),
         level=logging.WARNING,
     )
     request_unplanned_reopen(conn)

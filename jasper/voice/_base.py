@@ -383,7 +383,7 @@ class BaseLiveConnection:
         except Exception as e:  # noqa: BLE001
             async with self._state_lock:
                 self._set_state(ConnectionState.FAILED)
-            hand_off_first_connect(self, e)
+            hand_off_first_connect(self, e, literals=self._secret_literals())
 
     async def _open_session(self) -> None:
         """Open a session, recording the outcome on the outage tracker.

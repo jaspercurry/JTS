@@ -10,9 +10,17 @@ everywhere — which matters because redaction here is a non-negotiable
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+
 import pytest
 
-from jasper.voice._supervisor import FAILURE_DETAIL_LIMIT, failure_detail
+from jasper.voice._supervisor import (
+    FAILURE_DETAIL_LIMIT,
+    failure_detail,
+    hand_off_first_connect,
+)
+from tests._log_events import event_fields
 from tests.failure_detail_fixtures import Rejected
 
 # Captured verbatim from a live xAI 403 on the speaker.
@@ -88,3 +96,32 @@ def test_a_prefix_less_key_redacts_only_when_passed_as_a_literal() -> None:
     assert "plainvalue123" not in detail
     assert "bad key" in detail
     assert "401" in detail
+
+
+class _FakeSupervisedConnection:
+    """The handful of fields `hand_off_first_connect` and
+    `request_unplanned_reopen` touch — not a full `SupervisedConnection`."""
+
+    PROVIDER_NAME = "fake"
+    _planned_rotate = False
+    _reconnect_event = asyncio.Event()
+
+
+def test_hand_off_first_connect_redacts_the_connections_own_secret(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A prefix-less key the caller passes as a literal reaches neither
+    the journal nor `/state` from the initial-connect path either —
+    `hand_off_first_connect` takes `literals` as a parameter rather than
+    reading it off `conn` so the `SupervisedConnection` Protocol stays
+    narrow; this pins that the caller's value actually gets there."""
+    caplog.set_level(logging.WARNING, logger="jasper.voice._supervisor")
+    body = b'{"error":"bad key","key":"plainvalue123"}'
+    hand_off_first_connect(
+        _FakeSupervisedConnection(),  # type: ignore[arg-type]
+        Rejected(401, body),
+        literals=("plainvalue123",),
+    )
+    fields = event_fields(caplog, "voice.initial_connect.failed")
+    assert "plainvalue123" not in fields["reason"]
+    assert "bad key" in fields["reason"]

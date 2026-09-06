@@ -512,7 +512,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             log_event(
                 logger, "barge.truncate_failed",
                 item_id=item_id, error=type(e).__name__,
-                detail=failure_detail(e),
+                detail=failure_detail(e, literals=self._conn._secret_literals()),
                 level=logging.WARNING,
             )
 
@@ -1136,7 +1136,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             logger.warning(
                 f"{self._log_tag} session.update failed (%s: %s); "
                 "closing and re-raising for supervisor retry",
-                type(e).__name__, failure_detail(e),
+                type(e).__name__, failure_detail(e, literals=self._secret_literals()),
             )
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
