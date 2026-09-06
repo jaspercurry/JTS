@@ -2016,7 +2016,7 @@ AUDIO_INPUT_PROFILE="${JASPER_AUDIO_INPUT_PROFILE:-custom}"
 read_audio_input_profile --normalize \
     --profile="$AUDIO_INPUT_PROFILE" \
     --mode="$AEC_MODE" \
-    --mode-file="$MODE_FILE" \
+    --chip-ref-observe="${JASPER_AEC_CHIP_REF_OBSERVE:-0}" \
     --leg-raw="$LEG_RAW" \
     --leg-dtln="$LEG_DTLN" \
     --leg-chip-aec="$LEG_CHIP_AEC" \

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from ...audio_profile_state import (
+    AEC_MODE_AUTO,
     AecIntent,
+    normalize_aec_mode,
     resolve_audio_input_intent,
 )
 from ...config import Config, local_mic_present_from_env
@@ -216,7 +218,7 @@ def _assess_wake_legs(
             "every turn is opened by the remote's button",
             reason=REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY,
         )
-    if aec_mode != "auto":
+    if normalize_aec_mode(aec_mode) != AEC_MODE_AUTO:
         return CheckResult(
             "Wake legs", "skipped",
             f"AEC mode is {aec_mode}; additive legs require AEC on",
@@ -307,7 +309,9 @@ def check_wake_legs_configured() -> CheckResult:
     # Only worth a control-plane round-trip when AEC (and thus the legs) is
     # actually on; _assess_wake_legs skips otherwise.
     armed_runtime = (
-        _voice_wake_legs_runtime() if effective.mode == "auto" else None
+        _voice_wake_legs_runtime()
+        if normalize_aec_mode(effective.mode) == AEC_MODE_AUTO
+        else None
     )
     return _assess_wake_legs(
         effective.mode,

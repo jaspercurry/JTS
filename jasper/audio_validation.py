@@ -39,6 +39,7 @@ from .audio_profile_state import (
     MicProbe,
     RuntimeAecEnv,
     build_audio_profile_status,
+    normalize_aec_mode,
     parse_env_bool,
     probe_xvf_mic as _probe_xvf_mic,
     runtime_env_from_mapping,
@@ -454,13 +455,8 @@ def read_system_env(path: Path | None = None) -> dict[str, str]:
 
 
 def _intent_from_env(env: Mapping[str, str]) -> AecIntent:
-    mode = (env.get(AEC_MODE_ENV) or "auto").strip().strip("'\"").lower()
-    if mode in ("", "on", "true", "1"):
-        mode = "auto"
-    elif mode in ("off", "false", "0", "disabled", "disable", "no"):
-        mode = "disabled"
     return AecIntent(
-        mode=mode,
+        mode=normalize_aec_mode(env.get(AEC_MODE_ENV, "")),
         raw_enabled=parse_env_bool(env.get("JASPER_WAKE_LEG_RAW", "1"), True),
         dtln_enabled=parse_env_bool(env.get("JASPER_WAKE_LEG_DTLN", "0"), False),
         chip_aec_enabled=parse_env_bool(

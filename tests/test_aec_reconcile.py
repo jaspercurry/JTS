@@ -2640,8 +2640,8 @@ _SHIM_LEG_VARS = (
     "LEG_CHIP_AEC_210",
 )
 _SHIM_VARS = ("AUDIO_INPUT_PROFILE", *_SHIM_LEG_VARS)
-# What --normalize emits instead: the same master toggle and legs, read from
-# the pass's raw environment, plus the mode-file-scoped observe opt-in.
+# What --normalize emits instead: the same master toggle and legs, plus the
+# chip-ref observe opt-in — all read from the pass's raw environment.
 _SHIM_NORMALIZE_VARS = (*_SHIM_LEG_VARS, "CHIP_REF_OBSERVE")
 _SHIM_ENV_KEYS = (
     "JASPER_AEC_MODE",
@@ -2728,44 +2728,89 @@ def test_reconciler_evals_the_python_profile_tables(
 # off — the reduction is the whole reason --normalize exists (ADR-0235 D1).
 _HAND_EDIT_VALUES = ("yes", "true", "on", "ENABLED", " 1 ", "off", "no", "garbage", "")
 _APPLIED_VALUES = frozenset({"1", "0", "auto", "disabled"})
+# The build default each normalized boolean falls back to when the file said
+# nothing, or said something the vocabulary cannot express. RAW is the only
+# one that defaults on.
+_NORMALIZE_DEFAULTS = {
+    "LEG_RAW": True,
+    "LEG_DTLN": False,
+    "LEG_CHIP_AEC": False,
+    "LEG_CHIP_AEC_150": False,
+    "LEG_CHIP_AEC_210": False,
+    "CHIP_REF_OBSERVE": False,
+}
 
 
 @pytest.mark.parametrize("value", _HAND_EDIT_VALUES)
-def test_reconciler_evals_normalized_hand_edits(value: str, tmp_path: Path) -> None:
+def test_reconciler_evals_normalized_hand_edits(value: str) -> None:
     """--normalize reduces every hand-edit spelling to an applied value.
 
     `jasper.audio_profile_state` owns both vocabularies; the shell carries no
     second copy, so this drives the same eval the reconciler does and pins the
     emitted strings against the Python rules rather than against a table here.
-    An empty value is the shell's "nothing written" and takes the build
-    default, which is why RAW is the one leg that comes back on.
+    A value the vocabulary cannot express takes the same fallback an empty one
+    does — the key's own build default — which is why RAW is the one that
+    comes back on for both.
     """
-    mode_file = tmp_path / "aec_mode.env"
-    mode_file.write_text(f"JASPER_AEC_CHIP_REF_OBSERVE={value}\n")
-
     emitted = _eval_shim(
         "--normalize",
         "--profile=custom",
         f"--mode={value}",
-        f"--mode-file={mode_file}",
         *(
             f"--{name.lower().replace('_', '-')}={value}"
-            for name in _SHIM_LEG_VARS
-            if name != "AEC_MODE"
+            for name in _NORMALIZE_DEFAULTS
         ),
         names=_SHIM_NORMALIZE_VARS,
     )
 
-    applied = "1" if parse_env_bool(value, default=False) else "0"
     assert emitted == {
         "AEC_MODE": normalize_aec_mode(value),
         **{
-            name: "1" if (value == "" and name == "LEG_RAW") else applied
-            for name in _SHIM_NORMALIZE_VARS
-            if name != "AEC_MODE"
+            name: "1" if (
+                default if value == "" else parse_env_bool(value, default)
+            ) else "0"
+            for name, default in _NORMALIZE_DEFAULTS.items()
         },
     }
     assert set(emitted.values()) <= _APPLIED_VALUES
+
+
+def test_normalize_names_the_raw_spelling_it_rewrote() -> None:
+    """stdout is an eval, so a rewritten spelling is only visible to an
+    operator if it reaches the journal. One structured stderr line per key the
+    vocabulary changed, with the raw value shell-quoted so a spelling carrying
+    whitespace stays one field; a canonical value says nothing.
+    """
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "jasper.cli.audio_input_profile", "--normalize",
+            "--profile=custom", "--mode=AUTO", "--leg-raw= 1 ", "--leg-dtln=0",
+            "--chip-ref-observe=yes",
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [
+        dict(field.split("=", 1) for field in shlex.split(line))
+        for line in result.stderr.splitlines()
+    ] == [
+        {
+            "event": "audio_input_profile.normalized",
+            "key": "JASPER_AEC_MODE", "raw": "AUTO", "value": "auto",
+        },
+        {
+            "event": "audio_input_profile.normalized",
+            "key": "JASPER_WAKE_LEG_RAW", "raw": " 1 ", "value": "1",
+        },
+        {
+            "event": "audio_input_profile.normalized",
+            "key": "JASPER_AEC_CHIP_REF_OBSERVE", "raw": "yes", "value": "1",
+        },
+    ]
 
 
 def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None:

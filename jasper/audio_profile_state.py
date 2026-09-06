@@ -43,6 +43,9 @@ AEC_MODE_ENV = "JASPER_AEC_MODE"
 AEC_MODE_FILE_ENV = "JASPER_AEC_MODE_FILE"
 AEC_MODE_AUTO = "auto"
 AEC_MODE_DISABLED = "disabled"
+# Opt-in lab observation of the chip reference path; never authorizes a
+# production DAC.
+CHIP_REF_OBSERVE_ENV = "JASPER_AEC_CHIP_REF_OBSERVE"
 
 PROFILE_AUTO = "auto"
 PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"

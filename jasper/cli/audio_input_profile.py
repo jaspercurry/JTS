@@ -16,7 +16,8 @@ import shlex
 import sys
 
 from ..audio_profile_state import (
-    ALL_PROFILES, AEC_MODE_ENV, PROFILE_AUTO, PROFILE_CUSTOM,
+    ALL_PROFILES, AEC_MODE_ENV, CHIP_REF_OBSERVE_ENV, PROFILE_AUTO,
+    PROFILE_CUSTOM,
     PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING, AecIntent,
     infer_audio_input_profile, normalize_aec_mode,
     normalize_audio_input_profile, parse_env_bool, profile_env_updates,
@@ -24,10 +25,6 @@ from ..audio_profile_state import (
 )
 from ..env_load import parse_env_file
 
-
-# Opt-in lab observation. The wizard-owned mode file is its only writer, so it
-# is read from that file rather than from the pass's environment.
-CHIP_REF_OBSERVE_ENV = "JASPER_AEC_CHIP_REF_OBSERVE"
 
 # Env key -> the shell variable deploy/bin/jasper-aec-reconcile evals it into.
 SHELL_VARS = {
@@ -61,6 +58,10 @@ _WAKE_LEGS = (
     ("leg_chip_aec_150", "JASPER_WAKE_LEG_CHIP_AEC_150", False),
     ("leg_chip_aec_210", "JASPER_WAKE_LEG_CHIP_AEC_210", False),
 )
+# The chip-ref observe opt-in rides the same boolean vocabulary but is not a
+# wake leg: it arms a lab drift measurement, never a wake detector.
+_CHIP_REF_OBSERVE = ("chip_ref_observe", CHIP_REF_OBSERVE_ENV, False)
+_NORMALIZED_BOOLS = (*_WAKE_LEGS, _CHIP_REF_OBSERVE)
 
 
 def _quoted(values: dict[str, str]) -> str:
@@ -68,11 +69,12 @@ def _quoted(values: dict[str, str]) -> str:
 
 
 def _leg_enabled(raw: str | None, default: bool) -> bool:
-    """One wake-leg boolean. `None` is "nothing was written" and takes the
-    build default; anything else the vocabulary does not have reads as off, so
-    a typo never silently arms a leg."""
+    """One boolean from the mode file's vocabulary. `None` is "nothing was
+    written"; a value outside the vocabulary is a spelling the file cannot
+    express either. Both fall back to the same build default — the rule
+    `jasper.control.aec_endpoints._read_aec_state` applies."""
 
-    return default if raw is None else parse_env_bool(raw, default=False)
+    return default if raw is None else parse_env_bool(raw, default)
 
 
 def _shell_bool(value: bool) -> str:
@@ -109,24 +111,28 @@ def selection_assignments(
 
 
 def normalized_assignments(args: argparse.Namespace) -> dict[str, str]:
-    """The master toggle and wake legs the shell read raw, normalized.
+    """The master toggle, wake legs and observe opt-in the shell read raw.
 
-    Mode and legs come from the pass's environment, which the shell has
-    already layered mode file over jasper.env; an empty string is its "unset",
-    so the build default applies. The chip-ref observe opt-in is mode-file
-    scoped instead, and is read straight from the file.
+    All come from the pass's environment, which the shell has already layered
+    mode file over jasper.env; an empty string is its "unset", so the build
+    default applies. A spelling this rewrote is named on stderr, which the
+    reconciler's own stderr carries into the journal.
     """
 
-    values = {SHELL_VARS[AEC_MODE_ENV]: normalize_aec_mode(args.mode)}
-    for dest, key, default in _WAKE_LEGS:
-        values[SHELL_VARS[key]] = _shell_bool(
-            _leg_enabled(getattr(args, dest) or None, default)
+    normalized = [(AEC_MODE_ENV, args.mode, normalize_aec_mode(args.mode))]
+    for dest, key, default in _NORMALIZED_BOOLS:
+        raw = getattr(args, dest)
+        normalized.append(
+            (key, raw, _shell_bool(_leg_enabled(raw or None, default)))
         )
-    observe = parse_env_file(args.mode_file).get(CHIP_REF_OBSERVE_ENV)
-    values[SHELL_VARS[CHIP_REF_OBSERVE_ENV]] = _shell_bool(
-        _leg_enabled(observe, False)
-    )
-    return values
+    for key, raw, value in normalized:
+        if raw and raw != value:
+            print(
+                f"event=audio_input_profile.normalized key={key} "
+                f"raw={shlex.quote(raw)} value={value}",
+                file=sys.stderr,
+            )
+    return {SHELL_VARS[key]: value for key, _raw, value in normalized}
 
 
 def inferred_assignment(mode_file: str) -> dict[str, str]:
@@ -156,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--normalize", action="store_true")
     parser.add_argument("--mode", default="")
     parser.add_argument("--mode-file", default="")
-    for dest, _key, _default in _WAKE_LEGS:
+    for dest, _key, _default in _NORMALIZED_BOOLS:
         parser.add_argument("--" + dest.replace("_", "-"), default="")
     args = parser.parse_args(argv)
 
