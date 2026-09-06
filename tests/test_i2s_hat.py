@@ -12,6 +12,7 @@ from jasper.audio_hardware.dac import all_profiles
 from jasper.audio_hardware.i2s_hat import (
     I2S_HAT_BLOCK_BEGIN,
     I2sHatCollision,
+    i2s_hat_managed,
     read_i2s_hat_intent,
     render_i2s_hat_boot_config,
     selectable_i2s_hat_profiles,
@@ -40,6 +41,19 @@ def test_i2s_hat_intent_round_trip(tmp_path: Path, profile) -> None:
     assert intent.is_file()
     assert intent.read_text(encoding="utf-8") == "JASPER_I2S_HAT_PROFILE=\n"
     assert read_i2s_hat_intent(intent) is None
+
+
+def test_i2s_hat_managed_honors_the_intent_file_env_override(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """``i2s_hat_managed()`` resolves its intent path through
+    ``JASPER_I2S_HAT_INTENT_FILE`` when the caller passes none -- the same
+    env var the reconciler shell resolves and hands down to its own CLI."""
+    intent = tmp_path / "i2s_hat.env"
+    intent.write_text("", encoding="utf-8")
+    monkeypatch.setenv("JASPER_I2S_HAT_INTENT_FILE", str(intent))
+
+    assert i2s_hat_managed(hat_dir=tmp_path / "no-such-hat") is True
 
 
 def test_i2s_hat_intent_rejects_unsupported_profiles(tmp_path: Path) -> None:

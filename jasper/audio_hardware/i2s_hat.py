@@ -12,6 +12,7 @@ step; the intent file is the toggle for the HATs that carry no EEPROM to read
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,27 @@ I2S_HAT_INTENT_KEY = "JASPER_I2S_HAT_PROFILE"
 
 I2S_HAT_BLOCK_BEGIN = "# BEGIN JTS I2S AUDIO HAT"
 I2S_HAT_BLOCK_END = "# END JTS I2S AUDIO HAT"
+
+
+def i2s_hat_intent_path() -> Path:
+    """The I2S HAT intent file's resolved path, honoring
+    ``JASPER_I2S_HAT_INTENT_FILE`` (the env var the reconciler resolves and
+    passes down to its own CLI invocation)."""
+
+    return Path(
+        os.environ.get("JASPER_I2S_HAT_INTENT_FILE", DEFAULT_I2S_HAT_INTENT_PATH)
+    )
+
+
+def managed_i2s_hat_block_present(content: str) -> bool:
+    """Whether a JTS-managed I2S HAT block is present in ``content``.
+
+    Delegates to the canonical block parser (:func:`_without_managed_i2s_hat`)
+    rather than a separate marker scan, so a block whose ``BEGIN`` line is
+    mangled while its ``dtoverlay=`` line is live raises ``ValueError`` here
+    too instead of being reported absent.
+    """
+    return _without_managed_i2s_hat(content)[1] is not None
 
 
 def configured_i2s_overlays(
@@ -76,6 +98,38 @@ def detected_i2s_hat_profile(
     if profile is None or not is_boot_managed_i2s_profile(profile):
         return None
     return profile
+
+
+def hat_managed(detected_id: str | None, intent_path: str | Path | None) -> bool:
+    """Whether anything currently justifies JTS owning the I2S HAT boot
+    block: a detected HAT's profile id, or an intent file at ``intent_path``
+    the operator has written (the file's mere existence is what counts --
+    even one recording an explicit "None" choice).
+
+    The pure core: takes facts a caller already has rather than probing for
+    them, so ``reconcile_boot_config`` (which has already read the fitted
+    HAT) can reuse this without a second EEPROM read.
+    """
+    return detected_id is not None or (
+        intent_path is not None and Path(intent_path).is_file()
+    )
+
+
+def i2s_hat_managed(
+    *,
+    intent_path: str | Path | None = None,
+    hat_dir: str | Path = DEFAULT_HAT_DIR,
+) -> bool:
+    """Whether anything currently justifies JTS owning the I2S HAT boot
+    block. Probes the fitted HAT and, when ``intent_path`` is not given,
+    resolves it through :func:`i2s_hat_intent_path` (``JASPER_I2S_HAT_INTENT_FILE``)."""
+    detected = detected_i2s_hat_profile(hat_dir)
+    resolved_intent = (
+        intent_path if intent_path is not None else i2s_hat_intent_path()
+    )
+    return hat_managed(
+        detected.id if detected is not None else None, resolved_intent
+    )
 
 
 def selectable_i2s_hat_profiles() -> tuple[DacProfile, ...]:

@@ -258,7 +258,11 @@ EOF
 log_event() {
     local name="$1"
     shift
-    echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
+    # `pass_reason=` (the run's own `--reason`, why the PASS happened) is a
+    # different key from a caller's own `reason=<cause>` (why THIS event
+    # happened) -- distinct keys, so both can appear on one line without
+    # either colliding.
+    echo "event=audio_hardware_reconcile.${name} pass_reason=${REASON} $*" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -300,6 +304,15 @@ done
 # Deliberately ahead of the library loads -- a broken install must still fail
 # loudly in ExecStart rather than be skipped here. REASON is not an input.
 if [[ "$CHECK_CHANGED" == "1" ]]; then
+    if [[ -e "$RECONCILE_DEGRADED_MARKER" ]]; then
+        # write_reconcile_stamp returns early while this marker exists, so an
+        # old stamp from before the outage still matches an unchanged
+        # fingerprint -- without this, the doctor's remedy (`systemctl start
+        # jasper-audio-hardware-reconcile`) would be skipped instead of
+        # re-running the pass.
+        log_event "changed" "reason=degraded_marker_present"
+        exit 0
+    fi
     changed_fingerprint="$(reconcile_fingerprint 2>/dev/null)" || changed_fingerprint=""
     changed_stamp=""
     if [[ -f "$RECONCILE_STAMP_PATH" ]]; then

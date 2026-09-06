@@ -1640,13 +1640,13 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     commands = _systemctl_log(tmp_path)
     assert "--no-block stop jasper-voice.service jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" not in commands
-    assert "event=audio_hardware_reconcile.runtime_env reason=test mode=parked" in (
+    assert "event=audio_hardware_reconcile.runtime_env pass_reason=test mode=parked" in (
         result.stderr
     )
     # The reason reaches the JOURNAL, not just the record: an operator reading
     # `output_parked` sees WHY, not only `recognized=0`.
     assert (
-        "event=audio_hardware_reconcile.output_parked reason=test "
+        "event=audio_hardware_reconcile.output_parked pass_reason=test "
         "output_dac_id=unknown output_dac_card=A recognized=0 "
         "observed_blockers=saved_composite_partially_present"
     ) in result.stderr
@@ -2571,7 +2571,7 @@ def test_reconcile_emits_the_declared_latency_floor(
         outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
     )
     assert (
-        f"event=audio_hardware_reconcile.latency_floor reason=test "
+        f"event=audio_hardware_reconcile.latency_floor pass_reason=test "
         f"output_dac_id={dac_id} camilla_chunksize=256 "
         "camilla_target_level=1536 outputd_period_frames=128 "
         "outputd_dac_buffer_frames=256"
@@ -2849,7 +2849,7 @@ def declare_slot_floor(monkeypatch):
     [
         pytest.param(
             APPLE_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
             "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
             "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
             "ring_b_channels=2 ring_active_channels=2 topology=",
@@ -2857,7 +2857,8 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             DAC8X_STUDIO_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
+            "result=skipped "
             "output_dac_id=hifiberry_dac8x_studio period_frames=none "
             "previous_period_frames=none sample_format=none ring_a_channels=none "
             "ring_b_channels=none ring_active_channels=none topology=none "
@@ -2866,7 +2867,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             DAC8X_AND_APPLE_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
             "result=unchanged output_dac_id=hifiberry_dac8x period_frames=128 "
             "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
             "ring_b_channels=2 ring_active_channels=2 topology=",
@@ -2874,7 +2875,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             "",
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf pass_reason=test "
             "result=skipped reason=dac_unrecognized",
             id="dac-unrecognized",
         ),
@@ -3058,19 +3059,15 @@ def test_render_subcommand_reports_the_wire_and_the_topology_it_resolved(
 
 
 def _flat_cutover_event(stderr: str) -> dict[str, str]:
-    """The flat_cutover log line, parsed into its `key=value` fields.
-
-    `log_event` emits `event=<name> reason=$REASON <rest>`, so the run reason
-    is interleaved ahead of the function's own keys and an adjacent
-    `flat_cutover result=...` substring silently never matches.
-    """
+    """The flat_cutover log line, parsed into its `key=value` fields."""
     prefix = "event=audio_hardware_reconcile.flat_cutover "
     lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
     assert len(lines) == 1, f"expected exactly one flat_cutover event, got {lines}"
     fields: dict[str, str] = {}
     for token in lines[0][len(prefix):].split():
         key, _, value = token.partition("=")
-        fields.setdefault(key, value)  # first `reason=` is the run reason
+        assert key not in fields, key
+        fields[key] = value
     return fields
 
 
@@ -3223,9 +3220,36 @@ def test_reconcile_without_the_sound_cli_skips_the_render_instead_of_failing(
     )
 
     assert result.returncode == 0, result.stderr
-    assert _flat_cutover_event(result.stderr)["result"] == "skipped"
-    # The run reason wins the first `reason=`; the skip cause trails it.
-    assert "reason=cli_unavailable" in result.stderr
+    fields = _flat_cutover_event(result.stderr)
+    assert fields["result"] == "skipped"
+    assert fields["reason"] == "cli_unavailable"
+    assert fields["pass_reason"] == "test"
+
+
+def test_reconcile_degraded_marker_path_matches_the_output_hardware_helper(
+    monkeypatch, tmp_path: Path
+):
+    """``RECONCILE_DEGRADED_MARKER`` (this script) and
+    ``output_hardware.degraded_marker_path`` (the doctor's evidence) must
+    resolve to the same file under the same
+    ``JASPER_OUTPUT_HARDWARE_STATE_PATH`` -- one path for one fact."""
+    from jasper.output_hardware import degraded_marker_path
+
+    state_path = tmp_path / "output_hardware.json"
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            "JASPER_SOUND_CLI": str(tmp_path / "absent"),
+            "JASPER_OUTPUT_HARDWARE_STATE_PATH": str(state_path),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
+    assert degraded_marker_path().is_file()
 
 
 # --- the content-lane format axis ---------------------------------------------
@@ -3674,3 +3698,50 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
     assert _render_log(tmp_path) == rendered_before
     assert _systemctl_log(tmp_path).splitlines()[issued_before:] == []
     _assert_omits(check.stderr, "event=audio_hardware_reconcile.complete")
+
+
+def test_changed_check_reruns_while_the_degraded_marker_is_present(
+    tmp_path: Path,
+) -> None:
+    """A probe outage during ``--print-env`` (install.sh's mid-install call)
+    can set the degraded marker WITHOUT going through a full pass's own
+    stamp/marker reset (that reset only runs on the mutating path) -- so an
+    OLD stamp an earlier successful full pass left behind survives, and would
+    otherwise still match the now-unchanged fingerprint. Without the marker
+    check, the doctor's remedy (`systemctl start
+    jasper-audio-hardware-reconcile`) would be skipped instead of re-running
+    the pass."""
+    common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
+    healthy = _run_reconcile(
+        tmp_path, APPLE_LISTING, "--reason", "seed-healthy", extra_env=common
+    )
+    assert healthy.returncode == 0, healthy.stderr
+    assert (tmp_path / "reconcile.stamp").exists()
+
+    print_env = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--print-env",
+        initial_boot_config=(tmp_path / "config.txt").read_text(encoding="utf-8"),
+        extra_env={
+            **common,
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(tmp_path / "absent-python"),
+        },
+    )
+    assert print_env.returncode == 0, print_env.stderr
+    assert (tmp_path / "reconcile.degraded").exists()
+    # The stamp from the earlier full pass is left as-is: --print-env never
+    # touches it either way.
+    assert (tmp_path / "reconcile.stamp").exists()
+
+    check = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "unit-start",
+        "--changed",
+        initial_boot_config=(tmp_path / "config.txt").read_text(encoding="utf-8"),
+        extra_env=common,
+    )
+    assert check.returncode == 0, check.stderr
+    _assert_states(check.stderr, "event=audio_hardware_reconcile.changed ")
