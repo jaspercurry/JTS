@@ -60,6 +60,7 @@ from jasper.chip_aec.alignment import (
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
@@ -1121,7 +1122,7 @@ def publish_alignment_record(
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s aec-init %(levelname)s %(message)s")
+    configure_logging(fmt="%(asctime)s aec-init %(levelname)s %(message)s")
     corpus = _truthy(CORPUS_CHIP_AEC_ENABLED_ENV)
     mode = (
         "corpus"

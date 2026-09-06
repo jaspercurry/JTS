@@ -30,7 +30,6 @@ Designed to be run interactively or from `install.sh` post-install.
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 import urllib.parse
 
@@ -39,6 +38,7 @@ from ..env_load import load_env_files
 from .factory import build_cue_tts_backend
 from .manager import AudioCueManager
 from .registry import find as find_cue
+from ..logging_setup import configure_logging
 
 
 def _hostname_from_url(url: str) -> str:
@@ -197,9 +197,7 @@ def _cmd_play(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     parser = argparse.ArgumentParser(
         prog="jasper-cues",
         description="Manage the speaker's pre-rendered audio cues.",

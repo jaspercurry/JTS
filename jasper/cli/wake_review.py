@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from ._logging import configure_verbose_logging
+from ..logging_setup import configure_verbose_logging
 
 logger = logging.getLogger("jasper-wake-review")
 

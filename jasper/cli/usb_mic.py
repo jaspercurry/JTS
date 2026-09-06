@@ -36,6 +36,7 @@ from jasper.usb_mic import (
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
 )
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.usb_mic")
 
@@ -1304,10 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--udp-port", type=int, default=USB_HOST_MIC_UDP_PORT)
     parser.add_argument("--status-path", default=RELAY_STATUS_PATH)
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s usb-mic %(levelname)s %(message)s",
-    )
+    configure_logging(fmt="%(asctime)s usb-mic %(levelname)s %(message)s")
     try:
         return run_relay(udp_port=args.udp_port, status_path=args.status_path)
     except (OSError, RelayError) as exc:

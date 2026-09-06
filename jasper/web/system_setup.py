@@ -62,6 +62,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -227,10 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         help="jasper-control HTTP base URL (default 127.0.0.1:8780)",
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
 
     from . import _systemd
     sockets = _systemd.adopt_systemd_sockets()

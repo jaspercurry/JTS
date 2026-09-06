@@ -78,7 +78,7 @@ from jasper.wake_ports import (
     DEFAULT_AEC_RAW0_PORT as DEFAULT_AEC_RAW0_PORT,
 )
 
-from ._logging import configure_verbose_logging
+from ..logging_setup import configure_verbose_logging
 
 logger = logging.getLogger("jasper-wake-enroll")
 

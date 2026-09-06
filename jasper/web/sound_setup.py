@@ -58,6 +58,7 @@ from jasper.audio_hardware.i2s_hat import (
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
+from jasper.logging_setup import configure_logging
 from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
@@ -5506,10 +5507,7 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("JASPER_SOUND_CONFIG_DIR", DEFAULT_CONFIG_DIR),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server(
         (args.host, args.port),
         profile_path=args.profile_path,

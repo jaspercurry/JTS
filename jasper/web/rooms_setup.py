@@ -93,6 +93,7 @@ from ._common import (
     send_json_response,
     write_env_file,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1777,10 +1778,7 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("JASPER_ROOMS_WEB_PORT", "8785")),
     )
     args = p.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server((args.host, args.port))
     logger.info("rooms wizard listening on http://%s:%d/", args.host, args.port)
     try:

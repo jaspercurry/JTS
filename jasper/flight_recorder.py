@@ -39,6 +39,7 @@ import sys
 import time
 
 from . import debug_mode
+from .logging_setup import REDACTING_FILTER, TEMPLATE_ATTR
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,9 @@ class RingFlushHandler(logging.Handler):
         self.buffer: collections.deque = collections.deque(maxlen=capacity)
         self.dump_stream = dump_stream
         self.setFormatter(logging.Formatter(_FLIGHTREC_FORMAT))
+        # Redacts at capture, independently of configure_logging: the ring
+        # must be clean whatever order the two installs run in.
+        self.addFilter(REDACTING_FILTER)
         self._dumping = False
         # Monotonic time of the last auto-flush per WARNING+ signature.
         self._last_auto_flush: dict[str, float] = {}
@@ -103,9 +107,16 @@ class RingFlushHandler(logging.Handler):
         `log_event` renders every field VALUE into the message, so its
         records are keyed on `jasper_event` (the event name) instead;
         `record.msg` there is a different string on every call and would
-        defeat the floor entirely.
+        defeat the floor entirely. The redacting filter flattens `record.msg`
+        into the rendered line whenever it changes something, and stashes the
+        template it replaced under `logging_setup.TEMPLATE_ATTR` for the same
+        reason.
         """
-        origin = getattr(record, "jasper_event", None) or record.msg
+        origin = (
+            getattr(record, "jasper_event", None)
+            or getattr(record, TEMPLATE_ATTR, None)
+            or record.msg
+        )
         sig = f"{record.name}:{origin}"
         now = time.monotonic()
         last = self._last_auto_flush.get(sig)
@@ -175,10 +186,10 @@ def install(
     subsystem: str, *, capacity: int = DEFAULT_CAPACITY, dump_stream=None,
 ) -> bool:
     """Install the flight recorder for a daemon (call right after
-    ``logging.basicConfig``). Sets the ``jasper`` logger to DEBUG, pins the
-    live journal handler at INFO, attaches the ring, applies the Tier-B
-    debug toggle, and wires SIGUSR1. Returns whether the recorder was
-    installed (False if disabled by env)."""
+    ``logging_setup.configure_logging``). Sets the ``jasper`` logger to
+    DEBUG, pins the live journal handler at INFO, attaches the ring, applies
+    the Tier-B debug toggle, and wires SIGUSR1. Returns whether the recorder
+    was installed (False if disabled by env)."""
     global _ring
     # Install the SIGUSR1 -> dump handler UNCONDITIONALLY, even when the
     # recorder is disabled: an *unhandled* SIGUSR1 terminates the process by
@@ -195,7 +206,8 @@ def install(
     jasper_logger.setLevel(logging.DEBUG)  # records exist for the ring
     # With the logger pinned at DEBUG, `logger.isEnabledFor(DEBUG)` is always True for jasper.* —
     # so a per-frame `logger.debug(...)` on a hot audio path is no longer free (it builds a record
-    # and message every frame). Keep hot-loop logging coarser than DEBUG, or rate-limit it.
+    # and message every frame, and the ring's RedactingFilter runs a redaction pass over every one
+    # of them at capture). Keep hot-loop logging coarser than DEBUG, or rate-limit it.
     if _ring is not None:
         jasper_logger.removeHandler(_ring)
     _ring = RingFlushHandler(capacity, dump_stream or sys.stderr)

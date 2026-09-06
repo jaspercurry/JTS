@@ -23,6 +23,7 @@ Three pieces here, all load-bearing:
   from a test_doctor case — see #254 / #255 / #256 for context (this
   fixture, which contains that leak, landed in #256).
 """
+import contextlib
 import io
 import logging
 import os
@@ -557,23 +558,31 @@ def no_real_pi_paths(tmp_path, monkeypatch):
         monkeypatch.setattr(round_inputs, name, tmp_path / f"unset-{name}.json")
 
 
+@contextlib.contextmanager
+def bare_root_logger():
+    """The root and ``jasper`` loggers as a fresh interpreter has them, both
+    restored on exit. Yields the root logger. With pytest's caplog handler
+    still on root, ``basicConfig`` no-ops and ``set_console_debug`` finds the
+    wrong handler, so every test of the logging bootstrap starts from here."""
+    root, jasper = logging.getLogger(), logging.getLogger("jasper")
+    saved = (root.handlers[:], root.level, jasper.handlers[:], jasper.level)
+    root.handlers[:], jasper.handlers[:] = [], []
+    jasper.setLevel(logging.NOTSET)
+    try:
+        yield root
+    finally:
+        root.handlers[:], root.level, jasper.handlers[:], jasper.level = saved
+
+
 @pytest.fixture
 def logging_sandbox(monkeypatch):
-    """Give a deterministic single 'journal' StreamHandler on a clean root
-    (pytest's caplog handler would otherwise be the first one
-    set_console_debug finds), and restore everything afterward. Yields the
-    console handler so tests can assert its level."""
+    """A deterministic single 'journal' StreamHandler on a clean root, yielded
+    so tests can assert its level."""
     from jasper import flight_recorder as fr
 
-    root = logging.getLogger()
-    jasper = logging.getLogger("jasper")
-    saved = (root.handlers[:], root.level, jasper.handlers[:])
-    root.handlers[:] = []
-    jasper.handlers[:] = []
-    console = logging.StreamHandler(io.StringIO())
-    root.addHandler(console)
-    root.setLevel(logging.INFO)
-    monkeypatch.setattr(fr, "_ring", None, raising=False)
-    yield console
-    root.handlers[:], root.level, jasper.handlers[:] = saved
-    fr._ring = None
+    with bare_root_logger() as root:
+        console = logging.StreamHandler(io.StringIO())
+        root.addHandler(console)
+        root.setLevel(logging.INFO)
+        monkeypatch.setattr(fr, "_ring", None, raising=False)
+        yield console
