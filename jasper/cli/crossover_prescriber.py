@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..logging_setup import LOG_FORMAT
+from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
@@ -1459,7 +1459,7 @@ def main(argv: list[str] | None = None) -> int:
     # ``--verbose`` flag; its FORMAT is reused. In ``main`` rather than at
     # import, because configuring the root logger on import imposes that choice
     # on every importer.
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     args = build_parser().parse_args(argv)
     result: int = args.func(args)
     return result

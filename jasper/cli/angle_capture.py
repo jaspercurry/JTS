@@ -48,7 +48,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from ..logging_setup import LOG_FORMAT
+from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
@@ -1041,7 +1041,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # REPLACE another, with nothing anywhere saying so. In ``main`` rather than
     # at import, because a module that configures the root logger on import
     # imposes its choice on every importer, the test suite included.
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
     fields = list(argv) if argv is not None else sys.argv[1:]
     args = build_parser().parse_args(fields)
     args.invocation = fields

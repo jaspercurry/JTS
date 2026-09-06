@@ -110,7 +110,7 @@ from jasper.audio_measurement.calibration import (
     resolve_mic_sensitivity,
 )
 
-from ..logging_setup import LOG_FORMAT
+from ._logging import CLI_LOG_FORMAT
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 
 logger = logging.getLogger(__name__)
@@ -709,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
     # the level that would discard the receipt above.
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format=LOG_FORMAT,
+        format=CLI_LOG_FORMAT,
     )
     if not args.calibration_file and not args.mic_serial:
         build_parser().error("pass --calibration-file or --mic-serial")
