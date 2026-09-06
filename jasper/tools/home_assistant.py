@@ -301,9 +301,10 @@ def make_home_assistant_tools(ha: HAClient | None, *, monitor=None, clock=time.m
         # Non-arming path: this is a fresh command, not a consequential
         # confirmation. It supersedes any unconfirmed pending — the household
         # moved on — so a later "yes" can't fire an abandoned action. The tool
-        # itself has no turn context (jasper/voice/trace.py's active trace is
-        # only set during voice-eval harness runs, not live sessions), so
-        # this + the TTL are what bound a stale pending.
+        # itself has no turn context (no per-turn trace context is threaded
+        # to production tools; jasper/voice/trace.py's trace sink is only
+        # installed by the voice-eval harness), so this + the TTL are what
+        # bound a stale pending.
         store.clear()
         if label is not None:
             # Consequential, but the session was clean (untainted) so we ran it

@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tool-registry wrapper that records calls onto the active `TurnTrace`.
-
-`traced_registry` is eval-harness-only: it wraps every tool executor in
-a registry so calls emit `tool_call` / `tool_return` events via
-`jasper.voice.trace.emit`. Production registries are never wrapped —
-`emit()` itself lives in `jasper.voice.trace` and stays a no-op there
-when no trace is active."""
+"""Tool-call tracing for the eval harness — see `traced_registry`."""
 from __future__ import annotations
 
 import time
