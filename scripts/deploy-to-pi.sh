@@ -789,8 +789,8 @@ if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
 fi
 # Forward selected env vars into the remote install.sh (non-empty only).
 # SKIP_RESTART rides along with the install env, but install.sh does not read
-# it: its only reader is this script's own bounded post-install restart policy
-# below.
+# it: its only reader is this script's own post-install restart policy below,
+# and install.sh restarts the always-on daemons either way.
 for key in \
     JASPER_BUILD_SANDBOX \
     JASPER_BUILD_SANDBOX_OOM_SCORE_ADJ \
@@ -912,9 +912,11 @@ echo "==> Installed profile: ${REMOTE_INSTALL_PROFILE}"
 
 # Restart/reconcile the Python daemons that run application code so a
 # code change in this deploy actually takes effect. install.sh already
-# restarts jasper-mux + jasper-input + the wizard sockets. Socket
-# activation does not replace an already-warm wizard process, so restart
-# jasper-web explicitly after installing code. Voice is
+# restarts jasper-control + jasper-input + the wizard sockets on both
+# profiles, so SKIP_RESTART=1 below skips only what is left here: the
+# jasper-web restart and the per-profile reconciler. Socket activation
+# does not replace an already-warm wizard process, so restart jasper-web
+# explicitly after installing code. Voice is
 # mic-hardware-dependent, so do not restart jasper-voice directly here:
 # `jasper-aec-reconcile` restarts it when a valid mic path exists and
 # parks it cleanly when no configured mic is present.
@@ -923,12 +925,8 @@ echo "==> Installed profile: ${REMOTE_INSTALL_PROFILE}"
 #   - jasper-camilla — runs the Rust camilladsp binary, no Python.
 #     No restart needed for Python code changes.
 if [[ "${SKIP_RESTART:-}" == "1" ]]; then
-    echo "==> SKIP_RESTART=1 — leaving daemons on prior code"
+    echo "==> SKIP_RESTART=1 — skipping the jasper-web + reconciler restarts; install.sh already restarted jasper-control, jasper-input and the wizard sockets"
 else
-    echo "==> Restarting code daemon: jasper-control.service"
-    run_remote_sudo "systemctl restart jasper-control.service" || \
-        echo "  (jasper-control restart returned non-zero — see scripts/fetch-pi-logs.sh)"
-
     echo "==> Restarting web setup service: jasper-web.service"
     run_remote_sudo "systemctl restart jasper-web.service jasper-web.socket" || \
         echo "  (jasper-web restart returned non-zero — see scripts/fetch-pi-logs.sh)"
