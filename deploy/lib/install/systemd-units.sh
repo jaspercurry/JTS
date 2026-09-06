@@ -208,13 +208,17 @@ _rollback_unit_install_transaction() {
     for ((index=${#install_transaction_paths[@]} - 1; index >= 0; index--)); do
         destination="${install_transaction_paths[index]}"
         backup="${install_transaction_dir}/existing${destination}"
+        # Best effort per destination: one unrestorable path must not abort
+        # the loop under `set -e` and skip the reload tail below. The promotion
+        # stays gated on the copy so a truncated copy is never promoted.
         if [[ "${install_transaction_existed[index]}" == "1" ]]; then
             restore="${destination}.jasper-rollback.$$"
-            rm -f -- "${restore}"
-            cp -a -- "${backup}" "${restore}"
-            mv -f -- "${restore}" "${destination}"
+            rm -f -- "${restore}" || true
+            if cp -a -- "${backup}" "${restore}"; then
+                mv -f -- "${restore}" "${destination}" || true
+            fi
         else
-            rm -f -- "${destination}"
+            rm -f -- "${destination}" || true
         fi
     done
     systemctl daemon-reload 2>/dev/null || true

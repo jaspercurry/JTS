@@ -499,11 +499,13 @@ source "{FRAGMENT}"
 """
 
 
+_RECORDER_SHIMS = ("systemctl", "clear_install_in_progress", "mktemp")
+
+
 def _transaction_recorder(tmp_path: Path) -> str:
     """One ordered log of the systemctl argv a profile issues plus
     clear_install_in_progress, which lives in install.sh and so is covered by
-    no fragment stub. Also pins the transaction directory under tmp_path. Emit
-    AFTER any `declare -F` stub loop, which would otherwise replace these."""
+    no fragment stub. Also pins the transaction directory under tmp_path."""
     return f"""
 systemctl() {{ echo "systemctl $*" >> "{tmp_path}/calls.log"; return 0; }}
 clear_install_in_progress() {{ echo "fn clear_install_in_progress" >> "{tmp_path}/calls.log"; }}
@@ -517,7 +519,12 @@ def _profile_runtime_harness(
     """Run one profile's unit-install function with every fragment-defined
     helper stubbed into a recorder, so the systemctl argv it issues is
     observable off-box. `keep` names further fragment functions to leave real."""
-    real = " ".join(shlex.quote(name) for name in (function, *keep))
+    # The stub loop never replaces the recorder's own shims, so the two can be
+    # emitted in either order.
+    real = " ".join(
+        shlex.quote(name)
+        for name in (function, *keep, *_RECORDER_SHIMS)
+    )
     return f"""{_shim_preamble(tmp_path, errexit=False)}
 LOG='{tmp_path}/calls.log'
 for _stub in $(declare -F | awk '{{print $3}}'); do
@@ -772,9 +779,12 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
 def _destination_harness(tmp_path: Path, function: str) -> str:
     """Record every destination one install step promotes, with the copy itself
     suppressed — nothing here may write to the host's /etc or /usr/local. The
-    helpers stubbed out mutate state through something other than `install`
-    (NetworkManager projection, udev reload, systemd-analyze), so none of them
-    contributes a destination."""
+    stubbed helpers cannot run off-box at all: install_usb_network_files drives
+    a Python plan owner against the real /etc/NetworkManager, and the other two
+    reload udev rules or shell out to systemd-analyze. That costs the recorded
+    set exactly one destination, NetworkManager's 90-jasper-usbnet.conf, which
+    both profiles reach through that same helper — so the subset comparison
+    below is unaffected."""
     calls = tmp_path / "destinations.log"
     return f"""{_shim_preamble(tmp_path)}
 install_transaction_dir="{tmp_path}/txn"
