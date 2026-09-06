@@ -81,6 +81,7 @@ def _run_reconcile(
     board_model: str = "Raspberry Pi 5 Model B Rev 1.0",
     active_usb_role: str = "peripheral",
     extra_env: dict[str, str] | None = None,
+    script: Path = SCRIPT,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
@@ -162,7 +163,7 @@ def _run_reconcile(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(SCRIPT), *args],
+        ["bash", str(script), *args],
         check=False,
         cwd=ROOT,
         env=env,
@@ -1447,6 +1448,38 @@ def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    ("starting_content", "active_usb_role"),
+    [
+        # A verdict that would REMOVE the marker if --print-env mutated.
+        pytest.param("sentinel\n", "host", id="marker-present"),
+        # A verdict that would CREATE the marker if --print-env mutated.
+        pytest.param(None, "peripheral", id="marker-absent"),
+    ],
+)
+def test_print_env_leaves_the_management_transport_marker_untouched(
+    tmp_path: Path, starting_content: str | None, active_usb_role: str,
+):
+    """--print-env's usage text promises no mutations -- this pin does not
+    expire. (Today's motivation is install.sh's mid-install probe of the
+    PREVIOUS build, #4123, which would flip the gadget's management-transport
+    gate off a stale verdict; that motivation lapses if --print-env ever
+    moves after the source sync, but the no-mutations contract stays.)"""
+    marker = tmp_path / "management-transport.ok"
+    if starting_content is not None:
+        marker.write_text(starting_content, encoding="utf-8")
+
+    result = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--print-env", active_usb_role=active_usb_role,
+    )
+
+    assert result.returncode == 0, result.stderr
+    if starting_content is None:
+        assert not marker.exists()
+    else:
+        assert marker.read_text(encoding="utf-8") == starting_content
+
+
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):
@@ -2294,6 +2327,62 @@ def _stub_render_lib(tmp_path: Path, body: str) -> Path:
         encoding="utf-8",
     )
     return stub
+
+
+def _copy_script_with_sibling_render_lib(tmp_path: Path, sentinel: str) -> Path:
+    """A `bin/` + `lib/` layout mirroring the installed tree, with a sibling
+    render lib recognizable by `sentinel` -- distinct from the real one, so a
+    test can tell whether `load_asound_render_lib`'s own sibling-vs-installed
+    resolution found it, rather than `JASPER_ASOUND_RENDER_LIB` shortcutting
+    the decision (every other test in this file sets that override)."""
+    bin_dir = tmp_path / "layout" / "bin"
+    lib_dir = tmp_path / "layout" / "lib"
+    bin_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
+    script_copy = bin_dir / "jasper-audio-hardware-reconcile"
+    script_copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    script_copy.chmod(0o755)
+    (lib_dir / "jasper-asound-render.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"jasper_asound_log_token() {{ printf '%s' '{sentinel}'; }}\n",
+        encoding="utf-8",
+    )
+    return script_copy
+
+
+def test_print_env_dual_apple_ready_resolves_its_own_sibling_render_lib(
+    tmp_path: Path,
+):
+    """Every other --print-env test pins JASPER_ASOUND_RENDER_LIB to the real
+    lib, so load_asound_render_lib's own sibling-vs-installed resolution
+    never runs. Unset it here and give the copied script only a sibling lib
+    to find, with a jasper_asound_log_token distinct enough that its answer
+    can only have come from that copy."""
+    sentinel = "SIBLING-LIB-TOKEN"
+    script_copy = _copy_script_with_sibling_render_lib(tmp_path, sentinel)
+    topology_path = _dual_apple_topology(tmp_path, active=True)
+
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        script=script_copy,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+            "JASPER_ASOUND_RENDER_LIB": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "OUTPUT_DAC_ID=dual_apple_usb_c_dac_4ch" in result.stdout
+    _assert_states(
+        result.stderr,
+        "event=audio_hardware_reconcile.dual_apple_detected ",
+        "action=outputd_dual_sink",
+        f"dac_a_pcm={sentinel} dac_b_pcm={sentinel}",
+    )
 
 
 @pytest.mark.parametrize(

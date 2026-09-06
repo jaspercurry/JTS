@@ -114,6 +114,18 @@ def test_a_check_from_an_unrostered_module_is_rejected():
         _registry._REGISTRY[:] = saved
 
 
+def test_a_core_check_may_not_take_the_config():
+    """`--core` builds no Config (`_cli.main`), so a `needs_cfg` core check
+    would be handed nothing to read — reject the pair at registration rather
+    than crash the one subset the deploy gate runs."""
+    saved = list(_registry._REGISTRY)
+    try:
+        with pytest.raises(ValueError):
+            doctor_check(core=True, needs_cfg=True, label="x")(lambda _cfg: None)
+    finally:
+        _registry._REGISTRY[:] = saved
+
+
 @pytest.mark.parametrize("install_profile", ["full", "streambox"])
 def test_every_built_check_is_named_by_one_rule(install_profile):
     """`entry.label or _check_name(entry.func)` — on every profile and every
