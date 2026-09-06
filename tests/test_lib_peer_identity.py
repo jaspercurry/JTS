@@ -17,9 +17,17 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
+
+# install.sh writes peer_id as `python3 -c 'import uuid; print(uuid.uuid4())'`,
+# and only that shape is an identity (see verify_or_record_peer_id).
+ONE = "6f1a2b3c-4d5e-4f60-8a91-0123456789ab"
+OTHER = "0badc0de-1111-4222-8333-444455556666"
+NEW = "11112222-3333-4444-8555-666677778888"
 
 
 def _run(remote_id: str, env_file: Path, accept_new: str = "") -> subprocess.CompletedProcess:
@@ -44,8 +52,25 @@ def test_unavailable_when_remote_has_no_peer_id(tmp_path):
     assert "PI_PEER_ID" not in env.read_text()
 
 
+@pytest.mark.parametrize(
+    "remote_id",
+    ["[sudo] password for pi:", "cat: /var/lib/jasper/peer_id: No such file",
+     "6f1a2b3c4d5e4f608a910123456789ab", "6F1A2B3C-4D5E-4F60-8A91-0123456789AB"],
+    ids=["sudo-prompt", "error-text", "no-hyphens", "uppercase"],
+)
+def test_a_read_that_is_not_a_uuid_is_never_an_identity(tmp_path, remote_id):
+    # A capture can pick up prompt or error text where a peer_id should
+    # be; recording that would bless the wrong Pi on every later deploy.
+    env = tmp_path / ".env.local"
+    env.write_text("PI_HOST=jts.local\n")
+    proc = _run(remote_id, env)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "unavailable"
+    assert "PI_PEER_ID" not in env.read_text()
+
+
 def test_skips_without_state_file(tmp_path):
-    proc = _run("uuid-1", tmp_path / "absent.env")
+    proc = _run(ONE, tmp_path / "absent.env")
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "no_state_file"
 
@@ -53,18 +78,18 @@ def test_skips_without_state_file(tmp_path):
 def test_first_contact_records_tofu(tmp_path):
     env = tmp_path / ".env.local"
     env.write_text("PI_HOST=jts.local\nPI_USER=pi\n")
-    proc = _run("uuid-1", env)
+    proc = _run(ONE, env)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "recorded"
-    assert "PI_PEER_ID=uuid-1\n" in env.read_text()
+    assert f"PI_PEER_ID={ONE}\n" in env.read_text()
     # Existing lines survive.
     assert "PI_HOST=jts.local\n" in env.read_text()
 
 
 def test_match_on_same_identity(tmp_path):
     env = tmp_path / ".env.local"
-    env.write_text("PI_HOST=jts.local\nPI_PEER_ID=uuid-1\n")
-    proc = _run("uuid-1", env)
+    env.write_text(f"PI_HOST=jts.local\nPI_PEER_ID={ONE}\n")
+    proc = _run(ONE, env)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "match"
 
@@ -73,32 +98,32 @@ def test_whitespace_in_remote_id_is_normalized(tmp_path):
     # `ssh ... cat` output carries a trailing newline; the guard must not
     # treat it as a different identity.
     env = tmp_path / ".env.local"
-    env.write_text("PI_PEER_ID=uuid-1\n")
-    proc = _run("uuid-1\n", env)
+    env.write_text(f"PI_PEER_ID={ONE}\n")
+    proc = _run(f"{ONE}\n", env)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "match"
 
 
 def test_mismatch_returns_1(tmp_path):
     env = tmp_path / ".env.local"
-    env.write_text("PI_PEER_ID=uuid-1\n")
-    proc = _run("uuid-OTHER", env)
+    env.write_text(f"PI_PEER_ID={ONE}\n")
+    proc = _run(OTHER, env)
     assert proc.returncode == 1
     assert proc.stdout.strip().startswith("mismatch")
-    assert "uuid-1" in proc.stdout and "uuid-OTHER" in proc.stdout
+    assert ONE in proc.stdout and OTHER in proc.stdout
     # The recorded identity is NOT silently replaced.
-    assert "PI_PEER_ID=uuid-1\n" in env.read_text()
+    assert f"PI_PEER_ID={ONE}\n" in env.read_text()
 
 
 def test_accept_new_rerecords(tmp_path):
     env = tmp_path / ".env.local"
-    env.write_text("PI_HOST=jts.local\nPI_PEER_ID=uuid-1\n")
-    proc = _run("uuid-NEW", env, accept_new="1")
+    env.write_text(f"PI_HOST=jts.local\nPI_PEER_ID={ONE}\n")
+    proc = _run(NEW, env, accept_new="1")
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "rerecorded"
     content = env.read_text()
-    assert "PI_PEER_ID=uuid-NEW\n" in content
-    assert "uuid-1" not in content
+    assert f"PI_PEER_ID={NEW}\n" in content
+    assert ONE not in content
     assert "PI_HOST=jts.local\n" in content
 
 
@@ -107,10 +132,10 @@ def test_append_survives_missing_trailing_newline(tmp_path):
     PI_PEER_ID glued onto its last line (silently corrupting it)."""
     env = tmp_path / ".env.local"
     env.write_text("PI_HOST=jts.local\nPI_USER=pi")  # no trailing \n
-    proc = _run("uuid-1", env)
+    proc = _run(ONE, env)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "recorded"
     content = env.read_text()
     assert "PI_USER=pi\n" in content
-    assert "PI_PEER_ID=uuid-1\n" in content
+    assert f"PI_PEER_ID={ONE}\n" in content
     assert "piPI_PEER_ID" not in content

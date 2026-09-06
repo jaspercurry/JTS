@@ -81,6 +81,7 @@ def _run_reconcile(
     board_model: str = "Raspberry Pi 5 Model B Rev 1.0",
     active_usb_role: str = "peripheral",
     extra_env: dict[str, str] | None = None,
+    script: Path = SCRIPT,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
@@ -162,7 +163,7 @@ def _run_reconcile(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(SCRIPT), *args],
+        ["bash", str(script), *args],
         check=False,
         cwd=ROOT,
         env=env,
@@ -567,10 +568,9 @@ _SCRIPT_STATES = (
     # root:jasper jasper.env into root:root (jasper-control needs group read
     # for fresh /state), and must repair generated /var/lib/jasper env-file
     # permissions on no-op runs.
-    'jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750',
     'jasper_env_file_set "$file" "$key" "$value" 0640 0750',
-    'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750',
-    'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750',
+    'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640',
+    'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640',
     # The latency floor and the endpoint contract are the runtime plan's
     # answers, fetched over the CLI with the fan-in env and BOTH camilla
     # statefiles — never a second copy of the registry in bash.
@@ -990,6 +990,38 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "reset-failed jasper-outputd.service" in commands
     assert "--no-block restart jasper-outputd.service" in commands
     assert "--no-block restart jasper-aec-reconcile.service" in commands
+
+
+@pytest.mark.parametrize(
+    "locked_env,initial_fanin_env",
+    [
+        ("jasper.env", None),
+        # The route actions are all `unset` on fanin.env, so seeding one of
+        # their keys reaches apply_route_env's drop branch. That function runs
+        # in an `if` CONDITION, which disables set -e for its whole body — a
+        # refused lock there was discarded and the caller restarted anyway.
+        ("fanin.env", "JASPER_FANIN_INPUT_RESAMPLER=1\n"),
+    ],
+)
+def test_a_refused_env_lock_fails_the_pass_without_restarting(
+    tmp_path: Path, locked_env: str, initial_fanin_env: str | None
+):
+    """A refused lock returns 1 from the shared writer WITHOUT writing. The
+    `… && changed=1` / `file_changed=1` idioms would otherwise read that as
+    "changed" and restart jasper-outputd onto the OLD lane/PCM/format while
+    the unit exited 0. Removal condition: the bash env writers are gone."""
+    os.mkfifo(tmp_path / f".{locked_env}.lock")
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_fanin_env=initial_fanin_env,
+    )
+
+    assert result.returncode != 0
+    assert "restart" not in _systemctl_log(tmp_path)
 
 
 def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
@@ -1447,6 +1479,38 @@ def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    ("starting_content", "active_usb_role"),
+    [
+        # A verdict that would REMOVE the marker if --print-env mutated.
+        pytest.param("sentinel\n", "host", id="marker-present"),
+        # A verdict that would CREATE the marker if --print-env mutated.
+        pytest.param(None, "peripheral", id="marker-absent"),
+    ],
+)
+def test_print_env_leaves_the_management_transport_marker_untouched(
+    tmp_path: Path, starting_content: str | None, active_usb_role: str,
+):
+    """--print-env's usage text promises no mutations -- this pin does not
+    expire. (Today's motivation is install.sh's mid-install probe of the
+    PREVIOUS build, #4123, which would flip the gadget's management-transport
+    gate off a stale verdict; that motivation lapses if --print-env ever
+    moves after the source sync, but the no-mutations contract stays.)"""
+    marker = tmp_path / "management-transport.ok"
+    if starting_content is not None:
+        marker.write_text(starting_content, encoding="utf-8")
+
+    result = _run_reconcile(
+        tmp_path, INNOMAKER_LISTING, "--print-env", active_usb_role=active_usb_role,
+    )
+
+    assert result.returncode == 0, result.stderr
+    if starting_content is None:
+        assert not marker.exists()
+    else:
+        assert marker.read_text(encoding="utf-8") == starting_content
+
+
 def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
     tmp_path: Path,
 ):
@@ -1482,6 +1546,17 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
         "management_transport_available=true reason=available"
     ) in result.stderr
     _assert_publications_agree(tmp_path)
+    # --print-env's DONGLE_CARD truncates OBSERVED_OUTPUT_APPLE_CARD_IDS to
+    # its first id ("A", not "A_1") on this same dual-Apple pair.
+    print_env_dir = tmp_path / "print_env"
+    print_env_dir.mkdir()
+    print_env_result = _run_reconcile(
+        print_env_dir,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        extra_env=_dual_apple_cards(print_env_dir),
+    )
+    assert "DONGLE_CARD=A" in print_env_result.stdout
 
 
 def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path):
@@ -2294,6 +2369,62 @@ def _stub_render_lib(tmp_path: Path, body: str) -> Path:
         encoding="utf-8",
     )
     return stub
+
+
+def _copy_script_with_sibling_render_lib(tmp_path: Path, sentinel: str) -> Path:
+    """A `bin/` + `lib/` layout mirroring the installed tree, with a sibling
+    render lib recognizable by `sentinel` -- distinct from the real one, so a
+    test can tell whether `load_asound_render_lib`'s own sibling-vs-installed
+    resolution found it, rather than `JASPER_ASOUND_RENDER_LIB` shortcutting
+    the decision (every other test in this file sets that override)."""
+    bin_dir = tmp_path / "layout" / "bin"
+    lib_dir = tmp_path / "layout" / "lib"
+    bin_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
+    script_copy = bin_dir / "jasper-audio-hardware-reconcile"
+    script_copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    script_copy.chmod(0o755)
+    (lib_dir / "jasper-asound-render.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"jasper_asound_log_token() {{ printf '%s' '{sentinel}'; }}\n",
+        encoding="utf-8",
+    )
+    return script_copy
+
+
+def test_print_env_dual_apple_ready_resolves_its_own_sibling_render_lib(
+    tmp_path: Path,
+):
+    """Every other --print-env test pins JASPER_ASOUND_RENDER_LIB to the real
+    lib, so load_asound_render_lib's own sibling-vs-installed resolution
+    never runs. Unset it here and give the copied script only a sibling lib
+    to find, with a jasper_asound_log_token distinct enough that its answer
+    can only have come from that copy."""
+    sentinel = "SIBLING-LIB-TOKEN"
+    script_copy = _copy_script_with_sibling_render_lib(tmp_path, sentinel)
+    topology_path = _dual_apple_topology(tmp_path, active=True)
+
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        script=script_copy,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+            "JASPER_ASOUND_RENDER_LIB": "",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "OUTPUT_DAC_ID=dual_apple_usb_c_dac_4ch" in result.stdout
+    _assert_states(
+        result.stderr,
+        "event=audio_hardware_reconcile.dual_apple_detected ",
+        "action=outputd_dual_sink",
+        f"dac_a_pcm={sentinel} dac_b_pcm={sentinel}",
+    )
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,9 @@ makes the fix the single implementation for every env-file writer.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -81,7 +83,7 @@ def test_quote_env_value(value: str, expected: str) -> None:
 
 def test_round_trip_through_source(tmp_path: Path) -> None:
     """Whatever the lib writes, `source` must read back the original."""
-    values = ["hw:CARD=A,DEV=0", "has space", "it's", "a,b;c d'e"]
+    values = ["hw:CARD=A,DEV=0", "has space", "it's", "a,b;c d'e", "x=1,y=2 z"]
     env_file = tmp_path / "round.env"
     for value in values:
         result = _bash(
@@ -91,6 +93,90 @@ def test_round_trip_through_source(tmp_path: Path) -> None:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == value
+
+
+def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
+    """A second writer must wait, not clobber.
+
+    The holder here does what jasper/atomic_io.py's locked_update_env_file
+    does — take the advisory lock at `<dir>/.<basename>.lock`, read, then
+    write the whole file back — so an unlocked bash upsert landing inside
+    that window would be lost. Removal condition: a single Python owner
+    writes every env file.
+    """
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("SEED=1\n", encoding="utf-8")
+    lock = tmp_path / f".{env_file.name}.lock"
+    holding = tmp_path / "holding"
+    hold_seconds = 0.5
+    holder = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'exec 9>>"{lock}"\n'
+            "flock 9\n"
+            f'snapshot="$(cat "{env_file}")"\n'
+            f': > "{holding}"\n'
+            f"sleep {hold_seconds}\n"
+            f'printf "%s\\nHOLDER=1\\n" "$snapshot" > "{env_file}"\n',
+        ],
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not holding.exists():
+            assert time.monotonic() < deadline, "holder never took the lock"
+            time.sleep(0.01)
+        result = _bash(f'jasper_env_file_set "{env_file}" WRITER 2')
+    finally:
+        holder.wait(timeout=30)
+
+    assert result.returncode == 0, result.stderr
+    # An unlocked upsert lands inside the hold and the write-back drops it.
+    assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
+
+
+@pytest.mark.parametrize(
+    "plant", ["live_symlink", "dangling_symlink", "device_symlink", "fifo"]
+)
+def test_env_file_set_refuses_a_planted_lock(tmp_path: Path, plant: str) -> None:
+    """/var/lib/jasper is group-writable, so a jasper-group process can plant
+    anything at the lock path, and bash has no O_NOFOLLOW. Nothing may be
+    created or re-moded BY NAME: a live symlink must not carry the lock's 0660
+    onto its target (transit.env, control_token live in that directory), a
+    dangling one must not make root create the target, and a device must not be
+    re-moded — bash adds O_EXCL under noclobber only when its pre-open stat
+    FAILS, so a device is opened and followed where a regular file is refused.
+    Removal condition: only jasper/atomic_io.py, which opens O_NOFOLLOW, writes
+    these files.
+    """
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("A=1\n", encoding="utf-8")
+    victim = tmp_path / "victim"
+    device = Path("/dev/null")
+    device_mode = stat.S_IMODE(device.stat().st_mode)
+    lock = tmp_path / f".{env_file.name}.lock"
+    if plant == "fifo":
+        os.mkfifo(lock)
+    elif plant == "device_symlink":
+        lock.symlink_to(device)
+    else:
+        if plant == "live_symlink":
+            victim.write_text("secret\n", encoding="utf-8")
+            victim.chmod(0o600)
+        lock.symlink_to(victim)
+
+    result = _bash(f'jasper_env_file_set "{env_file}" A 2')
+
+    assert result.returncode == 1
+    assert "reason=not_regular" in result.stderr
+    assert env_file.read_text(encoding="utf-8") == "A=1\n"
+    if plant == "live_symlink":
+        assert victim.read_text(encoding="utf-8") == "secret\n"
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+    elif plant == "device_symlink":
+        assert stat.S_IMODE(device.stat().st_mode) == device_mode
+    elif plant == "dangling_symlink":
+        assert not victim.exists(), "root created the symlink's dangling target"
 
 
 def test_env_file_set_upserts_and_dedupes(tmp_path: Path) -> None:
@@ -136,9 +222,14 @@ def test_env_file_set_assigns_parent_group_before_publish(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
+    # Two publishes, both taking the parent group: the advisory lock, then the
+    # tempfile that becomes the env file. The lock is addressed by DESCRIPTOR
+    # — a rename over its name after the create cannot redirect the chgrp.
     args = chgrp_log.read_text().splitlines()
     assert args[0] == f"--reference={env_file.parent}"
-    assert args[1].startswith(str(env_file.parent / ".KEY."))
+    assert args[1].startswith("/dev/fd/")
+    assert args[2] == f"--reference={env_file.parent}"
+    assert args[3].startswith(str(env_file.parent / ".KEY."))
 
 
 def test_env_file_set_preserves_existing_ownership_before_rename(
@@ -183,7 +274,10 @@ def test_env_file_set_preserves_existing_ownership_before_rename(
     assert args[0] == f"--reference={env_file}"
     assert args[1].startswith(str(env_file.parent / ".A."))
     assert args[1] != str(env_file)
-    assert not chgrp_log.exists(), "rewrites must not replace file group with parent group"
+    chgrp_args = chgrp_log.read_text().splitlines()
+    assert chgrp_args[0] == f"--reference={env_file.parent}"
+    assert chgrp_args[1].startswith("/dev/fd/"), chgrp_args
+    assert len(chgrp_args) == 2, "the rewrite must keep the file's own group"
 
 
 def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:
@@ -203,7 +297,7 @@ def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:
     result = _bash(
         f'PATH="{fake_bin}:$PATH" '
         f'JTS_CHGRP_LOG="{chgrp_log}" '
-        f'jasper_env_file_repair_permissions "{env_file}" 0640 0750'
+        f'jasper_env_file_repair_permissions "{env_file}" 0640'
     )
 
     assert result.returncode == 0, result.stderr
