@@ -48,10 +48,7 @@ BASE_ENV_PATH = "/etc/jasper/jasper.env"
 
 
 def env_file_path() -> str:
-    """``BASE_ENV_PATH``, overridable via ``JASPER_ENV_FILE`` (test/probe seam).
-
-    An exported-but-empty ``JASPER_ENV_FILE`` falls back to the default,
-    same as an unset one."""
+    """``BASE_ENV_PATH``, overridable via ``JASPER_ENV_FILE`` (test/probe seam)."""
     return os.environ.get("JASPER_ENV_FILE") or BASE_ENV_PATH
 
 
@@ -220,10 +217,11 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     semantics, while long-lived daemons launching subprocesses need a
     freshly-read view of the wizard-owned SSOT files.
 
-    The base layer resolves through :func:`env_file_path`, so a
-    ``JASPER_ENV_FILE`` override reaches every caller of this function
-    (and of :func:`load_env_files`/:func:`outputd_reconciled_env`, both
-    built on it) the same way."""
+    The base layer resolves through :func:`env_file_path`, reaching every
+    reader that goes through ``env_load`` — not the literal
+    ``/etc/jasper/jasper.env`` readers in ``fanin/ring_health.py``,
+    ``renderer_lanes.py`` and ``model_downloads.py``, nor the separate
+    ``JASPER_SYSTEM_ENV_FILE`` seam in ``wake_corpus/runtime_probe.py``."""
     files = paths if paths is not None else ENV_FILES
     merged: dict[str, str] = {}
     for path in files:
@@ -250,10 +248,12 @@ def outputd_reconciled_env(outputd_env_path: str | None = None) -> dict[str, str
     outputd loads, which would silently invert every bonded pin.
 
     ``outputd_env_path`` overrides the outputd.env layer only (the
-    ``JASPER_OUTPUTD_ENV_FILE`` operator seam); the other two keep their own
-    paths so an override cannot hide a bonded pin or an operator's. Paths come
-    from the modules that own them, through lazy imports because this module is
-    a leaf every one of them can import.
+    ``JASPER_OUTPUTD_ENV_FILE`` operator seam); ``grouping-outputd.env`` keeps
+    its own path. The base ``jasper.env`` layer has its own seam,
+    ``JASPER_ENV_FILE`` (:func:`env_file_path`), applied inside
+    :func:`merged_env_files`. Paths come from the modules that own them,
+    through lazy imports because this module is a leaf every one of them can
+    import.
     """
     from jasper.fanin.coupling_reconcile import OUTPUTD_ENV_PATH
     from jasper.multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
