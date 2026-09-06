@@ -6,10 +6,10 @@
 
 Every process that installs a journal handler goes through
 :func:`configure_logging` and carries :class:`RedactingFilter`
-(non-negotiable 3; ADR-0243 owns what "credential-shaped" means) —
-except the tuning-zone CLIs and one web wizard whose journals are not
-redacted. ``tests/test_logging_setup.py`` holds that exhaustive list and
-fails on any addition to it.
+(non-negotiable 3; ADR-0243 owns what "credential-shaped" means),
+except the parked bootstraps whose journals are not redacted —
+``tests/test_logging_setup.py`` holds that exhaustive list and fails
+on any addition to it.
 """
 from __future__ import annotations
 
