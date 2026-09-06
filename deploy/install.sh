@@ -1732,6 +1732,42 @@ tune_nginx_worker_processes() {
     echo "  nginx worker_processes pinned to 1 in ${main}"
 }
 
+install_nginx_site_conf() {
+    # <site conf source> <nginx config root>. An installed conf is live at
+    # once, and the next nginx restart (Restart=always, jts-recovery.conf)
+    # loads whatever sits in sites-enabled — so a conf `nginx -t` rejects is
+    # put back rather than left there. The snapshot is staged outside
+    # sites-enabled, which nginx.conf includes unfiltered.
+    local src="${1}" root="${2}" prior=""
+    local dest="${root}/sites-enabled/jasper.conf"
+    install -d -m 0755 "${root}/snippets"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
+        "${root}/snippets/jts-proxy-headers.conf"
+    if [[ -f "${dest}" ]]; then
+        prior="$(mktemp "${root}/.jasper-site-prev.XXXXXX")"
+        cp -a "${dest}" "${prior}"
+    fi
+    install -m 0644 "${src}" "${dest}"
+    install_management_static_assets "${REPO_DIR}/deploy/index.html"
+    # nginx-light ships an enabled `default` site whose default_server
+    # clashes with ours; removing it is idempotent.
+    rm -f "${root}/sites-enabled/default"
+    tune_nginx_worker_processes
+    if ! nginx -t 2>/dev/null; then
+        if [[ -n "${prior}" ]]; then
+            mv -f "${prior}" "${dest}"
+        else
+            rm -f "${dest}"
+        fi
+        echo "  ERROR: event=install.nginx_conf_rejected src=${src}; not reloading. Run 'nginx -t' to debug." >&2
+        return 1
+    fi
+    rm -f "${prior}"
+    systemctl enable --now nginx 2>/dev/null || true
+    systemctl reload nginx
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
@@ -1746,30 +1782,8 @@ install_nginx_site() {
     # URIs, so it uses the same GitHub Pages bounce pattern as Spotify. The
     # correction-only cert is provisioned by provision_correction_tls() before
     # this function runs.
-    install -d -m 0755 /etc/nginx/snippets
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
-        /etc/nginx/snippets/jts-proxy-headers.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
-    install_management_static_assets "${REPO_DIR}/deploy/index.html"
-
-    # Disable Debian's default site so it doesn't clash with our
-    # default_server directives. nginx-light installs an enabled
-    # `default` symlink; remove it idempotently.
-    rm -f /etc/nginx/sites-enabled/default
-    tune_nginx_worker_processes
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
-    else
-        echo "  ERROR: nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
+    install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper.conf" /etc/nginx || return 1
+    echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
 }
 
 install_streambox_nginx_site() {
@@ -1777,26 +1791,8 @@ install_streambox_nginx_site() {
     # plus an nginx route set limited to local sources, DSP, grouping, and
     # system health. That keeps the frontend shared while omitting voice/wake
     # surfaces whose daemons are intentionally absent from this profile.
-    install -d -m 0755 /etc/nginx/snippets
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
-        /etc/nginx/snippets/jts-proxy-headers.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
-    install_management_static_assets "${REPO_DIR}/deploy/index.html"
-    rm -f /etc/nginx/sites-enabled/default
-    tune_nginx_worker_processes
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
-    else
-        echo "  ERROR: streambox nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
+    install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" /etc/nginx || return 1
+    echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
 }
 
 install_avahi_jasper_control() {

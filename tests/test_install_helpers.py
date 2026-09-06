@@ -907,6 +907,98 @@ def test_tune_nginx_worker_processes_pins_one_worker(tmp_path, packaged):
     assert directives[0].startswith("worker_processes 1;")
 
 
+def _run_install_nginx_site_conf(
+    tmp_path: Path, root: Path, src: Path, nginx_t_rc: int
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Drive install_nginx_site_conf against a throwaway nginx root, with
+    `nginx` (whose -t verdict the caller picks) and `systemctl` stubbed on
+    PATH and the static-asset step stubbed out. Returns the run plus the
+    file into which the `nginx` stub recorded the sites-enabled listing it
+    was asked to test."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    seen = tmp_path / "sites-enabled.at-test-time"
+    (bin_dir / "systemctl").write_text(
+        "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
+    )
+    (bin_dir / "nginx").write_text(
+        "#!/usr/bin/env bash\n"
+        f"ls -A {shlex.quote(str(root / 'sites-enabled'))} "
+        f"> {shlex.quote(str(seen))}\n"
+        f"exit {nginx_t_rc}\n",
+        encoding="utf-8",
+    )
+    for stub in (bin_dir / "systemctl", bin_dir / "nginx"):
+        stub.chmod(0o755)
+    script = "\n".join(
+        [
+            f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+            "install_management_static_assets() { :; }",
+            "install_nginx_site_conf "
+            f"{shlex.quote(str(src))} {shlex.quote(str(root))}",
+        ]
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            # Existing seam: an absent main conf makes the worker tuning a
+            # no-op instead of rewriting the host's /etc/nginx/nginx.conf.
+            "JTS_NGINX_MAIN_CONF": str(tmp_path / "absent-nginx.conf"),
+        },
+    )
+    return result, seen
+
+
+_PRIOR_CONF = "server { listen 80; }\n"
+_NEW_CONF = "server { listen 81; }\n"
+
+
+@pytest.mark.parametrize(
+    "nginx_t_rc,prior,expected_rc,expected_live",
+    [
+        (1, _PRIOR_CONF, 1, _PRIOR_CONF),
+        (1, None, 1, None),
+        (0, _PRIOR_CONF, 0, _NEW_CONF),
+    ],
+)
+def test_install_nginx_site_conf_never_leaves_a_rejected_conf_live(
+    tmp_path, nginx_t_rc, prior, expected_rc, expected_live
+):
+    """A conf `nginx -t` rejects must not survive in sites-enabled. The
+    running nginx keeps the last good config in memory, so a rejected file
+    left on disk only bites on its next Restart=always bounce — taking the
+    whole management surface down with no web recovery path.
+
+    Remove this guard once the site conf is installed from a package that
+    owns its own test-before-enable."""
+    root = tmp_path / "etc" / "nginx"
+    dest = root / "sites-enabled" / "jasper.conf"
+    dest.parent.mkdir(parents=True)
+    if prior is not None:
+        dest.write_text(prior, encoding="utf-8")
+    src = tmp_path / "site.conf"
+    src.write_text(_NEW_CONF, encoding="utf-8")
+
+    result, seen = _run_install_nginx_site_conf(tmp_path, root, src, nginx_t_rc)
+
+    assert result.returncode == expected_rc, result.stderr
+    if expected_live is None:
+        assert not dest.exists()
+    else:
+        assert dest.read_text(encoding="utf-8") == expected_live
+    if expected_rc:
+        assert "event=install.nginx_conf_rejected" in result.stderr
+    # nginx.conf includes sites-enabled unfiltered, so a snapshot staged
+    # beside the live conf would be tested as a second site.
+    assert seen.read_text(encoding="utf-8").split() == ["jasper.conf"]
+    assert not list(root.glob(".jasper-site-prev.*"))
+
+
 def _run_reconcile_headless_boot_config(cfg_path: Path) -> None:
     result = subprocess.run(
         [
