@@ -118,7 +118,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
         )
     if state.status == "unreadable":
         return CheckResult(
-            "voice provider key", "skipped",
+            "voice provider key", "warn",
             f"active provider undetermined ({state.detail}); no key checked",
             reason=REASON_PROVIDER_SELECTION_UNREADABLE,
         )
@@ -263,7 +263,7 @@ def check_provider_importable() -> CheckResult:
         )
     except subprocess.TimeoutExpired:
         return CheckResult(
-            "voice provider imports", "skipped",
+            "voice provider imports", "warn",
             f"{state.provider}: import probe timed out after "
             f"{timeout:.0f}s ({joined}) — could not verify",
             reason=REASON_PROVIDER_IMPORTS_TIMEOUT,
@@ -508,7 +508,7 @@ def check_spend_cap(cfg: Config) -> CheckResult:
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            "daily spend cap", "skipped", str(e), reason=REASON_SPEND_CAP_UNREADABLE,
+            "daily spend cap", "warn", str(e), reason=REASON_SPEND_CAP_UNREADABLE,
         )
 
 @doctor_check(label="voice model pricing")
@@ -573,5 +573,5 @@ def check_pricing() -> CheckResult:
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            "voice model pricing", "skipped", str(e), reason=REASON_PRICING_UNREADABLE,
+            "voice model pricing", "warn", str(e), reason=REASON_PRICING_UNREADABLE,
         )

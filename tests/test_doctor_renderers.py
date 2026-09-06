@@ -54,177 +54,82 @@ def _seed_bt_agent_running():
     )
 
 
-def test_check_bluetooth_pairing_policy_ok(monkeypatch):
-    _seed_bt_agent_running()
+_JTS_BT_AGENT_EXEC = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
+
+
+def _bt_show(discoverable: str, pairable: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        returncode=0,
+        stdout=f"\tPowered: yes\n\tDiscoverable: {discoverable}\n\tPairable: {pairable}\n",
+        stderr="",
+    )
+
+
+def _run_bt_pairing_probe(monkeypatch, *, exec_path: str, bt_result):
+    """`_run` stand-in for the two subprocesses `check_bluetooth_pairing_policy`
+    calls: the agent's `ExecStart`, then `bluetoothctl show` — skipped by the
+    wrong-agent case, which returns before ever reaching it. ``bt_result`` is
+    a `SimpleNamespace(returncode, stdout, stderr)` or an exception instance
+    to raise in its place."""
 
     def fake_run(cmd, *args, **kwargs):
         if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
             return SimpleNamespace(
-                returncode=0,
-                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
-                stderr="",
+                returncode=0, stdout=f"ExecStart={{ path={exec_path} ; }}\n", stderr="",
             )
         if cmd == ["bluetoothctl", "show"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout=("\tPowered: yes\n\tDiscoverable: no\n\tPairable: no\n"),
-                stderr="",
-            )
+            if isinstance(bt_result, Exception):
+                raise bt_result
+            return bt_result
         raise AssertionError(cmd)
 
     monkeypatch.setattr(renderers, "_run", fake_run)
 
-    r = renderers.check_bluetooth_pairing_policy()
 
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_bluetooth_pairing_policy_fails_old_agent(monkeypatch):
-    _seed_bt_agent_running()
-
-    def fake_run(cmd, *args, **kwargs):
-        assert cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]
-        return SimpleNamespace(
-            returncode=0,
-            stdout="ExecStart={ path=/usr/bin/bt-agent ; }\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(renderers, "_run", fake_run)
-
-    r = renderers.check_bluetooth_pairing_policy()
-
-    assert r.status == "fail"
-    assert r.reason == renderers.REASON_BT_PAIRING_WRONG_AGENT
-
-
-def test_check_bluetooth_pairing_policy_warns_pairable_outside_window(monkeypatch):
-    _seed_bt_agent_running()
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
-                stderr="",
-            )
-        if cmd == ["bluetoothctl", "show"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout=("\tPowered: yes\n\tDiscoverable: no\n\tPairable: yes\n"),
-                stderr="",
-            )
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(renderers, "_run", fake_run)
-
-    r = renderers.check_bluetooth_pairing_policy()
-
-    assert r.status == "warn"
-    assert r.reason == renderers.REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE
-
-
-def test_check_bluetooth_pairing_policy_warns_when_pairing_window_open(monkeypatch):
-    _seed_bt_agent_running()
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
-                stderr="",
-            )
-        if cmd == ["bluetoothctl", "show"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout=("\tPowered: yes\n\tDiscoverable: yes\n\tPairable: yes\n"),
-                stderr="",
-            )
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(renderers, "_run", fake_run)
-
-    r = renderers.check_bluetooth_pairing_policy()
-
-    assert r.status == "warn"
-    assert r.reason == renderers.REASON_BT_PAIRING_WINDOW_OPEN
-
-
-def test_check_bluetooth_pairing_policy_skips_when_bluetoothctl_missing(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "exec_path, bt_result, status, reason",
+    [
+        (_JTS_BT_AGENT_EXEC, _bt_show("no", "no"), "ok", ""),
+        ("/usr/bin/bt-agent", _bt_show("no", "no"), "fail", "REASON_BT_PAIRING_WRONG_AGENT"),
+        (
+            _JTS_BT_AGENT_EXEC, _bt_show("no", "yes"), "warn",
+            "REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE",
+        ),
+        (_JTS_BT_AGENT_EXEC, _bt_show("yes", "yes"), "warn", "REASON_BT_PAIRING_WINDOW_OPEN"),
+        (
+            _JTS_BT_AGENT_EXEC, FileNotFoundError("bluetoothctl"), "skipped",
+            "REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE",
+        ),
+        (
+            _JTS_BT_AGENT_EXEC,
+            SimpleNamespace(returncode=1, stdout="", stderr="no default controller"),
+            "warn", "REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN",
+        ),
+        (
+            _JTS_BT_AGENT_EXEC,
+            SimpleNamespace(returncode=0, stdout="\tPowered: yes\n", stderr=""),
+            "warn", "REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN",
+        ),
+    ],
+    ids=[
+        "ok", "wrong-agent", "pairable-without-discoverable", "window-open",
+        "bluetoothctl-missing", "show-failed", "state-not-reported",
+    ],
+)
+def test_check_bluetooth_pairing_policy_verdicts(
+    monkeypatch, exec_path, bt_result, status, reason,
 ):
-    """`bluetoothctl` absent means the adapter gate was never observed —
-    skipped, not warn."""
+    """`bluetoothctl` missing means the adapter gate was never observed
+    (skipped); every other arm is `bluetoothctl` answering — an exit
+    failure, an unparseable field, or a real pairing-window state — so all
+    of those are findings (warn/fail/ok), never skipped."""
     _seed_bt_agent_running()
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
-                stderr="",
-            )
-        if cmd == ["bluetoothctl", "show"]:
-            raise FileNotFoundError("bluetoothctl")
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(renderers, "_run", fake_run)
+    _run_bt_pairing_probe(monkeypatch, exec_path=exec_path, bt_result=bt_result)
 
     r = renderers.check_bluetooth_pairing_policy()
 
-    assert r.status == "skipped"
-    assert r.reason == renderers.REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE
-
-
-def test_check_bluetooth_pairing_policy_skips_when_show_fails(monkeypatch):
-    """`bluetoothctl show` exiting non-zero is the evidence channel failing,
-    not an observation of the adapter's state — skipped, not warn."""
-    _seed_bt_agent_running()
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
-                stderr="",
-            )
-        if cmd == ["bluetoothctl", "show"]:
-            return SimpleNamespace(returncode=1, stdout="", stderr="no default controller")
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(renderers, "_run", fake_run)
-
-    r = renderers.check_bluetooth_pairing_policy()
-
-    assert r.status == "skipped"
-    assert r.reason == renderers.REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN
-
-
-def test_check_bluetooth_pairing_policy_skips_when_state_not_reported(
-    monkeypatch,
-):
-    """`bluetoothctl show` succeeds but omits Discoverable/Pairable — still
-    nothing observed about the adapter gate, so skipped rather than warn."""
-    _seed_bt_agent_running()
-
-    def fake_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="ExecStart={ path=/opt/jasper/.venv/bin/jasper-bluetooth-agent ; }\n",
-                stderr="",
-            )
-        if cmd == ["bluetoothctl", "show"]:
-            return SimpleNamespace(returncode=0, stdout="\tPowered: yes\n", stderr="")
-        raise AssertionError(cmd)
-
-    monkeypatch.setattr(renderers, "_run", fake_run)
-
-    r = renderers.check_bluetooth_pairing_policy()
-
-    assert r.status == "skipped"
-    assert r.reason == renderers.REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN
+    assert r.status == status
+    assert r.reason == (getattr(renderers, reason) if reason else "")
 
 
 def _patch_lane_map(monkeypatch, tmp_path: Path, armed):
@@ -1669,6 +1574,14 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
 # right at runtime but hides a dropped manual pin without this doctor line.
 
 
+# A sentinel meaning "put a directory at the pin path" instead of writing
+# text — read_text() on a directory raises a real IsADirectoryError (an
+# OSError), no monkeypatching needed, to exercise the non-FileNotFoundError
+# arm the runtime reader treats exactly like corrupt JSON: pin lost, falls
+# back to auto.
+_IS_DIR = object()
+
+
 @pytest.mark.parametrize(
     "payload, status, reason",
     [
@@ -1680,29 +1593,21 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
             "warn",
             renderers.REASON_MUX_MODE_UNKNOWN_SOURCE,
         ),
+        (_IS_DIR, "warn", renderers.REASON_MUX_MODE_UNREADABLE),
     ],
-    ids=["absent", "corrupt", "auto", "unknown-source"],
+    ids=["absent", "corrupt", "auto", "unknown-source", "unreadable"],
 )
 def test_classify_mux_mode_verdicts(tmp_path, payload, status, reason):
     p = tmp_path / "mux_mode.json"
-    if payload is not None:
+    if payload is _IS_DIR:
+        p.mkdir()
+    elif payload is not None:
         p.write_text(payload, encoding="utf-8")
 
     res = _classify_mux_mode(p)
 
     assert res.status == status
     assert res.reason == reason
-
-
-def test_classify_mux_mode_unreadable_is_skipped(tmp_path):
-    """An OSError other than FileNotFoundError (permissions, I/O fault) is
-    the evidence channel failing, not an observed mux-mode value — skipped,
-    not warn. A directory in place of the pin file raises IsADirectoryError,
-    a real OSError, with no monkeypatching needed."""
-    res = _classify_mux_mode(tmp_path)
-
-    assert res.status == "skipped"
-    assert res.reason == renderers.REASON_MUX_MODE_UNREADABLE
 
 
 def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):

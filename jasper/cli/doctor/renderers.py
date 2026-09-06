@@ -486,7 +486,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     if bt.returncode != 0:
         return CheckResult(
             "Bluetooth pairing policy",
-            "skipped",
+            "warn",
             "agent OK, but bluetoothctl show failed — adapter gate not checked",
             reason=REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN,
         )
@@ -501,7 +501,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     if discoverable is None or pairable is None:
         return CheckResult(
             "Bluetooth pairing policy",
-            "skipped",
+            "warn",
             "agent OK, but adapter Discoverable/Pairable state was not reported",
             reason=REASON_BT_PAIRING_ADAPTER_STATE_UNKNOWN,
         )
@@ -1376,7 +1376,7 @@ def _classify_mux_mode(path: Path) -> CheckResult:
         return CheckResult(name, "ok", "auto (no source pin persisted)")
     except OSError as e:
         return CheckResult(
-            name, "skipped",
+            name, "warn",
             f"unreadable ({e.__class__.__name__}) — mux falls back to "
             f"auto. Check permissions on {path}",
             reason=REASON_MUX_MODE_UNREADABLE,

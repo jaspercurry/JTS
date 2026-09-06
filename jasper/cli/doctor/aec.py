@@ -1778,7 +1778,7 @@ def check_xvf_mixer_state() -> CheckResult:
     vol = _run(["amixer", "-c", card, "cget",
                 f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
     if sw.returncode != 0 or vol.returncode != 0:
-        return CheckResult("XVF mixer state", "skipped", "amixer cget failed",
+        return CheckResult("XVF mixer state", "warn", "amixer cget failed",
                            reason=REASON_XVF_MIXER_CGET_FAILED)
 
     def _extract_values(out: str) -> str | None:

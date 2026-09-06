@@ -1773,10 +1773,10 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
     assert admitted.reason == aec.REASON_BRIDGE_DOWN_READY_PRESENT
 
 
-def test_check_xvf_mixer_state_skips_when_cget_fails(monkeypatch):
-    """`amixer cget` failing on a present card is the evidence channel
-    breaking, not an observation about the mixer slots — skipped, not
-    warn."""
+def test_check_xvf_mixer_state_warns_when_cget_fails(monkeypatch):
+    """The card's presence is already confirmed above; `amixer cget`
+    failing on that confirmed hardware is the mixer erroring — an
+    observation, not a missing evidence channel — so warn, not skipped."""
     from jasper.mics import xvf3800
 
     monkeypatch.setattr(xvf3800, "is_present", lambda: True)
@@ -1789,7 +1789,7 @@ def test_check_xvf_mixer_state_skips_when_cget_fails(monkeypatch):
 
     r = aec.check_xvf_mixer_state()
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == aec.REASON_XVF_MIXER_CGET_FAILED
 
 

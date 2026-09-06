@@ -123,7 +123,7 @@ def test_provider_key_checks_the_ssot_provider_not_the_environments(
             doctor_voice.REASON_PROVIDER_SELECTION_INVALID,
         ),
         (
-            _state("unreadable"), "skipped",
+            _state("unreadable"), "warn",
             doctor_voice.REASON_PROVIDER_SELECTION_UNREADABLE,
         ),
         (_state("missing"), "warn", doctor_voice.REASON_PROVIDER_NOT_CONFIGURED),
@@ -189,9 +189,10 @@ def test_provider_imports_status_when_it_probed_nothing(
     assert r.reason == reason
 
 
-def test_provider_imports_timeout_is_skipped(monkeypatch):
-    """The import probe subprocess timing out means nothing was verified —
-    skipped, not warn."""
+def test_provider_imports_timeout_warns(monkeypatch):
+    """The child ran and was killed by its own timeout: an observation that
+    the import took too long on this box, not a missing evidence channel —
+    warn, not skipped."""
     state = _state("configured", provider="gemini")
     monkeypatch.setattr(doctor_voice, "read_active_provider_state", lambda: state)
 
@@ -202,7 +203,7 @@ def test_provider_imports_timeout_is_skipped(monkeypatch):
 
     r = doctor_voice.check_provider_importable()
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == doctor_voice.REASON_PROVIDER_IMPORTS_TIMEOUT
 
 
@@ -324,10 +325,11 @@ def test_pricing_skips_when_it_could_not_ask_which_model_is_active(
     assert r.reason == getattr(doctor_voice, reason)
 
 
-def test_pricing_unreadable_is_skipped(monkeypatch, tmp_path: Path):
-    """Any exception loading pricing data or resolving the active model's
-    rate is the evidence channel failing, not an observation about pricing
-    — skipped, not warn."""
+def test_pricing_unreadable_warns(monkeypatch, tmp_path: Path):
+    """The bare `except Exception` here catches an observed fault (a
+    corrupt env file resolving the active model) — warn, not skipped. A
+    genuine programming error is a different animal that should crash into
+    the harness's own `check_crashed` fail row, not this branch."""
     _ssot(monkeypatch, tmp_path, "gemini")
     monkeypatch.setattr(
         doctor_voice, "read_active_model_from_env_files",
@@ -336,7 +338,7 @@ def test_pricing_unreadable_is_skipped(monkeypatch, tmp_path: Path):
 
     r = doctor_voice.check_pricing()
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == doctor_voice.REASON_PRICING_UNREADABLE
 
 
@@ -420,9 +422,11 @@ def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
     assert r.reason == doctor_voice.REASON_SPEND_CAP_OK
 
 
-def test_check_spend_cap_unreadable_is_skipped(monkeypatch, tmp_path: Path):
-    """Any exception reading the usage ledger (corrupt DB, permissions
-    fault) means the cap could not be assessed — skipped, not warn."""
+def test_check_spend_cap_unreadable_warns(monkeypatch, tmp_path: Path):
+    """The bare `except Exception` here catches an observed fault (a
+    locked/corrupt usage DB) — warn, not skipped. A genuine programming
+    error is a different animal that should crash into the harness's own
+    `check_crashed` fail row, not this branch."""
     import jasper.usage as usage
 
     cfg = _spend_cap_cfg(monkeypatch, tmp_path, "1.00")
@@ -434,7 +438,7 @@ def test_check_spend_cap_unreadable_is_skipped(monkeypatch, tmp_path: Path):
 
     r = doctor_voice.check_spend_cap(cfg)
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == doctor_voice.REASON_SPEND_CAP_UNREADABLE
 
 
