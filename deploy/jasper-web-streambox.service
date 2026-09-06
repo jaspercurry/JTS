@@ -14,11 +14,11 @@ WatchdogSec=30s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Every wizard this tier can host sources its own file, after jasper.env so
-# wizard values win. Wake-side (wake_model.env) is the one omission.
+# wizard values win. Omissions: wake_model.env (no wake capability here) and
+# google_credentials.env (the /google wizard reads that file directly).
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
 EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
-EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
 EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
 EnvironmentFile=-/var/lib/jasper/weather.env
 EnvironmentFile=-/var/lib/jasper/transit.env
