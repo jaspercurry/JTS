@@ -371,7 +371,7 @@ Tick as merged. Rows condense the reports' finding tables; the reports carry
 the per-finding detail and the exact lines at `8777cff19`.
 
 Wave 0 — the ruler
-- [x] 0.1 `event=turn.timeline` + `/state.voice` last-turn fields + re-anchored first-chunk log (latency §G, providers E1–E3) — Opus; merged #4198
+- [x] 0.1 `event=turn.timeline` + `/state.voice` last-turn fields + re-anchored first-chunk log (latency §G, providers E1–E3) — Opus; merged #4198; `first_write` stage + `outcome=` on the timeline — merged #4254
 - [ ] 0.2 Owner gate: ten turns read with `journalctl -u jasper-voice -o cat | grep event=turn.timeline | tail -10` (each line carries `outcome=complete` or `outcome=aborted`; read the complete ones, which are also the only ones `/state.voice.last_turn_ms` keeps). Typical numbers recorded here: `first_response_ms − speech_end_ms` = __ ms, `first_write_ms − first_response_ms` = __ ms. `first_write` is the hand-off to fan-in — the last moment the daemon can time; the ring/CamillaDSP/outputd tail past it is not measurable from this process
 
 Wave 1 — deafness and boot
@@ -382,13 +382,14 @@ Wave 1 — deafness and boot
 - [ ] 1.4 Owner gate: WAN-unplugged boot on a spare Pi
 
 Wave 2 — subtraction
+- [x] C4 test pins: caplog prose → `tests/_log_events.py` helpers — #4273 (relocation), #4278, #4285 (open), #4287 (open), #4288 (open) (batches; the (b) prose-only list stays)
 - [ ] 2.1 `WakeFuser` + fire-path condition recompute (input-side F1; voice-daemon M4)
 - [ ] 2.2 Server-VAD path (providers C1) — after owner decision 1
-- [ ] 2.3 `_synthetic_audio_profile`; scalar `MeasurementHold.pause()` (voice-daemon M9, M11); `for_tests` → tests only under decision 6 (H4)
-- [ ] 2.4 `trace.py` + `submit_recorded_audio` → `tests/voice_eval/` (providers G6)
-- [ ] 2.5 Dead code sweep (voice-daemon L1–L4; providers G1–G5, G7, C2, C3, C4; tools F3–F6)
+- [x] 2.3 `_synthetic_audio_profile`; scalar `MeasurementHold.pause()` (voice-daemon M9, M11); `for_tests` → tests only under decision 6 (H4) — merged #4269 (`_synthetic_audio_profile` shim, scalar `pause()`); `for_tests` → tests/ waits on decision 6
+- [ ] 2.4 `trace.py` + `submit_recorded_audio` → `tests/voice_eval/` (providers G6) — `trace.py` half merged #4267 (`emit` + sink in production; `TurnTrace`/registry in `tests/voice_eval/`); `submit_recorded_audio` open
+- [ ] 2.5 Dead code sweep (voice-daemon L1–L4; providers G1–G5, G7, C2, C3, C4; tools F3–F6) — partial: header re-exports #4269, dead probes + transcript Protocols #4274, `QueueFull` guards #4286 (open), tools dead constants #4257
 - [ ] 2.6 Prose sweep, `voice_daemon.py` (voice-daemon §4, M5, M6)
-- [ ] 2.7 Prose sweep, `jasper/voice/` (providers §6, I1, I2; tools F10; input-side F4)
+- [ ] 2.7 Prose sweep, `jasper/voice/` (providers §6, I1, I2; tools F10; input-side F4) — non-adapter files merged #4276 (prompt.py history, session.py legacy/fallback claims, daemon_main root/0600 claim, unit incident blocks → ADR pointers); adapters #4289 (open)
 - [ ] 2.8 UDS clients converge on `jasper.control.uds` (providers D3); fan-in `GainRamp` import (rust F2)
 
 Wave 3 — our side of the latency
@@ -411,7 +412,7 @@ Wave 4 — decompose WakeLoop
 
 Wave 5 — one provider base
 - [ ] 5.1 `tests/test_voice_supervisor.py`; provider test files shrink (tests §4, §7.1)
-- [ ] 5.2 `_base.py`; adapters become wire-only (providers A3, D1, D2, D4, H1)
+- [x] 5.2 `_base.py`; adapters become wire-only (providers A3, D1, D2, D4, H1) — merged #4261 (`_base.py` 585 lines; adapters 1,676 / 1,012; net −279)
 - [ ] 5.3 Contract trim + mypy baseline exit + conformance tests (providers A4, C2–C4, J1; §5 guard 1) — after owner decision 1
 
 Wave 6 — hardware-gated tuning (owner)
