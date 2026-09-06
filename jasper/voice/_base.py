@@ -591,3 +591,39 @@ class BaseLiveConnection:
             self._log_tag, attempt, type(exc).__name__,
             self._outage.detail, transient,
         )
+
+    async def _send_event(self, event: dict) -> None:
+        """OpenAI pack; see openai_session."""
+        raise NotImplementedError
+
+    async def _send_audio_chunk(self, turn: Any, pcm_16khz: bytes) -> None:
+        """OpenAI pack; see openai_session."""
+        raise NotImplementedError
+
+    async def _commit_and_create_response(self, turn: Any) -> None:
+        """OpenAI pack; see openai_session."""
+        raise NotImplementedError
+
+    async def _cancel_response(self) -> None:
+        """OpenAI pack; see openai_session."""
+        raise NotImplementedError
+
+    async def _send_audio_blob(self, pcm: bytes) -> None:
+        """Gemini pack; see gemini_session."""
+        raise NotImplementedError
+
+    async def _send_activity_end(self) -> None:
+        """Gemini pack; see gemini_session."""
+        raise NotImplementedError
+
+    async def _handle_tool_call(self, tool_call: Any, turn: Any = None) -> None:
+        """Gemini pack; see gemini_session."""
+        raise NotImplementedError
+
+    def _note_cumulative_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Gemini pack; see gemini_session."""
+        raise NotImplementedError
+
+    async def _send_text_context(self, text: str) -> None:
+        """OpenAI and Gemini packs; see openai_session/gemini_session."""
+        raise NotImplementedError
