@@ -180,15 +180,26 @@ def doctor_check(
     return _register
 
 
-def registered_checks(*, core_only: bool = False) -> list[RegisteredCheck]:
+def registered_checks(
+    *,
+    core_only: bool = False,
+    modules: frozenset[str] | None = None,
+) -> list[RegisteredCheck]:
     """All registered checks in canonical order, importing what it needs.
 
     Modules follow ``MODULE_ROSTER``; within a module, source order. The
     sort is stable over the append-ordered registry, so the sequence is
     independent of the order in which the per-domain modules happened to
-    be imported.
+    be imported. ``modules``, when given, restricts both the import and
+    the result to that set (composes with ``core_only``: the intersection
+    runs) — the caller's ``--only`` skips the work, not just the display.
     """
-    for name in CORE_MODULES if core_only else MODULE_ROSTER:
+    wanted = CORE_MODULES if core_only else frozenset(MODULE_ROSTER)
+    if modules is not None:
+        wanted = wanted & modules
+    for name in wanted:
         importlib.import_module(f".{name}", __package__)
-    entries = [c for c in _REGISTRY if c.core] if core_only else list(_REGISTRY)
+    entries = [c for c in _REGISTRY if c.module in wanted]
+    if core_only:
+        entries = [c for c in entries if c.core]
     return sorted(entries, key=lambda c: _ROSTER_POSITION[c.module])

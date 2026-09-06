@@ -70,6 +70,39 @@ def test_core_modules_are_exactly_the_modules_holding_core_checks():
     assert CORE_MODULES == {c.module for c in core}
 
 
+def test_only_modules_restricts_the_import_and_the_result(monkeypatch):
+    """`--only` exists to skip the work, not just narrow the display: the
+    import loop itself must not touch a module outside the requested set."""
+    requested: list[str] = []
+    real_import_module = importlib.import_module
+
+    def spy(name, package=None):
+        requested.append(name)
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(_registry.importlib, "import_module", spy)
+
+    checks = registered_checks(modules=frozenset({"env"}))
+
+    assert requested == [".env"]
+    assert checks and {c.module for c in checks} == {"env"}
+
+
+def test_only_modules_composes_with_core():
+    """The two filters intersect: a module outside `--core`'s subset yields
+    no rows even when named, and a `--core` module's `--only` result matches
+    its slice of the unrestricted `--core` run."""
+    core_renderers = [
+        c for c in registered_checks(core_only=True) if c.module == "renderers"
+    ]
+    assert core_renderers, "renderers is expected to hold a core check"
+    assert (
+        registered_checks(core_only=True, modules=frozenset({"renderers"}))
+        == core_renderers
+    )
+    assert registered_checks(core_only=True, modules=frozenset({"env"})) == []
+
+
 def test_streambox_omissions_cannot_go_stale():
     """The two skip sets key off the roster and registered function names
     respectively, so either can drift silently if a module or check is

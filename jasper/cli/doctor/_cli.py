@@ -10,6 +10,8 @@ Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor --core      # post-deploy subset
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
+    sudo /opt/jasper/.venv/bin/jasper-doctor --only network  # one module
+    sudo /opt/jasper/.venv/bin/jasper-doctor --failing   # red rows only
 
 The doctor reads ``/etc/jasper/jasper.env`` and (if present)
 ``/var/lib/jasper/voice_provider.env`` itself. Exit 0 if all critical
@@ -43,6 +45,7 @@ from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
 from ._harness import run_async
+from ._registry import MODULE_ROSTER
 from ._shared import (
     BOLD,
     CheckResult,
@@ -59,10 +62,13 @@ from ._shared import (
 )
 
 
-def render(results: list[CheckResult], *, core: bool = False) -> int:
+def render(
+    results: list[CheckResult], *, core: bool = False, failing: bool = False,
+) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    for r in results:
+    rows = [r for r in results if r.status != "ok"] if failing else results
+    for r in rows:
         if r.status == "ok":
             color, mark = GREEN, "✓"
         elif r.status == "skipped":
@@ -223,7 +229,11 @@ def _doctor_config_from_env(install_profile: str) -> Config | SimpleNamespace:
     return Config.from_env()
 
 async def _watch_loop(
-    cfg: Config | SimpleNamespace, interval: float, *, core_only: bool = False,
+    cfg: Config | SimpleNamespace,
+    interval: float,
+    *,
+    core_only: bool = False,
+    modules: frozenset[str] | None = None,
 ) -> int:
     """Run checks every `interval` seconds, print one line per pass.
     Returns 0 on Ctrl-C."""
@@ -234,7 +244,7 @@ async def _watch_loop(
     )
     try:
         while True:
-            results = await run_async(cfg, core_only=core_only)
+            results = await run_async(cfg, core_only=core_only, modules=modules)
             print(_watch_line(results), flush=True)
             await asyncio.sleep(interval)
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -263,6 +273,16 @@ def main() -> None:
              "need, so it is cheap on a low-memory box. Works with --json.",
     )
     parser.add_argument(
+        "--only", choices=MODULE_ROSTER, default=None,
+        help="Run only this module's checks; skips importing the rest. "
+             "Composes with --core.",
+    )
+    parser.add_argument(
+        "--failing", action="store_true",
+        help="Print only rows that are not ok. Counts and exit code are "
+             "unchanged.",
+    )
+    parser.add_argument(
         "--json", action="store_true",
         help="Emit JSON on stdout instead of the ANSI report. Used by "
              "the /system dashboard's diagnostics disclosure.",
@@ -279,6 +299,7 @@ def main() -> None:
     # `--json --out PATH` or a bare `--out PATH`.
     if args.out:
         args.json = True
+    modules = frozenset({args.only}) if args.only else None
     _load_env_files()
     try:
         install_profile = read_install_profile()
@@ -302,11 +323,11 @@ def main() -> None:
         sys.exit(1)
     if args.watch:
         sys.exit(asyncio.run(
-            _watch_loop(cfg, args.interval, core_only=args.core)
+            _watch_loop(cfg, args.interval, core_only=args.core, modules=modules)
         ))
     started_at = time.monotonic()
     try:
-        results = asyncio.run(run_async(cfg, core_only=args.core))
+        results = asyncio.run(run_async(cfg, core_only=args.core, modules=modules))
     except Exception as e:  # noqa: BLE001
         if args.json:
             detail = _exception_detail(e)
@@ -326,4 +347,4 @@ def main() -> None:
             out_path=args.out,
             duration_sec=time.monotonic() - started_at,
         ))
-    sys.exit(render(results, core=args.core))
+    sys.exit(render(results, core=args.core, failing=args.failing))

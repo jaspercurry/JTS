@@ -697,6 +697,64 @@ def test_core_scope_does_not_build_the_voice_config(monkeypatch, capsys):
     }
 
 
+def test_only_flag_reaches_the_harness_as_a_module_set(monkeypatch, capsys):
+    """`--only` threads a module set into the harness the same way `--core`
+    threads a bool, and the run it produces is exactly the registry's own
+    filtered slice — not a display-side narrowing."""
+    seen: dict[str, object] = {}
+
+    async def fake_run_async(cfg, **scope):
+        seen.update(scope)
+        return [
+            CheckResult(_harness._registered_check_name(entry), "ok", "ran")
+            for entry in doctor.registered_checks(modules=scope.get("modules"))
+        ]
+
+    code, payload = _main_json(
+        monkeypatch, capsys, ["--only", "renderers"],
+        from_env=lambda: SimpleNamespace(), run_async=fake_run_async,
+    )
+
+    assert code == 0
+    assert seen["modules"] == frozenset({"renderers"})
+    expected = {
+        _harness._registered_check_name(entry)
+        for entry in doctor.registered_checks(modules=frozenset({"renderers"}))
+    }
+    assert expected and {row["name"] for row in payload["results"]} == expected
+
+
+def test_only_rejects_a_module_the_roster_does_not_name(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["jasper-doctor", "--only", "bogus"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        doctor.main()
+
+    assert exit_info.value.code != 0
+
+
+def test_failing_flag_keeps_the_full_run_summary(capsys):
+    """`--failing` narrows only the printed rows: the summary counts (here,
+    the deploy.health event's) must still reflect the unfiltered run."""
+    results = [
+        CheckResult("a", "ok", "up"),
+        CheckResult("b", "warn", "flaky", reason="b_flaky"),
+        CheckResult("c", "fail", "down", reason="c_down"),
+    ]
+
+    code = doctor.render(list(results), core=True, failing=True)
+    [health_line] = [
+        line for line in capsys.readouterr().out.splitlines()
+        if line.startswith("event=deploy.health ")
+    ]
+
+    assert code == 1
+    assert dict(kv.split("=", 1) for kv in health_line.split()[1:]) == {
+        "status": "fail", "fail": "1", "warn": "1", "rows": "3",
+        "speaker_silent": "false",
+    }
+
+
 @pytest.mark.parametrize(
     "results, core, fields",
     [
