@@ -7,6 +7,7 @@ and the zero-leg run() keepalive/heartbeat/teardown path (#2205)."""
 from __future__ import annotations
 
 from tests._live_turn_fake import _prep_session_status
+from tests._log_events import event_fields
 
 
 def _remote_runtime():
@@ -208,8 +209,8 @@ async def test_zero_leg_run_ticks_the_heartbeat_without_a_primary_mic(
     # The mode announces itself once, by this exact name: it is what the
     # owed #2205 hardware run greps for in the journal to confirm the box
     # came up push-to-talk rather than silently mic-less.
-    assert "event=voice.push_to_talk_only" in caplog.text
-    assert "sources=wiim_remote_2" in caplog.text
+    fields = event_fields(caplog, "voice.push_to_talk_only")
+    assert fields["sources"] == "wiim_remote_2"
 
 
 async def test_zero_leg_run_ends_an_in_flight_turn_on_stop(monkeypatch):
