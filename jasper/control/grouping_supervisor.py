@@ -70,7 +70,7 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.secret_redaction import redact_secrets
 
 from . import household_credential
-from .client import CONTROL_PORT, AsyncControlClient
+from .client import CONTROL_PORT, PEER_RESPONSE_MAX_BYTES, AsyncControlClient
 from .uds import read_status_body
 from .supervisor_runtime import (
     build_asyncio_thread,
@@ -91,10 +91,6 @@ logger = logging.getLogger(__name__)
 
 OUTPUTD_CONTROL_SOCKET = OUTPUTD_STATUS_SOCKET
 RECONCILE_KICK_HELPER = "/usr/local/sbin/jasper-grouping-reconcile-kick"
-
-# Matches rooms_setup.py's PEER_RESPONSE_MAX_BYTES: bounds the redaction
-# work done on an error body from a peer that may not be a trusted JTS box.
-_PEER_BODY_MAX_BYTES = 64 * 1024
 
 
 def _paired_follower_channel(leader_channel: str) -> str | None:
@@ -556,7 +552,7 @@ class GroupingSupervisor:
             # 160-char cap so a value straddling that boundary can't leak
             # a partial credential ahead of the marker (rooms_setup.py's
             # post_grouping_to_member does the same peer-POST redaction).
-            peer_text = resp.body[:_PEER_BODY_MAX_BYTES].decode(errors="replace")
+            peer_text = resp.body[:PEER_RESPONSE_MAX_BYTES].decode(errors="replace")
             peer_text = redact_secrets(
                 peer_text, literals=(household_credential_value,),
             )[:160]

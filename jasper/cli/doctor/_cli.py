@@ -37,6 +37,7 @@ from ...install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )
+from ...secret_redaction import redact_secrets
 from ...speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
@@ -113,7 +114,7 @@ def _error_payload(error: str, *, detail: str, reason: str) -> dict:
     """One row, shaped like every row `_json_payload` emits, for a run that
     produced no results at all (config error, doctor crash)."""
     return {
-        "error": error,
+        "error": redact_secrets(error),
         **_json_payload([CheckResult("jasper-doctor", "fail", detail, reason=reason)]),
     }
 
