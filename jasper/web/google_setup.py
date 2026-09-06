@@ -49,6 +49,7 @@ import secrets
 import time
 import urllib.parse
 import urllib.request
+from contextlib import suppress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -62,14 +63,13 @@ from ..google_creds import (
 )
 from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
-from ..secret_redaction import redact_secrets
 from ._common import (
     begin_request,
     canonical_banner,
     canonical_header,
     canonical_page,
     csrf_field_html,
-    delete_env_file,
+    flash_error,
     guard_mutating_request,
     guard_read_request,
     read_env_file,
@@ -94,7 +94,7 @@ _PAGE_CSS_HREF = "/assets/google/google.css"
 
 
 # Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
-# the systemd unit picks both up via `EnvironmentFile=`. WS1 Phase 4a:
+# jasper-voice picks it up via `EnvironmentFile=`. WS1 Phase 4a:
 # this file lives in the setgid `jasper-secrets` dir (readable only by
 # jasper-voice + jasper-web), so a tempfile written here inherits group
 # `jasper-secrets`. GOOGLE_CLIENT_SECRET is no longer on the broad
@@ -118,9 +118,9 @@ _USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
 
 def _creds(cfg: dict[str, Any]) -> tuple[str, str]:
     """Client ID + secret, read fresh from the file per request. The file is
-    the single writer; the process env holds only systemd's start-time
-    `EnvironmentFile=` copy of it, which would hide a later write and outlive
-    a reset — AGENTS.md "Single-writer env files"."""
+    the only source: an inherited `GOOGLE_CLIENT_*` is a start-time copy that
+    would hide a later write and outlive a reset — AGENTS.md
+    "Single-writer env files". Neither jasper-web unit sources this file."""
     creds = read_env_file(cfg["creds_path"])
     return creds.get("GOOGLE_CLIENT_ID", ""), creds.get("GOOGLE_CLIENT_SECRET", "")
 
@@ -136,7 +136,10 @@ def _write_creds_file(client_id: str, client_secret: str, *, path: str) -> None:
 
 
 def _delete_creds_file(path: str) -> None:
-    delete_env_file(path)
+    # Not `_common.delete_env_file`: that one warns and continues, and the
+    # reset handler must not report a cleared secret that is still on disk.
+    with suppress(FileNotFoundError):
+        os.unlink(path)
 
 
 def _restart_voice_daemon() -> None:
@@ -789,7 +792,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if not (code and state):
                     self._redirect("./?msg=Missing+code+or+state+from+Google")
                     return
-                if not all(_creds(cfg)):
+                creds = _creds(cfg)
+                if not all(creds):
                     self._redirect(
                         "./?msg=Credentials+were+cleared+mid-flow.+Start+over."
                     )
@@ -807,11 +811,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 account_name, verifier, _created = entry
                 try:
-                    self._exchange_code(account_name, code, verifier)
+                    self._exchange_code(account_name, code, verifier, creds)
                 except Exception as e:  # noqa: BLE001
                     logger.exception("oauth exchange failed")
-                    detail = urllib.parse.quote(redact_secrets(str(e))[:220])
-                    self._redirect(f"./?msg=Auth+exchange+failed:+{detail}")
+                    flash_error(self, "Auth exchange failed", e)
                     return
                 _restart_voice_daemon()
                 # No account name / token in the line — personal data + secret.
@@ -898,10 +901,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 _write_creds_file(client_id, client_secret, path=cfg["creds_path"])
-            except OSError as e:
+            except (OSError, ValueError) as e:
+                # ValueError: a pasted secret with a newline, which
+                # `write_env_file` refuses rather than split in two.
                 logger.exception("could not write credentials file")
-                detail = urllib.parse.quote(redact_secrets(str(e))[:220])
-                self._redirect(f"./?msg=Could+not+save+credentials:+{detail}")
+                flash_error(self, "Could not save credentials", e)
                 return
             _restart_voice_daemon()
             # Action + requester only — never the client_id/secret.
@@ -912,7 +916,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def _handle_reset_credentials(self) -> None:
-            _delete_creds_file(cfg["creds_path"])
+            try:
+                _delete_creds_file(cfg["creds_path"])
+            except OSError as e:
+                logger.exception("could not delete credentials file")
+                flash_error(self, "Could not clear credentials", e)
+                return
             _restart_voice_daemon()
             log_event(logger, "google.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
@@ -950,8 +959,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
             except Exception as e:  # noqa: BLE001
                 logger.exception("authorize-url build failed")
-                detail = urllib.parse.quote(redact_secrets(str(e))[:220])
-                self._redirect(f"./?msg=Could+not+start+OAuth:+{detail}")
+                flash_error(self, "Could not start OAuth", e)
                 return
             # google-auth-oauthlib defaults autogenerate_code_verifier=True,
             # so authorization_url() generated a PKCE verifier and stored
@@ -999,20 +1007,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def _exchange_code(
             self, account_name: str, code: str, verifier: str | None,
+            creds: tuple[str, str],
         ) -> None:
             registry = GoogleRegistry.load(cfg["registry_path"])
             account = registry.get(account_name)
             if account is None:
                 raise RuntimeError(f"unknown account: {account_name}")
-            flow = _build_flow(cfg, _creds(cfg), state=account_name)
+            flow = _build_flow(cfg, creds, state=account_name)
             # Restore the PKCE verifier that /start stashed under the nonce
             # (the callback already popped the pending entry, so a redo
             # can't reuse it — the next /start creates a fresh nonce).
             if verifier is not None:
                 flow.code_verifier = verifier
             flow.fetch_token(code=code)
-            creds = flow.credentials
-            if not creds.refresh_token:
+            granted = flow.credentials
+            if not granted.refresh_token:
                 # `prompt='consent'` should always produce one. If we
                 # get here Google probably rate-limited the consent
                 # screen for this user — the user can retry.
@@ -1023,14 +1032,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
             save_token(
                 account.token_path,
-                refresh_token=creds.refresh_token,
-                scopes=list(creds.scopes or GOOGLE_SCOPES),
-                token_uri=creds.token_uri or _TOKEN_URI,
+                refresh_token=granted.refresh_token,
+                scopes=list(granted.scopes or GOOGLE_SCOPES),
+                token_uri=granted.token_uri or _TOKEN_URI,
             )
             # Best-effort identity lookup so the management page can
             # show "jasper@gmail.com" next to the label. Failure here
             # is non-fatal — the account still works for tools.
-            info = _fetch_userinfo(creds.token or "")
+            info = _fetch_userinfo(granted.token or "")
             email = (info.get("email") or "").strip()
             display = (info.get("name") or "").strip()
             if email or display:

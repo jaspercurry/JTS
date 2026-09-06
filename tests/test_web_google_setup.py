@@ -395,9 +395,45 @@ def test_reset_credentials_deletes_creds_file(patched_common, tmp_path):
     assert patched_common.restart_voice_daemon.called
 
 
+def test_setup_credentials_failure_flashes_instead_of_raising(patched_common, tmp_path):
+    # `write_env_file` refuses a value carrying a newline (it would split the
+    # file into a bogus second line), so a pasted secret can reach the save
+    # site as a ValueError, not only an OSError.
+    creds = tmp_path / "creds.env"
+    patched_common.read_form.return_value = {
+        "client_id": GOOD_CLIENT_ID, "client_secret": "abc\ndef",
+    }
+    cfg = _cfg(creds_path=str(creds))
+    _make_bound_handler(cfg, "/setup-credentials").do_POST()
+
+    assert patched_common.send_see_other.call_args.args[1] == "./"
+    assert _flash(patched_common.send_see_other)
+    assert not creds.exists()
+    assert not patched_common.restart_voice_daemon.called
+
+
+def test_reset_credentials_failure_does_not_report_a_cleared_secret(
+    patched_common, tmp_path,
+):
+    # `_common.delete_env_file` is warn-and-continue; a reset that did not
+    # delete must not flash success while the wizard still renders the creds.
+    failure = OSError(13, "Permission denied")
+    cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"),
+               registry_path=str(tmp_path / "accounts.json"))
+    with mock.patch.object(google_setup.os, "unlink", side_effect=failure):
+        _make_bound_handler(cfg, "/reset-credentials").do_POST()
+
+    assert str(failure) in _flash(patched_common.send_see_other)
+    assert not patched_common.restart_voice_daemon.called
+
+    _make_bound_handler(cfg, "/").do_GET()
+    page = patched_common.send_html_response.call_args.args[1]
+    assert b'action="start"' in page  # state 2: credentials still present
+
+
 def test_reset_beats_the_systemd_env_snapshot(patched_common, tmp_path, monkeypatch):
-    # Both jasper-web units source the creds file via `EnvironmentFile=`, so
-    # the process env is a start-time copy that outlives the delete — read it
+    # An inherited `GOOGLE_CLIENT_*` (an operator's shell, or a unit that
+    # sourced the file at start) is a copy that outlives the delete — read it
     # and "clear credentials" would not take effect until the next restart.
     monkeypatch.setenv("GOOGLE_CLIENT_ID", GOOD_CLIENT_ID)
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret")
@@ -520,8 +556,11 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
          mock.patch.object(google_setup, "_gc_pending"):  # don't expire our 0.0 ts
         fake.do_GET()
         assert ex.called
-        # Nonce resolved to the account name + stashed PKCE verifier.
-        assert ex.call_args.args == ("jasper", "abc", "verifier123")
+        # Nonce resolved to the account name + stashed PKCE verifier, and the
+        # creds the guard already read ride along (the file is read once).
+        assert ex.call_args.args == (
+            "jasper", "abc", "verifier123", (GOOD_CLIENT_ID, "secret"),
+        )
     # Nonce consumed (single-use).
     assert "nonce123" not in google_setup._PENDING_FLOWS
     assert patched_common.restart_voice_daemon.called

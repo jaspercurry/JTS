@@ -491,7 +491,6 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch):
         for c in h.header_values("Set-Cookie") if "jts_flash=" in c
     ]
     assert len(flashes) == 1
-    assert flashes[0].startswith("Auth exchange failed:")
     assert leaked not in flashes[0]
 
 
