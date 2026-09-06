@@ -42,9 +42,9 @@ AUTHORITY_TIER = "measured"
 #: rather than a slug spelled again here.
 REFUSE_NO_SHOULDERS = "null_confirm_shoulders_unreadable"
 REFUSE_UNUSABLE_CAPTURE = "null_confirm_capture_unusable"
-#: The microphone half failed. One slug, two statuses: "refused" with no rows
-#: when it lands before the door, "partial" with the banked ids when it lands
-#: between two coordinates.
+#: The microphone half failed: no mic before the door, a mid-walk mic death,
+#: or a take the frame ledger says lost frames. One slug, because a grader
+#: reads the row's own detail for which; the run's status says where it landed.
 REFUSE_CAPTURE_FAILED = "null_confirm_capture_failed"
 
 #: The three named mid-run failures (B4), spelled the way ``jasper-measure``
@@ -77,12 +77,6 @@ DOOR_GATE_OWNER = "jasper-null"
 #: response is gated to its reflection-free span before the magnitude is read.
 #: A near-field geometry would skip that gating and read the room into the null.
 CAPTURE_GEOMETRY = "reference_axis"
-
-#: Seconds of room tail captured after the program ends, and the slack allowed
-#: between arming the recorder and the first sample. Both are the wired capture
-#: path's own numbers.
-POST_ROLL_S = 1.0
-PRE_PLAY_ALLOWANCE_S = 20.0
 
 
 def _mid_run_failures() -> dict[type[BaseException], str]:
@@ -354,32 +348,16 @@ def _publish_program(program: Any, work_dir: Path, relpath: str) -> Any:
     )
 
 
-def _resolve_mic() -> Any:
-    """The measurement mic, resolved BEFORE the speaker is claimed.
-
-    ``resolve_wired_mic`` fails soft to ``None``; the refusal is the caller's.
-    Asking here keeps a missing mic from costing the household its volume and a
-    graph swap first.
-    """
-    from jasper.audio_measurement.wired_capture import (
-        WiredCaptureError,
-        resolve_wired_mic,
-    )
-
-    mic = resolve_wired_mic()
-    if mic is None:
-        raise WiredCaptureError(
-            "no measurement microphone is plugged into the speaker — connect a "
-            "registered measurement mic (e.g. miniDSP UMIK-2) and start again"
-        )
-    return mic
-
-
 async def _play_and_capture(
     context: Any, volume_plan: Any, program: Any, mic: Any, artifact: Any,
     work_dir: Path,
-) -> bytes:
-    """Admit, play through the installed graph, and capture. Returns the mic WAV.
+) -> Any:
+    """Admit, play through the installed graph, and capture.
+
+    Returns the wired kernel's own answer, so a null take carries the same
+    device identity and integrity counters a wizard take does. The mint gets
+    no ``host``: this door has no household session to resolve a calibration
+    against, so the take is uncalibrated and the row says so.
 
     ``volume_plan`` must be the instance the door opened: ``play_program``
     asserts it is active AND opened in this process.
@@ -391,9 +369,10 @@ async def _play_and_capture(
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ
     from jasper.audio_measurement.wired_capture import (
-        WiredRecorder,
-        encode_wav_s32,
-        select_capture_channel,
+        WIRED_POST_ROLL_S,
+        WIRED_PRE_PLAY_ALLOWANCE_S,
+        make_wired_recorder,
+        mint_wired_answer,
     )
     from jasper.camilla import primary_controller
 
@@ -412,11 +391,12 @@ async def _play_and_capture(
     )
 
     program_s = program.total_samples / float(PROGRAM_SAMPLE_RATE_HZ)
-    recorder = WiredRecorder(
-        mic.pcm,
+    recorder = make_wired_recorder(
+        mic,
         sample_rate_hz=PROGRAM_SAMPLE_RATE_HZ,
-        channels=2,
-        max_capture_s=program_s + PRE_PLAY_ALLOWANCE_S + POST_ROLL_S,
+        max_capture_s=(
+            program_s + WIRED_PRE_PLAY_ALLOWANCE_S + WIRED_POST_ROLL_S
+        ),
     )
     # Armed BEFORE any audio: `start` blocks until the first real chunk lands,
     # so the pre-roll is a fact rather than a hope.
@@ -430,10 +410,42 @@ async def _play_and_capture(
         # rather than a broad `except`: nothing is caught, only cleaned up.
         if not played:
             recorder.abort()
-    recording = recorder.finish(tail_s=POST_ROLL_S)
-    _channel, mono, _levels = select_capture_channel(recording)
-    captured, _frames = encode_wav_s32(mono, sample_rate_hz=recording.sample_rate_hz)
-    return captured
+    return mint_wired_answer(
+        recorder.finish(tail_s=WIRED_POST_ROLL_S), device=mic, host=None,
+    )
+
+
+def _require_intact_capture(report: Mapping[str, Any]) -> None:
+    """Refuse a take the recorder itself says was not whole.
+
+    The ledger half is the wizard's own rule applied here
+    (``program_analysis.verify_integrity._frame_accounting_checks``): any
+    nonzero discrepancy fails, because one missing quantum is a phase
+    discontinuity through the deconvolution this depth is read from.
+
+    The zero-run half is STRICTER than that screen, where the #2557 runs are
+    disclosure only. This door has no retake and banks one row per coordinate,
+    so a dropout that survives quality gating would land as a measured null
+    nothing on disk contradicts. Removal condition: if a clean take on
+    hardware reports zero-fill runs, they go back to disclosure and this half
+    goes with them.
+    """
+    from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+
+    ledger = reconcile_capture_frames(
+        report, received_frames=int(report.get("encoded_frames") or 0),
+    )
+    faults = list(ledger.lost_at)
+    if int(report.get("zero_run_count") or 0):
+        faults.append("zero_fill_runs")
+    if report.get("truncated"):
+        faults.append("truncated")
+    if not faults:
+        return
+    raise NullDoorRefused(
+        REFUSE_CAPTURE_FAILED,
+        f"the microphone take is not intact and cannot decide a null: {faults}",
+    )
 
 
 def _depth(
@@ -504,6 +516,8 @@ def _row(
     depth_db: float | None = None,
     span: Any = None,
     wav_sha256: str | None = None,
+    capture_integrity: Mapping[str, Any] | None = None,
+    capture_device: Mapping[str, Any] | None = None,
     refusal: NullDoorRefused | None = None,
 ) -> dict[str, Any]:
     """One self-contained coordinate. Everything a grader needs, nothing to join.
@@ -531,6 +545,11 @@ def _row(
         ),
         "graph_fingerprint": graph_fingerprint,
         "wav_sha256": wav_sha256,
+        # What the RECORDER said about this take, from the same kernel the
+        # wizard's takes mint: frame ledger + zero-run scan, and the mic that
+        # heard it. A refused row carries them too — they are often why.
+        "capture_integrity": dict(capture_integrity) if capture_integrity else None,
+        "capture_device": dict(capture_device) if capture_device else None,
         # DISCLOSED, not decided. The depth is read off an UNCALIBRATED capture
         # and the mic's own response does not cancel here: the shoulders sit an
         # octave either side of Fc, so any tilt across that span biases the
@@ -581,6 +600,7 @@ async def _run(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.door import measurement_door
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.audio_measurement.program import NullConfirmUnavailable
+    from jasper.audio_measurement.wired_capture import require_wired_mic
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
     from jasper.camilla import primary_controller
 
@@ -665,10 +685,10 @@ async def _run(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
-    # OUTSIDE, deliberately: `resolve_wired_mic` is a pure READ, so asking here
-    # keeps a missing mic from costing the household a fader claim and a graph
-    # swap first.
-    mic = _resolve_mic()
+    # OUTSIDE, deliberately: the probe is a pure READ, so asking here keeps a
+    # missing mic from costing the household a fader claim and a graph swap
+    # first. `WiredMicMissing` is a `WiredCaptureError`, which `main` renders.
+    mic = require_wired_mic()
 
     try:
         async with measurement_door(
@@ -706,14 +726,16 @@ async def _run(args: argparse.Namespace) -> int:
                         delays,
                         trims_db,
                     )
-                    captured = await _play_and_capture(
+                    answer = await _play_and_capture(
                         context, door.plan, program, mic, artifact, work_dir,
                     )
                     mic_wav = (
                         work_dir / "null_programs" / f"capture_{index:02d}.wav"
                     )
-                    mic_wav.write_bytes(captured)
+                    mic_wav.write_bytes(answer.wav)
+                    report = answer.capture_integrity or {}
                     try:
+                        _require_intact_capture(report)
                         depth_db, span = _depth(mic_wav, program, plan, fc_hz)
                         outcome: dict[str, Any] = {
                             "depth_db": depth_db, "span": span,
@@ -722,7 +744,10 @@ async def _run(args: argparse.Namespace) -> int:
                         outcome = {"refusal": exc}
                     _bank(
                         candidate, inverted, fingerprint,
-                        wav_sha256=artifact.sha256, **outcome,
+                        wav_sha256=artifact.sha256,
+                        capture_integrity=report,
+                        capture_device=answer.device,
+                        **outcome,
                     )
             except tuple(mid_run) as exc:
                 # Any of the three can land BETWEEN two coordinates with rows
