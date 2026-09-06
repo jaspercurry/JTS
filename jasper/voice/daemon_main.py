@@ -833,7 +833,15 @@ async def run() -> None:
     if conversation_settings.capture_enabled:
         conversation_store = ConversationStore(conversation_settings.db_path)
 
+    # One exit stack owns every teardown here: each resource registers its
+    # release at the site that creates (or starts) it, so the unwind is the
+    # exact reverse of construction — which is dependency order, since each
+    # resource is built from the ones above it. Entered below as
+    # `async with stack:`; a callback that raises does not abort the rest.
+    stack = contextlib.AsyncExitStack()
+
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
+    stack.push_async_callback(camilla.close)
     renderer = RendererClient(
         librespot_state_path=cfg.librespot_state_path,
     )
@@ -845,18 +853,20 @@ async def run() -> None:
         default_name=cfg.weather_default_display_name,
         setup_url=f"{cfg.hostname}/weather",
     )
+    stack.push_async_callback(weather.aclose)
     # Transit (subway / bus / Citi Bike today; future city packs add more).
     # One call builds every provider in the household's ENABLED city packs
     # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns a
     # managed ActiveTransit: the flat tool list, a `configured` flag for the
     # system-prompt nudge, and an `aclose()` that releases any client owning a
-    # pool (closed in shutdown below). Each provider self-gates on its own
-    # config, so an enabled-but-unconfigured mode produces no tool —
-    # `transit_configured` is exactly "at least one transit tool registered",
-    # the same gate as before. Adding a city needs no edit here; see
+    # pool. Each provider self-gates on its own config, so an
+    # enabled-but-unconfigured mode produces no tool — `transit_configured`
+    # is exactly "at least one transit tool registered", the same gate as
+    # before. Adding a city needs no edit here; see
     # jasper.transit.active_transit. os.environ carries
     # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
     transit_active = transit.active_transit(os.environ)
+    stack.push_async_callback(transit_active.aclose)
     transit_tools = transit_active.tools
     transit_configured = transit_active.configured
     logger.info(
@@ -873,10 +883,10 @@ async def run() -> None:
     # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
     # is unset; the tool factory short-circuits to [] in that case so
     # the model never sees a tool whose every call would fail. The
-    # client owns a long-lived httpx.AsyncClient for the daemon's
-    # lifetime — closed in the shutdown path below.
+    # client owns a long-lived httpx.AsyncClient for the daemon's lifetime.
     ha = build_ha_client(cfg)
     if ha is not None:
+        stack.push_async_callback(ha.aclose)
         logger.info("home_assistant: enabled url=%s agent_id=%s",
                     ha.url, ha.agent_id or "(default)")
     else:
@@ -926,6 +936,7 @@ async def run() -> None:
         spotify_device_name=cfg.spotify_device_name,
         volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
+    stack.push_async_callback(volume_coordinator.aclose)
     # Every duck holder in this process — Ducker, CueDuck, and the graph-swap
     # bracket — releases against the coordinator's canonical target so their
     # interleavings cannot strand the fader at a value one of them had ducked.
@@ -971,6 +982,7 @@ async def run() -> None:
         librespot_state_path=cfg.librespot_state_path,
     )
     await volume_observer.start()
+    stack.push_async_callback(volume_observer.stop)
 
     # Timer scheduler — owns persistence + asyncio task lifecycle for
     # kitchen timers. Constructed BEFORE _build_registry so set_timer
@@ -987,6 +999,7 @@ async def run() -> None:
     active_research = active_research_provider(os.environ)
     research_scheduler: ResearchScheduler | None = None
     if active_research is not None:
+        stack.push_async_callback(active_research.aclose)
         research_scheduler = ResearchScheduler(
             active_research.client,
             db_path=cfg.research_db_path,
@@ -998,6 +1011,9 @@ async def run() -> None:
             usage_provider=active_research.provider_id,
             usage_model=str(getattr(active_research.client, "model", "")),
         )
+        # The store opens in __init__; stop() is registered at the start()
+        # site below, so the unwind cancels jobs before closing the store.
+        stack.callback(research_scheduler.close)
         _warn_if_research_model_unpriced(
             str(getattr(active_research.client, "model", "")),
             pricing_overrides=pricing_overrides,
@@ -1024,7 +1040,7 @@ async def run() -> None:
     # gates on the store and the LLM `session.update` is sent once
     # at WS handshake time — tools added to the registry after the
     # connection opens are invisible to the live session until the
-    # next reconnect. Close lives in the outer finally below.
+    # next reconnect.
     wake_event_store: WakeEventStore | None = None
     try:
         wake_event_store = WakeEventStore(
@@ -1032,6 +1048,13 @@ async def run() -> None:
             max_audio_bytes=cfg.wake_events_max_audio_bytes,
         )
         wake_event_store.open()
+
+        def _close_wake_event_store(store: WakeEventStore) -> None:
+            try:
+                store.close()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("wake_events store close: %s", e)
+        stack.callback(_close_wake_event_store, wake_event_store)
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "wake_events: failed to open store at %s: %s "
@@ -1097,6 +1120,7 @@ async def run() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown)
+        stack.callback(loop.remove_signal_handler, sig)
 
     # `wake=` must report what this daemon actually DOES, not what the config
     # happens to name — see `_wake_ready_detail`. Resolved once here because
@@ -1124,6 +1148,7 @@ async def run() -> None:
     # fresh open. The location is captured at startup; if you change
     # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
     connection = _make_connection(cfg, speech_policy=speech_policy)
+    stack.push_async_callback(connection.stop)
     # Time-billed providers (Grok: flat $/hour) price their per-turn token
     # rows to $0. Wire a meter before start(); the connection will record
     # active turn intervals that spend queries fold in. No meter for
@@ -1134,8 +1159,7 @@ async def run() -> None:
         provider=cfg.voice_provider,
         flat_per_hour_usd=pricing.flat_per_hour_usd,
     )
-    content_activity: ContentActivityTracker | None = None
-    try:
+    async with stack:
         # Capture the linked-Google-accounts list at startup so the
         # system instruction tells the model which `account` values
         # are valid for the calendar/gmail tools. Wizard-driven account
@@ -1196,216 +1220,190 @@ async def run() -> None:
         # jasper-aec-reconcile → restart_voice. Optional "off"/"dtln" legs
         # are best-effort: a mic-open failure is logged and that leg is
         # skipped so the speaker keeps waking on the healthy legs.
-        async with contextlib.AsyncExitStack() as stack:
-            legs: list[_LegRuntime] = []
-            for spec, device in planned_wake_legs:
-                try:
-                    leg_mic = await stack.enter_async_context(
-                        make_mic_capture(
-                            device,
-                            capture_rate=cfg.mic_capture_rate,
-                            capture_channels=cfg.mic_capture_channels,
-                        )
+        legs: list[_LegRuntime] = []
+        for spec, device in planned_wake_legs:
+            try:
+                leg_mic = await stack.enter_async_context(
+                    make_mic_capture(
+                        device,
+                        capture_rate=cfg.mic_capture_rate,
+                        capture_channels=cfg.mic_capture_channels,
                     )
-                except Exception as exc:  # noqa: BLE001
-                    if spec.token == "on":
-                        raise InputDeviceUnavailable(str(device), exc) from exc
-                    log_event(
-                        logger,
-                        "wake.leg_skipped",
-                        leg=spec.token,
-                        device=device,
-                        reason="mic_open_failed",
-                        err=str(exc),
-                        level=logging.WARNING,
-                    )
-                    continue
-                # openWakeWord's Model carries per-instance prediction
-                # state, so each leg gets its own detector — same model
-                # file + threshold, only the input stream differs. The
-                # "off" leg also gets a session shadow VAD (telemetry
-                # only; see _shadow_vad_score_raw).
-                legs.append(_LegRuntime(
-                    spec,
-                    leg_mic,
-                    WakeWordDetector(
-                        cfg.wake_model, threshold=cfg.wake_threshold,
-                    ),
-                    deque(maxlen=CAPTURE_RING_FRAMES),
-                    shadow_vad=SpeechVAD() if spec.token == "off" else None,
-                ))
-            manual_mics: list[_ManualMicRuntime] = []
-            for source_id, device in cfg.manual_mic_sources.items():
-                try:
-                    manual_mic = await stack.enter_async_context(
-                        make_mic_capture(
-                            device,
-                            capture_rate=cfg.mic_capture_rate,
-                            capture_channels=cfg.mic_capture_channels,
-                        )
-                    )
-                except (
-                    InputDeviceUnavailable,
-                    OSError,
-                    RuntimeError,
-                    TimeoutError,
-                    TypeError,
-                    ValueError,
-                ) as exc:
-                    log_event(
-                        logger,
-                        "manual_mic.source_skipped",
-                        source=source_id,
-                        device=device,
-                        reason="mic_open_failed",
-                        err=str(exc),
-                        level=logging.WARNING,
-                    )
-                    continue
-                manual_mics.append(_ManualMicRuntime(
-                    source_id,
-                    manual_mic,
-                    device,
-                ))
-            _require_usable_input(
-                legs, manual_mics, cfg.manual_mic_sources.values(),
-            )
-            tts = await stack.enter_async_context(TtsPlayout(
-                socket_path=cfg.tts_outputd_socket,
-                # outputd owns the final gain decision; this initial value
-                # only matters for chirps that play before the first real
-                # gain update lands.
-                gain_db=0.0,
-                drain_tail_sec=cfg.tts_drain_tail_sec,
-                provider=cfg.voice_provider,
-                model=_active_model(cfg),
-                voice=_active_voice(cfg),
-                profile_path=cfg.assistant_loudness_profile_path,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if spec.token == "on":
+                    raise InputDeviceUnavailable(str(device), exc) from exc
+                log_event(
+                    logger,
+                    "wake.leg_skipped",
+                    leg=spec.token,
+                    device=device,
+                    reason="mic_open_failed",
+                    err=str(exc),
+                    level=logging.WARNING,
+                )
+                continue
+            # openWakeWord's Model carries per-instance prediction
+            # state, so each leg gets its own detector — same model
+            # file + threshold, only the input stream differs. The
+            # "off" leg also gets a session shadow VAD (telemetry
+            # only; see _shadow_vad_score_raw).
+            legs.append(_LegRuntime(
+                spec,
+                leg_mic,
+                WakeWordDetector(
+                    cfg.wake_model, threshold=cfg.wake_threshold,
+                ),
+                deque(maxlen=CAPTURE_RING_FRAMES),
+                shadow_vad=SpeechVAD() if spec.token == "off" else None,
             ))
-            content_activity = ContentActivityTracker(camilla)
-            await content_activity.start()
-
-            # Wire the playout into the cue manager that was already
-            # constructed up top so timer tools could register with a
-            # working pre-render path. From here on cues.play() and
-            # cues.speak_text() can write audio out.
-            cues_manager.attach_tts(tts)
-            # Kick off background regen for any missing/stale cues.
-            # Doesn't block daemon "ready" — if regen fails (no
-            # internet / bad API key), cues silently won't play; the
-            # daemon's other voice paths still work.
-            _schedule_cue_regen(cues_manager, startup_fire_and_forget)
-            _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
-
-            # Tier 1 of the resilience ladder. Bumped on every mic
-            # frame inside WakeLoop.run; pairs with `Type=notify` +
-            # `WatchdogSec=30s` in jasper-voice.service. If the
-            # async loop wedges or mic capture dies, the heartbeat
-            # stops patting and systemd revives us cleanly via
-            # `Restart=on-watchdog` before SIGKILL is needed. See
-            # jasper/watchdog.py header.
-            heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
-            heartbeat.start()
-            # `wake_event_store` was opened at the top of run() —
-            # see the comment block above `_build_registry` for the
-            # timing rationale. We just hand it to WakeLoop here.
-            wake_loop = WakeLoop(
-                cfg, tts, connection, ducker,
-                content_activity, usage_store, spend_cap, stop_event,
-                volume_coordinator=volume_coordinator,
-                legs=legs,
-                cues=cues_manager,
-                camilla=camilla,
-                heartbeat=heartbeat,
-                wake_event_store=wake_event_store,
-                tool_packs=outcomes_to_state(registry.pack_outcomes),
-                conversation_store=conversation_store,
-                manual_mics=manual_mics,
-            )
-            # Host-compose the wake funnel at the single cross-provider
-            # dispatch seam. Tool implementations and provider adapters stay
-            # unaware of WakeLoop / SQLite; the narrow observer records only
-            # registered call start/completion while a wake event is active.
-            registry.set_dispatch_observer(
-                wake_loop.record_tool_dispatch_stage,
-            )
-            connection.set_failure_escalation_cb(
-                wake_loop.play_supervisor_cue,
-            )
-            research_delivery_recorder_ref["fn"] = (
-                wake_loop.record_research_delivery
-            )
-            # Wire timer announcements through the wake loop's
-            # session-aware playback (duck + speak_text + restore,
-            # with up-to-5s deferral if a voice turn is in flight).
-            # set_on_fire BEFORE start() — start() restores persisted
-            # timers and any whose fire_at has passed during downtime
-            # are dropped before they'd hit on_fire anyway, but timers
-            # whose fire_at is < 1s away could fire mid-restore.
-            timer_scheduler.set_on_fire(wake_loop.announce_timer)
-            await timer_scheduler.start()
-            if research_scheduler is not None:
-                wake_loop.set_research_scheduler(
-                    research_scheduler,
-                    provider_id=active_research.provider_id,
-                    model=str(getattr(active_research.client, "model", "")),
-                )
-                research_scheduler.set_on_done(wake_loop.announce_research_ready)
-                await research_scheduler.start()
-            control_socket = await _start_control_socket(
-                wake_loop, cfg.voice_control_socket,
-            )
+        manual_mics: list[_ManualMicRuntime] = []
+        for source_id, device in cfg.manual_mic_sources.items():
             try:
-                await _serve_while_connecting(
-                    connect_live_session, wake_loop.run,
+                manual_mic = await stack.enter_async_context(
+                    make_mic_capture(
+                        device,
+                        capture_rate=cfg.mic_capture_rate,
+                        capture_channels=cfg.mic_capture_channels,
+                    )
                 )
-                # Still inside the exit stack, so the cue manager and its
-                # TtsPlayout are open and the fan-in socket is live. Only on
-                # the clean stop: a crash is not a park.
-                await _announce_mic_loss_at_shutdown(wake_loop)
-            finally:
-                registry.set_dispatch_observer(None)
-                heartbeat.stop()
-                wake_loop.close_conversation_store()
-                control_socket.close()
-                try:
-                    await control_socket.wait_closed()
-                except Exception:  # noqa: BLE001
-                    pass
-    finally:
-        await _cancel_tracked_tasks(startup_fire_and_forget)
-        # Stop schedulers FIRST so any in-flight `_run` tasks that were
-        # about to announce get cancelled before we tear down the cue
-        # manager / TtsPlayout they'd be calling into.
-        await timer_scheduler.stop()
+            except (
+                InputDeviceUnavailable,
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                log_event(
+                    logger,
+                    "manual_mic.source_skipped",
+                    source=source_id,
+                    device=device,
+                    reason="mic_open_failed",
+                    err=str(exc),
+                    level=logging.WARNING,
+                )
+                continue
+            manual_mics.append(_ManualMicRuntime(
+                source_id,
+                manual_mic,
+                device,
+            ))
+        _require_usable_input(
+            legs, manual_mics, cfg.manual_mic_sources.values(),
+        )
+        tts = await stack.enter_async_context(TtsPlayout(
+            socket_path=cfg.tts_outputd_socket,
+            # outputd owns the final gain decision; this initial value
+            # only matters for chirps that play before the first real
+            # gain update lands.
+            gain_db=0.0,
+            drain_tail_sec=cfg.tts_drain_tail_sec,
+            provider=cfg.voice_provider,
+            model=_active_model(cfg),
+            voice=_active_voice(cfg),
+            profile_path=cfg.assistant_loudness_profile_path,
+        ))
+        content_activity = ContentActivityTracker(camilla)
+        await content_activity.start()
+        stack.push_async_callback(content_activity.stop)
+
+        # Wire the playout into the cue manager that was already
+        # constructed up top so timer tools could register with a
+        # working pre-render path. From here on cues.play() and
+        # cues.speak_text() can write audio out.
+        cues_manager.attach_tts(tts)
+        # Kick off background regen for any missing/stale cues.
+        # Doesn't block daemon "ready" — if regen fails (no
+        # internet / bad API key), cues silently won't play; the
+        # daemon's other voice paths still work.
+        _schedule_cue_regen(cues_manager, startup_fire_and_forget)
+        _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
+        stack.push_async_callback(
+            _cancel_tracked_tasks, startup_fire_and_forget,
+        )
+
+        # Tier 1 of the resilience ladder. Bumped on every mic
+        # frame inside WakeLoop.run; pairs with `Type=notify` +
+        # `WatchdogSec=30s` in jasper-voice.service. If the
+        # async loop wedges or mic capture dies, the heartbeat
+        # stops patting and systemd revives us cleanly via
+        # `Restart=on-watchdog` before SIGKILL is needed. See
+        # jasper/watchdog.py header.
+        heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
+        heartbeat.start()
+        stack.callback(heartbeat.stop)
+        # `wake_event_store` was opened at the top of run() —
+        # see the comment block above `_build_registry` for the
+        # timing rationale. We just hand it to WakeLoop here.
+        wake_loop = WakeLoop(
+            cfg, tts, connection, ducker,
+            content_activity, usage_store, spend_cap, stop_event,
+            volume_coordinator=volume_coordinator,
+            legs=legs,
+            cues=cues_manager,
+            camilla=camilla,
+            heartbeat=heartbeat,
+            wake_event_store=wake_event_store,
+            tool_packs=outcomes_to_state(registry.pack_outcomes),
+            conversation_store=conversation_store,
+            manual_mics=manual_mics,
+        )
+        stack.callback(wake_loop.close_conversation_store)
+        # Host-compose the wake funnel at the single cross-provider
+        # dispatch seam. Tool implementations and provider adapters stay
+        # unaware of WakeLoop / SQLite; the narrow observer records only
+        # registered call start/completion while a wake event is active.
+        registry.set_dispatch_observer(
+            wake_loop.record_tool_dispatch_stage,
+        )
+        stack.callback(registry.set_dispatch_observer, None)
+        connection.set_failure_escalation_cb(
+            wake_loop.play_supervisor_cue,
+        )
+        research_delivery_recorder_ref["fn"] = (
+            wake_loop.record_research_delivery
+        )
+        # Wire timer announcements through the wake loop's
+        # session-aware playback (duck + speak_text + restore,
+        # with up-to-5s deferral if a voice turn is in flight).
+        # set_on_fire BEFORE start() — start() restores persisted
+        # timers and any whose fire_at has passed during downtime
+        # are dropped before they'd hit on_fire anyway, but timers
+        # whose fire_at is < 1s away could fire mid-restore.
+        timer_scheduler.set_on_fire(wake_loop.announce_timer)
+        await timer_scheduler.start()
+        # Registered after the TtsPlayout so the unwind cancels in-flight
+        # announcements before the playout they speak through closes.
+        stack.push_async_callback(timer_scheduler.stop)
         if research_scheduler is not None:
-            await research_scheduler.stop()
-            research_scheduler.close()
-        if active_research is not None:
-            await active_research.aclose()
-        # Wake-event store close — moved out of the inner async-with
-        # block when the open was hoisted up so the diagnostic tools
-        # could land in the registry before the LLM session opened.
-        if wake_event_store is not None:
-            try:
-                wake_event_store.close()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("wake_events store close: %s", e)
-        if content_activity is not None:
-            await content_activity.stop()
-        if volume_observer is not None:
-            await volume_observer.stop()
-        await volume_coordinator.aclose()
-        await connection.stop()
-        await weather.aclose()
-        if ha is not None:
-            await ha.aclose()
-        # Release any transit client that owns a resource (today only
-        # BusClient's httpx.AsyncClient pool, whose idle connections + FDs
-        # would otherwise leak across daemon restart cycles). The managed
-        # ActiveTransit result owns that cleanup — the daemon just closes the
-        # subsystem, knowing nothing about which clients are closeable.
-        await transit_active.aclose()
+            wake_loop.set_research_scheduler(
+                research_scheduler,
+                provider_id=active_research.provider_id,
+                model=str(getattr(active_research.client, "model", "")),
+            )
+            research_scheduler.set_on_done(wake_loop.announce_research_ready)
+            await research_scheduler.start()
+            stack.push_async_callback(research_scheduler.stop)
+        control_socket = await _start_control_socket(
+            wake_loop, cfg.voice_control_socket,
+        )
+
+        # Registered last, so it unwinds first: the socket dispatches into
+        # the wake loop and must not take a command after that teardown began.
+        async def _close_control_socket() -> None:
+            control_socket.close()
+            with contextlib.suppress(Exception):
+                await control_socket.wait_closed()
+        stack.push_async_callback(_close_control_socket)
+        await _serve_while_connecting(
+            connect_live_session, wake_loop.run,
+        )
+        # Still inside the exit stack, so the cue manager and its
+        # TtsPlayout are open and the fan-in socket is live. Only on
+        # the clean stop: a crash is not a park.
+        await _announce_mic_loss_at_shutdown(wake_loop)
 
 
 def main() -> None:
