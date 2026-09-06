@@ -12,13 +12,16 @@ samples.
 """
 from __future__ import annotations
 
+import logging
 import struct
+from dataclasses import dataclass
 
 import pytest
 
 from jasper.voice.earcons import (
     _generate_listening_chirp,
     _generate_mute_click,
+    _synthetic_audio_profile,
 )
 
 _SR = 24000
@@ -110,3 +113,60 @@ def test_render_is_deterministic() -> None:
     assert _generate_mute_click(going_on=False) == _generate_mute_click(
         going_on=False
     )
+
+
+@dataclass(frozen=True)
+class _FakeMeasurement:
+    source_lufs: float
+    source_peak_dbfs: float
+
+
+def test_synthetic_audio_profile_uses_measured_source_level(monkeypatch):
+    import jasper.voice.earcons as earcons
+
+    monkeypatch.setattr(
+        earcons,
+        "measure_pcm_24k_mono",
+        lambda pcm, **_: _FakeMeasurement(
+            source_lufs=-31.25, source_peak_dbfs=-12.0
+        ),
+    )
+
+    profile = _synthetic_audio_profile(
+        model="synthetic-mute-click",
+        voice="mute",
+        pcm=b"\x00\x00\x01\x00",
+    )
+
+    assert profile.provider == "jts"
+    assert profile.model == "synthetic-mute-click"
+    assert profile.voice == "mute"
+    assert profile.source_lufs == -31.25
+    assert profile.source_peak_dbfs == -12.0
+    assert profile.confidence == 1.0
+    assert profile.method == "synthetic_generated"
+
+
+def test_synthetic_audio_profile_fallback_log_is_structured(
+    monkeypatch,
+    caplog,
+):
+    import jasper.voice.earcons as earcons
+
+    def fail_measurement(_pcm, **_kwargs):
+        raise RuntimeError("meter failed")
+
+    monkeypatch.setattr(earcons, "measure_pcm_24k_mono", fail_measurement)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        profile = _synthetic_audio_profile(
+            model="synthetic-mute-click",
+            voice="mute",
+            pcm=b"\x00\x00\x01\x00",
+        )
+
+    assert profile.confidence == 0.0
+    assert "event=audio.synthetic_profile" in caplog.text
+    assert "result=fallback" in caplog.text
+    assert "model=synthetic-mute-click" in caplog.text
+    assert "voice=mute" in caplog.text

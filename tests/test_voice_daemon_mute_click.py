@@ -4,14 +4,6 @@
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class _FakeMeasurement:
-    source_lufs: float
-    source_peak_dbfs: float
-
 
 class _FakeTts:
     def __init__(self) -> None:
@@ -22,57 +14,6 @@ class _FakeTts:
 
     async def wait_drained(self) -> None:
         return None
-
-
-def test_synthetic_audio_profile_uses_measured_source_level(monkeypatch):
-    import jasper.voice_daemon as vd
-
-    monkeypatch.setattr(
-        vd,
-        "measure_pcm_24k_mono",
-        lambda pcm, **_: _FakeMeasurement(
-            source_lufs=-31.25, source_peak_dbfs=-12.0
-        ),
-    )
-
-    profile = vd._synthetic_audio_profile(
-        model="synthetic-mute-click",
-        voice="mute",
-        pcm=b"\x00\x00\x01\x00",
-    )
-
-    assert profile.provider == "jts"
-    assert profile.model == "synthetic-mute-click"
-    assert profile.voice == "mute"
-    assert profile.source_lufs == -31.25
-    assert profile.source_peak_dbfs == -12.0
-    assert profile.confidence == 1.0
-    assert profile.method == "synthetic_generated"
-
-
-def test_synthetic_audio_profile_fallback_log_is_structured(
-    monkeypatch,
-    caplog,
-):
-    import jasper.voice_daemon as vd
-
-    def fail_measurement(_pcm, **_kwargs):
-        raise RuntimeError("meter failed")
-
-    monkeypatch.setattr(vd, "measure_pcm_24k_mono", fail_measurement)
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        profile = vd._synthetic_audio_profile(
-            model="synthetic-mute-click",
-            voice="mute",
-            pcm=b"\x00\x00\x01\x00",
-        )
-
-    assert profile.confidence == 0.0
-    assert "event=audio.synthetic_profile" in caplog.text
-    assert "result=fallback" in caplog.text
-    assert "model=synthetic-mute-click" in caplog.text
-    assert "voice=mute" in caplog.text
 
 
 async def test_mute_click_uses_matched_cue_path():

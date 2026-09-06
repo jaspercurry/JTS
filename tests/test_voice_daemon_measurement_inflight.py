@@ -11,7 +11,7 @@ residual half: the pause checked only `State.SESSION`, never
 moment BEFORE the PAUSE landed kept playing into the window's first
 capture.
 
-`MeasurementHold.pause()` now closes output admission atomically, arms the
+`MeasurementHold.pause_response()` now closes output admission atomically, arms the
 window (so nothing new can start and mic frames stop immediately), and then
 waits, bounded by `MEASUREMENT_INFLIGHT_DRAIN_SEC`, for the already-playing
 episode to finish. On timeout it preserves the compatible `result=ok`, adds
@@ -229,7 +229,7 @@ async def test_pause_waits_for_inflight_cue_then_returns() -> None:
     episode = await wl._output_gate.begin_if_idle("admin")
     assert episode is not None
 
-    pause = asyncio.create_task(wl.measurement_hold.pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -239,7 +239,7 @@ async def test_pause_waits_for_inflight_cue_then_returns() -> None:
 
     await wl._output_gate.end(episode)
 
-    assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+    assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
     assert wl._measurement_active.is_set()
     await _close_window(wl)
 
@@ -252,14 +252,14 @@ async def test_pause_drains_tts_for_both_supported_mix_stages() -> None:
         wl._cfg.tts_outputd_socket = tts_socket
         episode = await wl._output_gate.begin_turn()
 
-        pause = asyncio.create_task(wl.measurement_hold.pause())
+        pause = asyncio.create_task(wl.measurement_hold.pause_response())
         for _ in range(5):
             await asyncio.sleep(0)
 
         assert wl._measurement_active.is_set()
         assert not pause.done(), tts_socket
         await wl._output_gate.end(episode)
-        assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+        assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
         await _close_window(wl)
 
 
@@ -272,7 +272,7 @@ async def test_window_is_armed_before_the_drain_not_after() -> None:
     episode = await wl._output_gate.begin_if_idle("proactive")
     assert episode is not None
 
-    pause = asyncio.create_task(wl.measurement_hold.pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -285,7 +285,7 @@ async def test_window_is_armed_before_the_drain_not_after() -> None:
     assert await wl.play_cue("cant_connect") == "measurement_active"
 
     await wl._output_gate.end(episode)
-    assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+    assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
     await _close_window(wl)
 
 
@@ -296,7 +296,7 @@ async def test_drain_defers_to_inflight_audio_and_never_cancels_it() -> None:
     episode = await wl._output_gate.begin_if_idle("admin")
     assert episode is not None
 
-    pause = asyncio.create_task(wl.measurement_hold.pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -306,7 +306,7 @@ async def test_drain_defers_to_inflight_audio_and_never_cancels_it() -> None:
     assert wl._output_gate.is_current(episode)
 
     await wl._output_gate.end(episode)
-    assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+    assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
     await _close_window(wl)
 
 
@@ -316,11 +316,11 @@ async def test_drained_path_logs_the_wait(caplog) -> None:
     assert episode is not None
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        pause = asyncio.create_task(wl.measurement_hold.pause())
+        pause = asyncio.create_task(wl.measurement_hold.pause_response())
         for _ in range(5):
             await asyncio.sleep(0)
         await wl._output_gate.end(episode)
-        assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+        assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
 
     assert "event=measurement.inflight_drained" in caplog.text
     assert "active_kind=admin" in caplog.text
@@ -367,7 +367,7 @@ async def test_idle_output_never_waits() -> None:
     wl = WakeLoop.for_tests()
     wl._output_gate = _IdleGate()
 
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     assert wl._measurement_active.is_set()
     await _close_window(wl)
 
@@ -392,7 +392,7 @@ async def test_pause_setup_error_restores_output_admission_once() -> None:
     wl._tts = tts
 
     with pytest.raises(RuntimeError, match="meter pause failed"):
-        await wl.measurement_hold.pause()
+        await wl.measurement_hold.pause_response()
 
     assert not wl._measurement_active.is_set()
     assert not gate.admission_paused
@@ -417,7 +417,7 @@ async def test_unexpected_base_exception_after_opening_still_rolls_back(
     wl._tts = _UnexpectedMeter()
 
     with pytest.raises(error_type, match="unexpected setup failure"):
-        await wl.measurement_hold.pause()
+        await wl.measurement_hold.pause_response()
 
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
@@ -452,7 +452,7 @@ async def test_repeated_cancellation_waits_for_local_pause_rollback() -> None:
     assert episode is not None
     wl._output_gate = gate
     wl._tts = _HeldRollbackMeter()
-    pause = asyncio.create_task(wl.measurement_hold.pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     await wait_signalled(setup_entered, "measurement setup", producer=pause)
 
     pause.cancel()
@@ -501,7 +501,7 @@ async def test_pause_arms_crash_recovery_before_external_setup_await() -> None:
     wl._volume_coordinator = _FailingVolume()
     wl._tts = meter
 
-    pause = asyncio.create_task(wl.measurement_hold.pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     await wait_signalled(
         note_entered,
         "measurement volume setup",
@@ -540,7 +540,7 @@ async def test_resume_reopens_admission_before_stuck_meter_recovers() -> None:
 
     wl = WakeLoop.for_tests()
     wl._tts = _Meter()
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
     resume = asyncio.create_task(wl.measurement_hold.resume())
     await wait_signalled(
@@ -617,7 +617,7 @@ async def test_pause_waits_for_physical_mute_click_tail(tts_socket: str) -> None
         producer=click,
     )
 
-    pause = asyncio.create_task(wl.measurement_hold.pause())
+    pause = asyncio.create_task(wl.measurement_hold.pause_response())
     for _ in range(5):
         await asyncio.sleep(0)
     assert not pause.done(), tts_socket
@@ -625,7 +625,7 @@ async def test_pause_waits_for_physical_mute_click_tail(tts_socket: str) -> None
 
     tts.release_drain.set()
     await click
-    assert await asyncio.wait_for(pause, timeout=1.0) == "ok"
+    assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
     await _close_window(wl)
 
 
@@ -1979,11 +1979,11 @@ async def test_lease_refresh_into_an_open_window_never_waits() -> None:
     #1786 blocks new output, so a renewal has nothing to drain and must
     stay latency-free even if something is somehow playing."""
     wl = WakeLoop.for_tests()
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
     gate = _StuckGate()
     wl._output_gate = gate
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
     assert gate.waits == []
     await _close_window(wl)
@@ -2019,14 +2019,14 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
         controlled_safety_sleep,
     )
     wl = WakeLoop.for_tests()
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     await wait_signalled(old_sleeping, "old measurement safety sleep")
     old_task = wl.measurement_hold._safety_task
     assert old_task is not None
 
     await wl.measurement_hold._transition_lock.acquire()
     try:
-        renewal = asyncio.create_task(wl.measurement_hold.pause())
+        renewal = asyncio.create_task(wl.measurement_hold.pause_response())
         await asyncio.sleep(0)
         release_old.set()
         await wait_signalled(
@@ -2038,7 +2038,7 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(
     finally:
         wl.measurement_hold._transition_lock.release()
 
-    assert await renewal == "ok"
+    assert (await renewal)["result"] == "ok"
     await wait_signalled(new_sleeping, "renewed measurement safety sleep")
     assert old_task.done()
     assert wl.measurement_hold._safety_task is not old_task
@@ -2079,7 +2079,7 @@ async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch) -> None
     wl._volume_coordinator = _ExpiringVolume()
 
     with pytest.raises(TimeoutError, match="aggregate deadline"):
-        await wl.measurement_hold.pause()
+        await wl.measurement_hold.pause_response()
     await wait_signalled(
         safety_started,
         "renewed safety task",
@@ -2100,7 +2100,7 @@ async def test_active_session_still_refuses_without_draining() -> None:
     gate = _StuckGate()
     wl._output_gate = gate
 
-    assert await wl.measurement_hold.pause() == "BUSY"
+    assert (await wl.measurement_hold.pause_response())["result"] == "BUSY"
     assert not wl._measurement_active.is_set()
     assert gate.waits == []
 

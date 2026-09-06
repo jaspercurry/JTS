@@ -63,7 +63,7 @@ async def drain_acquire_buffer(
     is synchronous, so any frame appended during a ``send_audio``
     await is visible on the next iteration. The sync exit + the
     caller's state-flag clear (in
-    ``WakeLoop._acquire_and_drain``) happen without yielding, so
+    ``WakeLoop._arbitrate_acquire_drain``) happen without yielding, so
     no frame is appended after the drain decides it's done.
 
     If ``vad_predict`` is provided, also predict on each frame and
