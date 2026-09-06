@@ -28,6 +28,7 @@ from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
 from jasper.mics import xvf3800
+from tests.systemd_unit_helpers import seconds_for
 from tests._log_events import event_fields, event_records
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 
@@ -1044,14 +1045,10 @@ def test_settle_wait_fits_inside_the_calling_reconcilers_start_budget() -> None:
     # not a clean park — the script has no trap, so the box is left deaf with the
     # alignment status stuck at `checking`. Pin the derivation, not just the
     # numbers, so raising either bound forces a re-derivation.
-    unit = (
-        ROOT / "deploy" / "systemd" / "jasper-aec-reconcile.service"
-    ).read_text(encoding="utf-8")
-    budget = next(
-        float(line.split("=", 1)[1])
-        for line in unit.splitlines()
-        if line.startswith("TimeoutStartSec=")
+    unit = (ROOT / "deploy" / "systemd" / "jasper-aec-reconcile.service").read_text(
+        encoding="utf-8"
     )
+    budget = seconds_for(unit, "TimeoutStartSec")
 
     find_device_worst = 10.0        # _find_device: 10 attempts, 1 s apart
     queue_worst = 30.0              # collect_reference_queue's default timeout
