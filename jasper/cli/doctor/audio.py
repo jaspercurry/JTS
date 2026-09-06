@@ -82,6 +82,7 @@ REASON_OUTPUT_HARDWARE_BLOCKED = "output_hardware_blocked"
 REASON_OUTPUT_HARDWARE_MISMATCH = "output_hardware_mismatch"
 REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED = "output_hardware_clock_blocked"
 REASON_OUTPUT_HARDWARE_DEGRADED = "output_hardware_degraded"
+REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE = "output_hardware_stray_apple_dongle"
 
 REASON_TOPOLOGY_NOT_CONFIGURED = "output_topology_not_configured"
 
@@ -558,6 +559,29 @@ def check_output_hardware_reconcile_degraded() -> CheckResult:
         "last reconcile pass skipped a probe it depends on and left state "
         "stale — run `sudo systemctl start jasper-audio-hardware-reconcile`",
         reason=REASON_OUTPUT_HARDWARE_DEGRADED,
+    )
+
+
+@doctor_check()
+def check_output_hardware_stray_apple_dongle() -> CheckResult:
+    """A registered single DAC plus an unrelated Apple dongle classifies
+    ``ready`` with no issue (ADR-0235 D8, product call) — the dongle only
+    shows up as ``apple_dac_count`` on the published state, so surface it
+    here instead of reopening that classifier decision."""
+
+    state = evidence.output_hardware_state()
+    if state is None or state.apple_dac_count == 0:
+        return CheckResult("Output hardware Apple dongle", "ok", "no Apple dongle present")
+    if _apple_output_profile_active(state.profile_id):
+        return CheckResult(
+            "Output hardware Apple dongle", "ok",
+            f"active profile {state.profile_id} is the Apple device",
+        )
+    return CheckResult(
+        "Output hardware Apple dongle", "warn",
+        f"{state.apple_dac_count} Apple dongle(s) present alongside the "
+        f"registered {state.profile_id} DAC — unplug it, or select it in /sound/",
+        reason=REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE,
     )
 
 

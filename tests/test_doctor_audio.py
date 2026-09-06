@@ -371,6 +371,42 @@ def test_output_hardware_reconcile_not_degraded_carries_no_degraded_reason():
     assert result.reason != audio.REASON_OUTPUT_HARDWARE_DEGRADED
 
 
+def test_output_hardware_stray_apple_dongle_ok_without_one():
+    evidence.seed("output_hardware_state", _I2S_STATE)
+
+    result = audio.check_output_hardware_stray_apple_dongle()
+
+    assert result.status == "ok"
+    assert result.reason == ""
+
+
+def test_output_hardware_stray_apple_dongle_warns_beside_a_registered_dac():
+    """ADR-0235 D8: a HAT plus a stray Apple dongle classifies ``ready`` with
+    no issue (a product call, pinned by
+    test_classify_registered_single_dac_uses_profile_contract) — this check
+    surfaces the already-published ``apple_dac_count`` instead."""
+    state = OutputHardwareState(
+        profile_id="hifiberry_dac8x",
+        profile_label="HiFiBerry DAC8x",
+        status="ready",
+        physical_output_count=8,
+        apple_dac_count=1,
+        child_devices=(
+            OutputCardFact(
+                card_id="DAC8x",
+                device_id="hifiberry_dac8x",
+                has_playback=True,
+            ),
+        ),
+    )
+    evidence.seed("output_hardware_state", state)
+
+    result = audio.check_output_hardware_stray_apple_dongle()
+
+    assert result.status == "warn"
+    assert result.reason == audio.REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE
+
+
 # ------------------------------------------------ ALSA shorthand mic lookup
 
 
