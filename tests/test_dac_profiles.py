@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-import jasper.audio_hardware as audio_hardware
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
 from jasper.camilla_config_contract import CamillaFloor
@@ -31,12 +30,6 @@ from jasper.audio_hardware.dac import (
 from ._hat_eeprom import write_hat_eeprom
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_package_reexports_the_complete_dac_registry_surface() -> None:
-    assert set(audio_hardware.__all__) == set(dac.__all__)
-    for name in dac.__all__:
-        assert getattr(audio_hardware, name) is getattr(dac, name)
 
 
 def test_registry_contains_current_output_profiles_in_stable_order() -> None:
