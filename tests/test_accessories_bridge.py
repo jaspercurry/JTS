@@ -1008,7 +1008,7 @@ def _healthy_bridge(started: asyncio.Event):
 
 
 async def _supervise_until(
-    bridges, predicate, *, backoff_sec: float, status_path, details=None,
+    bridges, predicate, *, backoff_sec: float, status_path, detail=None,
 ) -> bool:
     """Run the supervisor until `predicate` holds; report whether it survived.
 
@@ -1020,7 +1020,7 @@ async def _supervise_until(
             bridges,
             backoff_sec=backoff_sec,
             status_path=status_path,
-            details=details,
+            detail=detail,
         ),
     )
     loop = asyncio.get_running_loop()
@@ -1124,10 +1124,12 @@ def test_a_missing_status_file_reads_as_unpublished(tmp_path):
     }
 
 
-def _install_fake_pyudev(monkeypatch) -> None:
+def _install_fake_pyudev(monkeypatch, observers: Optional[List] = None) -> None:
     """Inject a minimal fake `pyudev` so the HID bridge's discovery and
-    hot-plug loop run on dev hosts. The monitor never fires: the startup
-    scan is what drives the reader lifecycle here."""
+    hot-plug loop run on dev hosts. The monitor fires nothing on its own —
+    the startup scan drives the reader lifecycle — but a test that passes
+    `observers` collects the bridge's observer and pushes hot-plug through
+    it with `_fire_udev`."""
     fake = types.ModuleType("pyudev")
     fake.Context = lambda: None
     fake.Monitor = types.SimpleNamespace(
@@ -1136,7 +1138,9 @@ def _install_fake_pyudev(monkeypatch) -> None:
 
     class _Observer:
         def __init__(self, monitor, callback) -> None:
-            pass
+            self.callback = callback
+            if observers is not None:
+                observers.append(self)
 
         def start(self) -> None:
             pass
@@ -1146,6 +1150,36 @@ def _install_fake_pyudev(monkeypatch) -> None:
 
     fake.MonitorObserver = _Observer
     monkeypatch.setitem(sys.modules, "pyudev", fake)
+
+
+async def _fire_udev(observers: List, action: str, node: str) -> None:
+    """Deliver one udev action to the bridge, once its observer is up."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while not observers:
+        assert loop.time() < deadline, "the bridge never started its observer"
+        await asyncio.sleep(0.001)
+    observers[0].callback(action, types.SimpleNamespace(device_node=node))
+    await asyncio.sleep(0)  # the callback hands off via call_soon_threadsafe
+
+
+async def _stop(task: asyncio.Task) -> None:
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+class _FakeInputDevice:
+    """The WiiM Remote 2's evdev node, as `_maybe_start` probes it."""
+
+    def __init__(self, path):
+        self.info = types.SimpleNamespace(bustype=3, vendor=0x2717, product=0x32B9)
+        self.name = "WiiM Remote 2"
+
+    def close(self):
+        pass
 
 
 @pytest.mark.parametrize(
@@ -1172,17 +1206,9 @@ async def test_a_dead_reader_is_reported_and_re_armed(
             raise RuntimeError("simulated: evdev lookup blew up")
         await asyncio.Event().wait()
 
-    class _FakeDev:
-        def __init__(self, path):
-            self.info = types.SimpleNamespace(
-                bustype=3, vendor=0x2717, product=0x32B9,
-            )
-            self.name = "WiiM Remote 2"
-
-        def close(self):
-            pass
-
-    _install_fake_evdev(monkeypatch, input_device=_FakeDev, devices=(node,))
+    _install_fake_evdev(
+        monkeypatch, input_device=_FakeInputDevice, devices=(node,),
+    )
     _install_fake_pyudev(monkeypatch)
     monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
     monkeypatch.setattr(bridge_mod, "_read_device", fake_read_device)
@@ -1202,7 +1228,7 @@ async def test_a_dead_reader_is_reported_and_re_armed(
         ),
         backoff_sec=3600.0,
         status_path=status_path,
-        details={"hid": readers.register},
+        detail=("hid", readers.register),
     )
 
     assert still_running
@@ -1213,6 +1239,102 @@ async def test_a_dead_reader_is_reported_and_re_armed(
             "state": state,
             "restarts": restarts,
             "last_error": last_error,
+        },
+    }
+
+
+async def test_an_unplug_drops_the_reader_instead_of_counting_a_restart(
+    monkeypatch, caplog,
+):
+    """A clean unplug is not a failure. The device's reader is cancelled and
+    its entry leaves the map, so the replug that follows opens a fresh reader
+    instead of incrementing `restarts` — which means failures here, exactly as
+    it does in the supervisor's own entry."""
+    node = "/dev/input/event9"
+    device = _profile(keymap={})
+    opened = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_read_device(path, entry, post) -> None:
+        opened.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    observers: List = []
+    _install_fake_evdev(
+        monkeypatch, input_device=_FakeInputDevice, devices=(node,),
+    )
+    _install_fake_pyudev(monkeypatch, observers)
+    monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
+    monkeypatch.setattr(bridge_mod, "_read_device", fake_read_device)
+
+    readers = bridge_mod._ReaderHealth()
+    with caplog.at_level(logging.INFO, logger="jasper.accessories.bridge"):
+        bridge = asyncio.create_task(
+            bridge_mod._run_hid_bridge("http://127.0.0.1:8780", readers),
+        )
+        await asyncio.wait_for(opened.wait(), timeout=5.0)
+        assert readers.devices[node]["state"] == "open"
+
+        await _fire_udev(observers, "remove", node)
+        await asyncio.wait_for(cancelled.wait(), timeout=5.0)
+        await _stop(bridge)
+
+    assert node not in readers.devices
+    removed = [
+        r for r in caplog.records
+        if getattr(r, "jasper_event", None) == "knob.removed"
+    ]
+    assert len(removed) == 1
+
+
+async def test_a_node_that_is_not_openable_yet_is_retried_until_it_settles(
+    monkeypatch,
+):
+    """udev fires "add" before the kernel finishes wiring up
+    /dev/input/event*, so the open is retried on the settle ladder. The
+    reader that finally opens is a first open, not a restart."""
+    node = "/dev/input/event9"
+    device = _profile(keymap={})
+    opened = asyncio.Event()
+    probes: List[str] = []
+
+    class _NotYetWiredUp(_FakeInputDevice):
+        def __init__(self, path):
+            probes.append(path)
+            if len(probes) <= 2:
+                raise OSError("simulated: node not wired up yet")
+            super().__init__(path)
+
+    async def fake_read_device(path, entry, post) -> None:
+        opened.set()
+        await asyncio.Event().wait()
+
+    observers: List = []
+    _install_fake_evdev(monkeypatch, input_device=_NotYetWiredUp)
+    _install_fake_pyudev(monkeypatch, observers)
+    monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
+    monkeypatch.setattr(bridge_mod, "_read_device", fake_read_device)
+    monkeypatch.setattr(bridge_mod, "UDEV_SETTLE_SEC", 0.0)
+
+    readers = bridge_mod._ReaderHealth()
+    bridge = asyncio.create_task(
+        bridge_mod._run_hid_bridge("http://127.0.0.1:8780", readers),
+    )
+    await _fire_udev(observers, "add", node)
+    await asyncio.wait_for(opened.wait(), timeout=5.0)
+    await _stop(bridge)
+
+    assert probes == [node] * 3
+    assert readers.devices == {
+        node: {
+            "profile": device.id,
+            "state": "open",
+            "restarts": 0,
+            "last_error": None,
         },
     }
 

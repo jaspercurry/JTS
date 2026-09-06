@@ -91,6 +91,11 @@ UDEV_SETTLE_SEC = 0.1
 UDEV_SETTLE_ATTEMPTS = 5
 
 
+def _doubled(delay: float, cap: float = float("inf")) -> float:
+    """The next rung of a doubling backoff ladder, held at `cap`."""
+    return min(delay * 2, cap)
+
+
 # Async poster signature: (method, path, body-dict-or-None) -> ControlResponse.
 Poster = Callable[[str, str, Optional[dict]], Awaitable[ControlResponse]]
 
@@ -719,6 +724,14 @@ class _ReaderHealth:
         entry.update(state=state, last_error=error)
         self._publish()
 
+    def removed(self, path: str) -> None:
+        """Publish the unplug once, then drop the entry: a replug must open a
+        fresh reader rather than increment `restarts`, which counts failures
+        (the supervisor's own field means the same), and the map must stay
+        bounded by what is attached."""
+        self.ended(path, "removed")
+        self.devices.pop(path, None)
+
 
 async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
     """Discover known HID accessories at startup, then watch udev for
@@ -763,7 +776,7 @@ async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
             if loop.time() - started >= READER_REARM_MAX_SEC:
                 delay = READER_REARM_SEC
             await asyncio.sleep(delay)
-            delay = min(delay * 2, READER_REARM_MAX_SEC)
+            delay = _doubled(delay, READER_REARM_MAX_SEC)
 
     def _maybe_start(path: str) -> bool:
         """False only when the node could not be opened at all — a settle
@@ -798,7 +811,7 @@ async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
             await asyncio.sleep(delay)
             if _maybe_start(path):
                 return
-            delay *= 2
+            delay = _doubled(delay)
         log_event(
             logger,
             "knob.open.failed",
@@ -838,12 +851,16 @@ async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
                 task = active.pop(node, None)
                 if task is not None:
                     task.cancel()
-                    readers.ended(node, "removed")
+                    readers.removed(node)
                     log_event(logger, "knob.removed", path=node)
     finally:
         observer.stop()
         for task in active.values():
             task.cancel()
+        # Awaited, not just cancelled (supervisor.py holds the same contract):
+        # a reader's own finally closes the evdev fd and releases whatever
+        # button is held, and neither has run yet at cancel().
+        await asyncio.gather(*active.values(), return_exceptions=True)
 
 
 async def _run_wiim_remote_mic() -> None:
@@ -905,7 +922,7 @@ async def _run_bridges(control_url: str, status_path: str = STATUS_PATH) -> None
     log_event(logger, "accessory.bridges_started", bridges=",".join(bridges))
     try:
         await supervise(
-            bridges, status_path=status_path, details={"hid": readers.register},
+            bridges, status_path=status_path, detail=("hid", readers.register),
         )
     except asyncio.CancelledError:
         log_event(logger, "accessory.bridges_stopped")

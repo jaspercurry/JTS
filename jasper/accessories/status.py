@@ -23,8 +23,9 @@ def snapshot(status_path: str | os.PathLike = STATUS_PATH) -> dict[str, Any]:
     """``bridges`` maps each bridge to ``restarts`` (failures since the process
     started) and ``last_error`` (the exception class name, set only while the
     bridge waits out its backoff). A bridge that supervises sub-tasks adds its
-    own key — the HID bridge's ``readers`` carries one entry per device node,
-    because that bridge stays healthy while every reader under it is dead.
+    own key — the HID bridge's ``readers`` carries one entry per attached
+    device node (an unplug drops it), because that bridge stays healthy while
+    every reader under it is dead.
     Never raises: a missing or unreadable file reads as ``published: False``."""
     try:
         with open(status_path, encoding="utf-8") as f:
