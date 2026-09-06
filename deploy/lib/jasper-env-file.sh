@@ -46,11 +46,17 @@ jasper_env_quote_value() {
     esac
 }
 
-# _jasper_env_lock_acquire DIR FILE FDVAR
-# Hold FILE's advisory lock in the descriptor FDVAR names (a nameref; the
-# caller closes it). Path and create-time mode/group are jasper/atomic_io.py's
-# _env_lock_path / advisory_file_lock, whose group bit matters only where DIR
-# carries group jasper (/var/lib/jasper).
+# _jasper_env_lock_acquire DIR FILE
+# Hold FILE's advisory lock on descriptor 9 (the caller closes it). Path and
+# create-time mode/group are jasper/atomic_io.py's _env_lock_path /
+# advisory_file_lock, whose group bit matters only where DIR carries group
+# jasper (/var/lib/jasper).
+#
+# The descriptor number is FIXED, never bash's `{var}>` / `local -n` (4.1 /
+# 4.3): macOS ships bash 3.2 as /bin/bash, which parses `exec {var}>FILE` as
+# an exec of a command literally named `{var}`, and a non-interactive shell
+# dies 127 there with the write unmade. No other bash in deploy/ or scripts/
+# uses fd 9.
 #
 # NOTHING acts on the lock by name: a jasper-group process can swap a symlink
 # into that 0770 directory between two lookups, and a by-name `touch`/`chmod`
@@ -66,39 +72,40 @@ jasper_env_quote_value() {
 # 1, so that open gets EBUSY. A pre-planted FIFO is refused without opening;
 # one raced in blocks either open, which bash cannot make non-blocking.
 _jasper_env_lock_acquire() {
-    local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0
-    local -n fd_ref="$3"
+    local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0 open=0
     if [[ ! -e "$lock" && ! -L "$lock" ]]; then
         set -C
-        if { exec {fd_ref}>"$lock"; } 2>/dev/null; then
-            if [[ -f "/dev/fd/${fd_ref}" ]]; then
-                chmod 0660 "/dev/fd/${fd_ref}" 2>/dev/null || true
-                chgrp --reference="$dir" "/dev/fd/${fd_ref}" 2>/dev/null || true
+        if { exec 9>"$lock"; } 2>/dev/null; then
+            open=1
+            if [[ -f /dev/fd/9 ]]; then
+                chmod 0660 /dev/fd/9 2>/dev/null || true
+                chgrp --reference="$dir" /dev/fd/9 2>/dev/null || true
             else
-                exec {fd_ref}>&-
-                fd_ref=''
+                exec 9>&-
+                open=0
             fi
         fi
         set +C
     fi
-    if [[ -z "${fd_ref:-}" && ! -L "$lock" && -f "$lock" ]]; then
-        { exec {fd_ref}<"$lock"; } 2>/dev/null || rc=$?
+    if (( open == 0 )) && [[ ! -L "$lock" && -f "$lock" ]]; then
+        { exec 9<"$lock"; } 2>/dev/null || rc=$?
         if (( rc != 0 )); then
             echo "event=env_file.lock_failed file=${lock} reason=open rc=${rc}" >&2
             return 1
         fi
+        open=1
     fi
-    if [[ -z "${fd_ref:-}" ]] || [[ ! -f "/dev/fd/${fd_ref}" ]]; then
+    if (( open == 0 )) || [[ ! -f /dev/fd/9 ]]; then
         echo "event=env_file.lock_failed file=${lock} reason=not_regular rc=1" >&2
-        if [[ -n "${fd_ref:-}" ]]; then
-            exec {fd_ref}>&-
+        if (( open == 1 )); then
+            exec 9>&-
         fi
         return 1
     fi
-    flock -w 10 "$fd_ref" || rc=$?
+    flock -w 10 9 || rc=$?
     if (( rc != 0 )); then
         echo "event=env_file.lock_failed file=${lock} reason=flock rc=${rc} wait_s=10" >&2
-        exec {fd_ref}>&-
+        exec 9>&-
         return 1
     fi
 }
@@ -111,14 +118,14 @@ _jasper_env_lock_acquire() {
 jasper_env_file_set() {
     local file="$1" key="$2" value="$3"
     local file_mode="${4:-0600}" dir_mode="${5:-0750}"
-    local dir tmp quoted rc=0 lock_fd=''
+    local dir tmp quoted rc=0
 
     dir="$(dirname "$file")"
     # Only CREATE an absent dir; never re-mode an existing one: the installer
     # owns each env dir's mode/group and a blanket `install -d -m` on every
     # boot/udev reconcile re-strips them (#827).
     [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
-    _jasper_env_lock_acquire "$dir" "$file" lock_fd || return 1
+    _jasper_env_lock_acquire "$dir" "$file" || return 1
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(jasper_env_quote_value "$value")"
 
@@ -152,7 +159,7 @@ jasper_env_file_set() {
     fi
     chmod "$file_mode" "$tmp"
     mv "$tmp" "$file" || rc=1
-    exec {lock_fd}>&-
+    exec 9>&-
     return "$rc"
 }
 
@@ -181,13 +188,13 @@ jasper_env_file_repair_permissions() {
 jasper_env_file_unset() {
     local file="$1" key="$2"
     local file_mode="${3:-0600}"
-    local dir tmp rc=0 lock_fd=''
+    local dir tmp rc=0
 
     [[ -f "$file" ]] || return 0
     dir="$(dirname "$file")"
-    _jasper_env_lock_acquire "$dir" "$file" lock_fd || return 1
+    _jasper_env_lock_acquire "$dir" "$file" || return 1
     if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
-        exec {lock_fd}>&-
+        exec 9>&-
         return 0
     fi
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
@@ -198,6 +205,6 @@ jasper_env_file_unset() {
     chown --reference="$file" "$tmp" 2>/dev/null || true
     chmod "$file_mode" "$tmp"
     mv "$tmp" "$file" || rc=1
-    exec {lock_fd}>&-
+    exec 9>&-
     return "$rc"
 }
