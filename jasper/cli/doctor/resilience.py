@@ -14,6 +14,7 @@ from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
 from ...service_units import unit_unstable
 from ...voice.input_presence import voice_parked_no_mic
+from ...voice.provider_state import read_active_provider_state
 from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -39,6 +40,7 @@ REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
 REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
 REASON_VOICE_UNIT_INACTIVE = "voice_unit_inactive"
 REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE = "voice_unit_inactive_paired_remote"
+REASON_VOICE_UNIT_NO_PROVIDER = "voice_unit_no_provider_configured"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
@@ -131,6 +133,11 @@ _REQUIRED_ACTIVE_UNITS: tuple[str, ...] = (
     # A `.path` unit reads `active` while it WAITS, so a stopped one is
     # `inactive`, never `failed`.
     "jasper-accessory-reconcile.path",
+    # `web.check_wizard_socket_start_limits` reads an `inactive` wizard
+    # socket as "not on this profile" and owns only their `failed` state,
+    # so a stopped listener is this row's. NOT jasper-system-web.socket:
+    # `web.check_management_surface` already probes through it.
+    "jasper-web.socket",
 )
 
 
@@ -197,10 +204,12 @@ def check_voice_unit_running() -> CheckResult:
     the remote's talk button gets no answer, but the reconciler that owns
     that lifecycle may still be mid-pass.
 
-    Two other states are not a fault either: the unit's
+    Three other states are not a fault on either tier: the unit's
     ``ConditionPathExists=!/var/lib/jasper/voice-input-absent`` parks it
     ``inactive`` on a box the AEC reconciler found to have neither a local
-    nor an accessory mic, and a unit systemd cannot load was not observed.
+    nor an accessory mic, a box the ``/voice`` wizard has not given a
+    provider parks it on ``EX_CONFIG`` under ``RestartPreventExitStatus``,
+    and a unit systemd cannot load was not observed.
     """
     label = "voice daemon running"
     streambox = install_profile_is_streambox()
@@ -233,6 +242,15 @@ def check_voice_unit_running() -> CheckResult:
             "reconciler found neither a local nor an accessory mic",
             reason=REASON_VOICE_UNIT_PARKED_NO_INPUT,
         )
+    # Only a file that says nothing: an unreadable or invalid one is a
+    # bad read, not a box that has yet to choose, so it falls through.
+    if read_active_provider_state().status in ("unset", "missing"):
+        return CheckResult(
+            label, "skipped",
+            f"{_VOICE_UNIT} parked with no voice provider chosen yet — "
+            "visit /voice to pick one",
+            reason=REASON_VOICE_UNIT_NO_PROVIDER,
+        )
     if streambox:
         return CheckResult(
             label, "warn",
@@ -246,9 +264,8 @@ def check_voice_unit_running() -> CheckResult:
         label, "fail",
         f"{_VOICE_UNIT} is inactive (not failed) on the full profile, so no "
         "wake word gets an answer. `systemctl status jasper-voice` names "
-        "which of the parking exits it took (78 = no provider configured, "
-        "66 = mic could not be opened); otherwise `systemctl start "
-        "jasper-voice`.",
+        "which of the parking exits it took (66 = mic could not be opened); "
+        "otherwise `systemctl start jasper-voice`.",
         reason=REASON_VOICE_UNIT_INACTIVE,
     )
 
