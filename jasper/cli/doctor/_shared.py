@@ -270,6 +270,7 @@ def _service_state_failure(
     missing: str,
     not_enabled: str,
     inactive: str,
+    speaker_silent: bool = False,
 ) -> CheckResult | None:
     """The systemd verdict for a MANDATORY unit: the actionable failure, or
     ``None`` when it is installed, enabled and active.
@@ -279,7 +280,8 @@ def _service_state_failure(
     section, so anything other than ``enabled``/``enabled-runtime`` (including
     ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
     come up on its own. `journalctl -u <unit>` is the next step for every
-    caller, so the detail says so rather than repeating a per-unit sentence."""
+    caller, so the detail says so rather than repeating a per-unit sentence.
+    ``speaker_silent`` rides the fail arms only: `skipped` observed nothing."""
     from ._evidence import evidence
 
     state = evidence.unit_state(unit)
@@ -293,7 +295,7 @@ def _service_state_failure(
         return CheckResult(
             label, "fail",
             f"{unit} is not installed. Re-run install.sh.",
-            reason=missing,
+            reason=missing, speaker_silent=speaker_silent,
         )
     enabled = state.get("unit_file_state")
     if enabled not in ("enabled", "enabled-runtime"):
@@ -301,7 +303,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
             f"sudo systemctl enable --now {unit}",
-            reason=not_enabled,
+            reason=not_enabled, speaker_silent=speaker_silent,
         )
     active = state.get("active_state")
     if active != "active":
@@ -309,7 +311,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is enabled but state={active or 'unknown'}. "
             f"Check: journalctl -u {unit}",
-            reason=inactive,
+            reason=inactive, speaker_silent=speaker_silent,
         )
     return None
 
@@ -329,13 +331,11 @@ def _parked_follower_result(label: str) -> CheckResult | None:
     )
 
 
-# NO jasper-outputd.service: resilience.check_outputd_failure_reconcile_park
-# owns its runtime state, park record and all, so one failed outputd is one
-# fail row rather than two saying different things about the same unit.
+# NO audio-path unit: `_service_state_failure` (jasper-fanin, jasper-camilla)
+# and resilience.check_outputd_failure_reconcile_park (jasper-outputd, park
+# record and all) own their runtime state, so one down unit is one fail row.
 _RUNTIME_STATE_UNITS = (
     "nginx.service",
-    "jasper-fanin.service",
-    "jasper-camilla.service",
     "jasper-voice.service",
     "jasper-aec-bridge.service",
     "jasper-control.service",

@@ -24,6 +24,7 @@ from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
+from .test_doctor_audio_runtime_fanin import _patch_unreachable_status
 
 def _patch_ring_coupled_box(
     monkeypatch,
@@ -87,6 +88,18 @@ def test_outputd_service_fails_when_disabled(monkeypatch):
     r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_UNIT_NOT_ENABLED
+    assert r.speaker_silent is True
+
+
+def test_outputd_service_fails_when_status_socket_unreachable(monkeypatch):
+    """An active unit whose STATUS cannot be reached at all: outputd owns the
+    DAC write loop, so a daemon that answers nothing writes nothing."""
+    _seed_units()
+    _patch_unreachable_status(monkeypatch)
+    r = audio_runtime_outputd.check_outputd_service()
+    assert r.status == "fail"
+    assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_STATUS_UNREACHABLE
+    assert r.speaker_silent is True
 
 
 def test_outputd_service_ok_with_expected_status(monkeypatch):
@@ -547,6 +560,7 @@ def test_outputd_service_fails_on_fake_backend(monkeypatch):
     r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_BACKEND_NOT_ALSA
+    assert r.speaker_silent is True
 
 
 def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):

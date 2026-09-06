@@ -330,6 +330,11 @@ class VolumeCoordinator:
         # emergency user mute. It prevents the observed writer from replacing
         # a ramp value with persisted listening_level mid-measurement.
         self._measurement_active: bool = False
+        # Edge state for the three faults this reconciler re-evaluates every
+        # tick; each is reported once per episode, never at 1 Hz.
+        self._deep_quiet_skipped: bool = False
+        self._write_failures: int = 0
+        self._graph_probe_failures: int = 0
         # Serializes the final reconciler write with MEASURE_PAUSE acquisition.
         # Pause does not acknowledge until an already-started write has landed;
         # after the flag flips, no new reconcile write may enter this lock.
@@ -1756,45 +1761,37 @@ class VolumeCoordinator:
         return 0.0
 
     async def maybe_reconcile_camilla(self) -> None:
-        """Self-healing convergence: if `main_volume_db` has drifted
-        from `percent_to_db(listening_level)` while no session is
-        active, write the expected value back to camilla.
+        """Self-healing convergence: write `percent_to_db(listening_level)`
+        back to camilla when `main_volume_db` has drifted from it.
 
-        Pure resilience backstop. The coordinator's normal write paths
-        keep the two in sync; this only catches edge cases where some
-        other writer or transient (camilla restart blip, room
-        correction reverting, future code paths) leaves them
-        divergent. Called from `VolumeObserver._tick` at 1 Hz.
+        Pure resilience backstop: the normal write paths keep the two in
+        sync, and this catches the divergence some other writer or transient
+        left behind. Called from `VolumeObserver._tick` at 1 Hz.
 
         Gates (all must pass for a write to land):
 
-        1. No voice session or correction measurement is active. The Ducker
-           owns camilla during a voice session; the ramp owns it during a
-           measurement. Reconciling would clobber either transient owner.
-        2. Active source is camilla-as-master (idle / AirPlay /
-           USBSINK). For push-mode sources (Spotify / Bluetooth)
-           camilla is pinned at 0 dB by design and listening_level
-           lives on the source's own slider; reconciling there would
-           fight `apply_active_source_transition`.
-        3. `|main_volume_db − expected| > RECONCILE_DRIFT_DB` — dead
-           band around camilla's normal jitter so we don't write on
-           every tick.
-        4. No DSP writer holds the graph-mutation lock. The graph-swap
-           bracket takes no `VolumeOwner` claim and runs in whichever process
-           is applying, so the lock is what it publishes and this is the tick
-           asking it (ADR-0213). The gate precedes the drift directions
-           below, so it also defers a mute correction: an unmute mid-swap is
-           the loud write the bracket exists to prevent.
-        5. Deep QUIET drift is skipped (`expected - current >=
-           RECONCILE_DUCK_SKIP_DB`) — see the constant for its one remaining
-           client and its removal condition. Deep LOUD drift is always
-           corrected; a writer that left camilla far above the canonical
-           level is unsafe, not a duck.
+        1. No voice session or correction measurement is active — the Ducker
+           and the ramp own camilla there, and a write would clobber them.
+        2. Active source is camilla-as-master (idle / AirPlay / USBSINK).
+           On push-mode sources camilla is pinned at 0 dB by design and
+           listening_level lives on the source's own slider.
+        3. `|main_volume_db − expected| > RECONCILE_DRIFT_DB` — a dead band
+           around camilla's normal jitter.
+        4. No DSP writer holds the graph-mutation lock, and that gate
+           precedes the drift directions below so it also defers a mute
+           correction: an unmute mid-swap is the loud write the graph-swap
+           bracket exists to prevent (`_graph_mutation_in_progress`).
+        5. Deep QUIET drift is skipped, deep LOUD always corrected — a
+           writer that left camilla far above the canonical level is unsafe,
+           not a duck (`_deep_quiet_skip`).
 
-        Emits `event=volume.reconciled` on every write so drift
-        is visible in journalctl. Failures are logged at WARN and
-        non-fatal — the observer keeps ticking.
+        A write failure is non-fatal: WARN on the episode's first, then the
+        observer keeps ticking (`volume.reconcile_write_failed`).
         """
+        # A deep-quiet episode spans consecutive evaluations of the drift, so
+        # a tick that returns before reaching one ends it and the next unowned
+        # duck opens a new episode.
+        reported, self._deep_quiet_skipped = self._deep_quiet_skipped, False
         if self._voice_session_active or self._measurement_active:
             return
         try:
@@ -1828,16 +1825,13 @@ class VolumeCoordinator:
             return
         if self._graph_mutation_in_progress():
             return
-        if drift >= RECONCILE_DUCK_SKIP_DB and not mute_drift:
-            # Some deep attenuation we don't own. Leave it. The loud
-            # direction intentionally does not skip.
+        if self._deep_quiet_skip(drift, mute_drift, reported):
             return
         # The preflight above avoids taking the cross-daemon lease on every
-        # healthy 1 Hz tick. A candidate write must then join the same ordered
-        # writer set as user commands, source observations, and mux handoffs.
-        # Re-read every routing/intent/physical fact inside both leases: a
-        # control-daemon command may have completed while the preflight Camilla
-        # read was in flight.
+        # healthy 1 Hz tick; a candidate write then joins the same ordered
+        # writer set as user commands and mux handoffs, re-reading every
+        # routing/intent/physical fact inside both leases in case a
+        # control-daemon command landed while the preflight read was in flight.
         async with self._mutation():
             async with self._reconcile_write_lock:
                 if self._voice_session_active or self._measurement_active:
@@ -1870,8 +1864,30 @@ class VolumeCoordinator:
                     return
                 if self._graph_mutation_in_progress():
                     return
-                if drift >= RECONCILE_DUCK_SKIP_DB and not mute_drift:
+                if self._deep_quiet_skip(drift, mute_drift, reported):
                     return
+                try:
+                    ok = await self._write_camilla_db_with_mute(
+                        expected_db,
+                        context="reconcile",
+                    )
+                    failure: str | None = None if ok else "rejected"
+                except Exception as e:  # noqa: BLE001
+                    failure = f"{type(e).__name__}: {e}"
+                if failure is not None:
+                    # A camilla that refuses writes refuses them at 1 Hz, so
+                    # the retry itself is not news; the episode's open and
+                    # close are.
+                    self._write_failures += 1
+                    if self._write_failures == 1:
+                        log_event(logger, "volume.reconcile_write_failed",
+                                  level=logging.WARNING, error=failure)
+                    return
+                self._persistence.save_now(expected_db)
+                if self._write_failures:
+                    log_event(logger, "volume.reconcile_write_recovered",
+                              consecutive_failures=self._write_failures)
+                    self._write_failures = 0
                 log_event(
                     logger,
                     "volume.reconciled",
@@ -1890,15 +1906,6 @@ class VolumeCoordinator:
                         "expected_mute": str(expected_mute).lower(),
                     },
                 )
-                try:
-                    ok = await self._write_camilla_db_with_mute(
-                        expected_db,
-                        context="reconcile",
-                    )
-                    if ok:
-                        self._persistence.save_now(expected_db)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("reconcile write failed (will retry): %s", e)
 
     def _graph_mutation_in_progress(self) -> bool:
         """Stand this tick down while a DSP writer owns CamillaDSP's graph.
@@ -1906,8 +1913,7 @@ class VolumeCoordinator:
         The graph-swap bracket takes no `VolumeOwner` claim for the fader it
         ducks, and runs in whichever process is applying — so the answer has
         to cross processes, and the writer lock is the fact that already does
-        (ADR-0213). Asked only once drift is real, so a healthy 1 Hz tick
-        pays nothing; synchronous by contract, like the owner's own readers.
+        (ADR-0213). Synchronous by contract, like the owner's own readers.
 
         Fails open — no probe, an unreadable lock, a raising controller —
         because the loud-direction correction is a safety backstop and must
@@ -1916,14 +1922,35 @@ class VolumeCoordinator:
         try:
             held = self._camilla.graph_mutation_in_progress()
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "graph_mutation_in_progress raised %s; treating as unknown", e,
-            )
+            self._graph_probe_failures += 1
+            if self._graph_probe_failures == 1:
+                log_event(logger, "volume.graph_probe_failed",
+                          level=logging.WARNING,
+                          error=f"{type(e).__name__}: {e}")
             return False
+        if self._graph_probe_failures:
+            log_event(logger, "volume.graph_probe_recovered",
+                      consecutive_failures=self._graph_probe_failures)
+            self._graph_probe_failures = 0
         if held is not True:
             return False
         log_event(logger, "volume.reconcile_deferred", reason="dsp_writer_lock")
         return True
+
+    def _deep_quiet_skip(
+        self, drift_db: float, mute_drift: bool, reported: bool,
+    ) -> bool:
+        """True when camilla sits far below its slider under a duck we do not
+        own. Edge-reported, not per tick: the stranded audition that motivates
+        the threshold holds as long as its owner lives. Delete with
+        `RECONCILE_DUCK_SKIP_DB` (#3038).
+        """
+        skipping = drift_db >= RECONCILE_DUCK_SKIP_DB and not mute_drift
+        if skipping and not reported:
+            log_event(logger, "volume.reconcile_skipped",
+                      reason="deep_quiet_unowned", drift_db=f"{drift_db:+.2f}")
+        self._deep_quiet_skipped = skipping
+        return skipping
 
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare

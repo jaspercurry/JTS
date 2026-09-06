@@ -10,14 +10,10 @@ change immediately. We poll those daemons at 1 Hz so the coordinator's
 canonical `listening_level` reflects user-side movements without
 requiring the user to also tell Jarvis.
 
-AirPlay is intentionally different: it is not polled into the canonical
-level at all. shairport-sync pushes every sender-side volume change to
-`deploy/bin/jasper-airplay-volume` the moment it arrives, and that hook
-posts it to jasper-control (ADR-0206) — an event-driven path this 1 Hz
-loop cannot improve on. The AirPlay reading below is therefore read and
-logged for diagnostics only, never dispatched. Receiver→sender reflection
-stays impossible on AirPlay 2 (ADR-0176), so JTS keeps AirPlay speaker
-volume on CamillaDSP.
+AirPlay is intentionally different: its reading is diagnostics-only, never
+dispatched (see `_read_airplay_db`), and receiver→sender reflection stays
+impossible on AirPlay 2 (ADR-0176), so JTS keeps AirPlay speaker volume on
+CamillaDSP.
 
 Why polling (not DBus PropertiesChanged subscriptions). The codebase
 already uses `busctl` subprocess for DBus one-shot calls (renderer.py,
@@ -36,12 +32,8 @@ daemon observes the host-side gadget mixer directly and posts
 `source="usbsink"` changes to jasper-control, so this observer never
 polls it.
 
-Echo prevention. The coordinator tracks the timestamp of every
-outbound write per source. When an observer reports a value it just
-wrote (within ECHO_WINDOW_SEC), the coordinator ignores it as its
-own echo. So pushing 50% to Spotify → polling sees 50% on next tick →
-ignored; pushing 50% then user touches slider to 30% → polling sees
-30% outside the window → propagated.
+Echo prevention belongs to the coordinator: an observation matching a
+value it wrote within ECHO_WINDOW_SEC is ignored as its own echo.
 
 """
 from __future__ import annotations
@@ -55,6 +47,7 @@ from typing import Optional
 from . import librespot_state
 from .bluealsa_probe import active_transport_path
 from .busctl import run_busctl
+from .log_event import log_event
 from .volume_coordinator import (
     AIRPLAY_DB_MAX,
     AIRPLAY_DB_MIN,
@@ -134,13 +127,25 @@ class VolumeObserver:
         self._task = None
 
     async def _run(self) -> None:
+        # Reported on its edges only: at 1 Hz a per-tick line is 3,600 an
+        # hour, and a held fault says nothing the first one did not.
+        consecutive_failures = 0
         while True:
             try:
                 await self._tick()
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.warning("volume observer tick failed: %s", e)
+                if not consecutive_failures:
+                    log_event(logger, "volume.observer_tick_failed",
+                              level=logging.WARNING,
+                              error=f"{type(e).__name__}: {e}")
+                consecutive_failures += 1
+            else:
+                if consecutive_failures:
+                    log_event(logger, "volume.observer_tick_recovered",
+                              consecutive_failures=consecutive_failures)
+                    consecutive_failures = 0
             try:
                 await asyncio.sleep(self.POLL_INTERVAL_SEC)
             except asyncio.CancelledError:
@@ -176,10 +181,7 @@ class VolumeObserver:
             if airplay_db is not None:
                 self._last_seen[Source.AIRPLAY] = airplay_db
                 logger.debug(
-                    "airplay sender volume observed at %.1f dB "
-                    "(diagnostics only; the canonical path is shairport's "
-                    "volume hook — ADR-0206)",
-                    airplay_db,
+                    "airplay sender volume observed at %.1f dB", airplay_db,
                 )
         elif current_active == Source.SPOTIFY:
             spotify_pct = await self._read_spotify_percent()
@@ -190,12 +192,8 @@ class VolumeObserver:
             if bt_vol is not None:
                 await self._maybe_observe(Source.BLUETOOTH, float(bt_vol))
 
-        # Self-healing convergence backstop. Idempotent and gated
-        # internally — no-op unless `main_volume_db` has drifted
-        # from `percent_to_db(listening_level)` in a band that
-        # indicates a stale-state bug rather than a duck-in-progress.
-        # See `VolumeCoordinator.maybe_reconcile_camilla` for the
-        # full gate logic.
+        # Self-healing convergence backstop; internally gated and idempotent.
+        # See `VolumeCoordinator.maybe_reconcile_camilla` for the gates.
         try:
             await self._coord.maybe_reconcile_camilla()
         except Exception as e:  # noqa: BLE001
