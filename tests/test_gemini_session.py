@@ -14,6 +14,7 @@ import asyncio
 
 import pytest
 
+from jasper.voice._base import BaseLiveConnection
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import Response as _GoAwayResp
@@ -33,6 +34,16 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     not _HAVE_GENAI, reason="google-genai not installed in this environment"
 )
+
+
+def test_secret_literals_reports_the_api_key():
+    """A rejection body echoing the key in a shape `redact_secrets`'s
+    prefix patterns don't know still redacts, because the connection
+    hands its own key back as a literal (ADR-0243). The base class
+    returns none — it holds no secret of its own."""
+    conn = GeminiLiveConnection(api_key="plainvalue123", model="fake")
+    assert conn._secret_literals() == ("plainvalue123",)
+    assert BaseLiveConnection._secret_literals(conn) == ()
 
 
 async def _run_turn(conn: "GeminiLiveConnection", cum_in: int, cum_out: int):
@@ -181,19 +192,19 @@ async def test_gemini_usage_is_per_turn_delta_not_cumulative():
     conn = GeminiLiveConnection(api_key="fake", model="fake")
 
     t1 = await _run_turn(conn, 1000, 500)
-    assert t1.usage_tokens() == {"input_tokens": 1000, "output_tokens": 500}
+    assert (t1.usage().input_tokens, t1.usage().output_tokens) == (1000, 500)
 
     # Cumulative grows; this turn's delta is the increment only.
     t2 = await _run_turn(conn, 2500, 1300)
-    assert t2.usage_tokens() == {"input_tokens": 1500, "output_tokens": 800}
+    assert (t2.usage().input_tokens, t2.usage().output_tokens) == (1500, 800)
 
     t3 = await _run_turn(conn, 3000, 1500)
-    assert t3.usage_tokens() == {"input_tokens": 500, "output_tokens": 200}
+    assert (t3.usage().input_tokens, t3.usage().output_tokens) == (500, 200)
 
     # The property that makes SUM(cost) across per-turn rows correct:
     # the deltas telescope to the final cumulative, NOT 1000+2500+3000.
-    total_in = sum(t.usage_tokens()["input_tokens"] for t in (t1, t2, t3))
-    total_out = sum(t.usage_tokens()["output_tokens"] for t in (t1, t2, t3))
+    total_in = sum(t.usage().input_tokens for t in (t1, t2, t3))
+    total_out = sum(t.usage().output_tokens for t in (t1, t2, t3))
     assert (total_in, total_out) == (3000, 1500)
 
 
@@ -205,7 +216,7 @@ async def test_gemini_usage_delta_handles_counter_reset_on_reconnect():
     conn = GeminiLiveConnection(api_key="fake", model="fake")
     conn._cumulative_usage = {"input_tokens": 5000, "output_tokens": 3000}
     t = await _run_turn(conn, 200, 100)
-    assert t.usage_tokens() == {"input_tokens": 200, "output_tokens": 100}
+    assert (t.usage().input_tokens, t.usage().output_tokens) == (200, 100)
 
 
 async def test_gemini_turn_without_usage_metadata_reports_zero():
@@ -221,7 +232,7 @@ async def test_gemini_turn_without_usage_metadata_reports_zero():
     await turn._on_response(_Resp(
         data=b"audio", server_content=_SC(turn_complete=True),
     ))
-    assert turn.usage_tokens() == {"input_tokens": 0, "output_tokens": 0}
+    assert (turn.usage().input_tokens, turn.usage().output_tokens) == (0, 0)
 
 
 async def test_acquire_turn_rolls_back_active_turn_when_activity_start_fails():

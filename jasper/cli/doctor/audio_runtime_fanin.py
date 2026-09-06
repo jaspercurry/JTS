@@ -378,7 +378,7 @@ def check_fanin_service() -> CheckResult:
         "jasper-fanin.service",
         missing=REASON_FANIN_UNIT_MISSING,
         not_enabled=REASON_FANIN_UNIT_NOT_ENABLED,
-        inactive=REASON_FANIN_INACTIVE, speaker_silent=True,
+        inactive=REASON_FANIN_INACTIVE,
     )
     if service_failure is not None:
         return service_failure

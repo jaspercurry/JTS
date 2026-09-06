@@ -57,8 +57,129 @@ class AudioOutChunk:
     kind: str = "assistant"
 
 
+@dataclass(frozen=True)
+class TurnUsage:
+    """One turn's token usage, normalised to a PER-TURN count.
+
+    Adapters normalise even when the provider reports differently, so
+    callers may SUM across turns without multi-counting: OpenAI Realtime
+    sends per-response deltas (summed within the turn); Gemini Live sends
+    a counter cumulative for the WebSocket's lifetime, so its adapter
+    subtracts the baseline captured at turn start.
+
+    `breakdown` is the provider's modality split in the rich form
+    `usage.UsageStore.close_session` accepts, so the spend cap can price
+    audio / text / cached input separately. None where the provider
+    exposes no split (Gemini Live) — the cap then prices the two scalars
+    as all-audio.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    breakdown: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class TurnCapture:
+    """What a finished turn offers conversation history.
+
+    Providers differ in what they can offer, not in how it is written:
+    OpenAI/Grok carry both transcripts, Gemini carries none and offers
+    bounded `data` metadata instead. Adapters normalise blank text to
+    None, so a None field was not captured rather than captured empty.
+    See docs/conversation-history-plan.md.
+    """
+
+    user_text: str | None = None
+    assistant_text: str | None = None
+    data: dict[str, object] | None = None
+
+
 @runtime_checkable
-class LiveTurn(Protocol):
+class Interruptible(Protocol):
+    """A turn JTS can cut off mid-sentence and reconcile afterwards.
+
+    Capability-based, never provider-name-based: each catalog provider
+    declares a `catalog.InterruptReconcile` kind and implements this
+    Protocol to match, so a `server_self_truncates` provider (Gemini)
+    ships honest no-ops rather than being special-cased at the call site.
+    See ADR-0115.
+    """
+
+    def request_local_interrupt(self) -> None:
+        """Locally signal a user barge-in WITHOUT telling the provider.
+
+        Sets the same interrupt event :meth:`LiveTurn.wait_for_interrupt`
+        resolves on, so the playback path flushes local TTS immediately.
+        This is the provider-agnostic *detection + flush* spine: it
+        deliberately does NOT truncate or cancel the provider's in-flight
+        response — ``cancel_response`` / ``truncate_assistant_audio`` own
+        that."""
+        ...
+
+    def drop_pending_audio(self) -> int:
+        """Drop assistant audio buffered for playback but not yet written,
+        returning the number of chunks dropped.
+
+        A local flush clears the DAC ring (~one write), but burst-delivery
+        providers (OpenAI/Grok) enqueue the whole response's audio up
+        front, so without dropping it the playback loop resumes writing the
+        backlog and the assistant audibly talks over the user.
+        Implementations drain their playout queue while PRESERVING any
+        terminal end-of-audio sentinel, so the consumer still ends the
+        turn. Idempotent; must never raise."""
+        ...
+
+    def audio_chunks_pending(self) -> int:
+        """How many audio chunks the playout queue still holds — the depth
+        ``drop_pending_audio`` would drain.
+
+        The idle watchdog reads this to defer its tail-timer firing while
+        there's still work to play: without it, a single tts.write that
+        blocks longer than the tail timeout looks indistinguishable from
+        "audio finished" and the turn ends mid-playback."""
+        ...
+
+    async def cancel_response(self, reason: str) -> None:
+        """Explicitly tell the provider to stop generating the in-progress
+        response for this turn — the *local/manual* cancel path.
+
+        Called when JTS itself decides to stop the model: a barge-in the
+        provider's own VAD did not initiate, a push-to-talk release, an
+        operator/manual interrupt. It maps to the provider's "stop now"
+        control where one exists (OpenAI/Grok ``response.cancel``).
+
+        This is the inverse direction of ``LiveTurn.wait_for_interrupt()``
+        / ``LiveTurn.clear_interrupted()``: those observe a
+        provider-*reported* interruption; ``cancel_response`` is JTS
+        telling the provider to stop, not the provider telling JTS it
+        stopped. Local TTS flush is a separate daemon-layer step that does
+        not depend on this call — cancelling provider generation never
+        makes the already-queued DAC audio stop on its own.
+
+        ``reason`` is for the structured-log line only. Must be idempotent
+        and must never raise on an already-complete or absent response.
+        Providers with no client cancel mechanism (Gemini) implement this
+        as a no-op."""
+        ...
+
+    async def truncate_assistant_audio(
+        self, provider_item_id: str | None, audio_played_ms: int,
+    ) -> None:
+        """Align the provider's conversation history to what the listener
+        actually heard, after a barge-in cut local playback short. See
+        ADR-0115.
+
+        ``provider_item_id`` MUST be tolerated as ``None`` — the normal
+        value on every call for a ``server_self_truncates`` provider
+        (Gemini), and possible transiently for a ``needs_client_truncate``
+        provider (OpenAI/Grok) before the turn's first audio item. Must be
+        idempotent and must never raise."""
+        ...
+
+
+@runtime_checkable
+class LiveTurn(Interruptible, Protocol):
     """A single conversational turn within a long-lived voice connection.
 
     The daemon acquires a turn from a `LiveConnection` on wake, streams
@@ -128,36 +249,13 @@ class LiveTurn(Protocol):
         this turn."""
         ...
 
-    def usage_tokens(self) -> dict[str, int]:
-        """This turn's token usage (``input_tokens`` / ``output_tokens``).
-
-        Adapters normalise to a PER-TURN count even when the provider
-        reports differently, so callers may SUM across turns without
-        multi-counting: OpenAI Realtime sends per-response deltas (summed
-        within the turn); Gemini Live sends a counter cumulative for the
-        WebSocket's lifetime, so its adapter subtracts the baseline
-        captured at turn start."""
+    def usage(self) -> TurnUsage:
+        """This turn's token usage. See `TurnUsage`."""
         ...
 
-    def usage_breakdown(self) -> "dict | None":
-        """Provider-specific token-detail breakdown if available, else
-        None. The OpenAI Realtime adapter populates this from each
-        ``response.done`` event's ``response.usage`` object so the
-        spend cap can split by modality (audio / text / cached input
-        priced at $32 / $4 / $0.40 per million tokens respectively).
-        Gemini Live doesn't surface a modality breakdown and returns
-        None — the spend cap then falls back to the scalar all-audio
-        estimate, which matches the historical behaviour.
-
-        Shape when populated:
-          ``{"input_tokens": int, "output_tokens": int,``
-          `` "input_token_details": {"audio_tokens": int,``
-          ``                         "text_tokens": int,``
-          ``                         "cached_tokens": int,``
-          ``                         "cached_tokens_details": {...}},``
-          `` "output_token_details": {"audio_tokens": int,``
-          ``                          "text_tokens": int}}``
-        """
+    def capture(self) -> TurnCapture | None:
+        """What this turn offers conversation history, or None when the
+        provider exposes nothing to record. See `TurnCapture`."""
         ...
 
     def turn_lost(self) -> bool:
@@ -173,44 +271,6 @@ class LiveTurn(Protocol):
         without racing mid-response chunk gaps that look like idleness."""
         ...
 
-    def mark_server_vad(self) -> None:
-        """Optional server-VAD shadow hook.
-
-        Called by the daemon after a provider-specific
-        ``LiveConnection.set_turn_detection({"type": "server_vad", ...})``
-        succeeds for this turn. Providers that do not support
-        server-side VAD may omit this method; the daemon probes for it
-        with ``getattr`` before calling."""
-        ...
-
-    def server_speech_started(self) -> bool:
-        """Optional server-VAD shadow state.
-
-        True after the provider reports server-side speech start for
-        the active turn. The daemon uses this only when server-VAD mode
-        is active; providers without that mode may omit the method."""
-        ...
-
-    async def wait_for_server_eou(self) -> None:
-        """Optional server-VAD shadow awaitable.
-
-        Resolve when the provider's server-side VAD has committed the
-        user audio buffer and the daemon may ask the model to respond
-        via ``LiveConnection.create_response_only()``. Providers without
-        daemon-controlled server VAD may omit the method."""
-        ...
-
-    def audio_chunks_pending(self) -> int:
-        """How many audio chunks are queued waiting for the playback
-        consumer to dequeue. The idle watchdog reads this to defer its
-        tail-timer firing while there's still work to play — without it,
-        a single tts.write that blocks longer than the tail timeout
-        looks indistinguishable from "audio finished" and the turn ends
-        mid-playback. Adapters that don't track this can return 0; the
-        watchdog falls back to its dequeue-timestamp heuristic, which is
-        correct for providers whose chunks arrive at real-time rate."""
-        ...
-
     async def wait_for_interrupt(self) -> None:
         """Resolve when the model signals the user interrupted its speech.
         Used by the playback path to race write-current-chunk against
@@ -222,79 +282,10 @@ class LiveTurn(Protocol):
         flushed its output in response."""
         ...
 
-    # ---- Barge-in capability seam (provider-pack reconciliation) ----
-    # Capability-based, not provider-name-based: the daemon's
-    # ``_flush_for_interrupt`` dispatches by getattr-probing the two
-    # methods below, and both are safe no-ops in adapters that do not
-    # need them. See ADR-0115.
-
-    async def cancel_response(self, reason: str) -> None:
-        """Explicitly tell the provider to stop generating the in-progress
-        response for this turn — the *local/manual* cancel path.
-
-        Called when JTS itself decides to stop the model: a barge-in the
-        provider's own VAD did not initiate, a push-to-talk release, an
-        operator/manual interrupt. It maps to the provider's "stop now"
-        control where one exists (OpenAI/Grok ``response.cancel``).
-
-        This is the inverse direction of ``wait_for_interrupt()`` /
-        ``clear_interrupted()``: those observe a provider-*reported*
-        interruption; ``cancel_response`` is JTS telling the provider to
-        stop, not the provider telling JTS it stopped. Local TTS flush is a
-        separate daemon-layer step that does not depend on this call —
-        cancelling provider generation never makes the already-queued DAC
-        audio stop on its own.
-
-        ``reason`` is for the structured-log line only. Must be idempotent
-        and must never raise on an already-complete or absent response.
-        Providers with no client cancel mechanism (Gemini) implement this
-        as a no-op."""
-        ...
-
-    async def truncate_assistant_audio(
-        self, provider_item_id: str | None, audio_played_ms: int,
-    ) -> None:
-        """Align the provider's conversation history to what the listener
-        actually heard, after a barge-in cut local playback short. See
-        ADR-0115.
-
-        ``provider_item_id`` MUST be tolerated as ``None`` — the normal
-        value on every call for a ``server_self_truncates`` provider
-        (Gemini), and possible transiently for a ``needs_client_truncate``
-        provider (OpenAI/Grok) before the turn's first audio item. Must be
-        idempotent and must never raise."""
-        ...
-
-    def request_local_interrupt(self) -> None:
-        """Locally signal a user barge-in WITHOUT telling the provider.
-
-        Sets the same interrupt event :meth:`wait_for_interrupt` resolves
-        on, so the playback path flushes local TTS immediately. This is the
-        provider-agnostic *detection + flush* spine: it deliberately does
-        NOT truncate / cancel the provider's in-flight response (a later
-        barge-in increment owns that). Optional — the daemon probes it with
-        ``getattr`` and degrades to no local flush for adapters that omit
-        it.
-
-        Distinct from the ``cancel_response`` / ``truncate_assistant_audio``
-        seam above: those reconcile *provider* state and are still no-ops in
-        this increment; this only arms the local playout flush."""
-        ...
-
-    def drop_pending_audio(self) -> int:
-        """Drop assistant audio buffered for playback but not yet written,
-        returning the number of chunks dropped.
-
-        The *distinct* barge-in signal the OpenAI adapter's queue comment
-        anticipated. A local flush clears the DAC ring (~one write), but
-        burst-delivery providers (OpenAI/Grok) enqueue the whole response's
-        audio up front, so without dropping it the playback loop resumes
-        writing the backlog and the assistant audibly talks over the user.
-        The daemon's ``_flush_for_interrupt`` calls this right after the
-        local flush. Implementations drain their internal playout queue while
-        PRESERVING any terminal end-of-audio sentinel, so the consumer still
-        ends the turn. Optional — getattr-probed; an adapter that streams
-        without an internal buffer omits it. Idempotent; must never raise."""
+    def _on_connection_lost(self) -> None:
+        """The connection dropped while this turn was active: mark the
+        turn lost and end its audio stream. Called by the supervisor, not
+        by the daemon. Idempotent."""
         ...
 
 
@@ -382,32 +373,6 @@ class LiveConnection(Protocol):
     def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
         """Wire the cue player for a terminal connection failure. The
         daemon calls this once the ``WakeLoop`` exists."""
-        ...
-
-    def supports_server_vad(self) -> bool:
-        """Whether this provider supports mid-session switching to
-        server-side VAD via set_turn_detection(). Default False —
-        adapters that support it override to return True."""
-        ...
-
-    async def set_turn_detection(self, mode: dict | None) -> None:
-        """Optional server-VAD shadow control.
-
-        Switch provider turn detection for the current connection.
-        ``mode=None`` restores manual daemon-controlled VAD; a dict
-        with ``{"type": "server_vad", ...}`` enables provider-side VAD.
-        The daemon calls this only after ``supports_server_vad()``
-        returns true and still probes with ``getattr`` so providers
-        without this optional surface can omit it."""
-        ...
-
-    async def create_response_only(self) -> None:
-        """Optional server-VAD shadow control.
-
-        Ask the provider to create a response without first committing
-        the input buffer. Used after server-side VAD has already
-        committed the user audio. Providers without daemon-controlled
-        server VAD may omit the method."""
         ...
 
 

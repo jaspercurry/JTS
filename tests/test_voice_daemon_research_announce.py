@@ -88,7 +88,6 @@ def _put_in_session(
     wl._session_id = 7
     wl._usage_store = FakeUsageStore()
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._input_ended = False
 
     async def _noop(*_args, **_kwargs):
@@ -476,7 +475,6 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert scheduler.announced == ["job12345"]
     assert scheduler.read == []
     assert wl._research_window_active is False
-    assert "RECORDING TIMEOUT" not in caplog.text
     assert not event_records(caplog, "turn.silent_response")
 
 

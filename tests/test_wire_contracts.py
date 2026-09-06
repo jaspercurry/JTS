@@ -369,10 +369,6 @@ def _python_status_paths(path: Path, roots: dict[str, str]) -> dict[str, set[tup
 #: it. A root is a parameter/local name, or a zero-argument producer call
 #: (`evidence.outputd_status()`), whose value is the whole payload.
 STATUS_PATH_CONSUMERS: dict[str, dict[str, str]] = {
-    "jasper/control/state_aggregate.py": {
-        "outputd_status": "outputd",
-        "fanin_status": "fanin",
-    },
     # `outputd` here is the raw payload of `_read_local_status(OUTPUTD_SOCKET)`.
     # Its fan-in half is NOT a root: `current["fanin"]` is the AirPlay
     # sampler's normalized model, not what jasper-fanin emitted.
@@ -630,7 +626,6 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
     monkeypatch.setattr(subprocess, "Popen", record_spawn)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", record_spawn)
     monkeypatch.setattr(asyncio, "create_subprocess_shell", record_spawn)
-    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
     await state_aggregate._get_state(
@@ -679,7 +674,7 @@ _SECTION_STAMP = {"observed_at"}
 
 _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
     (): {
-        "schema_version", "ts", "voice", "microphone", "audio", "audio_graph",
+        "schema_version", "ts", "voice", "microphone", "audio",
         "active_speaker_setup", "audition", "bass_extension", "renderers",
         "speaker_name", "active_source", "fanin", "outputd", "aec",
         "source_selection", "resilience", "home_assistant", "grouping",
@@ -722,7 +717,6 @@ async def _state_payload(monkeypatch, tmp_path, **overrides):
             return dict(_FAKE_FANIN_STATUS)
         return dict(_FAKE_OUTPUTD_STATUS)
 
-    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
     return await state_aggregate._get_state(**{
@@ -753,7 +747,7 @@ async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
 
 async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
     payload = await _state_payload(monkeypatch, tmp_path)
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
 
 
 async def test_every_state_section_says_when_it_was_observed(monkeypatch, tmp_path):

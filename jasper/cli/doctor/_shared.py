@@ -285,18 +285,16 @@ def _service_state_failure(
     missing: str,
     not_enabled: str,
     inactive: str,
-    speaker_silent: bool = False,
 ) -> CheckResult | None:
-    """The systemd verdict for a MANDATORY unit: the actionable failure, or
-    ``None`` when it is installed, enabled and active.
+    """The systemd verdict for a MANDATORY audio-path unit: the actionable
+    failure, or ``None`` when it is installed, enabled and active.
 
     One ladder for jasper-fanin, jasper-camilla and jasper-outputd — each
     passes its own three reason codes. All three units carry an ``[Install]``
     section, so anything other than ``enabled``/``enabled-runtime`` (including
     ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
     come up on its own. `journalctl -u <unit>` is the next step for every
-    caller, so the detail says so rather than repeating a per-unit sentence.
-    ``speaker_silent`` rides the fail arms only: `skipped` observed nothing."""
+    caller, so the detail says so rather than repeating a per-unit sentence."""
     from ._evidence import evidence
 
     state = evidence.unit_state(unit)
@@ -306,7 +304,7 @@ def _service_state_failure(
         return CheckResult(
             label, "fail",
             f"{unit} is not installed. Re-run install.sh.",
-            reason=missing, speaker_silent=speaker_silent,
+            reason=missing, speaker_silent=True,
         )
     enabled = state.get("unit_file_state")
     if enabled not in ("enabled", "enabled-runtime"):
@@ -314,7 +312,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
             f"sudo systemctl enable --now {unit}",
-            reason=not_enabled, speaker_silent=speaker_silent,
+            reason=not_enabled, speaker_silent=True,
         )
     active = state.get("active_state")
     if active != "active":
@@ -322,7 +320,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is enabled but state={active or 'unknown'}. "
             f"Check: journalctl -u {unit}",
-            reason=inactive, speaker_silent=speaker_silent,
+            reason=inactive, speaker_silent=True,
         )
     return None
 

@@ -253,7 +253,8 @@ def _assess_wake_legs(
             f"configured {sorted(expected)} but jasper-voice armed only "
             f"{sorted(armed_runtime)}; {sorted(missing)} not running "
             f"(bridge down, chip not on 6-ch firmware, or see `journalctl "
-            f"-u jasper-voice | grep event=wake.leg_skipped`). {hint}",
+            rf"-u jasper-voice | grep -E 'event=wake\.leg_(skipped|died)'`). "
+            f"{hint}",
             reason=REASON_WAKE_LEGS_MISSING,
         )
     unexpected = armed_runtime - expected
@@ -280,12 +281,13 @@ def check_wake_legs_configured() -> CheckResult:
     reports the AEC3 master leg.
 
     Cross-checks configured intent from aec_mode.env against what jasper-voice
-    actually opened (/state.voice.wake_legs), so a startup leg-skip surfaces
-    here rather than only in the journal. Fail-soft: with jasper-control
-    unreachable, reports intent alone. Skips when AEC is disabled — leg
-    booleans are meaningless without the bridge emitting on the UDP ports they
-    consume — and on a push-to-talk-only speaker, which arms no legs by
-    design."""
+    currently has running: /state.voice.wake_legs is recomputed from the live
+    leg tasks, so a configured leg absent from it was either never armed or
+    has since died, and either way surfaces here rather than only in the
+    journal. Fail-soft: with jasper-control unreachable, reports intent alone.
+    Skips when AEC is disabled — leg booleans are meaningless without the
+    bridge emitting on the UDP ports they consume — and on a push-to-talk-only
+    speaker, which arms no legs by design."""
     aec_mode = _aec_mode_setting()
     raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
     dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)

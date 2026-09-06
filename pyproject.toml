@@ -431,19 +431,3 @@ module = [
     "jasper.xvf.xvf_host",
 ]
 ignore_errors = true
-
-[[tool.mypy.overrides]]
-# BaseLiveConnection now declares its nine provider-hook methods
-# (jasper/voice/_base.py), closing the attr-defined gap that used to
-# hide behind ignore_errors here. What's left is Gemini/OpenAI SDK
-# typing debt and one Protocol-conformance line, tracked for a
-# follow-up pass rather than fixed under this override.
-module = ["jasper.voice.gemini_session", "jasper.voice.openai_session"]
-disable_error_code = [
-    "return-value",
-    "arg-type",
-    "list-item",
-    "union-attr",
-    "assignment",
-    "attr-defined",
-]

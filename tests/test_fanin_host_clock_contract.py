@@ -13,13 +13,9 @@ ingress since the aloop solo path (and its usbsink-bridge host clock) was remove
 invariant *the daemon that owns the gadget capture owns the pitch ctl* it drives
 the host-clock ladder. The ladder/probe/servo itself is the SHARED
 ``rust/jasper-host-clock`` crate (byte-identical to solo mode); this file pins
-the two halves of the boundary this package's Python code consumes:
-
-  * the ``JASPER_FANIN_HOST_CLOCK*`` env-key names + defaults + ranges (Rust-
-    daemon-local, so ``tests/test_env_vars_codified.py``'s ``jasper/**`` scanner
-    can't see them — this is the dedicated pin), and
-  * the ``/state.audio_graph.fanin.host_clock`` pass-through shape
-    (``jasper.control.state_aggregate._audio_graph_state``).
+the ``JASPER_FANIN_HOST_CLOCK*`` env-key names + defaults + ranges (Rust-
+daemon-local, so ``tests/test_env_vars_codified.py``'s ``jasper/**`` scanner
+can't see them — this is the dedicated pin).
 
 The Rust-source grep-pins ``pytest.skip()`` if the fan-in sources are not
 present yet, mirroring the usbsink twin's idiom so the Python side never blocks
@@ -27,12 +23,9 @@ the Rust side landing first.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-
-from jasper.control import state_aggregate
 
 _REPO = Path(__file__).resolve().parents[1]
 _FANIN_CONFIG_RS = _REPO / "rust" / "jasper-fanin" / "src" / "config.rs"
@@ -40,27 +33,6 @@ _FANIN_HOST_CLOCK_RS = _REPO / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
 _SHARED_HOST_CLOCK_RS = _REPO / "rust" / "jasper-host-clock" / "src" / "lib.rs"
 _FANIN_UNIT = _REPO / "deploy" / "systemd" / "jasper-fanin.service"
 _ENV_EXAMPLE = _REPO / ".env.example"
-
-# The pinned disabled-block fragment for the combo (fan-in) daemon. Fan-in
-# ALWAYS builds its config with `ObsMode::Correction` (a lane resampler sits
-# between the gadget ring and the mix, so the fill slope is dead weight and
-# the probe/servo run on the resampler's own correction ppm) — the shared
-# crate's sole mode. `correction_ppm` is the additive observable (0 while
-# disabled). Combo boxes get exactly this shape under
-# /state.audio_graph.fanin.host_clock.
-_PINNED_HOST_CLOCK_FRAGMENT = (
-    '{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction",'
-    '"pitch_ppm_commanded":0.0,'
-    '"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,'
-    '"dll":{"err_frames":0.00,"locked":false},'
-    '"actuator":{"ready":false,"capture_generation":0,"control_generation":null,'
-    '"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},'
-    '"probe":{"phase":null,"attempt":1,"max_attempts":2,'
-    '"last_attempt_result":"none","last_attempt_response_ratio":null,'
-    '"final_result":"none","final_response_ratio":null,'
-    '"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},'
-    '"demotions":0,"transitions":0,"last_transition_reason":"startup"}'
-)
 
 
 def _fanin_config_text() -> str:
@@ -199,62 +171,6 @@ def test_fanin_host_clock_uses_the_shared_crate():
     assert "fn host_clock_fragment_shape_is_stable" in shared.read_text(encoding="utf-8"), (
         "the shared jasper-host-clock crate must still pin the wire fragment."
     )
-
-
-# --------------------------------------------------------------------------
-# /state.audio_graph.fanin.host_clock pass-through (C8).
-# --------------------------------------------------------------------------
-
-
-def _fanin_status_with_host_clock(host_clock_block) -> dict:
-    return {
-        "inputs": [
-            {"label": "usbsink", "source": "direct", "resampler": {"armed": True}},
-        ],
-        "host_clock": host_clock_block,
-    }
-
-
-def test_audio_graph_passes_through_present_fanin_host_clock_block():
-    block = json.loads(_PINNED_HOST_CLOCK_FRAGMENT)
-    block["enabled"] = True
-    block["ladder"] = "l0_locked"
-    graph = state_aggregate._audio_graph_state(
-        fanin_status=_fanin_status_with_host_clock(block),
-        outputd_status=None,
-    )
-    assert graph is not None
-    assert graph["fanin"]["host_clock"] == block
-
-
-def test_audio_graph_fanin_host_clock_none_when_key_absent():
-    # A combo build with no host_clock in the fan-in STATUS (feature never
-    # rendered a block) → None, a definite "no evidence".
-    graph = state_aggregate._audio_graph_state(
-        fanin_status={"inputs": []},
-        outputd_status=None,
-    )
-    assert graph is not None
-    assert graph["fanin"]["host_clock"] is None
-
-
-def test_audio_graph_fanin_host_clock_none_when_fanin_status_none():
-    graph = state_aggregate._audio_graph_state(
-        fanin_status=None,
-        outputd_status=None,
-    )
-    assert graph is not None
-    assert graph["fanin"]["host_clock"] is None
-
-
-def test_audio_graph_fanin_host_clock_none_when_fanin_status_not_a_dict():
-    # Defensive: a malformed fan-in status must degrade to None, not raise.
-    graph = state_aggregate._audio_graph_state(
-        fanin_status="not-a-dict",  # type: ignore[arg-type]
-        outputd_status=None,
-    )
-    assert graph is not None
-    assert graph["fanin"]["host_clock"] is None
 
 
 def test_generation_lifecycle_and_bounded_retry_contract_is_explicit():

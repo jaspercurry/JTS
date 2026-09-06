@@ -115,7 +115,6 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.camilla_host == "127.0.0.1"
     assert cfg.camilla_port == 1234
     assert cfg.vad_barge_in_threshold == 0.5
-    assert cfg.server_vad_enabled is False
     assert cfg.spotify_device_name == "JTS"
     assert cfg.weather_default_location == ""
     assert cfg.weather_default_lat is None
@@ -168,30 +167,6 @@ def test_openai_noise_reduction_env(monkeypatch):
     cfg = Config.from_env()
 
     assert cfg.openai_noise_reduction == "off"
-
-
-@pytest.mark.parametrize("value", ["0", "false", "no"])
-def test_server_vad_enabled_keeps_legacy_false_values(monkeypatch, value):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("JASPER_SERVER_VAD_ENABLED", value)
-
-    assert Config.from_env().server_vad_enabled is False
-
-
-@pytest.mark.parametrize("value", ["", " ", "off", "disabled", "potato"])
-def test_server_vad_enabled_fails_closed_for_empty_and_junk(monkeypatch, value):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("JASPER_SERVER_VAD_ENABLED", value)
-
-    assert Config.from_env().server_vad_enabled is False
-
-
-@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "enabled"])
-def test_server_vad_enabled_accepts_truthy_values(monkeypatch, value):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setenv("JASPER_SERVER_VAD_ENABLED", value)
-
-    assert Config.from_env().server_vad_enabled is True
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "off", "disabled"])

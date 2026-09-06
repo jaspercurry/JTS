@@ -1,67 +1,54 @@
-"""Contract tests for the barge-in / provider-pack capability seam.
+"""Conformance + tolerance contract for the voice turn adapters.
 
-PR-3 of the robust-barge-in plan adds two capability-based methods to the
-voice provider interface, with behaviour-neutral no-op defaults so this PR
-changes no runtime behaviour:
+Two halves:
 
-  * ``LiveTurn.cancel_response(reason)`` — explicit local/manual cancel.
-  * ``LiveTurn.truncate_assistant_audio(provider_item_id, audio_played_ms)``
-    — align provider history to what the listener actually heard; MUST
-    tolerate a missing ``provider_item_id``.
+  * **Shape** — every shipped turn adapter satisfies `LiveTurn` and its
+    `Interruptible` half, and the set of Interruptible adapters covers
+    exactly the providers `jasper/voice/catalog.py` declares an
+    `interrupt_reconcile` kind for. A provider that declares a
+    reconciliation kind but ships a turn missing part of the seam is the
+    failure this catches.
+  * **Tolerance** — the cross-provider no-op paths (a missing
+    `provider_item_id`, no active response) are clean no-ops on every
+    adapter, never a raise. Provider-specific *live* behaviour
+    (`response.cancel` + `conversation.item.truncate` for a real id and real
+    played-ms) is pinned in `tests/test_openai_session.py`; Gemini stays a
+    genuine no-op on every path because it self-truncates server-side.
 
-These tests pin that all three shipped adapters (Gemini, OpenAI, and Grok via
-its OpenAI subclass) expose the seam and that the cross-provider *tolerance*
-contract holds (a missing item id / no active response is always a clean
-no-op, never a raise).
-
-Note: PR-4 made the OpenAI/Grok pack's seam *live* — `cancel_response` and
-`truncate_assistant_audio` now issue real `response.cancel` /
-`conversation.item.truncate` for an active response + real played-ms. That
-provider-specific behaviour (and its guards) is pinned in
-`tests/test_openai_session.py`; here we pin only the seam shape and the
-no-op/tolerance paths that remain identical across providers (Gemini stays a
-genuine no-op on every path — it self-truncates server-side).
-
-Note on conformance checking: ``LiveTurn`` / ``LiveConnection`` are
-``@runtime_checkable`` but also declare *optional* server-VAD members that the
-Gemini adapter deliberately omits (it probes them with ``getattr``). So a bare
-``isinstance(turn, LiveTurn)`` is already ``False`` for Gemini and is NOT a
-clean full-conformance gate. We therefore assert the specific capability-seam
-members directly — that is exactly the contract PR-3 is responsible for.
+See ADR-0115.
 """
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
-from jasper.voice.session import LiveConnection, LiveTurn
+from jasper.voice.catalog import (
+    PROVIDERS,
+    InterruptReconcile,
+    resolve_interrupt_reconcile,
+)
 from jasper.voice.gemini_session import GeminiLiveTurn
 from jasper.voice.grok_session import GrokRealtimeConnection
 from jasper.voice.openai_session import (
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
+from jasper.voice.session import Interruptible, LiveTurn
 
 
-# The two turn adapter classes. Grok reuses ``OpenAIRealtimeTurn`` verbatim
-# (grok_session.py defines no turn class), so the per-turn seam is covered by
-# the OpenAI row; ``test_grok_inherits_openai_seam`` pins that reuse.
+# The turn class each catalog provider drives. Grok defines no turn class of
+# its own — `GrokRealtimeConnection` inherits OpenAI's `acquire_turn`, which
+# `test_grok_inherits_openai_seam` pins.
+PROVIDER_TURN_CLASSES = {
+    "gemini": GeminiLiveTurn,
+    "openai": OpenAIRealtimeTurn,
+    "grok": OpenAIRealtimeTurn,
+}
+
 TURN_CLASSES = (OpenAIRealtimeTurn, GeminiLiveTurn)
-
-# Members the barge-in seam adds, plus the daemon-facing interrupt EVENT
-# methods PR-3 must keep on the turn.
-TURN_SEAM_METHODS = ("cancel_response", "truncate_assistant_audio")
-# drop_pending_audio (A1) is part of the seam but OPTIONAL: the spine
-# getattr-probes it, so only providers with an internal playout buffer
-# implement it. Both of JTS's turn adapters are queue-backed, so both expose
-# it; an adapter that streams without a buffer may omit it.
-TURN_OPTIONAL_SEAM_METHODS = ("drop_pending_audio",)
-TURN_EVENT_METHODS = ("wait_for_interrupt", "clear_interrupted")
 
 
 def _make_turn(cls):
-    """Construct a turn adapter for no-op behaviour checks.
+    """Construct a turn adapter for shape and no-op behaviour checks.
 
     The seam methods are pure no-ops and never touch the connection, so a
     bare ``object()`` stand-in is sufficient. ``started_at`` is loop time
@@ -70,58 +57,48 @@ def _make_turn(cls):
 
 
 # ---------------------------------------------------------------------------
-# The Protocol itself declares the seam.
-# ---------------------------------------------------------------------------
-
-
-def test_protocol_declares_capability_seam():
-    for name in TURN_SEAM_METHODS + TURN_EVENT_METHODS:
-        assert hasattr(LiveTurn, name), f"LiveTurn missing {name}"
-    assert hasattr(LiveConnection, "supports_server_vad")
-
-
-def test_seam_method_signatures_match_protocol():
-    # cancel_response(reason)
-    assert list(inspect.signature(LiveTurn.cancel_response).parameters) == [
-        "self",
-        "reason",
-    ]
-    # truncate_assistant_audio(provider_item_id, audio_played_ms)
-    assert list(
-        inspect.signature(LiveTurn.truncate_assistant_audio).parameters
-    ) == ["self", "provider_item_id", "audio_played_ms"]
-
-
-# ---------------------------------------------------------------------------
-# Every adapter exposes the seam.
+# Shape: every adapter conforms, and the catalog names no provider that
+# doesn't.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("cls", TURN_CLASSES)
-def test_turn_adapters_expose_seam(cls):
-    for name in TURN_SEAM_METHODS + TURN_EVENT_METHODS:
-        assert callable(getattr(cls, name, None)), f"{cls.__name__} missing {name}"
-    # The seam actions are coroutines; the daemon awaits them.
-    assert inspect.iscoroutinefunction(cls.cancel_response)
-    assert inspect.iscoroutinefunction(cls.truncate_assistant_audio)
-
-
-@pytest.mark.parametrize("cls", TURN_CLASSES)
-def test_buffered_turn_adapters_drain_pending_audio(cls):
-    """drop_pending_audio (A1) stops post-flush replay on burst-delivery
-    providers. Both queue-backed adapters expose it and return the dropped
-    count (0 on an empty queue), and it is declared on the Protocol. It is
-    synchronous (the spine calls it inline after the flush, not awaited)."""
-    for name in TURN_OPTIONAL_SEAM_METHODS:
-        assert hasattr(LiveTurn, name), f"LiveTurn missing {name}"
+def test_turn_adapters_conform_to_the_protocols(cls):
     turn = _make_turn(cls)
-    assert not inspect.iscoroutinefunction(cls.drop_pending_audio)
-    result = turn.drop_pending_audio()
-    assert isinstance(result, int) and result == 0  # empty queue → nothing
+    assert isinstance(turn, Interruptible)
+    assert isinstance(turn, LiveTurn)
+
+
+def test_fake_live_turn_conforms_to_the_protocol():
+    """`FakeLiveTurn` (tests/_live_turn_fake.py) is hand-maintained rather
+    than derived from `LiveTurn`, so a member added to the Protocol can
+    leave the fake silently half-implemented — tests built on it would
+    still pass, having exercised a shape the real seam no longer has. Pin
+    conformance here so a Protocol change fails loudly instead."""
+    from tests._live_turn_fake import FakeLiveTurn
+
+    assert isinstance(FakeLiveTurn(), LiveTurn)
+
+
+def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn():
+    """The catalog's `interrupt_reconcile` is a REQUIRED field, so declaring
+    one is the same act as promising the seam. This pins that the two never
+    drift: a fourth provider must appear in both places, and a turn class
+    that drops part of `Interruptible` fails here rather than at the first
+    barge-in."""
+    assert set(PROVIDER_TURN_CLASSES) == {p.id for p in PROVIDERS}
+    for provider_id, cls in PROVIDER_TURN_CLASSES.items():
+        kind = resolve_interrupt_reconcile(provider_id)
+        # Resolved, never the INHERITS placeholder.
+        assert kind in (
+            InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
+            InterruptReconcile.SERVER_SELF_TRUNCATES,
+        )
+        assert isinstance(_make_turn(cls), Interruptible), provider_id
 
 
 # ---------------------------------------------------------------------------
-# The defaults are genuine no-ops (this PR is behaviour-neutral).
+# The cross-provider no-op paths are genuine no-ops.
 # ---------------------------------------------------------------------------
 
 
@@ -139,11 +116,11 @@ async def test_truncate_tolerates_missing_item_id(cls):
     OpenAI may not have observed one yet) — for any played-ms, with or
     without a ledger value, and never raise.
 
-    A *populated* id is no longer a universal no-op: post-PR-4 the OpenAI
-    pack sends a real conversation.item.truncate for a real id + positive
-    played-ms. That provider-specific behaviour (and its no-op-if-0 and
-    cancel guards) is pinned in tests/test_openai_session.py; here we pin
-    only the cross-provider tolerance of a *missing* id."""
+    A *populated* id is no longer a universal no-op: the OpenAI pack sends a
+    real conversation.item.truncate for a real id + positive played-ms. That
+    provider-specific behaviour (and its no-op-if-0 and cancel guards) is
+    pinned in tests/test_openai_session.py; here we pin only the
+    cross-provider tolerance of a *missing* id."""
     turn = _make_turn(cls)
     assert await turn.truncate_assistant_audio(None, 0) is None
     assert await turn.truncate_assistant_audio(None, 1500) is None

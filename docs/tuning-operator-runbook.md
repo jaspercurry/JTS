@@ -467,7 +467,7 @@ surfaces every tuning tool sits beside:
 | go back to the previous tuning | republish the prior candidate by its fingerprint, then apply it — the same two doors above, aimed backwards | mutating-with-gates | `POST /crossover/v2/republish` + `POST /crossover/v2/apply` |
 | decline | reject a reviewed candidate ("keep current sound") | mutating | `POST /crossover/v2/decline` |
 | `jasper-doctor` | health and config drift, including correction / audio-runtime / active-speaker checks | advisory | `--json` for a parseable report; no per-check selector |
-| `GET :8780/state` | cross-daemon snapshot: voice, volume, sources, `audio_graph`, `active_speaker_setup`, `sound_profile.last_dsp_apply` | advisory | per-section fail-soft; **no round section** — round evidence is file-based |
+| `GET :8780/state` | cross-daemon snapshot: voice, volume, sources, `active_speaker_setup`, `sound_profile.last_dsp_apply` | advisory | per-section fail-soft; **no round section** — round evidence is file-based |
 | `/sound/measurements/` | the household's frequency-response chart: pick one saved measurement, or two for an A/B overlay. Its catalog is the session bundles still in retention, so a **banked round is not on it**; `jasper-round-views frequency` writes the same document offline from a round, a bundle or a take file | advisory | `jasper/web/correction_measurements.py`; JSON at `/sound/measurements/data?a=&b=` |
 
 **The program menu is three live pieces.** The **walk**

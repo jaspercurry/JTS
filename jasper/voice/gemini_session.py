@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time as _time
 
 from google import genai
 from google.genai import types
+from google.genai.live import AsyncSession
 
 from ..tools import dispatch_tool
 from ._base import BaseLiveConnection, BaseLiveTurn
@@ -23,6 +25,8 @@ from .session import (
     AudioOutChunk,
     ConnectionState,
     LiveTurn,
+    TurnCapture,
+    TurnUsage,
     log_first_chunk,
 )
 
@@ -145,7 +149,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         # Gemini Live reports usage_metadata as a counter cumulative for
         # the WebSocket's lifetime, not per-turn. We capture the
         # connection's cumulative at turn start as a baseline and report
-        # this turn's DELTA from it (see usage_tokens), so per-turn usage
+        # this turn's DELTA from it (see usage()), so per-turn usage
         # rows hold per-turn counts and SUM() across rows doesn't
         # multi-count. `_usage` tracks the latest observed cumulative; it
         # starts at the baseline so a turn that observes no usage_metadata
@@ -226,14 +230,17 @@ class GeminiLiveTurn(BaseLiveTurn):
             elapsed_ms, self._chunks_received, self._bytes_sent,
         )
 
-    def usage_tokens(self) -> dict[str, int]:
-        """This turn's token usage — the delta of Gemini's cumulative
-        counter since the baseline captured at turn start, so callers
-        may SUM across turns without multi-counting. See __init__."""
-        return {
-            "input_tokens": self._turn_delta("input_tokens"),
-            "output_tokens": self._turn_delta("output_tokens"),
-        }
+    def usage(self) -> TurnUsage:
+        """This turn's usage — the delta of Gemini's cumulative counter
+        since the baseline captured at turn start (see __init__).
+
+        No `breakdown`: Gemini Live's usage_metadata carries only
+        `prompt_token_count` and `response_token_count`, so the spend cap
+        prices the two scalars as all-audio."""
+        return TurnUsage(
+            input_tokens=self._turn_delta("input_tokens"),
+            output_tokens=self._turn_delta("output_tokens"),
+        )
 
     def _turn_delta(self, key: str) -> int:
         observed = int(self._usage.get(key, 0))
@@ -244,27 +251,22 @@ class GeminiLiveTurn(BaseLiveTurn):
         # value is then already the post-reset, this-session total.
         return delta if delta >= 0 else observed
 
-    def usage_breakdown(self) -> dict | None:
-        # Gemini Live's usage_metadata only carries
-        # `prompt_token_count` and `response_token_count` — there's no
-        # audio/text/cached split exposed today. Returning None makes
-        # the spend cap fall back to the scalar all-audio estimate,
-        # which is what we've always done for Gemini.
-        return None
-
-    def conversation_metadata(self) -> dict[str, object]:
-        metadata: dict[str, object] = {
+    def capture(self) -> TurnCapture | None:
+        """Metadata only: Gemini Live surfaces no transcripts here, so
+        `/chat` can show that a turn happened (and which tools it used)
+        without leaking prompts, arguments, or provider payloads."""
+        data: dict[str, object] = {
             "kind": "voice_turn",
             "transcripts_available": False,
         }
         if self._tool_call_names:
-            metadata["tools"] = list(self._tool_call_names)
-        return metadata
+            data["tools"] = list(self._tool_call_names)
+        return TurnCapture(data=data)
 
-    # ---- Barge-in capability seam (Gemini pack) ----
+    # ---- Interruptible (Gemini pack) ----
     # Both methods are no-ops: Gemini has no client cancel call and no
     # per-response audio item id to truncate against. See ADR-0115 and
-    # ``session.py``'s ``cancel_response``/``truncate_assistant_audio``.
+    # ``session.Interruptible``.
 
     async def cancel_response(self, reason: str) -> None:
         # No-op: Gemini interruption is provider-side generation state;
@@ -332,7 +334,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         # The counter is cumulative for the WebSocket's lifetime, so we
         # store the latest observed value here AND advance the
         # connection's running cumulative (the baseline for the NEXT
-        # turn). usage_tokens() reports this turn's delta from its
+        # turn). usage() reports this turn's delta from its
         # captured baseline.
         usage = getattr(response, "usage_metadata", None)
         if usage is not None:
@@ -354,11 +356,11 @@ class GeminiLiveTurn(BaseLiveTurn):
         # billed to the usage row) and the cumulative counter (for
         # debugging the delta math).
         if turn_just_completed:
-            td = self.usage_tokens()
+            td = self.usage()
             logger.info(
                 "gemini turn complete: in=%d out=%d (turn) "
                 "in=%d out=%d (cumulative) chunks=%d",
-                td["input_tokens"], td["output_tokens"],
+                td.input_tokens, td.output_tokens,
                 int(self._usage.get("input_tokens") or 0),
                 int(self._usage.get("output_tokens") or 0),
                 self._chunks_received,
@@ -423,13 +425,14 @@ class GeminiLiveConnection(BaseLiveConnection):
             backoff_schedule=backoff_schedule,
             sleep=sleep,
         )
+        self._api_key = api_key
         self._client = genai.Client(api_key=api_key) if connect_factory is None else None
         self._connect_factory = connect_factory
         self._rotate_after_sec = rotate_after_sec
 
         # Active SDK session + context manager (cleared during reconnect).
-        self._session = None
-        self._session_cm = None
+        self._session: AsyncSession | None = None
+        self._session_cm: contextlib.AbstractAsyncContextManager[AsyncSession] | None = None
 
         # Latest session-resumption handle from the server. Used on
         # reconnect to resume the conversation. Cleared explicitly when
@@ -454,6 +457,15 @@ class GeminiLiveConnection(BaseLiveConnection):
         # yet been matched by a server-side `turn_complete`. See the
         # docstring on _prune_unack_activity_ends for the design.
         self._unack_activity_end_times: list[float] = []
+
+    def _secret_literals(self) -> tuple[str, ...]:
+        """The API key, so a rejection body that echoes it still redacts.
+
+        `_KEY_PREFIX_RE` in `secret_redaction.py` knows the `AIza`
+        shape; a prefix-less or rotated key can miss it, and this is
+        the fallback (ADR-0243).
+        """
+        return (self._api_key,) if self._api_key else ()
 
     # ------------------------------------------------------------------
     # LiveConnection protocol
@@ -494,9 +506,6 @@ class GeminiLiveConnection(BaseLiveConnection):
                     self._set_state(ConnectionState.IN_TURN)
             logger.info("live turn: started (activity_start sent)")
             return turn
-
-    def supports_server_vad(self) -> bool:
-        return False
 
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
@@ -627,13 +636,23 @@ class GeminiLiveConnection(BaseLiveConnection):
         # construct-then-add try block.
         gen_kwargs: dict = {}
         try:
-            gen_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+            gen_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.LOW,
+            )
         except Exception:  # noqa: BLE001
             pass
         return types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
+            response_modalities=[types.Modality.AUDIO],
             system_instruction=instruction or None,
-            tools=[types.Tool(function_declarations=decls)] if decls else None,
+            tools=(
+                [types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration.model_validate(d) for d in decls
+                    ],
+                )]
+                if decls
+                else None
+            ),
             temperature=0.3,
             **gen_kwargs,
             # Pin the prebuilt voice so it's consistent across sessions
@@ -713,11 +732,11 @@ class GeminiLiveConnection(BaseLiveConnection):
         # the old session are no longer relevant.
         self._unack_activity_end_times = []
         config = self._build_config()
-        connect_call = (
-            self._connect_factory
-            if self._connect_factory is not None
-            else self._client.aio.live.connect
-        )
+        if self._connect_factory is not None:
+            connect_call = self._connect_factory
+        else:
+            assert self._client is not None
+            connect_call = self._client.aio.live.connect
         t0 = _time.monotonic()
         cm = connect_call(model=self._model, config=config)
         try:

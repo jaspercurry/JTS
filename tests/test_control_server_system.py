@@ -1001,7 +1001,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     # check_tool_packs cross-checks it against the static registry).
     assert "tool_packs" in body["voice"]
     # endpointer is the third such field: which mechanism closed the turn's
-    # user input (push_to_talk / server_vad / silero_aec). Pinned HERE, at
+    # user input (push_to_talk / silero_aec). Pinned HERE, at
     # runtime and under its published name, because that is what a client
     # actually reads — a source-level check passes even when the key ships
     # misspelled.
@@ -2039,7 +2039,6 @@ async def test_state_airplay_row_and_active_source_come_from_the_injected_reader
     async def no_status(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
 

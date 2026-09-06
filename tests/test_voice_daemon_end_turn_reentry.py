@@ -69,7 +69,6 @@ def _make_wakeloop():
     wl._bg_tasks = set()
     wl._peering_current_epoch = "ep-1"
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._max_silero_score_in_turn = 0.0
     wl._max_silero_raw_in_turn = 0.0
     wl._silero_aec_armed_at_ms = None

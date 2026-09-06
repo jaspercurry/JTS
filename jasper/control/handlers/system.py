@@ -123,8 +123,9 @@ class SystemRoutes(ControlHandlerMixin):
                         # different fallback rule.
                         transport_park_snapshot=self._transport_park_reader(),
                         # The 30 s systemd snapshot this daemon already
-                        # samples for /system — reused so audio_graph can
-                        # report a stopped CamillaDSP without a second probe.
+                        # samples for /system — reused so
+                        # resilience.outputd_failure_reconcile can read
+                        # outputd's unit state without a second probe.
                         service_states_snapshot=(
                             None if self._sampler is None
                             else self._sampler.service_states_snapshot
