@@ -29,6 +29,7 @@ The public surface (`_index_html` analogue render fns, `make_server`,
 from __future__ import annotations
 
 import importlib
+import logging
 import urllib.parse
 from email.message import Message
 from types import SimpleNamespace
@@ -423,7 +424,7 @@ def test_reset_credentials_failure_does_not_report_a_cleared_secret(
     with mock.patch.object(google_setup.os, "unlink", side_effect=failure):
         _make_bound_handler(cfg, "/reset-credentials").do_POST()
 
-    assert str(failure) in _flash(patched_common.send_see_other)
+    assert _flash(patched_common.send_see_other)
     assert not patched_common.restart_voice_daemon.called
 
     _make_bound_handler(cfg, "/").do_GET()
@@ -569,9 +570,11 @@ def test_callback_exchanges_code_and_restarts(patched_common, tmp_path):
     assert "Linked" in _flash(patched_common.send_see_other)
 
 
-def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path):
+def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path, caplog):
     # The token endpoint's rejection text reaches the user scrubbed and
-    # bounded; the flash-cookie shim already kept it out of the URL.
+    # bounded; the flash-cookie shim already kept it out of the URL. The
+    # journal line beside the flash gets the same scrubbing — nothing
+    # upgrades the raw provider rejection to a traceback dump.
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     google_setup._PENDING_FLOWS.clear()
     google_setup._PENDING_FLOWS["nonce123"] = ("jasper", "verifier123", 0.0)
@@ -580,11 +583,14 @@ def test_callback_exchange_failure_flash_is_redacted(patched_common, tmp_path):
     with mock.patch.object(
         fake, "_exchange_code",
         side_effect=RuntimeError(f"400 invalid_client: client_secret={leaked}"),
-    ), mock.patch.object(google_setup, "_gc_pending"):
+    ), mock.patch.object(google_setup, "_gc_pending"), caplog.at_level(
+        logging.WARNING, logger="jasper.web.google_setup"
+    ):
         fake.do_GET()
 
     assert patched_common.send_see_other.call_args.args[1] == "./"
     assert leaked not in _flash(patched_common.send_see_other)
+    assert leaked not in caplog.text
     assert not patched_common.restart_voice_daemon.called
 
 

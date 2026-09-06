@@ -63,6 +63,7 @@ from ..google_creds import (
 )
 from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._common import (
     begin_request,
     canonical_banner,
@@ -94,9 +95,9 @@ _PAGE_CSS_HREF = "/assets/google/google.css"
 
 
 # Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
-# jasper-voice picks it up via `EnvironmentFile=`. WS1 Phase 4a:
-# this file lives in the setgid `jasper-secrets` dir (readable only by
-# jasper-voice + jasper-web), so a tempfile written here inherits group
+# jasper-voice picks it up via `EnvironmentFile=`. This file lives in
+# the setgid `jasper-secrets` dir (readable only by jasper-voice +
+# jasper-web), so a tempfile written here inherits group
 # `jasper-secrets`. GOOGLE_CLIENT_SECRET is no longer on the broad
 # `jasper` group; the /system/diagnostics jasper-doctor reads it as root.
 CREDS_FILE = "/var/lib/jasper-secrets/google_credentials.env"
@@ -126,9 +127,9 @@ def _creds(cfg: dict[str, Any]) -> tuple[str, str]:
 
 
 def _write_creds_file(client_id: str, client_secret: str, *, path: str) -> None:
-    # WS1 Phase 4a: 0640 in the setgid jasper-secrets dir → group
-    # `jasper-secrets` (voice + web only). GOOGLE_CLIENT_SECRET stays off the
-    # broad `jasper` group; the root /system/diagnostics jasper-doctor reads it.
+    # 0640 in the setgid jasper-secrets dir → group `jasper-secrets`
+    # (voice + web only). GOOGLE_CLIENT_SECRET stays off the broad
+    # `jasper` group; the root /system/diagnostics jasper-doctor reads it.
     write_env_file(path, {
         "GOOGLE_CLIENT_ID": client_id,
         "GOOGLE_CLIENT_SECRET": client_secret,
@@ -813,7 +814,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 try:
                     self._exchange_code(account_name, code, verifier, creds)
                 except Exception as e:  # noqa: BLE001
-                    logger.exception("oauth exchange failed")
+                    logger.warning(
+                        "oauth exchange failed: %s", redact_secrets(str(e))
+                    )
                     flash_error(self, "Auth exchange failed", e)
                     return
                 _restart_voice_daemon()
@@ -958,7 +961,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     include_granted_scopes="true",
                 )
             except Exception as e:  # noqa: BLE001
-                logger.exception("authorize-url build failed")
+                logger.warning(
+                    "authorize-url build failed: %s", redact_secrets(str(e))
+                )
                 flash_error(self, "Could not start OAuth", e)
                 return
             # google-auth-oauthlib defaults autogenerate_code_verifier=True,
