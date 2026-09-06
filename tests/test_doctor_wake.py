@@ -166,13 +166,14 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
         ({"aec_mode": "auto", "raw": True, "dtln": True,
           "armed_runtime": {"on", "off", "dtln"}}, "ok", "REASON_WAKE_LEGS_MATCH"),
         # raw is configured on (it maps to the chip-direct "off" token) but the
-        # daemon only opened the primary leg — a startup skip.
+        # daemon only has the primary leg running — a startup skip or a dead
+        # task, either way the box is deaf on that leg.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": {"on"}}, "warn", "REASON_WAKE_LEGS_MISSING"),
+          "armed_runtime": {"on"}}, "fail", "REASON_WAKE_LEGS_MISSING"),
         # DTLN configured but not armed: model OOM, or the bridge is not
         # emitting on :9878.
         ({"aec_mode": "auto", "raw": True, "dtln": True,
-          "armed_runtime": {"on", "off"}}, "warn", "REASON_WAKE_LEGS_MISSING"),
+          "armed_runtime": {"on", "off"}}, "fail", "REASON_WAKE_LEGS_MISSING"),
         # Chip-AEC mutual exclusion: the reconciler clears the raw/DTLN DEVICE
         # vars while preserving their booleans as wizard intent, so raw=True
         # coexists with chip_aec=True and the armed set is the primary beam
@@ -183,7 +184,7 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": {"on"}, "chip_aec": True, "chip_aec_150": True,
           "chip_aec_210": True},
-         "warn", "REASON_WAKE_LEGS_MISSING"),
+         "fail", "REASON_WAKE_LEGS_MISSING"),
         # Default chip-AEC arms only the primary beam; extra armed beams are
         # resource burn.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
@@ -200,9 +201,9 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
           "armed_runtime": set(), "push_to_talk_only": True},
          "skipped", "REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY"),
         # The control: the same empty set on an ORDINARY speaker (a bridge
-        # that died, a leg that failed to open) still warns.
+        # that died, a leg that failed to open) still fails.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": set()}, "warn", "REASON_WAKE_LEGS_MISSING"),
+          "armed_runtime": set()}, "fail", "REASON_WAKE_LEGS_MISSING"),
     ],
     ids=[
         "aec-disabled",
