@@ -2228,9 +2228,9 @@ main() {
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
-        # jasper-control renders its peering advert from the template at startup
-        # and reads /var/lib/jasper/peer_id, both created here, so this runs
-        # BEFORE the unit install restarts it.
+        # With JASPER_PEERING=on, jasper-control renders its advert from the
+        # template and reads /var/lib/jasper/peer_id at startup — both created
+        # here, so this runs BEFORE the unit install restarts it.
         install_avahi_jasper_control
         install_peering_template
         install_streambox_systemd_units
@@ -2277,9 +2277,9 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
-    # jasper-control renders its peering advert from the template at startup
-    # and reads /var/lib/jasper/peer_id, both created here, so this runs
-    # BEFORE the unit install restarts it.
+    # With JASPER_PEERING=on, jasper-control renders its advert from the
+    # template and reads /var/lib/jasper/peer_id at startup — both created
+    # here, so this runs BEFORE the unit install restarts it.
     install_avahi_jasper_control
     install_peering_template
     install_systemd_units

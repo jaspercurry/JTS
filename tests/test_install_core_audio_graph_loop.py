@@ -410,21 +410,6 @@ def test_source_intent_reapply_runs_the_bounded_full_coordinator():
     assert "--stop-disabled" not in helper
 
 
-def test_streambox_arms_usb_combo_owner_before_source_intent_reapply():
-    """Streambox uses the same direct USB data plane as a full speaker."""
-
-    body = _function_body(
-        FRAGMENT.read_text(),
-        "start_streambox_runtime_units",
-    )
-    baseline_idx = body.find("enable_usbgadget")
-    coupling_idx = body.find("systemctl enable jasper-fanin-coupling-auto.service")
-    reapply_idx = body.find("reapply_source_intent")
-
-    assert -1 not in (baseline_idx, coupling_idx, reapply_idx)
-    assert baseline_idx < coupling_idx < reapply_idx
-
-
 def test_upgrade_retires_destructive_combo_health_watcher():
     """A deploy removes the obsolete observer and its persisted override state."""
 
@@ -561,12 +546,11 @@ mktemp() {{ local d; d="{tmp_path}/txn.$RANDOM"; mkdir -p "$d"; printf '%s\\n' "
 def test_both_profiles_restart_control_and_refresh_the_source_roster(
     tmp_path, function
 ):
-    """The full profile used to only `enable` jasper-control, so a from-scratch
-    install left the control plane (and, through its Wants=, CamillaDSP) down
-    until the next reboot while streambox restarted it. Both profiles must
-    restart it; the try-restart set must cover every unit jasper's own
-    local-source roster names; and the USB baseline, the active-only refresh
-    and the source-intent coordinator must stay in that order.
+    """Both profiles must RESTART jasper-control: enabling alone leaves the
+    control plane — and, through its Wants=, CamillaDSP — down until the next
+    reboot. The try-restart set must cover every unit jasper's own local-source
+    roster names, and the USB baseline, the active-only refresh and the
+    source-intent coordinator must stay in that order.
 
     Remove when the installer stops managing unit lifecycle.
     """
@@ -615,3 +599,12 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
         and "jasper-source-intent-reconcile.service" in call
         for call in calls
     )
+    # Streambox uses the same direct USB data plane as a full speaker, so it
+    # arms the combo owner inline, between the two; the full profile leaves
+    # that to resolve_fanin_coupling_default after the coordinator's pass.
+    if function == "start_streambox_runtime_units":
+        assert (
+            first("fn enable_usbgadget")
+            < first("systemctl enable jasper-fanin-coupling-auto.service")
+            < first("fn reapply_source_intent")
+        )
