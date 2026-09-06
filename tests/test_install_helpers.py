@@ -361,7 +361,7 @@ def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():
     ]
     assert body.count("seed_speaker_name_env") == 1
     assert body.index("seed_speaker_name_env") < body.index(
-        "/usr/local/sbin/jasper-apply-airplay-mode"
+        'bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"'
     )
     assert body.index("seed_speaker_name_env") < body.index(
         'bash "${REPO_DIR}/deploy/configure-bluez.sh"'

@@ -68,14 +68,19 @@ ALLOWLIST: frozenset[str] = frozenset()
 
 # Deliberately out of scope: shapes that reach an env file without a
 # `source`/`.` at all — `eval "$(cat FILE)"`, `export $(grep … | xargs)`,
-# `source /dev/stdin <<EOF`, array-element loops. None appears in these trees,
-# and a substring scanner cannot model them; this guard covers source/. only.
+# `source /dev/stdin <<EOF`, array-element loops — plus two the scanner sees
+# but cannot resolve line by line: a `source` whose path sits on the next line
+# after a `\` continuation, and a `set -a` in a CALLER's frame wrapping a
+# helper that does the sourcing. None appears in these trees, and a substring
+# scanner cannot model them; this guard covers source/. only.
 
 # `source X` / `. X` at the start of a command. The prefix alternatives cover
 # the shapes these trees actually use: line start, after a separator, after
-# `then`/`else`/`do`, and inside a `$(` substitution.
+# `then`/`else`/`do`, and inside a `$(` substitution. `builtin`/`command`/`eval`
+# may precede the builtin itself.
 _SOURCE = re.compile(
     r"(?:^|[;&|(){}]|\bthen\b|\belse\b|\bdo\b)[ \t]*"
+    r"(?:(?:builtin|command|eval)[ \t]+)?"
     r"(?:source|\.)[ \t]+"
     r"(?P<arg>[^;&|\n]+)"
 )
@@ -92,8 +97,9 @@ _FOR_IN = re.compile(
 _VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 _POSITIONAL = re.compile(r"\$\{?(?:[1-9][0-9]*|@|\*)\b|\$\{?[1-9][0-9]*\}")
 # Unanchored: `set -a` and the source it wraps share a line in the one-line
-# loader shape `f(){ set -a; . "$1"; set +a; }`.
-_SET_PREFIX = r"(?:^|[;&|(){}])[ \t]*set[ \t]+"
+# loader shape `f(){ set -a; . "$1"; set +a; }`. Same prefix alternatives as
+# _SOURCE, so a toggle opening an `if`/`for` body is seen too.
+_SET_PREFIX = r"(?:^|[;&|(){}]|\bthen\b|\belse\b|\bdo\b)[ \t]*set[ \t]+"
 _ALLEXPORT_ON = re.compile(_SET_PREFIX + r"(?:-a\b|-o[ \t]+allexport\b)")
 _ALLEXPORT_OFF = re.compile(_SET_PREFIX + r"(?:\+a\b|\+o[ \t]+allexport\b)")
 
@@ -215,6 +221,13 @@ def test_scanner_sees_the_shell_corpus():
         'source "${STATE_DIR}/speaker_name.env"\n',
         # A glob loop over the whole wizard-owned directory.
         'for f in /var/lib/jasper/*.env; do . "$f"; done\n',
+        # The builtin reached through a `builtin`/`command`/`eval` prefix.
+        'builtin source "/etc/jasper/jasper.env"\n',
+        'command . /etc/jasper/jasper.env\n',
+        'eval . /etc/jasper/jasper.env\n',
+        # The generic loader with its `set -a` opening an if/for body.
+        'if [ -n "$1" ]; then set -a; . "$1"; set +a; fi\n',
+        'for f in "$1"; do set -a; . "$f"; set +a; done\n',
     ],
 )
 def test_classifier_catches_known_bad_shapes(bad):
@@ -239,6 +252,13 @@ def test_classifier_catches_known_bad_shapes(bad):
         # The sanctioned readers.
         'jasper_env_file_get /etc/jasper/jasper.env JASPER_MIC_DEVICE\n'
         'jasper_env_file_export /var/lib/jasper/aec_mode.env\n',
+        # A shell library keeps being code behind a `builtin`/`command` prefix.
+        'ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"\n'
+        'command source "$ENV_FILE_LIB"\n',
+        # `then set -a` over laptop state is still outside the JTS env trees.
+        'REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
+        'if [ -f "${REPO_ROOT}/.env.local" ]; then set -a; '
+        '. "${REPO_ROOT}/.env.local"; set +a; fi\n',
     ],
 )
 def test_classifier_allows_benign_shapes(good):

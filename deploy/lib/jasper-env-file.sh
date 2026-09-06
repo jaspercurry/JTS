@@ -4,6 +4,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# Include guard: deploy/install.sh sources this lib into a shell that loads
+# ~20 others, and a second pass over the `readonly` below would abort it
+# under `set -euo pipefail`. An INHERITED guard variable makes the lib define
+# nothing, which the consumers' `declare -F` checks turn into a loud exit 66.
+if [[ -n "${_JASPER_ENV_FILE_LIB_LOADED+x}" ]]; then
+    return 0
+fi
+_JASPER_ENV_FILE_LIB_LOADED=1
+
 # Shared env-file reader + quoting + atomic, locked single-key writer for the
 # bash consumers of /etc/jasper/jasper.env and the wizard-owned
 # /var/lib/jasper*/*.env files.
@@ -128,19 +137,23 @@ jasper_env_file_get() {
 # pasted value is data, not code. No-op when FILE is absent. A line
 # whose key is not a plain identifier is skipped (`source` would have
 # run it as a command).
+# The locals are `_jef_`-prefixed: bash scopes dynamically, so a local named
+# like a key in the parsed file would shadow it and `export KEY=` would land
+# on the local instead of the environment.
 jasper_env_file_export() {
-    local file="$1" key value parsed
+    local _jef_file="$1" _jef_key _jef_value _jef_parsed
 
-    [[ -r "$file" ]] || return 0
+    [[ -r "$_jef_file" ]] || return 0
     # Captured, not process-substituted: `pipefail` cannot see into a process
     # substitution, so an awk that never ran (or died mid-file) would leave
     # the caller reconciling against a blank world with rc 0. The trailing
     # `printf x` survives $()'s newline strip so a LAST key whose value is
     # empty still arrives as two lines.
-    parsed="$(awk -v key="" "$_JASPER_ENV_FILE_AWK" "$file" && printf x)" || return 1
-    while IFS= read -r key && IFS= read -r value; do
-        export "${key}=${value}"
-    done <<<"${parsed%x}"
+    _jef_parsed="$(awk -v key="" "$_JASPER_ENV_FILE_AWK" "$_jef_file" && printf x)" \
+        || return 1
+    while IFS= read -r _jef_key && IFS= read -r _jef_value; do
+        export "${_jef_key}=${_jef_value}"
+    done <<<"${_jef_parsed%x}"
 }
 
 # _jasper_env_lock_acquire DIR FILE FDVAR

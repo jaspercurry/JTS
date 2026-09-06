@@ -78,8 +78,10 @@
 #                                 Default: /var/lib/jasper/renderer_lanes.env.
 #   JASPER_STATUS_PYTHON        — interpreter used for both the daemon
 #                                 STATUS reads and the jasper.ring_assets
-#                                 parse. Default: /opt/jasper/.venv/bin/python
-#                                 if present, else python3 on PATH.
+#                                 parse; process environment only, no env
+#                                 file names it. Default:
+#                                 /opt/jasper/.venv/bin/python if present,
+#                                 else python3 on PATH.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -702,15 +704,14 @@ case "$mode" in
 esac
 
 latency_offset="$(derive_audio_backend_latency_offset)"
-# The name is the one env value that lands inside a libconfig quoted string,
-# so \ and " are escaped for shairport-sync's lexer BEFORE the sed-replacement
+# Name and renderer device both land inside a libconfig quoted string, so \
+# and " are escaped for shairport-sync's lexer BEFORE the sed-replacement
 # escape below; an unescaped " ends the string and the daemon refuses to start.
 airplay_name="${airplay_name//\\/\\\\}"
 airplay_name="${airplay_name//\"/\\\"}"
 airplay_name_sed="$(printf '%s' "$airplay_name" | sed -e 's/[\/&]/\\&/g')"
-# The map's writer only ever renders two known literals here, but the value
-# crosses a sed replacement like the speaker name does, so it gets the same
-# escape rather than a trust argument.
+renderer_device="${renderer_device//\\/\\\\}"
+renderer_device="${renderer_device//\"/\\\"}"
 renderer_device_sed="$(printf '%s' "$renderer_device" | sed -e 's/[\/&]/\\&/g')"
 
 tmp="${TARGET}.tmp.$$"
