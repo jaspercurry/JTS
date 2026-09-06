@@ -74,12 +74,16 @@ class RedactingFilter(logging.Filter):
         except Exception as exc:  # noqa: BLE001
             # A %-format mismatch is reported by Handler.handleError today
             # and must not become an exception raised at the log call site.
-            # The sentinel — never record.msg itself — is what the flight
-            # recorder's auto-flush floor keys on: record.msg's own __str__
-            # may be what raised, so calling it again outside this try would
-            # crash at the log call site.
+            # Key the sentinel on the call site (pathname:lineno), not
+            # record.msg or its type: two different broken call sites on one
+            # logger must not share an auto-flush signature. pathname and
+            # lineno are plain attributes set by the logging module itself,
+            # so neither can raise — unlike record.msg, whose own __str__
+            # may be what raised, so it must not be called again here.
             setattr(
-                record, TEMPLATE_ATTR, f"<unformattable {type(record.msg).__name__}>"
+                record,
+                TEMPLATE_ATTR,
+                f"<unformattable {record.pathname}:{record.lineno}>",
             )
             flattened = (
                 f"{record.msg!r} % {record.args!r} "
