@@ -43,9 +43,6 @@ from pathlib import Path
 from typing import Literal
 
 
-# UNION of every unit's persistent EnvironmentFile= (not one daemon's).
-# Guarded by tests/test_env_load_mirrors_unit.py: add a wizard env file to ANY
-# deploy/systemd/*.service and the test fails until it's added here too.
 #: The operator-owned base layer every daemon unit loads first.
 BASE_ENV_PATH = "/etc/jasper/jasper.env"
 
@@ -55,8 +52,11 @@ def env_file_path() -> str:
     return os.environ.get("JASPER_ENV_FILE", BASE_ENV_PATH)
 
 
+# UNION of every unit's persistent EnvironmentFile= (not one daemon's).
+# Guarded by tests/test_env_load_mirrors_unit.py: add a wizard env file to ANY
+# deploy/systemd/*.service and the test fails until it's added here too.
 ENV_FILES = (
-    "/etc/jasper/jasper.env",
+    BASE_ENV_PATH,
     # jasper-voice.service order (the most config-consuming daemon):
     "/var/lib/jasper/speaker_name.env",
     "/var/lib/jasper-intsecrets/spotify_credentials.env",

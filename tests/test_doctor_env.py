@@ -146,9 +146,17 @@ def os_environ_get(name: str) -> str | None:
 # -------------------------------------------------- env-file secret posture
 
 
+# JASPER_MTA_BUSTIME_KEY is a documented jasper.env key (see
+# jasper/web/transit_setup.py's _bus_key_source) rather than a compartment
+# escapee, so it alone must read "ok" non-empty too.
+_NONEMPTY_STATUS = {
+    k: ("ok" if k == "JASPER_MTA_BUSTIME_KEY" else "fail") for k in SECRET_ENV_NAMES
+}
+
+
 @pytest.mark.parametrize(
     "key, value, status",
-    [(k, "notasecretvalue", "fail") for k in SECRET_ENV_NAMES]
+    [(k, "notasecretvalue", _NONEMPTY_STATUS[k]) for k in SECRET_ENV_NAMES]
     + [(k, "", "ok") for k in SECRET_ENV_NAMES],
     ids=[f"{k}-nonempty" for k in SECRET_ENV_NAMES]
     + [f"{k}-empty" for k in SECRET_ENV_NAMES],
@@ -166,6 +174,7 @@ def test_check_env_file_secrets_verdict_by_key_and_value(
     if status == "fail":
         assert r.reason == env.REASON_SECRET_IN_ENV_FILE
         assert value not in r.detail
+        assert key in r.detail
 
 
 def test_check_env_file_secrets_ok_with_no_secret_keys(monkeypatch, tmp_path):
@@ -186,17 +195,20 @@ def test_check_env_file_secrets_skipped_when_file_absent(monkeypatch, tmp_path):
     assert r.status == "skipped"
 
 
-def test_check_env_file_secrets_skipped_when_file_unreadable(monkeypatch, tmp_path):
+def test_check_env_file_secrets_warns_when_file_unreadable(monkeypatch, tmp_path):
     # Root bypasses chmod, so simulate "can't read" with a directory in
     # place of the file — Path.read_text() raises IsADirectoryError there,
     # same OSError family env_load.read_env_file_state maps to "unreadable".
+    # jasper-doctor runs as root, so this is a real fault (undecodable bytes
+    # or a genuine permission problem) while systemd still exports every
+    # key in the file — worth a warn, not a silent skip.
     p = tmp_path / "jasper.env"
     p.mkdir()
     monkeypatch.setenv("JASPER_ENV_FILE", str(p))
 
     r = env.check_env_file_secrets()
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == env.REASON_ENV_FILE_UNREADABLE
 
 

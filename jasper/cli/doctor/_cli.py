@@ -29,8 +29,10 @@ from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...volume_persistence import configured_path as volume_state_path
 from ...config import Config
 from ...env_load import (
+    ENV_FILES,
     bounded_env_int,
-    load_env_files as _load_env_files,
+    env_file_path,
+    load_env_files,
 )
 from ...identity import resolve_hostname
 from ...install_profile import (
@@ -232,6 +234,14 @@ async def _watch_loop(
     except (KeyboardInterrupt, asyncio.CancelledError):
         print("\nexiting", flush=True)
         return 0
+
+
+def _load_env_files() -> None:
+    """`load_env_files`, but with the base layer resolved through
+    `env_file_path()` so a `JASPER_ENV_FILE` override reaches `cfg` here the
+    same way it reaches the env checks in `env.py` — otherwise the two would
+    judge different files under an override."""
+    load_env_files((env_file_path(), *ENV_FILES[1:]))
 
 
 def main() -> None:

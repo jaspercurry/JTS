@@ -184,10 +184,14 @@ while IFS= read -r changed; do
       ;;
     .env.example)
       # No jasper/*.py path component, so neither jasper/*/*.py) below nor
-      # any other arm sees it — without this arm the two tests that parse
-      # this file structurally never ran on a template-only edit.
+      # any other arm sees it — without this arm nothing here ran the tests
+      # that parse this file's actual content on a template-only edit.
       add_test_if_present "tests/test_config.py"
       add_test_if_present "tests/test_env_example_matches_config_defaults.py"
+      add_test_if_present "tests/test_correction_crossover_v2_endpoints.py"
+      add_test_if_present "tests/test_fanin_host_clock_contract.py"
+      add_test_if_present "tests/test_install_helpers.py"
+      add_test_if_present "tests/test_wire_contracts.py"
       ;;
     jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh)
       # The Python and bash redactors are pinned side by side against one
@@ -196,11 +200,13 @@ while IFS= read -r changed; do
       # all and jasper/secret_redaction.py routes only to its own test.
       add_test_if_present "tests/test_secret_redaction.py"
       add_test_if_present "tests/test_diagnostic_redaction_scripts.py"
-      # These five run redact_secrets on the surfaces the non-negotiable
-      # covers, so a rule change breaks them with nothing in their own
+      # These six run redact_secrets on the surfaces the non-negotiable
+      # covers, or (test_doctor_env.py) pin the secret-key vocabulary
+      # itself, so a rule change breaks them with nothing in their own
       # subject moved.
       add_test_if_present "tests/test_failure_detail.py"
       add_test_if_present "tests/test_doctor_core.py"
+      add_test_if_present "tests/test_doctor_env.py"
       add_test_if_present "tests/test_web_wifi_setup.py"
       add_test_if_present "tests/test_voice_setup.py"
       add_test_if_present "tests/test_web_transit_setup.py"

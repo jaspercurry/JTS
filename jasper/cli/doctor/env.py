@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from ...config import Config
 from ...env_load import env_file_path, read_env_file_state
-from ...secret_redaction import SECRET_ENV_NAME_RE
+from ...secret_redaction import SECRET_ENV_SUFFIX_RE
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir
 
@@ -24,9 +24,13 @@ REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
 REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
 REASON_SECRET_IN_ENV_FILE = "secret_in_env_file"
 
-# `fullmatch` at the call site anchors the match to the whole key (an
-# unanchored search would also flag e.g. "GEMINI_API_KEYWORD").
-_SECRET_KEY_RE = re.compile(SECRET_ENV_NAME_RE)
+# The suffix rule alone, not `SECRET_ENV_NAME_RE`: that export also matches
+# `JASPER_MTA_BUSTIME_KEY`, a key `jasper/web/transit_setup.py` documents as
+# living in jasper.env (operator-pasted or migrated there by install.sh) —
+# not a compartment escapee. `fullmatch` at the call site anchors the match
+# to the whole key (an unanchored search would also flag e.g.
+# "GEMINI_API_KEYWORD").
+_SECRET_KEY_RE = re.compile(rf"[A-Za-z_][A-Za-z0-9_]*{SECRET_ENV_SUFFIX_RE}")
 
 @doctor_check()
 def check_env_file() -> CheckResult:
@@ -56,8 +60,12 @@ def check_env_file_secrets() -> CheckResult:
             reason=REASON_ENV_FILE_MISSING,
         )
     if state.status == "unreadable":
+        # jasper-doctor runs as root, so "unreadable" here means undecodable
+        # bytes or a real permission fault, not the ordinary absent-file
+        # case — systemd still exports every key from this file to every
+        # daemon regardless, so this is worth a warn, not a silent skip.
         return CheckResult(
-            "env file secrets", "skipped", f"can't read {path}: {state.error}",
+            "env file secrets", "warn", f"can't read {path}: {state.error}",
             reason=REASON_ENV_FILE_UNREADABLE,
         )
     offenders = sorted(
@@ -67,8 +75,10 @@ def check_env_file_secrets() -> CheckResult:
     if offenders:
         return CheckResult(
             "env file secrets", "fail",
-            f"{path} holds a secret value for: {', '.join(offenders)} — move "
-            "it to /var/lib/jasper-secrets/ or /var/lib/jasper-intsecrets/",
+            f"{path} holds a secret value for: {', '.join(offenders)} — "
+            "re-run the owning wizard (or install.sh, which runs "
+            "migrate_voice_keys_split / migrate_google_routes_key for the "
+            "LLM and Google Routes keys) to move it to its compartment",
             reason=REASON_SECRET_IN_ENV_FILE,
         )
     return CheckResult("env file secrets", "ok", path)
