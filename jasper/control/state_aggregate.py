@@ -1160,6 +1160,8 @@ async def _get_state(
             level=logging.WARNING,
         )
         raise
+    # Matches _Probes field order so these and _Probes never index gathered[i].
+    camilla, voice, fanin, outputd, mux = gathered
 
     # One pass over every section read that depends on nothing else, so they
     # share the pool instead of each waiting out the one before it — serial
@@ -1168,6 +1170,7 @@ async def _get_state(
         volume_state, sound_profile, airplay_playing, aec_status, audio_health,
         usb_forensics, audition_state, bass_extension_state, transit_state,
         output_hardware_state, service_states, tools_state, chat_state,
+        grouping_state, active_speaker_setup, research_state,
     ) = await asyncio.gather(
         _soft_read("volume", _read_persisted_volume, exc=(OSError, ValueError)),
         _soft_read("sound_profile", _read_sound_profile),
@@ -1203,9 +1206,28 @@ async def _get_state(
             "chat", _conversation_history_state,
             exc=(ImportError, OSError, RuntimeError, ValueError),
         ),
+        _soft_read(
+            "grouping",
+            lambda: read_grouping_state(local_outputd_reader=lambda: outputd),
+        ),
+        _soft_read(
+            "active_speaker_setup",
+            lambda: read_active_speaker_setup_status(
+                active_config_path=camilla.get("active_config_path"),
+            ),
+            exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
+        ),
+        _soft_read(
+            "research",
+            lambda: _research_state((voice or {}).get("research")),
+            exc=(ImportError, OSError, RuntimeError, ValueError),
+        ),
     )
+    grouping_state = with_airplay_latency_fit(grouping_state)
     listening_level, persisted_main_volume_db = volume_state or (None, None)
-    probes = _Probes(*gathered, aec=aec_status, ha_status=ha_status)
+    probes = _Probes(
+        camilla, voice, fanin, outputd, mux, aec=aec_status, ha_status=ha_status,
+    )
 
     spotify = _spotify_state()
     if sound_profile is not None:
@@ -1229,7 +1251,7 @@ async def _get_state(
         ),
     )
 
-    voice_status = probes.voice or {}
+    voice_status = voice or {}
     voice_session = bool(probes.voice) and voice_status.get("state") == "SESSION"
     active_source = _active_source(
         voice_session=voice_session,
@@ -1249,26 +1271,10 @@ async def _get_state(
         diagnostics=_read_volume_diagnostics(),
     )
 
-    grouping_state = with_airplay_latency_fit(await _soft_read(
-        "grouping",
-        lambda: read_grouping_state(local_outputd_reader=lambda: probes.outputd),
-    ))
-    active_speaker_setup = await _soft_read(
-        "active_speaker_setup",
-        lambda: read_active_speaker_setup_status(
-            active_config_path=probes.camilla.get("active_config_path"),
-        ),
-        exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
-    )
     audio_graph_state = _audio_graph_state(
         fanin_status=probes.fanin,
         outputd_status=probes.outputd,
         service_states=service_states,
-    )
-    research_state = await _soft_read(
-        "research",
-        lambda: _research_state(voice_status.get("research")),
-        exc=(ImportError, OSError, RuntimeError, ValueError),
     )
 
     # Lazy import (mirrors read_active_provider_state above) so jasper-control

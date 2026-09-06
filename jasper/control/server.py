@@ -458,7 +458,8 @@ STATE_RESPONSE_CACHE_TTL_SEC = 1.0
 # How long a /state caller waits on someone else's in-flight aggregate before
 # it is served the last value instead. Admission is non-blocking and there are
 # eight request workers, so a longer wait starves every other route on one slow
-# compute. Retire with the cache's wait timeout.
+# compute. Retire if the cache stops bounding waiters, or the request pool
+# stops being bounded.
 STATE_RESPONSE_WAIT_SEC = 2.0
 
 
@@ -490,11 +491,8 @@ class _SingleFlightTTLCache:
         Only successful computations are cached. If the compute raises,
         waiters are released and the next caller may retry.
 
-        A waiter blocks for at most `wait_timeout_sec` — the compute's budget
-        — then serves the last value rather than parking: a compute that
-        outlives its deadline would otherwise park every waiter and, on the
-        bounded request pool, the whole control plane. With no value yet it
-        raises instead.
+        Blocks up to `wait_timeout_sec` for the in-flight compute, then
+        returns the stale value if there is one, else raises TimeoutError.
         """
         while True:
             with self._cond:
