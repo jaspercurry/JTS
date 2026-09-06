@@ -18,27 +18,7 @@ from jasper.cli.doctor import _evidence, _shared, aec
 from jasper.control import aec_endpoints
 from tests._aec_bridge_helpers import _rms_log_line
 
-
-def _stub_unit_active_states(monkeypatch, active: dict[str, str]) -> None:
-    """`_evidence.read_unit_states` stand-in for the doctor's one batched
-    ``systemctl show``: units in `active` report that ActiveState (and
-    UnitFileState=enabled); every other rostered unit reads inactive."""
-
-    def fake(units, *, timeout):
-        return {
-            unit: {
-                "unit": unit,
-                "load_state": "loaded",
-                "active_state": active.get(unit, "inactive"),
-                "sub_state": "running" if active.get(unit) == "active" else "dead",
-                "unit_file_state": "enabled",
-                "n_restarts": 0,
-                "main_pid": 0,
-            }
-            for unit in units
-        }
-
-    monkeypatch.setattr(_evidence, "read_unit_states", fake)
+from .doctor_test_support import _stub_unit_active_states
 
 
 # --------------------------------------------- AEC bridge output assessment
