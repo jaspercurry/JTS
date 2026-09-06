@@ -617,48 +617,6 @@ mark_outputd_restart_if_changed() {
     fi
 }
 
-normalize_mode() {
-    local mode="${1:-auto}"
-    mode="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
-    case "$mode" in
-        auto|"")
-            echo "auto"
-            ;;
-        disabled|disable|off|false|0|no)
-            echo "disabled"
-            ;;
-        *)
-            log "unknown JASPER_AEC_MODE=${mode}; treating as disabled"
-            echo "disabled"
-            ;;
-    esac
-}
-
-# Normalize the JASPER_WAKE_LEG_* booleans to "1" or "0". The wizard
-# only writes "1" / "0", but operators editing aec_mode.env by hand
-# might use yes/no/true/false. Default is supplied by the caller —
-# RAW defaults on, DTLN defaults off.
-normalize_bool() {
-    local value="${1:-}"
-    # Trim surrounding whitespace before matching, matching
-    # jasper.audio_profile_state.parse_env_bool()'s leading .strip().
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-    case "$value" in
-        1|on|true|yes|y|enabled|enable)
-            echo "1"
-            ;;
-        0|off|false|no|n|disabled|disable|"")
-            echo "0"
-            ;;
-        *)
-            log "unknown bool ${value}; treating as 0"
-            echo "0"
-            ;;
-    esac
-}
-
 # jasper.audio_profile_state owns this vocabulary; the shim emits it as shell
 # assignments to the variables set below.
 #
@@ -835,23 +793,12 @@ chip_aec_block_detail() {
     fi
 }
 
-mode_file_value() {
-    jasper_env_file_get "$MODE_FILE" "$1" || printf '%s\n' "$2"
-}
-
 # The closest profile for a mode file written before profiles existed. A
 # subshell, so seeding never disturbs the pass's own selection; exits non-zero
 # when the resolver is down, which leaves the key unseeded for the next pass
 # rather than stamping a guess.
 infer_audio_input_profile_from_mode_file() (
-    read_audio_input_profile --infer \
-        --mode="$(normalize_mode "$(mode_file_value JASPER_AEC_MODE auto)")" \
-        --leg-raw="$(mode_file_value JASPER_WAKE_LEG_RAW 1)" \
-        --leg-dtln="$(mode_file_value JASPER_WAKE_LEG_DTLN 0)" \
-        --leg-chip-aec="$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC 0)" \
-        --leg-chip-aec-150="$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_150 0)" \
-        --leg-chip-aec-210="$(mode_file_value JASPER_WAKE_LEG_CHIP_AEC_210 0)" \
-        || return 1
+    read_audio_input_profile --infer --mode-file="$MODE_FILE" || return 1
     printf '%s\n' "$AUDIO_INPUT_PROFILE"
 )
 
@@ -2051,9 +1998,30 @@ fi
 jasper_env_file_export "$MODE_FILE"
 observe_mic_profile_state
 
-AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
+# The raw pass-start reads, handed to the resolver and overwritten by its
+# eval. ADR-0101: without the resolver these stay exactly as configured, so a
+# hand-edited `yes` reads as off for that pass rather than routing on a guess.
+# Additive wake-detection legs (see write_leg_env for the mapping).
+# JASPER_AEC_MODE remains the master toggle; the legs only matter when the
+# bridge is running. Defaults — RAW on (cheap, gives OR-fusion wake-rate
+# recovery for ~5 MB), DTLN off (~75 MB + 25% one core, opt-in via /system/
+# wake-detection card), chip-AEC legs off (mic-profile/DAC-conditional).
+AEC_MODE="${JASPER_AEC_MODE:-auto}"
+LEG_RAW="${JASPER_WAKE_LEG_RAW:-1}"
+LEG_DTLN="${JASPER_WAKE_LEG_DTLN:-0}"
+LEG_CHIP_AEC="${JASPER_WAKE_LEG_CHIP_AEC:-0}"
+LEG_CHIP_AEC_150="${JASPER_WAKE_LEG_CHIP_AEC_150:-0}"
+LEG_CHIP_AEC_210="${JASPER_WAKE_LEG_CHIP_AEC_210:-0}"
 AUDIO_INPUT_PROFILE="${JASPER_AUDIO_INPUT_PROFILE:-custom}"
-read_audio_input_profile --profile="$AUDIO_INPUT_PROFILE" || true
+read_audio_input_profile --normalize \
+    --profile="$AUDIO_INPUT_PROFILE" \
+    --mode="$AEC_MODE" \
+    --mode-file="$MODE_FILE" \
+    --leg-raw="$LEG_RAW" \
+    --leg-dtln="$LEG_DTLN" \
+    --leg-chip-aec="$LEG_CHIP_AEC" \
+    --leg-chip-aec-150="$LEG_CHIP_AEC_150" \
+    --leg-chip-aec-210="$LEG_CHIP_AEC_210" || true
 if [[ "$AUDIO_INPUT_PROFILE_KNOWN" != "1" ]]; then
     log "unknown JASPER_AUDIO_INPUT_PROFILE=${JASPER_AUDIO_INPUT_PROFILE:-}; treating as custom"
 fi
@@ -2111,23 +2079,6 @@ if [[ "$COMMISSION_ARM" == "1" ]]; then
 fi
 
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
-# Additive wake-detection legs (see write_leg_env for the mapping).
-# JASPER_AEC_MODE remains the master toggle; these only matter when
-# the bridge is running. Defaults — RAW on (cheap, gives OR-fusion
-# wake-rate recovery for ~5 MB), DTLN off (~75 MB + 25% one core,
-# opt-in via /system/ wake-detection card).
-LEG_RAW="$(normalize_bool "${JASPER_WAKE_LEG_RAW:-1}")"
-LEG_DTLN="$(normalize_bool "${JASPER_WAKE_LEG_DTLN:-0}")"
-# Chip-AEC profile selection — mic-profile/DAC-conditional and mutually
-# exclusive with raw/DTLN (see write_leg_env). Extra chip-beam wake
-# detectors are separate opt-ins below.
-LEG_CHIP_AEC="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC:-0}")"
-LEG_CHIP_AEC_150="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC_150:-0}")"
-LEG_CHIP_AEC_210="$(normalize_bool "${JASPER_WAKE_LEG_CHIP_AEC_210:-0}")"
-# Opt-in chip-ref observe mode (default off). Read like the LEG_* booleans
-# (mode_file_value + normalize_bool) so a hand-edited yes/true also works.
-# Only the software-AEC3 leg path in write_leg_env acts on it.
-CHIP_REF_OBSERVE="$(normalize_bool "$(mode_file_value JASPER_AEC_CHIP_REF_OBSERVE 0)")"
 AUDIO_DAC_ID="$(normalize_output_dac_id "${JASPER_AUDIO_DAC_ID:-unknown}")"
 apply_audio_input_profile
 if [[ "$AUDIO_INPUT_PROFILE" == "custom" && "$LEG_CHIP_AEC" == "1" ]]; then

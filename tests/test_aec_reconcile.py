@@ -17,7 +17,12 @@ import pytest
 from jasper import wake_legs
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
-from jasper.audio_profile_state import ALL_PROFILES, profile_env_updates
+from jasper.audio_profile_state import (
+    ALL_PROFILES,
+    normalize_aec_mode,
+    parse_env_bool,
+    profile_env_updates,
+)
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
@@ -2635,6 +2640,9 @@ _SHIM_LEG_VARS = (
     "LEG_CHIP_AEC_210",
 )
 _SHIM_VARS = ("AUDIO_INPUT_PROFILE", *_SHIM_LEG_VARS)
+# What --normalize emits instead: the same master toggle and legs, read from
+# the pass's raw environment, plus the mode-file-scoped observe opt-in.
+_SHIM_NORMALIZE_VARS = (*_SHIM_LEG_VARS, "CHIP_REF_OBSERVE")
 _SHIM_ENV_KEYS = (
     "JASPER_AEC_MODE",
     "JASPER_WAKE_LEG_RAW",
@@ -2668,15 +2676,17 @@ def _expected_legs(effective: str | None) -> tuple[str, ...]:
     return tuple(updates[key] for key in _SHIM_ENV_KEYS)
 
 
-def _eval_shim(*shim_args: str) -> dict[str, str]:
+def _eval_shim(
+    *shim_args: str, names: tuple[str, ...] = _SHIM_VARS
+) -> dict[str, str]:
     """Run the shim behind the same `eval` the reconciler uses."""
     shim = shlex.join(
         [sys.executable, "-m", "jasper.cli.audio_input_profile", *shim_args]
     )
     script = (
-        "".join(f"{name}={_SHIM_SENTINEL}\n" for name in _SHIM_VARS)
+        "".join(f"{name}={_SHIM_SENTINEL}\n" for name in names)
         + f'eval "$({shim})"\n'
-        + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in _SHIM_VARS)
+        + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in names)
     )
     shell = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", script],
@@ -2710,6 +2720,52 @@ def test_reconciler_evals_the_python_profile_tables(
     assert _eval_shim(
         f"--profile={profile}", f"--chip-available={chip_available}"
     ) == dict(zip(_SHIM_VARS, (normalized, *_expected_legs(effective))))
+
+
+# The wizard writes only "1"/"0" and "auto"/"disabled", but an operator
+# hand-editing aec_mode.env may write any of these. The shell compares the
+# evaled values against those literals, so anything else silently reads as
+# off — the reduction is the whole reason --normalize exists (ADR-0235 D1).
+_HAND_EDIT_VALUES = ("yes", "true", "on", "ENABLED", " 1 ", "off", "no", "garbage", "")
+_APPLIED_VALUES = frozenset({"1", "0", "auto", "disabled"})
+
+
+@pytest.mark.parametrize("value", _HAND_EDIT_VALUES)
+def test_reconciler_evals_normalized_hand_edits(value: str, tmp_path: Path) -> None:
+    """--normalize reduces every hand-edit spelling to an applied value.
+
+    `jasper.audio_profile_state` owns both vocabularies; the shell carries no
+    second copy, so this drives the same eval the reconciler does and pins the
+    emitted strings against the Python rules rather than against a table here.
+    An empty value is the shell's "nothing written" and takes the build
+    default, which is why RAW is the one leg that comes back on.
+    """
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text(f"JASPER_AEC_CHIP_REF_OBSERVE={value}\n")
+
+    emitted = _eval_shim(
+        "--normalize",
+        "--profile=custom",
+        f"--mode={value}",
+        f"--mode-file={mode_file}",
+        *(
+            f"--{name.lower().replace('_', '-')}={value}"
+            for name in _SHIM_LEG_VARS
+            if name != "AEC_MODE"
+        ),
+        names=_SHIM_NORMALIZE_VARS,
+    )
+
+    applied = "1" if parse_env_bool(value, default=False) else "0"
+    assert emitted == {
+        "AEC_MODE": normalize_aec_mode(value),
+        **{
+            name: "1" if (value == "" and name == "LEG_RAW") else applied
+            for name in _SHIM_NORMALIZE_VARS
+            if name != "AEC_MODE"
+        },
+    }
+    assert set(emitted.values()) <= _APPLIED_VALUES
 
 
 def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None:
