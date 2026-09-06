@@ -1488,7 +1488,7 @@ reconcile_aec_state() {
             > "${STATE_DIR}/usb_mic.env"
         chmod 0644 "${STATE_DIR}/usb_mic.env"
     fi
-    # aec_mode.env has one writer: ensure_mode_file in the reconciler run below.
+    # aec_mode.env has one BASH writer: ensure_mode_file in the run below.
     local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
     systemctl enable jasper-aec-reconcile.service
     if ! /usr/local/sbin/jasper-aec-reconcile --reason install; then
@@ -1896,16 +1896,18 @@ widen_jasper_web_writable_dirs() {
 }
 
 ensure_peer_id() {
-    # The per-install identity peers key on across reboots, and the evidence
+    # The identity peers key on across reboots, and the evidence
     # scripts/_lib.sh's verify_or_record_peer_id aborts a deploy over: a
-    # truncated id (power loss mid-write) must be regenerated, not preserved,
-    # so the existence check is a validity check and the write is atomic.
+    # truncated id (power loss mid-write) must be regenerated, not preserved.
+    # The strip is that reader's twin — it compares after the same `tr -d`,
+    # so a trailing CR can never read as drift in one place and not the other.
     local file="${STATE_DIR}/peer_id" pid tmp
     local uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-    if [[ -f "${file}" && "$(cat "${file}")" =~ ${uuid_re} ]]; then
+    if [[ -f "${file}" ]] \
+        && [[ "$(tr -d '[:space:]' 2>/dev/null < "${file}")" =~ ${uuid_re} ]]; then
         return 0
     fi
-    pid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    pid="$(tr -d '[:space:]' 2>/dev/null < /proc/sys/kernel/random/uuid || true)"
     if [[ ! "${pid}" =~ ${uuid_re} ]]; then
         echo "  ERROR: could not generate peer_id (kernel uuid unreadable)" >&2
         exit 1

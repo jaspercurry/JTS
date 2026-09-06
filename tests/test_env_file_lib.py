@@ -124,15 +124,39 @@ def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
         while not holding.exists():
             assert time.monotonic() < deadline, "holder never took the lock"
             time.sleep(0.01)
-        started = time.monotonic()
         result = _bash(f'jasper_env_file_set "{env_file}" WRITER 2')
-        waited = time.monotonic() - started
     finally:
         holder.wait(timeout=30)
 
     assert result.returncode == 0, result.stderr
-    assert waited >= hold_seconds / 2
+    # An unlocked upsert lands inside the hold and the write-back drops it.
     assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
+
+
+@pytest.mark.parametrize("plant", ["symlink", "fifo"])
+def test_env_file_set_refuses_a_planted_lock(tmp_path: Path, plant: str) -> None:
+    """/var/lib/jasper is group-writable, so a jasper-group process can plant
+    something at the lock path. Bash has no O_NOFOLLOW, so the writer refuses
+    anything that is not a regular file rather than following it — and a FIFO
+    must not hang the open either. Removal condition: the bash writers are
+    gone and only jasper/atomic_io.py (which passes O_NOFOLLOW) writes these.
+    """
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("A=1\n", encoding="utf-8")
+    victim = tmp_path / "victim"
+    victim.write_text("untouched\n", encoding="utf-8")
+    lock = tmp_path / f".{env_file.name}.lock"
+    if plant == "symlink":
+        lock.symlink_to(victim)
+    else:
+        os.mkfifo(lock)
+
+    result = _bash(f'jasper_env_file_set "{env_file}" A 2')
+
+    assert result.returncode == 1
+    assert "event=env_file.lock_refused" in result.stderr
+    assert env_file.read_text(encoding="utf-8") == "A=1\n"
+    assert victim.read_text(encoding="utf-8") == "untouched\n"
 
 
 def test_env_file_set_upserts_and_dedupes(tmp_path: Path) -> None:
