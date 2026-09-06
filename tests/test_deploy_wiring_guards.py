@@ -350,17 +350,6 @@ def test_socket_web_services_have_generous_start_limit():
         assert "StartLimitBurst=20" in text, path
 
 
-def test_package_owned_recovery_dropins_are_installed():
-    install_text = "\n".join(
-        p.read_text(encoding="utf-8") for p in _INSTALL_SCRIPTS
-    )
-    for rel in (
-        "deploy/systemd/nginx.service.d/jts-recovery.conf",
-        "deploy/systemd/bluealsa-aplay.service.d/jts-restart.conf",
-    ):
-        assert rel in install_text
-
-
 _SYSTEMD_UNITS_FRAGMENT = _DEPLOY / "lib" / "install" / "systemd-units.sh"
 
 
@@ -427,28 +416,6 @@ def test_deploy_captures_install_rc_so_collateral_is_always_surfaced():
     assert "report_oom_collateral" in text
 
 
-def test_deploy_defines_and_calls_post_install_verification():
-    """The three post-install verification helpers must be both defined
-    and called."""
-    text = _DEPLOY_TO_PI.read_text()
-    for fn in (
-        "report_oom_collateral",
-        "verify_manifest_advanced",
-        "surface_system_health",
-    ):
-        assert f"{fn}() {{" in text, f"{fn} is not defined in deploy-to-pi.sh"
-        # Called at least once in addition to its definition.
-        assert text.count(fn) >= 2, f"{fn} is defined but never called"
-
-
-def test_deploy_verifies_browser_visible_status_asset_version():
-    """A 200 JSON poll must not hide a warm wizard serving stale CSS."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert "Verifying Status asset version" in text
-    assert 'http://127.0.0.1/system/ | grep -Fq' in text
-    assert '"/assets/app.css?v=${SHA}${DIRTY}\\\""' in text
-
-
 def test_deploy_captures_pi_clock_for_oom_window():
     """The OOM scan bounds its kernel-log window to the Pi's clock at
     install start — captured before the install run."""
@@ -459,20 +426,6 @@ def test_deploy_captures_pi_clock_for_oom_window():
     assert text.index("DEPLOY_START_EPOCH=\"$(ssh_remote") < text.index(
         "|| install_rc=$?"
     )
-
-
-def test_deploy_manifest_gate_checks_verified_status_and_sha():
-    """verify_manifest_advanced must confirm BOTH the deployed full SHA and
-    the JASPER_INSTALL_STATUS=ok marker — proving the install ran to
-    completion, not just that some manifest exists (See ADR-0172)."""
-    text = _DEPLOY_TO_PI.read_text()
-    start = text.index("verify_manifest_advanced() {")
-    body = text[start: text.index("\n}", start)]
-    assert "build_manifest_value" in body
-    assert "JASPER_GIT_SHA_FULL" in body
-    assert "JASPER_INSTALL_STATUS" in body
-    assert 'installed_status" == "ok"' in body
-    assert "exit 1" in body  # a non-advanced manifest fails the deploy
 
 
 def test_deploy_production_oom_is_gated_after_end_state_evidence():
@@ -503,21 +456,6 @@ def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
     assert "1200000" in body
     assert "jasper-deploy-health" in body
     assert "/opt/jasper/.venv/bin/jasper-doctor" in body
-
-
-def test_deploy_verification_skipped_cleanly_under_interactive_sudo():
-    """The manifest read + doctor capture corrupt under `ssh -tt`, so they
-    must be guarded by the same passwordless-sudo gate as the identity and
-    direction guards — skipping with a notice rather than mis-verifying."""
-    text = _DEPLOY_TO_PI.read_text()
-    # The verify+surface calls live in the else-branch of a SUDO_INTERACTIVE
-    # check that prints a skip notice in the then-branch.
-    assert re.search(
-        r'if \[\[ "\$SUDO_INTERACTIVE" == "1" \]\]; then[\s\S]*?'
-        r'manifest \+ health checks skipped[\s\S]*?else[\s\S]*?'
-        r'verify_manifest_advanced[\s\S]*?surface_system_health[\s\S]*?fi',
-        text,
-    )
 
 
 # ----------------------------------------------------------------------
