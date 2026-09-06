@@ -8,12 +8,61 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
+from typing import Any
 
 from ...log_event import log_event
+from ...music_sources import MUSIC_SOURCE_SPECS
 from .. import measurement_hold
 from .. import server as _server
 from .. import volume_ops
 from ._base import ControlHandlerMixin, logger
+
+SOURCE_AVAILABILITY_TTL_SEC = 10.0
+_source_availability_cache: tuple[float, dict[str, Any]] | None = None
+_source_availability_lock = threading.Lock()
+
+
+def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add on/off wizard availability to mux source status.
+
+    Mux knows audio policy; `/sources/` knows whether each renderer is
+    enabled/available. The landing selector needs both, but keeping the
+    merge here avoids teaching mux about systemd/DBus source toggles.
+    """
+    sources = payload.get("sources")
+    if not isinstance(sources, dict):
+        return payload
+    global _source_availability_cache
+    now = time.monotonic()
+    with _source_availability_lock:
+        cached = _source_availability_cache
+        if cached is not None and now - cached[0] < SOURCE_AVAILABILITY_TTL_SEC:
+            wizard_state = cached[1]
+        else:
+            wizard_state = None
+    if wizard_state is None:
+        try:
+            from ...web.sources_setup import _gather_state as _sources_state
+            fresh_state = _sources_state()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("source availability read failed: %s", e)
+            return payload
+        with _source_availability_lock:
+            _source_availability_cache = (now, fresh_state)
+        wizard_state = fresh_state
+    for spec in MUSIC_SOURCE_SPECS:
+        wizard_key = spec.wizard_key
+        mux_key = spec.id.value
+        state = wizard_state.get(wizard_key)
+        if not isinstance(state, dict):
+            continue
+        slot = sources.setdefault(mux_key, {})
+        if isinstance(slot, dict):
+            slot["available"] = bool(state.get("available", True))
+            slot["enabled"] = bool(state.get("enabled", False))
+    return payload
 
 
 class VolumeRoutes(ControlHandlerMixin):
@@ -51,7 +100,7 @@ class VolumeRoutes(ControlHandlerMixin):
             logger.exception("source STATUS failed")
             self._send_json({"error": str(e)}, status=502)
             return
-        self._send_json(_server._augment_source_payload(result))
+        self._send_json(_augment_source_payload(result))
 
     def _post_volume_adjust(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
@@ -359,5 +408,5 @@ class VolumeRoutes(ControlHandlerMixin):
             source=source,
             client=self.address_string(),
         )
-        self._send_json(_server._augment_source_payload(result))
+        self._send_json(_augment_source_payload(result))
         return

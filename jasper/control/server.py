@@ -519,11 +519,6 @@ VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
 _read_volume_state = _volume_ops.read_volume_state
 
-
-def _safe_audio_quality_state() -> dict[str, Any]:
-    return _state_aggregate._safe_audio_quality_state()
-
-
 _USB_LATENCY_APPLY_GRACE_SEC = 30.0
 _usb_latency_applying: tuple[str, float] | None = None
 
@@ -698,10 +693,6 @@ def _start_aec_commission() -> bool:
         "start",
         event_prefix="aec_commission.start",
     )
-
-
-def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return _state_aggregate._augment_source_payload(payload)
 
 
 async def _get_state(
