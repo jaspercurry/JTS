@@ -16,23 +16,27 @@ import asyncio
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from jasper.active_speaker import session_volume_plan
 from jasper.usbsink.volume_bridge import (
     MIXER_ELEMENT_NAME,
     POST_RETRY_BACKOFF_FACTOR,
     POST_RETRY_CEILING_SEC,
     POST_RETRY_INTERVAL_SEC,
+    POST_RETRY_MAX_SEC,
     USBSINK_VOLUME_DB_MAX,
     USBSINK_VOLUME_DB_MIN,
     USBSINK_VOLUME_STEP_DB,
     VolumeBridge,
     VolumeBridgeUnavailable,
 )
+from tests.fake_clock_fixtures import FakeClock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -710,6 +714,13 @@ def test_ceiling_stays_within_handoff_latency_budget():
     assert POST_RETRY_CEILING_SEC <= 10.0
 
 
+def test_post_retry_max_sec_covers_the_measurement_ceiling():
+    """POST_RETRY_MAX_SEC must be at least the guided-measurement's hard
+    wall-clock ceiling, so a slider move declined during a measurement is
+    still re-presented once the hold lifts."""
+    assert POST_RETRY_MAX_SEC >= session_volume_plan.MAX_WALL_CLOCK_CEILING_S
+
+
 async def test_declined_startup_snapshot_is_not_retried(monkeypatch):
     """A restarted bridge re-reads the mixer, but that snapshot predates any
     proof of a host action. Declined, it is dropped rather than re-presented
@@ -780,6 +791,51 @@ async def test_declined_host_move_retry_backoff_is_bounded(monkeypatch):
     assert delays == expected
     assert max(delays) == POST_RETRY_CEILING_SEC
     assert bridge._last_published_pct == 64
+
+
+async def test_declined_host_move_retry_abandons_after_the_cap(monkeypatch):
+    """A move declined for the OTHER reason — volume_coordinator's
+    inactive-source gate, which has no natural expiry — must not retry
+    every POST_RETRY_CEILING_SEC for the life of the process. Once the cap
+    elapses with no acceptance, the retry task completes on its own.
+
+    Elapsed time is wall-clock (time.monotonic()), so this drives it with a
+    FakeClock rather than real sleeps — real scheduler jitter around a
+    millisecond-scale cap would make the attempt count flaky."""
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_CEILING_SEC", 0.001)
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_MAX_SEC", 0.005)
+    clock = FakeClock()
+    monkeypatch.setattr(time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+
+    bridge = _ready_bridge(_FakeMixer())
+    bridge._last_published_pct = 25  # a prior accepted value
+    bridge._initial_observed_pct = 25  # so 64% is a MOVE, not the snapshot
+    attempts = 0
+
+    async def _decline(pct: int, *, initial: bool = False) -> bool:
+        nonlocal attempts
+        attempts += 1
+        return False
+
+    monkeypatch.setattr(bridge, "_post", _decline)
+
+    await bridge._publish(64)
+    task = bridge._retry_task
+    assert task is not None
+
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert task.done()
+    # 1 initial POST from _publish + 5 retries on the fake clock before
+    # elapsed (0.005 s) reaches the 0.005 s cap.
+    assert attempts == 6
+    assert bridge._last_published_pct == 25  # never accepted; unchanged
+
+    calls_at_finish = attempts
+    await _settle()
+    assert attempts == calls_at_finish  # _post not called again after done
 
 
 async def test_new_move_replaces_the_value_being_retried(monkeypatch):
