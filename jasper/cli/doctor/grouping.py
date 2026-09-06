@@ -549,7 +549,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     text = evidence.camilla_config_text()
     if text is None:
         return CheckResult(
-            label, "warn", f"could not read {config_path}",
+            label, "skipped", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
     rate_adjust = _devices_rate_adjust_from_text(text)
@@ -618,7 +618,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     text = evidence.camilla_config_text()
     if text is None:
         return CheckResult(
-            label, "warn", f"could not read {config_path}",
+            label, "skipped", f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
     if not playback_is_pipe(text, SNAPFIFO):
@@ -746,7 +746,7 @@ def check_grouping_channel_pick() -> CheckResult:
         env = _parse_env_file(path.read_text())
     except OSError as e:
         return CheckResult(
-            label, "warn", f"could not read {path}: {e}",
+            label, "skipped", f"could not read {path}: {e}",
             reason=REASON_CHANNEL_PICK_ENV_UNREADABLE,
         )
 
@@ -895,7 +895,7 @@ def check_grouping_tts_lane() -> CheckResult:
             outputd_env = _parse_env_file(outputd_path.read_text())
         except OSError as e:
             return CheckResult(
-                label, "warn", f"could not read {outputd_path}: {e}",
+                label, "skipped", f"could not read {outputd_path}: {e}",
                 reason=REASON_TTS_OUTPUTD_ENV_UNREADABLE,
             )
     outputd_socket = outputd_env.get(OUTPUTD_TTS_SOCKET_ENV, "")

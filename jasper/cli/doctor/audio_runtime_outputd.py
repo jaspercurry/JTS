@@ -29,9 +29,9 @@ from ...route_latency.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCK
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
     _service_state_failure,
+    _systemctl_unavailable_result,
 )
 from .audio_runtime_fanin import _assistant_gain_fault
 
@@ -873,12 +873,7 @@ def check_aec_clock_drift() -> CheckResult:
     label = "AEC clock drift"
     state = evidence.unit_state("jasper-outputd.service")
     if state is None:
-        return CheckResult(
-            label,
-            "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result(label)
     if state.get("load_state") == "not-found" or state.get(
         "unit_file_state"
     ) not in ("enabled", "enabled-runtime"):

@@ -13,7 +13,7 @@ from ...control import control_token
 from ...identity import resolve_hostname
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult, _run
+from ._shared import CheckResult, _run, _systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a web check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
@@ -305,7 +305,7 @@ def _camillagui_listen_addresses() -> list[str] | None:
     None when the `ss` probe itself fails, so the caller reports "can't
     verify" rather than reading a failed probe as "nothing listening";
     `OSError` is caught, not just `FileNotFoundError`, so a non-executable
-    `ss` or a fork failure under memory pressure degrades to a warn too.
+    `ss` or a fork failure under memory pressure degrades to a skip too.
     ``[]`` when the probe ran cleanly and found no LISTEN socket — "never
     installed" and "administratively stopped" alike, neither a live
     exposure."""
@@ -347,7 +347,7 @@ def check_camillagui_loopback() -> CheckResult:
     addresses = _camillagui_listen_addresses()
     if addresses is None:
         return CheckResult(
-            label, "warn", "`ss` probe failed — can't verify bind posture",
+            label, "skipped", "`ss` probe failed — can't verify bind posture",
             reason=REASON_CAMILLAGUI_PROBE_FAILED,
         )
     if not addresses:
@@ -456,10 +456,7 @@ def check_wizard_socket_start_limits() -> CheckResult:
     for unit in WIZARD_UNITS:
         result = _wizard_socket_state(unit)
         if result is None:
-            return CheckResult(
-                label, "skipped", "systemctl unavailable — skipped (not Linux?)",
-                reason=REASON_SYSTEMCTL_UNAVAILABLE,
-            )
+            return _systemctl_unavailable_result(label)
         active, finding = result
         if finding:
             findings.append(finding)

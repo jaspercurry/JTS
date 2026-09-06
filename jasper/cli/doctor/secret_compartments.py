@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from ...accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
 from . import privsep
 from ._registry import doctor_check
-from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
+from ._shared import CheckResult, _systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a compartment check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -373,10 +373,7 @@ def _check_compartment(group: str) -> CheckResult:
     comp = _COMPARTMENT_BY_GROUP[group]
     label = f"secret compartment: {group}"
     if not _systemctl_available():
-        return CheckResult(
-            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result(label)
     member_units = set(comp.member_units)
     members: list[_Identity] = []
     non_members: list[_Identity] = []

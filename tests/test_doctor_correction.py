@@ -17,12 +17,13 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.cli.doctor import correction
+from jasper.cli.doctor import _evidence, _shared, correction
 from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
 from .doctor_test_support import (
+    _make_unit_states_fake,
     _own_group,
     _pretend_group_is_jasper,
     _stub_unit_active_states,
@@ -56,6 +57,17 @@ def test_check_correction_web_service_warns_without_the_socket(
     r = correction.check_correction_web_service()
     assert r.status == "warn"
     assert r.reason == reason
+
+
+def test_check_correction_web_service_skips_without_systemctl(monkeypatch):
+    """Neither unit answered at all — nothing about the socket/service pair
+    was observed, so this must not read as the socket genuinely being down."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    r = correction.check_correction_web_service()
+    assert r.status == "skipped"
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 # ---------- #1860: long-outstanding idle-exit holds
@@ -1142,11 +1154,44 @@ def test_cert_check_compares_the_san_to_the_advertised_name(
     assert r.reason == reason
 
 
-def test_cert_check_warns_when_the_san_cannot_be_read(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("openssl"),
+        # PermissionError stands in for every plain OSError the narrower
+        # (FileNotFoundError, TimeoutExpired) clause would miss — including
+        # a fork failure (ENOMEM) under memory pressure on the Zero 2 W.
+        PermissionError("openssl not executable"),
+        subprocess.TimeoutExpired(cmd=["openssl"], timeout=5),
+    ],
+    ids=["absent", "oserror", "timeout"],
+)
+def test_cert_check_skips_when_the_san_cannot_be_read(
+    monkeypatch, tmp_path, failure,
+):
     _with_cert(monkeypatch, tmp_path)
     _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
 
-    with patch("subprocess.run", side_effect=FileNotFoundError("openssl")):
+    with patch("subprocess.run", side_effect=failure):
+        r = correction.check_correction_cert_hostname()
+
+    assert r.status == "skipped"
+    assert r.reason == correction.REASON_CERT_SAN_UNREADABLE
+
+
+def test_cert_check_warns_when_openssl_exits_nonzero(monkeypatch, tmp_path):
+    """openssl launched, unlike the skip cases above — but a non-zero exit
+    is not unambiguously "read the bytes and rejected them": an
+    unprivileged run, or a deploy rewriting the cert between `is_file()`
+    and openssl's own open, exits non-zero too. Same reason as the skip
+    arm, different status: this one ran."""
+    _with_cert(monkeypatch, tmp_path)
+    _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
+
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(returncode=1, stdout="", stderr="bad cert"),
+    ):
         r = correction.check_correction_cert_hostname()
 
     assert r.status == "warn"
