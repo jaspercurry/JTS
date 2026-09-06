@@ -93,12 +93,13 @@ from jasper.research import ResearchResult, ResearchScheduler
 from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry, UntrustedContentMonitor
 from jasper.tools.packs import ToolDeps, register_packs
-from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_persistence import VolumePersistence
 from jasper.weather import WeatherClient
 
 from . import tts
+from .trace_registry import traced_registry
+from .turn_trace import TurnTrace, reset_active, set_active
 
 logger = logging.getLogger(__name__)
 _CLEANUP_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
