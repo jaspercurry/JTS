@@ -50,7 +50,7 @@ FLUSH_LEVEL = logging.WARNING
 # which buries the journal it was meant to illuminate (2026-09-03: the
 # Gemini reconnect churn on jts4 produced 42k of 44k lines/day). Explicit
 # dumps (`dump()`, SIGUSR1, "flag that") are never rate-limited.
-AUTO_FLUSH_MIN_INTERVAL_SEC = 3600.0
+AUTO_FLUSH_MIN_INTERVAL_SEC = 21600.0
 # Hard cap on tracked signatures. Only binds when a daemon logs WARNING+
 # through f-strings (one signature per call, not per call site) from many
 # places; over the cap the map is aged and, failing that, reset.

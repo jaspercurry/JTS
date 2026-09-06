@@ -265,16 +265,25 @@ def _access_log_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRec
             "/healthz", {"Host": "evil.example"}, 403, 1,
             id="non_200_healthz_still_logged",
         ),
+        pytest.param(
+            "/system/snapshot", None, 200, 0, id="200_system_snapshot_not_logged",
+        ),
+        pytest.param(
+            "/system/snapshot", {"Host": "evil.example"}, 403, 1,
+            id="non_200_system_snapshot_still_logged",
+        ),
         pytest.param("/volume", None, 200, 1, id="other_path_still_logged"),
     ],
 )
-def test_access_log_skips_only_200_healthz(
+def test_access_log_skips_only_200_on_quiet_paths(
     server_with_coordinator, caplog, path, headers, expected_status,
     expected_info_records,
 ):
     # The supervisor's own successful liveness self-poll otherwise fills
     # ~45% of this daemon's idle journal volume (measured on jts4,
-    # jts.local, jts3 — see jasper/control/server.py Handler.log_request).
+    # jts.local, jts3). The dashboard's 5s /system/snapshot poll adds up
+    # to ~720 lines/hour per open tab on top of that (see
+    # jasper/control/server.py Handler.log_request).
     base, _ = server_with_coordinator
     with caplog.at_level("INFO", logger="jasper.control.server"):
         status, _ = _get(f"{base}{path}", headers=headers)

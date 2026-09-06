@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly read-only journal-health digest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jasper-journal-review
+Nice=19
+# Type=oneshot disables systemd's start timeout by default; bound it so a
+# wedged scan can't run forever as root and doesn't make the timer skip
+# later weeks as "already active".
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
