@@ -4,12 +4,11 @@
 
 """The one logging bootstrap — and the one place the journal is redacted.
 
-Every process that installs a journal handler installs it through
-:func:`configure_logging`, so that handler always carries
-:class:`RedactingFilter`, which owns how a record is scrubbed
-(non-negotiable 3; ADR-0243 owns what "credential-shaped" means).
-``tests/test_logging_setup.py`` holds the exhaustive list of the callers
-that still bootstrap for themselves — the parked tuning-zone CLIs — and
+Every process that installs a journal handler goes through
+:func:`configure_logging` and carries :class:`RedactingFilter`
+(non-negotiable 3; ADR-0243 owns what "credential-shaped" means) —
+except the tuning-zone CLIs and one web wizard whose journals are not
+redacted. ``tests/test_logging_setup.py`` holds that exhaustive list and
 fails on any addition to it.
 """
 from __future__ import annotations
