@@ -81,6 +81,17 @@ def overlay_declared_anywhere(content: str, overlay: str) -> bool:
     return overlay.lower() in _overlay_values(content.splitlines())
 
 
+def managed_block_present(content: str, begin_marker: str) -> bool:
+    """Whether a managed block's ``begin_marker`` line (say
+    ``i2s_hat.I2S_HAT_BLOCK_BEGIN``) is still in ``content``.
+
+    A plain marker scan, not either managed block's full BEGIN/END parser: a
+    presence-only caller (the I2S HAT orphan-block doctor check) must keep
+    answering even over a hand-corrupted block the full parser would raise on.
+    """
+    return any(line.strip() == begin_marker for line in content.splitlines())
+
+
 def boot_config_path() -> Path:
     """``config.txt``'s resolved path, honoring ``JTS_BOOT_CONFIG_FILE``."""
 

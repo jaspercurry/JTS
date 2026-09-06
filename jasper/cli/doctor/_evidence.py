@@ -267,6 +267,16 @@ class Evidence:
 
         return self.get("output_hardware_state", load_state)
 
+    def output_hardware_degraded(self) -> bool:
+        """Whether the reconciler's last pass hit a probe it depends on
+        being unavailable (the marker carries no other detail — see
+        ``output_hardware.degraded_marker_path``)."""
+        from ...output_hardware import degraded_marker_path
+
+        return self.get(
+            "output_hardware_degraded", lambda: degraded_marker_path().is_file(),
+        )
+
     def output_topology(self) -> Any:
         from ...output_topology import load_output_topology
 

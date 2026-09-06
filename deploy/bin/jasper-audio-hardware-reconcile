@@ -258,7 +258,16 @@ EOF
 log_event() {
     local name="$1"
     shift
-    echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
+    # A key appears once per line: several callers already carry their own
+    # `reason=<cause>` (why THIS event happened), distinct from the run's own
+    # `--reason` ($REASON, why the PASS happened). Prepending ours only when
+    # theirs is absent keeps every line to one `reason=` without renaming
+    # either vocabulary.
+    if [[ " $* " == *" reason="* ]]; then
+        echo "event=audio_hardware_reconcile.${name} $*" >&2
+    else
+        echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
+    fi
 }
 
 while [[ $# -gt 0 ]]; do

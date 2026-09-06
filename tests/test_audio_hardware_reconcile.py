@@ -2849,7 +2849,7 @@ def declare_slot_floor(monkeypatch):
     [
         pytest.param(
             APPLE_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf "
             "result=unchanged output_dac_id=apple_usb_c_dongle period_frames=128 "
             "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
             "ring_b_channels=2 ring_active_channels=2 topology=",
@@ -2857,7 +2857,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             DAC8X_STUDIO_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test result=skipped "
+            "event=audio_hardware_reconcile.ring_conf result=skipped "
             "output_dac_id=hifiberry_dac8x_studio period_frames=none "
             "previous_period_frames=none sample_format=none ring_a_channels=none "
             "ring_b_channels=none ring_active_channels=none topology=none "
@@ -2866,7 +2866,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             DAC8X_AND_APPLE_LISTING,
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf "
             "result=unchanged output_dac_id=hifiberry_dac8x period_frames=128 "
             "previous_period_frames=128 sample_format=S32_LE ring_a_channels=2 "
             "ring_b_channels=2 ring_active_channels=2 topology=",
@@ -2874,7 +2874,7 @@ def declare_slot_floor(monkeypatch):
         ),
         pytest.param(
             "",
-            "event=audio_hardware_reconcile.ring_conf reason=test "
+            "event=audio_hardware_reconcile.ring_conf "
             "result=skipped reason=dac_unrecognized",
             id="dac-unrecognized",
         ),
@@ -3058,19 +3058,14 @@ def test_render_subcommand_reports_the_wire_and_the_topology_it_resolved(
 
 
 def _flat_cutover_event(stderr: str) -> dict[str, str]:
-    """The flat_cutover log line, parsed into its `key=value` fields.
-
-    `log_event` emits `event=<name> reason=$REASON <rest>`, so the run reason
-    is interleaved ahead of the function's own keys and an adjacent
-    `flat_cutover result=...` substring silently never matches.
-    """
+    """The flat_cutover log line, parsed into its `key=value` fields."""
     prefix = "event=audio_hardware_reconcile.flat_cutover "
     lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
     assert len(lines) == 1, f"expected exactly one flat_cutover event, got {lines}"
     fields: dict[str, str] = {}
     for token in lines[0][len(prefix):].split():
         key, _, value = token.partition("=")
-        fields.setdefault(key, value)  # first `reason=` is the run reason
+        fields[key] = value
     return fields
 
 
@@ -3223,9 +3218,19 @@ def test_reconcile_without_the_sound_cli_skips_the_render_instead_of_failing(
     )
 
     assert result.returncode == 0, result.stderr
-    assert _flat_cutover_event(result.stderr)["result"] == "skipped"
-    # The run reason wins the first `reason=`; the skip cause trails it.
-    assert "reason=cli_unavailable" in result.stderr
+    fields = _flat_cutover_event(result.stderr)
+    assert fields["result"] == "skipped"
+    assert fields["reason"] == "cli_unavailable"
+    # A key appears once per line: the run's own `--reason test` must not
+    # ALSO show up as a second `reason=` on this event.
+    line = next(
+        line
+        for line in result.stderr.splitlines()
+        if line.startswith("event=audio_hardware_reconcile.flat_cutover ")
+    )
+    assert [tok for tok in line.split() if tok.startswith("reason=")] == [
+        "reason=cli_unavailable"
+    ]
 
 
 # --- the content-lane format axis ---------------------------------------------

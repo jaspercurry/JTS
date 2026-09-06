@@ -2,24 +2,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-doctor: the saved I2S DAC's overlay line survives a reboot (#2575)."""
+"""jasper-doctor: the saved I2S DAC's overlay line survives a reboot (#2575),
+and a managed I2S HAT block does not outlive the HAT it was written for
+(#4027 R3)."""
 
 from __future__ import annotations
 
 import pytest
 
+from jasper.audio_hardware.i2s_hat import I2S_HAT_BLOCK_BEGIN, I2S_HAT_BLOCK_END
 from jasper.cli.doctor.boot_config import (
     REASON_BOOT_CONFIG_UNREADABLE,
+    REASON_ORPHAN_MANAGED_I2S_BLOCK,
     REASON_OVERLAY_MISSING,
     REASON_OVERLAY_PRESENT,
     REASON_OVERLAY_PRESENT_SCOPED,
     REASON_SKIPPED,
     check_i2s_dac_overlay_persists,
+    check_i2s_hat_block_orphaned,
 )
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     save_output_topology,
+)
+
+_MANAGED_I2S_BLOCK = (
+    f"[all]\n{I2S_HAT_BLOCK_BEGIN}\n"
+    "dtoverlay=hifiberry-dac8x\n"
+    f"{I2S_HAT_BLOCK_END}\n"
 )
 
 
@@ -122,3 +133,64 @@ def test_i2s_dac_check_skips_with_no_saved_topology(monkeypatch, tmp_path):
 
     assert result.status == "ok"
     assert result.reason == REASON_SKIPPED
+
+
+# ---------------------------------- orphaned managed I2S HAT block ----------
+
+
+def test_i2s_hat_block_orphaned_warns_when_no_hat_is_managed(monkeypatch, tmp_path):
+    """A HAT that was only ever auto-detected, once removed, leaves its block
+    behind forever (i2s_hat_apply never touches an unmanaged block, #4027 R3)."""
+    boot_config = tmp_path / "config.txt"
+    boot_config.write_text(_MANAGED_I2S_BLOCK, encoding="utf-8")
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(boot_config))
+    monkeypatch.setattr(
+        "jasper.cli.doctor.boot_config.i2s_hat_managed", lambda: False
+    )
+
+    result = check_i2s_hat_block_orphaned()
+
+    assert result.status == "warn"
+    assert result.reason == REASON_ORPHAN_MANAGED_I2S_BLOCK
+
+
+def test_i2s_hat_block_present_and_managed_is_ok(monkeypatch, tmp_path):
+    boot_config = tmp_path / "config.txt"
+    boot_config.write_text(_MANAGED_I2S_BLOCK, encoding="utf-8")
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(boot_config))
+    monkeypatch.setattr(
+        "jasper.cli.doctor.boot_config.i2s_hat_managed", lambda: True
+    )
+
+    result = check_i2s_hat_block_orphaned()
+
+    assert result.status == "ok"
+    assert result.reason != REASON_ORPHAN_MANAGED_I2S_BLOCK
+
+
+def test_i2s_hat_block_orphan_check_skips_the_hat_read_with_no_block(
+    monkeypatch, tmp_path
+):
+    boot_config = tmp_path / "config.txt"
+    boot_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(boot_config))
+    monkeypatch.setattr(
+        "jasper.cli.doctor.boot_config.i2s_hat_managed",
+        lambda: (_ for _ in ()).throw(AssertionError("must not probe the HAT")),
+    )
+
+    result = check_i2s_hat_block_orphaned()
+
+    assert result.status == "ok"
+    assert result.reason != REASON_ORPHAN_MANAGED_I2S_BLOCK
+
+
+def test_i2s_hat_block_orphan_check_warns_when_boot_config_is_unreadable(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(tmp_path / "absent-config.txt"))
+
+    result = check_i2s_hat_block_orphaned()
+
+    assert result.status == "warn"
+    assert result.reason == REASON_BOOT_CONFIG_UNREADABLE

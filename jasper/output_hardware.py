@@ -107,6 +107,14 @@ def state_path(path: str | Path | None = None) -> Path:
     )
 
 
+def degraded_marker_path(path: str | Path | None = None) -> Path:
+    """The reconciler's degraded-pass marker, beside the state file it
+    describes (mirrors ``RECONCILE_DEGRADED_MARKER`` in
+    ``deploy/bin/jasper-audio-hardware-reconcile``). The file is a sentinel
+    only — always empty; its presence, not its content, is the signal."""
+    return state_path(path).parent / "reconcile.degraded"
+
+
 def _issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
 

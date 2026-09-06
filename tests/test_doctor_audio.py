@@ -354,6 +354,24 @@ def test_output_hardware_state_warns_without_a_record():
     assert result.reason == audio.REASON_OUTPUT_HARDWARE_STATE_UNAVAILABLE
 
 
+def test_output_hardware_reconcile_degraded_marker_warns():
+    evidence.seed("output_hardware_degraded", True)
+
+    result = audio.check_output_hardware_reconcile_degraded()
+
+    assert result.status == "warn"
+    assert result.reason == audio.REASON_OUTPUT_HARDWARE_DEGRADED
+
+
+def test_output_hardware_reconcile_not_degraded_carries_no_degraded_reason():
+    evidence.seed("output_hardware_degraded", False)
+
+    result = audio.check_output_hardware_reconcile_degraded()
+
+    assert result.status == "ok"
+    assert result.reason != audio.REASON_OUTPUT_HARDWARE_DEGRADED
+
+
 # ------------------------------------------------ ALSA shorthand mic lookup
 
 

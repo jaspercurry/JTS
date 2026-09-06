@@ -78,6 +78,24 @@ def detected_i2s_hat_profile(
     return profile
 
 
+def i2s_hat_managed(
+    *,
+    intent_path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
+    hat_dir: str | Path = DEFAULT_HAT_DIR,
+) -> bool:
+    """Whether anything currently justifies JTS owning the I2S HAT boot
+    block: a self-identifying fitted HAT, or an intent file the operator has
+    written (the file's mere existence is what counts -- even one recording
+    an explicit "None" choice). Mirrors ``manage_hat`` in
+    ``usb_port_role.reconcile_boot_config``, the one function that actually
+    renders the block, so a caller built on this can never see an answer the
+    next reconcile pass would contradict (the orphan-block doctor check)."""
+    return (
+        detected_i2s_hat_profile(hat_dir) is not None
+        or Path(intent_path).is_file()
+    )
+
+
 def selectable_i2s_hat_profiles() -> tuple[DacProfile, ...]:
     """The HATs an operator names by hand: boot-managed, no EEPROM of their own.
 
