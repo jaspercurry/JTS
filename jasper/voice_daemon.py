@@ -1013,10 +1013,10 @@ class WakeLoop:
         self._fire_and_forget: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
         # Populated by run() when it starts the leg/manual-mic consumer
-        # loops; empty before run() starts and never rebuilt afterward
-        # (see session_status's wake_legs fallback).
+        # loops; emptied again by its finally sweep. session_status's
+        # wake_legs derives from _leg_tasks (see there).
         self._leg_tasks: dict[str, asyncio.Task[None]] = {}
-        self._manual_tasks: dict[str, asyncio.Task[None]] = {}
+        self._manual_tasks: list[asyncio.Task[None]] = []
 
         # Room-correction measurement window. When set, mic frames are
         # dropped (no wake-word feed, no session forward) and outputd is
@@ -2313,16 +2313,26 @@ class WakeLoop:
         Cancellation (shutdown) is not a death. No restart, no cue — just
         the event, so a leg going deaf is visible in the journal instead
         of surfacing only as asyncio's silent "exception never retrieved"
-        warning at task GC. A future revision may replace the leg/manual
-        task pair with one `asyncio.TaskGroup`; deferred for now.
+        warning at task GC. An `asyncio.TaskGroup` would cancel every
+        sibling leg the instant one fails; a dead leg must not take the
+        others down, so each task is tracked and reaped independently
+        instead.
         """
         if task.cancelled():
             return
         exc = task.exception()
-        if exc is not None:
+        if exc is None:
+            if self._stop_event.is_set():
+                return
             log_event(
-                logger, "wake.leg_died", leg=name, exc_type=type(exc).__name__,
+                logger, "wake.leg_died", leg=name, exc_type="none",
+                level=logging.WARNING,
             )
+            return
+        log_event(
+            logger, "wake.leg_died", leg=name, exc_type=type(exc).__name__,
+            level=logging.WARNING,
+        )
 
     async def run(self) -> None:
         # One wake-only consumer per non-primary leg; the primary "on" leg
@@ -2341,7 +2351,7 @@ class WakeLoop:
                 lambda _t, _name=_leg_name: self._on_leg_task_done(_name, _t)
             )
             self._leg_tasks[_leg_name] = _leg_task
-        self._manual_tasks = {}
+        self._manual_tasks = []
         for _source_id in self._manual_mics:
             _manual_task = asyncio.create_task(
                 self._manual_mic_loop(_source_id),
@@ -2350,7 +2360,7 @@ class WakeLoop:
             _manual_task.add_done_callback(
                 lambda _t, _name=_source_id: self._on_leg_task_done(_name, _t)
             )
-            self._manual_tasks[_source_id] = _manual_task
+            self._manual_tasks.append(_manual_task)
         if self._leg_tasks:
             logger.info(
                 "multi-leg wake enabled: %s", " + ".join(self._legs.keys()),
@@ -2465,7 +2475,7 @@ class WakeLoop:
             # _fire_and_forget. Stop producers first so the cancellation sweep
             # below observes every task created during shutdown.
             _all_tasks = (
-                *self._leg_tasks.values(), *self._manual_tasks.values(),
+                *self._leg_tasks.values(), *self._manual_tasks,
             )
             for _t in _all_tasks:
                 _t.cancel()
@@ -2474,6 +2484,10 @@ class WakeLoop:
                     await _t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            # Empty both containers so session_status's wake_legs falls back
+            # to the configured list, matching its state before run() started.
+            self._leg_tasks = {}
+            self._manual_tasks = []
             await self._cancel_fire_and_forget_tasks()
 
     async def _push_to_talk_keepalive_ticks(self) -> "AsyncIterator[None]":
@@ -4303,14 +4317,12 @@ class WakeLoop:
         """
         # Legs whose consumer loop is alive right now, not merely
         # configured — /aec reports configured intent from aec_mode.env.
-        # Before run() starts (self._leg_tasks empty; the for_tests seam
-        # never calls it), falls back to the configured set.
-        _wake_legs = (
-            [
-                leg for leg in self._legs
-                if leg == "on" or not self._leg_tasks[leg].done()
-            ] if self._leg_tasks else list(self._legs)
-        )
+        _wake_legs = [
+            leg for leg in self._legs
+            if leg == "on"
+            or leg not in self._leg_tasks
+            or not self._leg_tasks[leg].done()
+        ]
         return {
             "state": self._state.name,
             "input_ended": self._input_ended,
