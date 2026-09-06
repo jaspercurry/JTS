@@ -82,7 +82,13 @@ def voice_input_absent_marker_path() -> str:
 
 
 def voice_input_absent_marker_lines() -> list[str]:
-    """Marker body lines; ``[]`` when it is missing or unreadable."""
+    """Marker body lines; ``[]`` when it is missing or unreadable.
+
+    The single read of the file. What the body *means* — the ``reason=`` code
+    vocabulary, its ``detail=`` prose, and which codes are transient parks —
+    belongs to ``jasper.mic_presence``, which cannot be imported from here
+    (it imports this module).
+    """
     try:
         return Path(voice_input_absent_marker_path()).read_text().splitlines()
     except OSError:
@@ -102,15 +108,3 @@ def voice_parked_no_mic() -> bool:
         return os.path.exists(voice_input_absent_marker_path())
     except OSError:
         return False
-
-
-def voice_park_is_transient() -> bool:
-    """True when the current park is a transient round trip — e.g. the
-    chip-AEC validation bounce (``jasper-aec-reconcile``'s
-    ``activate_managed_chip_aec``, ADR-0239) — rather than a real absence of
-    voice input. Meaningless unless ``voice_parked_no_mic()`` is also true,
-    and fail-safe to False so a real absence can never be misread as
-    transient and lose its shutdown cue.
-    """
-    lines = voice_input_absent_marker_lines()
-    return any(line.strip() == "transient=1" for line in lines)

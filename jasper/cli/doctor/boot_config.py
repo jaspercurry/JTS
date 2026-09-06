@@ -12,13 +12,13 @@ warns ahead of that reboot instead of after it.
 """
 from __future__ import annotations
 
-from ...audio_hardware.dac import by_id
-from ...audio_hardware.usb_port_role import (
+from ...audio_hardware.config_txt import (
     boot_config_path,
-    configured_i2s_overlays,
     overlay_declared_anywhere,
     read_boot_config_or_none,
 )
+from ...audio_hardware.dac import by_id
+from ...audio_hardware.i2s_hat import configured_i2s_overlays
 from ...control.transport_park import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
 from ...output_topology import OutputTopologyError
 from ._evidence import evidence

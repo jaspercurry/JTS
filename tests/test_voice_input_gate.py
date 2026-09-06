@@ -37,6 +37,10 @@ import pytest
 from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.audio_io import InputDeviceUnavailable
 from jasper.env_load import ENV_FILES
+from jasper.mic_presence import (
+    MIC_ABSENT_CHIP_AEC_VALIDATING,
+    MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
+)
 from jasper.voice.input_presence import (
     DEFAULT_VOICE_INPUT_ABSENT_MARKER,
     voice_input_absent_marker_path,
@@ -278,7 +282,7 @@ def test_voice_parked_no_mic_reads_marker(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
     assert voice_input_absent_marker_path() == str(marker)
     assert voice_parked_no_mic() is False
-    marker.write_text("reason=test\n")
+    marker.write_text(f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n")
     assert voice_parked_no_mic() is True
     marker.unlink()
     assert voice_parked_no_mic() is False
@@ -315,7 +319,7 @@ def test_check_mic_capture_reports_expected_idle_when_marked(
 
     monkeypatch.setattr(audio, "_parked_follower_result", lambda _label: None)
     marker = tmp_path / "voice-input-absent"
-    marker.write_text("reason=test\n")
+    marker.write_text(f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
 
     # Marker present → early ok return, before any device access, so a
@@ -333,10 +337,11 @@ def _shutting_down_daemon(
 
     marker = tmp_path / "voice-input-absent"
     if marked:
-        body = "reason=no candidate microphone present\n"
-        if transient:
-            body += "transient=1\n"
-        marker.write_text(body)
+        code = (
+            MIC_ABSENT_CHIP_AEC_VALIDATING if transient
+            else MIC_ABSENT_NO_LOCAL_OR_ACCESSORY
+        )
+        marker.write_text(f"reason={code}\n")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
     wake_loop = WakeLoop.for_tests()
     wake_loop._cues = _SpyCues()
@@ -362,8 +367,8 @@ async def test_the_mic_loss_cue_follows_the_marker_at_shutdown(
     So the marker at shutdown decides, and a plain restart stays silent —
     including in the journal, so `voice.mic_loss_cue` means a real loss.
     transient-park is the chip-AEC validation bounce's own park
-    (`transient=1`): marked, so it still logs, but never a real absence, so
-    the cue is skipped."""
+    (`reason=chip_aec_validating`, a transient code): marked, so it still
+    logs, but never a real absence, so the cue is skipped."""
     from jasper.voice import daemon_main
 
     wake_loop = _shutting_down_daemon(

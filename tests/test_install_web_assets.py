@@ -215,10 +215,7 @@ def test_prune_survives_ambient_utf8_locale(tmp_path: Path):
     The probe below proves this platform's `comm` can actually express
     that desync before trusting a pass here as a regression guard (BSD
     `comm` never collates by locale; glibc falls back to C silently
-    when the candidate locale isn't generated) — on-box proof against
-    the real pruner is recorded on #4236 (GNU coreutils 9.7, jts3,
-    en_GB.UTF-8: unfixed exit 1, 3/5 live files deleted; fixed exit 0,
-    5/5 present).
+    when the candidate locale isn't generated).
     """
     for lang in ("en_GB.UTF-8", "en_US.UTF-8"):
         if _comm_expresses_utf8_collation_bug(lang):
