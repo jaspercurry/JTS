@@ -641,8 +641,13 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
-   - Sweep an operator-seeded LLM API key or Google Routes key out of
-     /etc/jasper/jasper.env into the jasper-secrets compartment.
+   - Create, then re-assert ownership and modes on, the
+     /var/lib/jasper-secrets compartment holding the assistant provider
+     API keys jasper-voice reads, relocating any operator-seeded LLM API
+     key or Google Routes key out of the broad /etc/jasper/jasper.env.
+   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
+     integration-secret compartment holding the HA token and Spotify
+     credentials/caches.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, WiFi guardian recovery, and correction TLS CA/cert files.
@@ -854,9 +859,9 @@ install_deps() {
     # package, which would enable a global dnsmasq.service. The scoped,
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
     # hardware-gated USB management network.
-    # rustc + cargo are required to build the Rust audio daemons
-    # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
-    # our crate's rust-version=1.75 floor.
+    # rustc + cargo are required to build the Rust audio daemons (rust/jasper-fanin/,
+    # rust/jasper-outputd/). Trixie ships rustc 1.85; the effective floor is 1.82
+    # (jasper-daemon, jasper-tts-protocol).
     # meson + ninja-build are installed ahead of time for the optional
     # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
     # binding; an explicit Advanced → Software action compiles v2 later in a
@@ -2145,13 +2150,13 @@ main() {
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
+        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
+        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         migrate_calibration_sign_convention  # vendor mic cal files are response curves
         ensure_output_hardware_state
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
@@ -2197,6 +2202,8 @@ main() {
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
+    reassert_secrets_compartment_perms
+    reassert_intsecrets_compartment_perms
     migrate_calibration_sign_convention  # vendor mic cal files are response curves
     ensure_output_hardware_state
     render_outputd_cutover_config
@@ -2212,6 +2219,7 @@ main() {
     install_peering_template
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
+    migrate_wifi_guardian
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
