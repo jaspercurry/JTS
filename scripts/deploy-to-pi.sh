@@ -8,13 +8,6 @@
 # the git SHA/branch up front so the /system dashboard's "Software"
 # card shows the real version instead of "unknown".
 #
-# The standard rsync excludes .git/ for size + speed, which means
-# install.sh can't read git info on the Pi side. This wrapper captures
-# the info on the laptop *before* rsync and passes it through as
-# JASPER_DEPLOY_SHA / JASPER_DEPLOY_SHA_FULL / JASPER_DEPLOY_BRANCH
-# env vars on the sudo invocation. install.sh's build-manifest block
-# honors those over its local-git fallback.
-#
 # Usage:
 #   bash scripts/deploy-to-pi.sh
 #   PI_HOST=192.168.1.42 bash scripts/deploy-to-pi.sh
@@ -92,8 +85,8 @@ run_remote_sudo() {
 
 # One remote shell body plus its arguments, quoted for whatever login
 # shell sshd starts. The body must contain NO newline: printf %q renders
-# one as bash-only $'\n', which a /bin/sh login shell cannot parse — so
-# build bodies with `printf -v body '%s; '`, never '%s\n'.
+# one as bash-only $'\n', which /bin/sh cannot parse — build bodies with
+# `printf -v body '%s; '`, never '%s\n'.
 remote_sh() {
     local name="$1" body="$2"
     shift 2
@@ -664,9 +657,8 @@ INSTALL_POLL_INTERVAL_SEC=10
 # A Zero 2 W cold Rust build is the slowest supported install.
 INSTALL_POLL_CEILING_SEC=7200
 run_install_detached() {
-    local body launch_rc=0 chunk status transcript
+    local body launch_rc=0 chunk status transcript log="~${PI_USER}/.jts-install.log"
     local load active sub result main size ended offset=1 deadline down_since=0
-    local log="~${PI_USER}/.jts-install.log"
     install_rc=1
     INSTALL_OUTCOME=unknown
 
