@@ -4,6 +4,7 @@
 
 """Narrow shared helpers for the jasper-doctor domain test modules."""
 
+import json
 import os
 
 from jasper.cli import doctor
@@ -51,6 +52,54 @@ def _make_unit_states_fake(
         return out
 
     return fake
+
+
+def _fake_unit_states(
+    active: dict[str, str] | None = None,
+    *,
+    load: dict[str, str] | None = None,
+    default_active="inactive",
+    default_load="loaded",
+):
+    """A ``_evidence.read_unit_states`` stand-in: ``active``/``load`` map a
+    unit name to its ActiveState/LoadState word; any unit not named gets the
+    matching default. Both the batched roster read and a per-unit fallback
+    read route through this one fake, so it must answer for any units list."""
+    active = active or {}
+    load = load or {}
+
+    def fake(units, *, timeout=2.0):
+        return {
+            u: {
+                "unit": u,
+                "load_state": load.get(u, default_load),
+                "active_state": active.get(u, default_active),
+                "sub_state": None,
+                "unit_file_state": None,
+                "result": None,
+                "n_restarts": 0,
+                "main_pid": 0,
+                "tasks_current": None,
+                "memory_current_bytes": None,
+                "cpu_usage_nsec": None,
+                "control_group": "",
+            }
+            for u in units
+        }
+
+    return fake
+
+
+def _bootloop_marker(monkeypatch, tmp_path, payload) -> None:
+    """Point ``JASPER_BOOTLOOP_MARKER_FILE`` at a per-test path and write
+    ``payload`` there. ``None`` skips the write (models a marker that was
+    never created); a ``str`` is written verbatim (models malformed JSON,
+    e.g. ``"{torn"``); anything else is JSON-serialized."""
+    p = tmp_path / "bootloop-state.json"
+    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
+    if payload is None:
+        return
+    p.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
 
 
 def _registered_check_names() -> set[str]:

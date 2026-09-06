@@ -25,43 +25,8 @@ from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli.doctor import _evidence, _shared, usbsink
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_auto as _ca
+from .doctor_test_support import _fake_unit_states
 from .fanin_env_fixtures import declare_fanin_env
-
-
-def _fake_unit_states(
-    active: dict[str, str] | None = None,
-    *,
-    load: dict[str, str] | None = None,
-    default_active="inactive",
-    default_load="loaded",
-):
-    """A ``_evidence.read_unit_states`` stand-in: ``active``/``load`` map a
-    unit name to its ActiveState/LoadState word; any unit not named gets the
-    matching default. Both the batched roster read and a per-unit fallback
-    read route through this one fake, so it must answer for any units list."""
-    active = active or {}
-    load = load or {}
-
-    def fake(units, *, timeout=2.0):
-        return {
-            u: {
-                "unit": u,
-                "load_state": load.get(u, default_load),
-                "active_state": active.get(u, default_active),
-                "sub_state": None,
-                "unit_file_state": None,
-                "result": None,
-                "n_restarts": 0,
-                "main_pid": 0,
-                "tasks_current": None,
-                "memory_current_bytes": None,
-                "cpu_usage_nsec": None,
-                "control_group": "",
-            }
-            for u in units
-        }
-
-    return fake
 
 # ----------------------------------------------------------------------
 # shared USB data role

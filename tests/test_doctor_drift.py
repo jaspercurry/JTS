@@ -10,7 +10,6 @@ deploy/install.sh installed against what the running kernel and systemd report.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +18,7 @@ import pytest
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import drift as doctor_drift
 
-from .doctor_test_support import _make_unit_states_fake
+from .doctor_test_support import _bootloop_marker, _make_unit_states_fake
 
 
 _OOM_WANT = doctor_drift._UNIT_DIRECTIVES["OOMScoreAdjust"]
@@ -235,12 +234,6 @@ def test_degraded_directive_read_is_skipped_never_a_silent_pass():
     assert items == []
     assert checked == healthy_checked - len(_ACTION_WANT)
     assert notes
-
-
-def _bootloop_marker(monkeypatch, tmp_path, payload) -> None:
-    p = tmp_path / "bootloop-state.json"
-    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
-    p.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_bootloop_guard_tripped_units_are_not_reported_as_drift(

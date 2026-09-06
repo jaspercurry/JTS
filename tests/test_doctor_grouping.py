@@ -18,7 +18,11 @@ from jasper.tts_routing import (
     VOICE_TTS_SOCKET_ENV,
 )
 
-from .doctor_test_support import _grouping_cfg, _registered_check_names
+from .doctor_test_support import (
+    _fake_unit_states,
+    _grouping_cfg,
+    _registered_check_names,
+)
 
 _LEADER = dict(enabled=True, role="leader", channel="left", bond_id="x")
 _FOLLOWER = dict(
@@ -28,40 +32,6 @@ _FOLLOWER = dict(
     bond_id="living-room",
     leader_addr="192.168.1.50",
 )
-def _fake_unit_states(
-    active: dict[str, str] | None = None,
-    *,
-    load: dict[str, str] | None = None,
-    default_active="inactive",
-    default_load="loaded",
-):
-    """A ``_evidence.read_unit_states`` stand-in: ``active``/``load`` map a
-    unit name to its ActiveState/LoadState word; any unit not named gets the
-    matching default. Both the batched roster read and a per-unit fallback
-    read route through this one fake, so it must answer for any units list."""
-    active = active or {}
-    load = load or {}
-
-    def fake(units, *, timeout=2.0):
-        return {
-            u: {
-                "unit": u,
-                "load_state": load.get(u, default_load),
-                "active_state": active.get(u, default_active),
-                "sub_state": None,
-                "unit_file_state": None,
-                "result": None,
-                "n_restarts": 0,
-                "main_pid": 0,
-                "tasks_current": None,
-                "memory_current_bytes": None,
-                "cpu_usage_nsec": None,
-                "control_group": "",
-            }
-            for u in units
-        }
-
-    return fake
 
 
 def _patch_grouping(monkeypatch, cfg, *, unit_states=None):
