@@ -4,10 +4,9 @@
 
 """The one logging bootstrap — and the one place the journal is redacted.
 
-Every long-lived daemon, wizard and CLI under ``jasper/`` calls
-:func:`configure_logging` instead of ``logging.basicConfig``, so the
-journal handler always carries :class:`RedactingFilter` and a credential
-that reaches a log call is replaced before the record is formatted
+Every process that installs a journal handler installs it through
+:func:`configure_logging`, so that handler always carries
+:class:`RedactingFilter`, which owns how a record is scrubbed
 (non-negotiable 3; ADR-0240 owns what "credential-shaped" means).
 ``tests/test_logging_setup.py`` holds the exhaustive list of the callers
 that still bootstrap for themselves — the parked tuning-zone CLIs — and
@@ -26,6 +25,12 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 # ring) costs one redaction pass rather than two.
 _REDACTED_ATTR = "_jasper_redacted"
 
+# Holds the pre-redaction `record.msg` when the filter flattens a record:
+# the flight recorder keys its auto-flush floor on the template, which a
+# flattened message would make unique per call
+# (flight_recorder._auto_flush_due).
+TEMPLATE_ATTR = "_jasper_template"
+
 _EXC_FORMATTER = logging.Formatter()
 
 
@@ -35,7 +40,9 @@ class RedactingFilter(logging.Filter):
     Attached to *handlers*, not loggers: records from every ``jasper.*``
     logger propagate to the root handler, and only a handler filter sees
     them all. The record is mutated, so every other handler sharing it —
-    a second journal handler, the flight recorder's ring — is redacted too.
+    a second journal handler, the flight recorder's ring — is redacted too,
+    and a formatter overriding ``formatException`` is never consulted
+    because ``exc_text`` is already set by the time it formats.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -43,18 +50,35 @@ class RedactingFilter(logging.Filter):
             return True
         setattr(record, _REDACTED_ATTR, True)
         try:
+            self._scrub(record)
+        except Exception as exc:  # noqa: BLE001
+            # Handler.handle does not guard Filterer.filter, so anything
+            # raised here surfaces at the log call site. Fail closed: an
+            # unscrubbable record loses its content, never its redaction.
+            record.msg = (
+                "<redacted: log record could not be scrubbed "
+                f"({type(exc).__name__})>"
+            )
+            record.args = ()
+            record.exc_text = record.stack_info = None
+        return True
+
+    @staticmethod
+    def _scrub(record: logging.LogRecord) -> None:
+        try:
             message = record.getMessage()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             # A %-format mismatch is reported by Handler.handleError today
             # and must not become an exception raised at the log call site.
-            flattened = f"{record.msg!r} % {record.args!r}"
+            flattened = (
+                f"{record.msg!r} % {record.args!r} "
+                f"(unformattable: {type(exc).__name__})"
+            )
             record.msg, record.args = redact_secrets(flattened), ()
         else:
             redacted = redact_secrets(message)
             if redacted != message:
-                # Only on a change: `record.msg` is the flight recorder's
-                # auto-flush signature (flight_recorder._auto_flush_due),
-                # which a flattened message would make unique per call.
+                setattr(record, TEMPLATE_ATTR, record.msg)
                 record.msg, record.args = redacted, ()
         if record.exc_info:
             # Formatter.format reuses a non-empty exc_text, so pre-formatting
@@ -62,7 +86,8 @@ class RedactingFilter(logging.Filter):
             record.exc_text = redact_secrets(
                 record.exc_text or _EXC_FORMATTER.formatException(record.exc_info)
             )
-        return True
+        if record.stack_info:
+            record.stack_info = redact_secrets(record.stack_info)
 
 
 REDACTING_FILTER = RedactingFilter()

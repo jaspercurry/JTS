@@ -35,9 +35,10 @@ self-quiet timer so expiry does not restart anything.
 :mod:`jasper.voice.provider_state`: long-lived daemons freeze their
 env at process start, so the apply path reads the file directly. A
 daemon's logging level is set once at startup (``apply_for`` is called
-right after ``logging.basicConfig``). A toggle applies according to the
-subsystem policy: in process, by restarting an always-on unit, or by
-deferring until an optional inactive unit next starts.
+right after ``logging_setup.configure_logging``). A toggle applies
+according to the subsystem policy: in process, by restarting an
+always-on unit, or by deferring until an optional inactive unit next
+starts.
 """
 from __future__ import annotations
 
@@ -84,7 +85,8 @@ class Subsystem:
 # The subsystems the Debug card exposes. Extensible: add a row here, wire
 # apply_for() into that daemon's startup, and it appears on /system.
 # (mux uses a --log-level CLI arg and shairport uses its own config-file
-# log_verbosity — both a different mechanism than basicConfig, deferred.)
+# log_verbosity — both a different mechanism than configure_logging,
+# deferred.)
 SUBSYSTEMS: dict[str, Subsystem] = {
     "voice": Subsystem(
         "voice", "jasper-voice.service", "Voice", ("jasper",),
@@ -184,7 +186,7 @@ def compute_env_update(
 
 
 def _console_handler() -> "logging.Handler | None":
-    """The live journal ``StreamHandler`` (the one ``basicConfig`` adds to
+    """The live journal ``StreamHandler`` (the one ``configure_logging`` adds to
     root, writing to stderr). The debug toggle raises/lowers *this* handler's
     level — the logger is held at DEBUG by the flight recorder (Tier C), so
     the handler is the knob that decides whether DEBUG reaches the journal.
@@ -208,7 +210,7 @@ def _console_handler() -> "logging.Handler | None":
 
 def set_console_debug(on: bool) -> None:
     """Raise (DEBUG) or lower (INFO) the journal handler. No-op when there's
-    no console handler yet (e.g. before ``basicConfig``)."""
+    no console handler yet (e.g. before ``configure_logging``)."""
     h = _console_handler()
     if h is not None:
         h.setLevel(logging.DEBUG if on else logging.INFO)

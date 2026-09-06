@@ -189,9 +189,11 @@ while IFS= read -r changed; do
       # all and jasper/secret_redaction.py routes only to its own test.
       add_test_if_present "tests/test_secret_redaction.py"
       add_test_if_present "tests/test_diagnostic_redaction_scripts.py"
-      # These five run redact_secrets on the surfaces the non-negotiable
+      # These run redact_secrets on the surfaces the non-negotiable
       # covers, so a rule change breaks them with nothing in their own
       # subject moved.
+      add_test_if_present "tests/test_logging_setup.py"
+      add_test_if_present "tests/test_flight_recorder.py"
       add_test_if_present "tests/test_failure_detail.py"
       add_test_if_present "tests/test_doctor_core.py"
       add_test_if_present "tests/test_web_wifi_setup.py"

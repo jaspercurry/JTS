@@ -2,20 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The journal is redacted by construction.
+"""The journal is redacted by construction (:mod:`jasper.logging_setup`).
 
-``configure_logging`` is the bootstrap every process under ``jasper/``
-calls bar the parked tuning zone listed below, and the filter it attaches is
-what keeps a credential out of the journal (non-negotiable 3). These tests
-drive real records through the real root handler rather than through caplog,
-whose own handler is not the one under test — and whose presence on the root
-logger would make ``basicConfig`` a no-op, so each test takes the root logger
-away from pytest for the duration and restores it afterwards.
+These tests drive real records through the real root handler rather than
+through caplog, whose own handler is not the one under test — and whose
+presence on the root logger would make ``basicConfig`` a no-op, so each test
+takes the root logger away from pytest for the duration.
 """
 from __future__ import annotations
 
 import ast
-import contextlib
 import io
 import logging
 from pathlib import Path
@@ -24,21 +20,9 @@ import pytest
 
 import jasper.logging_setup as logging_setup
 from jasper.logging_setup import configure_logging
+from tests.conftest import bare_root_logger
 
 _REPO = Path(__file__).resolve().parent.parent
-
-
-@contextlib.contextmanager
-def _process_start_root():
-    """A root logger as a fresh interpreter has it: no handlers."""
-    root, jasper = logging.getLogger(), logging.getLogger("jasper")
-    saved = (root.handlers[:], root.level, jasper.handlers[:], jasper.level)
-    root.handlers[:], jasper.handlers[:] = [], []
-    jasper.setLevel(logging.NOTSET)
-    try:
-        yield
-    finally:
-        root.handlers[:], root.level, jasper.handlers[:], jasper.level = saved
 
 
 @pytest.mark.parametrize(
@@ -58,7 +42,7 @@ def test_a_secret_never_reaches_the_stream(capsys, template, secret, lazy_arg):
     secret passed as a lazy log argument is only covered because the
     interpolation happens before the patterns run.
     """
-    with _process_start_root():
+    with bare_root_logger():
         configure_logging()
         logger = logging.getLogger("jasper.x")
         if lazy_arg:
@@ -74,7 +58,7 @@ def test_a_secret_never_reaches_the_stream(capsys, template, secret, lazy_arg):
 def test_a_traceback_is_redacted_too(capsys):
     """``logger.exception`` renders the exception's own text, which is where
     a provider's rejected-credential message lands."""
-    with _process_start_root():
+    with bare_root_logger():
         configure_logging()
         try:
             raise RuntimeError("upstream rejected token=abc123secretvalue")
@@ -94,7 +78,7 @@ def test_a_logger_outside_jasper_is_redacted_too(capsys):
     journal and has to be scrubbed by the same pass; moving the filter onto
     the ``jasper`` logger would silently stop covering it.
     """
-    with _process_start_root():
+    with bare_root_logger():
         configure_logging()
         logging.getLogger("httpx").warning(
             "GET https://api.example.com/v1?key=abcdef0123456789 -> 200"
@@ -105,7 +89,7 @@ def test_a_logger_outside_jasper_is_redacted_too(capsys):
     assert "<redacted>" in err
 
 
-def test_a_record_is_redacted_once(capsys, monkeypatch):
+def test_a_record_is_redacted_once(monkeypatch):
     """One pass per record, not one per filtered handler.
 
     A ``jasper.*`` record reaches both the journal handler and the flight
@@ -119,7 +103,7 @@ def test_a_record_is_redacted_once(capsys, monkeypatch):
         "redact_secrets",
         lambda text, *a, **kw: (passes.append(text), real(text, *a, **kw))[1],
     )
-    with _process_start_root():
+    with bare_root_logger():
         configure_logging()
         ring = logging.StreamHandler(io.StringIO())
         ring.addFilter(logging_setup.REDACTING_FILTER)
@@ -127,7 +111,6 @@ def test_a_record_is_redacted_once(capsys, monkeypatch):
         logging.getLogger("jasper.x").warning("OPENAI_API_KEY=sk-live-abc123456789")
 
     assert len(passes) == 1
-    assert "sk-live-abc123456789" not in capsys.readouterr().err
 
 
 # ------------------------------------------------------------------- ratchet
@@ -150,17 +133,58 @@ _ALLOWLIST = frozenset({
 })
 
 
-def _calls_basic_config(tree: ast.AST) -> bool:
-    return any(
+# The stdlib calls that put a handler where a jasper record reaches it.
+_BOOTSTRAP_CALLS = frozenset({"basicConfig", "dictConfig", "fileConfig"})
+
+
+def _names_the_root_logger(node: ast.expr) -> bool:
+    """``logging.root`` or a bare ``logging.getLogger()``: an ``addHandler``
+    on either sits under every jasper logger, unfiltered."""
+    if isinstance(node, ast.Attribute) and node.attr == "root":
+        return True
+    return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "basicConfig"
-        for node in ast.walk(tree)
+        and node.func.attr == "getLogger"
+        and not node.args
+        and not node.keywords
     )
+
+
+def _installs_its_own_handler(tree: ast.AST) -> bool:
+    """One walk: attribute calls are matched by name (so ``import logging as
+    L`` is covered), bare calls against what a ``from logging`` import bound
+    (so an alias is covered too)."""
+    bootstrap_names: set[str] = set()
+    called_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "logging":
+                bootstrap_names |= {
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in _BOOTSTRAP_CALLS
+                }
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                called_names.add(func.id)
+            elif isinstance(func, ast.Attribute) and (
+                func.attr in _BOOTSTRAP_CALLS
+                or (func.attr == "addHandler" and _names_the_root_logger(func.value))
+            ):
+                return True
+    return bool(bootstrap_names & called_names)
 
 
 def test_configure_logging_is_the_only_logging_bootstrap():
     """No process may reach the journal around the redacting filter.
+
+    Covers the four ways a module installs a handler for itself:
+    ``basicConfig``, ``logging.config.dictConfig``/``fileConfig``, and an
+    ``addHandler`` on the root logger. Out of scope: a dynamic lookup
+    (``getattr(logging, "basicConfig")()``), which no shape-based scan
+    resolves.
 
     Exact-match, so the allowlist cannot go stale either: a parked file that
     adopts must leave the set in the same commit. Remove this ratchet when
@@ -172,10 +196,10 @@ def test_configure_logging_is_the_only_logging_bootstrap():
         path.relative_to(_REPO).as_posix()
         for path in sorted((_REPO / "jasper").rglob("*.py"))
         if path.name != "logging_setup.py"
-        and _calls_basic_config(ast.parse(path.read_text()))
+        and _installs_its_own_handler(ast.parse(path.read_text()))
     }
     assert offenders == _ALLOWLIST, (
-        "logging.basicConfig outside jasper/logging_setup.py must match the "
+        "A logging bootstrap outside jasper/logging_setup.py must match the "
         "parked tuning zone exactly.\n"
         f"  new bypass(es): {sorted(offenders - _ALLOWLIST) or 'none'}\n"
         f"  stale entr(ies): {sorted(_ALLOWLIST - offenders) or 'none'}\n"

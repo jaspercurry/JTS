@@ -99,6 +99,21 @@ def test_auto_flush_floor_keys_log_event_on_the_event_name():
         logger.removeHandler(ring)
 
 
+def test_auto_flush_floor_survives_redaction_flattening():
+    """The redacting filter rewrites `record.msg` to the rendered, redacted
+    line, so the floor keys on the template it stashes — otherwise one
+    chronic credential-carrying warning dumps the whole ring on every call.
+    """
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    for host in ("hostA", "hostB"):
+        ring.handle(logging.LogRecord(  # handle(), so the filter runs
+            "jasper.test", logging.WARNING, "f.py", 1,
+            "reconnect host=%s OPENAI_API_KEY=%s",
+            (host, "sk-live-abc123456789"), None))
+    assert s.getvalue().count("event=flightrec.dump ") == 1
+
+
 def test_explicit_dump_is_never_floored():
     """The floor is for automatic dumps only — an operator's SIGUSR1 or
     a 'flag that' must always write what is in the ring."""
