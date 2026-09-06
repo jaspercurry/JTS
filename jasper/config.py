@@ -163,12 +163,6 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
     if cfg.response_stall_timeout_sec <= 0:
         raise RuntimeError("JASPER_RESPONSE_STALL_TIMEOUT_SEC must be > 0")
-    if not 0.0 <= cfg.server_vad_threshold <= 1.0:
-        raise RuntimeError("JASPER_SERVER_VAD_THRESHOLD must be between 0.0 and 1.0")
-    if cfg.server_vad_silence_ms <= 0:
-        raise RuntimeError("JASPER_SERVER_VAD_SILENCE_MS must be > 0")
-    if cfg.server_vad_prefix_ms < 0:
-        raise RuntimeError("JASPER_SERVER_VAD_PREFIX_MS must be >= 0")
     validate_openai_noise_reduction(cfg.openai_noise_reduction)
     for name, value in [
         ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
@@ -280,11 +274,6 @@ class Config:
     assistant_loudness_auto_seed: bool
     tts_drain_tail_sec: float
     vad_barge_in_threshold: float
-
-    server_vad_enabled: bool
-    server_vad_threshold: float
-    server_vad_silence_ms: int
-    server_vad_prefix_ms: int
 
     camilla_host: str
     camilla_port: int
@@ -685,16 +674,6 @@ class Config:
             # jasper.voice.provider_state.read_barge_in_enabled.
             vad_barge_in_threshold=_env_float(
                 "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
-            ),
-            server_vad_enabled=_env_bool("JASPER_SERVER_VAD_ENABLED", False),
-            server_vad_threshold=_env_float(
-                "JASPER_SERVER_VAD_THRESHOLD", 0.5,
-            ),
-            server_vad_silence_ms=_env_int(
-                "JASPER_SERVER_VAD_SILENCE_MS", 350,
-            ),
-            server_vad_prefix_ms=_env_int(
-                "JASPER_SERVER_VAD_PREFIX_MS", 300,
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),

@@ -24,6 +24,7 @@ import logging
 
 import pytest
 
+from jasper.voice.session import TurnUsage
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_field_maps, event_fields, event_records
 
@@ -96,7 +97,6 @@ def _session_loop(*, manual: bool, elapsed: float = 1.0, idle_timeout: int = 20)
     wl._bg_tasks = set()
     wl._input_ended = False
     wl._barge_in_active = False
-    wl._server_vad_this_turn = False
     wl._manual_endpoint_this_turn = manual
     wl._active_manual_source = "wiim_remote_2" if manual else None
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - elapsed
@@ -438,234 +438,19 @@ async def test_hold_cap_fires_once_then_frames_are_dropped():
 
 
 # ---------------------------------------------------------------------------
-# Server VAD is another endpointer, and must refuse for the same reason
-# ---------------------------------------------------------------------------
-
-
-class _AcquiredTurn:
-    """Enough of a LiveTurn for `_begin_turn` to get past acquire_turn and
-    reach the server-VAD negotiation, which happens after it."""
-
-    def __init__(self) -> None:
-        self.server_vad_marked = False
-
-    def mark_server_vad(self) -> None:
-        self.server_vad_marked = True
-
-    async def send_audio(self, _data) -> None:
-        return None
-
-    def turn_lost(self) -> bool:
-        return False
-
-    def server_turn_complete(self) -> bool:
-        return False
-
-    def last_activity_at(self) -> float:
-        return asyncio.get_event_loop().time()
-
-    def last_chunk_at(self) -> float:
-        return 0.0
-
-    async def audio_out(self):
-        await asyncio.sleep(3600)
-        yield b""
-
-
-async def _drive_begin_turn(wl, *, server_vad_supported=True, music=True):
-    """Run the real `_begin_turn` far enough to observe the server-VAD
-    decision, then tear down the tasks it spawned."""
-    negotiated: list[dict] = []
-
-    async def _noop(*_a, **_k) -> None:
-        return None
-
-    async def _set_td(cfg):
-        negotiated.append(cfg)
-
-    wl._cfg.server_vad_enabled = True
-    wl._connection.supports_server_vad = lambda: server_vad_supported
-    wl._connection.set_turn_detection = _set_td
-    wl._connection.acquire_turn = lambda: _acquire()
-    wl._content_activity.music_is_playing = lambda: music
-    wl._content_activity.refresh_now = _noop
-    wl._tts.pause_content_meter = _noop
-
-    async def _acquire():
-        return _AcquiredTurn()
-
-    try:
-        await wl._begin_turn()
-        # Captured before teardown: the end-of-utterance trigger task is
-        # the thing that would actually answer mid-hold, so its presence
-        # is the observable the refusal has to change. The tasks are
-        # created unnamed, so key on the coroutine instead.
-        wl._spawned_coros = {
-            t.get_coro().__qualname__ for t in wl._bg_tasks
-        }
-    finally:
-        for t in wl._bg_tasks:
-            t.cancel()
-        for t in wl._bg_tasks:
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        wl._bg_tasks = set()
-    return negotiated
-
-
-async def test_server_vad_is_not_negotiated_on_a_button_turn(caplog):
-    """With JASPER_SERVER_VAD_ENABLED=1 and music playing, a 500 ms
-    mid-hold pause would let the server declare end-of-utterance and
-    answer while the button is still held — the same bug as local Silero
-    by a different writer."""
-    from jasper.voice_daemon import WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._active_manual_source = "wiim_remote_2"
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        negotiated = await _drive_begin_turn(wl)
-
-    assert wl._manual_endpoint_this_turn is True
-    assert wl._server_vad_this_turn is False
-    assert negotiated == []
-    assert (
-        event_fields(caplog, "server_vad.disabled_push_to_talk")["source"]
-        == "wiim_remote_2"
-    )
-    # The flag alone is not the harm. `_server_vad_response_trigger` is
-    # the task that would ask the model to answer on the server's
-    # end-of-utterance — while the button is still held. It must not exist.
-    assert "_server_vad_response_trigger" not in wl._spawned_coros
-
-
-async def test_server_vad_IS_negotiated_on_a_wake_turn():
-    """Mutation of the guard above: the identical setup on a wake turn
-    still negotiates server VAD, so the refusal is keyed on the button and
-    not on something incidental."""
-    from jasper.voice_daemon import WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._active_manual_source = None
-
-    negotiated = await _drive_begin_turn(wl)
-
-    assert wl._manual_endpoint_this_turn is False
-    assert wl._server_vad_this_turn is True
-    assert negotiated and negotiated[0]["type"] == "server_vad"
-    # Positive control for the assertion above: on a wake turn the trigger
-    # IS spawned, so "absent" on a button turn means the refusal did it —
-    # not that this stub setup never reaches the spawn at all.
-    assert "_server_vad_response_trigger" in wl._spawned_coros
-
-
-async def test_server_vad_refusal_warns_once_per_daemon(caplog):
-    """`_server_vad_ptt_warned` is a one-shot latch. A household that
-    holds the button all evening must not get one WARN per press —
-    journal spam is how a real warning stops being read.
-    """
-    from jasper.voice_daemon import WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._active_manual_source = "wiim_remote_2"
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await _drive_begin_turn(wl)
-        first = len(event_records(caplog, "server_vad.disabled_push_to_talk"))
-        # A second button turn on the same daemon.
-        await _drive_begin_turn(wl)
-        second = len(event_records(caplog, "server_vad.disabled_push_to_talk"))
-
-    # Positive control: the first turn really did warn, so "still 1" below
-    # is a latch holding rather than a refusal that never fired at all.
-    assert first == 1
-    assert second == 1
-
-
-async def test_server_vad_refusal_does_not_consume_the_barge_in_warning(
-    monkeypatch, tmp_path, caplog,
-):
-    """Two distinct subsystems, two latches — the same rule the barge-in
-    refusal already follows against its own no-reference sibling.
-
-    One button turn refuses BOTH barge-in and server VAD. Sharing a single
-    latch would let whichever fires first swallow the other's only WARN,
-    and the swallowed one is never coming back: these are one-shot.
-    """
-    from jasper.voice_daemon import WakeLoop
-
-    path = tmp_path / "voice_provider.env"
-    path.write_text("JASPER_BARGE_IN_GEMINI=1\n")
-    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
-
-    wl = WakeLoop.for_tests()
-    wl._cfg.voice_provider = "gemini"
-    wl._barge_in_reference_available = True  # would otherwise enable
-    wl._active_manual_source = "wiim_remote_2"
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await _drive_begin_turn(wl)
-
-    assert len(event_records(caplog, "barge.disabled_push_to_talk")) == 1
-    assert len(event_records(caplog, "server_vad.disabled_push_to_talk")) == 1
-
-
-@pytest.mark.parametrize(
-    "server_vad_supported, music",
-    [(False, True), (True, False)],
-)
-async def test_server_vad_refusal_is_not_claimed_when_it_was_never_armed(
-    caplog, server_vad_supported, music,
-):
-    """The WARN says server VAD was refused. It must therefore only fire
-    where server VAD would otherwise have been negotiated on THIS turn.
-
-    Server VAD needs three things: the flag, provider support, and music
-    playing. Drop either of the last two on a button turn and there was
-    nothing to refuse — logging a refusal would send an operator hunting a
-    server-VAD interaction that never existed. (The narrower
-    `server_vad_enabled and manual` form this replaces did exactly that.)
-    """
-    from jasper.voice_daemon import WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._active_manual_source = "wiim_remote_2"
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        negotiated = await _drive_begin_turn(
-            wl, server_vad_supported=server_vad_supported, music=music,
-        )
-
-    assert wl._manual_endpoint_this_turn is True
-    assert wl._server_vad_this_turn is False
-    assert negotiated == []
-    assert event_records(caplog, "server_vad.disabled_push_to_talk") == []
-
-
-# ---------------------------------------------------------------------------
 # The endpointer is decided once, at the top of _begin_turn
 # ---------------------------------------------------------------------------
 
 
 def test_endpointer_label_prefers_push_to_talk():
-    """Precedence, as defence in depth. `_begin_turn` now refuses server
-    VAD on a button turn, so the last case below (both flags set) is not
-    reachable in production — it is pinned so that if a future writer ever
-    sets `_server_vad_this_turn` on a button turn, the label still names
-    the mechanism that actually closes the input.
-    """
+    """The button owns both turn boundaries, so it names the endpointer
+    whenever it is the source of the turn's audio."""
     from jasper.voice_daemon import WakeLoop
 
     wl = WakeLoop.for_tests()
 
     wl._manual_endpoint_this_turn = False
-    wl._server_vad_this_turn = False
     assert wl._endpointer_label() == "silero_aec"
-
-    wl._server_vad_this_turn = True
-    assert wl._endpointer_label() == "server_vad"
 
     wl._manual_endpoint_this_turn = True
     assert wl._endpointer_label() == "push_to_talk"
@@ -771,7 +556,6 @@ def test_corpus_label_never_records_a_button_turn_as_a_no_speech_abort():
     from jasper.voice_daemon import WakeLoop
 
     wl = WakeLoop.for_tests()
-    wl._server_vad_this_turn = False
 
     wl._manual_endpoint_this_turn = True
     assert wl._corpus_endpointer_label(user_speech_seen=False) == "push_to_talk"
@@ -780,10 +564,6 @@ def test_corpus_label_never_records_a_button_turn_as_a_no_speech_abort():
     wl._manual_endpoint_this_turn = False
     assert wl._corpus_endpointer_label(user_speech_seen=False) == "no_speech_abort"
     assert wl._corpus_endpointer_label(user_speech_seen=True) == "silero_aec"
-
-    # A server-VAD turn is never relabelled — the server owned the endpoint.
-    wl._server_vad_this_turn = True
-    assert wl._corpus_endpointer_label(user_speech_seen=False) == "server_vad"
 
 
 class _TeardownTurn:
@@ -821,10 +601,10 @@ class _TeardownTurn:
     def chunks_received(self) -> int:
         return self._chunks
 
-    def usage_tokens(self) -> dict[str, int]:
-        return {"input_tokens": 0, "output_tokens": 0}
+    def usage(self) -> TurnUsage:
+        return TurnUsage()
 
-    def usage_breakdown(self) -> dict | None:
+    def capture(self) -> None:
         return None
 
     async def end_input(self) -> None:
@@ -1367,6 +1147,59 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
 
     assert (wl._vad is not None) is expect_vad
     assert len(built) == (0 if ptt_only else 1)
+
+
+class _AcquiredTurn:
+    """Enough of a LiveTurn for the real `_begin_turn` to run to the end."""
+
+    async def send_audio(self, _data) -> None:
+        return None
+
+    def turn_lost(self) -> bool:
+        return False
+
+    def server_turn_complete(self) -> bool:
+        return False
+
+    def last_activity_at(self) -> float:
+        return asyncio.get_event_loop().time()
+
+    def last_chunk_at(self) -> float:
+        return 0.0
+
+    def audio_chunks_pending(self) -> int:
+        return 0
+
+    async def audio_out(self):
+        await asyncio.sleep(3600)
+        yield b""
+
+
+async def _drive_begin_turn(wl):
+    """Run the real `_begin_turn`, then tear down the tasks it spawned."""
+
+    async def _noop(*_a, **_k) -> None:
+        return None
+
+    async def _acquire():
+        return _AcquiredTurn()
+
+    wl._connection.acquire_turn = lambda: _acquire()
+    wl._content_activity.music_is_playing = lambda: True
+    wl._content_activity.refresh_now = _noop
+    wl._tts.pause_content_meter = _noop
+
+    try:
+        await wl._begin_turn()
+    finally:
+        for t in wl._bg_tasks:
+            t.cancel()
+        for t in wl._bg_tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        wl._bg_tasks = set()
 
 
 async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():

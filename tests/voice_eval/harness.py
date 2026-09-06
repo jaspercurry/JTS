@@ -793,7 +793,10 @@ class VoiceEvalHarness:
                 raise
 
             trace.append("turn_complete", {
-                "tokens": dict(turn.usage_tokens() or {}),
+                "tokens": {
+                    "input_tokens": turn.usage().input_tokens,
+                    "output_tokens": turn.usage().output_tokens,
+                },
                 "audio_chunks": len(audio_chunks),
             })
         finally:

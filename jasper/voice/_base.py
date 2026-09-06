@@ -157,6 +157,9 @@ class BaseLiveTurn:
     def request_local_interrupt(self) -> None:
         self._interrupt_event.set()
 
+    def audio_chunks_pending(self) -> int:
+        return self._audio_q.qsize()
+
     def drop_pending_audio(self) -> int:
         dropped = 0
         try:

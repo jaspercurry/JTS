@@ -31,7 +31,9 @@ async def _play_responses(*args, **kwargs):
 
 class _FakeTurn:
     """Yields a fixed burst of audio chunks; carries the interrupt event
-    the daemon would set via request_local_interrupt()."""
+    the daemon would set via request_local_interrupt(). Generator-backed, so
+    the `Interruptible` reconcile half is a no-op here (`_QueueTurn` and
+    `_SeamTurn` below model the buffered and reconciling shapes)."""
 
     def __init__(self, n_chunks: int = 3) -> None:
         self._chunks = [bytes(8) for _ in range(n_chunks)]
@@ -49,6 +51,20 @@ class _FakeTurn:
 
     def clear_interrupted(self) -> None:
         self._interrupt_event.clear()
+
+    def drop_pending_audio(self) -> int:
+        return 0
+
+    def audio_chunks_pending(self) -> int:
+        return 0
+
+    async def cancel_response(self, reason: str) -> None:
+        return None
+
+    async def truncate_assistant_audio(
+        self, provider_item_id, audio_played_ms,
+    ) -> None:
+        return None
 
 
 class _QueueTurn:
@@ -83,6 +99,9 @@ class _QueueTurn:
     def clear_interrupted(self) -> None:
         self.cleared += 1
         self._interrupt_event.clear()
+
+    def audio_chunks_pending(self) -> int:
+        return self._q.qsize()
 
     def drop_pending_audio(self) -> int:
         # Same shape as the real adapters: drain queued chunks, preserve the
@@ -379,8 +398,10 @@ def test_flush_failure_warns_and_ends_turn(caplog):
 #
 # After a successful local flush the spine drives the active provider's
 # barge-in pack: cancel_response THEN truncate_assistant_audio, the latter
-# with the flush ack's played-ms. The pack methods are getattr-probed so a
-# turn predating the seam degrades to local-flush-only.
+# with the flush ack's played-ms. Both are `Interruptible` members, so every
+# turn that can reach the spine has them (pinned in
+# tests/test_voice_barge_in_contract.py); a provider with nothing to
+# reconcile ships them as no-ops.
 
 
 class _SeamTurn(_FakeTurn):
@@ -438,18 +459,6 @@ def test_flush_drives_cancel_then_truncate_with_ledger_ms():
         ("cancel", "barge_in"),
         ("truncate", None, 2750),
     ]
-
-
-def test_flush_seam_skipped_for_turn_without_capability():
-    """A turn predating the seam (no cancel/truncate methods) still flushes
-    cleanly — the spine getattr-probes and degrades to local-flush-only
-    rather than crashing. _FakeTurn has neither method."""
-    turn = _FakeTurn(n_chunks=2)
-    tts = _ChunkBargeTts(turn)
-
-    # Must not raise despite the turn lacking the seam methods.
-    asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
-    assert tts.flush_calls == 1
 
 
 class _SeamFlushRaisesTts(_BaseTts):

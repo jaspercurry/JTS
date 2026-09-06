@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from jasper.voice.session import TurnCapture, TurnUsage
+
 #: One mic frame as the wake loop sees it — `MicCapture.OUTPUT_FRAME_SAMPLES`
 #: at 16 kHz mono int16, i.e. 80 ms.
 _FRAME_SAMPLES = 1280
@@ -55,11 +57,8 @@ class FakeLiveTurn:
     async def release(self) -> None:
         self.release_calls += 1
 
-    def usage_tokens(self) -> dict[str, int]:
-        return {"input_tokens": 0, "output_tokens": 0}
-
-    def usage_breakdown(self) -> None:
-        return None
+    def usage(self) -> TurnUsage:
+        return TurnUsage()
 
     def bytes_sent(self) -> int:
         return self._bytes_sent
@@ -70,14 +69,18 @@ class FakeLiveTurn:
     def turn_lost(self) -> bool:
         return False
 
-    def user_transcript(self) -> str | None:
-        return self._user_text
-
-    def assistant_transcript(self) -> str | None:
-        return self._assistant_text
-
-    def conversation_metadata(self) -> dict | str | None:
-        return self._metadata
+    def capture(self) -> TurnCapture | None:
+        if (
+            self._user_text is None
+            and self._assistant_text is None
+            and self._metadata is None
+        ):
+            return None
+        return TurnCapture(
+            user_text=self._user_text,
+            assistant_text=self._assistant_text,
+            data=self._metadata,
+        )
 
 
 def _prep_session_status(wl) -> None:
