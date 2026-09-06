@@ -66,28 +66,72 @@ class _OrderedDucker:
         self.timeline.append("restore")
 
 
-class _CuesReleasingOpener:
+def _record_output_writes(wl: WakeLoop, timeline: list[str]) -> None:
+    """TTS writes and drain waits on the same timeline as the duck, so an
+    output write landing inside the cue's play window shows up as ordering
+    rather than as a call count."""
+
+    async def _write_segment(*_args, **kwargs) -> bool:
+        timeline.append(f"write_{kwargs.get('segment_kind') or 'segment'}")
+        return True
+
+    async def _wait_drained() -> None:
+        timeline.append("drain_wait")
+
+    wl._tts.write_segment = _write_segment
+    wl._tts.wait_drained = _wait_drained
+
+
+class _BlockingReleaseTurn(FakeLiveTurn):
+    """`LiveTurn.release()` as a real teardown finds it: an await that can
+    park. BOTH teardown paths call it after they have read who owns output
+    and before they act on the answer, so the surrender lands inside it and
+    a single answer read up front is stale when it is used."""
+
+    def __init__(
+        self,
+        timeline: list[str],
+        release_started: asyncio.Event,
+        allow_release: asyncio.Event,
+    ) -> None:
+        super().__init__()
+        self._timeline = timeline
+        self._release_started = release_started
+        self._allow_release = allow_release
+
+    async def release(self) -> None:
+        await super().release()
+        self._timeline.append("release_start")
+        self._release_started.set()
+        await asyncio.wait_for(self._allow_release.wait(), timeout=5.0)
+        self._timeline.append("release_end")
+
+
+class _CueDuringSurrender:
     """Stand-in cue manager so the REAL `_play_cue` path runs end to end,
-    and the surrendered opener resumes WHILE the cue's audio is live: the
-    cue holds itself open until the opener's real teardown has finished, so
-    what that teardown does to the cue's episode and duck is observable."""
+    with the surrendered opener resuming either inside the cue's play window
+    or after it: what that teardown does to the cue's episode, its duck and
+    the TTS stream is observable either way."""
 
     def __init__(
         self,
         wl: WakeLoop,
         timeline: list[str],
-        release: asyncio.Event,
+        allow_release: asyncio.Event,
         opener_done: asyncio.Event,
+        *,
+        resume_opener_during_play: bool,
     ) -> None:
         self._wl = wl
         self._timeline = timeline
-        self._release = release
+        self._allow_release = allow_release
         self._opener_done = opener_done
+        self._resume_opener_during_play = resume_opener_during_play
         self.played: list[str] = []
         self.kind_at_play: str | None = None
         self.turn_episode_field_at_play: bool | None = None
-        self.active_after_opener: bool | None = None
-        self.kind_after_opener: str | None = None
+        self.active_at_play_end: bool | None = None
+        self.kind_at_play_end: str | None = None
 
     async def play(self, slug: str) -> bool:
         self.played.append(slug)
@@ -96,35 +140,137 @@ class _CuesReleasingOpener:
             self._wl._turn_output_episode is not None
         )
         self._timeline.append("cue_play_start")
-        self._release.set()
-        await asyncio.wait_for(self._opener_done.wait(), timeout=5.0)
-        self.active_after_opener = self._wl._output_gate.is_active
-        self.kind_after_opener = self._wl._output_gate.active_kind
+        if self._resume_opener_during_play:
+            self._allow_release.set()
+            await asyncio.wait_for(self._opener_done.wait(), timeout=5.0)
+        self.active_at_play_end = self._wl._output_gate.is_active
+        self.kind_at_play_end = self._wl._output_gate.active_kind
         self._timeline.append("cue_play_end")
         return True
 
 
-async def _stalled_confirmation_opener(
+async def _failed_begin_opener(
     wl: WakeLoop,
-    blocked: asyncio.Event,
-    release: asyncio.Event,
+    turn: FakeLiveTurn,
     opener_done: asyncio.Event,
 ) -> None:
-    """`_open_confirmation_window`'s opener as the cancel wait finds it: the
-    turn episode taken through the real gate, the turn ducked, and stalled
-    inside `_begin_turn_inner` past `acquire_turn`. Nothing cancels it at the
-    timeout, so on release it resumes into `_begin_turn`'s real failure
-    cleanup."""
-    await wl._begin_turn_output_episode()
-    await wl._ducker.duck()
-    wl._session_id = "sess-stalled-opener"
-    wl._turn = FakeLiveTurn()
-    blocked.set()
+    """`_open_confirmation_window`'s opener dying mid-begin, through the
+    REAL `_begin_turn`: its `finally` runs `_cleanup_after_failed_begin`
+    inside the `_await_output_cleanup_owned` task wrapper, which is where
+    the window between reading ownership and acting on it lives."""
+
+    async def _inner(**_kwargs) -> None:
+        await wl._begin_turn_output_episode()
+        await wl._ducker.duck()
+        wl._session_id = "sess-stalled-opener"
+        wl._turn = turn
+        raise RuntimeError("confirmation turn died mid-begin")
+
+    wl._begin_turn_inner = _inner
     try:
-        await release.wait()
-        await wl._cleanup_after_failed_begin()
+        with pytest.raises(RuntimeError):
+            await wl._begin_turn()
     finally:
         opener_done.set()
+
+
+async def _success_arm_opener(
+    wl: WakeLoop,
+    turn: FakeLiveTurn,
+    opener_done: asyncio.Event,
+) -> None:
+    """The same opener on its success arm: the turn opened, so the surrender
+    lands on a loop that tears down through `_end_turn_inner` — whose "done
+    listening" chirp and drain wait are output writes like any other."""
+    await wl._begin_turn_output_episode()
+    await wl._ducker.duck()
+    wl._cfg.active_voice_model = "test-model"
+    wl._session_id = "sess-stalled-opener"
+    wl._turn = turn
+    wl._bg_tasks = set()
+    wl._wake_event_store = None
+    wl._state = State.SESSION
+    try:
+        await wl._end_turn_inner("test")
+    finally:
+        opener_done.set()
+
+
+_OPENERS = {
+    "failed_begin": _failed_begin_opener,
+    "success_arm": _success_arm_opener,
+}
+
+
+async def _drive_cancel_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    teardown: str,
+    resume_during_cue: bool,
+    cues_configured: bool = True,
+) -> tuple[WakeLoop, list[str], _CueDuringSurrender | None]:
+    """The NN-6 collision on real code: a confirmation-window opener holding
+    the turn output episode, the wake that cancels it timing out, and the
+    cue that must still be heard taking the gate from under it."""
+    import jasper.voice_daemon as voice_daemon_module
+
+    monkeypatch.setattr(
+        voice_daemon_module,
+        "RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC",
+        0.01,
+    )
+    wl = WakeLoop.for_tests()
+    wl._state = State.WAKE
+    timeline: list[str] = []
+    wl._ducker = _OrderedDucker(timeline)
+    _record_output_writes(wl, timeline)
+    release_started = asyncio.Event()
+    allow_release = asyncio.Event()
+    opener_done = asyncio.Event()
+    turn = _BlockingReleaseTurn(timeline, release_started, allow_release)
+    cues = (
+        _CueDuringSurrender(
+            wl,
+            timeline,
+            allow_release,
+            opener_done,
+            resume_opener_during_play=resume_during_cue,
+        )
+        if cues_configured else None
+    )
+    wl._cues = cues
+    opener = asyncio.create_task(_OPENERS[teardown](wl, turn, opener_done))
+    try:
+        # Parked inside `turn.release()`: past the point where each teardown
+        # path reads who owns output, before the point where it acts on it.
+        await asyncio.wait_for(release_started.wait(), timeout=5.0)
+        # Armed only now: `_end_turn_inner` reads the confirmation window at
+        # its top, and the window's own dismissal bookkeeping is another
+        # test's subject.
+        wl._research_window_active = True
+        wl._research_window_job = ResearchJob(
+            id="job-cancel-timeout",
+            query="q",
+            status=DONE,
+            result="r",
+            error=None,
+            created_at=time.time(),
+            finished_at=time.time(),
+            announced=False,
+            read=False,
+        )
+        wl._research_window_decided = False
+        wl._research_window_cancelled_by_wake = False
+        # Never set: the opener never observes the cancellation, forcing the
+        # `asyncio.wait_for` in `_handle_wake_frame` to time out.
+        wl._research_window_opening_done = asyncio.Event()
+        wl._legs["on"].detector.score_frame = lambda _frame: 0.95
+        await wl._handle_wake_frame(silent_frame(), leg="on")
+        allow_release.set()
+        await asyncio.wait_for(opener, timeout=5.0)
+    finally:
+        opener.cancel()
+    return wl, timeline, cues
 
 
 async def _win(**_kwargs) -> str:
@@ -307,71 +453,13 @@ async def _trigger_research_cancel_timeout(
     through the REAL `_play_cue`, against a REAL concurrent opener that
     holds the turn episode `_play_cue`'s own admission cannot preempt and
     that resumes into its own teardown while the cue is still sounding."""
-    import jasper.voice_daemon as voice_daemon_module
-
-    monkeypatch.setattr(
-        voice_daemon_module,
-        "RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC",
-        0.01,
+    _wl, _timeline, cues = await _drive_cancel_timeout(
+        monkeypatch, teardown="failed_begin", resume_during_cue=True,
     )
-    wl = WakeLoop.for_tests()
-    wl._state = State.WAKE
-    job = ResearchJob(
-        id="job-cancel-timeout",
-        query="q",
-        status=DONE,
-        result="r",
-        error=None,
-        created_at=time.time(),
-        finished_at=time.time(),
-        announced=False,
-        read=False,
-    )
-    wl._research_window_active = True
-    wl._research_window_job = job
-    wl._research_window_decided = False
-    wl._research_window_cancelled_by_wake = False
-    # Never set: the opener never observes the cancellation, forcing the
-    # `asyncio.wait_for` above to time out instead of resolving.
-    wl._research_window_opening_done = asyncio.Event()
-    wl._legs["on"].detector.score_frame = lambda _frame: 0.95
-    timeline: list[str] = []
-    wl._ducker = _OrderedDucker(timeline)
-    blocked = asyncio.Event()
-    release = asyncio.Event()
-    opener_done = asyncio.Event()
-    cues = _CuesReleasingOpener(wl, timeline, release, opener_done)
-    wl._cues = cues
-    opener = asyncio.create_task(
-        _stalled_confirmation_opener(wl, blocked, release, opener_done),
-    )
-    try:
-        await asyncio.wait_for(blocked.wait(), timeout=5.0)
-        await wl._handle_wake_frame(silent_frame(), leg="on")
-        await asyncio.wait_for(opener, timeout=5.0)
-    finally:
-        opener.cancel()
-
-    # The cue sounds on an episode of its OWN, not on the opener's turn
-    # episode, and the gate goes idle only when the cue's drain releases it.
-    assert cues.kind_at_play == "admin"
-    assert cues.kind_after_opener == "admin"
-    assert cues.active_after_opener is True
-    assert wl._output_gate.is_active is False
+    assert cues is not None
     # Surrendering output leaves the opener's "teardown still owed" sentinel
     # standing, so its own guarded cleanup call sites still fire.
     assert cues.turn_episode_field_at_play is True
-    # The resuming opener owns neither the cue's episode nor its duck: no
-    # restore lands inside the cue's play window, and the only one that
-    # lands at all is the cue's own, after it.
-    play_start = timeline.index("cue_play_start")
-    play_end = timeline.index("cue_play_end")
-    assert "restore" not in timeline[play_start:play_end]
-    assert timeline[play_end + 1:] == ["restore"]
-    # It still finished the turn it was holding.
-    assert wl._turn is None
-    assert wl._session_id is None
-    assert wl._state is State.WAKE
     return cues.played
 
 
@@ -471,3 +559,82 @@ async def test_refusal_is_a_structured_event(
     if expected_event == "research.confirmation_window_cancel_timeout":
         # NN-6: a dropped wake must still be audible.
         assert played == [INTERNAL_ERROR_CUE_SLUG]
+
+
+@pytest.mark.parametrize("teardown", ["failed_begin", "success_arm"])
+@pytest.mark.parametrize(
+    "resume_during_cue",
+    [True, False],
+    ids=["opener_resumes_during_cue", "cue_finishes_first"],
+)
+async def test_a_surrendered_opener_neither_writes_nor_unducks(
+    teardown: str,
+    resume_during_cue: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NN-6, both teardown paths and both orderings: once the cue has taken
+    the output gate, the opener that lost it must not touch output — no
+    chirp mixed into the cue, no drain wait held open for someone else's
+    audio, no duck restore, no gate release. Ownership is therefore asked
+    again AT each of those actions, not once before the awaits that
+    separate them (`turn.release()` is one of those awaits, and the
+    surrender lands inside it)."""
+    wl, timeline, cues = await _drive_cancel_timeout(
+        monkeypatch, teardown=teardown, resume_during_cue=resume_during_cue,
+    )
+    assert cues is not None
+    assert cues.played == [INTERNAL_ERROR_CUE_SLUG]
+
+    play_start = timeline.index("cue_play_start")
+    play_end = timeline.index("cue_play_end")
+    during_cue = timeline[play_start:play_end]
+    assert "restore" not in during_cue
+    assert "drain_wait" not in during_cue
+    # A surrendered opener writes nothing at all, in either ordering.
+    assert [entry for entry in timeline if entry.startswith("write_")] == []
+    # The only duck handback in the run is the cue's own, after its audio.
+    assert timeline.count("restore") == 1
+    assert timeline.index("restore") > play_end
+
+    # The cue owned output for its whole window, and the gate goes idle only
+    # when the cue's own drain releases it.
+    assert cues.kind_at_play == "admin"
+    assert cues.kind_at_play_end == "admin"
+    assert cues.active_at_play_end is True
+    assert wl._output_gate.is_active is False
+    # The opener still finished the turn it was holding.
+    assert wl._turn is None
+    assert wl._session_id is None
+    assert wl._turn_output_episode is None
+    assert wl._state is State.WAKE
+
+
+@pytest.mark.parametrize("teardown", ["failed_begin", "success_arm"])
+async def test_the_surrendered_duck_comes_back_once_with_no_cue_manager(
+    teardown: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-cue arm. Nothing ducks for a cue that cannot play, so the
+    timeout path hands back the duck the surrendered opener took and can no
+    longer restore — exactly once, and after the surrender. The episode it
+    handed `_play_cue` is released on that exit too: leaked, the gate stays
+    taken for the rest of the daemon run and every later cue is skipped."""
+    wl, timeline, cues = await _drive_cancel_timeout(
+        monkeypatch,
+        teardown=teardown,
+        resume_during_cue=False,
+        cues_configured=False,
+    )
+    assert cues is None
+    # One restore, landing while the opener is still parked in `release()`:
+    # the timeout path's, after the surrender — not the opener's.
+    assert timeline.count("restore") == 1
+    assert (
+        timeline.index("release_start")
+        < timeline.index("restore")
+        < timeline.index("release_end")
+    )
+    assert [entry for entry in timeline if entry.startswith("write_")] == []
+    assert wl._output_gate.is_active is False
+    assert wl._turn_output_episode is None
+    assert wl._state is State.WAKE

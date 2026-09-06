@@ -114,9 +114,28 @@ class AssistantOutputGate:
         kind: AssistantOutputKind,
     ) -> AssistantOutputEpisode | None:
         async with self._lock:
-            if self._admission_paused or self._active is not None:
-                return None
-            return self._begin_locked(kind)
+            return self._begin_if_idle_locked(kind)
+
+    async def end_and_begin_if_idle(
+        self,
+        episode: AssistantOutputEpisode,
+        kind: AssistantOutputKind,
+    ) -> AssistantOutputEpisode | None:
+        """End ``episode`` and take a ``kind`` episode under one lock hold.
+
+        The caller that surrenders an episode so a specific sound can be
+        heard needs the succession, not the two halves: `end` then
+        `begin_if_idle` only works while nothing yields between them, and a
+        `begin_turn` waiter queued on the idle signal would otherwise take
+        the gate first and the sound would be skipped (NN-6). Ending and
+        beginning inside the same lock hold makes that unrepresentable —
+        the woken waiter cannot observe the gap because it must acquire
+        this lock to act on it.
+        """
+
+        async with self._lock:
+            self._end_locked(episode, kind=None)
+            return self._begin_if_idle_locked(kind)
 
     async def pause_admission(self) -> bool:
         """Atomically refuse every future assistant-output admission.
@@ -165,17 +184,33 @@ class AssistantOutputGate:
         kind: AssistantOutputKind | None = None,
     ) -> None:
         async with self._lock:
-            active = self._active
-            if active is None:
-                return
-            matches = (
-                active.id == episode.id
-                if episode is not None else active.kind == kind
-            )
-            if not matches:
-                return
-            self._active = None
-            self._idle.set()
+            self._end_locked(episode, kind=kind)
+
+    def _end_locked(
+        self,
+        episode: AssistantOutputEpisode | None,
+        *,
+        kind: AssistantOutputKind | None,
+    ) -> None:
+        active = self._active
+        if active is None:
+            return
+        matches = (
+            active.id == episode.id
+            if episode is not None else active.kind == kind
+        )
+        if not matches:
+            return
+        self._active = None
+        self._idle.set()
+
+    def _begin_if_idle_locked(
+        self,
+        kind: AssistantOutputKind,
+    ) -> AssistantOutputEpisode | None:
+        if self._admission_paused or self._active is not None:
+            return None
+        return self._begin_locked(kind)
 
     def _begin_locked(self, kind: AssistantOutputKind) -> AssistantOutputEpisode:
         self._epoch += 1

@@ -161,3 +161,43 @@ async def test_paused_gate_boundedly_drains_only_the_preexisting_episode() -> No
     assert await gate.begin_if_idle("feedback") is None
     await gate.resume_admission()
     assert await gate.begin_if_idle("feedback") is not None
+
+
+async def test_the_swap_beats_a_turn_waiter_queued_before_it() -> None:
+    """A sound that MUST be heard cannot end its blocker and then ask for
+    the gate: `end` wakes every queued `begin_turn` waiter, and one of them
+    owns output before the ask lands — the sound is skipped (NN-6). The two
+    halves therefore happen inside one hold of the gate's single lock, so a
+    waiter queued before the swap cannot observe the gap."""
+    from jasper.voice.output_gate import AssistantOutputGate
+
+    gate = AssistantOutputGate()
+    blocker = await gate.begin_if_idle("proactive")
+    assert blocker is not None
+
+    # Queued while a non-turn episode owns output, so it is a real waiter
+    # rather than a caller that joins an open turn.
+    waiter = asyncio.create_task(gate.begin_turn())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+
+    # The blocker ends and the turn takes the gate with no yield in
+    # between: the waiter has been signalled but has not run.
+    await gate.end(blocker)
+    turn = await gate.begin_turn()
+    assert turn.kind == "turn"
+    assert not waiter.done()
+
+    cue = await gate.end_and_begin_if_idle(turn, "admin")
+    assert cue is not None
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert gate.active_kind == "admin"
+    assert not waiter.done()
+
+    # And the waiter is not lost — it takes its own, later episode once the
+    # cue is done.
+    await gate.end(cue)
+    queued = await asyncio.wait_for(waiter, timeout=1.0)
+    assert queued.kind == "turn"
+    assert queued.id > cue.id

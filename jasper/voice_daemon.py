@@ -2087,7 +2087,12 @@ class WakeLoop:
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.warning("dynamic text drain cleanup failed: %s", e)
 
-    async def _play_cue(self, slug: str) -> bool:
+    async def _play_cue(
+        self,
+        slug: str,
+        *,
+        episode: AssistantOutputEpisode | None = None,
+    ) -> bool:
         """Best-effort cue playback, ducking music via CamillaDSP for the
         cue's duration. Without ducking the cue is drowned out by playing
         music; TTS-side level math alone cannot make it audible over a
@@ -2101,8 +2106,19 @@ class WakeLoop:
         restarting, in which case music is not playing through camilla either,
         so the cue is unducked but audible, and silence on a wake-blocking
         condition is the worse outcome. Ducker.restore short-circuits when the
-        duck did not latch, so the finally is unconditional."""
+        duck did not latch, so the finally is unconditional.
+
+        ``episode`` is for the one caller that cannot let this method take
+        its own admission: the research cancel timeout has to end the turn
+        episode blocking the cue and take the cue's in the same lock hold
+        (`AssistantOutputGate.end_and_begin_if_idle`), or a queued turn
+        wins the gap and the wake goes unanswered. A handed-in episode is
+        this method's to release on EVERY exit, the unconfigured-cues one
+        included — otherwise it leaks the gate and the speaker goes deaf to
+        every later cue."""
         if self._cues is None:
+            if episode is not None:
+                await self._output_gate.end(episode)
             # Cues are how the user hears why the speaker did not respond.
             # With no cue manager the speaker is silent on every failure, so
             # make that state diagnosable in the journal. Once per daemon
@@ -2122,7 +2138,8 @@ class WakeLoop:
                     level=logging.WARNING,
                 )
             return False
-        episode = await self._output_gate.begin_if_idle("admin")
+        if episode is None:
+            episode = await self._output_gate.begin_if_idle("admin")
         if episode is None:
             log_event(
                 logger,
@@ -2931,16 +2948,25 @@ class WakeLoop:
                     # it would skip the cue and leave this wake silent.
                     # Take that ownership away rather than lend the cue the
                     # opener's episode: nothing cancels the opener here, so
-                    # it resumes into its own teardown, whose wildcard
-                    # `end_turn(None)` and duck restore would cut a cue
-                    # playing on a turn-kind episode. Both teardown paths
-                    # re-check `is_current` first, so a surrendered opener
-                    # releases neither, and the idle gate lets the cue take
-                    # its own "admin" episode with its own duck.
+                    # it resumes into its own teardown, whose duck restore
+                    # and gate release would cut a cue playing on a
+                    # turn-kind episode. Both teardown paths re-ask
+                    # `is_current` at each of their output actions, so a
+                    # surrendered opener writes nothing and releases
+                    # nothing. The succession is one lock hold, not an end
+                    # followed by a begin: a `begin_turn` waiter queued on
+                    # the idle signal would otherwise take the gate in
+                    # between and the wake would go unanswered (NN-6).
                     surrendered = self._turn_output_episode
-                    if surrendered is not None:
-                        await self._output_gate.end_turn(surrendered)
-                    played = await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
+                    cue_episode = (
+                        await self._output_gate.end_and_begin_if_idle(
+                            surrendered, "admin",
+                        )
+                        if surrendered is not None else None
+                    )
+                    played = await self._play_cue(
+                        INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
+                    )
                     if surrendered is not None and not played:
                         # No cue ducked, so no cue-side restore will hand
                         # back the duck the surrendered opener took and no
@@ -4581,9 +4607,16 @@ class WakeLoop:
         # it is mid-begin (the research-window cancel timeout does) and this
         # coroutine still resumes. Restoring a duck or ending an episode we
         # no longer hold would cut whatever owns output now.
-        owns_output = (
-            episode is not None and self._output_gate.is_current(episode)
-        )
+        #
+        # Asked again at every guarded action rather than once: every phase
+        # below is an await, and the surrender can land inside any of them
+        # (`turn.release` blocks on the provider). A single answer read at
+        # the top is stale by the time it is used.
+        def owns_output() -> bool:
+            return (
+                episode is not None and self._output_gate.is_current(episode)
+            )
+
         # First, so `total_ms` is the failure moment rather than the failure
         # plus the cleanup awaits below.
         await run_phase(
@@ -4592,7 +4625,7 @@ class WakeLoop:
         )
         if turn is not None:
             await run_phase("turn_release", turn.release)
-        if owns_output:
+        if owns_output():
             await run_phase("duck_restore", self._ducker.restore)
         await run_phase(
             "volume_session",
@@ -4624,7 +4657,7 @@ class WakeLoop:
                 asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
             ),
         )
-        if owns_output:
+        if owns_output():
             await run_phase(
                 "output_episode_release",
                 lambda: self._output_gate.end_turn(episode),
@@ -4919,26 +4952,38 @@ class WakeLoop:
                 ", turn_lost" if self._turn.turn_lost() else "",
             )
 
-        # "Done listening" chirp, bookending the wake chirp on every path into
-        # _end_turn. Awaited so it lands in the TTS queue before the unduck
-        # below, behind any LLM-response tail still buffered: the audible order
-        # is response → chirp → music returns.
-        await self._play_listening_chirp(going_on=False)
-        try:
-            # Queue completion is not acoustic completion. Keep the turn's
-            # output/duck ownership until the final chirp has cleared the
-            # physical route, for both fan-in and member-local outputd TTS.
-            await self._tts.wait_drained()
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
-            logger.warning("teardown TTS drain wait failed: %s", e)
-
         episode = self._turn_output_episode
-        # Same fact as `_cleanup_after_failed_begin`: a teardown that no
-        # longer owns output must not unduck or end what does.
-        owns_output = (
-            episode is not None and self._output_gate.is_current(episode)
-        )
-        if owns_output:
+        # Same fact as `_cleanup_after_failed_begin`, asked again at every
+        # guarded action because awaits separate them: a teardown that no
+        # longer owns output must not write to it, unduck it, or end what
+        # does. Ownership can be taken away mid-teardown (the
+        # research-window cancel timeout does it), and the chirp is an
+        # output write like any other — mixed into the sound that took the
+        # gate it would garble it, and its drain wait would hold this
+        # teardown open for someone else's audio. Whatever owns output now
+        # drains its own.
+        def owns_output() -> bool:
+            return (
+                episode is not None and self._output_gate.is_current(episode)
+            )
+
+        if owns_output():
+            # "Done listening" chirp, bookending the wake chirp on every path
+            # into _end_turn. Awaited so it lands in the TTS queue before the
+            # unduck below, behind any LLM-response tail still buffered: the
+            # audible order is response → chirp → music returns.
+            await self._play_listening_chirp(going_on=False)
+            try:
+                # Queue completion is not acoustic completion. Keep the turn's
+                # output/duck ownership until the final chirp has cleared the
+                # physical route, for both fan-in and member-local outputd TTS.
+                await self._tts.wait_drained()
+            except (
+                AttributeError, OSError, RuntimeError, TypeError, ValueError,
+            ) as e:
+                logger.warning("teardown TTS drain wait failed: %s", e)
+
+        if owns_output():
             await self._ducker.restore()
         self._volume_coordinator.note_voice_session(False)
         self._content_activity.resume()
@@ -4949,7 +4994,7 @@ class WakeLoop:
         # branch: left set, the cue below scores its own audio for a
         # barge-in against a turn that has already been released.
         self._barge_in_active = False
-        if owns_output:
+        if owns_output():
             await self._output_gate.end_turn(episode)
         self._turn_output_episode = None
         if research_window_job is not None:
