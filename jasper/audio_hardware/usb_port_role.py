@@ -2,34 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve the Pi USB data-port role, reconcile it into config.txt, and its CLI.
+"""Resolve the Pi USB data-port role and reconcile it into config.txt.
 
 The resolver is pure once its observed inputs are supplied.  It deliberately
 does not infer an I2S output from a missing USB device: on a Zero-class board,
 the shared OTG port stays in host mode through transient DAC removal so the DAC
-can reconnect without operator intervention.
+can reconnect without operator intervention. The role block's own render/parse
+lives in ``config_txt.py`` (ADR-0235 PR 6); the CLI lives in
+``jasper.cli.usb_port_role``.
 """
 
 from __future__ import annotations
 
-import argparse
 import os
-import re
-import shlex
 import stat
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
 from .config_txt import (
     DEFAULT_BOOT_CONFIG_PATH,
-    _SECTION_RE,
-    _collapse_empty_all_sections,
-    _global_or_all_lines,
+    BoardUsbTopology,
+    UsbDataRole,
+    configured_usb_role,
+    render_boot_config,
 )
 from .dac import all_profiles, by_id, is_boot_managed_i2s_profile
 from .hat_eeprom import DEFAULT_HAT_DIR
@@ -44,22 +43,6 @@ from .text_property import read_text_property
 
 
 DEFAULT_MODEL_PATH = "/proc/device-tree/model"
-
-MANAGED_BLOCK_BEGIN = "# BEGIN JTS USB DATA ROLE"
-MANAGED_BLOCK_END = "# END JTS USB DATA ROLE"
-
-BoardUsbTopology = Literal[
-    "shared_otg_port",
-    "separate_host_ports",
-    "unsupported",
-]
-UsbDataRole = Literal["host", "peripheral", "unknown"]
-
-_ROLE_LINE_RE = re.compile(
-    r"^\s*dtoverlay\s*=\s*dwc2\s*,\s*dr_mode\s*=\s*(host|peripheral)\s*(?:#.*)?$",
-    re.IGNORECASE,
-)
-_LEGACY_COMMENT_START = "# JTS install — required for the composite USB gadget"
 
 
 @dataclass(frozen=True)
@@ -250,15 +233,6 @@ def board_usb_topology(model: str) -> BoardUsbTopology:
     return "unsupported"
 
 
-def configured_usb_role(content: str) -> UsbDataRole:
-    role: UsbDataRole = "unknown"
-    for line in _global_or_all_lines(content):
-        match = _ROLE_LINE_RE.match(line)
-        if match:
-            role = match.group(1).lower()  # type: ignore[assignment]
-    return role
-
-
 def resolve_usb_port_role(
     *,
     board_model: str,
@@ -360,127 +334,6 @@ def resolve_system_usb_port_role(
     )
 
 
-def _dwc2_parameters(line: str) -> tuple[str, ...] | None:
-    directive = line.split("#", 1)[0].strip()
-    key, separator, value = directive.partition("=")
-    if not separator or key.strip().lower() != "dtoverlay":
-        return None
-    parts = tuple(part.strip() for part in value.split(","))
-    if not parts or parts[0].lower() != "dwc2":
-        return None
-    return parts[1:]
-
-
-def _removable_dwc2_line(line: str) -> bool:
-    parameters = _dwc2_parameters(line)
-    if parameters is None:
-        return False
-    if not parameters:
-        return True
-    if len(parameters) == 1:
-        key, separator, value = parameters[0].partition("=")
-        if (
-            separator
-            and key.strip().lower() == "dr_mode"
-            and value.strip().lower() in {"host", "peripheral"}
-        ):
-            return True
-    raise ValueError(
-        "ambiguous global/[all] dwc2 overlay; remove unsupported parameters "
-        "before JTS reconciles the USB data role"
-    )
-
-
-def _without_legacy_comment(content: str) -> str:
-    """Remove only the contiguous comment paragraph from the old installer.
-
-    The old role directive itself is removed by the ordinary DWC2 pass.  This
-    deliberately refuses a DOTALL pattern: intervening hardware directives
-    can never become part of a migration match.
-    """
-
-    lines = content.splitlines(keepends=True)
-    remove: set[int] = set()
-    for index, line in enumerate(lines):
-        if not line.strip().startswith(_LEGACY_COMMENT_START):
-            continue
-        cursor = index
-        while cursor < len(lines) and lines[cursor].lstrip().startswith("#"):
-            cursor += 1
-        if cursor >= len(lines) or _SECTION_RE.match(lines[cursor]) is None:
-            continue
-        section = _SECTION_RE.match(lines[cursor])
-        if section is None or section.group(1).strip().lower() != "all":
-            continue
-        role_index = cursor + 1
-        while role_index < len(lines) and not lines[role_index].strip():
-            role_index += 1
-        if role_index < len(lines) and _ROLE_LINE_RE.match(lines[role_index]):
-            remove.update(range(index, cursor))
-    return "".join(line for index, line in enumerate(lines) if index not in remove)
-
-
-def _without_managed_role_lines(content: str) -> str:
-    lines = content.splitlines(keepends=True)
-    output: list[str] = []
-    section = "global"
-    in_managed_block = False
-    for line in lines:
-        if line.strip() == MANAGED_BLOCK_BEGIN:
-            if in_managed_block:
-                raise ValueError("nested JTS USB data-role block")
-            in_managed_block = True
-            continue
-        if in_managed_block:
-            if line.strip() == MANAGED_BLOCK_END:
-                in_managed_block = False
-            elif (
-                line.strip()
-                and not line.lstrip().startswith("#")
-                and not _removable_dwc2_line(line)
-            ):
-                raise ValueError(
-                    "unexpected directive inside JTS USB data-role block"
-                )
-            continue
-        if line.strip() == MANAGED_BLOCK_END:
-            raise ValueError("JTS USB data-role block ends without a beginning")
-        match = _SECTION_RE.match(line)
-        if match:
-            section = match.group(1).strip().lower()
-            output.append(line)
-            continue
-        if section in {"global", "all"} and _removable_dwc2_line(line):
-            continue
-        output.append(line)
-    if in_managed_block:
-        raise ValueError("JTS USB data-role block is missing its end marker")
-    return _collapse_empty_all_sections("".join(output))
-
-
-def render_boot_config(content: str, desired_role: UsbDataRole) -> str:
-    if desired_role == "unknown":
-        return content
-    cleaned = _without_legacy_comment(content)
-    cleaned = _without_managed_role_lines(cleaned).rstrip()
-    purpose = (
-        "reserve the shared OTG port for output-DAC host mode"
-        if desired_role == "host"
-        else "enable the composite USB gadget on the OTG-capable port"
-    )
-    last_line = cleaned.splitlines()[-1].strip().lower() if cleaned else ""
-    section_prefix = "" if last_line == "[all]" else "[all]\n"
-    separator = "\n" if last_line == "[all]" else "\n\n"
-    block = section_prefix + (
-        f"{MANAGED_BLOCK_BEGIN}\n"
-        f"# JTS hardware reconciliation: {purpose}.\n"
-        "# Generated from board topology + registered DAC overlay; do not edit.\n"
-        f"dtoverlay=dwc2,dr_mode={desired_role}\n"
-        f"{MANAGED_BLOCK_END}\n"
-    )
-    return f"{cleaned}{separator}{block}" if cleaned else block
-
-
 def reconcile_boot_config(
     *,
     model_path: str | Path,
@@ -557,154 +410,7 @@ def reconcile_boot_config(
     return state, changed, hat_changed, desired_profile, durability_failed, hat_collision
 
 
-def _flag(value: object) -> str:
-    return "true" if value else "false"
-
-
-def _env_lines(
-    state: UsbPortRoleState,
-    *,
-    boot_config_changed: bool,
-    hat_profile: str,
-    hat_changed: bool,
-    durability_failed: bool,
-    hat_collision: I2sHatCollision | None,
-) -> str:
-    """The boot-config CLI's whole shell contract (ADR-0235 R2).
-
-    Emitted whether or not ``--reconcile-boot`` ran, so a caller evaling this
-    never hits an unset variable: the HAT-only keys read as empty/false when
-    there was nothing to reconcile.
-    """
-    values = {
-        "JASPER_BOOT_BOARD_TOPOLOGY": state.board_topology,
-        "JASPER_BOOT_USB_DESIRED_ROLE": state.desired_role,
-        "JASPER_BOOT_USB_ACTIVE_ROLE": state.active_role,
-        "JASPER_BOOT_REBOOT_REQUIRED": _flag(state.reboot_required),
-        "JASPER_BOOT_CONFIG_CHANGED": _flag(boot_config_changed),
-        "JASPER_BOOT_I2S_HAT_PROFILE": hat_profile,
-        "JASPER_BOOT_I2S_HAT_CHANGED": _flag(hat_changed),
-        "JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE": _flag(durability_failed),
-        "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY": (
-            hat_collision.managed_overlay if hat_collision is not None else ""
-        ),
-        "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS": (
-            ",".join(hat_collision.colliding_overlays)
-            if hat_collision is not None
-            else ""
-        ),
-    }
-    return "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items())
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--reconcile-boot", action="store_true")
-    parser.add_argument("--i2s-hat-intent-file")
-    parser.add_argument("--hat-dir", default=DEFAULT_HAT_DIR)
-    parser.add_argument("--require-management-transport", action="store_true")
-    parser.add_argument(
-        "--model-file",
-        default=os.environ.get("JASPER_PI_MODEL_FILE", DEFAULT_MODEL_PATH),
-    )
-    parser.add_argument(
-        "--boot-config",
-        default=os.environ.get("JTS_BOOT_CONFIG_FILE", DEFAULT_BOOT_CONFIG_PATH),
-    )
-    parser.add_argument(
-        "--udc-class-dir",
-        default=os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
-    )
-    parser.add_argument(
-        "--env",
-        action="store_true",
-        help="print the shell contract as shell-safe KEY=value assignments",
-    )
-    args = parser.parse_args(argv)
-    hat_changed = False
-    desired_hat_profile: str | None = None
-    durability_failed = False
-    hat_collision: I2sHatCollision | None = None
-    if args.reconcile_boot:
-        result = reconcile_boot_config(
-            model_path=args.model_file,
-            boot_config_path=args.boot_config,
-            udc_class_dir=args.udc_class_dir,
-            i2s_hat_intent_path=args.i2s_hat_intent_file,
-            hat_dir=args.hat_dir,
-        )
-        (
-            state,
-            changed,
-            hat_changed,
-            desired_hat_profile,
-            durability_failed,
-            hat_collision,
-        ) = result
-    else:
-        state = resolve_system_usb_port_role(
-            model_path=args.model_file,
-            boot_config_path=args.boot_config,
-            udc_class_dir=args.udc_class_dir,
-        )
-        changed = False
-    if args.require_management_transport:
-        print(
-            "event=hardware.usb_management_transport "
-            f"available={str(state.management_transport_available).lower()} "
-            f"desired={state.desired_role} active={state.active_role} "
-            f"reason={state.reason}",
-            file=sys.stderr,
-        )
-        return 0 if state.management_transport_available else 1
-    if args.env:
-        print(
-            _env_lines(
-                state,
-                boot_config_changed=changed,
-                hat_profile=desired_hat_profile or "",
-                hat_changed=hat_changed,
-                durability_failed=durability_failed,
-                hat_collision=hat_collision,
-            ),
-            end="",
-        )
-    # Every event= line goes to stderr (ADR-0235 R4): stdout carries the
-    # `--env` payload, stderr reaches the journal on every invocation.
-    print(
-        "event=hardware.usb_role_resolved "
-        f"topology={state.board_topology} desired={state.desired_role} "
-        f"active={state.active_role} "
-        f"gadget_available={str(state.gadget_available).lower()} "
-        "management_transport_available="
-        f"{str(state.management_transport_available).lower()} "
-        f"reason={state.reason}",
-        file=sys.stderr,
-    )
-    if changed:
-        print(
-            "event=hardware.boot_config_changed "
-            f"reboot_required={int(state.reboot_required)}",
-            file=sys.stderr,
-        )
-    if args.reconcile_boot and hat_changed:
-        # No `reboot_required` here: whether the running kernel already
-        # carries this overlay is desired-vs-observed, which only the
-        # reconciler's I2S reboot marker can decide (ADR-0233 one owner).
-        print(
-            "event=hardware.i2s_hat_boot_config_changed "
-            f"profile={desired_hat_profile or 'none'}",
-            file=sys.stderr,
-        )
-    if hat_collision is not None:
-        print(
-            "event=hardware.i2s_hat_boot_config_conflict "
-            f"managed_overlay={hat_collision.managed_overlay} "
-            f"colliding_overlays={','.join(hat_collision.colliding_overlays)}",
-            file=sys.stderr,
-        )
-    return os.EX_IOERR if durability_failed else 0
-
-
 if __name__ == "__main__":
+    from jasper.cli.usb_port_role import main
+
     raise SystemExit(main())
