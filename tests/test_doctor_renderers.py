@@ -244,13 +244,13 @@ def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
     assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_DMIX
 
 
-def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
+def test_shairport_check_legacy_plughw_ok_with_redeploy_hint(
     monkeypatch,
     tmp_path,
 ):
     """Pre-PR-#214 wiring: output_device still points at the bare
-    loopback. Doctor warns and tells the user to redeploy. This is
-    the legacy-but-functional path, not a hard failure."""
+    loopback. Legacy-but-functional, cosmetic advisory to redeploy —
+    not a fault (ADR-0233)."""
     _patch_lane_map(monkeypatch, tmp_path, None)
     _patch_shairport_conf(
         monkeypatch,
@@ -258,7 +258,7 @@ def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
         tmp_path,
     )
     r = renderers.check_shairport_sync_loopback_plughw()
-    assert r.status == "warn"
+    assert r.status == "ok"
     assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_PLUGHW
 
 
@@ -320,13 +320,67 @@ def test_shairport_legacy_remediations_name_this_box_s_device(
         "plughw:Loopback,0,0": renderers.REASON_SHAIRPORT_LEGACY_PLUGHW,
         "hw:Loopback,0,0": renderers.REASON_SHAIRPORT_RAW_HW_LOOPBACK,
     }[stale_device]
-    assert r.status in {"warn", "fail"}
+    expected_status = "ok" if stale_device == "plughw:Loopback,0,0" else "fail"
+    assert r.status == expected_status
     assert r.reason == expected_reason
     # The reason code is the same regardless of `armed` — the fact under
     # test here is that the remediation's NAMED DEVICE still consults the
     # lane map, which only `.detail` can pin.
     assert expected_device in r.detail
     assert forbidden_device not in r.detail
+
+
+@pytest.mark.parametrize(
+    "seed_registry,cache_exists",
+    [
+        pytest.param(True, False, id="registered_no_caches"),
+        pytest.param(False, False, id="no_registry_no_legacy_cache"),
+    ],
+)
+def test_spotify_cache_missing_is_ok(
+    monkeypatch, tmp_path, seed_registry, cache_exists,
+):
+    """A configured account with no linked token yet, or no account at
+    all, is a setup step remaining — not a fault (ADR-0233)."""
+    accounts_path = tmp_path / "accounts.json"
+    if seed_registry:
+        accounts_path.write_text(json.dumps({
+            "accounts": [
+                {"name": "jasper", "cache_path": str(tmp_path / "missing.json")},
+            ],
+        }))
+    legacy_cache = tmp_path / "legacy-cache"
+    if cache_exists:
+        legacy_cache.write_text("{}")
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaSyTest",
+        SPOTIFY_CLIENT_ID="test-client-id",
+        JASPER_SPOTIFY_ACCOUNTS_PATH=str(accounts_path),
+        SPOTIFY_CACHE_PATH=str(legacy_cache),
+    )
+
+    r = renderers.check_spotify_cache(cfg)
+
+    assert r.status == "ok"
+    assert r.reason == renderers.REASON_SPOTIFY_CACHE_MISSING
+
+
+def test_spotify_connect_device_no_tokens_is_ok(monkeypatch, tmp_path):
+    """No account has a token cache yet — nothing to verify against
+    librespot, not a fault (ADR-0233)."""
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaSyTest",
+        SPOTIFY_CLIENT_ID="test-client-id",
+        JASPER_SPEAKER_NAME="JTS",
+        JASPER_SPOTIFY_ACCOUNTS_PATH=str(tmp_path / "no-such-accounts.json"),
+    )
+
+    r = renderers.check_spotify_connect_device(cfg)
+
+    assert r.status == "ok"
+    assert r.reason == renderers.REASON_SPOTIFY_NO_TOKENS
 
 
 def test_shairport_check_missing_output_device_warns(monkeypatch, tmp_path):

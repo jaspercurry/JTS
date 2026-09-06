@@ -558,7 +558,7 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
                 f"{len(authed)} account(s) cached: {', '.join(authed)}",
             )
         return CheckResult(
-            "Spotify auth", "warn",
+            "Spotify auth", "ok",
             f"{len(registry.accounts)} account(s) registered but no token "
             f"caches found under {Path(cfg.spotify_accounts_path).parent}/"
             f"caches/. Visit {cfg.spotify_setup_url} to re-link.",
@@ -569,7 +569,7 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
     p = Path(cfg.spotify_cache_path)
     if not p.exists():
         return CheckResult(
-            "Spotify auth", "warn",
+            "Spotify auth", "ok",
             f"no accounts registered ({cfg.spotify_accounts_path}) and "
             f"no legacy cache at {p}. Visit {cfg.spotify_setup_url} to "
             f"link an account.",
@@ -637,7 +637,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         )
     if not clients:
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"no accounts have OAuth tokens (visit {cfg.spotify_setup_url}). "
             f"Once linked, this check will verify librespot visibility.",
             reason=REASON_SPOTIFY_NO_TOKENS,
@@ -805,7 +805,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
         )
     if 'plughw:Loopback' in line:
         return CheckResult(
-            label, "warn",
+            label, "ok",
             "plughw:Loopback,0,0 — stale pre-fan-in wiring. Redeploy "
             f"to render {expected_device}.",
             reason=REASON_SHAIRPORT_LEGACY_PLUGHW,

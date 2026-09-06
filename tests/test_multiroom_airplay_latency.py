@@ -325,13 +325,13 @@ def test_doctor_ok_when_budget_fits(monkeypatch):
     assert res.status == "ok"
 
 
-def test_doctor_warns_when_budget_too_short(monkeypatch):
+def test_doctor_ok_when_budget_too_short(monkeypatch):
     from jasper.cli.doctor import grouping as doctor_grouping
     from jasper.cli.doctor.grouping import check_grouping_airplay_latency
 
     _patch_doctor(monkeypatch, _cfg(buffer_ms=400), frames=5000)
     res = check_grouping_airplay_latency()
-    assert res.status == "warn"
+    assert res.status == "ok"
     assert res.reason == doctor_grouping.REASON_AIRPLAY_LATENCY_TIGHT
     # The s->ms scaling and remediation wording are prose; the underlying
     # residual math (0.56 s -> 560 ms for this same buffer_ms/frames pair) is

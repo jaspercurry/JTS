@@ -242,9 +242,8 @@ def check_zram_size_ratio() -> CheckResult:
     pct = usage.percent_of_ram
     zram_mb = usage.disksize_bytes // (1024 * 1024)
     if pct > ZRAM_WARN_PERCENT:
-        # If rpi-swap isn't installed, the JTS drop-in is moot —
-        # different package owns the zram device. Don't warn the
-        # operator about something they can't fix from this side.
+        # If rpi-swap isn't installed, the JTS drop-in is moot — a
+        # different package owns the zram device, unactionable here.
         # Detection: /etc/rpi/swap.conf exists iff rpi-swap is the
         # canonical Pi-side zram manager (Trixie default).
         if not Path("/etc/rpi/swap.conf").exists():
@@ -254,8 +253,9 @@ def check_zram_size_ratio() -> CheckResult:
                 f"zram package (rpi-swap not installed); JTS drop-in is inert",
                 reason=REASON_ZRAM_MANAGED_ELSEWHERE,
             )
+        status = "ok" if Path("/etc/rpi/swap.conf.d/50-jts.conf").exists() else "warn"
         return CheckResult(
-            "zram size", "warn",
+            "zram size", status,
             f"{zram_mb} MB ({pct}% of RAM) — old default; the JTS "
             f"drop-in targets {ZRAM_TARGET_PERCENT}%. If it is present "
             f"(check /etc/rpi/swap.conf.d/50-jts.conf), reboot to apply "

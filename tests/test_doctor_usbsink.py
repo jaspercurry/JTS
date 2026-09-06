@@ -90,7 +90,7 @@ def _available_usb_role(monkeypatch):
     [
         (_role, "ok", ""),
         (_zero_host_role, "ok", usbsink.REASON_DATA_ROLE_HOST_ONLY),
-        (_pending_reboot_role, "warn", usbsink.REASON_DATA_ROLE_REBOOT_REQUIRED),
+        (_pending_reboot_role, "ok", usbsink.REASON_DATA_ROLE_REBOOT_REQUIRED),
     ],
     ids=["available", "zero-host", "pending-reboot"],
 )
@@ -1023,7 +1023,7 @@ def test_composition_retains_ncm_during_a_pending_host_reboot(
 
     result = usbsink.check_usbgadget_composition()
 
-    assert result.status == "warn"
+    assert result.status == "ok"
     assert result.reason == usbsink.REASON_COMPOSITION_RETAINED_PENDING_REBOOT
 
 

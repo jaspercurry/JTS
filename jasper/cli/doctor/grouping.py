@@ -1078,8 +1078,8 @@ def check_grouping_airplay_latency() -> CheckResult:
     solo / follower. For a bonded leader it reads the sender's most-recent
     notified latency from shairport's journal (ABSENCE => the default ~2.0 s
     budget, the free regime — fail-soft, so an unreadable journal reads as
-    comfortable, never a false warn) and warns ONLY when the budget is
-    genuinely too short to hide the delay. Pinned to the same pure
+    comfortable) and reports the tight case as ``ok`` with a reason — no
+    local lever grows the budget. Pinned to the same pure
     :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
     uses, so the doctor and the dashboard tell one story."""
     from ...multiroom.airplay_latency import assess_fit, read_notified_frames
@@ -1108,7 +1108,7 @@ def check_grouping_airplay_latency() -> CheckResult:
         # in /var/lib/jasper/grouping.env if it was raised. Do NOT point at a
         # /rooms control — none writes buffer_ms.
         return CheckResult(
-            label, "warn",
+            label, "ok",
             f"AirPlay budget too short for the bonded round-trip: {budget_desc} "
             f"=> shairport drops the offset => ~{fit.residual_lag_sec * 1000:.0f} ms "
             "residual lip-sync lag (it also logs 'stream latency too short to "
