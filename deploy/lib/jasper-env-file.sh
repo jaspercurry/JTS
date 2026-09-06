@@ -4,10 +4,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared env-file reader + quoting + atomic, locked single-key writer. Callers
-# today: jasper-aec-reconcile, jasper-audio-hardware-reconcile,
-# jasper-wifi-guardian, deploy/install.sh; other bash writers of the same
-# files still bypass it.
+# Include guard: a second `source` of this file must be harmless, since the
+# `readonly` below would otherwise abort a caller running under
+# `set -euo pipefail`. An INHERITED guard variable makes the lib define
+# nothing, which the consumers' `declare -F` checks turn into a loud exit 66.
+if [[ -n "${_JASPER_ENV_FILE_LIB_LOADED+x}" ]]; then
+    return 0
+fi
+_JASPER_ENV_FILE_LIB_LOADED=1
+
+# Shared env-file reader + quoting + atomic, locked single-key writer for the
+# bash consumers of /etc/jasper/jasper.env and the wizard-owned
+# /var/lib/jasper*/*.env files.
 #
 # Values are single-quote wrapped, never `printf %q`: bash 5.2 escapes commas
 # (`hw:CARD=A\,DEV=0`), systemd's EnvironmentFile= parser keeps that backslash
@@ -47,55 +55,111 @@ jasper_env_quote_value() {
     esac
 }
 
-# jasper_env_file_get FILE KEY
-# Print the LAST `KEY=` line's value verbatim (one matched surrounding
-# quote pair stripped, nothing evaluated); return 1 with no output when
-# FILE or the key is absent. A single-quoted value additionally has
-# jasper_env_file_set's own '\'' splice undone, so set -> get round trips
-# an apostrophe-bearing value; otherwise this parses byte-for-byte like
-# read_stash in jasper/wifi_guardian_persistence.py, which reads the
-# same files.
-jasper_env_file_get() {
-    local file="$1" key="$2" value
-
-    [[ -r "$file" ]] || return 1
-    value="$(awk -v key="$key" '
-        BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
-        {
-            line = $0
-            sub(/^[ \t\r\v\f]+/, "", line)
-            sub(/[ \t\r\v\f]+$/, "", line)
-            if (line == "" || substr(line, 1, 1) == "#") next
-            eq = index(line, "=")
-            if (eq == 0) next
-            k = substr(line, 1, eq - 1)
-            sub(/^[ \t\r\v\f]+/, "", k)
-            sub(/[ \t\r\v\f]+$/, "", k)
+# The line parser both readers below share: `key` non-empty prints that
+# key's LAST value (rc 1 when absent); `key` empty prints every key as
+# NAME then value on the next line, in first-appearance order with the
+# last assignment's value. One matched surrounding quote pair is
+# stripped and jasper_env_file_set's own '\'' splice undone, so set ->
+# get round trips an apostrophe-bearing value; nothing is evaluated.
+# Otherwise this parses byte-for-byte like read_stash in
+# jasper/wifi_guardian_persistence.py, which reads the same files.
+# readonly: jasper_env_file_export already skips every `_JASPER_`-prefixed
+# key it finds (below), so this is the backstop — nothing may reassign this
+# shell global if that skip is ever weakened.
+readonly _JASPER_ENV_FILE_AWK='
+    BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
+    function unquote(v,   len, q, out, i) {
+        len = length(v)
+        q = substr(v, 1, 1)
+        if (len >= 2 && q == substr(v, len, 1) && (q == sq || q == dq)) {
+            v = substr(v, 2, len - 2)
+            if (q == sq) {
+                # index/substr, never a dynamic regex: mawk and gawk
+                # disagree on backslash escapes inside one.
+                out = ""
+                while ((i = index(v, splice)) > 0) {
+                    out = out substr(v, 1, i - 1) sq
+                    v = substr(v, i + 4)
+                }
+                v = out v
+            }
+        }
+        return v
+    }
+    {
+        line = $0
+        sub(/^[ \t\r\v\f]+/, "", line)
+        sub(/[ \t\r\v\f]+$/, "", line)
+        if (line == "" || substr(line, 1, 1) == "#") next
+        eq = index(line, "=")
+        if (eq == 0) next
+        k = substr(line, 1, eq - 1)
+        sub(/^[ \t\r\v\f]+/, "", k)
+        sub(/[ \t\r\v\f]+$/, "", k)
+        if (key != "") {
             if (k != key) next
             found = 1
             val = substr(line, eq + 1)
+            next
         }
-        END {
+        if (k !~ /^[A-Za-z_][A-Za-z0-9_]*$/) next
+        # _JASPER_-prefixed keys belong to the lib itself (include guard,
+        # parser); jasper_env_file_export must never re-export one, or a
+        # child that later sources the lib would find the guard already set
+        # and define nothing.
+        if (k ~ /^_JASPER_/) next
+        if (!(k in all)) order[++cnt] = k
+        all[k] = substr(line, eq + 1)
+    }
+    END {
+        if (key != "") {
             if (!found) exit 1
-            n = length(val)
-            q = substr(val, 1, 1)
-            if (n >= 2 && q == substr(val, n, 1) && (q == sq || q == dq)) {
-                val = substr(val, 2, n - 2)
-                if (q == sq) {
-                    # index/substr, never a dynamic regex: mawk and gawk
-                    # disagree on backslash escapes inside one.
-                    out = ""
-                    while ((i = index(val, splice)) > 0) {
-                        out = out substr(val, 1, i - 1) sq
-                        val = substr(val, i + 4)
-                    }
-                    val = out val
-                }
-            }
-            print val
+            print unquote(val)
+            exit 0
         }
-    ' "$file")" || return 1
+        for (i = 1; i <= cnt; i++) print order[i] "\n" unquote(all[order[i]])
+    }
+'
+
+# jasper_env_file_get FILE KEY
+# Print the LAST `KEY=` line's value; return 1 with no output when FILE
+# or the key is absent.
+jasper_env_file_get() {
+    local file="$1" key="$2" value
+
+    # An empty key is _JASPER_ENV_FILE_AWK's "print every key" sentinel;
+    # forwarding one here would hand the caller the whole file with rc 0.
+    [[ -n "$key" ]] || return 1
+    [[ -r "$file" ]] || return 1
+    value="$(awk -v key="$key" "$_JASPER_ENV_FILE_AWK" "$file")" || return 1
     printf '%s\n' "$value"
+}
+
+# jasper_env_file_export FILE
+# Export every `KEY=value` assignment in FILE into the environment, the
+# way `set -a; source FILE; set +a` did — but WITHOUT the shell ever
+# seeing the values: a `$(…)`, backtick, space or `#` in an operator-
+# pasted value is data, not code. No-op when FILE is absent. A line
+# whose key is not a plain identifier is skipped (`source` would have
+# run it as a command); so is a key beginning with `_JASPER_` (this lib's
+# own guard/parser state).
+# The locals are `_jef_`-prefixed: bash scopes dynamically, so a local named
+# like a key in the parsed file would shadow it and `export KEY=` would land
+# on the local instead of the environment.
+jasper_env_file_export() {
+    local _jef_file="$1" _jef_key _jef_value _jef_parsed
+
+    [[ -r "$_jef_file" ]] || return 0
+    # Captured, not process-substituted: `pipefail` cannot see into a process
+    # substitution, so an awk that never ran (or died mid-file) would leave
+    # the caller reconciling against a blank world with rc 0. The trailing
+    # `printf x` survives $()'s newline strip so a LAST key whose value is
+    # empty still arrives as two lines.
+    _jef_parsed="$(awk -v key="" "$_JASPER_ENV_FILE_AWK" "$_jef_file" && printf x)" \
+        || return 1
+    while IFS= read -r _jef_key && IFS= read -r _jef_value; do
+        export "${_jef_key}=${_jef_value}"
+    done <<<"${_jef_parsed%x}"
 }
 
 # _jasper_env_lock_acquire DIR FILE FDVAR

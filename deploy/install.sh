@@ -641,8 +641,13 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
-   - Sweep an operator-seeded LLM API key or Google Routes key out of
-     /etc/jasper/jasper.env into the jasper-secrets compartment.
+   - Create, then re-assert ownership and modes on, the
+     /var/lib/jasper-secrets compartment holding the assistant provider
+     API keys jasper-voice reads, relocating any operator-seeded LLM API
+     key or Google Routes key out of the broad /etc/jasper/jasper.env.
+   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
+     integration-secret compartment holding the HA token and Spotify
+     credentials/caches.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, WiFi guardian recovery, and correction TLS CA/cert files.
@@ -854,9 +859,9 @@ install_deps() {
     # package, which would enable a global dnsmasq.service. The scoped,
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
     # hardware-gated USB management network.
-    # rustc + cargo are required to build the Rust audio daemons
-    # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
-    # our crate's rust-version=1.75 floor.
+    # rustc + cargo are required to build the Rust audio daemons (rust/jasper-fanin/,
+    # rust/jasper-outputd/). Trixie ships rustc 1.85; the effective floor is 1.82
+    # (jasper-daemon, jasper-tts-protocol).
     # meson + ninja-build are installed ahead of time for the optional
     # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
     # binding; an explicit Advanced → Software action compiles v2 later in a
@@ -1297,10 +1302,6 @@ install_alsa() {
     fi
     install -d -m 0755 "${ENV_DIR}"
     ensure_state_dir
-    install -d -m 0755 /usr/local/lib/jasper
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
-        /usr/local/lib/jasper/jasper-asound-render.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
         /usr/local/sbin/jasper-render-asound-conf
@@ -2044,50 +2045,17 @@ install_camillagui() {
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 
+# See ADR-0242 for both properties. RAISE CONDITION for MemoryMax=96M: an
+# OOM kill of this transient run-u*.service unit in the journal (the deploy
+# wrapper's report_oom_collateral lists it).
 run_doctor_summary() {
-    # Final pre-flight: run jasper-doctor so the operator sees status of
-    # every subsystem (env file, mic, firmware, AEC bridge, renderers,
-    # provider keys, …) at install time. Non-blocking — install is done
-    # by the time we get here; this is just a status report.
-    #
-    # Critical for catching the "silent productization gaps" — e.g. an
-    # XVF chip on 6-ch firmware but with the ALSA mixer's ch2-5 muted,
-    # otherwise invisible until a wake-word test fails days later.
-    if [[ ! -x /opt/jasper/.venv/bin/jasper-doctor ]]; then
-        return 0
-    fi
-    echo
-    if build_swap_required; then
-        echo "=== low-memory deploy health pre-flight ==="
-        if "${REPO_DIR}/deploy/bin/jasper-deploy-health"; then
-            echo "✓ low-memory deploy health checks pass."
-        else
-            echo
-            echo "─────────────────────────────────────────────────────────────"
-            echo " low-memory deploy health reports failures (see above)."
-            echo " Install finished, but core runtime health isn't clean."
-            echo " Re-run after fixing: sudo ${REPO_DIR}/deploy/bin/jasper-deploy-health"
-            echo "─────────────────────────────────────────────────────────────"
-        fi
-        return 0
-    fi
-
-    echo "=== jasper-doctor pre-flight ==="
-    local doctor_status
-    set +e
-    /opt/jasper/.venv/bin/jasper-doctor
-    doctor_status=$?
-    set -e
-    if (( doctor_status == 0 )); then
-        echo "✓ all critical doctor checks pass."
-    else
-        echo
-        echo "─────────────────────────────────────────────────────────────"
-        echo " jasper-doctor reports failures (see above)."
-        echo " Install finished, but at least one subsystem isn't healthy."
-        echo " Re-run after fixing: sudo /opt/jasper/.venv/bin/jasper-doctor"
-        echo "─────────────────────────────────────────────────────────────"
-    fi
+    echo; echo "=== jasper-doctor --core ==="
+    local rc=0
+    systemd-run --quiet --wait --pipe --collect \
+        -p MemoryMax=96M -p RuntimeMaxSec=60 \
+        /opt/jasper/.venv/bin/jasper-doctor --core || rc=$?
+    logger -t jasper-install -- "event=install.doctor_core rc=${rc}" 2>/dev/null || true
+    return "${rc}"
 }
 
 main() {
@@ -2145,13 +2113,13 @@ main() {
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
+        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
+        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         migrate_calibration_sign_convention  # vendor mic cal files are response curves
         ensure_output_hardware_state
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
@@ -2178,7 +2146,7 @@ main() {
         # state change so a failure anywhere above leaves the prior good
         # manifest. See ADR-0172.
         write_build_manifest
-        run_doctor_summary
+        run_doctor_summary || true  # advisory; removal condition in ADR-0242
         return 0
     fi
     require_root
@@ -2197,6 +2165,8 @@ main() {
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
+    reassert_secrets_compartment_perms
+    reassert_intsecrets_compartment_perms
     migrate_calibration_sign_convention  # vendor mic cal files are response curves
     ensure_output_hardware_state
     render_outputd_cutover_config
@@ -2212,6 +2182,7 @@ main() {
     install_peering_template
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
+    migrate_wifi_guardian
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
@@ -2229,7 +2200,7 @@ main() {
     # change so a failure anywhere above leaves the prior good manifest.
     # See ADR-0172.
     write_build_manifest
-    run_doctor_summary
+    run_doctor_summary || true  # advisory; removal condition in ADR-0242
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests

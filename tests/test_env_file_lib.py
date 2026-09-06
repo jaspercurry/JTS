@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the shared env-file quoting/writer lib
-(deploy/lib/jasper-env-file.sh) and the drift guard that keeps both
-reconcilers on it.
+"""Tests for the shared env-file reader/quoting/writer lib
+(deploy/lib/jasper-env-file.sh) and the drift guards that keep its
+deploy/bin consumers on it.
 
 The `printf %q` bug class this lib exists to kill: bash 5.2 escapes
 commas (`hw:CARD=A\\,DEV=0`), which systemd's EnvironmentFile= parser
@@ -28,8 +28,12 @@ from tests.install_surface import installer_text
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
-RECONCILERS = [
+# Every deploy/bin executable that loads the shared lib. Not only the
+# reconcilers: the drift guards below are about the loader and the quoting,
+# which every consumer must get identically right.
+LIB_CONSUMERS = [
     ROOT / "deploy" / "bin" / "jasper-aec-reconcile",
+    ROOT / "deploy" / "bin" / "jasper-apply-airplay-mode",
     ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile",
     ROOT / "deploy" / "bin" / "jasper-wifi-guardian",
 ]
@@ -378,6 +382,17 @@ def test_env_file_get(tmp_path: Path, body: str, expected: str | None) -> None:
         assert result.stdout == expected + "\n"
 
 
+def test_env_file_get_rejects_an_empty_key(tmp_path: Path) -> None:
+    """An empty key is the shared parser's "print every key" sentinel, so a
+    caller that forwards one must get rc 1 — never the whole file, secrets
+    included, with rc 0."""
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("WANT=plain\nOTHER=x\n")
+    result = _bash(f'jasper_env_file_get "{env_file}" ""')
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_env_file_get_missing_file_returns_one(tmp_path: Path) -> None:
     result = _bash(f'jasper_env_file_get "{tmp_path / "absent.env"}" WANT')
     assert result.returncode == 1
@@ -397,12 +412,101 @@ def test_env_file_get_round_trips_env_file_set(tmp_path: Path) -> None:
     assert result.stdout == "it's\n"
 
 
-def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
-    """Drift guard: every script in RECONCILERS (the two reconcilers and
-    the wifi guardian) must load jasper-env-file.sh and must not regrow a
-    local `printf %q` (the bash-5.2 comma bug) or a forked local quoting
-    loop."""
-    for script in RECONCILERS:
+def test_env_file_export_loads_every_key_without_evaluating_it(
+    tmp_path: Path,
+) -> None:
+    """The `set -a; source FILE` replacement: every assignment reaches the
+    environment of this shell AND of its children, last assignment wins, one
+    matched quote pair is stripped, and nothing is evaluated — the canary
+    command substitution must not run and the `#` must survive."""
+    canary = tmp_path / "canary"
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text(
+        "PLAIN=one\n"
+        f"CANARY=$(touch {canary})\n"
+        "SPACED='has space'\n"
+        "HASHED=hash#tag\n"
+        "DUPE=first\n"
+        "DUPE=last\n"
+        "# COMMENTED=no\n"
+        "not an identifier=x\n"
+    )
+
+    result = _bash(
+        f'jasper_env_file_export "{env_file}"\n'
+        "env | grep -E '^(PLAIN|CANARY|SPACED|HASHED|DUPE|COMMENTED)=' | sort\n"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        f"CANARY=$(touch {canary})",
+        "DUPE=last",
+        "HASHED=hash#tag",
+        "PLAIN=one",
+        "SPACED=has space",
+    ]
+    assert not canary.exists()
+
+
+def test_env_file_export_noop_when_file_absent(tmp_path: Path) -> None:
+    result = _bash(f'jasper_env_file_export "{tmp_path / "absent.env"}"')
+    assert result.returncode == 0, result.stderr
+
+
+def test_env_file_export_fails_when_the_parser_cannot_run(tmp_path: Path) -> None:
+    """A parse that never happened must not read as an empty file: the caller
+    would then reconcile against a blank world and rewrite defaults over every
+    operator value. PATH=/nonexistent stands in for any awk failure."""
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("PLAIN=one\n")
+
+    result = _bash(
+        f'PATH=/nonexistent jasper_env_file_export "{env_file}"; rc=$?\n'
+        'printf "rc=%s plain=[%s]\\n" "$rc" "${PLAIN-}"\n'
+    )
+
+    assert result.stdout == "rc=1 plain=[]\n"
+
+
+@pytest.mark.parametrize(
+    "guard_key,guard_value,plain_key,plain_value",
+    [
+        # The awk program itself: a shell global an env file could carry.
+        ("_JASPER_ENV_FILE_AWK", "PWNED", "PLAIN", "one"),
+        # The include guard: exporting this into a child that later sources
+        # the lib would make the child find its guard already set and
+        # define nothing.
+        ("_JASPER_ENV_FILE_LIB_LOADED", "1", "JASPER_OK", "1"),
+    ],
+)
+def test_env_file_export_skips_jasper_prefixed_keys(
+    tmp_path: Path,
+    guard_key: str,
+    guard_value: str,
+    plain_key: str,
+    plain_value: str,
+) -> None:
+    """_JASPER_-prefixed keys are this lib's own state (include guard,
+    parser). jasper_env_file_export must never re-export one: every other
+    key still reaches a child's environment, and the pass still succeeds."""
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text(f"{guard_key}={guard_value}\n{plain_key}={plain_value}\n")
+
+    result = _bash(
+        f'set -e\njasper_env_file_export "{env_file}"\n'
+        f'env | grep -E "^({plain_key}|{guard_key})=" | sort\n'
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{plain_key}={plain_value}\n"
+
+
+def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
+    """Drift guard: every script in LIB_CONSUMERS (the two reconcilers, the
+    wifi guardian and the AirPlay conf renderer) must load
+    jasper-env-file.sh and must not regrow a local `printf %q` (the
+    bash-5.2 comma bug) or a forked local quoting loop."""
+    for script in LIB_CONSUMERS:
         text = script.read_text()
         assert "jasper-env-file.sh" in text, script.name
         assert "printf '%q'" not in text, script.name
@@ -412,15 +516,16 @@ def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
         assert "${rest%%\\'*}" not in text, script.name
 
 
-def test_reconcilers_prefer_script_dir_sibling_lib() -> None:
-    """Version-skew guard: install.sh runs the REPO copy of a reconciler
-    mid-install (install_alsa's --print-env) before install_systemd_units
-    refreshes /usr/local/lib, so the loader must prefer the readable
+def test_lib_consumers_prefer_script_dir_sibling_lib() -> None:
+    """Version-skew guard: install.sh runs the REPO copy of a consumer
+    mid-install (install_alsa's --print-env, install_renderers' seed render)
+    before install_systemd_units publishes /usr/local/lib/jasper at all, so
+    the loader must prefer the readable
     SCRIPT_DIR-relative sibling over the installed copy — otherwise one
     mid-install call can pair a new script with a stale lib."""
     sibling = '"${SCRIPT_DIR}/../lib/jasper-env-file.sh"'
     installed = "/usr/local/lib/jasper/jasper-env-file.sh"
-    for script in RECONCILERS:
+    for script in LIB_CONSUMERS:
         text = script.read_text()
         body = text[text.index("load_env_file_lib() {"):]
         assert body.index(sibling) < body.index(installed), script.name

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 #
@@ -16,15 +16,19 @@ set -eu
 
 # shellcheck source=deploy/lib/jasper-sed-inplace.sh
 . "$(dirname "$0")/lib/jasper-sed-inplace.sh"
+# shellcheck source=deploy/lib/jasper-env-file.sh
+. "$(dirname "$0")/lib/jasper-env-file.sh"
 
 CONF=/etc/bluetooth/main.conf
 SPEAKER_NAME_FILE=${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}
 
-if [ -r "$SPEAKER_NAME_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$SPEAKER_NAME_FILE" 2>/dev/null || true
+# The wizard-owned name is operator text: a `$(…)`, backtick or space in it
+# must reach sed as data, so the file is read, never sourced.
+speaker_name=${JASPER_SPEAKER_NAME:-}
+if speaker_name_from_file="$(jasper_env_file_get "$SPEAKER_NAME_FILE" JASPER_SPEAKER_NAME)"; then
+    speaker_name="$speaker_name_from_file"
 fi
-speaker_name=${JASPER_SPEAKER_NAME:-JTS}
+speaker_name=${speaker_name:-JTS}
 speaker_name_sed=$(printf '%s' "$speaker_name" | sed -e 's/[\/&]/\\&/g')
 
 if [ ! -f "$CONF" ]; then

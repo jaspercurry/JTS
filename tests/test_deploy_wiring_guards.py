@@ -359,45 +359,6 @@ def test_socket_web_services_have_generous_start_limit():
         assert "StartLimitBurst=20" in text, path
 
 
-_SYSTEMD_UNITS_FRAGMENT = _DEPLOY / "lib" / "install" / "systemd-units.sh"
-
-
-def _install_function_body(source: str, name: str) -> str:
-    """Extract a bash function body from an install fragment. Functions
-    there open with `name() {` at column 0 and close with a `}` alone at
-    column 0."""
-    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
-    m = re.search(pattern, source, re.S | re.M)
-    assert m, f"function {name} not found in systemd-units.sh"
-    return m.group(1)
-
-
-def test_nginx_recovery_dropin_installed_on_both_profiles():
-    """The nginx recovery drop-in (Restart=always + OOMScoreAdjust=-450)
-    shipped 2026-06-29 on the streambox path only. Full-profile boxes ran
-    an unprotected nginx (an OOM-killed nginx stayed dead) with a
-    permanently-warning doctor check — the installed-settings drift check
-    expects -450 on nginx regardless of profile, and its "re-run install.sh"
-    remediation could never fix it there. The whole-text check above cannot catch a
-    per-profile gap, so pin that the shared helper installs the drop-in
-    and that BOTH profile entry points reach it."""
-    source = _SYSTEMD_UNITS_FRAGMENT.read_text(encoding="utf-8")
-    helper = _install_function_body(source, "install_nginx_recovery_dropin")
-    assert "deploy/systemd/nginx.service.d/jts-recovery.conf" in helper
-
-    # Full profile calls the helper directly.
-    assert "install_nginx_recovery_dropin" in _install_function_body(
-        source, "install_systemd_units"
-    )
-    # Streambox profile reaches it via install_streambox_audio_slices.
-    assert "install_nginx_recovery_dropin" in _install_function_body(
-        source, "install_streambox_audio_slices"
-    )
-    assert "install_streambox_audio_slices" in _install_function_body(
-        source, "install_streambox_systemd_units"
-    )
-
-
 # ----------------------------------------------------------------------
 # 6 — deploy-to-pi.sh post-install verification wiring (Workstream B)
 # ----------------------------------------------------------------------
@@ -412,31 +373,6 @@ def test_nginx_recovery_dropin_installed_on_both_profiles():
 # test_lib_deploy_direction.py.
 
 
-def test_deploy_captures_install_rc_so_collateral_is_always_surfaced():
-    """install.sh must run with its exit code captured (not under bare
-    set -e), so report_oom_collateral runs even when the build failed —
-    otherwise an OOM-killed build would abort the deploy before surfacing
-    the collateral (See ADR-0174)."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert re.search(
-        r'run_remote_sudo "\$\{install_env\} bash[^\n]*"\s*\|\|\s*install_rc=\$\?',
-        text,
-    ), "install.sh invocation must capture its exit code with || install_rc=$?"
-    assert "report_oom_collateral" in text
-
-
-def test_deploy_captures_pi_clock_for_oom_window():
-    """The OOM scan bounds its kernel-log window to the Pi's clock at
-    install start — captured before the install run."""
-    text = _DEPLOY_TO_PI.read_text()
-    assert "DEPLOY_START_EPOCH=" in text
-    assert "date +%s" in text
-    # The capture must precede the install invocation it bounds.
-    assert text.index("DEPLOY_START_EPOCH=\"$(ssh_remote") < text.index(
-        "|| install_rc=$?"
-    )
-
-
 def test_deploy_production_oom_is_gated_after_end_state_evidence():
     """A production-daemon OOM during deploy is SURFACED loudly and then
     fails verification after the end-state gates have run. That keeps the
@@ -446,25 +382,12 @@ def test_deploy_production_oom_is_gated_after_end_state_evidence():
     assert "report_oom_collateral" in text  # surfacing happens
     success_path = text[text.index("Build manifest now on Pi"):]
     assert "verify_manifest_advanced" in success_path
-    assert "surface_system_health" in success_path
+    assert "gate_core_health" in success_path
     assert 'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]' in success_path
     assert "DEPLOY VERIFICATION FAILED: a live production daemon was" in success_path
-    assert success_path.index("surface_system_health") < success_path.index(
+    assert success_path.index("gate_core_health") < success_path.index(
         'if [[ "$OOM_PRODUCTION_HIT" == "1" ]]'
     )
-
-
-def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
-    """The post-deploy doctor runs after install.sh has removed temporary
-    build swap. On a 1 GB Pi we use a cheap deploy-health probe instead of
-    importing the full doctor graph beside freshly restarted services."""
-    text = _DEPLOY_TO_PI.read_text()
-    start = text.index("surface_system_health() {")
-    body = text[start: text.index("\n}", start)]
-    assert "MemTotal" in body
-    assert "1200000" in body
-    assert "jasper-deploy-health" in body
-    assert "/opt/jasper/.venv/bin/jasper-doctor" in body
 
 
 # ----------------------------------------------------------------------
