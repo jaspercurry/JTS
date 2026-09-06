@@ -1,13 +1,15 @@
-# ADR-0244: `/state.audio_graph` section deleted
+# ADR-0245: `/state.audio_graph` section deleted
 
 - **Date:** 2026-09-06
 - **Status:** Accepted
+- Refs: #4197. Schema bump follows PR #4295, which took version 2 for
+  `observed_at`.
 
 ## Context
 
-An observability sweep for issue #4197 found `/state.audio_graph`
-(`_camilla_unit_state`, `_audio_graph_state`, `_coupling_state`,
-`_observed_ring_wire`, `_combo_state` — ~295 lines, five helpers in
+An observability sweep found `/state.audio_graph` (`_camilla_unit_state`,
+`_audio_graph_state`, `_coupling_state`, `_observed_ring_wire`,
+`_combo_state` — ~295 lines, five helpers in
 `jasper/control/state_aggregate.py`) with no reader anywhere in the repo
 beyond its own tests: no Python, JS, shell, or doc consumer calls it or
 parses the section. Per ADR-0233 rule 2, a `/state` field must justify a
@@ -24,7 +26,7 @@ doctor's usbsink rows (`combo_armed_from_env`,
 
 The `/state.audio_graph` section is deleted, along with the five helpers
 that built it and their tests. `STATE_SCHEMA_VERSION` moves 2 → 3 (a
-top-level key was removed; PR #4295 took 2 for `observed_at`).
+top-level key was removed).
 
 ## Consequences
 
