@@ -782,6 +782,40 @@ async def test_declined_host_move_retry_backoff_is_bounded(monkeypatch):
     assert bridge._last_published_pct == 64
 
 
+async def test_declined_host_move_retry_abandons_after_the_cap(monkeypatch):
+    """A move declined for the OTHER reason — volume_coordinator's
+    inactive-source gate, which has no natural expiry — must not retry
+    every POST_RETRY_CEILING_SEC for the life of the process. Once the cap
+    elapses with no acceptance, the retry task completes on its own."""
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_CEILING_SEC", 0.001)
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_MAX_SEC", 0.005)
+
+    bridge = _ready_bridge(_FakeMixer())
+    bridge._last_published_pct = 25  # a prior accepted value
+    bridge._initial_observed_pct = 25  # so 64% is a MOVE, not the snapshot
+    attempts = 0
+
+    async def _decline(pct: int, *, initial: bool = False) -> bool:
+        nonlocal attempts
+        attempts += 1
+        return False
+
+    monkeypatch.setattr(bridge, "_post", _decline)
+
+    await bridge._publish(64)
+    task = bridge._retry_task
+    assert task is not None
+
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert task.done()
+    # 1 initial POST from _publish + 5 retries at the pinned 0.001 s delay
+    # before elapsed (0.005 s) reaches the 0.005 s cap.
+    assert attempts == 6
+    assert bridge._last_published_pct == 25  # never accepted; unchanged
+
+
 async def test_new_move_replaces_the_value_being_retried(monkeypatch):
     """A fresh slider move must not inherit the backoff of a now-stale value:
     it is attempted immediately and the old retry is dropped."""

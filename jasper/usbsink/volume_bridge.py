@@ -53,6 +53,17 @@ logger = logging.getLogger(__name__)
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
 POST_RETRY_CEILING_SEC = 5.0
+# A live measurement's hold renews for the whole session without losing
+# identity (jasper/control/measurement_hold.py: "a 30-minute session renews
+# ~30 times and is still one hold"), and jasper/control/handlers/volume.py
+# names 30 minutes as this decline path's ORDINARY case, not an edge one.
+# 1800 s covers that without truncating a real measurement, while still
+# bounding what was previously an indefinite retry for the OTHER decline
+# producer — jasper.volume_coordinator's inactive-source gate, which has no
+# natural expiry at all. Remove when the coordinator answers a decline with
+# a reason code the bridge can act on (distinguish "still measuring, keep
+# retrying" from "switched away, stop retrying").
+POST_RETRY_MAX_SEC = 1800.0
 
 # Mixer control names as the u_audio gadget driver exposes them.
 # These are fixed by the kernel module, not by our gadget descriptor —
@@ -152,8 +163,9 @@ class VolumeBridge:
     cross-process write within the persistence echo window; NOT the
     coordinator's own-echo window, which is never stamped for USB) is
     retried with a capped exponential backoff until the controller
-    acknowledges it. Accepted values are deduplicated locally, while
-    the coordinator owns source and echo policy.
+    acknowledges it or POST_RETRY_MAX_SEC elapses, whichever comes first.
+    Accepted values are deduplicated locally, while the coordinator owns
+    source and echo policy.
     """
 
     def __init__(
@@ -472,14 +484,27 @@ class VolumeBridge:
             self._retry_task = asyncio.create_task(self._retry_declined(pct))
 
     async def _retry_declined(self, pct: int) -> None:
-        """Re-present one unacknowledged value until the controller takes it."""
+        """Re-present one unacknowledged value until the controller takes it,
+        or until POST_RETRY_MAX_SEC of retrying has passed with no
+        acceptance — see the constant's derivation above."""
         delay = POST_RETRY_INTERVAL_SEC
-        while True:
+        elapsed = 0.0
+        attempts = 0
+        while elapsed < POST_RETRY_MAX_SEC:
             await asyncio.sleep(delay)
+            elapsed += delay
+            attempts += 1
             if await self._post(pct) is True:
                 self._last_published_pct = pct
                 return
             delay = min(delay * POST_RETRY_BACKOFF_FACTOR, POST_RETRY_CEILING_SEC)
+        log_event(
+            logger,
+            "usbsink.volume_retry_abandoned",
+            pct=pct,
+            attempts=attempts,
+            level=logging.DEBUG,
+        )
 
     async def _cancel_retry_and_wait(self) -> None:
         task, self._retry_task = self._retry_task, None
