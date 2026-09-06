@@ -8,11 +8,13 @@ import pytest
 
 from jasper import audio_runtime_plan
 from jasper.cli.doctor import (
+    _shared,
     audio_runtime_camilla,
     audio_runtime_fanin,
     audio_runtime_outputd,
 )
 from jasper.cli.doctor._evidence import evidence
+from jasper.doctor_contract import summarize
 from jasper.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
 
 from ._doctor_audio_runtime_fixtures import (
@@ -30,23 +32,27 @@ def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "enabled, active, reason",
+    "enabled, active, reason, silent",
     [
         # The clean-stop state (#2163): enabled, cleanly inactive, never
         # `failed`, so neither check_service_runtime_state nor
         # check_camilla_websocket names it.
-        ("enabled", "inactive", audio_runtime_camilla.REASON_CAMILLA_INACTIVE),
-        ("disabled", "inactive", audio_runtime_camilla.REASON_CAMILLA_UNIT_NOT_ENABLED),
-        ("not-found", "inactive", audio_runtime_camilla.REASON_CAMILLA_UNIT_MISSING),
+        ("enabled", "inactive",
+         audio_runtime_camilla.REASON_CAMILLA_INACTIVE, True),
+        ("disabled", "inactive",
+         audio_runtime_camilla.REASON_CAMILLA_UNIT_NOT_ENABLED, True),
+        ("not-found", "inactive",
+         audio_runtime_camilla.REASON_CAMILLA_UNIT_MISSING, True),
     ],
 )
-def test_check_camilla_service_failures(monkeypatch, enabled, active, reason):
+def test_check_camilla_service_failures(monkeypatch, enabled, active, reason, silent):
     _seed_units(enabled=enabled, active=active)
 
     result = audio_runtime_camilla.check_camilla_service()
 
-    assert result.status == "fail"
-    assert result.reason == reason
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "fail", reason, silent,
+    )
 
 
 @pytest.mark.parametrize(
@@ -84,6 +90,61 @@ def test_status_consumers_classify_non_object_root_without_crashing(
 
     assert result.status == expected_status
     assert result.reason == expected_reason
+
+
+# Renderer → ring → fan-in → CamillaDSP → outputd → DAC is the only path out,
+# so a fail from any of these three means no source can be heard now. They
+# share one systemd ladder, `_shared._service_state_failure`; delete the
+# guards below when it is replaced.
+_OUTPUT_CHAIN_CHECKS = (
+    audio_runtime_fanin.check_fanin_service,
+    audio_runtime_camilla.check_camilla_service,
+    audio_runtime_outputd.check_outputd_service,
+)
+_OUTPUT_CHAIN_IDS = [check.__name__ for check in _OUTPUT_CHAIN_CHECKS]
+
+
+@pytest.mark.parametrize(
+    "check, reason",
+    [
+        (audio_runtime_fanin.check_fanin_service,
+         audio_runtime_fanin.REASON_FANIN_INACTIVE),
+        (audio_runtime_outputd.check_outputd_service,
+         audio_runtime_outputd.REASON_OUTPUTD_INACTIVE),
+    ],
+    ids=["check_fanin_service", "check_outputd_service"],
+)
+def test_a_stopped_output_chain_unit_reads_speaker_silent(check, reason):
+    """camilla's own ladder rows are pinned by
+    ``test_check_camilla_service_failures`` above."""
+    _seed_units(active="inactive")
+
+    result = check()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "fail", reason, True,
+    )
+
+
+@pytest.mark.parametrize("check", _OUTPUT_CHAIN_CHECKS, ids=_OUTPUT_CHAIN_IDS)
+def test_no_systemd_claims_nothing_about_the_speaker(check):
+    """Nothing was observed at all, so the row may assert no silence."""
+    evidence.seed("units", None)
+
+    result = check()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, False,
+    )
+
+
+def test_a_broken_output_chain_makes_the_whole_report_read_silent():
+    """The report-level consequence an operator sees at the top of a run."""
+    _seed_units(active="inactive")
+
+    assert summarize([check() for check in _OUTPUT_CHAIN_CHECKS]) == {
+        "fails": 3, "warns": 0, "speaker_silent": True,
+    }
 
 
 def test_audio_runtime_plan_doctor_warns_on_shadowed_knob(monkeypatch):
