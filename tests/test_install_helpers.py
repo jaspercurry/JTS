@@ -829,18 +829,16 @@ def test_migrate_wake_events_cap_seed(
         assert expected_line in lines
 
 
-def test_mic_device_candidates_are_template_owned_for_fresh_install():
-    """The install-time seed must not duplicate hot-swap mic candidates."""
+def test_mic_device_candidates_is_never_seeded_on_a_fresh_install():
+    """A seeded value outranks the mic registry on every installed box, so the
+    key ships commented out and no installer writes it."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
-    assert (
-        env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch\n")
-        == 1
-    )
+    assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
 
     python_runtime = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
         encoding="utf-8"
     )
-    assert "JASPER_MIC_DEVICE_CANDIDATES=Array|" not in python_runtime
+    assert "JASPER_MIC_DEVICE_CANDIDATES" not in python_runtime
 
 
 def test_wifi_tuning_persists_retry_forever_and_power_save_disable():

@@ -1298,14 +1298,22 @@ ensure_capture_mixer_open() {
 
 split_candidates() {
     local raw="$1"
+    local candidate
     raw="${raw//,/ }"
-    # shellcheck disable=SC2206
-    MIC_CANDIDATES=($raw)
+    MIC_CANDIDATES=()
+    # Word-split on purpose; empty fields (an unset card ahead of the registry
+    # list) drop out, and order is preserved so the first present name wins.
+    # shellcheck disable=SC2086
+    for candidate in $raw; do
+        mic_candidates_contains "$candidate" || MIC_CANDIDATES+=("$candidate")
+    done
 }
 
 mic_candidates_contains() {
     local needle="$1"
     local candidate
+    # bash 3.2 fails "${arr[@]}" of an empty array under `set -u`.
+    [[ ${#MIC_CANDIDATES[@]} -gt 0 ]] || return 1
     for candidate in "${MIC_CANDIDATES[@]}"; do
         [[ "$candidate" == "$needle" ]] && return 0
     done
@@ -2075,7 +2083,10 @@ MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
 if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
     MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_ALSA_CARD},${MIC_DEVICE_CANDIDATES_DEFAULT}"
 fi
-split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE:-$MIC_DEVICE_CANDIDATES_DEFAULT}}"
+# JASPER_MIC_DEVICE_CANDIDATES is the operator override. Without it the
+# configured card only REORDERS the registry list (ADR-0235 G10) — it must
+# never replace it, or the other supported card names become unreachable.
+split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE},${MIC_DEVICE_CANDIDATES_DEFAULT}}"
 prime_measurement_usb_ids
 derive_profile_managed_aec_mic_device
 if [[ -z "$AEC_MIC_DEVICE" ]]; then
