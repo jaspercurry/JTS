@@ -55,8 +55,9 @@ jasper_env_quote_value() {
 # The descriptor number is FIXED, never bash's `{var}>` / `local -n` (4.1 /
 # 4.3): macOS ships bash 3.2 as /bin/bash, which parses `exec {var}>FILE` as
 # an exec of a command literally named `{var}`, and a non-interactive shell
-# dies 127 there with the write unmade. No other bash in deploy/ or scripts/
-# uses fd 9.
+# dies 127 there with the write unmade. deploy/bin/jasper-airplay-volume
+# holds its own lock on fd 9; it never sources this lib, and a caller that
+# did would lose its fd 9 here.
 #
 # NOTHING acts on the lock by name: a jasper-group process can swap a symlink
 # into that 0770 directory between two lookups, and a by-name `touch`/`chmod`
@@ -72,7 +73,7 @@ jasper_env_quote_value() {
 # 1, so that open gets EBUSY. A pre-planted FIFO is refused without opening;
 # one raced in blocks either open, which bash cannot make non-blocking.
 _jasper_env_lock_acquire() {
-    local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0 open=0
+    local dir="$1" lock="${1}/.${2##*/}.lock" rc=0 open=0
     if [[ ! -e "$lock" && ! -L "$lock" ]]; then
         set -C
         if { exec 9>"$lock"; } 2>/dev/null; then
