@@ -29,6 +29,7 @@ StartLimitAction=reboot:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -50,6 +51,7 @@ from jasper.voice.input_presence import (
     voice_parked_no_mic,
 )
 from jasper.voice_daemon import (
+    AUDIO_GRAPH_RECOVERING_CUE_SLUG,
     NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_NOT_SET_UP_CUE_SLUG,
@@ -469,6 +471,60 @@ def test_a_park_cue_with_no_cached_asset_is_named_play_failed(
     assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
     assert spy.played == [NO_ROOM_MIC_CUE_SLUG]
     assert event_fields(caplog, "voice.park_cue")["result"] == "play_failed"
+
+
+def test_boot_reads_a_parked_core_graph_and_announces_once(monkeypatch) -> None:
+    """daemon_main.run() reads jasper-camilla-recover's park record at the
+    very top, before Config.from_env() (ADR-0175/0233). Unlike the boot-exit
+    park cues above, this path does not exit: the daemon is expected to come
+    up and keep serving, with `audio_graph_parked=True` threaded into
+    WakeLoop for /state.voice to report."""
+    from jasper.control import camilla_recover_state
+    from jasper.voice import daemon_main
+
+    monkeypatch.setattr(
+        camilla_recover_state,
+        "snapshot",
+        lambda *a, **k: {
+            "status": "present",
+            "parked": True,
+            "path": "/run/jasper-camilla-recover.state",
+            "reason": "camilla_start_failed",
+            "parked_utc": "2026-09-06T00:00:00Z",
+            "detail": None,
+            "action": None,
+            "re_arm": None,
+        },
+    )
+    spy = _ParkCues()
+    monkeypatch.setattr(daemon_main, "build_env_cue_manager", lambda **_kw: spy)
+    monkeypatch.setattr(daemon_main, "TtsPlayout", _ParkPlayout())
+
+    parked = asyncio.run(daemon_main._announce_core_graph_park_at_start())
+
+    assert parked is True
+    assert spy.played == [AUDIO_GRAPH_RECOVERING_CUE_SLUG]
+
+
+def test_boot_read_of_an_unparked_core_graph_plays_nothing(monkeypatch) -> None:
+    """The common case — no park record on disk — must not play a cue for a
+    restart that never happened."""
+    from jasper.control import camilla_recover_state
+    from jasper.voice import daemon_main
+
+    monkeypatch.setattr(
+        camilla_recover_state,
+        "snapshot",
+        lambda *a, **k: {"status": "absent", "parked": False},
+    )
+    spy = _ParkCues()
+    monkeypatch.setattr(daemon_main, "build_env_cue_manager", lambda **_kw: spy)
+    monkeypatch.setattr(daemon_main, "TtsPlayout", _ParkPlayout())
+
+    parked = asyncio.run(daemon_main._announce_core_graph_park_at_start())
+
+    assert parked is False
+    assert spy.played == []
 
 
 def test_check_mic_capture_reports_expected_idle_when_marked(

@@ -30,6 +30,7 @@ from ..camilla import (
     set_canonical_target_db_provider,
 )
 from ..config import Config, VoiceProviderNotConfigured
+from ..control import camilla_recover_state
 from ..conversation_history import (
     ConversationStore,
     read_settings as read_conversation_settings,
@@ -79,6 +80,7 @@ from ..wake_events import WakeEventStore
 from ..watchdog import Heartbeat
 from ..weather import WeatherClient
 from ..voice_daemon import (
+    AUDIO_GRAPH_RECOVERING_CUE_SLUG,
     CAPTURE_RING_FRAMES,
     NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
@@ -257,24 +259,15 @@ async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
 PARK_CUE_TIMEOUT_SEC = 12.0
 
 
-def _announce_park_at_boot(slug: str) -> str:
-    """Say out loud why this daemon is parking, then let the caller exit.
+async def _play_park_cue(slug: str) -> str:
+    """Play `slug` through a Config-less cue manager, bounded and never
+    raising — not even a ``BaseException``.
 
-    The boot checks that raise 66/78 all run before the daemon's own cue
-    manager and TtsPlayout exist, so the largest deaf window on the box is a
-    park nobody hears (AGENTS.md non-negotiable 6). This rebuilds the minimum
-    to speak: a Config-less manager from the environment — `Config.from_env()`
-    is exactly what raised on the 78 path — over a TtsPlayout on the same
-    socket `main()`'s Config would have resolved.
-
-    Called from `main()` after `asyncio.run(run())` has returned, so no loop
-    is running and this owns its own. Returns the result code it logged:
-    ``ok``, ``play_failed``, ``play_error``, ``timeout`` or ``interrupted``.
-
-    Never raises — not even a ``BaseException`` — and never changes the exit
-    code. It is called from inside `main()`'s ``except`` handlers, so anything
-    escaping here skips the caller's ``sys.exit()`` and the process exits 1,
-    which is neither a park nor a success code for systemd.
+    The one implementation shared by `_announce_park_at_boot` (no running
+    loop; wraps this in `asyncio.run()`) and `run()`'s own boot-time park
+    read (already inside a running loop; awaits this directly). Returns the
+    result code it logs: ``ok``, ``play_failed``, ``play_error``, ``timeout``
+    or ``interrupted``.
     """
     # The cap is held out here so the classifier below can ask which bound
     # fired: TtsPlayout's own 1.0 s connect timeout raises TimeoutError too,
@@ -294,7 +287,7 @@ def _announce_park_at_boot(slug: str) -> str:
             return "ok" if await manager.play(slug) else "play_failed"
 
     try:
-        result = asyncio.run(_play())
+        result = await _play()
     except TimeoutError:
         if cap is not None and cap.expired():
             result = "timeout"
@@ -314,6 +307,52 @@ def _announce_park_at_boot(slug: str) -> str:
         level=logging.INFO if result == "ok" else logging.WARNING,
     )
     return result
+
+
+def _announce_park_at_boot(slug: str) -> str:
+    """Say out loud why this daemon is parking, then let the caller exit.
+
+    The boot checks that raise 66/78 all run before the daemon's own cue
+    manager and TtsPlayout exist, so the largest deaf window on the box is a
+    park nobody hears (AGENTS.md non-negotiable 6). This rebuilds the minimum
+    to speak: a Config-less manager from the environment — `Config.from_env()`
+    is exactly what raised on the 78 path — over a TtsPlayout on the same
+    socket `main()`'s Config would have resolved.
+
+    Called from `main()` after `asyncio.run(run())` has returned, so no loop
+    is running and this owns its own — see `_play_park_cue` for the shared
+    play/classify logic. Returns the result code it logged: ``ok``,
+    ``play_failed``, ``play_error``, ``timeout`` or ``interrupted``.
+
+    Never raises — not even a ``BaseException`` — and never changes the exit
+    code. It is called from inside `main()`'s ``except`` handlers, so anything
+    escaping here skips the caller's ``sys.exit()`` and the process exits 1,
+    which is neither a park nor a success code for systemd.
+    """
+    return asyncio.run(_play_park_cue(slug))
+
+
+async def _announce_core_graph_park_at_start() -> bool:
+    """Read jasper-camilla-recover's park record and, if parked, play a
+    best-effort cue announcing the restart. Returns whether the core audio
+    graph is parked, for `WakeLoop(audio_graph_parked=...)`.
+
+    Runs at the very top of `run()`, ahead of `Config.from_env()`, so a box
+    whose graph parked (ADR-0175/0233) gets this reported even if the park
+    coincided with an env problem. Awaits `_play_park_cue` directly — `run()`
+    already has a running loop, unlike `_announce_park_at_boot`'s no-loop
+    exit path — so this is one shared cue implementation, not a third.
+
+    The cue is genuinely inaudible while parked: CamillaDSP and
+    jasper-outputd are both stopped downstream of the fan-in socket TTS
+    connects to (docs/audio-paths.md), so nothing reaches the DAC.
+    `/state.voice.audio_graph_parked` (this return value) is the real
+    observable — never raises, so a park never blocks the daemon coming up.
+    """
+    parked = bool(camilla_recover_state.snapshot().get("parked", False))
+    if parked:
+        await _play_park_cue(AUDIO_GRAPH_RECOVERING_CUE_SLUG)
+    return parked
 
 
 def _wake_detection_supported() -> bool:
@@ -760,6 +799,7 @@ async def _serve_while_connecting(
 
 
 async def run() -> None:
+    audio_graph_parked = await _announce_core_graph_park_at_start()
     cfg = Config.from_env()
     configure_logging()
     # Log flight recorder + runtime debug toggle (/system Debug card).
@@ -1321,6 +1361,7 @@ async def run() -> None:
                 tool_packs=outcomes_to_state(registry.pack_outcomes),
                 conversation_store=conversation_store,
                 manual_mics=manual_mics,
+                audio_graph_parked=audio_graph_parked,
             )
             # Host-compose the wake funnel at the single cross-provider
             # dispatch seam. Tool implementations and provider adapters stay

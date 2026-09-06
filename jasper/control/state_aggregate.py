@@ -128,6 +128,7 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "music_dbfs",
     "wake_legs",
     "push_to_talk_only",
+    "audio_graph_parked",
     "tool_packs",
     "silent_responses_session",
 )

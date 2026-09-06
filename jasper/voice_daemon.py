@@ -339,6 +339,15 @@ NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 # VOICE_PROVIDER_NOT_CONFIGURED_EXIT; named here for the same reason.
 VOICE_NOT_SET_UP_CUE_SLUG = "voice_not_set_up"
 
+# Cue for "jasper-camilla-recover parked the core audio graph and this
+# daemon just restarted because of it." Best-effort only: fan-in's TTS
+# socket accepts the connect, but CamillaDSP and jasper-outputd are both
+# stopped downstream (ADR-0175/0233), so nothing reaches the DAC while
+# parked. /state.voice.audio_graph_parked is the real observable. Registered
+# in jasper/cues/registry.py; named here so daemon_main.run() and the
+# registry entry cannot drift.
+AUDIO_GRAPH_RECOVERING_CUE_SLUG = "audio_graph_recovering"
+
 # `_end_turn` reasons the household or the daemon itself chose: whoever
 # muted, shut down or spoke over the turn already knows why it went quiet,
 # so no failure cue is owed however little the model said.
@@ -863,9 +872,16 @@ class WakeLoop:
         vad: SpeechVAD | None = None,
         initial_mic_muted: bool | None = None,
         barge_in_reconcile: InterruptReconcile | None = None,
+        audio_graph_parked: bool = False,
     ) -> None:
         self._cfg = cfg
         self._tts = tts
+        # jasper-camilla-recover parked the core audio graph at some point
+        # before this boot (ADR-0175/0233) and daemon_main.run() restarted
+        # this daemon because of it — read once at boot, not re-derived, so
+        # a graph that recovers mid-session doesn't quietly flip the field.
+        # /state.voice.audio_graph_parked reads this verbatim.
+        self._audio_graph_parked = audio_graph_parked
         # Per-pack tool-registration outcomes, already serialized to the
         # /state.voice.tool_packs wire shape by outcomes_to_state. Opaque
         # here; held only so session_status can surface which tool
@@ -4366,6 +4382,14 @@ class WakeLoop:
             # published facts (env tri-state + accessory file) so it still
             # reports correctly when jasper-voice is down.
             "push_to_talk_only": self._push_to_talk_only,
+            # jasper-camilla-recover had the core audio graph parked at some
+            # point before this boot (ADR-0175/0233); daemon_main.run() read
+            # the park record once at start and restarted because of it. The
+            # boot-park cue is best-effort and genuinely inaudible while
+            # parked (CamillaDSP + jasper-outputd are both stopped
+            # downstream of the fan-in TTS socket) — this field is the real
+            # observable.
+            "audio_graph_parked": self._audio_graph_parked,
             # Who closes the in-flight turn's input — the daemon's own
             # decision, not a re-derivation, since "the remote cut me off" and
             # "the remote never cut me off" are the bug reports it answers.

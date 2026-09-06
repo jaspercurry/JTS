@@ -182,6 +182,21 @@ CUES: tuple[CueDef, ...] = (
         ),
     ),
     CueDef(
+        slug="audio_graph_recovering",
+        template=(
+            "My speaker's audio system hit trouble and is restarting."
+        ),
+        description=(
+            "Played once by jasper/voice/daemon_main.py:run() at boot when "
+            "jasper-camilla-recover's park record shows the core audio "
+            "graph parked (ADR-0175/0233). Best-effort only: CamillaDSP and "
+            "jasper-outputd are both stopped while parked, so this cue is "
+            "genuinely inaudible on the box it announces — "
+            "/state.voice.audio_graph_parked is the real observable. Wired "
+            "via AUDIO_GRAPH_RECOVERING_CUE_SLUG."
+        ),
+    ),
+    CueDef(
         slug="audition_reduced_graph",
         template=(
             "Heads up — I'm playing the crossover-only tuning for a listen. "

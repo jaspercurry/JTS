@@ -611,3 +611,25 @@ def test_session_status_tool_packs_defaults_empty():
     wl = _wake_loop_with_legs("on")
     _prep_session_status(wl)
     assert wl.session_status()["tool_packs"] == []
+
+
+def test_session_status_reports_audio_graph_parked():
+    """jasper-camilla-recover parked the core audio graph before this boot
+    (ADR-0175/0233); daemon_main.run() reads the park record once at start
+    and passes it into WakeLoop. /state.voice.audio_graph_parked reads this
+    verbatim."""
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests(audio_graph_parked=True)
+    _prep_session_status(wl)
+    assert wl.session_status()["audio_graph_parked"] is True
+
+
+def test_session_status_audio_graph_parked_defaults_false():
+    """A daemon that boots with no park record on disk reports False, not
+    an absent field."""
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    _prep_session_status(wl)
+    assert wl.session_status()["audio_graph_parked"] is False
