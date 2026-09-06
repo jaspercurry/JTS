@@ -5,7 +5,7 @@
 - Refs: #4190. Neighbours, not superseded:
   [ADR-0172](0172-full-a-b-install-generations-stay-deferred.md) (the build
   manifest is still the last mutation),
-  [ADR-0173](0173-post-deploy-health-is-surfaced-never-gating.md) and ADR-0240.
+  [ADR-0173](0173-post-deploy-health-is-surfaced-never-gating.md) and ADR-0242.
 
 ## Context
 
