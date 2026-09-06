@@ -288,7 +288,7 @@ class OutageTracker:
         if exc is not None:
             log_event(
                 logger,
-                "cue.task_failed",
+                "voice.supervisor.cue_failed",
                 cue=cue,
                 exc_type=type(exc).__name__,
                 level=logging.WARNING,

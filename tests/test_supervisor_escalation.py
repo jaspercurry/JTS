@@ -383,7 +383,7 @@ async def test_a_transient_failure_restarts_the_network_streak() -> None:
 async def test_announce_task_failure_is_logged_not_swallowed(caplog) -> None:
     """`_announce`'s fire-and-forget cue task must not vanish as an
     unretrieved-exception warning at GC time: a callback failure is
-    promoted to `event=cue.task_failed` instead."""
+    promoted to `event=voice.supervisor.cue_failed` instead."""
 
     async def boom(_slug: str) -> None:
         raise RuntimeError("cue backend wedged")
@@ -397,7 +397,7 @@ async def test_announce_task_failure_is_logged_not_swallowed(caplog) -> None:
             await asyncio.sleep(0)
 
     assert tracker._tasks == set()
-    fields = event_fields(caplog, "cue.task_failed")
+    fields = event_fields(caplog, "voice.supervisor.cue_failed")
     assert fields["cue"] == NEEDS_ATTENTION_CUE_SLUG
     assert fields["exc_type"] == "RuntimeError"
 
