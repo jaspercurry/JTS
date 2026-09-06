@@ -19,7 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from jasper.secret_redaction import SECRET_ENV_NAME_RE, redact_secrets
+from jasper.secret_redaction import (
+    SECRET_ENV_NAME_RE,
+    SECRET_ENV_SUFFIX_RE,
+    redact_secrets,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 _BASH_REDACTOR = ROOT / "scripts" / "_diagnostic_redaction.sh"
@@ -55,6 +59,12 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "JASPER_HA_TOKEN: <redacted>", True),
     ("env_value_with_spaces", "JASPER_WIFI_PSK=my long wifi passphrase",
      "JASPER_WIFI_PSK=<redacted>", True),
+    # The `_PASSWORD`/`_PASSPHRASE` halves of the naming convention, which
+    # no key the project defines today exercises.
+    ("env_password_suffix", "SMB_PASSWORD=hunter2xylophone",
+     "SMB_PASSWORD=<redacted>", True),
+    ("env_passphrase_suffix", "BACKUP_PASSPHRASE=correct horse battery staple",
+     "BACKUP_PASSPHRASE=<redacted>", True),
     ("env_inline_in_log_line",
      "2026-09-05 voice[1]: rejected OPENAI_API_KEY=sk-proj-LoGgEd01234567 invalid",
      "2026-09-05 voice[1]: rejected OPENAI_API_KEY=<redacted> invalid", True),
@@ -131,6 +141,10 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "x-goog-api-key: <redacted>", False),
     ("jts_household_header", "X-JTS-Household: kR3n9QpZ7sT2vX8b",
      "X-JTS-Household: <redacted>", False),
+    ("jts_household_header_json", '{"X-JTS-Household": "kR3n9QpZ7sT2vX8b"}',
+     '{"X-JTS-Household": <redacted>}', False),
+    ("jts_household_header_repr", "{'X-JTS-Household': 'kR3n9QpZ7sT2vX8b'}",
+     "{'X-JTS-Household': <redacted>}", False),
     ("jts_token_header", "X-JTS-Token: t0k3nV4lu3ForTheLan",
      "X-JTS-Token: <redacted>", False),
     ("nmcli_argv_psk", "nmcli dev wifi connect Home password hunter2xylophone",
@@ -152,12 +166,13 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "password reset link sent", True),
     ("negative_masked_display", "saved key sk-p…6789", "saved key sk-p…6789", True),
     ("negative_plain_kv", "backend=alsa sink=hw:0,0", "backend=alsa sink=hw:0,0", True),
-    ("negative_google_client_id", "GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com",
-     "GOOGLE_CLIENT_ID=1234-abc.apps.googleusercontent.com", True),
-    ("negative_wifi_key_mgmt", "JASPER_WIFI_KEY_MGMT=wpa-psk",
-     "JASPER_WIFI_KEY_MGMT=wpa-psk", True),
     ("negative_wpa_psk_key_mgmt", "key-mgmt=wpa-psk connection activated",
      "key-mgmt=wpa-psk connection activated", True),
+    # NetworkManager's own message for a mistyped PSK, which the wizard
+    # shows in its banner: `.psk:` names a property, not a credential.
+    ("negative_nm_psk_property_error",
+     "Error: 802-11-wireless-security.psk: property is invalid",
+     "Error: 802-11-wireless-security.psk: property is invalid", True),
     ("negative_basic_auth_prose", "Basic authentication failed for user",
      "Basic authentication failed for user", True),
     # A key at end of line must not reach across into the next one.
@@ -166,6 +181,10 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
 ) + tuple(
     (f"name_{name.lower()}", f"{name}=S3CR3TV4LUE", f"{name}=<redacted>", True)
     for name in SECRET_ENV_NAMES
+) + tuple(
+    (f"public_{name.lower()}", f"{name}=pub1ic-1dent1f1er",
+     f"{name}=pub1ic-1dent1f1er", True)
+    for name in PUBLIC_ENV_NAMES
 )
 
 _BASH_CASES = tuple((cid, text, expected) for cid, text, expected, m in CASES if m)
@@ -220,3 +239,17 @@ def test_secret_env_name_pattern_covers_every_real_key(name: str) -> None:
 @pytest.mark.parametrize("name", PUBLIC_ENV_NAMES)
 def test_secret_env_name_pattern_leaves_public_names_alone(name: str) -> None:
     assert re.fullmatch(SECRET_ENV_NAME_RE, name) is None
+
+
+@pytest.mark.parametrize("name", SECRET_ENV_NAMES)
+def test_the_suffix_rule_is_the_convention_without_the_key_predating_it(
+    name: str,
+) -> None:
+    """Both redactors scrub `JASPER_MTA_BUSTIME_KEY`, but it is also a
+    documented `/etc/jasper/jasper.env` key, so a consumer of the convention
+    alone — "this name may live only in a compartment" — must not see it."""
+    composed = rf"[A-Za-z_][A-Za-z0-9_]*{SECRET_ENV_SUFFIX_RE}"
+
+    matched = re.fullmatch(composed, name) is not None
+
+    assert matched is (name != "JASPER_MTA_BUSTIME_KEY")

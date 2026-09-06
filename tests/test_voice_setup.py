@@ -973,6 +973,27 @@ def test_e2e_save_and_test_runs_one_bounded_loudness_seed(
         server.server_close()
 
 
+def test_redact_provider_error_scrubs_a_key_with_no_recognised_prefix(
+    monkeypatch,
+):
+    """A pasted key the pattern rules cannot see must not reach the flash.
+
+    `api_key_token_is_valid` accepts any `[A-Za-z0-9_.~-]+`, so the literal
+    the wizard just wrote is the only thing that can remove it.
+    """
+    for key_env in voice_setup._SECRET_KEY_ENVS:
+        monkeypatch.delenv(key_env, raising=False)
+    key = "myk3y_abcdefgh"
+
+    msg = voice_setup._redact_provider_error(
+        RuntimeError(f"Incorrect API key provided: {key}"),
+        {"OPENAI_API_KEY": key},
+    )
+
+    assert key not in msg
+    assert "<redacted>" in msg
+
+
 def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
     tmp_path: Path, monkeypatch,
 ):

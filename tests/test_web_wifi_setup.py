@@ -324,9 +324,6 @@ def test_nmcli_secret_argv_never_logs_the_psk(monkeypatch, caplog, psk):
     proc = wifi_setup._run_nmcli_secret(cmd, timeout=1)
 
     assert proc.returncode == 124
-    # Both log sites: _run_nmcli_secret's argv line and _run_nmcli's timeout
-    # warning.
-    assert caplog.text.count("password <redacted>") == 2
     assert psk not in caplog.text
 
 

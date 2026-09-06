@@ -244,9 +244,19 @@ def _seed_config_from_state(state: dict[str, str]) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def _redact_provider_error(exc: Exception) -> str:
-    """Return a flash-safe error string without raw provider secrets."""
-    msg = " ".join(redact_secrets(str(exc) or exc.__class__.__name__).split())
+def _redact_provider_error(exc: Exception, state: dict[str, str]) -> str:
+    """Return a flash-safe error string without raw provider secrets.
+
+    The literal pass is not redundant with the pattern redactor: the wizards
+    accept any `api_key_token_is_valid` token, so a pasted key carrying no
+    recognised prefix is removable only by the literal the caller holds.
+    """
+    msg = str(exc) or exc.__class__.__name__
+    for key_env in _SECRET_KEY_ENVS:
+        secret = _value_for(state, key_env)
+        if secret:
+            msg = msg.replace(secret, "<redacted>")
+    msg = " ".join(redact_secrets(msg).split())
     if len(msg) > 220:
         msg = msg[:217] + "..."
     return msg
@@ -1448,7 +1458,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     retry_backoff_sec=0.0,
                 )
             except Exception as e:  # noqa: BLE001
-                seed_error = _redact_provider_error(e)
+                seed_error = _redact_provider_error(e, new)
                 log_event(
                     logger,
                     "voice_loudness_seed",
