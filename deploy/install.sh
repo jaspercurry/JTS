@@ -177,7 +177,7 @@ detect_default_install_profile() {
 # in a later build step is then self-evident in the deploy transcript. It
 # is the first step toward one shared tier vocabulary for the build knobs
 # that today read RAM independently (rust-daemons.sh's low-memory flip;
-# _webrtc_compile_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
+# build_sandbox_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
 # this helper is Workstream A; this change does NOT alter any build behavior.
 # See docs/install-hardware-tier-and-staleness.md.
 #
@@ -207,12 +207,7 @@ detect_hardware_tier() {
     # The low boundary REUSES rust-daemons.sh's threshold (one source of
     # truth) so the label can't drift from the build knob it describes —
     # below it, the Rust low-memory build profile is already active.
-    # install.sh always sources rust-daemons.sh, so the var is set; the
-    # :- fallback only guards a partial source in a stray test context.
-    # The 2 GB split is the one tier-owned constant: it separates the jts2
-    # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
-    # headroom.
-    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB}"
     local tier
     if (( mem_kb == 0 )); then
         tier="unknown"
@@ -1257,41 +1252,44 @@ select_audio_hardware_roles() {
     export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
+# snd-aloop binds index/pcm_substreams/pcm_notify at module load, and on a
+# full-RAM box jasper-fanin holds the Loopback capture sides, so the unload is
+# EBUSY (#4027) and changed options wait for the next boot. The low-RAM
+# profiles park fanin first; there the reload succeeds, gated by #4218.
+install_snd_aloop_options() {
+    local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
+    local installed=/etc/modprobe.d/snd-aloop.conf
+    local changed=0 module_busy=0 sysfs="$1"
+    cmp -s "${shipped}" "${installed}" || changed=1
+    install -m 0644 "${shipped}" "${installed}"
+    if [[ -d "${sysfs}" ]] && ! rmmod snd_aloop 2>/dev/null; then
+        module_busy=1
+    fi
+    modprobe snd-aloop
+    if (( ! module_busy )); then
+        _set_reboot_required_reason snd_aloop ""
+    elif (( changed )); then
+        echo "  snd-aloop: options changed but module busy; deferred to reboot"
+        _set_reboot_required_reason snd_aloop \
+            "snd-aloop options changed, module busy — reboot to apply"
+    fi
+}
+
 install_alsa() {
     install -d -m 0755 /etc/modules-load.d /etc/alsa/conf.d /etc/modprobe.d
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf" \
-        /etc/modprobe.d/snd-aloop.conf
-    # Reload module so the new card config takes effect (idempotent).
-    rmmod snd_aloop 2>/dev/null || true
-    modprobe snd-aloop || true
+    install_snd_aloop_options /sys/module/snd_aloop
 
     select_audio_hardware_roles
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions; its own
     # header owns what they are and why (deploy/alsa/asoundrc.jasper).
-    #
-    # Location matters: this file MUST be world-readable so that
-    # renderer processes running as non-root users (shairport-sync as
-    # `shairport-sync`, librespot as `pi`) can resolve the user-space
-    # PCM names declared in it. The pre-2026-05-23 location
-    # (/root/.asoundrc, mode 0600) was visible only to root, which
-    # was fine while renderers wrote to raw/plughw Loopback names (a
-    # kernel-built-in shape needing no asoundrc to resolve) but broke
-    # AirPlay and Spotify Connect once renderers switched to user-space
-    # PCM names. /etc/asound.conf at mode 0644 is the
-    # canonical Linux pattern for "ALSA config visible to all users."
-    #
-    # Hand-edited or apt-installed /etc/asound.conf files (rare on JTS, but
-    # possible) shouldn't be silently overwritten. The grep guard makes this
-    # idempotent — once our content is in place, subsequent deploys
-    # see `shairport_substream` and skip the backup (no .pre-jasper
-    # spam). Symlinks are not backed up here because JTS intentionally
-    # replaces /etc/asound.conf with a symlink to its rendered, public
-    # ALSA config below.
+    # It MUST stay world-readable: renderers run as non-root users
+    # (shairport-sync, librespot as `pi`) and cannot otherwise resolve the
+    # user-space PCM names it declares. The backup's grep guard keys on our
+    # own content; a symlink is ours (created below) and is never backed up.
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
             && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
@@ -2157,17 +2155,20 @@ main() {
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+        # With JASPER_PEERING=on, jasper-control renders its advert from the
+        # template and reads /var/lib/jasper/peer_id at startup — both created
+        # here, so this runs BEFORE the unit install restarts it.
+        install_avahi_jasper_control
+        install_peering_template
         install_streambox_systemd_units
         remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
         migrate_wifi_guardian
         migrate_memory_resilience
         migrate_cgroup_memory_enabled
         install_journald_persistent_storage
-        install_avahi_jasper_control
         install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
         install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
         widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-        install_peering_template
         provision_correction_tls
         install_streambox_nginx_site
         widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
@@ -2204,16 +2205,19 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+    # With JASPER_PEERING=on, jasper-control renders its advert from the
+    # template and reads /var/lib/jasper/peer_id at startup — both created
+    # here, so this runs BEFORE the unit install restarts it.
+    install_avahi_jasper_control
+    install_peering_template
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
-    install_avahi_jasper_control
     install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
     install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
     widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-    install_peering_template
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui
