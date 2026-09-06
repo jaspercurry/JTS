@@ -4,9 +4,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Include guard: deploy/install.sh sources this lib into a shell that loads
-# ~20 others, and a second pass over the `readonly` below would abort it
-# under `set -euo pipefail`. An INHERITED guard variable makes the lib define
+# Include guard: a second `source` of this file must be harmless, since the
+# `readonly` below would otherwise abort a caller running under
+# `set -euo pipefail`. An INHERITED guard variable makes the lib define
 # nothing, which the consumers' `declare -F` checks turn into a loud exit 66.
 if [[ -n "${_JASPER_ENV_FILE_LIB_LOADED+x}" ]]; then
     return 0
@@ -63,9 +63,9 @@ jasper_env_quote_value() {
 # get round trips an apostrophe-bearing value; nothing is evaluated.
 # Otherwise this parses byte-for-byte like read_stash in
 # jasper/wifi_guardian_persistence.py, which reads the same files.
-# readonly: jasper_env_file_export exports every identifier-shaped key in the
-# file it parses, and a file carrying this name would otherwise silently blind
-# every later read; readonly turns that into a failed pass instead.
+# readonly: jasper_env_file_export already skips every `_JASPER_`-prefixed
+# key it finds (below), so this is the backstop — nothing may reassign this
+# shell global if that skip is ever weakened.
 readonly _JASPER_ENV_FILE_AWK='
     BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
     function unquote(v,   len, q, out, i) {
@@ -103,6 +103,11 @@ readonly _JASPER_ENV_FILE_AWK='
             next
         }
         if (k !~ /^[A-Za-z_][A-Za-z0-9_]*$/) next
+        # _JASPER_-prefixed keys belong to the lib itself (include guard,
+        # parser); jasper_env_file_export must never re-export one, or a
+        # child that later sources the lib would find the guard already set
+        # and define nothing.
+        if (k ~ /^_JASPER_/) next
         if (!(k in all)) order[++cnt] = k
         all[k] = substr(line, eq + 1)
     }
@@ -136,7 +141,8 @@ jasper_env_file_get() {
 # seeing the values: a `$(…)`, backtick, space or `#` in an operator-
 # pasted value is data, not code. No-op when FILE is absent. A line
 # whose key is not a plain identifier is skipped (`source` would have
-# run it as a command).
+# run it as a command); so is a key beginning with `_JASPER_` (this lib's
+# own guard/parser state).
 # The locals are `_jef_`-prefixed: bash scopes dynamically, so a local named
 # like a key in the parsed file would shadow it and `export KEY=` would land
 # on the local instead of the environment.

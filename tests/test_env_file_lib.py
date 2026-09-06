@@ -468,21 +468,37 @@ def test_env_file_export_fails_when_the_parser_cannot_run(tmp_path: Path) -> Non
     assert result.stdout == "rc=1 plain=[]\n"
 
 
-def test_env_file_export_refuses_a_key_named_for_the_parser(
+@pytest.mark.parametrize(
+    "guard_key,guard_value,plain_key,plain_value",
+    [
+        # The awk program itself: a shell global an env file could carry.
+        ("_JASPER_ENV_FILE_AWK", "PWNED", "PLAIN", "one"),
+        # The include guard: exporting this into a child that later sources
+        # the lib would make the child find its guard already set and
+        # define nothing.
+        ("_JASPER_ENV_FILE_LIB_LOADED", "1", "JASPER_OK", "1"),
+    ],
+)
+def test_env_file_export_skips_jasper_prefixed_keys(
     tmp_path: Path,
+    guard_key: str,
+    guard_value: str,
+    plain_key: str,
+    plain_value: str,
 ) -> None:
-    """The awk program is a shell global whose name an env file could carry.
-    Overwriting it blinds every later read, so the export must fail the pass
-    instead of returning a silently wrong answer."""
+    """_JASPER_-prefixed keys are this lib's own state (include guard,
+    parser). jasper_env_file_export must never re-export one: every other
+    key still reaches a child's environment, and the pass still succeeds."""
     env_file = tmp_path / "jasper.env"
-    env_file.write_text("PLAIN=one\n_JASPER_ENV_FILE_AWK=PWNED\n")
+    env_file.write_text(f"{guard_key}={guard_value}\n{plain_key}={plain_value}\n")
 
     result = _bash(
-        f'set -e\njasper_env_file_export "{env_file}"\nprintf "reached\\n"\n'
+        f'set -e\njasper_env_file_export "{env_file}"\n'
+        f'env | grep -E "^({plain_key}|{guard_key})=" | sort\n'
     )
 
-    assert result.returncode == 1
-    assert result.stdout == ""
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{plain_key}={plain_value}\n"
 
 
 def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
