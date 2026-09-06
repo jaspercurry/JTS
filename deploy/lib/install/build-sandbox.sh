@@ -14,7 +14,7 @@
 #
 # Two complementary levers:
 #   1. build_sandbox_jobs <kb_per_job>  — RAM-aware `-j`. Generalizes the
-#      PR #899 webrtc point-fix (_webrtc_compile_jobs delegates here).
+#      PR #899 webrtc point-fix.
 #      Lower parallelism -> lower peak RAM -> lower OOM *probability*.
 #   2. run_contained_build <label> -- <cmd...>  — run the build inside a
 #      transient `systemd-run --scope` whose properties make it the
@@ -41,8 +41,8 @@
 # audio_processing_impl.cc peaks > 1 GB in cc1plus; a C autotools -O2 TU
 # (shairport-sync/nqptp) peaks a few hundred MB.
 #
-# Consumed by the installer files that source this lib (install.sh's
-# _webrtc_compile_jobs, renderers.sh's makes); shellcheck lints this lib
+# Consumed by the files that source this lib (renderers.sh's makes,
+# deploy/bin/jasper-contained-build); shellcheck lints this lib
 # standalone and can't follow the dynamic `source` path, so it reports
 # SC2034 (appears unused) — suppressed per constant below.
 # shellcheck disable=SC2034
