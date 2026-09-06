@@ -130,8 +130,8 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _timeline_loop(*, wake: bool):
-    """A WakeLoop parked mid-turn with a freshly anchored timeline.
+def _arm_turn(wl, *, wake: bool) -> None:
+    """Park `wl` mid-turn with a freshly anchored timeline.
 
     `wake` picks which anchor the turn gets, the same way `_begin_turn` does:
     the wake fire that opened it, or nothing — a turn no wake opened
@@ -139,22 +139,29 @@ def _timeline_loop(*, wake: bool):
     """
     import time
 
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
     from tests._live_turn_fake import FakeLiveTurn
 
-    wl = WakeLoop.for_tests()
     wl._state = State.SESSION
     wl._turn = FakeLiveTurn()
     wl._session_id = 1
     wl._bg_tasks = set()
-    wl._user_speech_seen = True
     wl._input_ended = False
-    wl._manual_endpoint_this_turn = not wake
-    wl._server_vad_this_turn = False
-    wl._barge_in_active = False
     wl._silence_started_at = 0.0
     wl._turn_started_at_loop = asyncio.get_event_loop().time()
     wl._anchor_turn_timeline(time.monotonic() if wake else 0.0)
+
+
+def _timeline_loop(*, wake: bool):
+    """A WakeLoop parked mid-turn, configured for `wake`'s endpointer."""
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests()
+    wl._user_speech_seen = True
+    wl._manual_endpoint_this_turn = not wake
+    wl._server_vad_this_turn = False
+    wl._barge_in_active = False
+    _arm_turn(wl, wake=wake)
     return wl
 
 
@@ -183,14 +190,17 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     await wl._end_session_input("test")
     await asyncio.sleep(0.002)
     await wl._record_response_started()
+    await asyncio.sleep(0.002)
+    await wl._record_first_write()
     await wl._end_turn("test")
 
     fields = event_fields(caplog, "turn.timeline")
     assert fields["anchor"] == "wake"
+    assert fields["outcome"] == "complete"
     assert fields["endpointer"] == wl._endpointer_label()
     stages = [
         "cue_ms", "first_audio_to_provider_ms", "speech_end_ms",
-        "end_input_ms", "first_response_ms", "total_ms",
+        "end_input_ms", "first_response_ms", "first_write_ms", "total_ms",
     ]
     assert [key for key in stages if key in fields] == stages
     deltas = [int(fields[key]) for key in stages]
@@ -244,6 +254,41 @@ async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
     assert int(fields["total_ms"]) < 1000
 
 
+async def test_a_begin_that_dies_after_the_anchor_still_publishes_a_line(
+    caplog,
+):
+    """A turn can duck the music, chirp, and then die inside `_begin_turn`
+    (acquire failure, connection lost mid-open). It reached the household's
+    ears, so it owes a ledger line — an unrecorded turn reads as "the
+    speaker did nothing" when the operator counts turns against `outcome`.
+    The failed turn must also close its timeline, so the next one is not
+    measured from the dead one's anchor."""
+    import logging
+
+    from tests._log_events import event_field_maps
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _timeline_loop(wake=True)
+    await wl._play_listening_chirp(going_on=True)
+
+    await wl._cleanup_after_failed_begin()
+
+    (failed,) = event_field_maps(caplog, "turn.timeline", outcome="begin_failed")
+    assert failed["anchor"] == "wake"
+    assert int(failed["cue_ms"]) >= 0
+    assert wl._turn_anchor == 0.0
+    assert wl.session_status()["last_turn_ms"]["outcome"] == "begin_failed"
+
+    # The next turn anchors fresh rather than inheriting the dead anchor.
+    _arm_turn(wl, wake=False)
+    await wl._end_session_input("test")
+    await wl._end_turn("test")
+
+    (served,) = event_field_maps(caplog, "turn.timeline", outcome="complete")
+    assert int(served["total_ms"]) < 1000
+    assert "cue_ms" not in served
+
+
 async def test_push_to_talk_release_stamps_end_of_input(caplog):
     """The button release is an end-of-input like any other and must go
     through the one implementation every endpointer shares. When it did not,
@@ -270,11 +315,17 @@ async def test_session_status_publishes_the_last_turn_timeline():
     assert wl.session_status()["last_turn_ms"] == {}
 
     await wl._end_session_input("test")
+    await wl._record_response_started()
+    await wl._record_first_write()
     await wl._end_turn("test")
 
     last = wl.session_status()["last_turn_ms"]
     assert last["anchor"] == "wake"
+    assert last["outcome"] == "complete"
     assert last["end_input_ms"] <= last["total_ms"]
+    # The second half of the ten-turn ruler: the hand-off to fan-in is the
+    # last moment this daemon can time, so the operator reads it here.
+    assert last["first_response_ms"] <= last["first_write_ms"] <= last["total_ms"]
 
 
 async def test_acquire_drain_stamps_first_audio_before_it_sends():

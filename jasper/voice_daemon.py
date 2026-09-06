@@ -516,6 +516,9 @@ _TURN_TIMELINE_STAGES = (
     "speech_end",
     "end_input",
     "first_response",
+    # Hand-off to fan-in: the first assistant PCM write the playout socket
+    # accepted. The ring/CamillaDSP/outputd tail past it is not timeable here.
+    "first_write",
 )
 
 
@@ -3218,6 +3221,10 @@ class WakeLoop:
         self._stamp_turn_stage("first_response")
         await self._telemetry_stage("response_started")
 
+    async def _record_first_write(self) -> None:
+        """Record the first assistant PCM the playout socket accepted."""
+        self._stamp_turn_stage("first_write")
+
     async def _telemetry_outcome(
         self, outcome: str, detail: str | None = None,
     ) -> None:
@@ -4256,6 +4263,31 @@ class WakeLoop:
         deltas["total_ms"] = int((time.monotonic() - self._turn_anchor) * 1000)
         return deltas
 
+    def _emit_turn_timeline(self, outcome: str) -> None:
+        """Publish this turn's ledger and close the timeline.
+
+        Every line carries `outcome=` so a journal reader can filter; a turn
+        that died inside `_begin_turn` emits one too — it had already ducked
+        the music and chirped. Closing the timeline keeps teardown stages
+        (the off-chirp, the teardown end_input) out of the next turn.
+        """
+        timeline = self._turn_timeline_ms()
+        if timeline:
+            log_event(
+                logger,
+                "turn.timeline",
+                anchor=self._turn_anchor_kind,
+                endpointer=self._endpointer_label(),
+                outcome=outcome,
+                **timeline,
+            )
+            self._last_turn_ms = {
+                "anchor": self._turn_anchor_kind,
+                "outcome": outcome,
+                **timeline,
+            }
+        self._turn_anchor = 0.0
+
     def session_status(self) -> dict:
         """Diagnostic snapshot — exposed via the control socket so
         jasper-control clients can render correct state without polling
@@ -4598,6 +4630,7 @@ class WakeLoop:
             _play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
                 on_response_started=self._record_response_started,
+                on_first_write=self._record_first_write,
             )
         )
         idle = asyncio.create_task(
@@ -4655,6 +4688,12 @@ class WakeLoop:
         turn = self._turn
         session_id = self._session_id
         episode = self._turn_output_episode
+        # First, so `total_ms` is the failure moment rather than the failure
+        # plus the cleanup awaits below.
+        await run_phase(
+            "turn_timeline",
+            lambda: self._emit_turn_timeline("begin_failed"),
+        )
         if turn is not None:
             await run_phase("turn_release", turn.release)
         await run_phase("duck_restore", self._ducker.restore)
@@ -4731,19 +4770,7 @@ class WakeLoop:
             drain_wait_sec = max(
                 0.0, time.monotonic() - self._turn.last_activity_at(),
             )
-        timeline = self._turn_timeline_ms()
-        if timeline:
-            log_event(
-                logger,
-                "turn.timeline",
-                anchor=self._turn_anchor_kind,
-                endpointer=self._endpointer_label(),
-                **timeline,
-            )
-            self._last_turn_ms = {"anchor": self._turn_anchor_kind, **timeline}
-        # Closes the timeline: teardown stages (the off-chirp, the teardown
-        # end_input) belong to no turn.
-        self._turn_anchor = 0.0
+        self._emit_turn_timeline("complete")
         research_window_job = (
             self._research_window_job if self._research_window_active else None
         )

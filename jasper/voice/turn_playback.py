@@ -19,6 +19,22 @@ logger = logging.getLogger("jasper.voice_daemon")
 _RESPONSE_OBSERVER_TIMEOUT_SEC = 0.1
 
 
+async def _observe(
+    callback: Callable[[], Awaitable[None]] | None, stage: str,
+) -> None:
+    """Run one per-turn latency observer without letting it hold up speech."""
+    if callback is None:
+        return
+    try:
+        await asyncio.wait_for(
+            callback(), timeout=_RESPONSE_OBSERVER_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("turn %s observer timed out", stage)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("turn %s observer failed: %s", stage, e)
+
+
 async def _turn_audio_chunks(turn: LiveTurn):
     chunks = getattr(turn, "audio_out_chunks", None)
     if callable(chunks):
@@ -121,6 +137,7 @@ async def _play_responses(
     *,
     barge_in_enabled: bool = False,
     on_response_started: Callable[[], Awaitable[None]] | None = None,
+    on_first_write: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -151,6 +168,7 @@ async def _play_responses(
     drain_task: asyncio.Task | None = None
     flush_failed = False
     response_started = False
+    first_write_seen = False
     try:
         async for chunk in _turn_audio_chunks(turn):
             # This is the one provider-neutral response boundary: the first
@@ -159,19 +177,7 @@ async def _play_responses(
             # failure does not falsely erase the fact that the model replied.
             if not response_started and chunk.pcm:
                 response_started = True
-                if on_response_started is not None:
-                    try:
-                        await asyncio.wait_for(
-                            on_response_started(),
-                            timeout=_RESPONSE_OBSERVER_TIMEOUT_SEC,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("turn response observer timed out")
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "turn response observer failed: %s",
-                            e,
-                        )
+                await _observe(on_response_started, "response")
             if interrupt_task is None or interrupt_task.done():
                 interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
             write_task = asyncio.create_task(
@@ -211,6 +217,10 @@ async def _play_responses(
                     raise
                 finally:
                     write_task = None
+                # Accepted, not merely attempted: the hand-off to fan-in.
+                if not first_write_seen and chunk.pcm:
+                    first_write_seen = True
+                    await _observe(on_first_write, "first_write")
             if write_task is not None and write_task.done():
                 write_task = None
         await tts.end_segment()

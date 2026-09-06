@@ -170,20 +170,29 @@ class _FlushRaisesTts(_ChunkBargeTts):
 
 
 def test_response_started_observed_once_before_first_playout_write():
+    """The two per-turn latency boundaries straddle the first write: the
+    model replied (before it), and the reply was handed to fan-in (after the
+    write the socket accepted). Each fires once."""
     turn = _FakeTurn(n_chunks=3)
     tts = _BaseTts()
     write_counts: list[int] = []
+    first_write_counts: list[int] = []
 
     async def response_started() -> None:
         write_counts.append(tts.write_calls)
+
+    async def first_write() -> None:
+        first_write_counts.append(tts.write_calls)
 
     asyncio.run(_play_responses(
         turn,
         tts,
         on_response_started=response_started,
+        on_first_write=first_write,
     ))
 
     assert write_counts == [0]
+    assert first_write_counts == [1]
     assert tts.write_calls == 3
 
 
