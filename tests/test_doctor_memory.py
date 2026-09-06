@@ -11,6 +11,7 @@ mocked; each must skip gracefully on a dev host where the paths do not exist.
 """
 from __future__ import annotations
 
+import contextlib
 import io
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,25 +104,6 @@ def test_memory_headroom_thresholds_scale_with_total_ram(
         assert doctor_memory.check_memory_headroom().status == status
 
 
-def test_memory_headroom_skips_when_meminfo_is_unreadable():
-    """The doctor's own evidence read failed (no /proc/meminfo access) — no
-    headroom finding was observed at all, so this is `skipped`, not `warn`
-    (ADR-0233 rule 3)."""
-    with patch("builtins.open", side_effect=OSError("permission denied")):
-        r = doctor_memory.check_memory_headroom()
-        assert r.status == "skipped"
-        assert r.reason == doctor_memory.REASON_MEMORY_HEADROOM_UNREADABLE
-
-
-def test_check_ram_skips_when_meminfo_is_unreadable():
-    """Same evidence-channel-failed posture as check_memory_headroom above:
-    /proc/meminfo unreadable means nothing about RAM sizing was observed."""
-    with patch("builtins.open", side_effect=OSError("permission denied")):
-        r = doctor_memory.check_ram()
-        assert r.status == "skipped"
-        assert r.reason == doctor_memory.REASON_RAM_UNREADABLE
-
-
 # ------------------------------------------------------- check_zram_size_ratio
 
 
@@ -142,6 +124,49 @@ def _zram_mocks(
         return False
 
     return fake_read, fake_exists
+
+
+@contextlib.contextmanager
+def _zram_sized_but_meminfo_unreadable():
+    """zram0 IS sized (its own read succeeds); ``/proc/meminfo`` is not — the
+    ``ZramUsage.total_bytes == 0`` case that means "MemTotal could not be
+    read" (see the docstring), not "nothing sized"."""
+    fake_read, _ = _zram_mocks(1014767616)
+    with patch("pathlib.Path.read_text", fake_read), patch(
+        "builtins.open", side_effect=OSError("permission denied")
+    ):
+        yield
+
+
+@pytest.mark.parametrize(
+    "check_fn, setup, reason",
+    [
+        (
+            doctor_memory.check_ram,
+            lambda: patch("builtins.open", side_effect=OSError("permission denied")),
+            doctor_memory.REASON_RAM_UNREADABLE,
+        ),
+        (
+            doctor_memory.check_memory_headroom,
+            lambda: patch("builtins.open", side_effect=OSError("permission denied")),
+            doctor_memory.REASON_MEMORY_HEADROOM_UNREADABLE,
+        ),
+        (
+            doctor_memory.check_zram_size_ratio,
+            _zram_sized_but_meminfo_unreadable,
+            doctor_memory.REASON_ZRAM_RATIO_UNREADABLE,
+        ),
+    ],
+    ids=["check_ram", "check_memory_headroom", "check_zram_size_ratio"],
+)
+def test_meminfo_read_failure_is_skipped_not_warned(check_fn, setup, reason):
+    """``/proc/meminfo`` unreadable is the doctor's own evidence channel
+    failing, not a finding about the subject — every check that depends on
+    it reports `skipped`, never `warn` (ADR-0233 rule 3)."""
+    with setup():
+        r = check_fn()
+    assert r.status == "skipped"
+    assert r.reason == reason
 
 
 @pytest.mark.parametrize(
@@ -412,16 +437,13 @@ def test_check_disk_space_skips_on_a_non_posix_host():
         assert r.reason == doctor_memory.REASON_DISK_NOT_POSIX
 
 
-def test_check_disk_space_skips_on_statvfs_oserror():
-    """statvfs itself raised — the doctor's own evidence read failed, so
-    nothing about disk fullness was observed: `skipped`, not `warn`
-    (ADR-0233 rule 3)."""
+def test_check_disk_space_warns_on_statvfs_oserror():
     def boom(path):
         raise OSError("nope")
 
     with patch.object(memory_policy.os, "statvfs", boom):
         r = doctor_memory.check_disk_space()
-        assert r.status == "skipped"
+        assert r.status == "warn"
         assert r.reason == doctor_memory.REASON_DISK_STATVFS_FAILED
 
 

@@ -83,38 +83,33 @@ REASON_JOURNALD_CAP_REGRESSED = "journald_retention_cap_regressed"
 
 @doctor_check()
 def check_ram() -> CheckResult:
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    kb = int(line.split()[1])
-                    mb = kb // 1024
-                    if mb < 1500:
-                        # The "recommend a bigger board" signal is a
-                        # full-speaker sizing check. Streambox is the
-                        # deliberately-light tier a small board resolves to
-                        # (a Zero 2 W -> streambox), so a board-size warn
-                        # there is a false positive — live memory pressure is
-                        # caught SKU-agnostically by check_memory_headroom.
-                        if evidence.install_profile_is_streambox():
-                            return CheckResult(
-                                "RAM", "ok",
-                                f"{mb} MB total (streambox tier; live "
-                                "pressure covered by the memory-headroom "
-                                "check)",
-                                reason=REASON_RAM_STREAMBOX_TIER,
-                            )
-                        return CheckResult(
-                            "RAM", "warn",
-                            f"{mb} MB total — recommend 2GB Pi 5 for v1 stack",
-                            reason=REASON_RAM_UNDERSIZED,
-                        )
-                    return CheckResult("RAM", "ok", f"{mb} MB total")
-    except Exception:  # noqa: BLE001
-        pass
-    return CheckResult(
-        "RAM", "skipped", "couldn't read /proc/meminfo", reason=REASON_RAM_UNREADABLE,
-    )
+    kb = meminfo_kb("MemTotal")
+    if kb is None:
+        return CheckResult(
+            "RAM", "skipped", "couldn't read /proc/meminfo",
+            reason=REASON_RAM_UNREADABLE,
+        )
+    mb = kb // 1024
+    if mb < 1500:
+        # The "recommend a bigger board" signal is a full-speaker sizing
+        # check. Streambox is the deliberately-light tier a small board
+        # resolves to (a Zero 2 W -> streambox), so a board-size warn there
+        # is a false positive — live memory pressure is caught
+        # SKU-agnostically by check_memory_headroom.
+        if evidence.install_profile_is_streambox():
+            return CheckResult(
+                "RAM", "ok",
+                f"{mb} MB total (streambox tier; live "
+                "pressure covered by the memory-headroom "
+                "check)",
+                reason=REASON_RAM_STREAMBOX_TIER,
+            )
+        return CheckResult(
+            "RAM", "warn",
+            f"{mb} MB total — recommend 2GB Pi 5 for v1 stack",
+            reason=REASON_RAM_UNDERSIZED,
+        )
+    return CheckResult("RAM", "ok", f"{mb} MB total")
 
 # "memory-sample" keeps this off the wire while another check is holding a
 # large transient allocation of its own. Today that is voice.py's
@@ -231,8 +226,12 @@ def check_zram_size_ratio() -> CheckResult:
             reason=REASON_ZRAM_UNSIZED,
         )
     if usage.total_bytes == 0:
+        # zram0 is sized (disksize_bytes already ruled out 0 above), so this
+        # is exactly ZramUsage's other zero case: MemTotal could not be read
+        # (jasper.memory_policy.ZramUsage docstring) — the same evidence-read
+        # failure check_ram/check_memory_headroom report as skipped.
         return CheckResult(
-            "zram size", "warn", "couldn't compute ratio",
+            "zram size", "skipped", "couldn't compute ratio",
             reason=REASON_ZRAM_RATIO_UNREADABLE,
         )
     pct = usage.percent_of_ram
@@ -437,7 +436,7 @@ def check_disk_space() -> CheckResult:
         usage = disk_usage(path)
     except OSError as e:
         return CheckResult(
-            "disk space", "skipped",
+            "disk space", "warn",
             f"couldn't statvfs {path}: {e.__class__.__name__}",
             reason=REASON_DISK_STATVFS_FAILED,
         )
