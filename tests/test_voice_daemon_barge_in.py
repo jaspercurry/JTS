@@ -20,6 +20,7 @@ import asyncio
 import logging
 
 from tests._live_turn_fake import silent_frame
+from tests._log_events import event_records
 
 
 class _SpyTurn:
@@ -217,10 +218,10 @@ def test_resolve_disables_barge_in_without_aec_reference(monkeypatch, tmp_path, 
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         wl._resolve_barge_in_for_turn()
-        first = [r for r in caplog.records if "barge.disabled_no_reference" in r.getMessage()]
+        first = event_records(caplog, "barge.disabled_no_reference")
         # WARN is one-shot per daemon — a second turn does not re-spam.
         wl._resolve_barge_in_for_turn()
-        second = [r for r in caplog.records if "barge.disabled_no_reference" in r.getMessage()]
+        second = event_records(caplog, "barge.disabled_no_reference")
 
     assert wl._barge_in_active is False
     assert len(first) == 1

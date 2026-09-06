@@ -26,7 +26,7 @@ from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
 from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
 
 from ._async_wait import wait_signalled
-from ._log_events import event_fields
+from ._log_events import event_fields, event_records
 
 
 class _SpyCalls:
@@ -101,8 +101,7 @@ async def test_manual_start_refused_when_mic_muted(caplog):
 
     assert result == "MUTED"
     _assert_no_turn_no_duck(wl)
-    assert "event=session.manual_refused" in caplog.text
-    assert "reason=mic_muted" in caplog.text
+    assert event_fields(caplog, "session.manual_refused") == {"reason": "mic_muted"}
 
 
 async def test_manual_start_refused_when_measurement_active(caplog):
@@ -114,10 +113,11 @@ async def test_manual_start_refused_when_measurement_active(caplog):
 
     assert result == "MEASURING"
     _assert_no_turn_no_duck(wl)
-    assert "event=session.manual_refused" in caplog.text
     # Exact reason string shared with the wake path's late-cancel log,
     # so one query covers both refusal surfaces.
-    assert "reason=measurement_active" in caplog.text
+    assert event_fields(caplog, "session.manual_refused") == {
+        "reason": "measurement_active",
+    }
 
 
 async def test_manual_start_at_the_spend_cap_cues_and_refuses(caplog):
@@ -183,7 +183,9 @@ async def test_manual_start_refused_when_paused_asks_for_an_early_retry(
     assert state.nudges == 1
     await _drain_refusal_cue(wl)
     assert wl._play_cue.called is True
-    assert "reason=connection_paused" in caplog.text
+    assert event_fields(caplog, "session.manual_refused")["reason"] == (
+        "connection_paused"
+    )
 
 
 @pytest.mark.parametrize(
@@ -413,9 +415,10 @@ async def test_manual_start_unknown_source_refused_before_side_effects(caplog):
 
     assert result == "UNKNOWN_SOURCE"
     _assert_no_turn_no_duck(wl)
-    assert "event=session.manual_refused" in caplog.text
-    assert "reason=unknown_source" in caplog.text
-    assert "source=missing_remote" in caplog.text
+    assert event_fields(caplog, "session.manual_refused") == {
+        "reason": "unknown_source",
+        "source": "missing_remote",
+    }
 
 
 async def test_manual_start_source_uses_source_audio_without_primary_preroll():
@@ -522,14 +525,12 @@ async def test_source_less_start_on_a_speaker_with_no_room_mic_cues_and_refuses(
     # be answered with silence (AGENTS.md's no-silent-deafness rule).
     await _drain_refusal_cue(wl)
     assert wl._cues.played == [NO_ROOM_MIC_CUE_SLUG]
-    assert "event=session.manual_refused" in caplog.text
-    assert "reason=no_room_microphone" in caplog.text
+    assert event_fields(caplog, "session.manual_refused")["reason"] == (
+        "no_room_microphone"
+    )
     # WARNING, not INFO: this is a misconfigured caller on a working speaker.
-    assert any(
-        rec.levelno >= logging.WARNING
-        and "reason=no_room_microphone" in rec.getMessage()
-        for rec in caplog.records
-    ), caplog.text
+    (record,) = event_records(caplog, "session.manual_refused")
+    assert record.levelno >= logging.WARNING
 
 
 def test_no_room_mic_cue_slug_is_registered():

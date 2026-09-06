@@ -21,6 +21,7 @@ from jasper.chip_aec.policy import ChipAecGate
 from jasper.wake_corpus import bridge_session, capture_plan, runtime_probe
 from jasper.web import wake_corpus_setup
 
+from tests._log_events import event_fields, event_records
 from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,
     _patch_udp,
@@ -911,11 +912,10 @@ def test_bridge_env_rollback_deletes_new_file_and_logs_one_restart_failure(
 
     assert not env_path.exists()
     assert attempts == 2
-    assert caplog.messages == [
-        "event=wake_corpus.bridge_rollback_restart_failed "
-        "failure_context=configure error=\"Command '['systemctl', 'restart']' "
-        "timed out after 1.0 seconds\""
-    ]
+    assert event_fields(caplog, "wake_corpus.bridge_rollback_restart_failed") == {
+        "failure_context": "configure",
+        "error": "Command '['systemctl', 'restart']' timed out after 1.0 seconds",
+    }
 
 
 def test_disable_bridge_outputs_restarts_chip_stack_in_safe_order(
@@ -1079,12 +1079,9 @@ def test_corpus_exit_survives_the_designed_commissioning_park(
     ]
     # The park is loud and names an operator action, and its owner is asked to
     # converge rather than this surface deciding locally.
-    assert any(
-        "event=wake_corpus.corpus_exit_parked" in message
-        and "jasper-aec-commission" in message
-        and "not commissioned" in message
-        for message in caplog.messages
-    ), caplog.messages
+    fields = event_fields(caplog, "wake_corpus.corpus_exit_parked")
+    assert "jasper-aec-commission" in fields["action"]
+    assert "not commissioned" in fields["reason"]
     assert len(kicks) == 1
 
 
@@ -1218,10 +1215,7 @@ def test_reconciler_kick_is_non_blocking_and_never_raises(
     assert seen[0]["unit"] == bridge_session.AEC_RECONCILE_UNIT
     assert seen[0]["verb"] == "start"
     assert seen[0]["no_block"] is True
-    assert any(
-        "event=wake_corpus.aec_reconcile_kick_failed" in message
-        for message in caplog.messages
-    ), caplog.messages
+    assert event_records(caplog, "wake_corpus.aec_reconcile_kick_failed")
 
 
 def test_a_broken_reconciler_kick_cannot_resurrect_the_rollback(

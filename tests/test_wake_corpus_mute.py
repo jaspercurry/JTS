@@ -16,6 +16,7 @@ import pytest
 from jasper.wake_corpus import recording_backend
 from jasper.web import wake_corpus_setup
 
+from tests._log_events import event_records
 from tests.wake_corpus_setup_fixtures import (
     _mute_backend_fixture,
     _mute_path_fixture,
@@ -43,7 +44,7 @@ def test_begin_session_refused_while_muted(
     with pytest.raises(wake_corpus_setup.MicMutedError, match="muted"):
         mute_backend.begin_session("jasper")
     assert mute_backend.session_id() is None
-    assert "event=wake_corpus.mute_refused" in caplog.text
+    assert event_records(caplog, "wake_corpus.mute_refused")
 
 
 def test_start_recording_refused_when_mute_flips_after_session_begin(
@@ -91,7 +92,7 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
     # A privacy stop is NOT the duration-cap auto-stop — downstream
     # tools must be able to tell them apart.
     assert clips[-1].auto_stopped is False
-    assert "event=wake_corpus.mute_stop" in caplog.text
+    assert event_records(caplog, "wake_corpus.mute_stop")
     # The flag persists into the session metadata sidecar.
     # RecordingBackend.stop_recording appends to the in-memory clip list
     # under the lock, then calls _save_metadata() OUTSIDE the lock on the

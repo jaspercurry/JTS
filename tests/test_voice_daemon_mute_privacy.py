@@ -21,6 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._log_events import event_fields
+
+
 def _wake_loop_for_mute(tmp_path):
     from jasper.voice_daemon import State, WakeLoop
 
@@ -80,13 +83,9 @@ async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
         await wl._play_cue("cant_connect")
         await wl._play_cue("spend_cap_reached")
 
-    warns = [
-        r for r in caplog.records
-        if "event=cue.skipped" in r.getMessage()
-    ]
-    assert len(warns) == 1  # once per daemon run, not per cue
-    assert "cues_unconfigured" in warns[0].getMessage()
-    assert "cant_connect" in warns[0].getMessage()
+    fields = event_fields(caplog, "cue.skipped")  # once per daemon run, not per cue
+    assert fields["reason"] == "cues_unconfigured"
+    assert fields["slug"] == "cant_connect"
 
 
 async def test_public_play_cue_reports_playback_failure() -> None:

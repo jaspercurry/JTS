@@ -22,6 +22,7 @@ from jasper.research import (
 )
 from tests._async_wait import wait_until as _wait_for
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
+from tests._log_events import event_fields, event_records
 from tests.usage_store_fixtures import FakeUsageStore
 
 def _wake_loop():
@@ -316,9 +317,9 @@ async def test_announce_research_ready_measurement_active_queues_without_speakin
     assert spoken == []
     assert [job.id for job in wl._pending_research] == ["job12345"]
     assert scheduler.announced == []
-    assert "event=research.announce_suppressed" in caplog.text
-    assert "reason=measurement_active" in caplog.text
-    assert "job_id=job12345" in caplog.text
+    fields = event_fields(caplog, "research.announce_suppressed")
+    assert fields["reason"] == "measurement_active"
+    assert fields["job_id"] == "job12345"
 
 
 async def test_research_drain_never_speaks_while_measurement_active():
@@ -476,7 +477,7 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert scheduler.read == []
     assert wl._research_window_active is False
     assert "RECORDING TIMEOUT" not in caplog.text
-    assert "event=turn.silent_response" not in caplog.text
+    assert not event_records(caplog, "turn.silent_response")
 
 
 async def test_real_wake_during_confirmation_window_cancels_window_and_wins():
