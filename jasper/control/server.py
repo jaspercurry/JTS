@@ -466,10 +466,12 @@ class _SingleFlightTTLCache:
     def __init__(
         self,
         ttl_sec: float,
+        wait_timeout_sec: float,
         *,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._ttl_sec = float(ttl_sec)
+        self._wait_timeout_sec = float(wait_timeout_sec)
         self._clock = clock
         self._cond = threading.Condition()
         self._value: Any = _MISSING
@@ -482,11 +484,11 @@ class _SingleFlightTTLCache:
         Only successful computations are cached. If the compute raises,
         waiters are released and the next caller may retry.
 
-        `wait()` is intentionally un-timed: a waiter blocks only for as long
-        as the single in-flight `compute()` runs, so `compute` MUST be
-        self-bounding (the /state aggregate enforces its own liveness
-        budget). An unbounded compute parks every waiter and, on the bounded
-        request pool, the whole control plane.
+        A waiter blocks for at most `wait_timeout_sec` — the compute's budget
+        — then serves the last value rather than parking: a compute that
+        outlives its deadline would otherwise park every waiter and, on the
+        bounded request pool, the whole control plane. With no value yet it
+        raises instead.
         """
         while True:
             with self._cond:
@@ -496,7 +498,12 @@ class _SingleFlightTTLCache:
                 if not self._inflight:
                     self._inflight = True
                     break
-                self._cond.wait()
+                if not self._cond.wait(timeout=self._wait_timeout_sec):
+                    if self._value is not _MISSING:
+                        return self._value
+                    raise TimeoutError(
+                        "state compute did not finish within its budget",
+                    )
 
         computed = False
         try:
@@ -703,6 +710,7 @@ async def _get_state(
     voice_socket_path: str,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
     airplay_playing_snapshot: Callable[[], bool | None] | None = None,
+    audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
     transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
     service_states_snapshot: (
         Callable[[], dict[str, dict[str, Any]]] | None
@@ -714,6 +722,7 @@ async def _get_state(
     return await _state_aggregate._get_state(
         service_states_snapshot=service_states_snapshot,
         airplay_playing_snapshot=airplay_playing_snapshot,
+        audio_health_snapshot=audio_health_snapshot,
         camilla_host=camilla_host,
         camilla_port=camilla_port,
         voice_socket_path=voice_socket_path,
@@ -1374,7 +1383,10 @@ def _make_handler(
     # voice_socket_path), so all mutating volume ops share it. Read-only
     # `_get_op` bypasses coordinator/actuator construction.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
-    state_response_cache = _SingleFlightTTLCache(STATE_RESPONSE_CACHE_TTL_SEC)
+    state_response_cache = _SingleFlightTTLCache(
+        STATE_RESPONSE_CACHE_TTL_SEC,
+        _state_aggregate._STATE_AGGREGATE_BUDGET_SEC,
+    )
     if ha_status_cache is None:
         from .ha_status_cache import HomeAssistantStatusCache
 

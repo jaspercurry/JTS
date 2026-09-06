@@ -660,8 +660,9 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
 # here rather than derived from the producer. `schema_version` is what a
 # consumer pins against — bump it in `state_aggregate` when a set changes.
 #
-# Scope: what the aggregate returns. The HTTP handler attaches two further
-# top-level keys of its own (`audio_health`, `usb_gadget_forensics`).
+# Scope: the whole wire set — the aggregate builds every key `/state` serves.
+# `tests/test_control_server_system.py` pins an HTTP response against this same
+# set, so a key attached anywhere else is caught rather than shipped unpinned.
 # ---------------------------------------------------------------------------
 
 #: Fed to the aggregate as the daemons' STATUS bodies. The blocks below must
@@ -678,7 +679,7 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
         "speaker_name", "active_source", "fanin", "outputd", "aec",
         "source_selection", "resilience", "home_assistant", "grouping",
         "transit", "debug", "tools", "chat", "research", "measurement",
-        "usb_network",
+        "usb_network", "audio_health", "usb_gadget_forensics",
     },
     # jasper.mic_presence.MicPresence.as_dict. `reason` is the closed
     # MIC_ABSENT_REASONS code a client may switch on; `detail` is the prose
@@ -701,7 +702,7 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
 }
 
 
-async def _state_payload(monkeypatch, tmp_path):
+async def _state_payload(monkeypatch, tmp_path, **overrides):
     """The real aggregate over stub daemon bodies."""
     from jasper.control import state_aggregate
 
@@ -716,17 +717,18 @@ async def _state_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
-    return await state_aggregate._get_state(
-        camilla_host="127.0.0.1",
-        camilla_port=1234,
-        voice_socket_path=str(tmp_path / "voice.sock"),
-        voice_socket_command=no_status,
-        mux_socket_command=no_status,
-        local_status_json=daemon_status,
-        aec_full_status=lambda: dict(_FAKE_AEC_STATUS),
-        read_transit_state_func=lambda: {"packs": []},
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
-    )
+    return await state_aggregate._get_state(**{
+        "camilla_host": "127.0.0.1",
+        "camilla_port": 1234,
+        "voice_socket_path": str(tmp_path / "voice.sock"),
+        "voice_socket_command": no_status,
+        "mux_socket_command": no_status,
+        "local_status_json": daemon_status,
+        "aec_full_status": lambda: dict(_FAKE_AEC_STATUS),
+        "read_transit_state_func": lambda: {"packs": []},
+        "ha_status_snapshot": lambda: {"configured": False, "connected": False},
+        **overrides,
+    })
 
 
 @pytest.mark.parametrize(

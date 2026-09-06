@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Callable, NamedTuple, Sequence, TypeVar
@@ -64,6 +66,7 @@ from . import (
     shairport_supervisor,
     system_supervisor,
     transport_park,
+    usb_gadget_forensics,
 )
 from .aec_endpoints import _aec_full_status
 from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
@@ -85,12 +88,24 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 # See ADR-0233 rule 2.
 STATE_SCHEMA_VERSION = 1
 
-# Liveness backstop for the entire cross-daemon fan-out. NOT a latency
-# control — the normal path completes in ~200 ms, with HA's cached network
-# probe (~8 s worst case) the slow outlier. It fires only if a probe blows
-# past its own ceiling, converting an unbounded hang into a logged, bounded
-# failure so the bounded-worker control plane is never parked on /state.
+# One deadline for the whole payload: the daemon fan-out and every section
+# read spend from it. NOT a latency control — the normal path finishes well
+# inside it, with HA's cached network probe (~8 s worst case) the slow outlier.
+# It converts an unbounded hang into a bounded, logged failure so the
+# bounded-worker control plane is never parked on /state.
 _STATE_AGGREGATE_BUDGET_SEC = 20.0
+
+#: Deadline for the payload in flight; None means untimed.
+_STATE_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "jasper_state_deadline", default=None,
+)
+
+#: NOT the loop's default executor: asyncio.run joins that one at teardown, so
+#: a wedged section read would hang the compute this deadline bounds. Threads
+#: start on demand; max_workers caps what wedged reads can strand.
+_STATE_READ_POOL = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="jasper-state-read",
+)
 _default_ha_status_cache: Any | None = None
 
 _VOICE_STATUS_DIRECT_KEYS = (
@@ -715,21 +730,48 @@ async def _outputd_status(
     """Probe jasper-outputd's STATUS endpoint.
 
     Missing socket is fail-soft here so /state remains available while
-    jasper-doctor owns the actionable cutover failure.
+    jasper-doctor owns the actionable cutover failure. The chip-reference
+    writer's per-write ring is dropped (~25 KB of every response); its one
+    consumer, jasper-aec-init, reads it off this socket directly.
     """
-    return await local_status_json(OUTPUTD_STATUS_SOCKET)
+    status = await local_status_json(OUTPUTD_STATUS_SOCKET)
+    if isinstance(status, dict):
+        writer = status.get("reference_outputs", {})
+        writer = writer.get("chip_ref_writer") if isinstance(writer, dict) else None
+        if isinstance(writer, dict):
+            writer.pop("recent_writes", None)
+    return status
 
 
-def _soft_read(
-    label: str,
+async def _soft_read(
+    section: str,
     reader: Callable[[], _T],
     *,
     exc: tuple[type[BaseException], ...] = (Exception,),
 ) -> _T | None:
+    """One /state section read, off the loop and inside the payload deadline.
+
+    None is the section's "unavailable": the reader raised, or the deadline
+    passed first. A timed-out reader keeps running in its worker — nothing can
+    stop a blocking call — but the response stops waiting on it. The timeout
+    clause must precede ``exc``: TimeoutError is an OSError subclass, which
+    several callers pass.
+    """
+    deadline = _STATE_DEADLINE.get()
+    timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+    loop = asyncio.get_running_loop()
     try:
-        return reader()
+        return await asyncio.wait_for(
+            loop.run_in_executor(_STATE_READ_POOL, reader), timeout,
+        )
+    except asyncio.TimeoutError:
+        log_event(
+            logger, "state.section_timeout", section=section,
+            level=logging.WARNING,
+        )
+        return None
     except exc:
-        logger.exception(label)
+        logger.exception("/state %s section read failed", section)
         return None
 
 
@@ -791,17 +833,25 @@ def _spotify_state() -> dict[str, Any]:
 def _active_source(
     *,
     voice_session: bool,
+    audio_health: Mapping[str, Any] | None,
     mux_status: dict | None,
     spotify_playing: bool,
     airplay_playing: bool | None,
     usbsink_playing: bool,
 ) -> str:
-    """Pick ``/state.active_source``.
+    """Pick ``/state.active_source`` — the only derivation on the wire.
 
-    Mux owns the effective audible source in both manual and auto mode; the
-    raw renderer probes are a fallback for when mux is unavailable or has no
-    selected winner yet.
+    The audio-health sampler's verdict wins whenever it has one, so it and
+    ``audio_health.overall.active_source`` cannot name different sources in one
+    response. It models music lanes only and answers None for "cannot confirm",
+    so a voice session still leads and the ladder below (mux's effective
+    source, then the raw renderer probes) still answers when it cannot.
     """
+    overall = audio_health.get("overall") if isinstance(audio_health, Mapping) else None
+    health_source = (
+        overall.get("active_source") if isinstance(overall, Mapping) else None
+    )
+
     mux_effective_source = None
     if isinstance(mux_status, dict):
         raw_selected = mux_status.get("selected_source")
@@ -814,6 +864,8 @@ def _active_source(
 
     if voice_session:
         return "voice"
+    if isinstance(health_source, str) and health_source:
+        return health_source
     if mux_effective_source:
         return mux_effective_source
     if spotify_playing:
@@ -963,9 +1015,15 @@ async def _mux_status(cmd: Callable[..., Any]) -> dict | None:
 
 
 async def _aec_status(full_status: Callable[[], dict]) -> dict | None:
-    """Additive mirror of GET /aec for one-shot /state consumers."""
+    """Additive mirror of GET /aec for one-shot /state consumers.
+
+    On _STATE_READ_POOL, not the loop's default executor, for the reason
+    _soft_read is: asyncio.run joins the default one before the request can
+    return, so a wedged probe there outlasts the deadline meant to bound it.
+    """
+    loop = asyncio.get_running_loop()
     try:
-        return await asyncio.to_thread(full_status)
+        return await loop.run_in_executor(_STATE_READ_POOL, full_status)
     except Exception:  # noqa: BLE001
         logger.exception("AEC/profile state probe failed")
         return None
@@ -999,12 +1057,14 @@ async def _get_state(
     service_states_snapshot: (
         Callable[[], dict[str, dict[str, Any]]] | None
     ) = None,
+    audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    """Aggregate state across daemons for GET /state. Each section
-    fails soft — voice unreachable or Camilla restarting reports null
-    in the affected section instead of erroring out
-    the whole response. Slow probes fan out in parallel so the call
-    completes in ~200 ms typical."""
+    """Build the whole GET /state payload — every key a client receives.
+
+    Each section fails soft: voice unreachable, Camilla restarting or a read
+    that outlives the deadline reports null in that section instead of erroring
+    out the whole response. Slow probes fan out in parallel.
+    """
     from datetime import datetime, timezone
 
     from ..speaker_name import read_state as _read_speaker_name_state
@@ -1020,12 +1080,13 @@ async def _get_state(
     # stale provider. ("", None) when unconfigured; never a guessed default.
     active_provider = read_active_provider_state()
 
-    listening_level, persisted_main_volume_db = _soft_read(
-        "persisted volume state read failed",
-        _read_persisted_volume,
-        exc=(OSError, ValueError),
+    deadline = time.monotonic() + _STATE_AGGREGATE_BUDGET_SEC
+    _STATE_DEADLINE.set(deadline)
+
+    listening_level, persisted_main_volume_db = await _soft_read(
+        "volume", _read_persisted_volume, exc=(OSError, ValueError),
     ) or (None, None)
-    sound_profile = _soft_read("sound profile state probe failed", _read_sound_profile)
+    sound_profile = await _soft_read("sound_profile", _read_sound_profile)
 
     ha_status = _ha_status(ha_status_snapshot)
     # The AirPlay health sampler's held MPRIS PlaybackStatus, so no `busctl`
@@ -1033,7 +1094,7 @@ async def _get_state(
     # has no sample yet; freshness is bounded by its own interval.
     airplay_playing = (
         None if airplay_playing_snapshot is None
-        else _soft_read("airplay playing snapshot failed", airplay_playing_snapshot)
+        else await _soft_read("airplay_playing", airplay_playing_snapshot)
     )
     try:
         gathered = await asyncio.wait_for(
@@ -1045,7 +1106,7 @@ async def _get_state(
                 _mux_status(mux_socket_command),
                 _aec_status(aec_full_status),
             ),
-            timeout=_STATE_AGGREGATE_BUDGET_SEC,
+            timeout=max(0.0, deadline - time.monotonic()),
         )
     except asyncio.TimeoutError:
         # A probe blew past its own ceiling. Fail loud (the handler turns this
@@ -1083,10 +1144,21 @@ async def _get_state(
         ),
     )
 
+    # Read into the payload here, not bolted onto the response afterwards:
+    # `active_source` below comes out of THIS object, so the two cannot drift.
+    audio_health = (
+        None if audio_health_snapshot is None
+        else await _soft_read("audio_health", audio_health_snapshot)
+    )
+    usb_forensics = await _soft_read(
+        "usb_gadget_forensics", usb_gadget_forensics.snapshot,
+    )
+
     voice_status = probes.voice or {}
     voice_session = bool(probes.voice) and voice_status.get("state") == "SESSION"
     active_source = _active_source(
         voice_session=voice_session,
+        audio_health=audio_health,
         mux_status=probes.mux,
         spotify_playing=spotify["playing"],
         airplay_playing=airplay_playing,
@@ -1102,24 +1174,24 @@ async def _get_state(
         diagnostics=_read_volume_diagnostics(),
     )
 
-    grouping_state = with_airplay_latency_fit(_soft_read(
-        "grouping state read failed",
+    grouping_state = with_airplay_latency_fit(await _soft_read(
+        "grouping",
         lambda: read_grouping_state(local_outputd_reader=lambda: probes.outputd),
     ))
-    active_speaker_setup = _soft_read(
-        "active speaker setup status read failed",
+    active_speaker_setup = await _soft_read(
+        "active_speaker_setup",
         lambda: read_active_speaker_setup_status(
             active_config_path=probes.camilla.get("active_config_path"),
         ),
         exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
     )
-    audition_state = _soft_read(
-        "audition state read failed",
+    audition_state = await _soft_read(
+        "audition",
         _read_audition_state,
         exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
     )
-    bass_extension_state = _soft_read(
-        "bass extension profile state read failed",
+    bass_extension_state = await _soft_read(
+        "bass_extension",
         _read_bass_extension,
         exc=(
             ImportError,
@@ -1131,12 +1203,12 @@ async def _get_state(
             AttributeError,
         ),
     )
-    transit_state = _soft_read("transit state read failed", read_transit_state_func)
-    output_hardware_state = _soft_read(
-        "output hardware state read failed", _read_output_hardware,
+    transit_state = await _soft_read("transit", read_transit_state_func)
+    output_hardware_state = await _soft_read(
+        "output_hardware", _read_output_hardware,
     )
     service_states = (
-        _soft_read("service state snapshot read failed", service_states_snapshot)
+        await _soft_read("service_states", service_states_snapshot)
         if service_states_snapshot
         else None
     )
@@ -1146,18 +1218,18 @@ async def _get_state(
         outputd_status=probes.outputd,
         service_states=service_states,
     )
-    tools_state = _soft_read("tool catalog state read failed", _read_tool_catalog)
+    tools_state = await _soft_read("tools", _read_tool_catalog)
 
     # Conversation history is a read-only Feature surface. Settings are
     # wizard-owned and read fresh; the SQLite store is opened read-only so
     # jasper-control cannot create or mutate jasper-voice's DB.
-    chat_state = _soft_read(
-        "conversation history state read failed",
+    chat_state = await _soft_read(
+        "chat",
         _conversation_history_state,
         exc=(ImportError, OSError, RuntimeError, ValueError),
     )
-    research_state = _soft_read(
-        "research state read failed",
+    research_state = await _soft_read(
+        "research",
         lambda: _research_state(voice_status.get("research")),
         exc=(ImportError, OSError, RuntimeError, ValueError),
     )
@@ -1231,6 +1303,7 @@ async def _get_state(
         },
         "speaker_name": {
             "name": speaker_name_state.name,
+            "room": speaker_name_state.room,
             "source": speaker_name_state.source,
         },
         "active_source": active_source,
@@ -1330,4 +1403,8 @@ async def _get_state(
         # http://<JASPER_HOSTNAME>/ reachable with WiFi off when the resolved
         # USB role permits gadget mode.
         "usb_network": _usb_network_snapshot(),
+        # The normalized health contract /system/snapshot renders. null when
+        # this daemon runs no sampler, so the key set is the same either way.
+        "audio_health": audio_health,
+        "usb_gadget_forensics": usb_forensics,
     }

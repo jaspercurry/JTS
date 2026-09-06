@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -1035,6 +1036,113 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert any(p["id"] == "nyc" for p in body["transit"]["packs"])
 
 
+def _pinned_state_keys() -> set[str]:
+    from tests.test_wire_contracts import _STATE_KEY_SETS
+
+    return _STATE_KEY_SETS[()]
+
+
+@pytest.mark.parametrize("refuse_spawns", [False, True])
+def test_state_wire_key_set_is_the_pinned_set(
+    server_with_coordinator, monkeypatch, tmp_path, refuse_spawns,
+):
+    """What a client receives is what tests/test_wire_contracts.py pins.
+
+    The aggregate builds every top-level key, so a key bolted on in the
+    handler instead would reach consumers unpinned — the nesting-drift class
+    the key-set pin exists for. The second case refuses every spawn
+    primitive: no per-request process may be load-bearing for the shape
+    (ADR-0233 rule 2), so a probe that forks and lets the failure escape
+    takes the payload to 502 and fails here. Retire with the key-set pin.
+    """
+    if refuse_spawns:
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("/state must not depend on a spawned process")
+
+        monkeypatch.setattr(subprocess, "run", refuse)
+        monkeypatch.setattr(subprocess, "Popen", refuse)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", refuse)
+        monkeypatch.setattr(asyncio, "create_subprocess_shell", refuse)
+    base, _ = server_with_coordinator
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert set(body) == _pinned_state_keys()
+
+
+async def test_state_section_read_past_the_deadline_reports_unavailable(
+    monkeypatch, tmp_path,
+):
+    """One deadline bounds the whole payload, not just the daemon fan-out.
+
+    A section read that never returns used to park the compute, and with it
+    every /state client behind the single-flight cache. It now costs that
+    section only: the key stays, its value is the same null every other
+    fail-soft section serves. Retire with the deadline in _get_state.
+    """
+    from tests.test_wire_contracts import _state_payload
+
+    released = threading.Event()
+
+    def wedged_transit():
+        released.wait(timeout=30)
+        return {"packs": []}
+
+    monkeypatch.setattr(state_aggregate, "_STATE_AGGREGATE_BUDGET_SEC", 1.0)
+    started = time.monotonic()
+    try:
+        payload = await _state_payload(
+            monkeypatch, tmp_path, read_transit_state_func=wedged_transit,
+        )
+    finally:
+        released.set()
+
+    assert time.monotonic() - started < 15.0
+    assert set(payload) == _pinned_state_keys()
+    assert payload["transit"] is None
+
+
+async def test_state_active_source_is_the_health_samplers_verdict(
+    monkeypatch, tmp_path,
+):
+    """One active_source on the wire (ADR-0233 rule 2).
+
+    The audio-health sampler and the aggregate's renderer ladder are two
+    candidate answers in one response, free to name different sources unless
+    one of them defers. Retire when the sampler stops publishing a source.
+    """
+    from tests.test_wire_contracts import _state_payload
+
+    payload = await _state_payload(
+        monkeypatch, tmp_path,
+        audio_health_snapshot=lambda: {"overall": {"active_source": "usbsink"}},
+    )
+
+    assert payload["active_source"] == "usbsink"
+    assert payload["audio_health"]["overall"]["active_source"] == "usbsink"
+
+
+async def test_state_outputd_section_drops_the_chip_ref_write_ring():
+    """~25 KB of every response that no /state consumer reads: jasper-aec-init
+    takes the ring off outputd's socket. Retire if a /state reader needs it.
+    """
+    async def status(_path, *_args, **_kwargs):
+        return {"reference_outputs": {"chip_ref_writer": {
+            "active": True,
+            "recent_writes": [{"frames_written": 128}],
+            "recent_writes_capacity": 256,
+        }}}
+
+    body = await state_aggregate._outputd_status(local_status_json=status)
+
+    writer = body["reference_outputs"]["chip_ref_writer"]
+    assert "recent_writes" not in writer
+    assert writer["recent_writes_capacity"] == 256
+
+
 async def test_state_voice_model_reads_pin_from_jasper_env_not_just_wizard_file(
     monkeypatch, tmp_path,
 ):
@@ -1737,7 +1845,6 @@ def test_state_concurrent_requests_share_one_aggregate(monkeypatch):
     assert len(results) == 2
     assert all(item[0] == 200 for item in results)
     assert all(item[1]["ok"] is True and item[1]["calls"] == 1 for item in results)
-    assert all("usb_gadget_forensics" in item[1] for item in results)
     assert calls == 1
 
 
@@ -1754,7 +1861,9 @@ def test_single_flight_cache_recomputes_after_ttl_expiry():
         calls["n"] += 1
         return calls["n"]
 
-    cache = _SingleFlightTTLCache(ttl_sec=1.0, clock=lambda: now["t"])
+    cache = _SingleFlightTTLCache(
+        ttl_sec=1.0, wait_timeout_sec=60.0, clock=lambda: now["t"],
+    )
 
     assert cache.get_or_compute(compute) == 1
     now["t"] = 1000.9  # still inside the 1 s TTL -> served from cache
@@ -1771,7 +1880,7 @@ def test_single_flight_cache_does_not_cache_failures():
     inheriting a stuck in-flight state."""
     from jasper.control.server import _SingleFlightTTLCache
 
-    cache = _SingleFlightTTLCache(ttl_sec=60.0)
+    cache = _SingleFlightTTLCache(ttl_sec=60.0, wait_timeout_sec=60.0)
     calls = {"n": 0}
 
     def flaky():
@@ -1785,6 +1894,38 @@ def test_single_flight_cache_does_not_cache_failures():
     # Failure not cached + in-flight released -> retry succeeds.
     assert cache.get_or_compute(flaky) == "ok"
     assert calls["n"] == 2
+
+
+def test_single_flight_cache_waiter_gives_up_on_a_wedged_compute():
+    """A waiter must not park past the compute's budget.
+
+    It serves the last value instead, because the alternative is holding a
+    bounded request worker — and, with enough waiters, the control plane —
+    on one compute that overran. Retire with the cache's wait timeout.
+    """
+    from jasper.control.server import _SingleFlightTTLCache
+
+    cache = _SingleFlightTTLCache(ttl_sec=0.0, wait_timeout_sec=0.05)
+    assert cache.get_or_compute(lambda: "first") == "first"
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def wedged():
+        entered.set()
+        release.wait(timeout=30)
+        return "second"
+
+    thread = threading.Thread(
+        target=lambda: cache.get_or_compute(wedged), daemon=True,
+    )
+    thread.start()
+    try:
+        assert entered.wait(timeout=5)
+        assert cache.get_or_compute(lambda: "never computed") == "first"
+    finally:
+        release.set()
+        thread.join(timeout=5)
 
 
 def test_state_camilla_probe_times_out_fail_soft(
