@@ -24,7 +24,7 @@ class TraceEvent:
       tool_call      payload={name, args}
       tool_return    payload={name, result, elapsed_ms, error?}
       audio_out      payload={n_bytes}            (per chunk)
-      turn_complete  payload={tokens, usage_breakdown?}
+      turn_complete  payload={tokens}
       turn_end       payload={reason}             (release/lost/error)
       session_close  payload={reason}
 

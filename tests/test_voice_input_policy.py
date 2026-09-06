@@ -23,7 +23,6 @@ def _cfg(**overrides):
         "mic_device_chip_aec_150": "",
         "mic_device_chip_aec_210": "",
         "aec_chip_aec_enabled": False,
-        "server_vad_enabled": False,
         "openai_noise_reduction": "auto",
     }
     values.update(overrides)

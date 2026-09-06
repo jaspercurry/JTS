@@ -524,12 +524,11 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 
 
 class ContentActivityTracker:
-    """Cheap observer for music/activity telemetry and server-VAD gating.
+    """Cheap observer for music/activity telemetry.
 
     It never sets TTS gain. Outputd owns the final assistant loudness
     decision; this tracker only keeps a recent best-effort playback RMS
-    value for wake telemetry and the "music is playing, use server VAD"
-    branch.
+    value for ``/state`` and the wake-event columns.
     """
 
     def __init__(
@@ -635,40 +634,6 @@ def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
     except Exception:  # noqa: BLE001
         return None
 
-
-
-async def _server_vad_response_trigger(turn, connection) -> None:
-    """Wait for the server's VAD to signal end-of-utterance, then fire
-    response.create. Only spawned when server_vad is active for the turn."""
-    wait_eou = getattr(turn, "wait_for_server_eou", None)
-    if wait_eou is None or not callable(wait_eou):
-        return
-    try:
-        await asyncio.wait_for(wait_eou(), timeout=NO_SPEECH_ABORT_SEC + 5.0)
-    except asyncio.TimeoutError:
-        log_event(logger, "server_vad.eou_timeout", level=logging.WARNING)
-        return
-    except asyncio.CancelledError:
-        raise
-    if turn.turn_lost():
-        return
-    create = getattr(connection, "create_response_only", None)
-    if create is not None and callable(create):
-        try:
-            await create()
-            log_event(logger, "server_vad.response_create")
-        except Exception as e:  # noqa: BLE001
-            log_event(
-                logger,
-                "server_vad.response_create_failed",
-                error=f"{type(e).__name__}: {e}",
-                level=logging.WARNING,
-            )
-    # Must not return: this task lives in WakeLoop._bg_tasks and the turn
-    # completion watcher treats any completed member as "turn over", so
-    # returning would tear the turn down before the model's response arrived.
-    # Idle until _end_turn's cleanup loop cancels it.
-    await asyncio.Event().wait()
 
 
 class _LegRuntime:
@@ -1135,7 +1100,6 @@ class WakeLoop:
         # `_speech_run_started_at`). Used to reject wake-tail audio
         # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
-        self._server_vad_this_turn: bool = False
         # Decided once per turn in `_begin_turn_inner`: true when this turn's
         # session audio comes from a push-to-talk source, so the button owns
         # both boundaries and local VAD must not become a second writer of
@@ -1158,7 +1122,6 @@ class WakeLoop:
         self._barge_in_no_ref_warned: bool = False
         self._barge_in_ptt_warned: bool = False
         self._ptt_cap_warned: bool = False
-        self._server_vad_ptt_warned: bool = False
         # Turns since daemon start that were asked a question and produced no
         # answer. Published as /state.voice.silent_responses_session.
         self._silent_responses_session: int = 0
@@ -1304,9 +1267,6 @@ class WakeLoop:
             def request_reconnect_now(self) -> bool:
                 return False
 
-            def supports_server_vad(self) -> bool:
-                return False
-
             async def acquire_turn(self):
                 raise AssertionError("WakeLoop.for_tests acquire_turn stub used")
 
@@ -1369,10 +1329,6 @@ class WakeLoop:
             peering_enabled=False,
             peering_uds_socket="/tmp/jasper-peering-test.sock",
             response_stall_timeout_sec=120.0,
-            server_vad_enabled=False,
-            server_vad_prefix_ms=300,
-            server_vad_silence_ms=500,
-            server_vad_threshold=0.5,
             vad_barge_in_threshold=0.5,
             voice_provider="test",
             wake_model="test_model",
@@ -1971,7 +1927,7 @@ class WakeLoop:
         user_text: str | None,
         assistant_text: str | None,
         *,
-        data_json: dict | str | None = None,
+        data_json: dict | None = None,
         provider: str | None = None,
     ) -> None:
         """Persist one conversation-history row.
@@ -2010,8 +1966,6 @@ class WakeLoop:
                     e,
                 )
                 data_text = None
-        elif data_json is not None:
-            data_text = str(data_json)
         if user_text is None and assistant_text is None and data_text is None:
             return
 
@@ -3653,9 +3607,9 @@ class WakeLoop:
     async def _send_session_audio(self, frame) -> None:
         """Forward one frame to the live turn; end the turn if it refuses.
 
-        One implementation for all three endpointer paths (server VAD,
-        local Silero, push-to-talk), so the failure handling cannot
-        drift between them.
+        One implementation for both endpointer paths (local Silero,
+        push-to-talk), so the failure handling cannot drift between
+        them.
         """
         self._stamp_turn_stage("first_audio_to_provider")
         try:
@@ -3695,8 +3649,6 @@ class WakeLoop:
         """
         if self._manual_endpoint_this_turn:
             return "push_to_talk"
-        if self._server_vad_this_turn:
-            return "server_vad"
         return "silero_aec"
 
     def _corpus_endpointer_label(self, *, user_speech_seen: bool) -> str:
@@ -3704,10 +3656,9 @@ class WakeLoop:
 
         Same vocabulary as ``_endpointer_label`` plus ``no_speech_abort``,
         which is a verdict about *listening* and so only meaningful when
-        something was listening for speech. Keyed on the resolved label
-        rather than on ``not _server_vad_this_turn`` so that if button
-        turns ever gain corpus rows, one cannot be recorded as a
-        no-speech abort it never performed.
+        something was listening for speech. Keyed on the resolved label so
+        that if button turns ever gain corpus rows, one cannot be recorded
+        as a no-speech abort it never performed.
         """
         label = self._endpointer_label()
         if label == "silero_aec" and not user_speech_seen:
@@ -3871,67 +3822,9 @@ class WakeLoop:
         # ---- Push-to-talk branch ----
         # The button already carries both turn boundaries, so nothing
         # here may close the user's input early. Must come BEFORE the
-        # server-VAD and Silero branches: both of those end input on
-        # their own schedule.
+        # Silero branch: that one ends input on its own schedule.
         if self._manual_endpoint_this_turn:
             await self._handle_manual_session_frame(frame)
-            return
-
-        # ---- Server-side VAD branch ----
-        # When server_vad is active, the server owns end-of-utterance
-        # detection. Skip local Silero for turn-control decisions; just
-        # forward audio and watch for the server's committed event.
-        if self._server_vad_this_turn:
-            now = asyncio.get_event_loop().time()
-            elapsed = now - self._turn_started_at_loop
-
-            # Shadow telemetry: run Silero on the primary stream so
-            # wake_events.max_silero_aec is populated on server-VAD turns
-            # too, keeping local-VAD permissiveness comparable across
-            # stream configs (AEC vs raw+AGC). Does NOT affect turn
-            # behavior.
-            try:
-                shadow_prob = self._vad.predict(frame)
-                if shadow_prob > self._max_silero_score_in_turn:
-                    self._max_silero_score_in_turn = shadow_prob
-            except Exception:  # noqa: BLE001
-                pass
-
-            ss_fn = getattr(self._turn, "server_speech_started", None)
-            server_heard_speech = bool(ss_fn()) if callable(ss_fn) else False
-            if server_heard_speech and not self._user_speech_seen:
-                self._user_speech_seen = True
-                await self._telemetry_stage("speech_detected")
-
-            if not server_heard_speech and not self._user_speech_seen \
-                    and elapsed >= NO_SPEECH_ABORT_SEC:
-                log_event(
-                    logger,
-                    "server_vad.no_speech",
-                    timeout_sec=f"{NO_SPEECH_ABORT_SEC:.1f}",
-                )
-                await self._end_turn()
-                return
-
-            if elapsed >= HARD_RECORDING_CAP_SEC:
-                log_event(
-                    logger,
-                    "server_vad.hard_cap",
-                    elapsed_sec=f"{HARD_RECORDING_CAP_SEC:.1f}",
-                )
-                self._input_ended = True
-                self._stamp_turn_stage("end_input")
-                await self._end_turn()
-                return
-
-            eou_check = getattr(self._turn, "server_speech_detected", None)
-            if eou_check is not None and callable(eou_check) and eou_check():
-                self._input_ended = True
-                # Not via `_end_session_input`: the server already committed
-                # the buffer, so calling it would send a second end_input.
-                self._stamp_turn_stage("end_input")
-
-            await self._send_session_audio(frame)
             return
 
         # ---- Local Silero VAD path (manual VAD) ----
@@ -4416,7 +4309,7 @@ class WakeLoop:
 
         Pure telemetry — records what raw-stream Silero sees during the
         session but makes no endpointing decisions. The active endpointer
-        (server_vad or AEC-stream Silero) is unaffected."""
+        (AEC-stream Silero) is unaffected."""
         if self._vad_off is None or self._input_ended:
             return
         try:
@@ -4561,73 +4454,16 @@ class WakeLoop:
             if self._turn.turn_lost():
                 raise RuntimeError("live turn lost while sending text context")
 
-        self._server_vad_this_turn = False
-        # Computed once, then either refused or armed, so the refusal below
-        # can only claim to have blocked something that would otherwise have
-        # been negotiated on this turn. `music_is_playing()` is a per-turn
-        # condition: a button turn in silence never had server VAD to refuse
-        # and must not say it did.
-        want_server_vad = (
-            self._cfg.server_vad_enabled
-            and self._connection.supports_server_vad()
-            and self._content_activity.music_is_playing()
-        )
-        if want_server_vad and self._manual_endpoint_this_turn:
-            # On a button turn server VAD is a second writer of "input is
-            # over": at `server_vad_silence_ms` (500 ms default) the server
-            # declares end-of-utterance and answers while the button is still
-            # held. Its own latch, not `_barge_in_ptt_warned` — sharing one
-            # would let whichever fires first swallow the other's only WARN.
-            if not self._server_vad_ptt_warned:
-                self._server_vad_ptt_warned = True
-                log_event(
-                    logger,
-                    "server_vad.disabled_push_to_talk",
-                    silence_ms=self._cfg.server_vad_silence_ms,
-                    source=self._active_manual_source or "primary",
-                    detail="the button already closes input on release",
-                    level=logging.WARNING,
-                )
-        elif want_server_vad:
-            set_td = getattr(self._connection, "set_turn_detection", None)
-            if set_td is not None and callable(set_td):
-                try:
-                    await set_td({
-                        "type": "server_vad",
-                        "threshold": self._cfg.server_vad_threshold,
-                        "silence_duration_ms": self._cfg.server_vad_silence_ms,
-                        "prefix_padding_ms": self._cfg.server_vad_prefix_ms,
-                        "create_response": False,
-                        "interrupt_response": False,
-                    })
-                    self._server_vad_this_turn = True
-                    mark = getattr(self._turn, "mark_server_vad", None)
-                    if callable(mark):
-                        mark()
-                    log_event(
-                        logger,
-                        "server_vad.enabled",
-                        music_dbfs=f"{self._content_activity.music_dbfs or float('-inf'):.1f}",
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "server_vad.enable_failed",
-                        error=f"{type(e).__name__}: {e}",
-                        level=logging.WARNING,
-                    )
-
         logger.info(
             "turn acquire done in %.0fms "
             "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f acquire=%.0f) "
-            "(wake→activity_start%s)",
+            "(wake→activity_start)",
             (time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
             (t_after_loudness_prepare - t_after_state) * 1000,
             (t_after_duck - t_after_loudness_prepare) * 1000,
             (t_after_acquire - t_after_duck) * 1000,
-            ", server_vad" if self._server_vad_this_turn else "",
         )
         # Drain the recent-mic ring into the turn so the user's first phoneme,
         # which preceded the wake firing, reaches the model. The frame that
@@ -4664,11 +4500,6 @@ class WakeLoop:
             )
         )
         self._bg_tasks = {playback, idle}
-        if self._server_vad_this_turn:
-            vad_trigger = asyncio.create_task(
-                _server_vad_response_trigger(self._turn, self._connection)
-            )
-            self._bg_tasks.add(vad_trigger)
         self._arm_session_task_watcher()
         self._state = State.SESSION
         self._arm_turn_background_end()
@@ -4880,24 +4711,31 @@ class WakeLoop:
             except Exception as e:  # noqa: BLE001
                 logger.debug("turn release error (ignored): %s", e)
 
-            tokens = self._turn.usage_tokens()
-            # Modality breakdown when the provider exposes one: OpenAI
-            # Realtime does; Gemini Live returns None and the store falls back
-            # to scalar all-audio pricing.
-            breakdown = self._turn.usage_breakdown()
+            usage = self._turn.usage()
             assert self._session_id is not None
             cost = self._usage_store.close_session(
                 self._session_id,
-                tokens["input_tokens"],
-                tokens["output_tokens"],
-                usage=breakdown,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage=usage.breakdown,
             )
             if research_window_job is None:
-                self._record_conversation_turn(
-                    _optional_turn_text(self._turn, "user_transcript"),
-                    _optional_turn_text(self._turn, "assistant_transcript"),
-                    data_json=_optional_turn_data_json(self._turn),
-                )
+                try:
+                    capture = self._turn.capture()
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    log_event(
+                        logger,
+                        "turn.capture_failed",
+                        exc_type=type(exc).__name__,
+                        level=logging.WARNING,
+                    )
+                    capture = None
+                if capture is not None:
+                    self._record_conversation_turn(
+                        capture.user_text,
+                        capture.assistant_text,
+                        data_json=capture.data,
+                    )
             # Per-turn no-answer detection, gated on whether the wake loop
             # explicitly ended input (silence detector, hard cap, or manual
             # end). Bytes sent with `_input_ended` never flipped means the
@@ -4994,8 +4832,10 @@ class WakeLoop:
             paced_sec = self._tts.take_paced_sec()
             paced_part = f", paced {paced_sec:.2f}s" if paced_sec > 0.05 else ""
             logger.info(
-                "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s%s%s)",
-                tokens, cost, bytes_sent, chunks_received, drain_part,
+                "turn ended: in=%d out=%d tokens, est $%.4f "
+                "(sent=%dB, recv=%d chunks%s%s%s)",
+                usage.input_tokens, usage.output_tokens, cost,
+                bytes_sent, chunks_received, drain_part,
                 paced_part,
                 ", turn_lost" if self._turn.turn_lost() else "",
             )
@@ -5087,39 +4927,6 @@ def _conversation_ts_utc() -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
-
-
-def _optional_turn_text(turn: object, method_name: str) -> str | None:
-    getter = getattr(turn, method_name, None)
-    if not callable(getter):
-        return None
-    try:
-        text = getter()
-    except (RuntimeError, TypeError, ValueError) as e:
-        logger.debug("conversation capture: %s failed: %s", method_name, e)
-        return None
-    if text is None:
-        return None
-    text = str(text).strip()
-    return text or None
-
-
-def _optional_turn_data_json(turn: object) -> dict | str | None:
-    getter = getattr(turn, "conversation_metadata", None)
-    if not callable(getter):
-        return None
-    try:
-        data = getter()
-    except (RuntimeError, TypeError, ValueError) as e:
-        logger.debug("conversation capture: conversation_metadata failed: %s", e)
-        return None
-    if data is None or isinstance(data, (dict, str)):
-        return data
-    logger.debug(
-        "conversation capture: conversation_metadata returned unsupported %s",
-        type(data).__name__,
-    )
-    return None
 
 
 async def run() -> None:

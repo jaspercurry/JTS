@@ -78,13 +78,14 @@ is where conversation capture hooks — **one write path for all three
 providers.**
 
 What differs per provider is only *how the turn object exposes its text*.
-The per-provider optional fields are read through the untyped
-`_optional_turn_text` / `_optional_turn_data_json` helpers in
-`jasper/voice_daemon.py`, which `getattr`-probe the turn for:
+The daemon reads one typed accessor on the turn — `capture() -> TurnCapture
+| None` (`jasper/voice/session.py`), returning None when the provider has
+nothing to record:
 
 ```
-user_transcript() -> str | None        # the perceived command (ASR)
-assistant_transcript() -> str | None    # what the model said
+TurnCapture.user_text       # the perceived command (ASR)
+TurnCapture.assistant_text  # what the model said
+TurnCapture.data            # bounded metadata, for providers with no text
 ```
 
 - OpenAI already has `assistant_transcript()`; add a one-line `_user_transcript`
@@ -98,11 +99,11 @@ The daemon reads whatever the accessors return at `_end_turn_inner` and writes
 a row. **The host owns the write; the provider only declares its text** — the
 indirection invariant from the doctrine, applied.
 
-Providers without transcripts may expose `conversation_metadata() ->
-dict[str, Any] | None` instead. The metadata must stay bounded and privacy-safe;
-Gemini currently uses it for `{"kind": "voice_turn",
-"transcripts_available": false}` and optional tool names so `/chat` can show a
-turn happened without leaking prompts, arguments, or provider payloads.
+Providers without transcripts fill `TurnCapture.data` instead. The metadata
+must stay bounded and privacy-safe; Gemini currently uses it for
+`{"kind": "voice_turn", "transcripts_available": false}` and optional tool
+names so `/chat` can show a turn happened without leaking prompts, arguments,
+or provider payloads.
 
 > Borrow the *vocabulary* of `jasper/voice/trace.py` (which already
 > distinguishes model-emitted `text_out` from an STT transcription) but not

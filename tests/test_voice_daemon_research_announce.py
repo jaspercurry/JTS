@@ -88,7 +88,6 @@ def _put_in_session(
     wl._session_id = 7
     wl._usage_store = FakeUsageStore()
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._input_ended = False
 
     async def _noop(*_args, **_kwargs):

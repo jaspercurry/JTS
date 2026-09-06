@@ -22,8 +22,9 @@ stubs. This file pins the *Gemini pack's* decision and contract on top:
     watchdog consumes (``server_turn_complete()``) is set by ``turn_complete``
     alone.
 
-Not duplicated here: ``supports_server_vad()`` value is pinned by
-``tests/test_voice_barge_in_contract.py``; the generic
+Not duplicated here: Protocol conformance (``LiveTurn`` /
+``Interruptible``) is pinned by ``tests/test_voice_barge_in_contract.py``;
+the generic
 "watchdog returns on ``server_turn_complete``" behaviour is pinned by
 ``tests/test_voice_daemon_defects.py``. The paid, on-device "speak over
 Gemini TTS" proof is a SKIPPED voice-eval placeholder — see
