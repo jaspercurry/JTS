@@ -5,14 +5,16 @@
 """The jasper-doctor output contract (ADR-0233 rule 3).
 
 The row shape, the status vocabulary, and the harness-generated reason codes
-— everything a *consumer* of a doctor report needs. Stdlib-only and free of
-any `jasper.cli.doctor` import, so jasper-control can build and count
-contract rows without dragging in the check package, whose ``__init__``
-imports every domain module.
+— everything a *consumer* of a doctor report needs. Free of any
+`jasper.cli.doctor` import, and of any non-stdlib dependency, so
+jasper-control can build and count contract rows without dragging in the
+check package, whose ``__init__`` imports every domain module.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from .secret_redaction import redact_secrets
 
 CHECK_STATUSES = frozenset({"ok", "warn", "fail", "skipped"})
 
@@ -72,10 +74,18 @@ class CheckResult:
             raise ValueError(
                 f"speaker_silent needs a warn/fail status: {self.name!r}"
             )
+        if self.detail:
+            self.detail = redact_secrets(self.detail)
 
 
 def check_row(result: CheckResult) -> dict:
-    """One row of the flat /system-diagnostics schema."""
+    """One row of the flat /system-diagnostics schema.
+
+    ``detail`` is already redacted by ``CheckResult.__post_init__`` — the
+    one point every row (including a crash row) passes through on its way
+    to ``jasper-doctor --json`` and jasper-control's
+    ``/system/diagnostics``.
+    """
     return {
         "name": result.name,
         "status": result.status,

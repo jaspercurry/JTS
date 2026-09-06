@@ -147,11 +147,11 @@ def check_provider_key(cfg: Config) -> CheckResult:
         )
     if drift:
         return CheckResult(
-            env_name, "warn", f"{key[:8]}...{drift}",
+            env_name, "warn", f"configured{drift}",
             reason=REASON_PROVIDER_KEY_OK_ENV_DRIFT,
         )
     return CheckResult(
-        env_name, "ok", f"{key[:8]}...",
+        env_name, "ok", "configured",
     )
 
 # Imports the module names handed to it on argv, in order, reporting the FIRST

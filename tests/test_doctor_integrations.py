@@ -218,3 +218,31 @@ def test_check_home_assistant_verdicts(
 
     assert r.status == status
     assert r.reason == getattr(integrations, reason)
+
+
+def test_check_home_assistant_probe_raised_redacts_credential_shaped_text(
+    monkeypatch,
+):
+    """probe_status runs with the live ha_token; a raised exception's text
+    must route through `_exception_detail` (redact + cap) like every other
+    crash branch, not bare `{e}` — and its literal ha_token pass must catch
+    the token even in a shape none of the keyword patterns recognise (no
+    `token=`/`Bearer` neighbour), unlike the keyword-matched value alongside
+    it. A realistic-length token: this file's usual "t" placeholder would
+    make the literal pass replace every "t" in the message.
+    """
+    live_token = "ha-live-Zx9pQwErTy12345"
+    _ha_probe(
+        monkeypatch,
+        raises=RuntimeError(
+            f"token=abcdef0123456789 unreachable; presented {live_token}"
+        ),
+    )
+    creds = {"url": "http://ha.local:8123", "token": live_token}
+
+    r = integrations.check_home_assistant(_ha_cfg(monkeypatch, **creds))
+
+    assert r.status == "warn"
+    assert r.reason == integrations.REASON_HOME_ASSISTANT_PROBE_RAISED
+    assert "abcdef0123456789" not in r.detail
+    assert live_token not in r.detail
