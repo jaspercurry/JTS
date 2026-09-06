@@ -56,10 +56,24 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | P1 secrets #4193 | P2 deploy integrity #4194 | P12 attached hardware #4213 (#4209 first) |
-| 2 | P6 right-sizing #4200 | P4 observability #4197 | P9 voice loop #4208 (once #4198 and #4203 have merged) |
-| 3 | P3 resilience #4195 | P5 structure #4199 (plan, cycle fix and contract at once; moves after P6's deletions merge) | P11 web UI #4212 (merges #4210 first) |
-| 4 | P7 tests #4201 (scout and plan at once; execution after P5's moves merge) | P8 docs #4202 (its stale-path pass after P5's moves merge) | — |
+| 1 | P1 close-out (#4193): merge the five reviewed PRs — #4223 with its ADR renumbered to 0243, then #4230, #4232, #4233, #4239 — and post the handoff issue | P4 observability #4197 (plan posted 2026-09-06 08:44; the owner's triage is in the kickoff) | P12 attached hardware #4213 (running): merge #4240, reopen and merge #4242, deploy `main` to jts3, run H1–H3 and every HW row on #4027, then R5c, R6, R9.1–2 |
+| 2 | P6 right-sizing #4200 (plan posted 05:43; triage in the kickoff) | P2 round 2 from the handoff #4248: arm the gate after HW-3, the STEPS table, the atomic source tree, the install-path interpreters, the remaining writers, the test-fast map, laptop portability | P9 voice loop #4208 (plan posted 05:42; triage in the kickoff; rows 0.2 and 1.4 need the owner at the box) |
+| 3 | P3 resilience #4195 (P12, P4 and P6 have already posted its rows) | P5 structure #4199 (moves after P6's deletions merge) | P11 web UI #4212 (#4210 merged; deploy each wave, phone eyeball) |
+| 4 | P7 tests #4201 (execution after P5's moves merge) | P8 docs #4202 (stale-path pass after P5's moves merge; owns the ADR-number uniqueness pin) | — |
+
+**State on 2026-09-06 (first night's result).** P2 ran to its handoff (#4248; sixteen PRs merged,
+ADR-0241/0242). P1 merged three of eight and holds five reviewed PRs for a merge word. P12 merged
+twelve (ADR-0239/0240; #4209 root-caused and fixed in #4234), left #4240 waiting for a word and
+#4242 closed unmerged by accident (the bash-3.2 lock fix the owner's laptop lane needs), and has
+run none of the hardware proofs; the deploy of `main` to jts3 failed on #4215's pruner (hotfixed in
+#4236, not redeployed). P4, P6 and P9 posted plans and stopped at their gates. Three ADR-number
+collisions happened in one night (0238, and 0240 twice): a lane takes the next free number in its
+merge commit, never at draft time.
+
+**Merge word (rule change).** The owner's triage at the plan gate is also the merge word for every
+PR in that plan, sensitive tier included, once `/code-review`, `/simplify` and (where the tier
+demands it) `/adversarial-review` have no open blockers. No lane waits for a per-PR word; four
+lanes stalled on that on the first night.
 
 Kickoff message for a lane — paste it into a fresh session on the named account, changing only the
 issue number and the lane name in the last sentences:
@@ -71,8 +85,9 @@ issue number and the lane name in the last sentences:
 > simpler codebase: less cruft, less prose, one source of truth per fact, clear contracts, no god
 > files — never bigger. Your full brief is issue #4193 in jaspercurry/JTS (quality lane P1,
 > secrets). Read `AGENTS.md`, then read that issue in full and follow it exactly; it ends at a plan
-> gate where you stop and wait for me. Other lanes run concurrently; their issues are named in the
-> brief.
+> gate where you stop and wait for me. My answer there is also the merge word for every PR in your
+> plan, sensitive tier included, once its review passes have no open blockers. Other lanes run
+> concurrently; their issues are named in the brief.
 
 On Space Hater add: *You are on my machine and the Pis are reachable; other lanes' hardware asks
 arrive as comments on #4027 — answer them on the asking lane's issue.*
