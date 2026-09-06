@@ -554,12 +554,9 @@ def _resolved_ring_wire():
     ``resolve_wire_for_gate``'s to report.
     """
     try:
-        from ...fanin.ring_health import (
-            load_topology_for_wire,
-            resolve_wire_for_gate,
-        )
+        from ...fanin.ring_health import resolve_wire_for_gate
 
-        wire, _problem = resolve_wire_for_gate(load_topology_for_wire())
+        wire, _problem = resolve_wire_for_gate(evidence.saved_topology_for_wire())
     except (ImportError, OSError):
         return None
     return wire

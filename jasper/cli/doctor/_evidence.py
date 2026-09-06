@@ -238,6 +238,17 @@ class Evidence:
 
         return self.get("parked_bonded_follower", _parked_as_bonded_follower)
 
+    def grouping_config(self) -> Any:
+        from ...multiroom.config import load_config
+
+        return self.get("grouping_config", load_config)
+
+    def saved_topology_for_wire(self) -> Any:
+        """Fail-soft to None; see ``fanin.ring_health.load_topology_for_wire``."""
+        from ...fanin.ring_health import load_topology_for_wire
+
+        return self.get("saved_topology_for_wire", load_topology_for_wire)
+
     def camilla_config_path(self) -> str | None:
         """The config path CamillaDSP's statefile names, read once; None when
         the statefile is unreadable or names nothing."""

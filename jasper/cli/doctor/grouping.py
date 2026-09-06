@@ -184,10 +184,8 @@ def check_grouping() -> CheckResult:
 
     Both verdicts come from the same pure `derive_grouping_runtime` the
     /state surface uses."""
-    from ...multiroom.config import load_config as _load_grouping_config
-
     label = "grouping"
-    cfg = _load_grouping_config()
+    cfg = evidence.grouping_config()
     if not cfg.enabled:
         return CheckResult(
             label, "ok", "single-speaker (grouping off)", reason=REASON_GROUPING_OFF
@@ -327,7 +325,6 @@ def check_grouping_ring_device() -> CheckResult:
       - fail — the conf.d block is missing, or the name did not resolve on a
                bonded box.
     """
-    from ...multiroom.config import load_config as _load_grouping_config
     from ...multiroom.grouping_ring import GROUPING_RING_CONF_D, GROUPING_RING_PCM
     from ...ring_assets import RING_ALSA_PLUGIN_DIR, RING_IOPLUG_SO
 
@@ -350,7 +347,7 @@ def check_grouping_ring_device() -> CheckResult:
             label, "ok", f"pcm.{GROUPING_RING_PCM} resolves and the ioplug loads"
         )
     named = errno.errorcode.get(-rc, "") if rc < 0 else ""
-    bonded = _load_grouping_config().enabled
+    bonded = evidence.grouping_config().enabled
     return CheckResult(
         label,
         "fail" if bonded else "warn",
@@ -372,10 +369,8 @@ def check_grouping_snapcast_installed() -> CheckResult:
     and the grouping reconciler owns the opt-in install. This check reads the
     runtime truth directly: OFF skips (snapcast deliberately absent); ON fails if
     either binary is missing after provisioning, with the one-line remediation."""
-    from ...multiroom.config import load_config as _load_grouping_config
-
     label = "grouping: snapcast installed"
-    cfg = _load_grouping_config()
+    cfg = evidence.grouping_config()
     if not cfg.enabled:
         return CheckResult(
             label, "ok", "grouping off (snapcast not required)",
@@ -420,11 +415,10 @@ def check_grouping_snapcast_version() -> CheckResult:
     version-shaped substring (a linked library's version, not snapclient's
     own), and parsing it anyway would fabricate a comparison from a process
     that determined nothing."""
-    from ...multiroom.config import load_config as _load_grouping_config
     from ...multiroom.provision import VALIDATED_SNAPCAST_VERSION
 
     label = "grouping: snapcast version"
-    cfg = _load_grouping_config()
+    cfg = evidence.grouping_config()
     if not cfg.enabled:
         return CheckResult(
             label, "ok", "grouping off (snapcast not required)",
@@ -513,7 +507,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
     from ...active_speaker.environment import camilla_statefile_path
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_member
     from ...multiroom.reconcile import is_active_speaker_box
     from .correction import (
         REASON_CAMILLA_CONFIG_MISSING,
@@ -522,7 +516,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     )
 
     label = "grouping: rate_adjust"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     # "In the bonded chain" for the instance this check reads (the ACTIVE
     # statefile's config — camilla#1 on a passive leader and on an active
     # follower, camilla#2 on an active leader): a LEADER of either kind bakes the
@@ -592,7 +586,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     hears silence while every unit shows green. The silent-wrong-config
     class this check exists for."""
     from ...active_speaker.environment import camilla_statefile_path
-    from ...multiroom.config import is_active_leader, load_config
+    from ...multiroom.config import is_active_leader
     from ...multiroom.leader_config import playback_is_pipe
     from ...multiroom.reconcile import SNAPFIFO
     from .correction import (
@@ -602,7 +596,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     )
 
     label = "grouping: leader pipe"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     if not is_active_leader(cfg):
         return CheckResult(
             label, "skipped", "not an active bond leader",
@@ -689,7 +683,7 @@ def check_grouping_channel_pick() -> CheckResult:
     full stereo program — the wrong channel), so this drift check is the
     only way a wrong-channel member is visible."""
     from ...fanin_coupling import dac_content_lane_marker_armed
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_member
     from ...multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
     from ...multiroom.reconcile import (
         LANE_REFUSED_ACTIVE_ENDPOINT,
@@ -703,7 +697,7 @@ def check_grouping_channel_pick() -> CheckResult:
     )
 
     label = "grouping: channel pick"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     if not is_active_member(cfg):
         return CheckResult(
             label, "skipped", "solo / not an active bond member",
@@ -821,7 +815,7 @@ def check_grouping_tts_lane() -> CheckResult:
     (Replaces ``check_grouping_tts_interim``, the standing bonded warn
     that existed while TTS still mixed in fanin pre-stream — Increment 5
     PR-2 closed that gap.)"""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_member
     from ...multiroom.reconcile import (
         OUTPUTD_GROUPING_ENV_FILE,
         VOICE_GROUPING_ENV_FILE,
@@ -839,7 +833,7 @@ def check_grouping_tts_lane() -> CheckResult:
     )
 
     label = "grouping: TTS lane"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     active = is_active_member(cfg)
     active_endpoint = is_active_speaker_box() if active else False
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
@@ -983,10 +977,10 @@ def check_grouping_pair_channels() -> CheckResult:
     mDNS discovery) — one GET of the leader's /grouping, compared against
     our own channel. Remediation is one tap: /rooms Swap repairs a
     same-channel pair to left/right."""
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_member
 
     label = "grouping: pair channels"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     if not is_active_member(cfg) or cfg.role != "follower":
         return CheckResult(
             label, "skipped", "solo / not a bonded follower",
@@ -1050,10 +1044,10 @@ def check_grouping_household_credential() -> CheckResult:
     whether the file is present, never reads or echoes the value (mirrors
     ``check_control_token``)."""
     from ...control import household_credential
-    from ...multiroom.config import is_active_member, load_config
+    from ...multiroom.config import is_active_member
 
     label = "grouping: household credential"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     if not is_active_member(cfg):
         return CheckResult(
             label, "skipped", "solo / not a bonded member",
@@ -1089,10 +1083,10 @@ def check_grouping_airplay_latency() -> CheckResult:
     :func:`jasper.multiroom.airplay_latency.assess_fit` the /state surface
     uses, so the doctor and the dashboard tell one story."""
     from ...multiroom.airplay_latency import assess_fit, read_notified_frames
-    from ...multiroom.config import is_active_leader, load_config
+    from ...multiroom.config import is_active_leader
 
     label = "grouping: AirPlay latency fit"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     if not is_active_leader(cfg):
         return CheckResult(
             label, "skipped", "not an active bond leader",
@@ -1147,11 +1141,11 @@ def check_crossover_unit_installed() -> CheckResult:
 
     A missing or unparseable unit on an active leader is a real gap (the
     reconciler PR would have nothing to arm), so it warns."""
-    from ...multiroom.config import is_active_leader, load_config
+    from ...multiroom.config import is_active_leader
     from ...output_topology import OutputTopologyError
 
     label = "grouping: crossover unit"
-    cfg = load_config()
+    cfg = evidence.grouping_config()
     if not is_active_leader(cfg):
         return CheckResult(
             label, "skipped", "not an active bond leader",
