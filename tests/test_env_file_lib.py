@@ -223,6 +223,11 @@ def test_env_file_hold_excludes_another_writer_until_dropped(
     env_file = tmp_path / "outputd.env"
     env_file.write_text("SEED=1\n", encoding="utf-8")
     lock = tmp_path / f".{env_file.name}.lock"
+    # Production always finds this already present (the installer or a prior
+    # writer created it) and takes the read-only `exec 9<` branch before
+    # moving the hold to fd 8; an absent lock would take the create branch
+    # instead and leave that path unpinned.
+    lock.touch()
     contend = (
         f'if bash -c \'exec 9>>"{lock}"; flock -n 9\' 2>/dev/null; '
         'then printf "free\\n"; else printf "excluded\\n"; fi\n'
