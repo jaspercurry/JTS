@@ -340,7 +340,7 @@ class BaseLiveConnection:
         A rejection body can echo a credential in a shape
         `redact_secrets`'s prefix patterns don't know; passing the exact
         value here catches it. Base has nothing to retain — see
-        `OpenAIRealtimeConnection` for the one provider that does.
+        `OpenAIRealtimeConnection` for a provider that does.
         """
         return ()
 
