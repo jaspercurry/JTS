@@ -6,9 +6,7 @@
 
 Asks whether this Pi should take a wake (`arbitrate`), and tells the
 peering daemon when a session opens/closes so peers stay suppressed for
-its duration. Every method is fail-open: peering being disabled, unset,
-or erroring never blocks or silences the speaker — callers get "WIN" and
-None responses respectively.
+its duration. Fail-open on every path — see ADR-0128.
 """
 
 from __future__ import annotations
@@ -20,18 +18,11 @@ logger = logging.getLogger("jasper.voice_daemon")
 
 
 class PeeringClient:
-    """Arbitrate wake ownership and notify session lifecycle over
-    jasper-control's peering UDS."""
-
     def __init__(self, *, enabled: bool, socket_path: str) -> None:
         self._enabled = enabled
         self._socket_path = socket_path
-        # Multi-device peering: epoch UUID assigned by the peering
-        # daemon when this Pi wins arbitration. Used to correlate the
-        # SESSION_STARTED / SESSION_ENDED notifications back to the
-        # specific wake event. Empty string means "no peer-tracked
-        # session" — either peering is disabled, or this is a
-        # remote-driven session that didn't go through arbitration.
+        # Empty string means "no peer-tracked session": peering
+        # disabled, or a remote-driven session that skipped arbitration.
         self._epoch: str = ""
 
     async def _send(

@@ -1176,8 +1176,6 @@ class WakeLoop:
         self._acquiring: bool = False
         self._acquire_buffer: deque = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
 
-        # Multi-device peering: arbitrates wake ownership and notifies
-        # session lifecycle over jasper-control's UDS. See PeeringClient.
         self._peering = PeeringClient(
             enabled=cfg.peering_enabled, socket_path=cfg.peering_uds_socket,
         )
