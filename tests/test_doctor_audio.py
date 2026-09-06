@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import types
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -369,6 +370,44 @@ def test_output_hardware_reconcile_not_degraded_carries_no_degraded_reason():
 
     assert result.status == "ok"
     assert result.reason != audio.REASON_OUTPUT_HARDWARE_DEGRADED
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["no_dongle", "state_unavailable", "blocked_state", "active_apple_profile"],
+)
+def test_output_hardware_stray_apple_dongle_ok_cases(case):
+    # _I2S_STATE is defined later in this module; build states lazily so the
+    # decorator (evaluated at collection time) never forward-references it.
+    states = {
+        "no_dongle": _I2S_STATE,
+        "state_unavailable": None,
+        "blocked_state": replace(
+            _I2S_STATE, status="partial", profile_id="unknown", apple_dac_count=3
+        ),
+        "active_apple_profile": replace(
+            _I2S_STATE, profile_id=APPLE_USB_C_DONGLE_DEVICE_ID, apple_dac_count=1
+        ),
+    }
+    evidence.seed("output_hardware_state", states[case])
+
+    result = audio.check_output_hardware_stray_apple_dongle()
+
+    assert result.status == "ok"
+    assert result.reason == ""
+
+
+def test_output_hardware_stray_apple_dongle_warns_beside_a_registered_dac():
+    """ADR-0235 D8: a HAT plus a stray Apple dongle classifies ``ready`` with
+    no issue (a product call, pinned by
+    test_classify_registered_single_dac_uses_profile_contract) — this check
+    surfaces the already-published ``apple_dac_count`` instead."""
+    evidence.seed("output_hardware_state", replace(_I2S_STATE, apple_dac_count=1))
+
+    result = audio.check_output_hardware_stray_apple_dongle()
+
+    assert result.status == "warn"
+    assert result.reason == audio.REASON_OUTPUT_HARDWARE_STRAY_APPLE_DONGLE
 
 
 # ------------------------------------------------ ALSA shorthand mic lookup
