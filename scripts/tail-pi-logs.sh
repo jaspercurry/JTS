@@ -46,5 +46,5 @@ fi
 # of `read` silently dropping it.
 ssh -t "${PI_USER}@${PI_HOST}" "$remote_cmd" 2>&1 \
     | while IFS= read -r line || [[ -n "$line" ]]; do
-        redact_jasper_diagnostics <<<"$line"
+        printf '%s\n' "$line" | redact_jasper_diagnostics
     done

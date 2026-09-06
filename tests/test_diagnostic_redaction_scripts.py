@@ -17,15 +17,18 @@ _REDACTION_LIB = ROOT / "scripts" / "_diagnostic_redaction.sh"
 
 
 @functools.lru_cache(maxsize=None)
-def _secret_env_files() -> list[str]:
-    """The shared file list, read out of the bash lib itself."""
+def _secret_env_files() -> tuple[str, ...]:
+    """The shared file list, read out of the bash lib itself.
+
+    Tuple, not list: lru_cache hands every caller the same object.
+    """
     proc = subprocess.run(
         ["bash", "-c", f'. "{_REDACTION_LIB}"; printf "%s\\n" "${{JASPER_SECRET_ENV_FILES[@]}}"'],
         capture_output=True,
         text=True,
         check=True,
     )
-    return proc.stdout.splitlines()
+    return tuple(proc.stdout.splitlines())
 
 
 def test_pi_bundle_redacts_unit_files_before_packaging():
