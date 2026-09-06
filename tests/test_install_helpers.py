@@ -1022,6 +1022,7 @@ def test_install_nginx_site_aborts_before_touching_the_live_conf(tmp_path):
     assert result.returncode != 0
     assert not calls.exists(), calls.read_text(encoding="utf-8")
 
+
 def _run_reconcile_headless_boot_config(cfg_path: Path) -> None:
     result = subprocess.run(
         [
