@@ -1509,8 +1509,11 @@ def _make_handler(
             # The supervisor polls its own /healthz every few seconds
             # (system_supervisor.py); a 200 there is a liveness no-op, not
             # an event, and was ~45% of this daemon's idle journal volume.
-            # Every other response, and any non-200 /healthz, still logs.
-            if self.path == "/healthz" and code == 200:
+            # /system/snapshot gets the same treatment: the dashboard polls
+            # it every 5s per open tab (main.js POLL_MS), pure read, no
+            # state change. Every other response, and any non-200 on
+            # either path, still logs.
+            if code == 200 and self.path in ("/healthz", "/system/snapshot"):
                 return
             super().log_request(code, size)
 

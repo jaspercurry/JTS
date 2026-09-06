@@ -493,6 +493,8 @@ _UNGATED_ASYNC_UNITS = {
     "jasper-wifi-recover.service": "bash recovery that must keep running during a "
                                    "long install; its Python branch self-gates on "
                                    "the marker instead",
+    "jasper-journal-review.service": "pure bash + journalctl/awk; read-only, "
+                                     "writes only its own state file, always exits 0",
 }
 
 

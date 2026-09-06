@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly read-only journal-health digest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jasper-journal-review
+# Low priority: a background digest, never a latency-sensitive path.
+Nice=19
+StandardOutput=journal
+StandardError=journal
