@@ -142,7 +142,9 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
         beamformed=False,
         gain_controlled=False,
         provenance=(
-            "operator" if mic_device and mic_device not in ALSA_CARD_NAMES else "default"
+            "operator"
+            if mic_device and mic_device not in ALSA_CARD_NAMES
+            else "default"
         ),
     )
 

@@ -500,10 +500,6 @@ set_env_file_var_if_changed() {
     return 0
 }
 
-env_file_value() { env_file_value_from "$ENV_FILE" "$1"; }
-
-set_env_var() { set_env_file_var "$ENV_FILE" "$1" "$2"; }
-
 set_env_var_if_changed() { set_env_file_var_if_changed "$ENV_FILE" "$1" "$2"; }
 
 cleanup_outputd_env_stage() {
