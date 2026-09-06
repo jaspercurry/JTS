@@ -218,12 +218,6 @@ load_env_file_lib() {
     fi
     # shellcheck disable=SC1090
     source "$ENV_FILE_LIB"
-    # Readable is not usable: a zeroed or truncated lib sources cleanly and
-    # defines nothing, and every env write would then silently do nothing.
-    if ! declare -F jasper_env_file_set >/dev/null; then
-        echo "jasper-audio-hardware-reconcile: unusable env-file library: ${ENV_FILE_LIB}" >&2
-        exit 66
-    fi
 }
 
 load_asound_render_lib() {

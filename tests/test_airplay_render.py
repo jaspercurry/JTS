@@ -45,6 +45,7 @@ def _render(
     outputd_status_socket: Path | None = None,
     ring_alsa_conf_content: str | None = None,
     extra_env: dict[str, str] | None = None,
+    check: bool = True,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     template = tmp_path / "shairport-sync.conf.template"
     target = tmp_path / "shairport-sync.conf"
@@ -139,12 +140,12 @@ def _render(
         # pinning cwd here keeps that resolution independent of wherever
         # the test suite itself happens to be invoked from.
         cwd=str(REPO),
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
         timeout=5,
     )
-    return target.read_text(), result
+    return (target.read_text() if target.exists() else ""), result
 
 
 def test_env_file_values_are_data_never_shell(tmp_path: Path):
@@ -172,13 +173,12 @@ def test_env_file_values_are_data_never_shell(tmp_path: Path):
     assert 'name = "Kitchen #1 Speaker";' in rendered
 
 
-def test_render_falls_back_to_defaults_when_the_env_lib_is_absent(tmp_path: Path):
-    """install_renderers seeds /etc/shairport-sync.conf by running the
-    INSTALLED copy of this script, and it runs before install_systemd_units
-    publishes deploy/lib/jasper-env-file.sh — so on a fresh install the lib is
-    genuinely absent here. Aborting would abort install.sh; every read must
-    take its documented fallback instead, which is exactly the seed render.
-    shairport-sync's ExecStartPre re-renders with the real lib on next start."""
+def test_render_refuses_when_the_env_lib_is_absent(tmp_path: Path):
+    """The lib is this renderer's only reader of the configured name and lane,
+    so without it every read silently takes its default and a named box would
+    advertise as JTS on the shipped lane. Refusing costs a fresh install
+    nothing: install_renderers seeds the conf by running the REPO copy of this
+    script, whose ../lib sibling is always present."""
     rendered, result = _render(
         tmp_path,
         """
@@ -189,13 +189,31 @@ def test_render_falls_back_to_defaults_when_the_env_lib_is_absent(tmp_path: Path
         """,
         speaker_name_content="JASPER_SPEAKER_NAME=Configured Name\n",
         extra_env={"JASPER_ENV_FILE_LIB": str(tmp_path / "absent-lib.sh")},
+        check=False,
+    )
+
+    assert result.returncode == 66
+    assert rendered == ""
+
+
+def test_speaker_name_is_escaped_for_the_libconfig_lexer(tmp_path: Path):
+    r"""The name is the one env value that lands inside a libconfig quoted
+    string. An unescaped `"` would end the string and an unescaped `\` would
+    start an escape shairport-sync does not know, so the daemon would refuse
+    to parse its own conf on every subsequent start."""
+    rendered, result = _render(
+        tmp_path,
+        """
+        devices:
+          samplerate: 48000
+          chunksize: 1024
+          target_level: 4096
+        """,
+        speaker_name_content='JASPER_SPEAKER_NAME=Say "Hi" a\\b\n',
     )
 
     assert result.returncode == 0, result.stderr
-    assert 'name = "JTS";' in rendered
-    assert 'output_device = "shairport_substream";' in rendered
-    assert 'disable_synchronization = "no";' in rendered
-    assert "audio_backend_latency_offset_in_seconds = -0.157333;" in rendered
+    assert 'name = "Say \\"Hi\\" a\\\\b";' in rendered
 
 
 def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: Path):

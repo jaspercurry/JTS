@@ -134,17 +134,12 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # Shared env-file reader (jasper_env_file_get). Sibling-first, installed path
 # as fallback — same order and rationale as jasper-aec-reconcile's loader,
 # which states it; the installed copy has no ../lib sibling and falls through.
-#
-# Absent or unusable is NOT fatal here, unlike in the reconcilers.
-# install_renderers seeds /etc/shairport-sync.conf by running the INSTALLED
-# copy of this script, and it runs before install_systemd_units publishes the
-# lib — so on a fresh install the lib genuinely is not there yet and an exit
-# would abort install.sh. Every read below already has a documented fallback
-# (no / JTS / shairport_substream / the packaged DAC buffer), and that fallback
-# IS the seed render; shairport-sync's ExecStartPre re-renders with the real
-# lib on the next start. The stub says so on stderr rather than rendering
-# defaults silently — readable is not usable either, since a zeroed lib
-# sources cleanly and defines nothing.
+# Fatal, like the reconcilers': the lib is this script's only reader of the
+# configured name and lane, so without it every read takes its default and a
+# named box would advertise as JTS on the shipped lane. install_renderers runs
+# the REPO copy for its seed render, whose sibling lib is always present, so
+# refusing here cannot abort a fresh install. Readable is not usable either: a
+# zeroed lib sources cleanly and defines nothing.
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
         if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
@@ -153,13 +148,15 @@ load_env_file_lib() {
             ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
         fi
     fi
-    if [[ -r "$ENV_FILE_LIB" ]]; then
-        # shellcheck disable=SC1090
-        source "$ENV_FILE_LIB"
+    if [[ ! -r "$ENV_FILE_LIB" ]]; then
+        echo "jasper-apply-airplay-mode: missing env-file library: ${ENV_FILE_LIB}" >&2
+        exit 66
     fi
+    # shellcheck disable=SC1090
+    source "$ENV_FILE_LIB"
     if ! declare -F jasper_env_file_get >/dev/null; then
-        echo "jasper-apply-airplay-mode: env-file library unavailable (${ENV_FILE_LIB}); rendering from defaults" >&2
-        jasper_env_file_get() { return 1; }
+        echo "jasper-apply-airplay-mode: unusable env-file library: ${ENV_FILE_LIB}" >&2
+        exit 66
     fi
 }
 load_env_file_lib
@@ -530,11 +527,6 @@ bonded_extra_delay_sec() {
     local value
     value="$(jasper_env_file_get "$GROUPING_AIRPLAY_ENV_FILE" \
         JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC || true)"
-    value="${value//[[:space:]]/}"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
     if [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         printf '%s\n' "$value"
     else
@@ -710,6 +702,11 @@ case "$mode" in
 esac
 
 latency_offset="$(derive_audio_backend_latency_offset)"
+# The name is the one env value that lands inside a libconfig quoted string,
+# so \ and " are escaped for shairport-sync's lexer BEFORE the sed-replacement
+# escape below; an unescaped " ends the string and the daemon refuses to start.
+airplay_name="${airplay_name//\\/\\\\}"
+airplay_name="${airplay_name//\"/\\\"}"
 airplay_name_sed="$(printf '%s' "$airplay_name" | sed -e 's/[\/&]/\\&/g')"
 # The map's writer only ever renders two known literals here, but the value
 # crosses a sed replacement like the speaker name does, so it gets the same

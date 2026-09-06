@@ -4,9 +4,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared env-file reader + quoting + atomic single-key writer for the JTS
-# reconcilers (jasper-aec-reconcile, jasper-audio-hardware-reconcile,
-# jasper-wifi-guardian).
+# Shared env-file reader + quoting + atomic single-key writer for the bash
+# consumers of /etc/jasper/jasper.env and the wizard-owned
+# /var/lib/jasper*/*.env files.
 #
 # Why this exists — and why NOT `printf %q`: bash 5.2 (Trixie) quotes
 # values containing commas with backslash escaping, so
@@ -78,7 +78,10 @@ jasper_env_quote_value() {
 # get round trips an apostrophe-bearing value; nothing is evaluated.
 # Otherwise this parses byte-for-byte like read_stash in
 # jasper/wifi_guardian_persistence.py, which reads the same files.
-_JASPER_ENV_FILE_AWK='
+# readonly: jasper_env_file_export exports every identifier-shaped key in the
+# file it parses, and a file carrying this name would otherwise silently blind
+# every later read; readonly turns that into a failed pass instead.
+readonly _JASPER_ENV_FILE_AWK='
     BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
     function unquote(v,   len, q, out, i) {
         len = length(v)
@@ -134,6 +137,9 @@ _JASPER_ENV_FILE_AWK='
 jasper_env_file_get() {
     local file="$1" key="$2" value
 
+    # An empty key is _JASPER_ENV_FILE_AWK's "print every key" sentinel;
+    # forwarding one here would hand the caller the whole file with rc 0.
+    [[ -n "$key" ]] || return 1
     [[ -r "$file" ]] || return 1
     value="$(awk -v key="$key" "$_JASPER_ENV_FILE_AWK" "$file")" || return 1
     printf '%s\n' "$value"
@@ -147,12 +153,18 @@ jasper_env_file_get() {
 # whose key is not a plain identifier is skipped (`source` would have
 # run it as a command).
 jasper_env_file_export() {
-    local file="$1" key value
+    local file="$1" key value parsed
 
     [[ -r "$file" ]] || return 0
+    # Captured, not process-substituted: `pipefail` cannot see into a process
+    # substitution, so an awk that never ran (or died mid-file) would leave
+    # the caller reconciling against a blank world with rc 0. The trailing
+    # `printf x` survives $()'s newline strip so a LAST key whose value is
+    # empty still arrives as two lines.
+    parsed="$(awk -v key="" "$_JASPER_ENV_FILE_AWK" "$file" && printf x)" || return 1
     while IFS= read -r key && IFS= read -r value; do
         export "${key}=${value}"
-    done < <(awk -v key="" "$_JASPER_ENV_FILE_AWK" "$file")
+    done <<<"${parsed%x}"
 }
 
 # jasper_env_file_set FILE KEY VALUE [FILE_MODE] [DIR_MODE]

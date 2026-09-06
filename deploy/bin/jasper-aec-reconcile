@@ -131,13 +131,6 @@ load_env_file_lib() {
     fi
     # shellcheck disable=SC1090
     source "$ENV_FILE_LIB"
-    # Readable is not usable: a zeroed or truncated lib sources cleanly and
-    # defines nothing, and every env read would then come back empty — a pass
-    # that silently reconciles against a blank world.
-    if ! declare -F jasper_env_file_export >/dev/null; then
-        echo "jasper-aec-reconcile: unusable env-file library: ${ENV_FILE_LIB}" >&2
-        exit 66
-    fi
 }
 load_env_file_lib
 

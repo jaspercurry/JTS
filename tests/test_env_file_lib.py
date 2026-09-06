@@ -288,6 +288,17 @@ def test_env_file_get(tmp_path: Path, body: str, expected: str | None) -> None:
         assert result.stdout == expected + "\n"
 
 
+def test_env_file_get_rejects_an_empty_key(tmp_path: Path) -> None:
+    """An empty key is the shared parser's "print every key" sentinel, so a
+    caller that forwards one must get rc 1 — never the whole file, secrets
+    included, with rc 0."""
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("WANT=plain\nOTHER=x\n")
+    result = _bash(f'jasper_env_file_get "{env_file}" ""')
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_env_file_get_missing_file_returns_one(tmp_path: Path) -> None:
     result = _bash(f'jasper_env_file_get "{tmp_path / "absent.env"}" WANT')
     assert result.returncode == 1
@@ -348,6 +359,38 @@ def test_env_file_export_noop_when_file_absent(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_env_file_export_fails_when_the_parser_cannot_run(tmp_path: Path) -> None:
+    """A parse that never happened must not read as an empty file: the caller
+    would then reconcile against a blank world and rewrite defaults over every
+    operator value. PATH=/nonexistent stands in for any awk failure."""
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("PLAIN=one\n")
+
+    result = _bash(
+        f'PATH=/nonexistent jasper_env_file_export "{env_file}"; rc=$?\n'
+        'printf "rc=%s plain=[%s]\\n" "$rc" "${PLAIN-}"\n'
+    )
+
+    assert result.stdout == "rc=1 plain=[]\n"
+
+
+def test_env_file_export_refuses_a_key_named_for_the_parser(
+    tmp_path: Path,
+) -> None:
+    """The awk program is a shell global whose name an env file could carry.
+    Overwriting it blinds every later read, so the export must fail the pass
+    instead of returning a silently wrong answer."""
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text("PLAIN=one\n_JASPER_ENV_FILE_AWK=PWNED\n")
+
+    result = _bash(
+        f'set -e\njasper_env_file_export "{env_file}"\nprintf "reached\\n"\n'
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+
+
 def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
     """Drift guard: every script in LIB_CONSUMERS (the two reconcilers, the
     wifi guardian and the AirPlay conf renderer) must load
@@ -364,9 +407,10 @@ def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
 
 
 def test_lib_consumers_prefer_script_dir_sibling_lib() -> None:
-    """Version-skew guard: install.sh runs the REPO copy of a reconciler
-    mid-install (install_alsa's --print-env) before install_systemd_units
-    refreshes /usr/local/lib, so the loader must prefer the readable
+    """Version-skew guard: install.sh runs the REPO copy of a consumer
+    mid-install (install_alsa's --print-env, install_renderers' seed render)
+    before install_systemd_units publishes /usr/local/lib/jasper at all, so
+    the loader must prefer the readable
     SCRIPT_DIR-relative sibling over the installed copy — otherwise one
     mid-install call can pair a new script with a stale lib."""
     sibling = '"${SCRIPT_DIR}/../lib/jasper-env-file.sh"'

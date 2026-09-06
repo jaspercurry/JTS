@@ -21,8 +21,8 @@ This is a tree scan by necessity — bash offers no structural altitude at
 which "an env file was sourced" can be asserted once. It flags two shapes:
 
   1. a ``source``/``.`` whose target names a path under ``/etc/jasper`` or
-     ``/var/lib/jasper`` — literally, or through a variable this same file
-     assigns; and
+     ``/var/lib/jasper``, or carries a JTS env-file basename — literally, or
+     through a variable or ``for``-list this same file assigns; and
   2. a ``source``/``.`` of a path the file takes as a POSITIONAL PARAMETER
      while ``set -a`` is in effect — the generic ``load_env_file FILE``
      loader shape, whose target no scanner can resolve.
@@ -30,9 +30,11 @@ which "an env file was sourced" can be asserted once. It flags two shapes:
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+
+from jasper.env_load import ENV_FILES
 
 from ._shell_corpus import shell_files
 
@@ -43,6 +45,19 @@ SCAN_DIRS = ("deploy", "scripts")
 # is a prefix, so `-secrets` and `-intsecrets` are covered by the same string.
 JASPER_ENV_ROOTS = ("/etc/jasper", "/var/lib/jasper")
 
+# Basenames catch the same files when the directory came from a variable this
+# file never assigns — `. "${ENV_DIR}/jasper.env"` inside deploy/lib/install/*,
+# which runs with install.sh's variables. jasper.env_load.ENV_FILES is the
+# union of every unit's persistent EnvironmentFile=, so it tracks new wizard
+# files for free; the three added here are read by scripts and systemd
+# drop-ins rather than by a unit's EnvironmentFile=, so they are not in it.
+JASPER_ENV_BASENAMES = tuple(
+    sorted(
+        {PurePosixPath(path).name for path in ENV_FILES}
+        | {"wifi_guardian.env", "airplay_mode.env", "grouping-airplay.env"}
+    )
+)
+
 # Empty by design, and it stays that way: a sourcing site is a bug, not a
 # style preference, so there is nothing to grandfather.
 # REMOVAL CONDITION: delete this guard when the last bash consumer of a JTS
@@ -50,6 +65,11 @@ JASPER_ENV_ROOTS = ("/etc/jasper", "/var/lib/jasper")
 # jasper_env_file_get / jasper_env_file_export, or the file is read only by
 # Python and systemd) — with no consumer left, there is nothing to source.
 ALLOWLIST: frozenset[str] = frozenset()
+
+# Deliberately out of scope: shapes that reach an env file without a
+# `source`/`.` at all — `eval "$(cat FILE)"`, `export $(grep … | xargs)`,
+# `source /dev/stdin <<EOF`, array-element loops. None appears in these trees,
+# and a substring scanner cannot model them; this guard covers source/. only.
 
 # `source X` / `. X` at the start of a command. The prefix alternatives cover
 # the shapes these trees actually use: line start, after a separator, after
@@ -63,10 +83,19 @@ _ASSIGN = re.compile(
     r"^[ \t]*(?:local[ \t]+|export[ \t]+|declare[ \t]+(?:-\w+[ \t]+)?)?"
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<rhs>.*)$"
 )
+# `for VAR in PATHS; do . "$VAR"; done` binds VAR to the list, so the list is
+# an assignment for resolution purposes.
+_FOR_IN = re.compile(
+    r"^[ \t]*for[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+"
+    r"(?P<rhs>[^;\n]+)"
+)
 _VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 _POSITIONAL = re.compile(r"\$\{?(?:[1-9][0-9]*|@|\*)\b|\$\{?[1-9][0-9]*\}")
-_ALLEXPORT_ON = re.compile(r"^[ \t]*set[ \t]+(?:-a\b|-o[ \t]+allexport\b)")
-_ALLEXPORT_OFF = re.compile(r"^[ \t]*set[ \t]+(?:\+a\b|\+o[ \t]+allexport\b)")
+# Unanchored: `set -a` and the source it wraps share a line in the one-line
+# loader shape `f(){ set -a; . "$1"; set +a; }`.
+_SET_PREFIX = r"(?:^|[;&|(){}])[ \t]*set[ \t]+"
+_ALLEXPORT_ON = re.compile(_SET_PREFIX + r"(?:-a\b|-o[ \t]+allexport\b)")
+_ALLEXPORT_OFF = re.compile(_SET_PREFIX + r"(?:\+a\b|\+o[ \t]+allexport\b)")
 
 _MAX_RESOLVE_PASSES = 6
 
@@ -79,7 +108,7 @@ def _assignments(text: str) -> dict[str, list[str]]:
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        match = _ASSIGN.match(line)
+        match = _ASSIGN.match(line) or _FOR_IN.match(line)
         if match:
             found.setdefault(match.group("name"), []).append(match.group("rhs"))
     return found
@@ -120,21 +149,27 @@ def _violations_in(text: str) -> list[tuple[int, str, str]]:
     assignments = _assignments(text)
     allexport = False
     for lineno, line in enumerate(text.splitlines(), start=1):
-        if _ALLEXPORT_ON.match(line):
-            allexport = True
-        elif _ALLEXPORT_OFF.match(line):
-            allexport = False
+        # A toggle can sit anywhere in the line, including before a source on
+        # that same line; the last one on the line carries to the lines after.
+        ons = [m.start() for m in _ALLEXPORT_ON.finditer(line)]
+        offs = [m.start() for m in _ALLEXPORT_OFF.finditer(line)]
+        line_allexport = allexport or bool(ons)
+        if ons or offs:
+            allexport = max(ons, default=-1) > max(offs, default=-1)
         if line.lstrip().startswith("#"):
             continue
         for match in _SOURCE.finditer(line):
             arg = match.group("arg").strip()
             resolved = _resolve(arg, assignments)
-            root = next(
-                (r for r in JASPER_ENV_ROOTS if r in resolved), None
+            named = next(
+                (r for r in JASPER_ENV_ROOTS if r in resolved),
+                None,
+            ) or next(
+                (b for b in JASPER_ENV_BASENAMES if b in resolved), None
             )
-            if root:
-                out.append((lineno, line.strip(), f"sources a file under {root}"))
-            elif allexport and _POSITIONAL.search(resolved):
+            if named:
+                out.append((lineno, line.strip(), f"sources a JTS env file ({named})"))
+            elif line_allexport and _POSITIONAL.search(resolved):
                 out.append(
                     (
                         lineno,
@@ -169,9 +204,17 @@ def test_scanner_sees_the_shell_corpus():
         # Inside an if/then, and inside a command substitution.
         'if [ -r /etc/jasper/jasper.env ]; then . /etc/jasper/jasper.env; fi\n',
         'name="$(. /etc/jasper/jasper.env; printf %s "$X")"\n',
-        # The generic loader: a caller-supplied path exported wholesale.
+        # The generic loader: a caller-supplied path exported wholesale,
+        # line-broken and collapsed onto one line.
         'load_env_file() {\n    local file="$1"\n    set -a\n'
         '    source "$file"\n    set +a\n}\n',
+        'load_env_file() { set -a; . "$1"; set +a; }\n',
+        # A directory the sourcing file never assigns (deploy/lib/install/*
+        # runs with install.sh's variables) — only the basename is visible.
+        '. "${ENV_DIR}/jasper.env"\n',
+        'source "${STATE_DIR}/speaker_name.env"\n',
+        # A glob loop over the whole wizard-owned directory.
+        'for f in /var/lib/jasper/*.env; do . "$f"; done\n',
     ],
 )
 def test_classifier_catches_known_bad_shapes(bad):

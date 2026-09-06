@@ -220,7 +220,11 @@ install_renderers() {
     # Seed /etc/shairport-sync.conf so the first start of shairport-sync
     # has a valid config. ExecStartPre re-renders on every subsequent
     # restart, picking up any changes made via the web UI / CLI.
-    /usr/local/sbin/jasper-apply-airplay-mode
+    # The REPO copy, not the installed one: the renderer needs
+    # deploy/lib/jasper-env-file.sh, which install_systemd_units does not
+    # publish to /usr/local/lib until after this phase. Same shape as
+    # install.sh's mid-install `bash .../jasper-audio-hardware-reconcile`.
+    bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"
 
     # bluez-alsa-utils was apt-installed in install_deps.
     # Configure /etc/bluetooth/main.conf for speaker-mode (Just Works
