@@ -38,7 +38,7 @@ from ..audio_profile_state import (
 )
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
-from ..env_load import read_env_file_state
+from ..env_load import env_file_path, read_env_file_state
 from ..usb_mic import (
     build_usb_mic_status,
     read_usb_mic_leg,
@@ -52,7 +52,6 @@ from ..wake_models import WAKE_MODEL_FILE
 
 _AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
-_JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
@@ -380,7 +379,7 @@ def _fresh_jasper_env() -> dict[str, str]:
     keys absent from the file.
     """
     from ..env_load import parse_env_file
-    return parse_env_file(os.environ.get("JASPER_ENV_FILE", _JASPER_ENV_FILE))
+    return parse_env_file(env_file_path())
 
 
 def _read_wake_word_status() -> dict[str, Any]:

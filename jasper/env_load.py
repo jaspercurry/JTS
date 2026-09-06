@@ -43,14 +43,20 @@ from pathlib import Path
 from typing import Literal
 
 
-# UNION of every unit's persistent EnvironmentFile= (not one daemon's).
-# Guarded by tests/test_env_load_mirrors_unit.py: add a wizard env file to ANY
-# deploy/systemd/*.service and the test fails until it's added here too.
 #: The operator-owned base layer every daemon unit loads first.
 BASE_ENV_PATH = "/etc/jasper/jasper.env"
 
+
+def env_file_path() -> str:
+    """``BASE_ENV_PATH``, overridable via ``JASPER_ENV_FILE`` (test/probe seam)."""
+    return os.environ.get("JASPER_ENV_FILE") or BASE_ENV_PATH
+
+
+# UNION of every unit's persistent EnvironmentFile= (not one daemon's).
+# Guarded by tests/test_env_load_mirrors_unit.py: add a wizard env file to ANY
+# deploy/systemd/*.service and the test fails until it's added here too.
 ENV_FILES = (
-    "/etc/jasper/jasper.env",
+    BASE_ENV_PATH,
     # jasper-voice.service order (the most config-consuming daemon):
     "/var/lib/jasper/speaker_name.env",
     "/var/lib/jasper-intsecrets/spotify_credentials.env",
@@ -209,10 +215,18 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     ``EnvironmentFile=`` ordering. This is intentionally separate from
     :func:`load_env_files`: some callers need CLI-style "shell wins"
     semantics, while long-lived daemons launching subprocesses need a
-    freshly-read view of the wizard-owned SSOT files."""
+    freshly-read view of the wizard-owned SSOT files.
+
+    The base layer resolves through :func:`env_file_path`, reaching every
+    reader that goes through ``env_load`` — not the literal
+    ``/etc/jasper/jasper.env`` readers in ``fanin/ring_health.py``,
+    ``renderer_lanes.py`` and ``model_downloads.py``, nor the separate
+    ``JASPER_SYSTEM_ENV_FILE`` seam in ``wake_corpus/runtime_probe.py``."""
     files = paths if paths is not None else ENV_FILES
     merged: dict[str, str] = {}
     for path in files:
+        if path == BASE_ENV_PATH:
+            path = env_file_path()
         merged.update(parse_env_file(path))
     return merged
 
@@ -234,10 +248,12 @@ def outputd_reconciled_env(outputd_env_path: str | None = None) -> dict[str, str
     outputd loads, which would silently invert every bonded pin.
 
     ``outputd_env_path`` overrides the outputd.env layer only (the
-    ``JASPER_OUTPUTD_ENV_FILE`` operator seam); the other two keep their own
-    paths so an override cannot hide a bonded pin or an operator's. Paths come
-    from the modules that own them, through lazy imports because this module is
-    a leaf every one of them can import.
+    ``JASPER_OUTPUTD_ENV_FILE`` operator seam); ``grouping-outputd.env`` keeps
+    its own path. The base ``jasper.env`` layer has its own seam,
+    ``JASPER_ENV_FILE`` (:func:`env_file_path`), applied inside
+    :func:`merged_env_files`. Paths come from the modules that own them,
+    through lazy imports because this module is a leaf every one of them can
+    import.
     """
     from jasper.fanin.coupling_reconcile import OUTPUTD_ENV_PATH
     from jasper.multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE

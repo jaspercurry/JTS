@@ -5,23 +5,36 @@
 """jasper-doctor checks — env domain."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from ...config import Config
+from ...env_load import env_file_path, read_env_file_state
+from ...secret_redaction import SECRET_ENV_SUFFIX_RE
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir
 
 # Machine-stable codes naming which branch of an env check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
 REASON_ENV_FILE_MISSING = "env_file_missing"
+REASON_ENV_FILE_UNREADABLE = "env_file_unreadable"
 REASON_SPEAKER_NAME_UNPARSEABLE = "speaker_name_unparseable"
 REASON_STATE_DIR_MISSING = "state_dir_missing"
 REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
 REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
 REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
+REASON_SECRET_IN_ENV_FILE = "secret_in_env_file"
+
+# The suffix rule alone, not `SECRET_ENV_NAME_RE`: that export also matches
+# `JASPER_MTA_BUSTIME_KEY`, a key `jasper/web/transit_setup.py` documents as
+# living in jasper.env (operator-pasted or migrated there by install.sh) —
+# not a compartment escapee. `fullmatch` at the call site anchors the match
+# to the whole key (an unanchored search would also flag e.g.
+# "GEMINI_API_KEYWORD").
+_SECRET_KEY_RE = re.compile(rf"[A-Za-z_][A-Za-z0-9_]*{SECRET_ENV_SUFFIX_RE}")
 
 @doctor_check()
 def check_env_file() -> CheckResult:
-    p = Path("/etc/jasper/jasper.env")
+    p = Path(env_file_path())
     if not p.exists():
         return CheckResult(
             "env file", "fail", f"{p} missing — re-run install.sh",
@@ -31,6 +44,41 @@ def check_env_file() -> CheckResult:
     if wizard.exists():
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
     return CheckResult("env file", "ok", str(p))
+
+@doctor_check()
+def check_env_file_secrets() -> CheckResult:
+    """`/etc/jasper/jasper.env` is `0640` group `jasper`, so a secret resting
+    there is readable by every daemon."""
+    path = env_file_path()
+    state = read_env_file_state(path)
+    if state.status == "missing":
+        return CheckResult(
+            "env file secrets", "skipped", f"{path} missing",
+            reason=REASON_ENV_FILE_MISSING,
+        )
+    if state.status == "unreadable":
+        # jasper-doctor runs as root, so "unreadable" here means undecodable
+        # bytes or a real permission fault, not the ordinary absent-file
+        # case — systemd still exports every key from this file to every
+        # daemon regardless, so this is worth a warn, not a silent skip.
+        return CheckResult(
+            "env file secrets", "warn", f"can't read {path}: {state.error}",
+            reason=REASON_ENV_FILE_UNREADABLE,
+        )
+    offenders = sorted(
+        key for key, value in state.values.items()
+        if value and _SECRET_KEY_RE.fullmatch(key)
+    )
+    if offenders:
+        return CheckResult(
+            "env file secrets", "fail",
+            f"{path} holds a secret value for: {', '.join(offenders)} — "
+            "re-run the owning wizard (or install.sh, which runs "
+            "migrate_voice_keys_split / migrate_google_routes_key for the "
+            "LLM and Google Routes keys) to move it to its compartment",
+            reason=REASON_SECRET_IN_ENV_FILE,
+        )
+    return CheckResult("env file secrets", "ok", path)
 
 @doctor_check()
 def check_speaker_name() -> CheckResult:

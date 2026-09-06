@@ -39,7 +39,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     read_camilla_devices_config,
 )
-from jasper.env_load import read_env_file_state
+from jasper.env_load import BASE_ENV_PATH, env_file_path, read_env_file_state
 from jasper.fanin.ring_health import saved_topology_reader
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -57,7 +57,7 @@ from jasper.transport_coherence import (
     transport_topology_for_coupling,
 )
 
-DEFAULT_BASE_ENV_PATH = "/etc/jasper/jasper.env"
+DEFAULT_BASE_ENV_PATH = BASE_ENV_PATH
 DEFAULT_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 DEFAULT_FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 DEFAULT_GROUPING_ENV_PATH = "/var/lib/jasper/grouping.env"
@@ -1125,7 +1125,7 @@ def outputd_period_frames_as_loaded(
 
 def build_audio_runtime_plan_from_system(
     *,
-    base_env_path: str = DEFAULT_BASE_ENV_PATH,
+    base_env_path: str | None = None,
     outputd_env_path: str = DEFAULT_OUTPUTD_ENV_PATH,
     outputd_grouping_env_path: str | None = None,
     fanin_env_path: str = DEFAULT_FANIN_ENV_PATH,
@@ -1133,8 +1133,15 @@ def build_audio_runtime_plan_from_system(
     overrides_path: str | None = None,
     output_hardware_state_path: str | None = None,
 ) -> AudioRuntimePlan:
-    """Build the plan from the same persistent files the daemons load."""
+    """Build the plan from the same persistent files the daemons load.
 
+    ``base_env_path`` resolves through :func:`jasper.env_load.env_file_path`
+    at call time when unset, so the plan reads the same ``JASPER_ENV_FILE``
+    base layer as ``outputd_reconciled_env`` and the rest of ``env_load``.
+    """
+
+    if base_env_path is None:
+        base_env_path = env_file_path()
     if outputd_grouping_env_path is None:
         outputd_grouping_env_path = outputd_grouping_env_file()
 
