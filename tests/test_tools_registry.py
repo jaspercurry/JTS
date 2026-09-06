@@ -16,6 +16,7 @@ from jasper.tools import (
     tool,
 )
 from jasper.tools import _annotation_to_schema
+from tests._log_events import event_fields, event_records
 
 
 def test_registers_and_builds_schema_from_type_hints():
@@ -430,11 +431,7 @@ def test_build_tool_warns_once_for_non_coroutine_fn(caplog):
     with caplog.at_level("WARNING", logger="jasper.tools"):
         built = build_tool(blocking_lookup)
     assert built.name == "blocking_lookup"
-    warns = [
-        r for r in caplog.records if "event=tool.sync_fn" in r.getMessage()
-    ]
-    assert len(warns) == 1
-    assert "blocking_lookup" in warns[0].getMessage()
+    assert event_fields(caplog, "tool.sync_fn")["tool"] == "blocking_lookup"
 
 
 def test_build_tool_is_silent_for_coroutine_fn(caplog):
@@ -445,9 +442,7 @@ def test_build_tool_is_silent_for_coroutine_fn(caplog):
 
     with caplog.at_level("WARNING", logger="jasper.tools"):
         build_tool(fine_tool)
-    assert not [
-        r for r in caplog.records if "event=tool.sync_fn" in r.getMessage()
-    ]
+    assert not event_records(caplog, "tool.sync_fn")
 
 
 # ---- llm_description seam (model-facing description override) --------------

@@ -20,6 +20,7 @@ import asyncio
 import logging
 
 from jasper.voice.session import AudioOutChunk
+from tests._log_events import event_records
 
 
 async def _play_responses(*args, **kwargs):
@@ -371,8 +372,7 @@ def test_flush_failure_warns_and_ends_turn(caplog):
 
     assert tts.flush_calls == 1
     assert tts.end_segment_calls == 1
-    failed = [r for r in caplog.records if "barge.flush_failed" in r.getMessage()]
-    assert len(failed) == 1
+    assert len(event_records(caplog, "barge.flush_failed")) == 1
 
 
 # --- provider reconcile seam wiring (PR-4) -----------------------------
@@ -484,5 +484,4 @@ def test_flush_failure_skips_provider_reconcile(caplog):
     assert turn.seam_calls == [], (
         "a failed flush must not drive the provider reconcile seam"
     )
-    failed = [r for r in caplog.records if "barge.flush_failed" in r.getMessage()]
-    assert len(failed) == 1
+    assert len(event_records(caplog, "barge.flush_failed")) == 1

@@ -21,6 +21,7 @@ from jasper.cues.generator import (
 )
 from jasper.cues.registry import find
 from tests._async_wait import wait_signalled
+from tests._log_events import event_fields
 
 
 # --- Fakes ---
@@ -216,8 +217,7 @@ def test_regenerate_isolates_per_cue_failure(tmp_path, caplog):
     assert mgr.is_cached(CUES[1])
 
     # Failure is observable, not swallowed silently.
-    assert any("cue.regenerate_failed" in r.message or failed_slug in r.message
-               for r in caplog.records)
+    assert event_fields(caplog, "cue.regenerate_failed")["slug"] == failed_slug
 
 
 # --- introspection ---

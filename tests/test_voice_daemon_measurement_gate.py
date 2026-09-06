@@ -32,6 +32,7 @@ import pytest
 
 from jasper.audio_io import TtsPlayout
 from jasper.timers import Timer
+from tests._log_events import event_fields
 
 
 def _timer(*, id: str = "t1", label: str | None = "pasta") -> Timer:
@@ -56,9 +57,10 @@ async def test_play_cue_refuses_during_measurement(caplog) -> None:
         result = await wl.play_cue("cant_connect")
 
     assert result == "measurement_active"
-    assert "event=cue.skipped" in caplog.text
-    assert "reason=measurement_active" in caplog.text
-    assert "slug=cant_connect" in caplog.text
+    assert event_fields(caplog, "cue.skipped") == {
+        "reason": "measurement_active",
+        "slug": "cant_connect",
+    }
     await wl.measurement_hold.resume()
 
 
@@ -96,8 +98,7 @@ async def test_play_supervisor_cue_refuses_during_measurement(
 
     assert result == "measurement_active"
     if not output_busy:
-        assert "event=cue.skipped" in caplog.text
-        assert "reason=measurement_active" in caplog.text
+        assert event_fields(caplog, "cue.skipped")["reason"] == "measurement_active"
     await wl.measurement_hold.resume()
 
 
@@ -137,8 +138,9 @@ async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         await wl.announce_timer(_timer())
 
-    assert "event=dynamic_text.skipped" in caplog.text
-    assert "reason=measurement_active" in caplog.text
+    assert event_fields(caplog, "dynamic_text.skipped") == {
+        "reason": "measurement_active",
+    }
     await wl.measurement_hold.resume()
 
 
@@ -258,8 +260,7 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
         await wl._tts.write_segment(b"\x00\x00", segment_kind="assistant")
 
     assert tts.segments == []
-    assert "event=tts_write.refused" in caplog.text
-    assert "reason=measurement_active" in caplog.text
+    assert event_fields(caplog, "tts_write.refused")["reason"] == "measurement_active"
     await wl.measurement_hold.resume()
 
 

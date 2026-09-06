@@ -31,6 +31,7 @@ import pytest
 
 from jasper.voice_daemon import WakeLoop, _LegRuntime
 from jasper.wake_legs import by_token
+from tests._log_events import event_fields, event_records
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
@@ -114,10 +115,7 @@ async def test_single_stream_on_fires_when_threshold_crossed(caplog):
     wl._detector.reset.assert_called_once()
     wl._arbitrate_acquire_drain.assert_called_once()
     # Log line includes both per-leg scores and the firing leg
-    assert any(
-        "event=wake.detected" in r.message and "leg=on" in r.message
-        for r in caplog.records
-    )
+    assert event_fields(caplog, "wake.detected")["leg"] == "on"
 
 
 async def test_subthreshold_frame_updates_recent_score_but_does_not_fire():
@@ -150,8 +148,8 @@ async def test_verify_false_suppresses_the_or_gate_fire(caplog):
 
     wl._arbitrate_acquire_drain.assert_not_called()  # no turn opened
     wl._detector.reset.assert_called_once()          # utterance still deduped
-    assert any("event=wake.suppressed" in r.message for r in caplog.records)
-    assert not any("event=wake.detected" in r.message for r in caplog.records)
+    assert event_records(caplog, "wake.suppressed")
+    assert not event_records(caplog, "wake.detected")
 
 
 # ---------------------------------------------------------------------------
@@ -217,15 +215,10 @@ async def test_both_legs_recent_scores_attached_when_fire(caplog):
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="off")
 
-    wake_logs = [
-        r.message for r in caplog.records
-        if "event=wake.detected" in r.message
-    ]
-    assert len(wake_logs) == 1
-    msg = wake_logs[0]
-    assert "leg=off" in msg
-    assert "score_off=0.55" in msg
-    assert "score_on=0.09" in msg
+    fields = event_fields(caplog, "wake.detected")
+    assert fields["leg"] == "off"
+    assert fields["score_off"] == "0.55"
+    assert fields["score_on"] == "0.09"
 
 
 async def test_stale_other_leg_score_reported_as_none(caplog):
@@ -244,15 +237,10 @@ async def test_stale_other_leg_score_reported_as_none(caplog):
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
 
-    wake_logs = [
-        r.message for r in caplog.records
-        if "event=wake.detected" in r.message
-    ]
-    assert len(wake_logs) == 1
-    msg = wake_logs[0]
-    assert "leg=on" in msg
-    assert "score_on=0.91" in msg
-    assert "score_off=none" in msg, msg
+    fields = event_fields(caplog, "wake.detected")
+    assert fields["leg"] == "on"
+    assert fields["score_on"] == "0.91"
+    assert fields["score_off"] == "none"
 
 
 async def test_refractory_blocks_immediate_re_fire_on_same_leg():

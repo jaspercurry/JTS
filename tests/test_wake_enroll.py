@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 
 from jasper.cli import wake_enroll
+from tests._log_events import event_records
 
 
 def _write_mute(path: Path, muted: bool) -> None:
@@ -182,7 +183,7 @@ def test_refuse_if_muted_blocks_start(tmp_path: Path, caplog) -> None:
     with pytest.raises(wake_enroll.MicMutedError, match="mic is muted"):
         wake_enroll._refuse_if_muted("start_session", mute_path)
 
-    assert "event=wake_enroll.mute_refused" in caplog.text
+    assert event_records(caplog, "wake_enroll.mute_refused")
 
 
 async def test_run_session_refuses_while_muted_before_audio_imports(
