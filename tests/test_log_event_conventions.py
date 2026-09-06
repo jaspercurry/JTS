@@ -34,11 +34,30 @@ event=`` examples, ``# event=...`` comments, ``log_event(logger,
 "domain.action")`` calls (which pass the bare name, no ``event=`` prefix), and
 the emitter's own ``logger.log(level, message)`` (a *variable* message) are all
 correctly ignored.
+
+The same walk collects the **vocabulary** — every event name the tree emits, by
+any of the five forms :func:`_scan` documents — and three checks hold it
+together: a name is ``domain.action`` (``FLAT_EVENT_NAMES`` is the frozen
+exception), a top-level prefix does not spread to more packages than
+``PREFIX_OWNERS`` records, and a name some reader greps for is still emitted by
+someone. The vocabulary stays test-only: ``log_event`` does no membership check
+at runtime, so no daemon pays for a ~1,100-name table on a 415 MB Pi (ADR-0226)
+and no logging call can raise on a wake-blocking path.
 """
 from __future__ import annotations
 
 import ast
+import functools
+import re
+from collections import defaultdict
 from pathlib import Path
+from typing import NamedTuple
+
+from tests.event_vocabulary import (
+    CONSUMED_ELSEWHERE,
+    FLAT_EVENT_NAMES,
+    PREFIX_OWNERS,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 JASPER = ROOT / "jasper"
@@ -47,6 +66,25 @@ JASPER = ROOT / "jasper"
 # so a stray `logger.warn("event=...")` is still caught.
 _LOG_METHODS = frozenset(
     {"debug", "info", "warning", "warn", "error", "exception", "critical"}
+)
+
+# `event=<name>` inside a rendered line. The charset is the vocabulary's own, so
+# `event="…"` (a keyword argument), `event=${VAR}` and `event=[A-Za-z0-9_.:-]+`
+# (an awk pattern) capture the empty name and are dropped.
+_EVENT_IN_TEXT = re.compile(r"event=([a-z0-9_.]*)")
+
+# `domain.action`: lower snake segments, at least one dot.
+_SHAPE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$")
+
+# Files that READ event names back: a doctor hint naming what to grep, a
+# `/state` sampler scanning the journal. deploy/bin/ is not among them — its
+# `event=` lines are its own shell emissions, and a shell-emitted name is
+# outside a Python AST collector's reach either way.
+_READER_PATHS = (
+    "jasper/cli/doctor",
+    "jasper/control",
+    "scripts/journal-review.sh",
+    "scripts/fetch-pi-logs.sh",
 )
 
 # Active-zone files an in-flight work-stream owns (the active-crossover / sound
@@ -93,20 +131,47 @@ _ACTIVE_ZONE_PREFIXES = (
 ALLOWLIST: dict[str, set[str]] = dict(DEFERRED_ACTIVE_ZONE)
 
 
-def _literal_prefix(arg: ast.expr) -> str | None:
-    """Literal leading text of a string/f-string arg, else None.
+class _Event(NamedTuple):
+    """One emitted event name.
 
-    A plain ``ast.Constant`` str returns its value. An f-string
-    (``ast.JoinedStr``) returns the text of its first segment when that segment
-    is a constant — enough to see an ``event=`` prefix, since the event name is
-    always a literal in this codebase. Anything else (a name, a call) → None.
+    ``partial`` marks a name an f-string placeholder completes
+    (``f"multiroom.reconcile.{key}_env_failed"`` → ``multiroom.reconcile.``):
+    the literal head is all a static reader can know.
+    """
+
+    name: str
+    partial: bool
+    path: str
+    lineno: int
+
+
+class _Scan(NamedTuple):
+    """One file's AST pass.
+
+    ``emit_linenos`` holds every line that emits an event, literal name or not,
+    so the reader scan can tell a grep-for-this-name from an emission.
+    """
+
+    violations: tuple[tuple[int, str], ...]
+    events: tuple[_Event, ...]
+    emit_linenos: frozenset[int]
+
+
+def _literal_head(arg: ast.expr) -> tuple[str, bool] | None:
+    """``(leading literal text, truncated)`` of a string/f-string arg, else None.
+
+    A plain ``ast.Constant`` str returns its whole value, untruncated. An
+    f-string (``ast.JoinedStr``) returns the text of its first segment when that
+    segment is a constant, marked truncated — enough to see an ``event=`` prefix
+    and, where the name itself is interpolated, its literal head. Anything else
+    (a name, a call, a ``%`` format) → None.
     """
     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-        return arg.value
+        return arg.value, False
     if isinstance(arg, ast.JoinedStr) and arg.values:
         first = arg.values[0]
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            return first.value
+            return first.value, True
     return None
 
 
@@ -134,30 +199,135 @@ def _message_arg(node: ast.Call) -> ast.expr | None:
     return None
 
 
-def _violations_in(path: Path) -> list[tuple[int, str]]:
-    """(lineno, event_name) for each hand-written event= logger call in path."""
+def _rel(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return path.name
+
+
+def _package(rel_path: str) -> str:
+    """Owner of a file: ``jasper/<pkg>/…`` → ``<pkg>``; a top-level module → ``jasper``."""
+    parts = rel_path.split("/")
+    return parts[1] if len(parts) > 2 else "jasper"
+
+
+def _named_event(arg: ast.expr, rel_path: str) -> list[_Event]:
+    """The event an argument that IS the name carries (log_event's name, `event=`)."""
+    head = _literal_head(arg)
+    if head is None:
+        return []
+    return [_Event(head[0], head[1], rel_path, arg.lineno)]
+
+
+def _rendered_events(arg: ast.expr, rel_path: str) -> list[_Event]:
+    """The events an argument that RENDERS a whole line carries (`print`, `.write`)."""
+    head = _literal_head(arg)
+    if head is None:
+        return []
+    text, truncated = head
+    return [
+        _Event(
+            match.group(1),
+            truncated and match.end() == len(text),
+            rel_path,
+            arg.lineno,
+        )
+        for match in _EVENT_IN_TEXT.finditer(text)
+    ]
+
+
+def _scan(path: Path) -> _Scan:
+    """Walk one file once: hand-written event= violations AND the vocabulary.
+
+    Five emission forms reach the vocabulary: ``log_event(logger, "<name>")``;
+    a literal ``event=``/``*_event=`` keyword argument to any call (the helpers
+    that emit on their caller's behalf); ``print("event=…")``;
+    ``<stream>.write("… event=… ")`` (the flight recorder's dumps); and the
+    hand-written ``logger.<level>("event=…")`` lines the allowlist still defers.
+    """
+    rel_path = _rel(path)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found: list[tuple[int, str]] = []
+    violations: list[tuple[int, str]] = []
+    events: list[_Event] = []
+    emit_linenos: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        arg = _message_arg(node)
-        if arg is None:
-            continue
-        prefix = _literal_prefix(arg)
-        if prefix is None or not prefix.startswith("event="):
-            continue
-        found.append((node.lineno, _event_name(prefix)))
-    return found
+        func = node.func
+        called = (
+            func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        )
+        if called == "log_event" and len(node.args) >= 2:
+            emit_linenos.update({node.lineno, node.args[1].lineno})
+            events += _named_event(node.args[1], rel_path)
+        for keyword in node.keywords:
+            if keyword.arg and (
+                keyword.arg == "event" or keyword.arg.endswith("_event")
+            ):
+                emit_linenos.update({node.lineno, keyword.value.lineno})
+                events += _named_event(keyword.value, rel_path)
+        message = _message_arg(node)
+        if message is not None:
+            head = _literal_head(message)
+            if head is not None and head[0].startswith("event="):
+                violations.append((node.lineno, _event_name(head[0])))
+                emit_linenos.update({node.lineno, message.lineno})
+                events += _rendered_events(message, rel_path)
+        if called in {"print", "write"} and node.args:
+            head = _literal_head(node.args[0])
+            if head is not None and "event=" in head[0]:
+                emit_linenos.update({node.lineno, node.args[0].lineno})
+                events += _rendered_events(node.args[0], rel_path)
+    return _Scan(tuple(violations), tuple(events), frozenset(emit_linenos))
+
+
+@functools.lru_cache(maxsize=1)
+def _tree_scan() -> dict[str, _Scan]:
+    """Every ``jasper/`` module, scanned once per session."""
+    return {_rel(path): _scan(path) for path in sorted(JASPER.rglob("*.py"))}
+
+
+def _violations_in(path: Path) -> list[tuple[int, str]]:
+    """(lineno, event_name) for each hand-written event= logger call in path."""
+    return list(_scan(path).violations)
 
 
 def _all_violations() -> dict[str, list[tuple[int, str]]]:
-    out: dict[str, list[tuple[int, str]]] = {}
-    for path in sorted(JASPER.rglob("*.py")):
-        hits = _violations_in(path)
-        if hits:
-            out[str(path.relative_to(ROOT))] = hits
-    return out
+    return {
+        rel_path: list(scan.violations)
+        for rel_path, scan in _tree_scan().items()
+        if scan.violations
+    }
+
+
+def _events() -> tuple[_Event, ...]:
+    return tuple(event for scan in _tree_scan().values() for event in scan.events)
+
+
+@functools.lru_cache(maxsize=1)
+def _consumed() -> dict[str, tuple[str, ...]]:
+    """``{event name: where a reader names it}``, minus the readers' own emissions."""
+    found: dict[str, list[str]] = defaultdict(list)
+    for entry in _READER_PATHS:
+        root = ROOT / entry
+        for file in sorted(root.rglob("*.py")) if root.is_dir() else [root]:
+            rel_path = _rel(file)
+            scan = _tree_scan().get(rel_path)
+            emitted_at = scan.emit_linenos if scan else frozenset()
+            for lineno, line in enumerate(
+                file.read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if lineno in emitted_at:
+                    continue
+                for match in _EVENT_IN_TEXT.finditer(line):
+                    # A trailing dot is prose ("… see event=fanin.ring.opened.")
+                    # or a glob stem ("event=multiroom.reconcile.*"); either way
+                    # the reference is to that family.
+                    name = match.group(1).rstrip(".")
+                    if name:
+                        found[name].append(f"{rel_path}:{lineno}")
+    return {name: tuple(where) for name, where in found.items()}
 
 
 def _is_allowed(rel_path: str, event_name: str) -> bool:
@@ -237,6 +407,98 @@ def test_sound_setup_migration_has_no_exemption_or_backdoor_prefix():
     assert not any(rel_path.startswith(prefix) for prefix in _ACTIVE_ZONE_PREFIXES)
 
 
+def test_event_names_are_domain_action():
+    """Every emitted name is `domain.action`, bar the frozen flat set.
+
+    A partial name is checked with a placeholder segment appended, so
+    `multiroom.reconcile.` passes and `Ramp.Locked.` would not.
+    """
+    offending = sorted(
+        f"{event.path}:{event.lineno}  {event.name}"
+        for event in _events()
+        if not _SHAPE.match(f"{event.name}x" if event.partial else event.name)
+        and event.name not in FLAT_EVENT_NAMES
+    )
+    assert not offending, (
+        "Event name(s) outside the `domain.action` vocabulary (lower snake "
+        "segments, at least one dot):\n  " + "\n  ".join(offending)
+    )
+
+
+def test_flat_event_names_only_shrink():
+    """FLAT_EVENT_NAMES is worked off, never added to: every entry is still a
+    flat name that some site still emits."""
+    emitted = {event.name for event in _events() if not event.partial}
+    stale = sorted(name for name in FLAT_EVENT_NAMES if name not in emitted)
+    dotted = sorted(name for name in FLAT_EVENT_NAMES if "." in name)
+    assert not stale, (
+        "FLAT_EVENT_NAMES entries nothing emits any more (renamed? deleted?) — "
+        "drop them, the list only shrinks:\n  " + "\n  ".join(stale)
+    )
+    assert not dotted, (
+        "FLAT_EVENT_NAMES holds flat names only; these conform already and "
+        f"must be dropped: {dotted}"
+    )
+
+
+def test_event_prefixes_stay_within_their_recorded_packages():
+    """A top-level prefix may not reach a package PREFIX_OWNERS does not record,
+    and a recorded package that stopped emitting it must be dropped."""
+    owners: dict[str, set[str]] = defaultdict(set)
+    for event in _events():
+        if "." in event.name or event.partial:
+            owners[event.name.split(".")[0]].add(_package(event.path))
+    widened = sorted(
+        f"{prefix}: now {sorted(packages)}, "
+        f"recorded {list(PREFIX_OWNERS.get(prefix, ()))}"
+        for prefix, packages in owners.items()
+        if len(packages) > 1 and not packages <= set(PREFIX_OWNERS.get(prefix, ()))
+    )
+    stale = sorted(
+        f"{prefix}: recorded {list(recorded)}, no longer emitted from "
+        f"{sorted(set(recorded) - owners.get(prefix, set()))}"
+        for prefix, recorded in PREFIX_OWNERS.items()
+        if not set(recorded) <= owners.get(prefix, set())
+    )
+    assert not widened, (
+        "An event prefix reached a new package — give the family one owner, or "
+        "record the spread in PREFIX_OWNERS:\n  " + "\n  ".join(widened)
+    )
+    assert not stale, (
+        "PREFIX_OWNERS is stale — trim these entries:\n  " + "\n  ".join(stale)
+    )
+
+
+def test_consumed_event_names_are_emitted():
+    """Every name a reader greps for is still emitted, so a producer rename that
+    breaks a doctor hint or /state's journal scan fails here first."""
+    emitted = {event.name for event in _events() if not event.partial}
+    families = {event.name for event in _events() if event.partial}
+
+    def is_emitted(name: str) -> bool:
+        return (
+            name in emitted
+            or any(other.startswith(f"{name}.") for other in emitted)
+            or any(family.startswith(name) for family in families)
+        )
+
+    missing = sorted(
+        f"{name}  (read at {', '.join(where)})"
+        for name, where in _consumed().items()
+        if not is_emitted(name) and name not in CONSUMED_ELSEWHERE
+    )
+    resolved = sorted(name for name in CONSUMED_ELSEWHERE if is_emitted(name))
+    unread = sorted(name for name in CONSUMED_ELSEWHERE if name not in _consumed())
+    assert not missing, (
+        "A reader names an event nothing in jasper/ emits — restore the name or "
+        "fix the reader:\n  " + "\n  ".join(missing)
+    )
+    assert not resolved and not unread, (
+        "CONSUMED_ELSEWHERE is stale — drop entries now emitted from jasper/ "
+        f"{resolved} or no longer read {unread}"
+    )
+
+
 def test_detector_catches_both_logging_forms(tmp_path):
     """The detector flags `logger.<level>("event=…")` AND the generic
     `logger.log(LEVEL, "event=…")` form, while ignoring a variable message
@@ -253,3 +515,29 @@ def test_detector_catches_both_logging_forms(tmp_path):
     snippet.write_text(src)
     names = sorted(name for _, name in _violations_in(snippet))
     assert names == ["demo.level_method", "demo.log_form"]
+
+
+def test_collector_sees_every_emission_form(tmp_path):
+    """All five emission forms reach the vocabulary, and a name an f-string
+    completes is collected as the literal head it can be known by."""
+    src = (
+        'log_event(logger, "demo.canonical")\n'
+        'log_event(logger, f"demo.family.{suffix}")\n'
+        'helper(unit, refusal_event="demo.kwarg")\n'
+        'print(f"event=demo.printed path={path}")\n'
+        'print(f"event=demo.split_{suffix}")\n'
+        'stream.write(f"flightrec event=demo.written n={count}\\n")\n'
+        'logger.warning("event=demo.raw k=v")\n'
+        'logger.info("nothing to see here")\n'
+    )
+    snippet = tmp_path / "snippet.py"
+    snippet.write_text(src)
+    assert sorted((e.name, e.partial) for e in _scan(snippet).events) == [
+        ("demo.canonical", False),
+        ("demo.family.", True),
+        ("demo.kwarg", False),
+        ("demo.printed", False),
+        ("demo.raw", False),
+        ("demo.split_", True),
+        ("demo.written", False),
+    ]
