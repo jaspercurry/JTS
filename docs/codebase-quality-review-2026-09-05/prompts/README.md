@@ -56,18 +56,27 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | P1 close-out (#4193): merge the five reviewed PRs — #4223 with its ADR renumbered to 0243, then #4230, #4232, #4233, #4239 — and post the handoff issue | P4 observability #4197 (plan posted 2026-09-06 08:44; the owner's triage is in the kickoff) | P12 attached hardware #4213 (running): merge #4240, reopen and merge #4242, deploy `main` to jts3, run H1–H3 and every HW row on #4027, then R5c, R6, R9.1–2 |
-| 2 | P6 right-sizing #4200 (plan posted 05:43; triage in the kickoff) | P2 round 2 from the handoff #4248: arm the gate after HW-3, the STEPS table, the atomic source tree, the install-path interpreters, the remaining writers, the test-fast map, laptop portability | P9 voice loop #4208 (plan posted 05:42; triage in the kickoff; rows 0.2 and 1.4 need the owner at the box) |
-| 3 | P3 resilience #4195 (P12, P4 and P6 have already posted its rows) | P5 structure #4199 (moves after P6's deletions merge) | P11 web UI #4212 (#4210 merged; deploy each wave, phone eyeball) |
-| 4 | P7 tests #4201 (execution after P5's moves merge) | P8 docs #4202 (stale-path pass after P5's moves merge; owns the ADR-number uniqueness pin) | — |
+| 1 | P6 right-sizing #4200 — plan posted 2026-09-06 05:43, still at its gate: paste its kickoff (P1 is done: eight PRs merged, handoff #4279) | P4 observability #4197 — second session driving on the owner's triage; finish rows 15/16, merge or close #4305, post the handoff | **Two sessions.** P12 #4213 (all Phase 3 rows merged; left: H1 and H2 on jts3 with the owner, the #4209 slider on jts.local, the jts4 deploy for HW-3/HW-5, R6, #4317, handoff) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
+| 2 | P3 resilience #4195 (P12, P4 and P6 have posted its rows) | P2 round 2 from the handoff #4248 | P11 web UI #4212, once P12 has handed off |
+| 3 | P7 tests #4201 (execution after P5's moves merge) | P5 structure #4199 (moves after P6's deletions merge) | — |
+| 4 | — | P8 docs #4202 (stale-path pass last; owns the ADR-number uniqueness pin) | — |
 
-**State on 2026-09-06 (first night's result).** P2 ran to its handoff (#4248; sixteen PRs merged,
-ADR-0241/0242). P1 merged three of eight and holds five reviewed PRs for a merge word. P12 merged
-twelve (ADR-0239/0240; #4209 root-caused and fixed in #4234), left #4240 waiting for a word and
-#4242 closed unmerged by accident (the bash-3.2 lock fix the owner's laptop lane needs), and has
-run none of the hardware proofs; the deploy of `main` to jts3 failed on #4215's pruner (hotfixed in
-#4236, not redeployed). P4, P6 and P9 posted plans and stopped at their gates. Three ADR-number
-collisions happened in one night (0238, and 0240 twice): a lane takes the next free number in its
+**Owner at the box (next session at home).** Nothing needs a deploy first; every build is already
+on its box. jts.local (`162ab4088`): move the host volume slider 0 → 50 → 100 and hold (the #4209
+check; the P12 session reads `event=usbsink.volume_observed raw= muted=`), then speak ten turns
+(P9's gate 0.2; the session reads `event=turn.timeline`). jts3 (`60c38f5ab`): with the P12 session
+watching the journal, unplug the XVF3800 (H1: the reboot-window number) and listen for the mic-loss
+cue (H2), then replug. jts4: nothing; the P12 session deploys it for HW-3/HW-5. Read ADR-0244 (the
+server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
+restores it from git history) and object on #4208 only if you want that experiment path kept.
+
+**State on 2026-09-06 23:00 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
+#4304). P2 done (handoff #4248). P4: one session stood down at 20:21, a second took over on the
+owner's triage and has merged rows 1–14, 17–19, the `audio_graph` deletion (ADR-0245) and most of
+the warn sweep. P9: 24 PRs merged (ADR-0244), the daemon split in progress. P12: every Phase 3 row
+merged (#4242 reopened and merged), H3 and the P1/P2 hardware rows PASS on jts3, HW-6's premise
+does not hold on ring boxes. Deployed: jts3 `60c38f5ab`, jts.local and jts4 `162ab4088`. Three
+ADR-number collisions in one night (0238, and 0240 twice): a lane takes the next free number in its
 merge commit, never at draft time.
 
 **Merge word (rule change).** The owner's triage at the plan gate is also the merge word for every
