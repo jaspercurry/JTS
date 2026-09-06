@@ -887,6 +887,50 @@ def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
     assert not (tmp_path / "output_hardware.json").exists()
 
 
+def _pythonpath_recording_python(tmp_path: Path) -> Path:
+    """The real interpreter, with the PYTHONPATH of each emitter spawn logged."""
+    fake = tmp_path / "recording-python"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${2:-}" == "jasper.cli.output_hardware" ]]; then\n'
+        '  printf \'%s\\n\' "${PYTHONPATH:-}" >> "$JASPER_FAKE_PYTHONPATH_LOG"\n'
+        "fi\n"
+        'exec "$JASPER_FAKE_PYTHON_REAL" "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
+def test_the_emitter_is_pinned_to_the_checkout_the_script_ran_from(tmp_path: Path):
+    """install.sh runs `--print-env` from the rsynced checkout BEFORE the venv
+    is refreshed, so an unpinned spawn pairs the NEW shell with the PREVIOUS
+    build's emitter and every key that build never emitted reads as empty."""
+    log = tmp_path / "pythonpath.log"
+    # An inherited PYTHONPATH that is NOT the checkout, so the pin below can
+    # only be satisfied by the script prepending its own tree.
+    inherited = str(tmp_path / "inherited-site")
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--print-env",
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                _pythonpath_recording_python(tmp_path)
+            ),
+            "JASPER_FAKE_PYTHON_REAL": sys.executable,
+            "JASPER_FAKE_PYTHONPATH_LOG": str(log),
+            "PYTHONPATH": inherited,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    recorded = log.read_text(encoding="utf-8").splitlines()
+    assert recorded, "the emitter never ran"
+    assert recorded == [os.pathsep.join((str(ROOT), inherited))] * len(recorded)
+    assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
+
+
 def test_no_interpreter_leaves_every_observed_fact_at_its_absent_value(
     tmp_path: Path,
 ):

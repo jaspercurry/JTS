@@ -23,11 +23,23 @@ ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}
 RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 APLAY="${JASPER_APLAY:-aplay}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_OUTPUT_HARDWARE_PYTHON="python3"
 if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_OUTPUT_HARDWARE_PYTHON="/opt/jasper/.venv/bin/python"
 fi
 OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
+# install.sh runs THIS script from the rsynced checkout (install_alsa's
+# --print-env) BEFORE install_jasper refreshes /opt/jasper/.venv, so the venv
+# interpreter would answer a new shell with the PREVIOUS build's emitter --
+# missing keys read as empty and the pass mis-classifies. A checkout that
+# carries the package pins the emitter to its own tree; the installed copy
+# (/usr/local/sbin) has no such sibling and keeps the venv's own package.
+# Same script/library lockstep as load_env_file_lib below.
+OUTPUT_HARDWARE_PYTHONPATH=""
+if [[ -f "${SCRIPT_DIR}/../../jasper/cli/output_hardware.py" ]]; then
+    OUTPUT_HARDWARE_PYTHONPATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
 DEFAULT_OUTPUTD_PLAYBACK_DEVICE="outputd_content_playback"
 # The ACTIVE RING's playback PCM — the ONE legal active endpoint. This shell
 # never CHOOSES it; the Python active-lane decision reports which endpoint the
@@ -185,7 +197,6 @@ OBSERVED_AT_PASS_START=""
 I2S_HAT_DESIRED_PROFILE=""
 I2S_HAT_BOOT_CHANGED=""
 I2S_HAT_APPLY_ERROR=0
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 
@@ -366,6 +377,9 @@ observe_output_hardware_state() {
         return 0
     fi
     if ! payload="$(
+        if [[ -n "$OUTPUT_HARDWARE_PYTHONPATH" ]]; then
+            export PYTHONPATH="${OUTPUT_HARDWARE_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
+        fi
         JASPER_APLAY="$APLAY" \
         JASPER_OUTPUT_HARDWARE_STATE_PATH="$OUTPUT_HARDWARE_STATE_PATH" \
         JASPER_OUTPUT_TOPOLOGY_PATH="$OUTPUT_TOPOLOGY_PATH" \
@@ -1551,7 +1565,7 @@ gate_role_services() {
     # The monitor exists to re-pin ONE mixer control, so the DAC the box drives
     # declaring that control is the whole condition for running it — the
     # emitter answers it off the registry (ADR-0235 R2).
-    if [[ -n "$OBSERVED_OUTPUT_HEADPHONE_CONTROL" && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+    if [[ -n "$OBSERVED_OUTPUT_HEADPHONE_CONTROL" ]]; then
         apple_output=1
     fi
     # The mixer pin is enabled on every box: which controls a DAC pins is the

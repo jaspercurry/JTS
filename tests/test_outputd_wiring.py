@@ -285,6 +285,11 @@ def _await(
     raise AssertionError(f"monitor never reached {expected}; {log.name}: {text!r}")
 
 
+def _event_fields(line: str) -> dict[str, str]:
+    """One `event=... key=value` journal line as its fields."""
+    return dict(token.split("=", 1) for token in line.split() if "=" in token)
+
+
 def _empty_board(tmp_path: Path) -> dict[str, str]:
     sys_class = tmp_path / "sys" / "class" / "sound"
     proc_asound = tmp_path / "proc" / "asound"
@@ -353,6 +358,28 @@ def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
     finally:
         monitor.kill()
         monitor.wait()
+
+
+def test_the_drift_monitor_refuses_an_explicit_card_with_no_control(tmp_path):
+    """The override skips the emitter, so it carries no control either: naming
+    a card without one leaves nothing to pin, and the monitor has to say so and
+    exit rather than poll a control name it never resolved."""
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
+            "Dongle_1",
+        ],
+        env={**os.environ, **_empty_board(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    fields = _event_fields(result.stderr.strip())
+    assert fields["event"] == "apple_dongle.headphone_monitor.failed"
+    assert fields["reason"] == "control_required"
 
 
 def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):

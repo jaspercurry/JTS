@@ -1432,7 +1432,6 @@ _ENV_CONTRACT_KEYS = {
     "OBSERVED_OUTPUT_PROFILE_STATUS",
     "OBSERVED_OUTPUT_PROFILE_KIND",
     "OBSERVED_OUTPUT_HEADPHONE_CONTROL",
-    "OBSERVED_OUTPUT_APPLE_USB_ID",
     "OBSERVED_OUTPUT_SELECTED_CARD_ID",
     "OBSERVED_OUTPUT_CHILD_DEVICE_IDS",
     "OBSERVED_OUTPUT_APPLE_CARD_IDS",
@@ -1578,4 +1577,3 @@ def test_the_emitter_answers_shape_and_mixer_control_from_the_registry(
     assert emitted["OBSERVED_OUTPUT_HEADPHONE_CONTROL"] == (
         _declared_percent_control(profile_id)
     )
-    assert emitted["OBSERVED_OUTPUT_APPLE_USB_ID"] == dac.APPLE_USB_C_DONGLE.usb_ids[0]

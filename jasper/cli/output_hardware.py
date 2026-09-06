@@ -22,7 +22,6 @@ from jasper.audio_hardware.dac import kind_for, percent_pinned_control_for
 from jasper.audio_hardware.hat_eeprom import read_hat_eeprom
 from jasper.audio_hardware.usb_port_role import resolve_system_usb_port_role
 from jasper.output_hardware import (
-    APPLE_USB_ID,
     OutputCardFact,
     OutputHardwareState,
     apple_output_card_ids,
@@ -68,11 +67,6 @@ def env_lines(
             state.active_profile_id or ""
         )
         or "",
-        # Apple's USB `vendor:product` as the registry declares it, for the
-        # installer's attached-dongle power pin. A declaration, not an
-        # observation: an attached dongle wants autosuspend off whatever
-        # profile this box happens to drive.
-        "OBSERVED_OUTPUT_APPLE_USB_ID": APPLE_USB_ID,
         "OBSERVED_OUTPUT_SELECTED_CARD_ID": state.selected_card_id or "",
         "OBSERVED_OUTPUT_CHILD_DEVICE_IDS": " ".join(
             child.device_id for child in state.child_devices
