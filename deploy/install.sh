@@ -1260,12 +1260,11 @@ select_audio_hardware_roles() {
     export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
-# snd-aloop binds index/pcm_substreams/pcm_notify at module load and
-# jasper-fanin holds the Loopback capture sides, so the unload returns EBUSY
-# on a live box (#4027) and a changed conf only applies at the next boot.
-# Parking the graph to force the reload is not the fix: the remove+add uevents
-# start the udev reconcilers mid-install (#4123). $1: the module's sysfs dir,
-# named by the caller so tests can point it elsewhere.
+# snd-aloop binds index/pcm_substreams/pcm_notify at module load; on a full-RAM
+# box jasper-fanin holds the Loopback capture sides, so the unload is EBUSY
+# (#4027) and changed options wait for the next boot. The low-RAM profiles park
+# fanin before this runs, so there the reload succeeds and the reconcilers its
+# uevents wake are gated by the install-in-progress marker (#4218).
 install_snd_aloop_options() {
     local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
     local installed=/etc/modprobe.d/snd-aloop.conf
@@ -1279,8 +1278,9 @@ install_snd_aloop_options() {
     if (( ! module_busy )); then
         _set_reboot_required_reason snd_aloop ""
     elif (( changed )); then
+        echo "  snd-aloop: options changed but module busy; deferred to reboot"
         _set_reboot_required_reason snd_aloop \
-            "snd-aloop options changed; module busy — reboot to apply"
+            "snd-aloop options changed, module busy — reboot to apply"
     fi
 }
 

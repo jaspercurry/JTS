@@ -8,9 +8,8 @@ log prose for "REBOOT REQUIRED". Every writer owns one key and may clear only
 its own, so no writer can step on another's reason regardless of call order.
 
 Two writers are covered here: the zram/cgroup migrations in
-deploy/lib/install/memory-resilience.sh, which own the helper itself, and
-install.sh's install_snd_aloop_options, which cannot apply changed module
-options while jasper-fanin holds the card and defers them to a reboot."""
+deploy/lib/install/memory-resilience.sh, and install.sh's
+install_snd_aloop_options."""
 from __future__ import annotations
 
 import os

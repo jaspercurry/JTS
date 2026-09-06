@@ -47,7 +47,8 @@ REBOOT_REQUIRED_MARKER="${JTS_REBOOT_REQUIRED_MARKER:-/run/jasper-install/reboot
 # marker, identified by `key`. Each migration calls this unconditionally
 # on every run — clearing when its own condition is no longer true — so
 # the file always reflects only what THIS run still needs a reboot for,
-# regardless of the other migration's call order.
+# regardless of the other migration's call order. A writer may instead leave
+# its key untouched when an earlier run's ask is still pending.
 _set_reboot_required_reason() {
     local key="$1" reason="$2"
     local dir tmp
