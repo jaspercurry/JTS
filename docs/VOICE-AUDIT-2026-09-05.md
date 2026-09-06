@@ -371,14 +371,14 @@ Tick as merged. Rows condense the reports' finding tables; the reports carry
 the per-finding detail and the exact lines at `8777cff19`.
 
 Wave 0 — the ruler
-- [ ] 0.1 `event=turn.timeline` + `/state.voice` last-turn fields + re-anchored first-chunk log (latency §G, providers E1–E3) — Opus; open as #4198
+- [x] 0.1 `event=turn.timeline` + `/state.voice` last-turn fields + re-anchored first-chunk log (latency §G, providers E1–E3) — Opus; merged #4198
 - [ ] 0.2 Owner gate: ten turns read, typical numbers recorded here: speech_end→first_response = __ ms, first_response→speaker = __ ms
 
 Wave 1 — deafness and boot
-- [ ] 1.1 Push-to-talk `CAP` and acquire-error cues + pins (voice-daemon H1, H2) — open as #4191; review also made all four manual refusal cues fire-and-forget (an awaited cue blocked the control-socket START reply past its 5 s timeout)
-- [ ] 1.2 Silent-response / lost-turn cue + counter (providers B2) — open as #4203
-- [ ] 1.3a First connect is one attempt handed to the reconnect supervisor; no exit at a connect failure (providers A1) — open as #4192
-- [ ] 1.3b Boot order: mics, TTS, cues and `READY=1` before the connect; a stop cancels a dialling connect; `CONNECTING` counts as paused (providers A2, B1) — open as #4206
+- [x] 1.1 Push-to-talk `CAP` and acquire-error cues + pins (voice-daemon H1, H2) — merged #4191; review also made all four manual refusal cues fire-and-forget (an awaited cue blocked the control-socket START reply past its 5 s timeout)
+- [x] 1.2 Silent-response / lost-turn cue + counter (providers B2) — merged #4203
+- [x] 1.3a First connect is one attempt handed to the reconnect supervisor; no exit at a connect failure (providers A1) — merged #4192
+- [x] 1.3b Boot order: mics, TTS, cues and `READY=1` before the connect; a stop cancels a dialling connect; `CONNECTING` counts as paused (providers A2, B1) — merged #4206
 - [ ] 1.4 Owner gate: WAN-unplugged boot on a spare Pi
 
 Wave 2 — subtraction
