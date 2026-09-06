@@ -1012,6 +1012,11 @@ class WakeLoop:
         self._bg_end_scheduled: bool = False
         self._fire_and_forget: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
+        # Populated by run() when it starts the leg/manual-mic consumer
+        # loops; empty before run() starts and never rebuilt afterward
+        # (see session_status's wake_legs fallback).
+        self._leg_tasks: dict[str, asyncio.Task[None]] = {}
+        self._manual_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Room-correction measurement window. When set, mic frames are
         # dropped (no wake-word feed, no session forward) and outputd is
@@ -2300,30 +2305,57 @@ class WakeLoop:
         if deferred_cancel:
             raise asyncio.CancelledError
 
+    def _on_leg_task_done(
+        self, name: str, task: "asyncio.Task[None]",
+    ) -> None:
+        """Log a leg/manual-mic consumer loop dying unexpectedly.
+
+        Cancellation (shutdown) is not a death. No restart, no cue — just
+        the event, so a leg going deaf is visible in the journal instead
+        of surfacing only as asyncio's silent "exception never retrieved"
+        warning at task GC. A future revision may replace the leg/manual
+        task pair with one `asyncio.TaskGroup`; deferred for now.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log_event(
+                logger, "wake.leg_died", leg=name, exc_type=type(exc).__name__,
+            )
+
     async def run(self) -> None:
         # One wake-only consumer per non-primary leg; the primary "on" leg
         # is driven by this method's main loop below. A leg is in
         # self._legs only when both its mic and detector were configured,
         # so there is no misconfiguration case to warn about here.
-        leg_tasks: list[asyncio.Task] = []
+        self._leg_tasks = {}
         for _leg_name in self._legs:
             if _leg_name == "on":
                 continue
-            leg_tasks.append(asyncio.create_task(
+            _leg_task = asyncio.create_task(
                 self._wake_leg_loop(_leg_name),
                 name=f"wake-leg-{_leg_name}",
-            ))
-        manual_tasks: list[asyncio.Task] = []
+            )
+            _leg_task.add_done_callback(
+                lambda _t, _name=_leg_name: self._on_leg_task_done(_name, _t)
+            )
+            self._leg_tasks[_leg_name] = _leg_task
+        self._manual_tasks = {}
         for _source_id in self._manual_mics:
-            manual_tasks.append(asyncio.create_task(
+            _manual_task = asyncio.create_task(
                 self._manual_mic_loop(_source_id),
                 name=f"manual-mic-{_source_id}",
-            ))
-        if leg_tasks:
+            )
+            _manual_task.add_done_callback(
+                lambda _t, _name=_source_id: self._on_leg_task_done(_name, _t)
+            )
+            self._manual_tasks[_source_id] = _manual_task
+        if self._leg_tasks:
             logger.info(
                 "multi-leg wake enabled: %s", " + ".join(self._legs.keys()),
             )
-        if manual_tasks:
+        if self._manual_tasks:
             log_event(
                 logger,
                 "manual_mic.sources_enabled",
@@ -2432,9 +2464,12 @@ class WakeLoop:
             # frame can still enqueue acquire/finalize tasks into
             # _fire_and_forget. Stop producers first so the cancellation sweep
             # below observes every task created during shutdown.
-            for _t in (*leg_tasks, *manual_tasks):
+            _all_tasks = (
+                *self._leg_tasks.values(), *self._manual_tasks.values(),
+            )
+            for _t in _all_tasks:
                 _t.cancel()
-            for _t in (*leg_tasks, *manual_tasks):
+            for _t in _all_tasks:
                 try:
                     await _t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
@@ -4266,6 +4301,16 @@ class WakeLoop:
         can duck program audio while leaving this false, so ``duck_active``
         remains user-facing session telemetry rather than a volume lock.
         """
+        # Legs whose consumer loop is alive right now, not merely
+        # configured — /aec reports configured intent from aec_mode.env.
+        # Before run() starts (self._leg_tasks empty; the for_tests seam
+        # never calls it), falls back to the configured set.
+        _wake_legs = (
+            [
+                leg for leg in self._legs
+                if leg == "on" or not self._leg_tasks[leg].done()
+            ] if self._leg_tasks else list(self._legs)
+        )
         return {
             "state": self._state.name,
             "input_ended": self._input_ended,
@@ -4319,12 +4364,7 @@ class WakeLoop:
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
             ),
-            # Actually-armed wake legs (runtime truth, by jasper.wake_legs
-            # token order). /aec reports configured *intent* from
-            # aec_mode.env; this is what the daemon actually opened, so a
-            # startup leg-skip (event=wake.leg_skipped) is visible in
-            # /state.voice, not only in the journal.
-            "wake_legs": list(self._legs),
+            "wake_legs": _wake_legs,
             # Per-pack tool-registration outcomes (registered / skipped /
             # failed), same motivation as wake_legs: a tool family that
             # silently failed to build (event=tool_pack.build_failed) is
