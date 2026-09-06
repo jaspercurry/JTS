@@ -220,6 +220,7 @@ from jasper.web._common import (
     send_json_response,
     toggle_html,
 )
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
@@ -1369,10 +1370,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(level=logging.DEBUG if args.verbose else logging.INFO)
 
     if not args.no_require_root:
         require_root()

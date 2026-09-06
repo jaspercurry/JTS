@@ -99,6 +99,21 @@ def test_auto_flush_floor_keys_log_event_on_the_event_name():
         logger.removeHandler(ring)
 
 
+def test_auto_flush_floor_survives_redaction_flattening():
+    """The redacting filter rewrites `record.msg` to the rendered, redacted
+    line, so the floor keys on the template it stashes — otherwise one
+    chronic credential-carrying warning dumps the whole ring on every call.
+    """
+    s = io.StringIO()
+    ring = fr.RingFlushHandler(10, s)
+    for host in ("hostA", "hostB"):
+        ring.handle(logging.LogRecord(  # handle(), so the filter runs
+            "jasper.test", logging.WARNING, "f.py", 1,
+            "reconnect host=%s OPENAI_API_KEY=%s",
+            (host, "sk-live-abc123456789"), None))
+    assert s.getvalue().count("event=flightrec.dump ") == 1
+
+
 def test_explicit_dump_is_never_floored():
     """The floor is for automatic dumps only — an operator's SIGUSR1 or
     a 'flag that' must always write what is in the ring."""
@@ -244,6 +259,23 @@ def test_dump_flushes_installed_ring_with_captured_context(
     assert n >= 1
     assert "reason=voice_flagged" in out
     assert "a debug breadcrumb" in out
+
+
+def test_the_ring_is_redacted_where_it_is_filled(
+    logging_sandbox, monkeypatch, tmp_path
+):
+    """A DEBUG breadcrumb the journal never sees still leaves the process in
+    a dump, so the ring carries the redacting filter itself rather than
+    relying on the flush to scrub (non-negotiable 3)."""
+    monkeypatch.setattr(debug_mode, "DEBUG_FILE", str(tmp_path / "debug.env"))
+    dump_stream = io.StringIO()
+    fr.install("voice", capacity=50, dump_stream=dump_stream)
+    log = logging.getLogger("jasper.somewhere")
+    log.debug("token exchange OPENAI_API_KEY=sk-live-abc123456789")
+    log.warning("boom")  # WARNING+ dumps the ring behind it
+    out = dump_stream.getvalue()
+    assert "sk-live-abc123456789" not in out
+    assert "OPENAI_API_KEY=<redacted>" in out
 
 
 def test_dump_without_install_is_noop(logging_sandbox):

@@ -55,6 +55,7 @@ from .env_load import env_file_path, parse_env_file
 from .log_event import log_event
 from .output_hardware import published_dac_id
 from .route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from .logging_setup import configure_logging
 
 
 CURRENT_SCHEMA_VERSION = 1
@@ -2201,7 +2202,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_logging(fmt="%(message)s")
     artifact = build_chip_aec_readiness_artifact(profile=args.profile)
     directory = args.directory or artifact_directory()
     try:

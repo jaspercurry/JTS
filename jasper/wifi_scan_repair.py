@@ -32,6 +32,7 @@ from typing import Any
 
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -513,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print JSON result")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_logging(fmt="%(message)s")
     result = maybe_repair_scan_suppression(args.iface, state_path=args.state_path)
     payload = result.to_dict()
     if args.json:

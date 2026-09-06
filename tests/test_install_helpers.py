@@ -829,18 +829,40 @@ def test_migrate_wake_events_cap_seed(
         assert expected_line in lines
 
 
-def test_mic_device_candidates_are_template_owned_for_fresh_install():
-    """The install-time seed must not duplicate hot-swap mic candidates."""
+def test_mic_device_candidates_is_never_seeded_in_env_example():
+    """A seeded value outranks the mic registry on every installed box, so
+    the key ships commented out; the installer's migration behavior is
+    pinned by test_migrate_mic_device_candidates_seed below."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
-    assert (
-        env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch\n")
-        == 1
+    assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
+
+
+@pytest.mark.parametrize(
+    ("seeded_line", "survives"),
+    [
+        ("JASPER_MIC_DEVICE_CANDIDATES=Array", False),
+        ("JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch", False),
+        ("JASPER_MIC_DEVICE_CANDIDATES=UsbMic,Array", True),
+    ],
+    ids=("seed-array", "seed-array-l16k6ch", "operator-list-preserved"),
+)
+def test_migrate_mic_device_candidates_seed(
+    tmp_path: Path, seeded_line: str, survives: bool,
+) -> None:
+    """Both shapes .env.example ever shipped migrate away, so the mic registry
+    is reachable on an installed box; any operator list survives untouched."""
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "jasper.env").write_text(
+        f"JASPER_HOSTNAME=jts.local\n{seeded_line}\n"
     )
 
-    python_runtime = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
-        encoding="utf-8"
-    )
-    assert "JASPER_MIC_DEVICE_CANDIDATES=Array|" not in python_runtime
+    proc = _run_install_helper("migrate_mic_device_candidates_seed", tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+    lines = (env_dir / "jasper.env").read_text().splitlines()
+    assert "JASPER_HOSTNAME=jts.local" in lines
+    assert (seeded_line in lines) is survives
 
 
 def test_wifi_tuning_persists_retry_forever_and_power_save_disable():

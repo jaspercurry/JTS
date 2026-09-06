@@ -53,6 +53,7 @@ from .mic_env import (
     render_manual_mic_env,
 )
 from .registry import KNOWN_PROFILES, RemoteProfile, lookup_by_name
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -718,10 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     from dbus_next.errors import DBusError  # type: ignore
 
     args = _parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     # A claimed request names its own requester; --reason is the fallback for
     # the direct boot/install starts, which carry no request file.
     reason = claim_reconcile_request(args.reason_file) or args.reason

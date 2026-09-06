@@ -559,9 +559,11 @@ def test_split_control_helpers_keep_state_at_owner_modules():
         "_aec_bridge_active_impl",
         "_aec_fresh_jasper_env_impl",
         "_aec_full_status",
+        "_augment_source_payload",
         "_fresh_jasper_env",
         "_read_audio_quality_state",
         "_read_active_audio_converter",
+        "_safe_audio_quality_state",
         "_same_config_path",
         "_server_aec_bridge_active_wrapper",
         "_server_fresh_jasper_env_wrapper",
@@ -574,11 +576,7 @@ def test_split_control_helpers_keep_state_at_owner_modules():
 
     # These are intentional host seams, not mirrored state: handlers and
     # _get_state composition replace the whole callable in route-level tests.
-    for name in (
-        "_augment_source_payload",
-        "_get_state",
-        "_safe_audio_quality_state",
-    ):
+    for name in ("_get_state",):
         assert callable(getattr(srv_mod, name))
 
 

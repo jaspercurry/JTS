@@ -142,6 +142,10 @@ SystemCallFilter=@system-service
 # lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
 UMask=0007
 
+# Wizard: recoverable dashboard, idle-exits already — make it one of
+# OOM's first picks (jasper/_oom_adj.py wizard tier).
+OOMScoreAdjust=200
+
 # Hardening — this process needs to read /etc/jasper/jasper.env,
 # read+write /var/lib/jasper/ and generated CamillaDSP configs,
 # update BlueZ's local name (/etc/bluetooth/main.conf), re-render the speaker-

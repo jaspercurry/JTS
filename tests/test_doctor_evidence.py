@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,8 @@ import pytest
 from jasper import service_units
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor._evidence import Evidence, StatusRead
+
+from .doctor_test_support import _fresh_cfg
 
 
 def test_a_key_is_read_once_even_under_concurrent_readers():
@@ -44,6 +47,65 @@ def test_reset_clears_and_seed_preempts_the_reader():
     assert ev.get("k", lambda: 2) == 1
     ev.reset()
     assert ev.get("k", lambda: 2) == 2
+
+
+@pytest.mark.parametrize("install_profile", ["full", "streambox"])
+def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
+    monkeypatch, install_profile,
+):
+    """ADR-0233 rule 4, end to end: whatever subset of the ~170 registered
+    checks consumes the household's grouping config or the crossover-v2
+    status block, each is read AT MOST ONCE per run — the whole point of
+    routing every consumer through ``evidence.grouping_config()`` /
+    ``evidence.get("crossover_v2_status", ...)`` instead of calling the
+    readers directly.
+
+    ``build_audio_runtime_plan_from_system`` is faked out: it re-reads the
+    same grouping.env for an unrelated fact (the audio-runtime route mode)
+    via its own un-memoized call in ``audio_runtime_camilla.py`` — a real
+    gap, but a different file's fix, so it is isolated here rather than
+    inflating this guard's count.
+    """
+    import jasper.multiroom.config as mr_config
+    import jasper.web.correction_crossover_v2_status as crossover_status
+    from jasper.cli import doctor
+    from jasper.cli.doctor import _cli, _harness
+
+    load_config_calls: list[None] = []
+    real_load_config = mr_config.load_config
+
+    def counting_load_config(*args, **kwargs):
+        load_config_calls.append(None)
+        return real_load_config(*args, **kwargs)
+
+    status_block_calls: list[None] = []
+    real_status_block = crossover_status.crossover_v2_status_block
+
+    def counting_status_block():
+        status_block_calls.append(None)
+        return real_status_block()
+
+    monkeypatch.setattr(mr_config, "load_config", counting_load_config)
+    monkeypatch.setattr(
+        crossover_status, "crossover_v2_status_block", counting_status_block,
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.build_audio_runtime_plan_from_system",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: install_profile)
+
+    cfg = (
+        _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest")
+        if install_profile == "full"
+        else _cli._doctor_config_from_env("streambox")
+    )
+
+    results = asyncio.run(doctor.run_async(cfg))
+
+    assert results, "registry is empty — nothing ran"
+    assert len(load_config_calls) <= 1
+    assert len(status_block_calls) <= 1
 
 
 def test_daemon_status_is_fail_soft_and_classifies_unreachable(monkeypatch):

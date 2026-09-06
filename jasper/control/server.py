@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
+from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
@@ -519,11 +520,6 @@ VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
 VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
 _read_volume_state = _volume_ops.read_volume_state
 
-
-def _safe_audio_quality_state() -> dict[str, Any]:
-    return _state_aggregate._safe_audio_quality_state()
-
-
 _USB_LATENCY_APPLY_GRACE_SEC = 30.0
 _usb_latency_applying: tuple[str, float] | None = None
 
@@ -698,10 +694,6 @@ def _start_aec_commission() -> bool:
         "start",
         event_prefix="aec_commission.start",
     )
-
-
-def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return _state_aggregate._augment_source_payload(payload)
 
 
 async def _get_state(
@@ -2124,10 +2116,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
     # the journal at INFO, applies the /system Debug card's toggle, and wires
     # SIGUSR1 -> dump. See jasper/flight_recorder.py.

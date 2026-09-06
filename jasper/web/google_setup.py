@@ -83,6 +83,7 @@ from ._common import (
     write_env_file,
     SECRET_ENV_MODE,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1104,10 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--redirect-uri", default=resolved_google_redirect_uri())
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server(
         (args.host, args.port),
         registry_path=args.registry,

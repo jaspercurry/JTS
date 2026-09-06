@@ -88,6 +88,18 @@ def combo_is_armed(*, gadget_present: bool, usb_intent_enabled: bool) -> bool:
     return gadget_present and usb_intent_enabled
 
 
+def combo_armed_from_env(text: str) -> bool:
+    """The OBSERVED counterpart to ``combo_is_armed``'s INTENT.
+
+    Reads whether ``fanin.env`` content shows the combo already armed, rather
+    than recomputing the decision — the doctor and ``/state`` both need this
+    same read of the reconciler's own output.
+    """
+    from jasper.env_file import read_value
+
+    return read_value(text, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
+
+
 def usb_combo_actions(
     *, armed: bool, latency_mode: str = DEFAULT_MODE,
 ) -> tuple[RuntimeEnvAction, ...]:

@@ -53,7 +53,12 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    for name in (*SCRIPT_NAMES, "_lib.sh", "_wake_audio_metrics.py"):
+    for name in (
+        *SCRIPT_NAMES,
+        "_lib.sh",
+        "_diagnostic_redaction.sh",
+        "_wake_audio_metrics.py",
+    ):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
     (scripts / "_offline_wake_count.py").write_text("# test stub\n", encoding="utf-8")
 

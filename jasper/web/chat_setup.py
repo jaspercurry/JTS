@@ -27,6 +27,7 @@ from ._common import (
     send_html_response,
     send_proxy_json,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -273,10 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("JASPER_CHAT_WEB_PORT", "8787")),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
 
     from . import _systemd
 

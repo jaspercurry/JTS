@@ -18,21 +18,13 @@ This is Tier 1 of the JTS resilience ladder. Pairs with
     policy brings the daemon back with a fresh process (see
     deploy/systemd/jasper-aec-bridge.service).
 
-The progress-sentinel pattern matters: a naive heartbeat thread
-that just pats every N seconds masks hangs in the work loop. A
-sentinel ensures the heartbeat reflects actual forward progress.
-The thread reads-only — no GIL-contention concerns with the work
-loop.
+The heartbeat thread only reads the sentinel, so it adds no GIL
+contention to the work loop.
 
 A wedge inside a blocking C call can hold the GIL indefinitely, so
 Python's own signal handler never runs and SIGTERM does nothing --
 only the watchdog timer's own recovery path gets the daemon back; see
 the Tier 1+2 block in deploy/systemd/jasper-aec-bridge.service.
-
-Pure-Python `sdnotify` (no C extension); if the package is not
-installed or `NOTIFY_SOCKET` is unset (i.e. we're running
-outside systemd, e.g. in tests or interactive dev), the helper
-no-ops gracefully.
 """
 from __future__ import annotations
 
@@ -42,6 +34,8 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Optional
+
+from .log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +95,17 @@ class Heartbeat:
             self._thread.join(timeout=1.0)
 
     def _run(self) -> None:
-        # Tick on a fixed cadence; check progress sentinel each tick.
         # `Event.wait()` returns True if stop was set, False on timeout.
+        # Suppression is reported on its edges only: the tick cadence is not
+        # news, and systemd kills the unit while it holds.
+        suppressed_ticks = 0
         while not self._stop.wait(self._interval):
             since = self._monotonic() - self._last_progress
             if since < self._stale_threshold:
+                if suppressed_ticks:
+                    log_event(logger, "watchdog.heartbeat_resumed",
+                              suppressed_ticks=suppressed_ticks)
+                    suppressed_ticks = 0
                 try:
                     self._notifier.notify("WATCHDOG=1")
                 except Exception:  # noqa: BLE001
@@ -113,15 +113,15 @@ class Heartbeat:
                     # socket error — try again next tick.
                     logger.exception("sdnotify WATCHDOG=1 failed")
             else:
-                logger.warning(
-                    "heartbeat suppressed: no progress for %.1fs "
-                    "(threshold=%.1fs) — systemd will kill us soon",
-                    since, self._stale_threshold,
-                )
+                if not suppressed_ticks:
+                    log_event(logger, "watchdog.heartbeat_suppressed",
+                              level=logging.WARNING,
+                              stalled_for_s=f"{since:.1f}")
+                suppressed_ticks += 1
 
 
 def _make_notifier():
-    """Return an sdnotify notifier, or None if unavailable.
+    """Return a pure-Python sdnotify notifier, or None if unavailable.
 
     Returns None when:
       - the `sdnotify` package isn't installed

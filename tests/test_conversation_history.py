@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
+import pytest
+
 from jasper import conversation_history as history_module
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
@@ -451,10 +453,85 @@ def test_methods_fail_soft_when_sqlite_connection_errors(tmp_path):
     store.close()
 
 
+# --- health() -------------------------------------------------------------
+#
+# The one reader of capture settings + store status for both jasper-doctor
+# and /state.chat (ADR-0233 rule 1).
+
+
+@pytest.mark.parametrize(
+    "seed_turn, expect_available, expect_turn_count, expect_age_is_none",
+    [
+        (None, False, None, True),  # capture on, db never created
+        (False, True, 0, True),  # capture on, store exists but empty
+        (True, True, 1, False),  # capture on, one turn written
+    ],
+    ids=["absent-store", "empty-store", "one-turn"],
+)
+def test_health_reports_settings_and_store_status(
+    monkeypatch,
+    tmp_path,
+    seed_turn,
+    expect_available,
+    expect_turn_count,
+    expect_age_is_none,
+):
+    db_path = tmp_path / "history.db"
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(
+        f"{CAPTURE_ENABLED_ENV}=1\n{DB_PATH_ENV}={db_path}\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_file))
+    if seed_turn is not None:
+        store = ConversationStore(str(db_path))
+        if seed_turn:
+            store.add(_turn("2026-06-19T20:15:00Z", 1))
+        store.close()
+
+    info = history_module.health()
+
+    assert info["capture_enabled"] is True
+    assert info["available"] is expect_available
+    assert info["turn_count"] == expect_turn_count
+    assert (info["last_write_age_seconds"] is None) is expect_age_is_none
+    assert info["retention"] == {
+        "days": DEFAULT_RETENTION_DAYS,
+        "max_rows": DEFAULT_RETENTION_MAX_ROWS,
+    }
+
+
+def test_health_capture_disabled_opens_no_store(monkeypatch, tmp_path, caplog):
+    """Capture off is the shipped default; a default box must not touch
+    the SQLite file or log on every doctor/`/state` read."""
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(f"{CAPTURE_ENABLED_ENV}=0\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_file))
+
+    def _unexpected_construction(*a, **k):
+        raise AssertionError("ConversationStore constructed while capture is off")
+
+    monkeypatch.setattr(history_module, "ConversationStore", _unexpected_construction)
+
+    with caplog.at_level(logging.WARNING):
+        info = history_module.health(warn_unavailable=True)
+
+    assert info == {
+        "capture_enabled": False,
+        "available": False,
+        "turn_count": None,
+        "last_write_age_seconds": None,
+        "retention": {
+            "days": DEFAULT_RETENTION_DAYS,
+            "max_rows": DEFAULT_RETENTION_MAX_ROWS,
+        },
+    }
+    assert caplog.records == []
+
+
 # --- /state.chat snapshot ------------------------------------------------
 #
-# state_aggregate publishes the store's summary on /state; it must resolve the
-# same settings the store itself reads.
+# state_aggregate projects health() onto /state.chat's wire shape, which
+# distinguishes "capture never turned on" from "capture on but unreadable".
 
 
 def test_conversation_history_state_reads_store_summary(monkeypatch, tmp_path):

@@ -778,19 +778,19 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
 def test_system_snapshot_audio_quality_fails_soft(
     monkeypatch,
 ):
-    import jasper.control.server as srv_mod
+    from jasper.control.handlers import system as system_handlers
 
     def fail_state() -> dict:
         raise ValueError("unsupported ALSA rate converter 'linear'")
 
-    monkeypatch.setattr(state_aggregate, "_read_audio_quality_state", fail_state)
+    monkeypatch.setattr(system_handlers, "_read_audio_quality_state", fail_state)
     monkeypatch.setattr(
-        state_aggregate,
+        system_handlers,
         "_read_active_audio_converter",
         lambda: "samplerate_medium",
     )
 
-    body = srv_mod._safe_audio_quality_state()
+    body = system_handlers._safe_audio_quality_state()
 
     assert body["converter"] == "samplerate_medium"
     assert body["active_converter"] == "samplerate_medium"

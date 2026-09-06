@@ -189,17 +189,19 @@ while IFS= read -r changed; do
         add_test_if_present "${env_example_test}"
       done < <(grep -l -- '.env.example' tests/test_*.py 2>/dev/null || true)
       ;;
-    jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh)
+    jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh|scripts/tail-pi-logs.sh|scripts/fetch-pi-logs.sh|scripts/pi-bundle.sh|scripts/pi-run-diagnostic.sh)
       # The Python and bash redactors are pinned side by side against one
       # case table, so an edit to either has to run both files' tests.
-      # Without this arm scripts/_diagnostic_redaction.sh matches no arm at
-      # all and jasper/secret_redaction.py routes only to its own test.
+      # Without this arm scripts/_diagnostic_redaction.sh and its four
+      # consumers match no arm at all and jasper/secret_redaction.py routes
+      # only to its own test.
       add_test_if_present "tests/test_secret_redaction.py"
       add_test_if_present "tests/test_diagnostic_redaction_scripts.py"
-      # These six run redact_secrets on the surfaces the non-negotiable
-      # covers, or (test_doctor_env.py) pin the secret-key vocabulary
-      # itself, so a rule change breaks them with nothing in their own
-      # subject moved.
+      # These run redact_secrets on the surfaces the non-negotiable covers,
+      # or (test_doctor_env.py) pin the secret-key vocabulary itself, so a
+      # rule change breaks them with nothing in their own subject moved.
+      add_test_if_present "tests/test_logging_setup.py"
+      add_test_if_present "tests/test_flight_recorder.py"
       add_test_if_present "tests/test_failure_detail.py"
       add_test_if_present "tests/test_doctor_core.py"
       add_test_if_present "tests/test_doctor_env.py"

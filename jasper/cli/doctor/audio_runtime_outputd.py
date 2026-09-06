@@ -23,7 +23,6 @@ deliberately not renderable).
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from ...route_latency.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
 from ._evidence import evidence
@@ -292,19 +291,6 @@ def _outputd_loudness_health(data: dict[str, object]) -> str | CheckResult:
     )
 
 
-
-def _saved_topology_for_wire() -> Any:
-    """The saved topology the ring wire's per-topology axes resolve against,
-    read once per doctor run (ADR-0233 rule 4).
-
-    Fail-soft to ``None`` like every other consumer of this fact — a box with no
-    saved layout still has a shipped wire declaration to compare against.
-    """
-    from jasper.fanin.ring_health import load_topology_for_wire
-
-    return evidence.get("saved_topology_for_wire", load_topology_for_wire)
-
-
 def _outputd_buffer_health(
     data: dict[str, object],
     content: dict[str, object],
@@ -406,7 +392,7 @@ def _outputd_buffer_health(
             # channel counts are PER-TOPOLOGY axes, so resolving with ``None``
             # would answer the shipped stereo declaration and FAIL a box whose
             # post-DSP ring legitimately carries a different width.
-            wire = resolve_ring_wire(_saved_topology_for_wire())
+            wire = resolve_ring_wire(evidence.saved_topology_for_wire())
             # WHICH ring outputd attached decides which width it is held to: an
             # armed ACTIVE endpoint reads the post-crossover per-driver ring,
             # whose width is ``ring_active_channels``. An armed endpoint whose
@@ -559,7 +545,7 @@ def _outputd_transport_health(
     # the ALSA lane, the central ring, or a bonded member's return ring — and
     # everything below branches on that rather than on a second marker read.
     topology = transport_topology_for_coupling(
-        outputd_env=outputd_env, read_saved_topology=_saved_topology_for_wire
+        outputd_env=outputd_env, read_saved_topology=evidence.saved_topology_for_wire
     )
     expected_content_source = topology.outputd_content_source
     actual_content_source = content.get("source")
@@ -594,7 +580,7 @@ def _outputd_transport_health(
         transport_report = transport_coherence_report(
             outputd_env=live_outputd_env,
             camilla_devices=endpoint_evidence.devices,
-            read_saved_topology=_saved_topology_for_wire,
+            read_saved_topology=evidence.saved_topology_for_wire,
         )
         if transport_report.errors:
             return CheckResult(

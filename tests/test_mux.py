@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import math
+import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,7 @@ from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
 from ._async_wait import wait_signalled
+from ._log_events import event_field_maps, event_records
 from .fake_clock_fixtures import FakeClock
 
 REPO = Path(__file__).resolve().parents[1]
@@ -2425,6 +2427,83 @@ async def test_one_pause_failure_does_not_abort_pausing_the_rest(
     assert mux._winner is Source.AIRPLAY
     pause_targets = {c.args[0] for c in mux._pause.await_args_list}
     assert pause_targets == {Source.SPOTIFY, Source.BLUETOOTH}
+
+
+def _daemon_main(monkeypatch, tmp_path, ready: asyncio.Event) -> asyncio.Task:
+    """Start `_amain` with its I/O stubbed, signalling `ready` on `mux.ready`.
+
+    The event comes off the emitted event name rather than a poll, so the
+    handoff back to the test body is the daemon's own transition.
+    """
+    import jasper.source_events as source_events
+
+    real_log_event = mux_module.log_event
+
+    def signalling_log_event(target, name, **kwargs):
+        real_log_event(target, name, **kwargs)
+        if name == "mux.ready":
+            ready.set()
+
+    monkeypatch.setattr(mux_module, "log_event", signalling_log_event)
+    monkeypatch.setattr(
+        mux_module, "MUX_CONTROL_SOCKET_PATH", str(tmp_path / "control.sock"),
+    )
+    monkeypatch.setattr(
+        source_events, "start_source_event_tasks", lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(Mux, "_fanin_none_best_effort", AsyncMock())
+    monkeypatch.setattr(Mux, "_reconcile", AsyncMock())
+    return asyncio.create_task(
+        mux_module._amain(
+            SimpleNamespace(librespot_state=str(tmp_path / "librespot.env")),
+        ),
+    )
+
+
+async def test_daemon_main_reports_ready_once_before_it_can_bind(
+    monkeypatch, tmp_path, caplog,
+):
+    """Readiness is the daemon's, not the control socket's: a box whose socket
+    cannot bind still has a running arbiter, and the bind is its own line.
+    Delete with the events.
+    """
+    caplog.set_level(logging.INFO, logger=mux_module.__name__)
+    ready = asyncio.Event()
+    task = _daemon_main(monkeypatch, tmp_path, ready)
+    try:
+        await wait_signalled(ready, "mux announced readiness", producer=task)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    (fields,) = event_field_maps(caplog, "mux.ready")
+    assert fields["patrol_s"] == str(Mux.POLL_INTERVAL_SEC)
+
+
+async def test_sigterm_shuts_the_daemon_down_through_its_cleanup(
+    monkeypatch, tmp_path, caplog,
+):
+    """SIGTERM's default disposition kills the interpreter with `run()`'s
+    finally — the control server and renderer event tasks — unrun, so the
+    daemon asks asyncio to unwind instead and says so once. The handler is
+    captured rather than raised for real: a regression would otherwise kill
+    the pytest process instead of failing this test. Delete with the event.
+    """
+    caplog.set_level(logging.INFO, logger=mux_module.__name__)
+    handlers: dict[int, object] = {}
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        loop, "add_signal_handler", lambda sig, cb: handlers.__setitem__(sig, cb),
+    )
+    ready = asyncio.Event()
+    task = _daemon_main(monkeypatch, tmp_path, ready)
+    await wait_signalled(ready, "mux announced readiness", producer=task)
+
+    assert set(handlers) == {signal.SIGINT, signal.SIGTERM}
+    handlers[signal.SIGTERM]()  # what the kernel's signal would reach
+    await asyncio.wait_for(task, timeout=10.0)
+
+    assert len(event_records(caplog, "mux.shutdown")) == 1
 
 
 def test_debounce_ticks_constant_removed():

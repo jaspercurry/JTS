@@ -13,6 +13,9 @@ from jasper import _oom_adj
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy/systemd"
 SLICE = SYSTEMD / "jts-audio.slice"
+# Wizard units live at the top of deploy/, not deploy/systemd/, but still
+# carry OOMScoreAdjust= and so belong in the explicit-adjustment scan below.
+DEPLOY = ROOT / "deploy"
 
 EXPECTED = {
     "bluealsa-aplay",
@@ -51,17 +54,26 @@ def _named_audio_units(text: str) -> set[str]:
 
 def _explicit_oom_adjustments() -> dict[str, int]:
     adjustments: dict[str, int] = {}
-    paths = [*SYSTEMD.glob("*.service"), *SYSTEMD.glob("*.service.d/*.conf")]
+    paths = [
+        *SYSTEMD.glob("*.service"), *SYSTEMD.glob("*.service.d/*.conf"),
+        *DEPLOY.glob("*.service"),
+    ]
     for path in paths:
         name = (
             path.parent.name.removesuffix(".service.d")
             if path.suffix == ".conf"
-            else path.stem
+            # The streambox web unit installs AS jasper-web.service
+            # (systemd-units.sh), so it keys under that name too.
+            else path.stem.removesuffix("-streambox")
         )
         for line in path.read_text().splitlines():
             match = re.fullmatch(r"OOMScoreAdjust=([+-]?\d+)", line.strip())
             if match:
-                adjustments[name] = int(match.group(1))
+                value = int(match.group(1))
+                assert adjustments.get(name, value) == value, (
+                    f"{name} OOMScoreAdjust diverges between its unit files"
+                )
+                adjustments[name] = value
     return adjustments
 
 

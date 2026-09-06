@@ -16,7 +16,6 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from jasper.control import state_aggregate
 from jasper.control.server import _make_handler
 from jasper.control.volume_ops import _percent_to_db
 
@@ -537,6 +536,7 @@ def server_with_mux_stub(monkeypatch):
         }
 
     import jasper.control.server as srv_mod
+    from jasper.control.handlers import volume as volume_handlers
     monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_command)
 
     def fake_augment(payload: dict) -> dict:
@@ -545,7 +545,7 @@ def server_with_mux_stub(monkeypatch):
             source["enabled"] = True
         return payload
 
-    monkeypatch.setattr(srv_mod, "_augment_source_payload", fake_augment)
+    monkeypatch.setattr(volume_handlers, "_augment_source_payload", fake_augment)
 
     handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -610,7 +610,7 @@ def test_source_state_mux_unreachable_is_503(server_with_mux_stub):
 
 def test_source_payload_adds_sources_wizard_availability(monkeypatch):
     import jasper.web.sources_setup as sources_mod
-    from jasper.control.server import _augment_source_payload
+    from jasper.control.handlers.volume import _augment_source_payload
 
     monkeypatch.setattr(sources_mod, "_gather_state", lambda: {
         "airplay": {"available": True, "enabled": True},
@@ -636,7 +636,7 @@ def test_source_payload_adds_sources_wizard_availability(monkeypatch):
 
 
 def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
-    import jasper.control.server as srv_mod
+    from jasper.control.handlers import volume as volume_handlers
     import jasper.web.sources_setup as sources_mod
 
     entered_probe = threading.Event()
@@ -655,7 +655,7 @@ def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
 
     def augment():
         try:
-            srv_mod._augment_source_payload(
+            volume_handlers._augment_source_payload(
                 {
                     "sources": {
                         "airplay": {},
@@ -669,20 +669,20 @@ def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
             errors.append(e)
 
     monkeypatch.setattr(sources_mod, "_gather_state", slow_gather_state)
-    state_aggregate._source_availability_cache = None
+    volume_handlers._source_availability_cache = None
     worker = threading.Thread(target=augment)
     worker.start()
     assert entered_probe.wait(timeout=2)
 
-    acquired = state_aggregate._source_availability_lock.acquire(timeout=0.2)
+    acquired = volume_handlers._source_availability_lock.acquire(timeout=0.2)
     try:
         assert acquired, "source availability probe held the cache lock"
     finally:
         if acquired:
-            state_aggregate._source_availability_lock.release()
+            volume_handlers._source_availability_lock.release()
         release_probe.set()
         worker.join(timeout=2)
-        state_aggregate._source_availability_cache = None
+        volume_handlers._source_availability_cache = None
 
     assert not worker.is_alive()
     assert not errors

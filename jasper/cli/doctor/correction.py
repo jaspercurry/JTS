@@ -655,6 +655,13 @@ def check_correction_cert_hostname() -> CheckResult:
     )
 
 
+def _crossover_v2_status_block() -> dict | None:
+    """Kept beside the web import the boundary allowlist admits only here."""
+    from jasper.web.correction_crossover_v2_status import crossover_v2_status_block
+
+    return crossover_v2_status_block()
+
+
 @doctor_check()
 def check_crossover_v2_cloud_pipeline() -> CheckResult:
     """The last session's honest-instrument cloud verdict — per group, the spec
@@ -668,10 +675,9 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     out-of-spec speaker is a measurement finding, not a broken daemon.
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
-    from jasper.web.correction_crossover_v2_status import crossover_v2_status_block
 
     label = "crossover v2 cloud pipeline"
-    block = crossover_v2_status_block()
+    block = evidence.get("crossover_v2_status", _crossover_v2_status_block)
     cloud = (block or {}).get("cloud")
     if not isinstance(cloud, dict) or not cloud:
         return CheckResult(
@@ -747,10 +753,8 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         GRADE_SPATIAL_PASSED,
         GRADE_SPATIAL_UNMEASURABLE,
     )
-    from jasper.web.correction_crossover_v2_status import crossover_v2_status_block
-
     label = "crossover v2 applied profile graded"
-    block = crossover_v2_status_block() or {}
+    block = evidence.get("crossover_v2_status", _crossover_v2_status_block) or {}
     grade = block.get("post_apply_grade")
     grade = grade if isinstance(grade, dict) else {}
     # `.get` with a default rather than a lookup: a durable state written by a

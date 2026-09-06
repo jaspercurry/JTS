@@ -42,6 +42,10 @@ EXPECTED: dict[str, int] = {
     "jasper-snapserver": -300,  # grouping reconcile can restart
     "ssh": -250,                # recovery path; moderately protected
     "jasper-usbsink-volume": 100,  # optional observer; prefer killing first
+    "jasper-chat-web": 200,  # wizard tier: idle-exits, recoverable; killed before every daemon above
+    "jasper-system-web": 200,  # wizard tier
+    "jasper-bluetooth-web": 200,  # wizard tier
+    "jasper-web": 200,  # wizard tier
     "jasper-enhanced-aec-install": 900,  # optional compiler; kill before live audio
 }
 

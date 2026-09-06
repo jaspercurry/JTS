@@ -256,41 +256,35 @@ def check_conversation_history() -> CheckResult:
     enables history. Once configured on, the read-side store must open cleanly
     or `/chat/` and `/state.chat` cannot show the log jasper-voice writes.
     """
-    from ...conversation_history import ConversationStore, read_settings
+    from ...conversation_history import health
 
     label = "conversation history"
-    settings = read_settings()
-    if not settings.capture_enabled:
+    info = health(warn_unavailable=True)
+    if not info["capture_enabled"]:
         # Off by operator intent, and the off state WAS observed — `ok` with
         # a reason, not a skip (ADR-0233 rule 3).
         return CheckResult(
             label, "ok", "capture disabled", reason=REASON_HISTORY_DISABLED,
         )
-    store = ConversationStore(settings.db_path, read_only=True)
-    try:
-        if not store.available:
-            return CheckResult(
-                label,
-                "warn",
-                f"capture enabled but {settings.db_path} is unavailable",
-                reason=REASON_HISTORY_STORE_UNAVAILABLE,
-            )
-        stats = store.stats()
-        if stats is None:
-            return CheckResult(
-                label,
-                "warn",
-                f"capture enabled but {settings.db_path} could not be read",
-                reason=REASON_HISTORY_STATS_UNREADABLE,
-            )
-        last = stats.last_write_ts_utc or "never"
+    if not info["available"]:
         return CheckResult(
             label,
-            "ok",
-            f"{stats.turn_count} turns, last write {last}",
+            "warn",
+            "capture enabled but the store is unavailable",
+            reason=REASON_HISTORY_STORE_UNAVAILABLE,
         )
-    finally:
-        store.close()
+    if info["turn_count"] is None:
+        return CheckResult(
+            label,
+            "warn",
+            "capture enabled but the store could not be read",
+            reason=REASON_HISTORY_STATS_UNREADABLE,
+        )
+    age = info["last_write_age_seconds"]
+    last = f"{age:.0f}s ago" if age is not None else "never"
+    return CheckResult(
+        label, "ok", f"{info['turn_count']} turns, last write {last}",
+    )
 
 
 # Probe target for check_camillagui_loopback; matches

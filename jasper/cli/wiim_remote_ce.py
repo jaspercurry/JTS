@@ -108,8 +108,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from jasper.accessories.constants import WIIM_REMOTE_2_NAME_RE
-from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.log_event import log_event
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -627,7 +627,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     _parse_args(argv)
     # INFO floor, not configure_verbose_logging's WARNING: "applied" is the only success line.
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    configure_logging()
     return run()
 
 
