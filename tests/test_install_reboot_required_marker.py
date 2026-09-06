@@ -2,16 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The reboot-required marker deploy/lib/install/memory-resilience.sh writes
-(issue #2110): one canonical, machine-readable file that onboard.sh and
-deploy-to-pi.sh read instead of parsing install.sh's log prose for
-"REBOOT REQUIRED". Each migration owns one key in the file and clears it
-on every run before possibly re-setting it, so two migrations can't step
-on each other's reason regardless of call order.
+"""The reboot-required marker (issue #2110): one canonical, machine-readable
+file that onboard.sh and deploy-to-pi.sh read instead of parsing install.sh's
+log prose for "REBOOT REQUIRED". Every writer owns one key and may clear only
+its own, so no writer can step on another's reason regardless of call order.
 
-install.sh's snd-aloop reload is the third writer: options bind at module
-load, so a conf change that cannot unload the busy module is disclosed
-through the same marker rather than silently deferred to some later boot."""
+Two writers are covered here: the zram/cgroup migrations in
+deploy/lib/install/memory-resilience.sh, which own the helper itself, and
+install.sh's install_snd_aloop_options, which cannot apply changed module
+options while jasper-fanin holds the card and defers them to a reboot."""
 from __future__ import annotations
 
 import os
@@ -89,47 +88,84 @@ def test_two_migrations_dont_clobber_each_others_reason(tmp_path: Path) -> None:
     assert "cmdline updated" not in r.stdout
 
 
+#: What an earlier deploy left in the marker; a run that must not touch the
+#: key has to leave exactly this, and a run that clears it must remove it.
+SEEDED_SND_ALOOP = "snd_aloop=deferred by an earlier deploy"
+SEEDED_OTHER = "zram=resize pending"
+
+
 # Removal condition: drop this pin when the install parks the audio graph
 # before the reload (needs #4123's install-in-progress marker on every box),
 # because then the unload succeeds and no reboot is ever deferred.
 @pytest.mark.parametrize(
-    ("rmmod_rc", "module_loaded", "conf_changed", "expect_key", "expect_modprobe"),
+    ("module_loaded", "rmmod_rc", "conf_changed", "expected"),
     [
         # The live box: fanin holds the capture sides, the unload is EBUSY.
-        (1, True, True, True, False),
+        (True, 1, True, "set"),
         # Nothing holds it: remove + add applies the shipped options now.
-        (0, True, True, False, True),
+        (True, 0, True, "cleared"),
         # First install: nothing to unload, the add still has to happen.
-        (1, False, True, False, True),
-        # Busy, but the conf did not change — nothing is pending a reboot.
-        (1, True, False, False, False),
+        (False, 0, True, "cleared"),
+        # Busy, but this deploy shipped no option change — the earlier
+        # deploy's pending reboot must survive, and no new one is asked for.
+        (True, 1, False, "kept"),
     ],
 )
-def test_busy_snd_aloop_reload_defers_to_the_marker(
+def test_a_busy_snd_aloop_defers_its_options_to_the_marker(
     tmp_path: Path,
-    rmmod_rc: int,
     module_loaded: bool,
+    rmmod_rc: int,
     conf_changed: bool,
-    expect_key: bool,
-    expect_modprobe: bool,
+    expected: str,
 ) -> None:
     marker = tmp_path / "reboot_required"
+    marker.write_text(f"{SEEDED_OTHER}\n{SEEDED_SND_ALOOP}\n", encoding="utf-8")
     calls = tmp_path / "calls.log"
-    lsmod_out = 'echo "snd_aloop 32768 3 -"' if module_loaded else "true"
+    sysfs = tmp_path / "sys_module_snd_aloop"
+    if module_loaded:
+        sysfs.mkdir()
     r = _run(
         f"""
         install() {{ return 0; }}
         cmp() {{ return {1 if conf_changed else 0}; }}
-        lsmod() {{ {lsmod_out}; }}
         rmmod() {{ echo "rmmod $*" >> {shlex.quote(str(calls))}; return {rmmod_rc}; }}
         modprobe() {{ echo "modprobe $*" >> {shlex.quote(str(calls))}; return 0; }}
-        install_snd_aloop_options
+        install_snd_aloop_options {shlex.quote(str(sysfs))}
         """,
         marker,
         source=INSTALL_SH,
     )
     assert r.returncode == 0, r.stderr
-    keys = marker.read_text(encoding="utf-8").splitlines() if marker.exists() else []
-    assert any(k.startswith("snd_aloop=") for k in keys) is expect_key
+    lines = marker.read_text(encoding="utf-8").splitlines() if marker.exists() else []
+    assert SEEDED_OTHER in lines
+    snd = [line for line in lines if line.startswith("snd_aloop=")]
+    if expected == "cleared":
+        assert snd == []
+    elif expected == "kept":
+        assert snd == [SEEDED_SND_ALOOP]
+    else:
+        assert snd and snd != [SEEDED_SND_ALOOP]
     logged = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
-    assert ("modprobe snd-aloop" in logged) is expect_modprobe
+    # The module is always (re)loaded; only a loaded module is unloaded first.
+    assert "modprobe snd-aloop" in logged
+    assert ("rmmod snd_aloop" in logged) is module_loaded
+
+
+def test_a_module_that_will_not_load_fails_the_install(tmp_path: Path) -> None:
+    """A snd-aloop that cannot be inserted is not a deferrable condition: every
+    later audio step needs the card, so the installer stops instead of marking
+    a reboot and carrying on."""
+    marker = tmp_path / "reboot_required"
+    r = _run(
+        """
+        install() { return 0; }
+        cmp() { return 1; }
+        rmmod() { return 0; }
+        modprobe() { return 1; }
+        install_snd_aloop_options
+        """,
+        marker,
+        source=INSTALL_SH,
+    )
+    assert r.returncode != 0
+    assert not marker.exists()

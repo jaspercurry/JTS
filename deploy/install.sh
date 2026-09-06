@@ -176,7 +176,7 @@ detect_default_install_profile() {
 # in a later build step is then self-evident in the deploy transcript. It
 # is the first step toward one shared tier vocabulary for the build knobs
 # that today read RAM independently (rust-daemons.sh's low-memory flip;
-# _webrtc_compile_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
+# build_sandbox_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
 # this helper is Workstream A; this change does NOT alter any build behavior.
 # See docs/install-hardware-tier-and-staleness.md.
 #
@@ -206,12 +206,7 @@ detect_hardware_tier() {
     # The low boundary REUSES rust-daemons.sh's threshold (one source of
     # truth) so the label can't drift from the build knob it describes —
     # below it, the Rust low-memory build profile is already active.
-    # install.sh always sources rust-daemons.sh, so the var is set; the
-    # :- fallback only guards a partial source in a stray test context.
-    # The 2 GB split is the one tier-owned constant: it separates the jts2
-    # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
-    # headroom.
-    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB}"
     local tier
     if (( mem_kb == 0 )); then
         tier="unknown"
@@ -1265,19 +1260,23 @@ select_audio_hardware_roles() {
     export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
-# snd-aloop binds index/pcm_substreams/pcm_notify at module load; jasper-fanin
-# holds the Loopback capture sides, so the unload returns EBUSY on a live box
-# (#4027) and a changed conf can only apply at the next boot. Do not park the
-# graph to force the reload: the remove+add uevents start the udev reconcilers
-# mid-install, against a torn /opt/jasper (#4123).
+# snd-aloop binds index/pcm_substreams/pcm_notify at module load and
+# jasper-fanin holds the Loopback capture sides, so the unload returns EBUSY
+# on a live box (#4027) and a changed conf only applies at the next boot.
+# Parking the graph to force the reload is not the fix: the remove+add uevents
+# start the udev reconcilers mid-install (#4123). $1: the module's sysfs dir,
+# injectable for tests.
 install_snd_aloop_options() {
     local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
     local installed=/etc/modprobe.d/snd-aloop.conf
-    local changed=0
+    local changed=0 module_busy=0 sysfs="${1:-/sys/module/snd_aloop}"
     cmp -s "${shipped}" "${installed}" || changed=1
     install -m 0644 "${shipped}" "${installed}"
-    if { rmmod snd_aloop 2>/dev/null || ! lsmod | grep -q '^snd_aloop '; } \
-            && modprobe snd-aloop; then
+    if [[ -d "${sysfs}" ]] && ! rmmod snd_aloop 2>/dev/null; then
+        module_busy=1
+    fi
+    modprobe snd-aloop
+    if (( ! module_busy )); then
         _set_reboot_required_reason snd_aloop ""
     elif (( changed )); then
         _set_reboot_required_reason snd_aloop \
@@ -1296,35 +1295,19 @@ install_alsa() {
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions; its own
     # header owns what they are and why (deploy/alsa/asoundrc.jasper).
-    #
-    # Location matters: this file MUST be world-readable so that
-    # renderer processes running as non-root users (shairport-sync as
-    # `shairport-sync`, librespot as `pi`) can resolve the user-space
-    # PCM names declared in it. The pre-2026-05-23 location
-    # (/root/.asoundrc, mode 0600) was visible only to root, which
-    # was fine while renderers wrote to raw/plughw Loopback names (a
-    # kernel-built-in shape needing no asoundrc to resolve) but broke
-    # AirPlay and Spotify Connect once renderers switched to user-space
-    # PCM names. /etc/asound.conf at mode 0644 is the
-    # canonical Linux pattern for "ALSA config visible to all users."
-    #
-    # Migration: any existing /root/.asoundrc gets backed up
-    # (.pre-jasper.<unix-ts>) and removed so it can't silently
-    # shadow /etc/asound.conf for root processes (ALSA evaluates
-    # ~/.asoundrc before /etc/asound.conf).
+    # It MUST stay world-readable: renderers run as non-root users
+    # (shairport-sync, librespot as `pi`) and cannot otherwise resolve the
+    # user-space PCM names it declares. A /root/.asoundrc would shadow it for
+    # root processes — ALSA reads ~/.asoundrc first — so one is backed up and
+    # removed.
     if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
         cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
         rm -f /root/.asoundrc
         echo "  Migrated old /root/.asoundrc to backup (.pre-jasper.*); see PR #223 for why."
     fi
-    # Same backup discipline at the new location. Hand-edited or
-    # apt-installed /etc/asound.conf files (rare on JTS, but possible)
-    # shouldn't be silently overwritten. The grep guard makes this
-    # idempotent — once our content is in place, subsequent deploys
-    # see `shairport_substream` and skip the backup (no .pre-jasper
-    # spam). Symlinks are not backed up here because JTS intentionally
-    # replaces /etc/asound.conf with a symlink to its rendered, public
-    # ALSA config below.
+    # Back up a hand-edited or apt-installed /etc/asound.conf once: the grep
+    # guard keys on our own content, so later deploys do not re-spam backups.
+    # A symlink is ours (created below) and is never backed up.
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
             && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
