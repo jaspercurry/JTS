@@ -81,6 +81,7 @@ def _run_reconcile(
     board_model: str = "Raspberry Pi 5 Model B Rev 1.0",
     active_usb_role: str = "peripheral",
     extra_env: dict[str, str] | None = None,
+    script: Path = SCRIPT,
 ) -> subprocess.CompletedProcess[str]:
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
@@ -162,7 +163,7 @@ def _run_reconcile(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(SCRIPT), *args],
+        ["bash", str(script), *args],
         check=False,
         cwd=ROOT,
         env=env,
@@ -1459,10 +1460,11 @@ def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
 def test_print_env_leaves_the_management_transport_marker_untouched(
     tmp_path: Path, starting_content: str | None, active_usb_role: str,
 ):
-    """--print-env is install.sh's mid-install probe of the PREVIOUS build
-    (#4123): it must never flip the gadget's management-transport gate off a
-    stale verdict. Remove this test when --print-env moves after the source
-    sync."""
+    """--print-env's usage text promises no mutations -- this pin does not
+    expire. (Today's motivation is install.sh's mid-install probe of the
+    PREVIOUS build, #4123, which would flip the gadget's management-transport
+    gate off a stale verdict; that motivation lapses if --print-env ever
+    moves after the source sync, but the no-mutations contract stays.)"""
     marker = tmp_path / "management-transport.ok"
     if starting_content is not None:
         marker.write_text(starting_content, encoding="utf-8")
@@ -2327,75 +2329,51 @@ def _stub_render_lib(tmp_path: Path, body: str) -> Path:
     return stub
 
 
-def _stub_render_lib_missing_log_token(tmp_path: Path) -> Path:
-    """The shape of an installed render lib one build behind the repo script:
-    everything else intact, `jasper_asound_log_token` gone."""
-    stub = tmp_path / "stub-asound-render-stale.sh"
-    real = ROOT / "deploy" / "lib" / "jasper-asound-render.sh"
-    stub.write_text(
-        f"#!/usr/bin/env bash\nsource {real}\nunset -f jasper_asound_log_token\n",
+def _copy_script_with_sibling_render_lib(tmp_path: Path, sentinel: str) -> Path:
+    """A `bin/` + `lib/` layout mirroring the installed tree, with a sibling
+    render lib recognizable by `sentinel` -- distinct from the real one, so a
+    test can tell whether `load_asound_render_lib`'s own sibling-vs-installed
+    resolution found it, rather than `JASPER_ASOUND_RENDER_LIB` shortcutting
+    the decision (every other test in this file sets that override)."""
+    bin_dir = tmp_path / "layout" / "bin"
+    lib_dir = tmp_path / "layout" / "lib"
+    bin_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
+    script_copy = bin_dir / "jasper-audio-hardware-reconcile"
+    script_copy.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+    script_copy.chmod(0o755)
+    (lib_dir / "jasper-asound-render.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"jasper_asound_log_token() {{ printf '%s' '{sentinel}'; }}\n",
         encoding="utf-8",
     )
-    return stub
+    return script_copy
 
 
-def _dual_apple_ready_python(tmp_path: Path) -> Path:
-    """A python stand-in reporting a fully-ready dual-Apple composite. This is
-    the only branch --print-env can reach that calls into the render lib
-    (`apply_observed_composite_policy`'s `jasper_asound_log_token`), and
-    driving it for real needs a saved topology and a CamillaDSP statefile --
-    machinery this test has no other reason to stand up.
-    """
-    fake_python = tmp_path / "dual-apple-ready-python"
-    fake_python.write_text(
-        "#!/bin/sh\n"
-        'case "$*" in\n'
-        "*jasper.cli.output_hardware*) cat <<'EOF'\n"
-        "OBSERVED_OUTPUT_PROFILE_ID=dual_apple_usb_c_dac_4ch\n"
-        "OBSERVED_OUTPUT_PROFILE_STATUS=ready\n"
-        "OBSERVED_OUTPUT_APPLE_CARD_IDS='A A_1'\n"
-        "OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE=false\n"
-        "OBSERVED_OUTPUT_RECORD_CHANGED=0\n"
-        "OBSERVED_OUTPUT_DUAL_MAPPING_OK=1\n"
-        "OBSERVED_OUTPUT_DUAL_ORDER_SOURCE=topology\n"
-        "OBSERVED_OUTPUT_DUAL_DAC_A_PCM=hw:1,0\n"
-        "OBSERVED_OUTPUT_DUAL_DAC_B_PCM=hw:2,0\n"
-        "EOF\n"
-        "exit 0 ;;\n"
-        "-) printf '4 ring_active_playback\\n'; exit 0 ;;\n"
-        f'esac\nexec "{sys.executable}" "$@"\n',
-        encoding="utf-8",
-    )
-    fake_python.chmod(0o755)
-    return fake_python
-
-
-@pytest.mark.parametrize(
-    ("stale_lib", "expected_pcm_fields"),
-    [
-        pytest.param(False, "dac_a_pcm=hw:1,0 dac_b_pcm=hw:2,0", id="current-lib"),
-        pytest.param(True, "dac_a_pcm= dac_b_pcm=", id="lib-missing-log-token"),
-    ],
-)
-def test_print_env_composite_ready_path_survives_a_stale_render_lib(
-    tmp_path: Path, stale_lib: bool, expected_pcm_fields: str,
+def test_print_env_dual_apple_ready_resolves_its_own_sibling_render_lib(
+    tmp_path: Path,
 ):
-    """The dual-Apple ready branch is --print-env's only call into the render
-    lib. A lib one build behind the script -- the exposure
-    `load_asound_render_lib`'s installed-first order used to carry into the
-    mid-install probe of the PREVIOUS build, #4123 -- does not abort the
-    probe: the missing function drops its two log fields instead of stopping
-    the pass. Remove this test when --print-env moves after the source sync.
-    """
-    extra_env = {
-        "JASPER_OUTPUT_HARDWARE_PYTHON": str(_dual_apple_ready_python(tmp_path)),
-    }
-    if stale_lib:
-        extra_env["JASPER_ASOUND_RENDER_LIB"] = str(
-            _stub_render_lib_missing_log_token(tmp_path)
-        )
+    """Every other --print-env test pins JASPER_ASOUND_RENDER_LIB to the real
+    lib, so load_asound_render_lib's own sibling-vs-installed resolution
+    never runs. Unset it here and give the copied script only a sibling lib
+    to find, with a jasper_asound_log_token distinct enough that its answer
+    can only have come from that copy."""
+    sentinel = "SIBLING-LIB-TOKEN"
+    script_copy = _copy_script_with_sibling_render_lib(tmp_path, sentinel)
+    topology_path = _dual_apple_topology(tmp_path, active=True)
 
-    result = _run_reconcile(tmp_path, "", "--print-env", extra_env=extra_env)
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        script=script_copy,
+        extra_env={
+            **_dual_apple_cards(tmp_path),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+            "JASPER_ASOUND_RENDER_LIB": "",
+        },
+    )
 
     assert result.returncode == 0, result.stderr
     assert "OUTPUT_DAC_ID=dual_apple_usb_c_dac_4ch" in result.stdout
@@ -2403,7 +2381,7 @@ def test_print_env_composite_ready_path_survives_a_stale_render_lib(
         result.stderr,
         "event=audio_hardware_reconcile.dual_apple_detected ",
         "action=outputd_dual_sink",
-        expected_pcm_fields,
+        f"dac_a_pcm={sentinel} dac_b_pcm={sentinel}",
     )
 
 
