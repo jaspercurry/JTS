@@ -267,12 +267,7 @@ while IFS= read -r changed; do
       # and deploy/lib/install/* rides the always-on test_deploy_wiring_guards
       # scanner below — a `deploy/lib/*` glob would swallow both.
       add_test_if_present "tests/test_env_file_lib.py"
-      # The repo-wide awk -v convention guard is written for this lib (the
-      # mawk corruption it pins is invisible on a gawk laptop, so an editor
-      # needs it to run here rather than trust the always-on phase below),
-      # and test_wifi_guardian_script.py now exercises jasper_env_file_get
-      # end to end.
-      add_test_if_present "tests/test_shell_awk_environ_convention.py"
+      # test_wifi_guardian_script.py exercises jasper_env_file_get end to end.
       add_test_if_present "tests/test_wifi_guardian_script.py"
       ;;
     deploy/systemd/jasper-wifi-guardian*)
@@ -426,6 +421,7 @@ echo "==> pytest always-on fast guards"
 lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
   tests/test_dependency_groups.py tests/test_lint_contracts.py \
   tests/test_deploy_wiring_guards.py tests/test_shell_awk_environ_convention.py \
+  tests/test_shell_env_source_convention.py \
   tests/test_docs_impact.py tests/test_correction_boundary_ssot.py \
   tests/test_runtime_import_closure.py "$@"
 _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
