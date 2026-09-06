@@ -40,6 +40,10 @@ RestartSec=2
 # UMask=0007 — wizard-written state under /var/lib/jasper(-secrets|-intsecrets)
 # lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
 UMask=0007
+
+# Wizard: recoverable dashboard, idle-exits already — make it one of
+# OOM's first picks (jasper/_oom_adj.py wizard tier).
+OOMScoreAdjust=200
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
