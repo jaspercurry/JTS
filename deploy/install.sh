@@ -1265,11 +1265,11 @@ select_audio_hardware_roles() {
 # on a live box (#4027) and a changed conf only applies at the next boot.
 # Parking the graph to force the reload is not the fix: the remove+add uevents
 # start the udev reconcilers mid-install (#4123). $1: the module's sysfs dir,
-# injectable for tests.
+# named by the caller so tests can point it elsewhere.
 install_snd_aloop_options() {
     local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
     local installed=/etc/modprobe.d/snd-aloop.conf
-    local changed=0 module_busy=0 sysfs="${1:-/sys/module/snd_aloop}"
+    local changed=0 module_busy=0 sysfs="$1"
     cmp -s "${shipped}" "${installed}" || changed=1
     install -m 0644 "${shipped}" "${installed}"
     if [[ -d "${sysfs}" ]] && ! rmmod snd_aloop 2>/dev/null; then
@@ -1289,7 +1289,7 @@ install_alsa() {
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
-    install_snd_aloop_options
+    install_snd_aloop_options /sys/module/snd_aloop
 
     select_audio_hardware_roles
 

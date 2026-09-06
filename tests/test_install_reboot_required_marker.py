@@ -157,12 +157,12 @@ def test_a_module_that_will_not_load_fails_the_install(tmp_path: Path) -> None:
     a reboot and carrying on."""
     marker = tmp_path / "reboot_required"
     r = _run(
-        """
-        install() { return 0; }
-        cmp() { return 1; }
-        rmmod() { return 0; }
-        modprobe() { return 1; }
-        install_snd_aloop_options
+        f"""
+        install() {{ return 0; }}
+        cmp() {{ return 1; }}
+        rmmod() {{ return 0; }}
+        modprobe() {{ return 1; }}
+        install_snd_aloop_options {shlex.quote(str(tmp_path / "absent"))}
         """,
         marker,
         source=INSTALL_SH,
