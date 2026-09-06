@@ -287,9 +287,10 @@ log_event() {
 # bash holds ONE EXIT trap, so the stage cleanup and the terminal line share
 # this one: an open stage is recognized by its candidate path, not by a second
 # arm/disarm flag. `$?` inside a trap is only the last COMPLETED command's
-# status, so a killed pass would report whatever finished before the signal --
-# the recorders below name the signal and this maps it to the 128+n its sender
-# expects. The closing `exit` publishes that mapped status; `|| true` keeps a
+# status, which is why the signal traps below set their own mapped exit code
+# directly instead of leaving on_exit to guess it from whatever was running.
+# The `case` here is the fallback for the same mapping if `$?` ever did carry
+# it. The closing `exit` publishes that mapped status; `|| true` keeps a
 # stderr that has gone away (errexit) from replacing it with 1.
 SIGNALLED=""
 on_exit() {
@@ -305,11 +306,12 @@ on_exit() {
     log_event "exit" "signal=${SIGNALLED:-none} status=${status}" || true
     exit "$status"
 }
-# Recorders, not handlers: a signalled pass still runs to its own end rather
-# than leaving the output path half-reconciled, and on_exit reports the cause.
-trap 'SIGNALLED=TERM' TERM
-trap 'SIGNALLED=HUP' HUP
-trap 'SIGNALLED=INT' INT
+# Each trap exits at the next command boundary with the code systemd expects
+# for that signal, rather than letting the pass run on. on_exit still fires
+# on that exit, cleans up any open stage, and names the signal that caused it.
+trap 'SIGNALLED=TERM; exit 143' TERM
+trap 'SIGNALLED=HUP; exit 129' HUP
+trap 'SIGNALLED=INT; exit 130' INT
 trap on_exit EXIT
 
 while [[ $# -gt 0 ]]; do
