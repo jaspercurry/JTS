@@ -19,7 +19,7 @@ import pytest
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import drift as doctor_drift
 
-from .doctor_test_support import _make_unit_states_fake
+from .doctor_test_support import _bootloop_marker, _make_unit_states_fake
 
 
 _OOM_WANT = doctor_drift._UNIT_DIRECTIVES["OOMScoreAdjust"]
@@ -237,12 +237,6 @@ def test_degraded_directive_read_is_skipped_never_a_silent_pass():
     assert notes
 
 
-def _bootloop_marker(monkeypatch, tmp_path, payload) -> None:
-    p = tmp_path / "bootloop-state.json"
-    monkeypatch.setenv("JASPER_BOOTLOOP_MARKER_FILE", str(p))
-    p.write_text(json.dumps(payload), encoding="utf-8")
-
-
 def test_bootloop_guard_tripped_units_are_not_reported_as_drift(
     monkeypatch, tmp_path,
 ):
@@ -253,14 +247,14 @@ def test_bootloop_guard_tripped_units_are_not_reported_as_drift(
         "jasper-outputd", "jasper-aec-bridge", "jasper-voice", "jasper-control",
     )
     healthy_checked = _systemd_drift()[1]
-    _bootloop_marker(monkeypatch, tmp_path, {
+    _bootloop_marker(monkeypatch, tmp_path, json.dumps({
         "tripped": True,
         "boots_in_window": 3,
         "threshold": 3,
         "window_sec": 3600,
         "checked_at": 1000,
         "units": [f"{u}.service" for u in guarded],
-    })
+    }))
 
     items, checked, _ = _systemd_drift(actions={u: "none" for u in guarded})
 

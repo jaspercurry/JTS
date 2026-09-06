@@ -6,21 +6,30 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
 
+logger = logging.getLogger(__name__)
 
-def no_account_error(clients: "GoogleClients", attempted: str) -> dict:
+# `label` -> what the user hears ('Gmail', 'Google Calendar').
+_FRIENDLY = {"gmail": "Gmail", "calendar": "Google Calendar"}
+
+
+def no_account_error(
+    clients: "GoogleClients", attempted: str, setup_url: str,
+) -> dict:
     available = clients.list_account_names()
     if not available:
         return {
             "ok": False,
             "error": (
                 "No Google accounts linked to this speaker yet. "
-                "Visit jts.local/google to add one."
+                f"Visit {setup_url} to add one."
             ),
+            "setup_url": setup_url,
         }
     name_list = ", ".join(available)
     if attempted:
@@ -40,11 +49,27 @@ def no_account_error(clients: "GoogleClients", attempted: str) -> dict:
     }
 
 
-def no_credentials_error(account_name: str) -> dict:
+def no_credentials_error(account_name: str, setup_url: str) -> dict:
     return {
         "ok": False,
         "error": (
             f"Google access for {account_name} can't be refreshed. "
-            "Re-link at jts.local/google."
+            f"Re-link at {setup_url}."
         ),
+        "setup_url": setup_url,
+    }
+
+
+def api_error(label: str, account_name: str, exc: Exception) -> dict:
+    """Generic fallback for a googleapiclient HttpError or transport
+    failure, shared by gmail.py and calendar.py. Logged with the full
+    traceback for debugging; the model speaks the short version.
+    `label` names the failing surface ('gmail', 'calendar') for both
+    the log line and the `_FRIENDLY` lookup."""
+    logger.warning(
+        "%s API error for %s: %s", label, account_name, exc, exc_info=True,
+    )
+    return {
+        "ok": False,
+        "error": f"Couldn't reach {_FRIENDLY[label]} just now. Try again in a moment.",
     }

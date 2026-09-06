@@ -15,7 +15,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import tool
-from ..timers import announcement_text, human_duration
+from ..timers import human_duration
 
 if TYPE_CHECKING:
     from ..timers import Timer, TimerScheduler
@@ -259,4 +259,4 @@ def make_timer_tools(scheduler: "TimerScheduler"):
     return [set_timer, list_timers, cancel_timer, update_timer]
 
 
-__all__ = ["make_timer_tools", "announcement_text"]
+__all__ = ["make_timer_tools"]

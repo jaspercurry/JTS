@@ -6,14 +6,14 @@ from __future__ import annotations
 
 import asyncio
 
-from jasper.tools.audio import (
-    VOLUME_MAX_DB,
-    VOLUME_MIN_DB,
-    _db_to_percent,
-    _percent_to_db,
-    make_audio_tools,
-)
+from jasper.tools.audio import make_audio_tools
 from jasper.volume_coordinator import VolumeState
+from jasper.volume_curve import (
+    DEFAULT_VOLUME_FLOOR_DB,
+    VOLUME_CEILING_DB,
+    db_to_percent,
+    percent_to_db,
+)
 
 
 class FakeCoordinator:
@@ -73,19 +73,19 @@ def _tools(coordinator):
 
 
 def test_percent_db_round_trip_at_endpoints():
-    assert _percent_to_db(0) == VOLUME_MIN_DB
-    assert _percent_to_db(100) == VOLUME_MAX_DB
-    assert _db_to_percent(VOLUME_MIN_DB) == 0
-    assert _db_to_percent(VOLUME_MAX_DB) == 100
+    assert percent_to_db(0) == DEFAULT_VOLUME_FLOOR_DB
+    assert percent_to_db(100) == VOLUME_CEILING_DB
+    assert db_to_percent(DEFAULT_VOLUME_FLOOR_DB) == 0
+    assert db_to_percent(VOLUME_CEILING_DB) == 100
 
 
 def test_percent_to_db_round_trips_nonzero_slider_values():
-    assert _db_to_percent(_percent_to_db(50)) == 50
+    assert db_to_percent(percent_to_db(50)) == 50
 
 
 def test_percent_clamped_out_of_range():
-    assert _percent_to_db(-10) == VOLUME_MIN_DB
-    assert _percent_to_db(150) == VOLUME_MAX_DB
+    assert percent_to_db(-10) == DEFAULT_VOLUME_FLOOR_DB
+    assert percent_to_db(150) == VOLUME_CEILING_DB
 
 
 def test_set_volume_dispatches_to_coordinator():
