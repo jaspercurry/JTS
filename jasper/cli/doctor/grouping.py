@@ -269,7 +269,7 @@ def _probe_grouping_pcm(pcm: str) -> tuple[int | None, str]:
 
     Returns ``(rc, "")`` with alsa-lib's own return code, or ``(None, reason)``
     when the probe could not be run at all (no interpreter, no libasound, an
-    unparseable answer) — which is skipped, not a verdict about the PCM.
+    unparseable answer) — which is a warn, not a verdict about the PCM.
     """
     try:
         proc = _run(
@@ -319,12 +319,11 @@ def check_grouping_ring_device() -> CheckResult:
     outcomes are name-resolves, name-does-not-resolve, and probe-could-not-run.
 
     Statuses:
-      - ok      — the name resolved and the ioplug loaded.
-      - skipped — the probe could not be run at all (no libasound on this
-                  host) — nothing about the name was observed.
-      - warn    — the name did not resolve on a box that is not bonded.
-      - fail    — the conf.d block is missing, or the name did not resolve on
-                  a bonded box.
+      - ok   — the name resolved and the ioplug loaded.
+      - warn — the probe could not be run (no libasound on this host), or the
+               name did not resolve on a box that is not bonded.
+      - fail — the conf.d block is missing, or the name did not resolve on a
+               bonded box.
     """
     from ...multiroom.grouping_ring import GROUPING_RING_CONF_D, GROUPING_RING_PCM
     from ...ring_assets import RING_ALSA_PLUGIN_DIR, RING_IOPLUG_SO
@@ -341,7 +340,7 @@ def check_grouping_ring_device() -> CheckResult:
     rc, probe_detail = _probe_grouping_pcm(GROUPING_RING_PCM)
     if rc is None:
         return CheckResult(
-            label, "skipped", probe_detail, reason=REASON_RING_PROBE_UNAVAILABLE
+            label, "warn", probe_detail, reason=REASON_RING_PROBE_UNAVAILABLE
         )
     if rc == 0:
         return CheckResult(

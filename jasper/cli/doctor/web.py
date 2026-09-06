@@ -13,7 +13,7 @@ from ...control import control_token
 from ...identity import resolve_hostname
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult, _run
+from ._shared import CheckResult, _run, _systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a web check produced a result
 # (AGENTS.md: tests pin status + reason, never detail prose).
@@ -276,7 +276,7 @@ def check_conversation_history() -> CheckResult:
     if info["turn_count"] is None:
         return CheckResult(
             label,
-            "skipped",
+            "warn",
             "capture enabled but the store could not be read",
             reason=REASON_HISTORY_STATS_UNREADABLE,
         )
@@ -456,10 +456,7 @@ def check_wizard_socket_start_limits() -> CheckResult:
     for unit in WIZARD_UNITS:
         result = _wizard_socket_state(unit)
         if result is None:
-            return CheckResult(
-                label, "skipped", "systemctl unavailable — skipped (not Linux?)",
-                reason=REASON_SYSTEMCTL_UNAVAILABLE,
-            )
+            return _systemctl_unavailable_result(label)
         active, finding = result
         if finding:
             findings.append(finding)

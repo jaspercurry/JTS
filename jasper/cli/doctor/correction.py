@@ -17,10 +17,10 @@ from pathlib import Path
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
     _group_writable_dir,
     _run,
+    _systemctl_unavailable_result,
 )
 from ...active_speaker.environment import (
     camilla_statefile_path,
@@ -82,6 +82,7 @@ REASON_CERT_NOT_INSTALLED = "cert_not_installed"
 REASON_CERT_IDENTITY_ABSENT = "cert_identity_absent"
 REASON_CERT_HOSTNAME_UNKNOWN = "cert_hostname_unknown"
 REASON_CERT_SAN_UNREADABLE = "cert_san_unreadable"
+REASON_CERT_SAN_UNPARSEABLE = "cert_san_unparseable"
 REASON_CERT_SAN_MISMATCH = "cert_san_mismatch"
 
 REASON_CLOUD_NOT_RUN = "cloud_pipeline_not_run"
@@ -124,25 +125,12 @@ def check_correction_web_service() -> CheckResult:
     timeout; the socket must remain active so nginx can spawn the
     wizard on demand.
     """
-    if (
-        evidence.unit_state("jasper-correction-web.socket") is None
-        and evidence.unit_state("jasper-correction-web.service") is None
-    ):
-        return CheckResult(
-            "correction web", "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
-    socket_state = str(
-        (evidence.unit_state("jasper-correction-web.socket") or {}).get(
-            "active_state",
-        ) or ""
-    )
-    service_state = str(
-        (evidence.unit_state("jasper-correction-web.service") or {}).get(
-            "active_state",
-        ) or ""
-    )
+    socket_raw = evidence.unit_state("jasper-correction-web.socket")
+    service_raw = evidence.unit_state("jasper-correction-web.service")
+    if socket_raw is None and service_raw is None:
+        return _systemctl_unavailable_result("correction web")
+    socket_state = str((socket_raw or {}).get("active_state") or "")
+    service_state = str((service_raw or {}).get("active_state") or "")
     if socket_state == "active":
         return CheckResult(
             "correction web", "ok",
@@ -651,10 +639,13 @@ def check_correction_cert_hostname() -> CheckResult:
             reason=REASON_CERT_SAN_UNREADABLE,
         )
     if proc.returncode != 0:
+        # openssl launched and read the file — a non-zero exit means it
+        # rejected the bytes (truncated/wrong-PEM), not that nothing was
+        # observed: nginx would refuse this cert too.
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             f"openssl exited {proc.returncode} reading {cert_path}",
-            reason=REASON_CERT_SAN_UNREADABLE,
+            reason=REASON_CERT_SAN_UNPARSEABLE,
         )
     san = proc.stdout.lower()
     if effective.lower() in san:
@@ -966,7 +957,7 @@ def check_measurement_hold() -> CheckResult:
         held_for_s = float(held_for)
     except (TypeError, ValueError):
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             f"held by {owner} (mode={mode}) but held_for_s is unreadable "
             f"({held_for!r}) — a stuck hold could not be ruled out",
             reason=REASON_MEASUREMENT_HOLD_AGE_UNREADABLE,

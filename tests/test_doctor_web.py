@@ -21,7 +21,7 @@ import pytest
 
 from jasper import tool_catalog_view
 from jasper.cli import doctor
-from jasper.cli.doctor import _evidence
+from jasper.cli.doctor import _evidence, _shared
 from jasper.cli.doctor import web as doctor_web
 from jasper.control import control_token
 from jasper.conversation_history import (
@@ -433,27 +433,6 @@ def test_conversation_history_warns_when_enabled_db_missing(monkeypatch, tmp_pat
     assert r.reason == doctor_web.REASON_HISTORY_STORE_UNAVAILABLE
 
 
-def test_conversation_history_skips_when_stats_cannot_be_read(monkeypatch):
-    """The store opened (``available`` True) but the stats query itself
-    raised — nothing about turn count or last-write age was observed, so
-    this must not read as a live finding about the data (ADR-0233 rule 3)."""
-    monkeypatch.setattr(
-        "jasper.conversation_history.health",
-        lambda **_kwargs: {
-            "capture_enabled": True,
-            "available": True,
-            "turn_count": None,
-            "last_write_age_seconds": None,
-            "retention": {"days": None, "max_rows": None},
-        },
-    )
-
-    r = doctor_web.check_conversation_history()
-
-    assert r.status == "skipped"
-    assert r.reason == doctor_web.REASON_HISTORY_STATS_UNREADABLE
-
-
 def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
     db_path = tmp_path / "conversation_history.db"
     _history_settings(monkeypatch, tmp_path, enabled="1", db_path=db_path)
@@ -618,7 +597,7 @@ def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
     r = doctor_web.check_wizard_socket_start_limits()
 
     assert r.status == "skipped"
-    assert r.reason == doctor_web.REASON_SYSTEMCTL_UNAVAILABLE
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_swept_units_match_the_installers_wizard_family():

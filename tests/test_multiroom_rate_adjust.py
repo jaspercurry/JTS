@@ -331,52 +331,50 @@ def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
     assert result.reason == doctor_grouping.REASON_RATE_ADJUST_UNCONFIRMED
 
 
-def test_doctor_check_skips_when_the_statefile_is_unreadable(monkeypatch):
-    """The statefile itself named no config path — the doctor's evidence
-    channel failed, so this is a skip, not a verdict about rate_adjust."""
-    import jasper.cli.doctor.correction as corrmod
-    import jasper.multiroom.config as cfgmod
-    from jasper.cli.doctor.grouping import check_grouping_rate_adjust
-
-    monkeypatch.setattr(
-        cfgmod, "load_config",
-        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left",
-                             bond_id="b"),
-    )
-    monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
-        lambda: ("/var/lib/jasper/camilla-active.yml", None),
-    )
-
-    result = check_grouping_rate_adjust()
-    assert result.status == "skipped"
-    assert result.reason == corrmod.REASON_CAMILLA_STATEFILE_UNREADABLE
-
-
-def test_doctor_check_skips_when_the_active_config_is_unreadable(
-    monkeypatch, tmp_path,
+@pytest.mark.parametrize(
+    "check_name", ["check_grouping_rate_adjust", "check_grouping_leader_pipe"],
+)
+@pytest.mark.parametrize(
+    "unreadable, reason_name",
+    [
+        ("statefile", "REASON_CAMILLA_STATEFILE_UNREADABLE"),
+        ("config", "REASON_CAMILLA_CONFIG_UNREADABLE"),
+    ],
+    ids=["statefile-unreadable", "config-unreadable"],
+)
+def test_doctor_backstops_skip_when_the_active_config_is_unreadable(
+    monkeypatch, tmp_path, check_name, unreadable, reason_name,
 ):
-    """The statefile named a config path that exists but cannot be read — an
-    OSError on the doctor's own read, not a fact about rate_adjust."""
+    """Both backstops read the active CamillaDSP config through the same
+    reader (correction._active_camilla_config_path) — either failure mode is
+    the doctor's own evidence channel, not a verdict about the check's own
+    subject (rate_adjust / the leader's pipe)."""
     import jasper.cli.doctor.correction as corrmod
+    import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
-    from jasper.cli.doctor.grouping import check_grouping_rate_adjust
 
     monkeypatch.setattr(
         cfgmod, "load_config",
         lambda *a, **k: _cfg(enabled=True, role="leader", channel="left",
                              bond_id="b"),
     )
-    unreadable = tmp_path / "active.yml"
-    unreadable.mkdir()
-    monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
-        lambda: ("statefile", str(unreadable)),
-    )
+    if unreadable == "statefile":
+        monkeypatch.setattr(
+            corrmod, "_active_camilla_config_path",
+            lambda: ("/var/lib/jasper/camilla-active.yml", None),
+        )
+    else:
+        unreadable_path = tmp_path / "active.yml"
+        unreadable_path.mkdir()
+        monkeypatch.setattr(
+            corrmod, "_active_camilla_config_path",
+            lambda: ("statefile", str(unreadable_path)),
+        )
 
-    result = check_grouping_rate_adjust()
+    result = getattr(groupmod, check_name)()
+
     assert result.status == "skipped"
-    assert result.reason == corrmod.REASON_CAMILLA_CONFIG_UNREADABLE
+    assert result.reason == getattr(corrmod, reason_name)
 
 
 def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_path):
@@ -466,48 +464,6 @@ def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
     )
     r = check_grouping_leader_pipe()
     assert r.status == "ok"
-
-
-def test_leader_pipe_check_skips_when_the_statefile_is_unreadable(monkeypatch):
-    """The statefile named no config path — the doctor's evidence channel
-    failed, so this is a skip, not a verdict about the leader's pipe."""
-    import jasper.cli.doctor.correction as corrmod
-    import jasper.multiroom.config as cfgmod
-    from jasper.cli.doctor.grouping import check_grouping_leader_pipe
-
-    leader = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: leader)
-    monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
-        lambda: ("/var/lib/jasper/camilla-active.yml", None),
-    )
-
-    r = check_grouping_leader_pipe()
-    assert r.status == "skipped"
-    assert r.reason == corrmod.REASON_CAMILLA_STATEFILE_UNREADABLE
-
-
-def test_leader_pipe_check_skips_when_the_active_config_is_unreadable(
-    monkeypatch, tmp_path,
-):
-    """The statefile named a config path that exists but cannot be read — an
-    OSError on the doctor's own read, not a fact about the leader's pipe."""
-    import jasper.cli.doctor.correction as corrmod
-    import jasper.multiroom.config as cfgmod
-    from jasper.cli.doctor.grouping import check_grouping_leader_pipe
-
-    leader = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: leader)
-    unreadable = tmp_path / "active.yml"
-    unreadable.mkdir()
-    monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
-        lambda: ("statefile", str(unreadable)),
-    )
-
-    r = check_grouping_leader_pipe()
-    assert r.status == "skipped"
-    assert r.reason == corrmod.REASON_CAMILLA_CONFIG_UNREADABLE
 
 
 def test_leader_pipe_check_skips_non_leaders(monkeypatch):
@@ -770,6 +726,7 @@ def test_daemon_config_exit_code_contract(unit):
 def _tts_lane_check(
     monkeypatch, *, cfg, voice_text=None, outputd_text=None,
     resolved_voice_text=None, tmp_path=None, active_box=False,
+    outputd_unreadable=False,
 ):
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
@@ -781,7 +738,13 @@ def _tts_lane_check(
         f = tmp_path / "grouping-voice.env"
         f.write_text(voice_text)
         voice_path = str(f)
-    if outputd_text is not None:
+    if outputd_unreadable:
+        # A directory in place of the file: it exists, so `.read_text()`
+        # raises `OSError` — the doctor's own read failing, not drift.
+        d = tmp_path / "grouping-outputd.env"
+        d.mkdir()
+        outputd_path = str(d)
+    elif outputd_text is not None:
         f = tmp_path / "grouping-outputd.env"
         f.write_text(outputd_text)
         outputd_path = str(f)
@@ -906,31 +869,13 @@ def test_tts_lane_check_bonded_skips_when_outputd_env_is_unreadable(
     """The outputd lane-env file exists but cannot be read (OSError) — the
     doctor's own read failed, so this is a skip, not a verdict about the
     TTS lane's arming."""
-    import jasper.cli.doctor.grouping as groupmod
-    import jasper.multiroom.config as cfgmod
-    import jasper.multiroom.reconcile as recmod
-
-    cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
-    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr(
-        recmod, "VOICE_GROUPING_ENV_FILE", "/nonexistent/grouping-voice.env",
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
+        outputd_unreadable=True,
+        tmp_path=tmp_path,
     )
-    unreadable = tmp_path / "grouping-outputd.env"
-    unreadable.mkdir()
-    monkeypatch.setattr(recmod, "OUTPUTD_GROUPING_ENV_FILE", str(unreadable))
-    monkeypatch.setattr(
-        groupmod,
-        "_resolved_jasper_voice_env",
-        lambda: (
-            groupmod._parse_systemd_environment(
-                f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n"
-            ),
-            "",
-        ),
-    )
-
-    r = groupmod.check_grouping_tts_lane()
-
     assert r.status == "skipped"
     assert r.reason == doctor_grouping.REASON_TTS_OUTPUTD_ENV_UNREADABLE
 

@@ -133,6 +133,17 @@ async def _run_async_doctor_check(
 # callers of the systemctl helpers report `skipped` with this.
 REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
 
+
+def _systemctl_unavailable_result(label: str) -> CheckResult:
+    """The verbatim skip every caller reports when ``unit_state()`` (or the
+    ``unit_states()`` batch behind it) returns ``None`` — systemctl itself
+    answered nothing, so no unit's state was observed."""
+    return CheckResult(
+        label, "skipped",
+        "systemctl unavailable — skipped (not Linux?)",
+        reason=REASON_SYSTEMCTL_UNAVAILABLE,
+    )
+
 # The saved output topology is torn/unreadable — both the audio-domain
 # output-hardware-match check and the active-speaker runtime-graph check
 # report this same reason for the same underlying evidence failure.
@@ -290,11 +301,7 @@ def _service_state_failure(
 
     state = evidence.unit_state(unit)
     if state is None:
-        return CheckResult(
-            label, "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result(label)
     if state.get("load_state") == "not-found":
         return CheckResult(
             label, "fail",

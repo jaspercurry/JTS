@@ -936,10 +936,9 @@ def _hold(**overrides):
             _hold(owner="correction-measurement", held_for_s="over-ceiling"),
             "warn", correction.REASON_MEASUREMENT_HOLD_STUCK,
         ),
-        # A hold whose age cannot be read must not read as healthy — nor as
-        # a confirmed stuck hold, since nothing about its age was observed.
+        # A hold whose age cannot be read must not read as healthy.
         (
-            _hold(held_for_s=None), "skipped",
+            _hold(held_for_s=None), "warn",
             correction.REASON_MEASUREMENT_HOLD_AGE_UNREADABLE,
         ),
     ],
@@ -1164,3 +1163,20 @@ def test_cert_check_skips_when_the_san_cannot_be_read(monkeypatch, tmp_path):
 
     assert r.status == "skipped"
     assert r.reason == correction.REASON_CERT_SAN_UNREADABLE
+
+
+def test_cert_check_warns_when_openssl_rejects_the_cert(monkeypatch, tmp_path):
+    """openssl launched and read the file, then exited non-zero — it
+    observed and rejected the bytes, unlike the unreadable-SAN skip above
+    where openssl never ran at all."""
+    _with_cert(monkeypatch, tmp_path)
+    _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
+
+    with patch(
+        "subprocess.run",
+        return_value=SimpleNamespace(returncode=1, stdout="", stderr="bad cert"),
+    ):
+        r = correction.check_correction_cert_hostname()
+
+    assert r.status == "warn"
+    assert r.reason == correction.REASON_CERT_SAN_UNPARSEABLE
