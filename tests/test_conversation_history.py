@@ -500,6 +500,34 @@ def test_health_reports_settings_and_store_status(
     }
 
 
+def test_health_capture_disabled_opens_no_store(monkeypatch, tmp_path, caplog):
+    """Capture off is the shipped default; a default box must not touch
+    the SQLite file or log on every doctor/`/state` read."""
+    settings_file = tmp_path / "conversation_history.env"
+    settings_file.write_text(f"{CAPTURE_ENABLED_ENV}=0\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_file))
+
+    def _unexpected_construction(*a, **k):
+        raise AssertionError("ConversationStore constructed while capture is off")
+
+    monkeypatch.setattr(history_module, "ConversationStore", _unexpected_construction)
+
+    with caplog.at_level(logging.WARNING):
+        info = history_module.health(warn_unavailable=True)
+
+    assert info == {
+        "capture_enabled": False,
+        "available": False,
+        "turn_count": None,
+        "last_write_age_seconds": None,
+        "retention": {
+            "days": DEFAULT_RETENTION_DAYS,
+            "max_rows": DEFAULT_RETENTION_MAX_ROWS,
+        },
+    }
+    assert caplog.records == []
+
+
 # --- /state.chat snapshot ------------------------------------------------
 #
 # state_aggregate projects health() onto /state.chat's wire shape, which

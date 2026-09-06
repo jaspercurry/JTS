@@ -360,21 +360,27 @@ def health(*, warn_unavailable: bool = False) -> dict[str, Any]:
 
     The sole computation of availability, turn count, and write age for both
     ``jasper-doctor`` and ``/state.chat`` (ADR-0233 rule 1) — each caller
-    applies only its own verdict/wire shape on top. ``available`` reflects
-    the store connection; a connection that opens but whose query then fails
-    still reports ``turn_count`` as ``None``, so a caller can tell the two
-    failure modes apart without a second field. ``warn_unavailable`` controls
-    whether an unavailable store logs (the doctor wants the signal; a
-    frequently-polled ``/state`` read does not).
+    applies only its own verdict/wire shape on top. ``warn_unavailable``
+    controls whether an unavailable store logs (the doctor wants the signal;
+    a frequently-polled ``/state`` read does not).
     """
     settings = read_settings()
+    if not settings.capture_enabled:
+        # Capture off is the shipped default: open nothing, log nothing.
+        return {
+            "capture_enabled": False,
+            "available": False,
+            "turn_count": None,
+            "last_write_age_seconds": None,
+            "retention": settings.retention,
+        }
     store = ConversationStore(
         settings.db_path, read_only=True, warn_unavailable=warn_unavailable,
     )
     try:
-        stats = store.stats() if store.available else None
+        stats = store.stats()
         return {
-            "capture_enabled": settings.capture_enabled,
+            "capture_enabled": True,
             "available": store.available,
             "turn_count": stats.turn_count if stats is not None else None,
             "last_write_age_seconds": (

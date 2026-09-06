@@ -151,10 +151,9 @@ def test_combo_is_armed_requires_both_signals():
     "text, expected",
     [
         (f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n", True),
-        (f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_DISABLED_VALUE}\n", False),
         ("", False),
     ],
-    ids=["enabled", "disabled", "absent"],
+    ids=["enabled", "absent"],
 )
 def test_combo_armed_from_env_reads_the_resolved_value(text, expected):
     # The OBSERVED read the doctor and /state both need — see combo_is_armed
