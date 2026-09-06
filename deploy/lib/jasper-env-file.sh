@@ -13,9 +13,9 @@ if [[ -n "${_JASPER_ENV_FILE_LIB_LOADED+x}" ]]; then
 fi
 _JASPER_ENV_FILE_LIB_LOADED=1
 
-# Shared env-file reader + quoting + atomic, locked single-key writer for the
-# bash consumers of /etc/jasper/jasper.env and the wizard-owned
-# /var/lib/jasper*/*.env files.
+# Shared env-file reader + quoting + atomic, locked writers (single-key
+# upsert/unset, multi-key seed) for the bash consumers of
+# /etc/jasper/jasper.env and the wizard-owned /var/lib/jasper*/*.env files.
 #
 # Values are single-quote wrapped, never `printf %q`: bash 5.2 escapes commas
 # (`hw:CARD=A\,DEV=0`), systemd's EnvironmentFile= parser keeps that backslash
@@ -162,6 +162,14 @@ jasper_env_file_export() {
     done <<<"${_jef_parsed%x}"
 }
 
+# jasper_env_lock_path FILE
+# Print FILE's advisory-lock sibling path — the one formula jasper.atomic_io's
+# _env_lock_path also emits, so a bash writer and the Python one name the same
+# lock file for the same FILE.
+jasper_env_lock_path() {
+    printf '%s/.%s.lock' "$(dirname "$1")" "${1##*/}"
+}
+
 # _jasper_env_lock_acquire DIR FILE FDVAR
 # Hold FILE's advisory lock in the descriptor FDVAR names (a nameref; the
 # caller closes it). Path and create-time mode/group are jasper/atomic_io.py's
@@ -182,7 +190,8 @@ jasper_env_file_export() {
 # 1, so that open gets EBUSY. A pre-planted FIFO is refused without opening;
 # one raced in blocks either open, which bash cannot make non-blocking.
 _jasper_env_lock_acquire() {
-    local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0
+    local dir="$1" file="$2" rc=0
+    local lock; lock="$(jasper_env_lock_path "$file")"
     local -n fd_ref="$3"
     if [[ ! -e "$lock" && ! -L "$lock" ]]; then
         set -C
@@ -225,15 +234,112 @@ _jasper_env_lock_acquire() {
 # Returns 1 without writing when the lock is refused. Every caller passes its
 # own modes; the defaults only keep the arguments optional.
 jasper_env_file_set() {
+    _jasper_env_file_upsert "$1" "$2" "$3" "${4:-0600}" "${5:-0750}"
+}
+
+# _jasper_env_file_publish TMP FILE FILE_MODE
+# Give TMP the ownership FILE already carries — or, for a file being created,
+# the parent directory's group — then the requested mode, then rename it over
+# FILE. The lib's only publish, so upsert, unset and seed cannot drift.
+_jasper_env_file_publish() {
+    local tmp="$1" file="$2" file_mode="$3"
+    if [[ -e "$file" ]]; then
+        chown --reference="$file" "$tmp" 2>/dev/null || true
+    else
+        chgrp --reference="$(dirname "$file")" "$tmp" 2>/dev/null || true
+    fi
+    chmod "$file_mode" "$tmp"
+    mv "$tmp" "$file"
+}
+
+# _jasper_env_file_ensure_dir DIR DIR_MODE
+# Only CREATE an absent dir; never re-mode an existing one: the installer owns
+# each env dir's mode/group and a blanket `install -d -m` on every boot/udev
+# reconcile re-strips them (#827).
+_jasper_env_file_ensure_dir() {
+    [[ -d "$1" ]] || install -d -m "$2" "$1"
+}
+
+# jasper_env_file_seed_absent FILE FILE_MODE DIR_MODE KEY=VALUE...
+# Append every KEY=VALUE whose KEY the file does not already state — one lock
+# hold, one awk pass, and a publish only when a key was actually appended: a
+# pass that finds nothing absent leaves FILE's inode untouched. A key the file
+# states keeps the value its writer published. The presence test runs INSIDE
+# the hold, so a seed can neither overwrite a value written since the caller
+# last looked nor append a second line for a key that value already states.
+#
+# Returns 75 (EX_TEMPFAIL) when the lock was refused and nothing was written, 1
+# when the write itself failed, 0 otherwise. The two are distinct codes because
+# a caller whose defaults every reader also carries may tolerate the refusal and
+# must not tolerate the failure.
+jasper_env_file_seed_absent() {
+    local file="$1" file_mode="$2" dir_mode="$3"
+    shift 3
+    local dir tmp pair src lines="" rc=0 lock_fd=''
+    (( $# )) || return 0
+
+    for pair in "$@"; do
+        lines+="${pair%%=*}=$(jasper_env_quote_value "${pair#*=}")"$'\n'
+    done
+    dir="$(dirname "$file")"
+    _jasper_env_file_ensure_dir "$dir" "$dir_mode"
+    _jasper_env_lock_acquire "$dir" "$file" lock_fd || return 75
+    if ! tmp="$(mktemp "${dir}/.${file##*/}.seed.XXXXXX")"; then
+        exec {lock_fd}>&-
+        return 1
+    fi
+    src=/dev/null
+    [[ -f "$file" ]] && src="$file"
+    # ENVIRON, never `awk -v` — same escape-processing trap as the upsert below.
+    if JASPER_ENV_FILE_SEED_LINES="$lines" awk '
+        BEGIN {
+            count = split(ENVIRON["JASPER_ENV_FILE_SEED_LINES"], seed, "\n")
+            for (i = 1; i <= count; i++) {
+                at = index(seed[i], "=")
+                if (at > 1) {
+                    key[i] = substr(seed[i], 1, at - 1)
+                }
+            }
+        }
+        {
+            print
+            for (i = 1; i <= count; i++) {
+                if (key[i] != "" &&
+                    $0 ~ "^[[:space:]]*" key[i] "[[:space:]]*=") {
+                    seen[i] = 1
+                }
+            }
+        }
+        END {
+            for (i = 1; i <= count; i++) {
+                if (key[i] != "" && !seen[i]) {
+                    print seed[i]
+                }
+            }
+        }
+    ' "$src" > "$tmp"; then
+        if [[ -f "$file" ]] && cmp -s "$tmp" "$file"; then
+            rm -f "$tmp"
+        elif ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+            rm -f "$tmp"
+            rc=1
+        fi
+    else
+        rc=1
+        rm -f "$tmp"
+    fi
+    exec {lock_fd}>&-
+    return "$rc"
+}
+
+# _jasper_env_file_upsert FILE KEY VALUE FILE_MODE DIR_MODE
+_jasper_env_file_upsert() {
     local file="$1" key="$2" value="$3"
-    local file_mode="${4:-0600}" dir_mode="${5:-0750}"
+    local file_mode="$4" dir_mode="$5"
     local dir tmp quoted rc=0 lock_fd=''
 
     dir="$(dirname "$file")"
-    # Only CREATE an absent dir; never re-mode an existing one: the installer
-    # owns each env dir's mode/group and a blanket `install -d -m` on every
-    # boot/udev reconcile re-strips them (#827).
-    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
+    _jasper_env_file_ensure_dir "$dir" "$dir_mode"
     _jasper_env_lock_acquire "$dir" "$file" lock_fd || return 1
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(jasper_env_quote_value "$value")"
@@ -261,15 +367,47 @@ jasper_env_file_set() {
         printf '%s=%s\n' "$key" "$quoted" > "$tmp"
     fi
 
-    if [[ -e "$file" ]]; then
-        chown --reference="$file" "$tmp" 2>/dev/null || true
-    else
-        chgrp --reference="$dir" "$tmp" 2>/dev/null || true
+    if ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+        rm -f "$tmp"
+        rc=1
     fi
-    chmod "$file_mode" "$tmp"
-    mv "$tmp" "$file" || rc=1
     exec {lock_fd}>&-
     return "$rc"
+}
+
+# jasper_env_file_hold FILE / jasper_env_file_drop
+# Take FILE's advisory lock and KEEP it across a sequence, so a caller that
+# publishes FILE by building a candidate and renaming it excludes another
+# holder of the same lock for the whole snapshot→rename window (whichever
+# renamed second would discard the other's file entirely). It excludes BASH
+# holders only: jasper/fanin/coupling_reconcile.py, the second writer of
+# outputd.env, publishes through jasper/atomic_io.py's atomic_write_text, which
+# takes no env-file lock at all (ADR-0235 G8, open until the Python side joins
+# this path).
+# Every acquire above allocates its OWN descriptor, so a hold and those writers
+# never share one and the hold spans their writes to the CANDIDATE. It cannot
+# span a set/unset of FILE ITSELF — flock(2) is per open file description, so
+# the inner open is denied once `flock -w 10` gives up. The descriptor is
+# dynamic, so it is carried in this lib-level variable rather than a literal
+# digit; the parser skips every `_JASPER_`-prefixed key, so no parsed env file
+# can plant an fd number here.
+# Removal condition: drop both when jasper-audio-hardware-reconcile's
+# stage_outputd_env — the one caller — no longer stages a whole env file.
+_JASPER_ENV_HOLD_FD=''
+
+jasper_env_file_hold() {
+    jasper_env_file_drop
+    _jasper_env_lock_acquire "$(dirname "$1")" "$1" _JASPER_ENV_HOLD_FD && return 0
+    # A refused acquire can leave the number of a descriptor it already closed.
+    _JASPER_ENV_HOLD_FD=''
+    return 1
+}
+
+jasper_env_file_drop() {
+    local fd="${_JASPER_ENV_HOLD_FD:-}"
+    [[ -n "$fd" ]] || return 0
+    _JASPER_ENV_HOLD_FD=''
+    { exec {fd}>&-; } 2>/dev/null || true
 }
 
 # jasper_env_file_repair_permissions FILE [FILE_MODE]
@@ -311,9 +449,10 @@ jasper_env_file_unset() {
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
         { print }
     ' "$file" > "$tmp"
-    chown --reference="$file" "$tmp" 2>/dev/null || true
-    chmod "$file_mode" "$tmp"
-    mv "$tmp" "$file" || rc=1
+    if ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+        rm -f "$tmp"
+        rc=1
+    fi
     exec {lock_fd}>&-
     return "$rc"
 }
