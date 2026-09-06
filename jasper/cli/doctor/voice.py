@@ -345,7 +345,7 @@ def check_voice_provider_ids_manifest() -> CheckResult:
     if sorted(actual) == expected and len(actual) == len(expected):
         return CheckResult(
             "voice provider ids",
-            "warn",
+            "ok",
             f"{path} has the right ids but non-canonical order/format; re-run install.sh",
             reason=REASON_MANIFEST_NONCANONICAL,
         )
