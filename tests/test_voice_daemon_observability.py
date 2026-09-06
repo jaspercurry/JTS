@@ -478,6 +478,116 @@ def test_session_status_reports_only_armed_legs_when_optional_absent():
     assert wl.session_status()["wake_legs"] == ["on", "off"]
 
 
+async def test_dead_wake_leg_logs_and_drops_from_wake_legs(caplog):
+    """A wake-leg consumer loop that raises used to leave the daemon deaf
+    on that leg with zero event line. It must now log wake.leg_died and
+    stop claiming the leg is armed, while the "on" leg (driven inline by
+    run(), not by a task) stays reported."""
+    import logging
+
+    from tests._log_events import event_fields, event_records
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _wake_loop_with_legs("on", "off")
+    _prep_session_status(wl)
+    wl._heartbeat = None
+
+    async def _dying_wake_leg_loop(_leg_name: str) -> None:
+        raise RuntimeError("boom")
+
+    wl._wake_leg_loop = _dying_wake_leg_loop
+
+    class _IdleMic:
+        async def frames(self):
+            while True:
+                await asyncio.sleep(0)
+                yield None
+
+    wl._mic = _IdleMic()
+
+    run_task = asyncio.create_task(wl.run())
+    try:
+        for _ in range(200):
+            task = wl._leg_tasks.get("off")
+            if task is not None and task.done():
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the 'off' leg task never completed")
+        # The done-callback fires via call_soon, one tick after the task
+        # itself transitions to done — a few extra yields make sure it ran.
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        fields = event_fields(caplog, "wake.leg_died")
+        assert fields["leg"] == "off"
+        assert fields["exc_type"] == "RuntimeError"
+        (record,) = event_records(caplog, "wake.leg_died")
+        assert record.levelno == logging.WARNING
+
+        wake_legs = wl.session_status()["wake_legs"]
+        assert "off" not in wake_legs
+        assert "on" in wake_legs
+    finally:
+        wl._stop_event.set()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+
+async def test_returning_wake_leg_logs_as_dead_with_no_exc_type(caplog):
+    """A wake-leg loop can also die by returning cleanly — its mic's frame
+    generator ended — with no exception at all. That is just as deaf as a
+    raise, so wake.leg_died must fire for it too, with exc_type="none" so
+    the field is always present, and the leg drops out of wake_legs."""
+    import logging
+
+    from tests._log_events import event_fields, event_records
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _wake_loop_with_legs("on", "off")
+    _prep_session_status(wl)
+    wl._heartbeat = None
+
+    async def _returning_wake_leg_loop(_leg_name: str) -> None:
+        return
+
+    wl._wake_leg_loop = _returning_wake_leg_loop
+
+    class _IdleMic:
+        async def frames(self):
+            while True:
+                await asyncio.sleep(0)
+                yield None
+
+    wl._mic = _IdleMic()
+
+    run_task = asyncio.create_task(wl.run())
+    try:
+        for _ in range(200):
+            task = wl._leg_tasks.get("off")
+            if task is not None and task.done():
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the 'off' leg task never completed")
+        # The done-callback fires via call_soon, one tick after the task
+        # itself transitions to done — a few extra yields make sure it ran.
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        fields = event_fields(caplog, "wake.leg_died")
+        assert fields["leg"] == "off"
+        assert fields["exc_type"] == "none"
+        (record,) = event_records(caplog, "wake.leg_died")
+        assert record.levelno == logging.WARNING
+
+        wake_legs = wl.session_status()["wake_legs"]
+        assert "off" not in wake_legs
+        assert "on" in wake_legs
+    finally:
+        wl._stop_event.set()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+
 def test_session_status_surfaces_tool_pack_outcomes():
     """session_status surfaces the per-pack tool-registration outcomes so a
     pack that silently failed to build (event=tool_pack.build_failed) is
