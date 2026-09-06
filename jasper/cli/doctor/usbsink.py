@@ -971,7 +971,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             )
         ):
             return CheckResult(
-                "usbsink name", "ok",
+                "usbsink name", "warn",
                 f"override {override} still contains the stock string — "
                 f"patch did not take. Restart {USBGADGET_UNIT}.",
                 reason=REASON_NAME_STOCK_STRING,

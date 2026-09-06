@@ -285,14 +285,13 @@ def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
     assert r.reason == doctor_network.REASON_GUARDIAN_NOT_APPLICABLE
 
 
-def test_check_wifi_guardian_ok_when_stash_missing_but_active(
+def test_check_wifi_guardian_warns_when_stash_missing_but_active(
     monkeypatch,
     tmp_path,
 ):
     """WiFi works but the stash hasn't been seeded — operator brought
     up wifi via raspi-config or installed before our migration shipped.
-    Correct-by-intent (nothing to recover from yet): ok with the reason
-    so the recovery gap still surfaces in detail (ADR-0233)."""
+    Warn so the dashboard / system check surfaces the recovery gap."""
     monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
     _patch_doctor_nmcli(
         monkeypatch,
@@ -302,7 +301,7 @@ def test_check_wifi_guardian_ok_when_stash_missing_but_active(
         ],
     )
     r = doctor_network.check_wifi_guardian()
-    assert r.status == "ok"
+    assert r.status == "warn"
     assert r.reason == doctor_network.REASON_GUARDIAN_STASH_MISSING
 
 

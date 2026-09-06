@@ -652,7 +652,7 @@ def _write_override(root: Path, body: bytes, marker: str | None) -> None:
             "Kitchen",
             b"\x7fELF" + b"Playback Inactive\x00Capture Inactive\x00rest",
             _MARKER,
-            "ok",
+            "warn",
             usbsink.REASON_NAME_STOCK_STRING,
         ),
         (
@@ -660,7 +660,7 @@ def _write_override(root: Path, body: bytes, marker: str | None) -> None:
             "Kitchen",
             b"\x7fELF Kitchen\x00Kitchen Mic\x00Capture Active\x00rest",
             _MARKER,
-            "ok",
+            "warn",
             usbsink.REASON_NAME_STOCK_STRING,
         ),
         (True, "Kitchen", _PATCHED, _MARKER, "ok", usbsink.REASON_NAME_PATCHED),

@@ -314,7 +314,7 @@ def check_wifi_guardian() -> CheckResult:
 
     if stash is None and active_ssid is not None:
         return CheckResult(
-            label, "ok",
+            label, "warn",
             f"WiFi is up on {active_ssid!r} but no recovery stash exists. "
             f"Open http://jts.local/wifi/ and Connect once to seed "
             f"{stash_path} — until then, a dirty-shutdown filesystem loss "

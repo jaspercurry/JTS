@@ -113,34 +113,46 @@ def test_memory_headroom_warns_when_meminfo_is_unreadable():
 # ------------------------------------------------------- check_zram_size_ratio
 
 
-def _zram_mocks(zram_bytes: int, *, rpi_swap_installed: bool = True):
+def _zram_mocks(
+    zram_bytes: int, *, rpi_swap_installed: bool = True, drop_in_installed: bool = False,
+):
     def fake_read(self):
         if str(self) == "/sys/block/zram0/disksize":
             return str(zram_bytes)
         raise FileNotFoundError(str(self))
 
     def fake_exists(self):
-        return str(self) == "/etc/rpi/swap.conf" and rpi_swap_installed
+        path = str(self)
+        if path == "/etc/rpi/swap.conf":
+            return rpi_swap_installed
+        if path == "/etc/rpi/swap.conf.d/50-jts.conf":
+            return drop_in_installed
+        return False
 
     return fake_read, fake_exists
 
 
 @pytest.mark.parametrize(
-    "zram_bytes, rpi_swap_installed, status, reason",
+    "zram_bytes, rpi_swap_installed, drop_in_installed, status, reason",
     [
-        # rpi-swap installed and zram over 60% of RAM: old default, a
-        # reboot applies the JTS drop-in — correct-by-intent, not a fault.
-        (1014767616, True, "ok", "REASON_ZRAM_OVERSIZED"),
+        # rpi-swap installed, JTS drop-in present: one reboot from correct.
+        (1014767616, True, True, "ok", doctor_memory.REASON_ZRAM_OVERSIZED),
+        # rpi-swap installed, drop-in never installed: a real gap.
+        (1014767616, True, False, "warn", doctor_memory.REASON_ZRAM_OVERSIZED),
         # Without rpi-swap the drop-in is inert — a different package
         # manages the device, so this box has nothing to apply.
-        (1014767616, False, "ok", "REASON_ZRAM_MANAGED_ELSEWHERE"),
-        (520 * 1024 * 1024, True, "ok", None),
+        (1014767616, False, False, "ok", doctor_memory.REASON_ZRAM_MANAGED_ELSEWHERE),
+        (520 * 1024 * 1024, True, False, "ok", ""),
     ],
-    ids=["over-60pct", "no-rpi-swap", "at-50pct"],
+    ids=["over-60pct-drop-in-present", "over-60pct-no-drop-in", "no-rpi-swap", "at-50pct"],
 )
-def test_check_zram_size_ratio_verdicts(zram_bytes, rpi_swap_installed, status, reason):
+def test_check_zram_size_ratio_verdicts(
+    zram_bytes, rpi_swap_installed, drop_in_installed, status, reason,
+):
     fake_read, fake_exists = _zram_mocks(
-        zram_bytes, rpi_swap_installed=rpi_swap_installed
+        zram_bytes,
+        rpi_swap_installed=rpi_swap_installed,
+        drop_in_installed=drop_in_installed,
     )
     with patch("pathlib.Path.read_text", fake_read), patch(
         "pathlib.Path.exists", fake_exists
@@ -149,7 +161,7 @@ def test_check_zram_size_ratio_verdicts(zram_bytes, rpi_swap_installed, status, 
     ):
         r = doctor_memory.check_zram_size_ratio()
         assert r.status == status
-        assert r.reason == (getattr(doctor_memory, reason) if reason else "")
+        assert r.reason == reason
 
 
 def test_check_zram_size_ratio_skips_without_a_zram_device():

@@ -1193,25 +1193,37 @@ devices:
 filters:
 """
 
+# Same mid-ladder playback, but capture also broken — a second, independent
+# fault the ladder does not excuse.
+_STALE_RING_CAPTURE_BROKEN_CFG = _STALE_RING_CFG.replace(
+    'device: "jts_ring_capture"', 'device: "plug:jasper_capture"',
+)
+
 
 @pytest.mark.parametrize(
-    "roleful, status, reason",
+    "cfg_text, roleful, status, reason",
     [
         # A ROLEFUL box on a graph its CLEAR endpoint marker does not name is
         # mid-ladder: the graph moves first, the marker second, so this is
         # the ladder in flight, not a fault — ok, with the ladder's remedy.
-        (True, "ok", audio_runtime_fanin.REASON_COUPLING_ACTIVE_LADDER_PENDING),
+        (_STALE_RING_CFG, True, "ok",
+         audio_runtime_fanin.REASON_COUPLING_ACTIVE_LADDER_PENDING),
         # CONTROL: on a PASSIVE box there is no ladder in flight, so the
         # mismatch is a real fault — the reconciler's own pass is the fix.
-        (False, "warn", audio_runtime_fanin.REASON_COUPLING_GRAPH_NOT_RING),
+        (_STALE_RING_CFG, False, "warn", audio_runtime_fanin.REASON_COUPLING_GRAPH_NOT_RING),
+        # Roleful and mid-ladder on playback, but capture is ALSO broken: a
+        # real fault the ladder does not excuse, so it must not be ok.
+        (_STALE_RING_CAPTURE_BROKEN_CFG, True, "warn",
+         audio_runtime_fanin.REASON_COUPLING_GRAPH_NOT_RING),
     ],
+    ids=["pending-ladder", "passive-mismatch", "capture-mismatch-while-roleful"],
 )
 def test_a_roleful_box_with_a_clear_marker_is_its_own_state(
-    monkeypatch, tmp_path, roleful, status, reason
+    monkeypatch, tmp_path, cfg_text, roleful, status, reason
 ):
     monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: roleful)
 
-    res = _run_check(monkeypatch, cfg_text=_STALE_RING_CFG, tmp_path=tmp_path)
+    res = _run_check(monkeypatch, cfg_text=cfg_text, tmp_path=tmp_path)
 
     assert res.status == status
     assert res.reason == reason

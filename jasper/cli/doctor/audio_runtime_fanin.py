@@ -898,7 +898,8 @@ def check_fanin_coupling() -> CheckResult:
     capture_device = devices.get("capture_device")
     playback_device = devices.get("playback_device")
     ring_mismatches: list[str] = []
-    if capture != "Alsa" or capture_device != RING_CAPTURE_DEVICE:
+    capture_mismatch = capture != "Alsa" or capture_device != RING_CAPTURE_DEVICE
+    if capture_mismatch:
         ring_mismatches.append(
             f"capture={capture}/{capture_device or '(missing)'} "
             f"(expected Alsa/{RING_CAPTURE_DEVICE})"
@@ -928,28 +929,27 @@ def check_fanin_coupling() -> CheckResult:
             "ok",
             f"capture={RING_CAPTURE_DEVICE}, playback={endpoint}",
         )
-    # Roleful means the ACTIVE-ring ladder is moving: the graph moves first
-    # and the marker second, so a box caught between those steps is ok, not
-    # broken. Off the ladder (not roleful) the mismatch stays warn.
-    if roleful:
+    # The graph moves first and the marker second, so a box observed between
+    # those two ladder steps is exactly this state.
+    if roleful and not armed and not capture_mismatch:
+        coupling_status, coupling_reason = "ok", REASON_COUPLING_ACTIVE_LADDER_PENDING
         # The first two steps are the SAME ladder the transport-park check
         # records, composed from its constant rather than respelled.
         from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
 
-        coupling_reason = REASON_COUPLING_ACTIVE_LADDER_PENDING
         recovery = (
             f"the ACTIVE-ring ladder, in order: {ACTIVE_ENDPOINT_REMEDY} && "
             "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
         )
     else:
-        coupling_reason = REASON_COUPLING_GRAPH_NOT_RING
+        coupling_status, coupling_reason = "warn", REASON_COUPLING_GRAPH_NOT_RING
         recovery = (
             "run: sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile "
             "shm_ring"
         )
     return CheckResult(
         label,
-        "ok" if roleful else "warn",
+        coupling_status,
         "the loaded graph is not this box's ring config: "
         f"{'; '.join(ring_mismatches)}; a stale baseline artifact re-seeded on a "
         f"camilla restart is the usual cause; {recovery}",
