@@ -630,8 +630,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._server_turn_complete = True
         self._record_usage(usage)
         # Sentinel lets consumer drain queued chunks then exit; barge-in (if added later) must use a distinct signal.
-        with contextlib.suppress(asyncio.QueueFull):
-            self._audio_q.put_nowait(None)
+        self._audio_q.put_nowait(None)
 
     def _on_assistant_item_id(self, item_id: str | None) -> None:
         if item_id:
