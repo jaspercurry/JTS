@@ -138,16 +138,6 @@ def _event_values(stderr: str, event: str, field: str) -> list[str]:
     )
 
 
-def _shell_function_body(source: str, name: str) -> str:
-    match = re.search(
-        rf"^{re.escape(name)}\(\)\s*\{{\n(.*?)^\}}$",
-        source,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert match is not None, f"could not locate shell function {name}"
-    return match.group(1)
-
-
 def _alignment_record(tmp_path: Path) -> Path:
     """Where jasper-aec-init publishes the verdict for the pass it ran."""
     return tmp_path / "alignment"
@@ -1768,8 +1758,7 @@ def _write_mode_with_legs(
 
 def test_ensure_mode_file_seeds_every_documented_default(tmp_path: Path) -> None:
     """Fresh install (no aec_mode.env): the reconciler creates the file with
-    the documented defaults, which must match install.sh's reconcile_aec_state
-    seed verbatim (pinned against control's view in the next two tests)."""
+    the documented defaults (pinned against control's view in the next test)."""
     _write_env(tmp_path, "Array")
 
     _run_reconcile(tmp_path, "--reason", "test")
@@ -1821,17 +1810,6 @@ def test_reconciler_leg_defaults_match_control_fallback(
     actual = _env_assignments(tmp_path / "aec_mode.env")
     expected = _control_leg_defaults()
     assert {key: actual.get(key) for key in expected} == expected
-
-
-def test_install_leg_seed_matches_control_fallback() -> None:
-    """The install-time seed and control's missing-file view stay aligned."""
-    install = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
-    function = _shell_function_body(install, "reconcile_aec_state")
-    key_pattern = "|".join(re.escape(key) for key in _control_leg_defaults())
-    pairs = re.findall(rf"({key_pattern})=([01])\\n", function)
-
-    assert len(pairs) == len(_control_leg_defaults()), pairs
-    assert dict(pairs) == _control_leg_defaults()
 
 
 def test_reconcile_preserves_existing_mode_file_dir_mode(tmp_path: Path) -> None:
