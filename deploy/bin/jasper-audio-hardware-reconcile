@@ -476,9 +476,22 @@ env_file_value_from() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# A refused lock returns 1 WITHOUT writing, and the callers' `&& changed=1`
+# idiom would read that as "changed" and restart jasper-outputd onto the old
+# lane/PCM/format. A write that did not happen fails the pass instead.
 set_env_file_var() {
     local file="$1" key="$2" value="$3"
-    jasper_env_file_set "$file" "$key" "$value" 0640 0750
+    if ! jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
+        log_event "env_write_failed" "file=${file} key=${key}"
+        exit 1
+    fi
+}
+
+unset_env_file_var() {
+    if ! jasper_env_file_unset "$1" "$2" 0640; then
+        log_event "env_write_failed" "file=${1} key=${2}"
+        exit 1
+    fi
 }
 
 set_env_file_var_if_changed() {
@@ -762,8 +775,8 @@ commit_outputd_env_stage() {
 }
 
 repair_generated_env_permissions() {
-    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750
-    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750
+    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640
+    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640
 }
 
 APPLE_DONGLE_PRESENT=0
@@ -1230,7 +1243,7 @@ apply_route_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
-                    jasper_env_file_unset "$file" "$key" 0640 0750
+                    unset_env_file_var "$file" "$key"
                     file_changed=1
                 fi
                 ;;
@@ -1276,7 +1289,7 @@ apply_latency_floor_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$OUTPUTD_ENV_TARGET_FILE" 2>/dev/null; then
-                    jasper_env_file_unset "$OUTPUTD_ENV_TARGET_FILE" "$key" 0640 0750
+                    unset_env_file_var "$OUTPUTD_ENV_TARGET_FILE" "$key"
                     LATENCY_FLOOR_CHANGED=1
                 fi
                 ;;
@@ -1740,8 +1753,7 @@ set_outputd_active_lane_pair() {
 # once nothing reads the key, no box needs healing off it.
 drop_retired_content_pcm() {
     env_file_states_key "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" || return 1
-    jasper_env_file_unset \
-        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640 0750
+    unset_env_file_var "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM"
 }
 
 apply_audio_runtime_env() {
