@@ -1118,14 +1118,17 @@ async def test_tool_round_metadata_captures_tool_name_without_args_or_payload():
             timeout=2.0,
         )
 
-        metadata = turn.conversation_metadata()
-        assert metadata == {
+        capture = turn.capture()
+        assert capture is not None
+        assert capture.user_text is None
+        assert capture.assistant_text is None
+        assert capture.data == {
             "kind": "voice_turn",
             "transcripts_available": False,
             "tools": ["get_weather"],
         }
-        assert "Home" not in repr(metadata)
-        assert "temperature" not in repr(metadata)
+        assert "Home" not in repr(capture)
+        assert "temperature" not in repr(capture)
 
         await turn.release()
     finally:

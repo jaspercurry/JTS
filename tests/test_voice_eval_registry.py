@@ -191,8 +191,10 @@ def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
         def server_turn_complete(self) -> bool:
             return False
 
-        def usage_tokens(self) -> dict:
-            return {}
+        def usage(self):
+            from jasper.voice.session import TurnUsage
+
+            return TurnUsage()
 
         async def release(self) -> None:
             self.released = True

@@ -44,6 +44,7 @@ from jasper.usb_mic import (
 )
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 from tests._lock_holder import spawn_lock_holder
+from tests._log_events import stderr_events
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -129,23 +130,6 @@ def _env_assignments(path: Path) -> dict[str, str]:
         line.split("=", 1)
         for line in path.read_text(encoding="utf-8").splitlines()
         if line and not line.lstrip().startswith("#") and "=" in line
-    )
-
-
-def _event_values(stderr: str, event: str, field: str) -> list[str]:
-    """Every `field=` value, one per stderr line carrying `event=<event>`.
-
-    Captures up to the next `key=` token or end of line, never to the next
-    space alone: several of this reconciler's fields carry embedded spaces
-    (absence-marker `reason=` prose, ALSA mixer control names), so `field`
-    need not be the last key=value pair on the line. Same anchor-on-the-next-
-    known-field idiom the pass-summary `candidates=(.*?) legs=` pin already
-    relies on (ADR-0235 PR 12).
-    """
-    return re.findall(
-        rf"^.*\bevent={re.escape(event)}(?= |$).*\b{re.escape(field)}=(.*?)(?= \S+=|$)",
-        stderr,
-        flags=re.MULTILINE,
     )
 
 
@@ -580,7 +564,13 @@ def test_jasper_env_values_are_data_never_shell(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
-    assert _event_values(result.stderr, "aec_reconcile.pass", "current_mic") == [mic]
+    # `current_mic` is the one field this test deliberately gives an embedded
+    # space, to pin that the value reaches its use whole (see docstring) —
+    # this shell script never logfmt-quotes it the way jasper.log_event does,
+    # so stderr_events' tokenizer would itself split on that space and
+    # truncate the value it exists to check. Anchor on the next field
+    # instead, same idiom as the `candidates=(.*?) legs=` pin below.
+    assert re.findall(r"current_mic=(.*?) aec_mic=", result.stderr) == [mic]
 
 
 def test_the_configured_card_only_reorders_the_registry_list(
@@ -607,9 +597,10 @@ def test_the_configured_card_only_reorders_the_registry_list(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.direct_mic_selected", "mic"
-    ) == ["C16K6Ch"]
+    assert [
+        d["mic"]
+        for d in stderr_events(result.stderr, "aec_reconcile.direct_mic_selected")
+    ] == ["C16K6Ch"]
     values = _env_assignments(tmp_path / "jasper.env")
     assert values["JASPER_MIC_DEVICE"] == "C16K6Ch"
     assert values["JASPER_LOCAL_MIC_PRESENT"] == "1"
@@ -718,9 +709,9 @@ def test_bridge_ready_marker_publish_and_revoke_are_events(tmp_path: Path) -> No
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.bridge_ready", "state"
-    ) == ["revoked", "published"]
+    assert [
+        d["state"] for d in stderr_events(result.stderr, "aec_reconcile.bridge_ready")
+    ] == ["revoked", "published"]
 
 
 def test_bridge_ready_marker_stays_revoked_with_no_candidate_mic(
@@ -733,7 +724,9 @@ def test_bridge_ready_marker_stays_revoked_with_no_candidate_mic(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    states = _event_values(result.stderr, "aec_reconcile.bridge_ready", "state")
+    states = [
+        d["state"] for d in stderr_events(result.stderr, "aec_reconcile.bridge_ready")
+    ]
     assert states and set(states) == {"revoked"}
 
 
@@ -755,12 +748,14 @@ def test_direct_mic_selected_event_for_a_non_6_channel_custom_mic(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.direct_mic_selected", "reason"
-    ) == ["not_6_channel"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.direct_mic_selected", "changed"
-    ) == [changed]
+    assert [
+        d["reason"]
+        for d in stderr_events(result.stderr, "aec_reconcile.direct_mic_selected")
+    ] == ["not_6_channel"]
+    assert [
+        d["changed"]
+        for d in stderr_events(result.stderr, "aec_reconcile.direct_mic_selected")
+    ] == [changed]
 
 
 def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> None:
@@ -773,14 +768,22 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "state"
-    ) == ["marked"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == [MIC_ABSENT_NO_LOCAL_OR_ACCESSORY]
-    [detail] = _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "detail"
+    assert [
+        d["state"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == ["marked"]
+    assert [
+        d["reason"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == [MIC_ABSENT_NO_LOCAL_OR_ACCESSORY]
+    # `detail=` is operator prose with embedded spaces and always the last
+    # field on its line; this shell script never logfmt-quotes it, so
+    # stderr_events' tokenizer (built for jasper.log_event's quoted output)
+    # would truncate it at the first space. Match to end of line instead.
+    [detail] = re.findall(
+        r"^.*event=aec_reconcile\.voice_input_absent.*\bdetail=(.*)$",
+        result.stderr,
+        flags=re.MULTILINE,
     )
     assert detail == _marker_fields(_marker(tmp_path))["detail"]
 
@@ -824,12 +827,14 @@ def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "state"
-    ) == ["cleared"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == [MIC_ABSENT_XVF_CAPTURE_ABSENT]
+    assert [
+        d["state"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == ["cleared"]
+    assert [
+        d["reason"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == [MIC_ABSENT_XVF_CAPTURE_ABSENT]
 
 
 @pytest.mark.parametrize(
@@ -1309,8 +1314,17 @@ def test_mixer_repair_failure_is_one_event_per_invocation(
     )
 
     assert result.returncode == 0, result.stderr
+    # `control=` can be an ALSA mixer name with embedded spaces (e.g.
+    # "Headset Capture Switch") and is always the last field on its line;
+    # this shell script never logfmt-quotes it, so stderr_events' tokenizer
+    # (built for jasper.log_event's quoted output) would truncate it at the
+    # first space. Match to end of line instead.
     assert (
-        _event_values(result.stderr, "aec_reconcile.mixer_repair", "control")
+        re.findall(
+            r"^.*event=aec_reconcile\.mixer_repair.*\bcontrol=(.*)$",
+            result.stderr,
+            flags=re.MULTILINE,
+        )
         == controls
     )
     # Non-fatal: the pass still arms AEC on the same run.
@@ -2841,12 +2855,14 @@ def test_aec_disabled_clears_every_leg_and_keeps_the_operator_booleans(
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
     # No card staged, so no candidate mic; the custom "Array" device is
     # neither udp: nor unset, so the reconciler leaves it alone.
-    assert _event_values(
-        result.stderr, "aec_reconcile.no_candidate_mic", "current"
-    ) == ["Array"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.no_candidate_mic", "cleared"
-    ) == ["0"]
+    assert [
+        d["current"]
+        for d in stderr_events(result.stderr, "aec_reconcile.no_candidate_mic")
+    ] == ["Array"]
+    assert [
+        d["cleared"]
+        for d in stderr_events(result.stderr, "aec_reconcile.no_candidate_mic")
+    ] == ["0"]
     mode_values = _env_assignments(tmp_path / "aec_mode.env")
     assert mode_values["JASPER_WAKE_LEG_RAW"] == "1"
     assert mode_values["JASPER_WAKE_LEG_DTLN"] == "1"

@@ -95,12 +95,8 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     # TTS / output path.
     ("JASPER_TTS_OUTPUTD_SOCKET", "tts_outputd_socket", "str"),
     ("JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH", "assistant_loudness_profile_path", "str"),
-    # Barge-in + server VAD.
+    # Barge-in.
     ("JASPER_VAD_BARGE_IN_THRESHOLD", "vad_barge_in_threshold", "float"),
-    ("JASPER_SERVER_VAD_ENABLED", "server_vad_enabled", "bool"),
-    ("JASPER_SERVER_VAD_THRESHOLD", "server_vad_threshold", "float"),
-    ("JASPER_SERVER_VAD_SILENCE_MS", "server_vad_silence_ms", "int"),
-    ("JASPER_SERVER_VAD_PREFIX_MS", "server_vad_prefix_ms", "int"),
     # Ducking / CamillaDSP reach.
     ("JASPER_CAMILLA_HOST", "camilla_host", "str"),
     ("JASPER_CAMILLA_PORT", "camilla_port", "int"),

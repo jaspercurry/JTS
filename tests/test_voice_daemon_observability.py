@@ -156,7 +156,6 @@ def _timeline_loop(*, wake: bool):
     wl = WakeLoop.for_tests()
     wl._user_speech_seen = True
     wl._manual_endpoint_this_turn = not wake
-    wl._server_vad_this_turn = False
     wl._barge_in_active = False
     _arm_turn(wl, wake=wake)
     return wl
@@ -347,27 +346,6 @@ async def test_acquire_drain_stamps_first_audio_before_it_sends():
 
     assert drained == 2
     assert stamped_when_sent[0] is True
-
-
-async def test_server_vad_turn_carries_end_of_input(caplog):
-    """Server VAD closes input inline rather than through
-    `_end_session_input` — it must not send a second end_input — so the
-    stamp has to sit beside each of those assignments or this whole class of
-    turn reports a timeline with no `end_input_ms` in it."""
-    import logging
-
-    from tests._log_events import event_fields
-
-    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
-    wl = _timeline_loop(wake=True)
-    wl._server_vad_this_turn = True
-    wl._turn.server_speech_detected = lambda: True
-
-    await wl._handle_session_frame(silent_frame())
-    await wl._end_turn("test")
-
-    assert wl._input_ended is True
-    assert "end_input_ms" in event_fields(caplog, "turn.timeline")
 
 
 async def test_background_connect_failure_ends_the_run() -> None:

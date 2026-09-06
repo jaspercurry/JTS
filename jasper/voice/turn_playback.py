@@ -41,13 +41,11 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
     from local barge-in detection (``WakeLoop._handle_playback_frame`` ->
     ``turn.request_local_interrupt()``). The local TTS flush always happens
     first (the latency-critical action). After a *clean* flush this drives
-    the provider-pack seam — ``cancel_response`` then
-    ``truncate_assistant_audio`` (jasper/voice/session.py) — with the playout
-    ledger's played-ms, so provider history matches what the listener
-    actually heard. Both are no-ops for a server-self-truncating provider
-    (Gemini); the OpenAI/Grok pack sends ``response.cancel`` +
-    ``conversation.item.truncate``. The seam is getattr-probed, so an adapter
-    without it degrades to local-flush-only.
+    the ``session.Interruptible`` seam — ``cancel_response`` then
+    ``truncate_assistant_audio`` — with the playout ledger's played-ms, so
+    provider history matches what the listener actually heard. Both are
+    no-ops for a server-self-truncating provider (Gemini); the OpenAI/Grok
+    pack sends ``response.cancel`` + ``conversation.item.truncate``.
 
     Returns ``True`` on a clean flush, ``False`` if the flush errored. On a
     flush error it emits
@@ -75,30 +73,15 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
             flushed_frames=ack.get("flushed_frames"),
         )
     turn.clear_interrupted()
-    # Drop assistant audio already buffered for playback but not yet written.
-    # The flush above only cleared the DAC ring (~one write), but burst-
-    # delivery providers (OpenAI/Grok) enqueue the whole response up front,
-    # so without this the play loop resumes writing the backlog and the
-    # assistant audibly talks over the user. getattr-probed like the rest of
-    # the seam; adapters that stream without an internal buffer (or already
-    # drain on their own server-interrupt path) return 0 / omit it.
-    drop_pending = getattr(turn, "drop_pending_audio", None)
-    if callable(drop_pending):
-        dropped = drop_pending()
-        if dropped:
-            log_event(logger, "barge.dropped_pending_audio", chunks=dropped)
+    dropped = turn.drop_pending_audio()
+    if dropped:
+        log_event(logger, "barge.dropped_pending_audio", chunks=dropped)
     # Local playout is now fully stopped; reconcile the active provider's
     # conversation state to the heard boundary using the playout ledger's
-    # played-ms from the flush ack. Capability seam (jasper/voice/session.py):
-    # a server-self-truncating provider (Gemini) no-ops both calls; the
-    # OpenAI/Grok pack sends response.cancel then
-    # conversation.item.truncate(audio_end_ms=played-ms). getattr-probed so
-    # an adapter predating the seam degrades to local-flush-only rather than
-    # crashing — same optional-capability handling as request_local_interrupt.
-    # Order matters: cancel stops generation first, then truncate trims
-    # history to what actually played. The truncate's own no-op-if-0 /
-    # missing-id guards live in the pack, so passing the raw ledger value
-    # (0 when unwired/unavailable) is safe here.
+    # played-ms from the flush ack. Order matters: cancel stops generation
+    # first, then truncate trims history to what actually played. The
+    # truncate's own no-op-if-0 / missing-id guards live in the pack, so
+    # passing the raw ledger value (0 when unwired/unavailable) is safe here.
     played_ms = ack.get("max_audio_played_ms") if isinstance(ack, dict) else None
     try:
         played_ms_int = int(played_ms) if played_ms is not None else 0
@@ -107,12 +90,8 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
         # must not raise out of the flush path. The pack's own no-op-if-<=0
         # guard then skips the truncate.
         played_ms_int = 0
-    cancel = getattr(turn, "cancel_response", None)
-    if callable(cancel):
-        await cancel("barge_in")
-    truncate = getattr(turn, "truncate_assistant_audio", None)
-    if callable(truncate):
-        await truncate(None, played_ms_int)
+    await turn.cancel_response("barge_in")
+    await turn.truncate_assistant_audio(None, played_ms_int)
     return True
 
 
@@ -307,8 +286,7 @@ async def _idle_watchdog(
         if turn.server_turn_complete():
             # Defer while chunks are still queued in the inter-task
             # buffer — the consumer hasn't yet pushed them to TtsPlayout.
-            pending_getter = getattr(turn, "audio_chunks_pending", None)
-            if callable(pending_getter) and pending_getter() > 0:
+            if turn.audio_chunks_pending() > 0:
                 continue
             if tts.expected_drain_at() > now:
                 continue

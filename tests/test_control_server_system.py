@@ -1001,7 +1001,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     # check_tool_packs cross-checks it against the static registry).
     assert "tool_packs" in body["voice"]
     # endpointer is the third such field: which mechanism closed the turn's
-    # user input (push_to_talk / server_vad / silero_aec). Pinned HERE, at
+    # user input (push_to_talk / silero_aec). Pinned HERE, at
     # runtime and under its published name, because that is what a client
     # actually reads — a source-level check passes even when the key ships
     # misspelled.

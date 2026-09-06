@@ -60,6 +60,8 @@ from .session import (
     AudioOutChunk,
     ConnectionState,
     LiveTurn,
+    TurnCapture,
+    TurnUsage,
     log_first_chunk,
 )
 
@@ -205,11 +207,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # target item's own duration (C1). Per-turn dict, discarded at turn
         # end; a tool-using turn holds only its handful of item ids.
         self._received_ms_by_item: dict[str, float] = {}
-        self._server_vad_active: bool = False
-        self._server_speech_started: bool = False
-        self._server_speech_stopped: bool = False
-        self._server_committed: bool = False
-        self._server_eou_event: asyncio.Event = asyncio.Event()
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost or self._committed:
@@ -306,13 +303,8 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         """Commit the user audio buffer and trigger a response.
 
         The server stops listening for more user audio and starts
-        generating. Idempotent.
-
-        No-op when server_vad is active — the server already committed
-        the buffer via speech_stopped + committed events."""
+        generating. Idempotent."""
         if self._committed or self._released or self._turn_lost:
-            return
-        if self._server_vad_active:
             return
         self._committed = True
         self._end_input_at_monotonic = _time.monotonic()
@@ -385,21 +377,30 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 elapsed_ms, self._chunks_received, self._bytes_sent,
             )
 
-    def audio_chunks_pending(self) -> int:
-        return self._audio_q.qsize()
+    def usage(self) -> TurnUsage:
+        return TurnUsage(
+            input_tokens=int(self._usage.get("input_tokens", 0)),
+            output_tokens=int(self._usage.get("output_tokens", 0)),
+            # Copied out of the accumulator so a caller can't mutate the
+            # turn's internal state through the returned reference.
+            breakdown={
+                "input_tokens": self._usage_breakdown["input_tokens"],
+                "output_tokens": self._usage_breakdown["output_tokens"],
+                "input_token_details": dict(
+                    self._usage_breakdown["input_token_details"],
+                ),
+                "output_token_details": dict(
+                    self._usage_breakdown["output_token_details"],
+                ),
+            },
+        )
 
-    def usage_tokens(self) -> dict[str, int]:
-        return dict(self._usage)
-
-    def usage_breakdown(self) -> dict | None:
-        # Deep-copy of the accumulator so callers can't mutate the
-        # turn's internal state through the returned reference.
-        return {
-            "input_tokens": self._usage_breakdown["input_tokens"],
-            "output_tokens": self._usage_breakdown["output_tokens"],
-            "input_token_details": dict(self._usage_breakdown["input_token_details"]),
-            "output_token_details": dict(self._usage_breakdown["output_token_details"]),
-        }
+    def capture(self) -> TurnCapture | None:
+        user = self.user_transcript().strip() or None
+        assistant = self.assistant_transcript().strip() or None
+        if user is None and assistant is None:
+            return None
+        return TurnCapture(user_text=user, assistant_text=assistant)
 
     def assistant_transcript(self) -> str:
         return "".join(self._assistant_transcript_parts)
@@ -407,11 +408,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     def user_transcript(self) -> str:
         return " ".join(self._user_transcript_parts)
 
-    # ---- Barge-in capability seam (OpenAI reference pack) ----
+    # ---- Interruptible (OpenAI reference pack) ----
     # `response.cancel` then `conversation.item.truncate`, in that order,
     # from the flush's playout-ledger accounting. See ADR-0115 and
-    # ``session.py``'s ``cancel_response``/``truncate_assistant_audio``.
-    # Grok inherits this pack via ``GrokRealtimeConnection``.
+    # ``session.Interruptible``. Grok inherits this pack via
+    # ``GrokRealtimeConnection``.
 
     async def cancel_response(self, reason: str) -> None:
         """Stop the in-progress OpenAI response (the local/manual cancel).
@@ -510,40 +511,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 level=logging.WARNING,
             )
 
-    # ---- Server VAD ----
-
-    def server_vad_active(self) -> bool:
-        return self._server_vad_active
-
-    def server_speech_started(self) -> bool:
-        return self._server_speech_started
-
-    def server_speech_detected(self) -> bool:
-        return self._server_speech_stopped and self._server_committed
-
-    async def wait_for_server_eou(self) -> None:
-        await self._server_eou_event.wait()
-
-    def mark_server_vad(self) -> None:
-        self._server_vad_active = True
-
-    def _on_speech_started(self) -> None:
-        self._server_speech_started = True
-        log_event(logger, "server_vad.speech_started")
-
-    def _on_speech_stopped(self) -> None:
-        self._server_speech_stopped = True
-        log_event(logger, "server_vad.speech_stopped")
-        if self._server_committed:
-            self._server_eou_event.set()
-
-    def _on_server_committed(self) -> None:
-        self._server_committed = True
-        self._committed = True
-        log_event(logger, "server_vad.committed")
-        if self._server_speech_stopped:
-            self._server_eou_event.set()
-
     # ---- Internal — called by the connection's receive loop ----
 
     async def _on_audio_delta(self, b64_audio: str) -> None:
@@ -594,7 +561,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
 
         Also accumulates the modality breakdown
         (input.audio/text/cached, output.audio/text) so
-        ``usage_breakdown()`` returns the full split for cost
+        ``usage().breakdown`` returns the full split for cost
         estimation."""
         if not usage:
             return
@@ -752,8 +719,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._billable_activity_meter = None
         self._billable_activity_interval_open: bool = False
 
-        self._server_vad_active: bool = False
-
     def _secret_literals(self) -> tuple[str, ...]:
         """The API key, so a rejection body that echoes it still redacts.
 
@@ -821,9 +786,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     self._set_state(ConnectionState.IN_TURN)
             logger.info("openai turn: started")
             return turn
-
-    def supports_server_vad(self) -> bool:
-        return True
 
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
@@ -903,49 +865,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         await self._send_event({"type": "input_audio_buffer.commit"})
         await self._send_event({"type": "response.create"})
 
-    async def create_response_only(self) -> None:
-        """Send response.create WITHOUT a preceding commit — used when
-        server_vad has already committed the audio buffer.
-
-        This is the ask on a server-VAD turn, so it carries the same
-        first-chunk anchor `end_input()` sets on a daemon-endpointed one.
-        """
-        turn = self._active_turn
-        if turn is not None:
-            turn._end_input_at_monotonic = _time.monotonic()
-        await self._send_event({"type": "response.create"})
-
-    async def set_turn_detection(self, mode: dict | None) -> None:
-        """Switch turn detection mid-session.
-
-        mode=None restores manual VAD. mode={...} activates server_vad
-        (with create_response/interrupt_response already set to false by
-        the caller so the daemon retains response timing control)."""
-        if mode is not None and not self._server_vad_active:
-            await self._send_event({"type": "input_audio_buffer.clear"})
-        self._server_vad_active = mode is not None
-        await self._send_event({
-            "type": "session.update",
-            "session": {
-                # session.type is required on every session.update, not
-                # just the first — omitting it returns
-                # missing_required_parameter and the switch silently
-                # no-ops, leaving the daemon waiting for a
-                # speech_started event the server will never send.
-                "type": "realtime",
-                "audio": {
-                    "input": {
-                        "turn_detection": mode,
-                    },
-                },
-            },
-        })
-        log_event(
-            logger,
-            "server_vad.switch",
-            mode="server_vad" if mode is not None else "manual",
-        )
-
     async def _cancel_response(self) -> None:
         # Best-effort: tell the server to stop generating. Idempotent on
         # the server side — extra cancels for a non-existent response
@@ -958,16 +877,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             logger.debug(f"{self._log_tag} cancel ignored (%s)", e)
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
-        if self._server_vad_active:
-            try:
-                await self.set_turn_detection(None)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    f"{self._log_tag} failed to restore manual VAD "
-                    "after turn (%s: %s); next turn's session.update "
-                    "will correct",
-                    type(e).__name__, e,
-                )
         self._mark_billable_activity_ended()
         await super()._on_turn_released(turn)
 
@@ -1326,27 +1235,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         # Server-side response complete.
         if etype == "response.done":
             await self._handle_response_done(event, turn)
-            return
-
-        if etype == "input_audio_buffer.speech_started":
-            if self._server_vad_active and turn is not None:
-                turn._on_speech_started()
-            else:
-                logger.debug(f"{self._log_tag} VAD event %s (no server_vad turn)", etype)
-            return
-
-        if etype == "input_audio_buffer.speech_stopped":
-            if self._server_vad_active and turn is not None:
-                turn._on_speech_stopped()
-            else:
-                logger.debug(f"{self._log_tag} VAD event %s (no server_vad turn)", etype)
-            return
-
-        if etype == "input_audio_buffer.committed":
-            if self._server_vad_active and turn is not None:
-                turn._on_server_committed()
-            else:
-                logger.debug(f"{self._log_tag} event %s", etype)
             return
 
         logger.debug(f"{self._log_tag} event %s", etype)

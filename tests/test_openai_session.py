@@ -844,7 +844,8 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
         chunks = await asyncio.wait_for(task, timeout=1.0)
         assert chunks == [b"audio_chunk_1"]
         assert turn.server_turn_complete() is True
-        assert turn.usage_tokens() == {"input_tokens": 12, "output_tokens": 34}
+        usage = turn.usage()
+        assert (usage.input_tokens, usage.output_tokens) == (12, 34)
     finally:
         await conn.stop()
 
@@ -1514,9 +1515,9 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
         # Token usage should ACCUMULATE across both responses, not
         # just report the second one. The spend cap charges the
         # full round-trip.
-        usage = turn.usage_tokens()
-        assert usage["input_tokens"] == 150  # 100 + 50
-        assert usage["output_tokens"] == 208  # 8 + 200
+        usage = turn.usage()
+        assert usage.input_tokens == 150  # 100 + 50
+        assert usage.output_tokens == 208  # 8 + 200
     finally:
         await conn.stop()
 
@@ -2398,198 +2399,18 @@ async def test_noise_reduction_can_be_disabled_in_session_payload():
         await conn.stop()
 
 
-async def test_supports_server_vad_returns_true():
-    """OpenAI adapter declares server_vad capability."""
-    conn, _ = _make_conn()
-    assert conn.supports_server_vad() is True
-
-
-async def test_set_turn_detection_sends_session_update():
-    """Switching to server_vad sends input_audio_buffer.clear then
-    session.update with the mode dict."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        baseline = len(sess.sent)
-        mode = {
-            "type": "server_vad",
-            "threshold": 0.5,
-            "silence_duration_ms": 350,
-            "create_response": False,
-            "interrupt_response": False,
-        }
-        await conn.set_turn_detection(mode)
-        new = sess.sent[baseline:]
-        types = [e["type"] for e in new]
-        assert "input_audio_buffer.clear" in types
-        assert "session.update" in types
-        su = [e for e in new if e["type"] == "session.update"][0]
-        # OpenAI's API requires `session.type` on every session.update,
-        # not just the first. Omitting it returns
-        # missing_required_parameter and the switch silently no-ops —
-        # observed in production on 2026-05-24 against gpt-realtime-2.
-        assert su["session"]["type"] == "realtime"
-        td = su["session"]["audio"]["input"]["turn_detection"]
-        assert td["type"] == "server_vad"
-        assert td["create_response"] is False
-        assert td["interrupt_response"] is False
-        assert conn._server_vad_active is True
-    finally:
-        await conn.stop()
-
-
-async def test_set_turn_detection_null_restores_manual():
-    """Switching back to manual VAD sends session.update with
-    turn_detection: null and does NOT send input_audio_buffer.clear."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        await conn.set_turn_detection({"type": "server_vad"})
-        baseline = len(sess.sent)
-        await conn.set_turn_detection(None)
-        new = sess.sent[baseline:]
-        types = [e["type"] for e in new]
-        assert "input_audio_buffer.clear" not in types
-        su = [e for e in new if e["type"] == "session.update"][0]
-        assert su["session"]["type"] == "realtime"
-        assert su["session"]["audio"]["input"]["turn_detection"] is None
-        assert conn._server_vad_active is False
-    finally:
-        await conn.stop()
-
-
-async def test_end_input_noop_under_server_vad():
-    """When server_vad is active, end_input is a no-op — the server
-    already committed the buffer."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        await conn.set_turn_detection({"type": "server_vad"})
-        turn = await conn.acquire_turn()
-        turn.mark_server_vad()
-        baseline = len(sess.sent)
-        await turn.end_input()
-        new_types = [e["type"] for e in sess.sent[baseline:]]
-        assert "input_audio_buffer.commit" not in new_types
-        assert "response.create" not in new_types
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
-async def test_server_vad_speech_events_dispatch():
-    """speech_started, speech_stopped, committed events are routed to
-    the turn when server_vad is active, and the EOU event fires when
-    both speech_stopped and committed have arrived."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        await conn.set_turn_detection({"type": "server_vad"})
-        turn = await conn.acquire_turn()
-        turn.mark_server_vad()
-
-        assert turn.server_speech_started() is False
-        assert turn.server_speech_detected() is False
-
-        sess.feed({"type": "input_audio_buffer.speech_started"})
-        await asyncio.sleep(0.05)
-        assert turn.server_speech_started() is True
-
-        sess.feed({"type": "input_audio_buffer.speech_stopped"})
-        await asyncio.sleep(0.05)
-        assert turn.server_speech_detected() is False
-
-        sess.feed({"type": "input_audio_buffer.committed"})
-        await asyncio.sleep(0.05)
-        assert turn.server_speech_detected() is True
-        assert turn._committed is True
-        assert turn._server_eou_event.is_set()
-
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
-async def test_server_vad_events_ignored_under_manual_vad():
-    """When manual VAD is active, speech events are logged but not
-    dispatched to the turn."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        sess.feed({"type": "input_audio_buffer.speech_started"})
-        await asyncio.sleep(0.05)
-        assert turn._server_speech_started is False
-        await turn.release()
-    finally:
-        await conn.stop()
-
-
-async def test_create_response_only_sends_response_create_without_commit():
-    """create_response_only sends just response.create, no commit."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        baseline = len(sess.sent)
-        await conn.create_response_only()
-        new = sess.sent[baseline:]
-        assert len(new) == 1
-        assert new[0]["type"] == "response.create"
-    finally:
-        await conn.stop()
-
-
-async def test_turn_release_restores_manual_vad():
-    """After a server_vad turn is released, the connection restores
-    manual VAD via session.update with turn_detection: null."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        await conn.set_turn_detection({"type": "server_vad"})
-        assert conn._server_vad_active is True
-        turn = await conn.acquire_turn()
-        turn.mark_server_vad()
-        await turn.release()
-        await asyncio.sleep(0.05)
-        assert conn._server_vad_active is False
-        restore = [
-            e for e in sess.sent
-            if e.get("type") == "session.update"
-            and e.get("session", {}).get("audio", {}).get("input", {}).get("turn_detection") is None
-        ]
-        assert len(restore) >= 1
-    finally:
-        await conn.stop()
-
-
 async def test_committed_stops_send_audio():
-    """After the server commits the audio buffer, further send_audio
-    calls are no-ops (the buffer is closed)."""
+    """Once the user audio buffer is committed, further send_audio calls
+    are no-ops (the buffer is closed)."""
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
     try:
         sess = factory.conns[0]
-        await conn.set_turn_detection({"type": "server_vad"})
         turn = await conn.acquire_turn()
-        turn.mark_server_vad()
         await turn.send_audio(b"\x00\x00" * 1280)
+        await turn.end_input()
         baseline = len(sess.sent)
-        turn._on_server_committed()
         await turn.send_audio(b"\x00\x00" * 1280)
         new_appends = [
             e for e in sess.sent[baseline:]
@@ -2877,14 +2698,12 @@ async def test_cancelling_a_long_backoff_unwinds_at_once():
 
 
 
-@pytest.mark.parametrize("ask", ["end_input", "server_vad", None])
+@pytest.mark.parametrize("ask", ["end_input", None])
 async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
     """`since_end_input_ms` is the provider's own latency — the interval
     between asking for a response and the first audio of it coming back.
-    Both ends of input are an ask: the daemon's `end_input()` and, on a
-    server-VAD turn, the `response.create` the daemon fires once the server
-    reports end-of-utterance. It is absent only when this turn was never
-    asked, because there is then no interval to report.
+    The ask is the daemon's `end_input()`; the field is absent only when
+    this turn was never asked, because there is then no interval to report.
     `since_turn_start_ms` still spans the user's whole utterance plus local
     endpointing, so it is not a provider figure."""
     from tests._log_events import event_fields
@@ -2898,9 +2717,6 @@ async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
         await asyncio.sleep(0.01)
         if ask == "end_input":
             await turn.end_input()
-        elif ask == "server_vad":
-            turn.mark_server_vad()
-            await conn.create_response_only()
         sess.feed({
             "type": "response.output_audio.delta",
             "delta": _b64(b"chunk"),

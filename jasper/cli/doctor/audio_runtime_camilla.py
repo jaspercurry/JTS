@@ -72,7 +72,7 @@ def check_camilla_service() -> CheckResult:
         "jasper-camilla.service",
         missing=REASON_CAMILLA_UNIT_MISSING,
         not_enabled=REASON_CAMILLA_UNIT_NOT_ENABLED,
-        inactive=REASON_CAMILLA_INACTIVE, speaker_silent=True,
+        inactive=REASON_CAMILLA_INACTIVE,
     )
     if service_failure is not None:
         return service_failure
