@@ -751,7 +751,7 @@ class Config:
             # developers.openai.com/api/docs/guides/realtime-conversations.
             # 5-min buffer leaves comfortable headroom for an in-flight turn
             # to finish before the proactive tear-down fires. See
-            # `_proactive_reconnect_watchdog`.
+            # `openai_session._watchdog_delay_sec`.
             openai_session_max_sec=_env_int(
                 "JASPER_OPENAI_SESSION_MAX_SEC", 3600,
             ),
