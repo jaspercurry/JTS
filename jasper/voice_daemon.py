@@ -54,7 +54,7 @@ from .wake_events import (
 from .cues import AudioCueManager
 from .vad import SpeechVAD
 from .wake_legs import LegSpec, by_token, wake_input_legs
-from .wake_condition_context import classify_condition
+from .wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
@@ -904,6 +904,14 @@ class WakeLoop:
         # Loop-clock timestamp of the last condition recompute; 0.0 forces
         # a refresh on the first WAKE frame.
         self._condition_refreshed_at: float = 0.0
+        # Wake-recency observability (R-013): daemon-lifetime, never nulled
+        # on mute. Set in _handle_wake_frame.
+        self._last_wake_at: float | None = None
+        # Derived by _maybe_refresh_condition; nulled by mute_mic since the
+        # refresh stops ticking while muted and they would otherwise go
+        # stale.
+        self._idle_rms_dbfs: float | None = None
+        self._input_last_above_floor_at: float | None = None
         self._connection = connection
         self._ducker = ducker
         self._output_gate = AssistantOutputGate()
@@ -2762,6 +2770,10 @@ class WakeLoop:
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
         self._mic_muted = True
+        # The condition refresh stops ticking while muted, so these would
+        # otherwise go stale rather than reflect "unknown while muted".
+        self._idle_rms_dbfs = None
+        self._input_last_above_floor_at = None
         # Drop already-buffered room audio, not just future frames. The
         # pre-roll otherwise survives the mute and is replayed into the
         # first turn after unmute (~560 ms of pre-mute room audio sent
@@ -2806,10 +2818,14 @@ class WakeLoop:
         # path must never break because of ancillary condition estimation.
         self._condition_refreshed_at = now_loop
         try:
+            noise_floor_dbfs = _ring_noise_floor_dbfs(self._capture_ring_on)
             self._current_condition = classify_condition(
                 music_dbfs=self._read_music_dbfs(),
-                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
+                noise_floor_dbfs=noise_floor_dbfs,
             ).condition
+            self._idle_rms_dbfs = noise_floor_dbfs
+            if noise_floor_dbfs is not None and noise_floor_dbfs > AMBIENT_FLOOR_DBFS:
+                self._input_last_above_floor_at = time.time()
         except Exception:  # noqa: BLE001
             # Keep the last good condition: an unguarded raise here would
             # propagate out of the frame loop and stop wake detection.
@@ -3008,6 +3024,10 @@ class WakeLoop:
             threshold=f"{firing_threshold:.2f}",
             fired=fired_legs,
         )
+        # Daemon-lifetime wake-recency: "this box's wake pipeline is alive",
+        # not "this box served the turn" — set before arbitration, never
+        # nulled on mute.
+        self._last_wake_at = time.time()
 
         # In peering mode `can_serve` is broadcast in the WAKE message so the
         # fleet's ranking function can prefer a peer that can serve. We bid
@@ -4345,6 +4365,14 @@ class WakeLoop:
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
             ),
+            # Wake-recency observability (R-013). Epoch-second floats (never
+            # ISO strings), or None before the daemon has seen the signal —
+            # last_wake_at is daemon-lifetime and never nulled on mute; the
+            # other two are nulled by mute_mic (the refresh stops ticking
+            # while muted).
+            "last_wake_at": self._last_wake_at,
+            "idle_rms_dbfs": self._idle_rms_dbfs,
+            "input_last_above_floor_at": self._input_last_above_floor_at,
             "wake_legs": _wake_legs,
             # Per-pack tool-registration outcomes (registered / skipped /
             # failed), same motivation as wake_legs: a tool family that

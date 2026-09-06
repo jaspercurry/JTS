@@ -118,6 +118,22 @@ async def test_single_stream_on_fires_when_threshold_crossed(caplog):
     assert event_fields(caplog, "wake.detected")["leg"] == "on"
 
 
+async def test_wake_fire_stamps_last_wake_at(caplog):
+    """last_wake_at (R-013) marks that this box's wake pipeline is alive —
+    set on a genuine fire, before arbitration, regardless of who ends up
+    serving the turn."""
+    wl = _make_wake_loop(detector_off=None)
+    wl._detector.score_frame.return_value = 0.85
+    assert wl.session_status()["last_wake_at"] is None
+
+    with caplog.at_level(logging.INFO):
+        await wl._handle_wake_frame(_frame(), leg="on")
+
+    last_wake_at = wl.session_status()["last_wake_at"]
+    assert isinstance(last_wake_at, float)
+    assert last_wake_at > 0
+
+
 async def test_subthreshold_frame_updates_recent_score_but_does_not_fire():
     """A score below threshold updates _recent_score_on (so the OTHER
     leg's eventual fire can attach it as context) but does NOT fire
