@@ -148,6 +148,21 @@ def test_combo_is_armed_requires_both_signals():
 
 
 @pytest.mark.parametrize(
+    "text, expected",
+    [
+        (f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n", True),
+        (f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_DISABLED_VALUE}\n", False),
+        ("", False),
+    ],
+    ids=["enabled", "disabled", "absent"],
+)
+def test_combo_armed_from_env_reads_the_resolved_value(text, expected):
+    # The OBSERVED read the doctor and /state both need — see combo_is_armed
+    # for the INTENT it was resolved from.
+    assert ca.combo_armed_from_env(text) is expected
+
+
+@pytest.mark.parametrize(
     "mode,decay,floor",
     [
         ("low", "enabled", "576"),

@@ -836,8 +836,7 @@ def check_usb_combo_consistency() -> CheckResult:
     Skip-if-not-applicable: a box whose resolved USB role cannot carry a gadget
     reports ok with a skip note (check_usb_data_role owns the reason)."""
     from jasper.fanin.coupling_auto import (
-        USB_COMBO_ENABLED_VALUE,
-        USB_DIRECT_ENV_VAR,
+        combo_armed_from_env,
         read_usb_gadget_available,
     )
 
@@ -863,7 +862,6 @@ def check_usb_combo_consistency() -> CheckResult:
             + audio.detail,
             reason=REASON_SOURCE_INTENT_INVALID,
         )
-    from jasper.env_file import read_value
     from jasper.fanin.ring_health import FANIN_ENV_PATH
 
     try:
@@ -871,7 +869,7 @@ def check_usb_combo_consistency() -> CheckResult:
     except OSError:
         fanin_text = ""
 
-    armed = read_value(fanin_text, USB_DIRECT_ENV_VAR) == USB_COMBO_ENABLED_VALUE
+    armed = combo_armed_from_env(fanin_text)
 
     if not gadget:
         return CheckResult(
