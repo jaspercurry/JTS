@@ -2031,9 +2031,39 @@ def test_member_post_redacts_echoed_credentials_from_http_error(monkeypatch):
         "192.168.1.9", {}, known=set(), token=token, household=household,
     )
     assert ok is False
-    assert detail == "HTTP 403: denied [redacted] [redacted]"
+    assert detail == "HTTP 403: denied <redacted> <redacted>"
     assert token not in detail
     assert household not in detail
+
+
+def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
+    """A peer's error body can echo the household credential in a shape no
+    `redact_secrets` pattern recognises (a bare JSON field, no `token=` or
+    `X-JTS-Household:` neighbour), so only the literal pass removes it — and
+    it must run BEFORE the detail cap: this credential straddles the cap
+    boundary, so cap-then-redact would carry its head into the returned
+    detail with no marker at all."""
+    household = "kR3n9QpZ7sT2vX8b"
+    prefix = '{"error":"household_mismatch","presented":"'
+    body = (prefix + "f" * (150 - len(prefix)) + household + '"}').encode()
+    error = rooms_setup.urllib.error.HTTPError(
+        "http://192.168.1.9:8780/grouping/set",
+        403,
+        "failure",
+        hdrs=None,
+        fp=BytesIO(body),
+    )
+    monkeypatch.setattr(
+        rooms_setup.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error),
+    )
+
+    ok, detail = rooms_setup.post_grouping_to_member(
+        "192.168.1.9", {}, known=set(), household=household,
+    )
+    assert ok is False
+    # The head is the fragment a cap-then-redact order would leave exposed.
+    assert household[:8] not in detail
+    assert "<redacted>" in detail
 
 
 @pytest.mark.parametrize(

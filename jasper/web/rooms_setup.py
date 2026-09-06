@@ -67,7 +67,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
 from ..control import household_credential
-from ..control.client import CONTROL_PORT, PEER_RESPONSE_MAX_BYTES
+from ..control.client import (
+    CONTROL_PORT,
+    PEER_DETAIL_MAX_CHARS,
+    PEER_RESPONSE_MAX_BYTES,
+)
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import is_private_or_loopback_ipv4
@@ -78,6 +82,7 @@ from ..multiroom.state import (
     read_grouping_state,
 )
 from ..peering import config as peering_config
+from ..secret_redaction import redact_secrets
 from ..log_event import log_event
 from ._common import (
     begin_request,
@@ -663,11 +668,9 @@ def post_grouping_to_member(
             return False, f"HTTP {e.code}"
         if raw is None:
             return False, f"HTTP {e.code}: response too large"
-        detail = raw.decode(errors="replace")
-        for secret in (token, cred):
-            if secret:
-                detail = detail.replace(secret, "[redacted]")
-        detail = detail[:200]
+        detail = redact_secrets(
+            raw.decode(errors="replace"), literals=(token or "", cred or ""),
+        )[:PEER_DETAIL_MAX_CHARS]
         return False, f"HTTP {e.code}: {detail}".strip()
     except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         # http.client.HTTPException (BadStatusLine / IncompleteRead) is NOT an

@@ -70,7 +70,12 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.secret_redaction import redact_secrets
 
 from . import household_credential
-from .client import CONTROL_PORT, PEER_RESPONSE_MAX_BYTES, AsyncControlClient
+from .client import (
+    CONTROL_PORT,
+    PEER_DETAIL_MAX_CHARS,
+    PEER_RESPONSE_MAX_BYTES,
+    AsyncControlClient,
+)
 from .uds import read_status_body
 from .supervisor_runtime import (
     build_asyncio_thread,
@@ -548,14 +553,11 @@ class GroupingSupervisor:
         if not resp.ok and resp.body:
             household_credential_value = (headers or {}).get("X-JTS-Household", "")
             # Cap before decode so an oversized peer body can't make the
-            # redaction passes below do unbounded work; redact before the
-            # 160-char cap so a value straddling that boundary can't leak
-            # a partial credential ahead of the marker (rooms_setup.py's
-            # post_grouping_to_member does the same peer-POST redaction).
+            # redaction pass below do unbounded work.
             peer_text = resp.body[:PEER_RESPONSE_MAX_BYTES].decode(errors="replace")
             peer_text = redact_secrets(
                 peer_text, literals=(household_credential_value,),
-            )[:160]
+            )[:PEER_DETAIL_MAX_CHARS]
             detail = f"{detail}: {peer_text}"
         return resp.ok, detail
 

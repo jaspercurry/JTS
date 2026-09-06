@@ -77,6 +77,12 @@ DEFAULT_TIMEOUT = 2.0
 # probes) — a peer, unlike jasper-control itself, is not this box.
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
 
+# Cap on the peer-supplied detail a caller carries into `/state`, a journal
+# line or a flash. Apply it AFTER redaction: capping first can crop a
+# credential that straddles the boundary, leaving its head exposed ahead
+# of the `<redacted>` marker (ADR-0243).
+PEER_DETAIL_MAX_CHARS = 160
+
 
 class ControlError(RuntimeError):
     """jasper-control was unreachable or the request failed at the transport
