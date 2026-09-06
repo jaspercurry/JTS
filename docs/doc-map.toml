@@ -698,7 +698,7 @@ requires_docs_when = [
   "The lean File-capture lane topology, the CamillaDSP resampler schema/vocabulary, the FIFO format/path contract, the lean-lane feature flag, the chip/software AEC optionality, or the no-re-architect rules change.",
   "The USB-only lean-fifo route, its solo-only/mux-ladder arming, or the DAC-floor codification plan changes.",
   "The click/capture harness's mic-source contract or presets, or the Rust ingress tap's JSONL/HTTP arm-disarm contract change (see testing-tooling.md's harness section).",
-  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS and `/state.audio_graph.fanin.host_clock` shape, servo constants, or bandwidth-separation derivation change.",
+  "The host-slaved USB clock's env keys/defaults, ladder states, fan-in STATUS shape, servo constants, or bandwidth-separation derivation change.",
   "The USB-input ring geometry, cushion-decay floor, or the productized fresh-install combo defaults change — re-verify the measured latency numbers and the fresh-install settings table.",
 ]
 verification = [

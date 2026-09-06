@@ -2039,7 +2039,6 @@ async def test_state_airplay_row_and_active_source_come_from_the_injected_reader
     async def no_status(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kw: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
 
