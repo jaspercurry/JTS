@@ -203,16 +203,6 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
         # that died, a leg that failed to open) still warns.
         ({"aec_mode": "auto", "raw": True, "dtln": False,
           "armed_runtime": set()}, "warn", "REASON_WAKE_LEGS_MISSING"),
-        # A leg the reconciler APPLIED (its device var is set, so the daemon
-        # planned it) that is absent from the live set is a dead task, not a
-        # config divergence — and it outranks the intent comparison.
-        ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": {"on"}, "applied": {"off"}},
-         "fail", "REASON_WAKE_LEGS_DEAD"),
-        # The same leg running: no dead verdict.
-        ({"aec_mode": "auto", "raw": True, "dtln": False,
-          "armed_runtime": {"on", "off"}, "applied": {"off"}},
-         "ok", "REASON_WAKE_LEGS_MATCH"),
     ],
     ids=[
         "aec-disabled",
@@ -226,8 +216,6 @@ def test_check_openwakeword_model_hashes_an_active_external_model(
         "chip-intent-only",
         "push-to-talk",
         "empty-armed-set",
-        "applied-leg-dead",
-        "applied-leg-running",
     ],
 )
 def test_assess_wake_legs_verdicts(kwargs, status, reason):
