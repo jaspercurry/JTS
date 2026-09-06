@@ -7,9 +7,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -71,10 +74,10 @@ def _fake_active_speaker_cli(tmp_path: Path) -> Path:
     return fake
 
 
-def _run_reconcile(
+def _reconcile_env(
     tmp_path: Path,
     listing: str,
-    *args: str,
+    *,
     initial_env: str | None = None,
     initial_outputd_env: str | None = None,
     initial_fanin_env: str | None = None,
@@ -83,8 +86,8 @@ def _run_reconcile(
     board_model: str = "Raspberry Pi 5 Model B Rev 1.0",
     active_usb_role: str = "peripheral",
     extra_env: dict[str, str] | None = None,
-    script: Path = SCRIPT,
-) -> subprocess.CompletedProcess[str]:
+) -> dict[str, str]:
+    """Stage the fixtures one hermetic pass reads, and the env naming them."""
     fake_systemctl, systemctl_log = _fake_systemctl(tmp_path)
     fake_aplay = _fake_aplay(tmp_path, listing)
     fake_renderer, render_log = _fake_renderer(tmp_path)
@@ -164,11 +167,21 @@ def _run_reconcile(
     )
     if extra_env:
         env.update(extra_env)
+    return env
+
+
+def _run_reconcile(
+    tmp_path: Path,
+    listing: str,
+    *args: str,
+    script: Path = SCRIPT,
+    **fixtures: Any,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(script), *args],
         check=False,
         cwd=ROOT,
-        env=env,
+        env=_reconcile_env(tmp_path, listing, **fixtures),
         text=True,
         capture_output=True,
         timeout=180,
@@ -1481,10 +1494,11 @@ def _event_names(stderr: str) -> list[str]:
 def test_every_pass_ends_with_one_exit_event_carrying_its_own_status(
     tmp_path: Path, mode: str, expected_rc: int
 ) -> None:
-    """`set -euo pipefail` used to end a failed pass with no terminal line, so
-    the journal showed a pass that started and never finished. bash holds ONE
-    EXIT trap, so that terminal line and the outputd.env stage cleanup share
-    it — and it must not move the code systemd sees."""
+    """Every pass ends with one `exit` line naming the code it exits with.
+
+    bash holds ONE EXIT trap, so that terminal line and the outputd.env stage
+    cleanup share it — and neither may move the code systemd sees.
+    """
     extra: dict[str, str] = {}
     read_only = tmp_path / "read-only"
     if mode == "early_refusal":
@@ -1512,13 +1526,114 @@ def test_every_pass_ends_with_one_exit_event_carrying_its_own_status(
     assert result.returncode == expected_rc, result.stderr
     names = _event_names(result.stderr)
     assert names[-1] == "audio_hardware_reconcile.exit", result.stderr
-    assert stderr_event(result.stderr, "audio_hardware_reconcile.exit")["status"] == (
-        str(expected_rc)
-    )
+    assert stderr_event(result.stderr, "audio_hardware_reconcile.exit") == {
+        "pass_reason": "test",
+        "signal": "none",
+        "status": str(expected_rc),
+    }
     # The nine result fields exist only where the pass got that far, so
     # `complete` stays the success-only line the terminal one closes over.
     assert ("audio_hardware_reconcile.complete" in names) == (mode == "success")
     assert _stage_candidate_debris(tmp_path) == []
+
+
+def test_help_publishes_no_event_because_reading_usage_is_not_a_pass(
+    tmp_path: Path,
+) -> None:
+    """Every other exit reports itself; an operator reading usage must not."""
+    result = _run_reconcile(tmp_path, "", "--help")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout
+    assert _event_names(result.stderr) == [], result.stderr
+
+
+def _sleeping_python(tmp_path: Path, marker: Path) -> Path:
+    """A `python` stand-in that parks its FIRST spawn, so a signal lands mid-pass."""
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        f'if [ ! -e "{marker}" ]; then : > "{marker}"; sleep 2; fi\n'
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    return fake_python
+
+
+def test_a_signalled_pass_names_the_signal_and_exits_128_plus_it(
+    tmp_path: Path,
+) -> None:
+    """A pass systemd kills at TimeoutStartSec reports 143, not 0.
+
+    `$?` inside the EXIT trap is the last COMPLETED command's status, which on
+    a kill is whatever succeeded before the signal — so the signal itself has
+    to be recorded where the trap can read it.
+    """
+    marker = tmp_path / "python-spawned"
+    process = subprocess.Popen(
+        ["bash", str(SCRIPT), "--reason", "test"],
+        cwd=ROOT,
+        env=_reconcile_env(
+            tmp_path,
+            APPLE_LISTING,
+            extra_env={
+                "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+                    _sleeping_python(tmp_path, marker)
+                )
+            },
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 60
+    while not marker.exists():
+        assert process.poll() is None, "the pass ended before it was signalled"
+        assert time.monotonic() < deadline, "the pass never spawned its emitter"
+        time.sleep(0.02)
+    process.send_signal(signal.SIGTERM)
+    _, stderr = process.communicate(timeout=180)
+
+    assert process.returncode == 143, stderr
+    assert _event_names(stderr)[-1] == "audio_hardware_reconcile.exit", stderr
+    assert stderr_event(stderr, "audio_hardware_reconcile.exit") == {
+        "pass_reason": "test",
+        "signal": "TERM",
+        "status": "143",
+    }
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_state_written_carries_the_classifier_blocker_codes(
+    tmp_path: Path, blocked: bool
+) -> None:
+    """The codes behind a park reach the journal on the pass's own line.
+
+    The reconciler runs the classifier with its stderr on `/dev/null`, so this
+    line is the only place a pass publishes its verdict.
+    """
+    extra: dict[str, str] = {}
+    expected = "none"
+    if blocked:
+        # One child of a saved dual-Apple pair is absent, so the record is
+        # partial and names which half is missing.
+        extra = {
+            **_dual_apple_cards(tmp_path, ((1, "A", "left"),)),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(
+                _dual_apple_topology(tmp_path, active=True)
+            ),
+            **_active_graph_env(tmp_path, write_topology=False),
+        }
+        expected = "saved_composite_partially_present"
+
+    result = _run_reconcile(
+        tmp_path, APPLE_LISTING, "--reason", "test", extra_env=extra
+    )
+
+    assert result.returncode == 0, result.stderr
+    written = stderr_event(result.stderr, "audio_hardware_reconcile.state_written")
+    assert written["blockers"] == expected
 
 
 @pytest.mark.parametrize(
