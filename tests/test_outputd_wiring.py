@@ -177,7 +177,6 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     # the classifier's env emitter names the Apple cards (ADR-0235 R2).
     assert "usb-c to 3.5mm" not in reconcile.lower()
     assert "find_card" not in reconcile
-    assert 'DONGLE_CARD="${OBSERVED_OUTPUT_APPLE_CARD_IDS%% *}"' in reconcile
     assert "DAC8X_OUTPUT_CARD=" not in reconcile
     assert "DAC8X_STUDIO_OUTPUT_CARD=" not in reconcile
     assert "jasper_asound_render_template" in install_sh

@@ -455,57 +455,6 @@ sync_i2s_hat_reboot_marker() {
     install -m 0644 /dev/null "$I2S_HAT_REBOOT_REQUIRED_PATH"
 }
 
-env_file_value() {
-    local key="$1"
-    if [[ ! -f "$ENV_FILE" ]]; then
-        return 0
-    fi
-    awk -v key="$key" '
-        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-            value = $0
-            sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", value)
-            found = value
-            seen = 1
-        }
-        END {
-            if (seen) {
-                print found
-            }
-        }
-    ' "$ENV_FILE" \
-        | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
-}
-
-# A refused lock returns 1 WITHOUT writing, and the callers' `&& changed=1`
-# idiom would read that as "changed" and restart jasper-outputd onto the old
-# lane/PCM/format. A write that did not happen fails the pass instead.
-set_env_var() {
-    local key="$1" value="$2"
-    if ! jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750; then
-        log_event "env_write_failed" "file=${ENV_FILE} key=${key}"
-        exit 1
-    fi
-}
-
-set_env_var_if_changed() {
-    local key="$1" value="$2"
-    local current
-    if [[ ! -f "$ENV_FILE" ]]; then
-        set_env_var "$key" "$value"
-        return 0
-    fi
-    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$ENV_FILE"; then
-        set_env_var "$key" "$value"
-        return 0
-    fi
-    current="$(env_file_value "$key")"
-    if [[ "$current" == "$value" ]]; then
-        return 1
-    fi
-    set_env_var "$key" "$value"
-    return 0
-}
-
 env_file_value_from() {
     local file="$1" key="$2"
     if [[ ! -f "$file" ]]; then
@@ -527,6 +476,9 @@ env_file_value_from() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# A refused lock returns 1 WITHOUT writing, and the callers' `&& changed=1`
+# idiom would read that as "changed" and restart jasper-outputd onto the old
+# lane/PCM/format. A write that did not happen fails the pass instead.
 set_env_file_var() {
     local file="$1" key="$2" value="$3"
     if ! jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
@@ -553,6 +505,8 @@ set_env_file_var_if_changed() {
     set_env_file_var "$file" "$key" "$value"
     return 0
 }
+
+set_env_var_if_changed() { set_env_file_var_if_changed "$ENV_FILE" "$1" "$2"; }
 
 cleanup_outputd_env_stage() {
     if [[ -n "${OUTPUTD_ENV_STAGE_FILE:-}" && -f "$OUTPUTD_ENV_STAGE_FILE" ]]; then
@@ -1151,8 +1105,9 @@ emit_dac_format_for_recognized() {
     local dac_id="$1"
     local fields dac_format dac_sink preserved
     fields="$(final_edge_format_for_dac "$dac_id")"
-    dac_format="$(printf '%s\n' "$fields" | sed -n '1p')"
-    dac_sink="$(printf '%s\n' "$fields" | sed -n '2p')"
+    dac_format="${fields%%$'\n'*}"
+    dac_sink=""
+    [[ "$fields" == *$'\n'* ]] && dac_sink="${fields#*$'\n'}"
     if [[ -z "$dac_format" ]]; then
         preserved="$(env_file_value_from "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT")"
         log_event "dac_format_skip" \

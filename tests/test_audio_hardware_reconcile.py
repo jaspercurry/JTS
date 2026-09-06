@@ -568,7 +568,6 @@ _SCRIPT_STATES = (
     # root:jasper jasper.env into root:root (jasper-control needs group read
     # for fresh /state), and must repair generated /var/lib/jasper env-file
     # permissions on no-op runs.
-    'jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750',
     'jasper_env_file_set "$file" "$key" "$value" 0640 0750',
     'jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750',
     'jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750',
@@ -1528,6 +1527,17 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
         "management_transport_available=true reason=available"
     ) in result.stderr
     _assert_publications_agree(tmp_path)
+    # --print-env's DONGLE_CARD truncates OBSERVED_OUTPUT_APPLE_CARD_IDS to
+    # its first id ("A", not "A_1") on this same dual-Apple pair.
+    print_env_dir = tmp_path / "print_env"
+    print_env_dir.mkdir()
+    print_env_result = _run_reconcile(
+        print_env_dir,
+        DUAL_APPLE_LISTING,
+        "--print-env",
+        extra_env=_dual_apple_cards(print_env_dir),
+    )
+    assert "DONGLE_CARD=A" in print_env_result.stdout
 
 
 def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path):
