@@ -17,14 +17,17 @@ from types import SimpleNamespace
 import pytest
 
 
+import jasper.mic_presence as mic_presence_module
 from jasper.cli import doctor
 # `main` and `run_async` resolve these names in their own module's
 # namespace, so a patch aimed at the package would not apply.
 from jasper.cli.doctor import _cli, _harness, _shared
 from jasper.cli.doctor import CheckResult, render_json, renderers
+from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config, VoiceProviderNotConfigured
 from jasper.control.restart_broker import MANAGED_UNITS
+from jasper.mic_presence import MicPresence
 
 
 def _reg(func, *, module="env", **kw) -> RegisteredCheck:
@@ -162,7 +165,7 @@ def test_async_doctor_check_exception_becomes_fail_result():
 
 def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     """A persisted/legacy 'endpoint' token normalizes to streambox, so the
-    doctor applies the streambox skip behaviour (voice/brain groups skipped,
+    doctor applies the streambox skip behaviour (wake/brain groups skipped,
     local audio kept)."""
     ran: list[str] = []
 
@@ -170,9 +173,9 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
         ran.append("env")
         return doctor.CheckResult("env file", "ok", "ran")
 
-    def voice_check(_cfg):
-        ran.append("voice")
-        return doctor.CheckResult("provider key", "fail", "should not run")
+    def wake_check(_cfg):
+        ran.append("wake")
+        return doctor.CheckResult("wake model", "fail", "should not run")
 
     def web_check():
         ran.append("web")
@@ -184,7 +187,7 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
         "registered_checks",
         lambda **_scope: [
             _reg(env_check),
-            _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
+            _reg(wake_check, module="wake", needs_cfg=True, label="wake model"),
             _reg(web_check, module="web"),
         ],
     )
@@ -194,7 +197,7 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
     assert ran == ["env", "web"]
     assert [(r.name, r.status, r.detail) for r in results] == [
         ("env file", "ok", "ran"),
-        ("provider key", "skipped", "not installed (streambox profile)"),
+        ("wake model", "skipped", "not installed (streambox profile)"),
         ("management surface", "ok", "ran"),
     ]
 
@@ -222,6 +225,16 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
         _harness._doctor_skip_detail(by_name["check_provider_key"], "streambox")
         == "not installed (streambox profile)"
     )
+    assert (
+        _harness._doctor_skip_detail(by_name["check_spend_cap"], "streambox")
+        == "not installed (streambox profile)"
+    )
+    # The other 4 voice checks self-gate instead — see test_doctor_voice.py.
+    for name in (
+        "check_provider_importable", "check_voice_provider_ids_manifest",
+        "check_tool_packs", "check_pricing",
+    ):
+        assert not _harness._doctor_skip_detail(by_name[name], "streambox"), name
     assert _harness._doctor_skip_detail(
         by_name["check_openwakeword_model"],
         "streambox",
@@ -259,9 +272,12 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
 
 
 def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
+    """`check_provider_key` is named individually in
+    STREAMBOX_OMITTED_DOCTOR_CHECKS, not by its module — see that set's
+    comment in _registry.py."""
     ran: list[str] = []
 
-    def voice_check(_cfg):
+    def check_provider_key(_cfg):
         ran.append("voice")
         return doctor.CheckResult("provider key", "fail", "should not run")
 
@@ -288,7 +304,7 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         _harness,
         "registered_checks",
         lambda **_scope: [
-            _reg(voice_check, module="voice", needs_cfg=True, label="provider key"),
+            _reg(check_provider_key, module="voice", needs_cfg=True, label="provider key"),
             _reg(
                 check_mic_capture,
                 module="audio",
@@ -761,17 +777,30 @@ def test_only_outside_core_is_rejected_before_running(monkeypatch):
 def test_only_voice_on_streambox_yields_skipped_rows_not_an_empty_run(
     monkeypatch,
 ):
-    """voice is a real, valid module that the streambox profile omits
-    wholesale (ADR-0217): --only voice must still produce voice's rows,
-    each skipped with REASON_NOT_INSTALLED — not a silent zero-row run."""
+    """voice is a real, valid module — --only voice must still produce
+    voice's rows on a streambox with no accessory paired, every one
+    `skipped`, never a silent zero-row run. Reason codes differ per check;
+    which gets which is pinned in test_doctor_voice.py and
+    test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks."""
+    # run_async() itself calls evidence.reset(), so a pre-seeded memo will
+    # not survive to when the checks run — patch the underlying readers.
     monkeypatch.setattr(_harness, "read_install_profile", lambda: "streambox")
+    monkeypatch.setattr(_shared, "read_install_profile", lambda: "streambox")
+    monkeypatch.setattr(
+        mic_presence_module, "read_mic_presence",
+        lambda *a, **kw: MicPresence(present=False),
+    )
     cfg = _cli._doctor_config_from_env("streambox")
 
     results = asyncio.run(doctor.run_async(cfg, only="voice"))
 
     assert results
     assert all(r.status == "skipped" for r in results)
-    assert all(r.reason == _harness.REASON_NOT_INSTALLED for r in results)
+    assert {r.reason for r in results} == {
+        _harness.REASON_NOT_INSTALLED,
+        doctor_voice.REASON_VOICE_UNIT_NOT_FULL_PROFILE,
+        doctor_voice.REASON_MANIFEST_NOT_RENDERED,
+    }
 
 
 def test_failing_flag_keeps_the_full_run_summary(capsys):

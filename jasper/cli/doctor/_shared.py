@@ -138,6 +138,8 @@ REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
 # report this same reason for the same underlying evidence failure.
 REASON_TOPOLOGY_UNREADABLE = "output_topology_unreadable"
 
+# ADR-0217 streambox-awaiting-accessory state, shared by resilience.py and voice.py.
+REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)

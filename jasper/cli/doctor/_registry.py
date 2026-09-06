@@ -85,7 +85,8 @@ CORE_MODULES: frozenset[str] = frozenset({
 })
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
-    "voice",
+    # "voice" is NOT here — 4 of its 6 checks self-gate on ADR-0217; the
+    # other 2 are named below in STREAMBOX_OMITTED_DOCTOR_CHECKS.
     "cues",
     "wake",
     "integrations",
@@ -101,6 +102,14 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     # rather than the whole module.
     "check_crossover_v2_cloud_pipeline",
     "check_crossover_v2_applied_is_graded",
+    # Unlike their voice module neighbours, these two need Config fields
+    # (voice_provider, API keys, daily_spend_cap_*) the streambox doctor cfg
+    # (_cli._local_audio_config_from_env) does not carry, so reading them
+    # would be a false verdict rather than a skip. Remove once that cfg
+    # surface carries the voice Config fields, and gate on live accessory
+    # presence like check_provider_importable instead.
+    "check_provider_key",
+    "check_spend_cap",
 })
 
 
