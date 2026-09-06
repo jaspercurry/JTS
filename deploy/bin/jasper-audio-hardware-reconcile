@@ -284,6 +284,36 @@ log_event() {
     echo "event=audio_hardware_reconcile.${name} pass_reason=${REASON} $*" >&2
 }
 
+# bash holds ONE EXIT trap, so the stage cleanup and the terminal line share
+# this one: an open stage is recognized by its candidate path, not by a second
+# arm/disarm flag. `$?` inside a trap is only the last COMPLETED command's
+# status, which is why the signal traps below set their own mapped exit code
+# directly instead of leaving on_exit to guess it from whatever was running.
+# The `case` here is the fallback for the same mapping if `$?` ever did carry
+# it. The closing `exit` publishes that mapped status; `|| true` keeps a
+# stderr that has gone away (errexit) from replacing it with 1.
+SIGNALLED=""
+on_exit() {
+    local status=$?
+    case "$SIGNALLED" in
+        TERM) status=143 ;;
+        HUP) status=129 ;;
+        INT) status=130 ;;
+    esac
+    if [[ -n "${OUTPUTD_ENV_STAGE_FILE:-}" ]]; then
+        cleanup_outputd_env_stage || true
+    fi
+    log_event "exit" "signal=${SIGNALLED:-none} status=${status}" || true
+    exit "$status"
+}
+# Each trap exits at the next command boundary with the code systemd expects
+# for that signal, rather than letting the pass run on. on_exit still fires
+# on that exit, cleans up any open stage, and names the signal that caused it.
+trap 'SIGNALLED=TERM; exit 143' TERM
+trap 'SIGNALLED=HUP; exit 129' HUP
+trap 'SIGNALLED=INT; exit 130' INT
+trap on_exit EXIT
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --reason)
@@ -304,6 +334,8 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
+            # Reading usage is not a pass, so it publishes no terminal event.
+            trap - EXIT
             usage
             exit 0
             ;;
@@ -427,7 +459,10 @@ observe_output_hardware_state() {
             "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
     fi
     log_event "state_${action}" \
-        "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown} status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}"
+        "path=${OUTPUT_HARDWARE_STATE_PATH}" \
+        "profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown}" \
+        "status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}" \
+        "blockers=$(jasper_asound_log_token "${OBSERVED_OUTPUT_BLOCKER_CODES:-none}")"
 }
 
 reconcile_i2s_hat_boot() {
@@ -573,9 +608,9 @@ stage_outputd_env() {
     [[ -d "$dir" ]] || install -d -m 0750 "$dir"
     # See ADR-0235 G8.
     if jasper_env_file_hold "$OUTPUTD_ENV_FILE"; then
-        # Debris an earlier pass could not clean (a kill between mktemp and the
-        # trap). Swept before this pass names its own candidate, so the glob
-        # can never reach it. Gated on the hold: a refused hold means a live
+        # Debris an earlier pass could not clean (a SIGKILL mid-stage, which
+        # no trap catches). Swept before this pass names its own candidate, so
+        # the glob can never reach it. Gated on the hold: a refused hold means a live
         # holder mid-stage, whose in-flight candidate this must not delete.
         for stale in "${dir}"/.outputd.env.candidate.*; do
             if [[ -e "$stale" ]]; then
@@ -595,7 +630,6 @@ stage_outputd_env() {
         chmod 0640 "$OUTPUTD_ENV_STAGE_FILE"
     fi
     OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_STAGE_FILE"
-    trap cleanup_outputd_env_stage EXIT
 }
 
 validate_outputd_env_stage() {
@@ -810,7 +844,6 @@ finish_outputd_env_stage() {
     cleanup_outputd_env_stage
     OUTPUTD_ENV_STAGE_FILE=""
     OUTPUTD_ENV_TARGET_FILE="$OUTPUTD_ENV_FILE"
-    trap - EXIT
 }
 
 commit_outputd_env_stage() {
