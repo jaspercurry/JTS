@@ -18,7 +18,6 @@ provider module; anything wizard-specific belongs in
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
@@ -220,19 +219,3 @@ def haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float
         + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     )
     return 2 * _EARTH_RADIUS_MI * math.asin(math.sqrt(a))
-
-
-# Matches query-string `key=…` (case-insensitive) — the credential-bearing
-# parameter convention every BusTime endpoint uses. Anchored on `[?&]` so
-# we don't accidentally scrub free-form prose like "the key is foo".
-_KEY_QUERY_RE = re.compile(r"(?i)([?&]key=)[^&\s'\"<>]+")
-
-
-def scrub_secrets(value: object) -> str:
-    """Render any value with `key=SECRET` query-string parameters masked.
-
-    `httpx.HTTPError.__str__` includes the full URL on error, which means
-    a stray `f"BusTime failed: {e}"` in a log line or user-facing message
-    leaks the API key. Pipe every interpolation that might carry a URL
-    through this scrubber so the key only ever appears in the env file."""
-    return _KEY_QUERY_RE.sub(r"\1***", str(value))

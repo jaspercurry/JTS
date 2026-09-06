@@ -40,7 +40,8 @@ if TYPE_CHECKING:
     import httpx
 
 from ...log_event import log_event
-from ..base import CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
+from ...secret_redaction import redact_secrets
+from ..base import CredentialSpec, Stop, TransitError, haversine_miles
 from ._nyc import NYC_BBOX
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,9 @@ class _NycBus:
             # `e` may stringify with the full URL including ?key=…; scrub
             # before surfacing — this message lands in the wizard's error
             # banner where any LAN viewer would see it.
-            raise TransitError(f"BusTime request failed: {scrub_secrets(e)}")
+            raise TransitError(f"BusTime request failed: {redact_secrets(str(e))}")
         except ValueError as e:
-            raise TransitError(f"BusTime returned non-JSON: {scrub_secrets(e)}")
+            raise TransitError(f"BusTime returned non-JSON: {redact_secrets(str(e))}")
         finally:
             if owns:
                 c.close()
@@ -254,7 +255,7 @@ class _NycBus:
                 logger,
                 "transit.bus.siri_probe.error",
                 stop=bare,
-                err=scrub_secrets(e),
+                err=redact_secrets(str(e)),
             )
             return ()
         finally:
@@ -296,7 +297,7 @@ class _NycBus:
                 params={"key": value},
             )
         except httpx.HTTPError as e:
-            scrubbed = scrub_secrets(e)
+            scrubbed = redact_secrets(str(e))
             log_event(
                 logger,
                 "transit.bus.validate.error",

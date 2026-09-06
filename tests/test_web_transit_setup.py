@@ -15,6 +15,7 @@ hardware-free.
 """
 from __future__ import annotations
 
+import html
 import http
 import logging
 import stat
@@ -520,7 +521,7 @@ def test_bus_card_scrubs_key_from_error_banner():
     state = {**NYC_STATE, "JASPER_MTA_BUSTIME_KEY": _SECRET_KEY}
     html_out = transit_setup._bus_card_html(provider, state)
     assert _SECRET_KEY not in html_out
-    assert "key=***" in html_out
+    assert html.escape(transit_setup.redact_secrets(_LEAKY_URL)) in html_out
 
 
 def _assert_one_scrubbed_warning(caplog) -> None:
@@ -533,7 +534,7 @@ def _assert_one_scrubbed_warning(caplog) -> None:
     ]
     (record,) = records
     message = record.getMessage()
-    assert transit_setup.scrub_secrets(_LEAKY_URL) in message
+    assert transit_setup.redact_secrets(_LEAKY_URL) in message
     assert _SECRET_KEY not in message
 
 
@@ -568,4 +569,4 @@ def test_citibike_card_scrubs_url_from_error_banner(monkeypatch):
     )
     html_out = transit_setup._citibike_card_html(provider, NYC_STATE)
     assert _SECRET_KEY not in html_out
-    assert "key=***" in html_out
+    assert html.escape(transit_setup.redact_secrets(_LEAKY_URL)) in html_out
