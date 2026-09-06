@@ -63,8 +63,7 @@ def test_auto_flush_on_warning_includes_prior_context():
 def test_auto_flush_is_floored_per_signature(monkeypatch):
     """A chronic warning dumps the ring once per floor interval; a
     different call site still gets its own dump immediately. A repeat
-    past the old 1h floor but inside the current 6h one (#4122) stays
-    suppressed; one past the current floor lands."""
+    within the floor (#4122) stays suppressed; one past it lands."""
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)
     now = [1_000.0]
@@ -75,7 +74,7 @@ def test_auto_flush_is_floored_per_signature(monkeypatch):
     # Same message, different logger -> different signature.
     ring.emit(_rec(logging.WARNING, "churn", name="jasper.other"))
     assert s.getvalue().count("event=flightrec.dump ") == 2
-    now[0] += 3700.0  # past the old 3600s floor, short of the 21600s one
+    now[0] += fr.AUTO_FLUSH_MIN_INTERVAL_SEC - 100.0  # short of the floor
     ring.emit(_rec(logging.WARNING, "churn"))
     assert s.getvalue().count("event=flightrec.dump ") == 2  # still suppressed
     now[0] += fr.AUTO_FLUSH_MIN_INTERVAL_SEC

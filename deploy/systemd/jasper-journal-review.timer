@@ -6,7 +6,6 @@ OnCalendar=weekly
 # Catches up a missed week (box off at the scheduled time) instead of
 # silently skipping it.
 Persistent=true
-RandomizedDelaySec=1h
 Unit=jasper-journal-review.service
 
 [Install]

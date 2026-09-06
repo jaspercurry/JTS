@@ -127,6 +127,15 @@ if [[ -r "$STATE_FILE" ]]; then
   ' "$STATE_FILE" 2>/dev/null || true
 fi
 
+# A manual --since run between weekly ticks can leave a stored window that
+# differs from this run's; its counts are then not a valid week-over-week
+# baseline (different span) even though its seen keys still are.
+PRIOR_WINDOW="$(grep -m1 '"window"' "$STATE_FILE" 2>/dev/null | sed -E 's/.*"window": *"([^"]*)".*/\1/')"
+if [[ -n "$PRIOR_WINDOW" && "$PRIOR_WINDOW" != "$SINCE" ]]; then
+  : > "$SCRATCH/prior_counts"
+  echo "journal-review: prior window '$PRIOR_WINDOW' != '$SINCE' -- counts/delta reset, seen keys kept." >&2
+fi
+
 # ---------------------------------------------------------------------------
 # THE ONE HEAVY PASS: a single windowed, all-unit journal stream fed straight
 # into one awk that simultaneously aggregates (a) event= keys, (b) auto-restart

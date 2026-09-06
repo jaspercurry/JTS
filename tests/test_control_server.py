@@ -275,7 +275,7 @@ def _access_log_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRec
         pytest.param("/volume", None, 200, 1, id="other_path_still_logged"),
     ],
 )
-def test_access_log_skips_only_200_healthz(
+def test_access_log_skips_only_200_on_quiet_paths(
     server_with_coordinator, caplog, path, headers, expected_status,
     expected_info_records,
 ):

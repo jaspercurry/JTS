@@ -431,6 +431,8 @@ validate_streambox_systemd_units() {
             "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
             "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
+            "${SYSTEMD_DIR}/jasper-journal-review.service"
+            "${SYSTEMD_DIR}/jasper-journal-review.timer"
             "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
             "${SYSTEMD_DIR}/jasper-voice.service"
             "${SYSTEMD_DIR}/jasper-input.service"
@@ -1353,7 +1355,8 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl enable --now jasper-journal-review.timer
+    systemctl enable --now jasper-journal-review.timer || \
+        echo "  (journal-review timer not enabled — non-fatal)"
     # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
     systemctl reset-failed jasper-control.service 2>/dev/null || true
     systemctl restart jasper-control.service || \
