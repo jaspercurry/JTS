@@ -40,6 +40,7 @@ from pathlib import Path
 import pytest
 
 from jasper.control import household_credential
+from jasper.control.client import PEER_DETAIL_MAX_CHARS
 from jasper.web import rooms_setup
 
 from ._web_test_helpers import FakeHandler
@@ -2045,7 +2046,8 @@ def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
     detail with no marker at all."""
     household = "kR3n9QpZ7sT2vX8b"
     prefix = '{"error":"household_mismatch","presented":"'
-    body = (prefix + "f" * (150 - len(prefix)) + household + '"}').encode()
+    pad = "f" * (PEER_DETAIL_MAX_CHARS - 10 - len(prefix))
+    body = (prefix + pad + household + '"}').encode()
     error = rooms_setup.urllib.error.HTTPError(
         "http://192.168.1.9:8780/grouping/set",
         403,

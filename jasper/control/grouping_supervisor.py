@@ -67,14 +67,12 @@ from typing import Any
 from jasper import identity
 from jasper.log_event import log_event
 from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
-from jasper.secret_redaction import redact_secrets
 
 from . import household_credential
 from .client import (
     CONTROL_PORT,
-    PEER_DETAIL_MAX_CHARS,
-    PEER_RESPONSE_MAX_BYTES,
     AsyncControlClient,
+    peer_detail,
 )
 from .uds import read_status_body
 from .supervisor_runtime import (
@@ -552,12 +550,7 @@ class GroupingSupervisor:
         detail = f"HTTP {resp.status}"
         if not resp.ok and resp.body:
             household_credential_value = (headers or {}).get("X-JTS-Household", "")
-            # Cap before decode so an oversized peer body can't make the
-            # redaction pass below do unbounded work.
-            peer_text = resp.body[:PEER_RESPONSE_MAX_BYTES].decode(errors="replace")
-            peer_text = redact_secrets(
-                peer_text, literals=(household_credential_value,),
-            )[:PEER_DETAIL_MAX_CHARS]
+            peer_text = peer_detail(resp.body, household_credential_value)
             detail = f"{detail}: {peer_text}"
         return resp.ok, detail
 
