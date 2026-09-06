@@ -15,6 +15,8 @@ import pytest
 from jasper.audio_io import InputDeviceUnavailable
 from jasper.voice_daemon import State, WakeLoop, _idle_watchdog
 
+from ._log_events import event_fields
+
 
 async def test_fire_and_forget_task_survives_gc_until_done():
     """WakeLoop keeps one-shot tasks strongly referenced until completion.
@@ -221,7 +223,7 @@ async def test_idle_watchdog_returns_on_server_turn_complete():
     )
 
 
-async def test_turn_open_failure_cue_is_honest_about_cause():
+async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
     """Regression for the 2026-06-19 incident.
 
     An UNEXPECTED local error during turn-open (the trigger that day was
@@ -231,7 +233,8 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
     by the LIVE connection state: `cant_connect` only when the connection
     is genuinely paused, otherwise the honest, low-alarm `internal_error`
     cue. (Layer 2 separately keeps the usage write from reaching here at
-    all; this pins the cue honesty regardless of what throws.)"""
+    all; this pins the cue honesty regardless of what throws.) The catch-all
+    also names itself in the journal, so the refusal is not cue-only."""
 
     async def _drive(
         *, paused: bool, conn_paused: bool = False, cue: str | None = None,
@@ -291,7 +294,12 @@ async def test_turn_open_failure_cue_is_honest_about_cause():
 
     # Healthy connection + unexpected local error -> honest internal cue,
     # NOT a false "I can't connect".
-    assert await _drive(paused=False) == (["internal_error"], 0)
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await _drive(paused=False) == (["internal_error"], 0)
+    assert event_fields(caplog, "wake.refused") == {
+        "reason": "acquire_error",
+        "exc_type": "RuntimeError",
+    }
 
     # Connection genuinely dropped into paused/failed mid-acquire ->
     # cant_connect is the truthful cue.

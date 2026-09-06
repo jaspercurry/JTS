@@ -2087,7 +2087,12 @@ class WakeLoop:
             except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
                 logger.warning("dynamic text drain cleanup failed: %s", e)
 
-    async def _play_cue(self, slug: str) -> bool:
+    async def _play_cue(
+        self,
+        slug: str,
+        *,
+        episode: AssistantOutputEpisode | None = None,
+    ) -> bool:
         """Best-effort cue playback, ducking music via CamillaDSP for the
         cue's duration. Without ducking the cue is drowned out by playing
         music; TTS-side level math alone cannot make it audible over a
@@ -2101,7 +2106,12 @@ class WakeLoop:
         restarting, in which case music is not playing through camilla either,
         so the cue is unducked but audible, and silence on a wake-blocking
         condition is the worse outcome. Ducker.restore short-circuits when the
-        duck did not latch, so the finally is unconditional."""
+        duck did not latch, so the finally is unconditional.
+
+        ``episode`` hands the cue an episode the caller already owns, for a
+        cue that must sound while that episode is still active — the
+        ``begin_if_idle`` admission below would refuse against it. The cue's
+        own drain path releases it, so the caller must not release it too."""
         if self._cues is None:
             # Cues are how the user hears why the speaker did not respond.
             # With no cue manager the speaker is silent on every failure, so
@@ -2122,16 +2132,17 @@ class WakeLoop:
                     level=logging.WARNING,
                 )
             return False
-        episode = await self._output_gate.begin_if_idle("admin")
         if episode is None:
-            log_event(
-                logger,
-                "cue.skipped",
-                reason=self._output_admission_refusal() or "output_active",
-                slug=slug,
-                active_kind=self._output_gate.active_kind,
-            )
-            return False
+            episode = await self._output_gate.begin_if_idle("admin")
+            if episode is None:
+                log_event(
+                    logger,
+                    "cue.skipped",
+                    reason=self._output_admission_refusal() or "output_active",
+                    slug=slug,
+                    active_kind=self._output_gate.active_kind,
+                )
+                return False
         return await self._play_cue_owned(slug, episode)
 
     async def _play_cue_owned(
@@ -2926,7 +2937,22 @@ class WakeLoop:
                         ),
                         level=logging.WARNING,
                     )
-                    await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
+                    # The opener still owns the turn episode, which
+                    # `_play_cue`'s own "admin" admission cannot preempt —
+                    # it would skip the cue and leave this wake silent.
+                    # The window is already cancelled above, so its episode
+                    # is handed to the cue; the opener's later release of an
+                    # episode that is no longer active is a no-op.
+                    handover = self._turn_output_episode
+                    if handover is not None and self._output_gate.is_current(
+                        handover,
+                    ):
+                        self._turn_output_episode = None
+                    else:
+                        handover = None
+                    await self._play_cue(
+                        INTERNAL_ERROR_CUE_SLUG, episode=handover,
+                    )
                     return
             elif self._state is State.SESSION:
                 await self._end_turn("research_window_wake")
@@ -3793,8 +3819,9 @@ class WakeLoop:
         (``UdpMicCapture.frames``) and the primary mic loop does not feed a
         button turn, so ``_idle_watchdog`` reaps it; ``_end_turn`` still
         finalises it through the ``_manual_endpoint_this_turn`` term in its
-        ``end_input()`` gate, and the operator gets the ``HOLD TIMEOUT`` line
-        rather than the wake-turn text.
+        ``end_input()`` gate, and the operator gets
+        ``event=turn.silent_response reason=hold_timeout`` rather than the
+        wake-turn ``reason=recording_timeout``.
         """
         now = asyncio.get_event_loop().time()
         elapsed = now - self._turn_started_at_loop
@@ -4773,11 +4800,17 @@ class WakeLoop:
                 and not self._turn.server_turn_complete()
             )
             silent = chunks_received == 0 and not self._turn.turn_lost()
-            if bytes_sent == 0 and not expected_research_silence_dismiss:
+            if (
+                bytes_sent == 0
+                and not expected_research_silence_dismiss
+                and reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS
+            ):
                 # No frame ever left the mic before teardown (idle-watchdog
                 # reap of a wake that fired on noise, or a push-to-talk
                 # release before any audio was captured) — distinct from
-                # `silent`, which requires bytes sent but no reply.
+                # `silent`, which requires bytes sent but no reply. The
+                # reasons the household or the daemon chose end this way
+                # routinely, so they stay silent here too.
                 log_event(
                     logger,
                     "turn.silent_response",
@@ -4791,7 +4824,8 @@ class WakeLoop:
                     level=logging.WARNING,
                 )
             elif (
-                (silent or lost_mid_reply)
+                bytes_sent > 0
+                and (silent or lost_mid_reply)
                 and not expected_research_silence_dismiss
             ):
                 model = _active_model(self._cfg)
@@ -4827,12 +4861,12 @@ class WakeLoop:
                         )
                         play_no_answer_cue = True
                 elif silent and self._manual_endpoint_this_turn:
-                    # Same shape as RECORDING TIMEOUT below, but that text
-                    # names a silence detector and a wake fire, neither of
-                    # which exists on a button turn — it would send an
-                    # operator hunting a wake-threshold problem that isn't
-                    # there. The button was held past the point where the
-                    # idle watchdog gave up waiting for the model.
+                    # Split from `recording_timeout` below, which diagnoses
+                    # a silence detector that never tripped after a wake —
+                    # neither exists on a button turn, so sharing the reason
+                    # would send an operator hunting a wake-threshold
+                    # problem that isn't there. The button was held past the
+                    # point where the idle watchdog gave up on the model.
                     log_event(
                         logger,
                         "turn.silent_response",
@@ -4847,14 +4881,22 @@ class WakeLoop:
                         level=logging.WARNING,
                     )
                 elif silent:
-                    logger.warning(
-                        "RECORDING TIMEOUT: sent %d bytes of audio to %s "
-                        "but the silence detector never tripped — idle "
-                        "watchdog ended the turn before the wake loop "
-                        "asked for a response. Common cause: low-confidence "
-                        "wake firing on background audio, or user speaking "
-                        "continuously past the idle window without a pause.",
-                        bytes_sent, model,
+                    # The silence detector never tripped, so the idle
+                    # watchdog ended the turn before the wake loop asked
+                    # for a response. Usual causes: a low-confidence wake
+                    # firing on background audio, or a user speaking past
+                    # the idle window without a pause.
+                    log_event(
+                        logger,
+                        "turn.silent_response",
+                        provider=self._cfg.voice_provider,
+                        model=model,
+                        reason="recording_timeout",
+                        bytes_sent=bytes_sent,
+                        chunks_received=chunks_received,
+                        turn_lost=lost_mid_reply,
+                        endpointer=self._endpointer_label(),
+                        level=logging.WARNING,
                     )
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
