@@ -413,7 +413,7 @@ Wave 4 — decompose WakeLoop
 Wave 5 — one provider base
 - [ ] 5.1 `tests/test_voice_supervisor.py`; provider test files shrink (tests §4, §7.1)
 - [x] 5.2 `_base.py`; adapters become wire-only (providers A3, D1, D2, D4, H1) — merged #4261 (`_base.py` 585 lines; adapters 1,676 / 1,012; net −279)
-- [ ] 5.3 Contract trim + mypy baseline exit + conformance tests (providers A4, C2–C4, J1; §5 guard 1) — partial: contract trim #4297, template methods declared #4296, adapters fully type-checked #4310; per-adapter isinstance conformance pin open
+- [ ] 5.3 Contract trim + mypy baseline exit + conformance tests (providers A4, C2–C4, J1; §5 guard 1) — partial: contract trim #4297, template methods declared #4296, adapters fully type-checked #4310; §5 guard 1: the turn classes are pinned per adapter (`tests/test_voice_barge_in_contract.py`), the `LiveConnection` half open
 
 Wave 6 — hardware-gated tuning (owner)
 - [ ] 6.1 `JASPER_AEC_CAPTURE_LATENCY=low` (latency #1)
