@@ -140,7 +140,9 @@ async def test_state_bass_extension_section_is_populated(monkeypatch, tmp_path):
 
     state = await _state_snapshot(monkeypatch, tmp_path)
 
-    assert state["bass_extension"] == summary
+    section = dict(state["bass_extension"])
+    section.pop("observed_at")  # every /state section is stamped (issue #4197)
+    assert section == summary
 
 
 async def test_state_bass_extension_section_is_fail_soft(monkeypatch, tmp_path):

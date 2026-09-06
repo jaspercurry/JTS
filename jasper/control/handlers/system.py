@@ -145,23 +145,9 @@ class SystemRoutes(ControlHandlerMixin):
         # Sampler may be None in tests / direct CLI invocation;
         # surface an empty history rather than 500.
         from ..system_metrics import read_build_info
-        from ...speaker_name import read_state as _read_speaker_name_state
         from ...voice.provider_state import read_active_provider
 
-        try:
-            ha_status = self._ha_status_cache.snapshot()
-        except Exception:  # noqa: BLE001
-            # Fail-soft per the existing aggregator convention —
-            # never break /system/snapshot because HA is wedged.
-            logger.exception("home assistant status snapshot failed")
-            ha_status = {
-                "configured": False,
-                "connected": False,
-                "url": "",
-                "instance_name": None,
-                "version": None,
-                "error": "probe failed",
-            }
+        ha_status = state_aggregate._ha_status(self._ha_status_cache.snapshot)
 
         try:
             if self._audio_health_sampler is not None:
@@ -179,11 +165,14 @@ class SystemRoutes(ControlHandlerMixin):
                 "reason": "AirPlay health sampler failed",
             }
 
+        # The sampler's cached observation when there is one, so this route
+        # re-probes nothing (ADR-0233 rule 2); same shaper as /state either way.
         try:
-            if self._audio_health_sampler is not None:
-                outputd_status = self._audio_health_sampler.outputd_snapshot()
-            else:
-                outputd_status = asyncio.run(state_aggregate._outputd_status())
+            cached = getattr(self._audio_health_sampler, "outputd_snapshot", None)
+            outputd_status = (
+                state_aggregate._outputd_section(cached()) if cached is not None
+                else asyncio.run(state_aggregate._outputd_status())
+            )
         except Exception:  # noqa: BLE001
             logger.exception("outputd status snapshot failed")
             outputd_status = None
@@ -226,7 +215,7 @@ class SystemRoutes(ControlHandlerMixin):
             "audio_quality": _safe_audio_quality_state(),
             "usb_latency": _server._safe_usb_latency_state(airplay_health),
             "voice_provider": read_active_provider(),
-            "speaker_name": _read_speaker_name_state().__dict__,
+            "speaker_name": state_aggregate._speaker_name_section(),
             "home_assistant": ha_status,
             "system_capabilities": system_capabilities_for_profile(
                 install_profile,

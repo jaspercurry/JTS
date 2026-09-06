@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -3992,10 +3993,15 @@ class _FakeHaStatus:
         }
 
 
-def test_system_snapshot_shares_normalized_and_legacy_health() -> None:
+def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> None:
+    """One reader per fact on the dashboard route (ADR-0233 rule 1): outputd
+    is read ONCE per request and published through the shaper /state shares.
+    Retire when /system/snapshot stops publishing outputd.
+    """
     normalized = _compose(selected="usbsink", ladder="l0_locked")
     legacy = {"status": "ok", "reason": "clean"}
     outputd = _outputd()
+    reads = []
 
     class FakeAudioHealth:
         def snapshot(self) -> dict:
@@ -4005,7 +4011,8 @@ def test_system_snapshot_shares_normalized_and_legacy_health() -> None:
             return legacy
 
         def outputd_snapshot(self) -> dict:
-            return outputd
+            reads.append(1)
+            return copy.deepcopy(outputd)
 
     handler = _make_handler(
         "127.0.0.1",
@@ -4026,7 +4033,8 @@ def test_system_snapshot_shares_normalized_and_legacy_health() -> None:
             payload = json.loads(response.read())
         assert payload["audio_health"] == normalized
         assert payload["airplay_health"] == legacy
-        assert payload["outputd"] == outputd
+        assert len(reads) == 1
+        assert payload["outputd"]["watchdog"] == outputd["watchdog"]
     finally:
         server.shutdown()
         server.server_close()

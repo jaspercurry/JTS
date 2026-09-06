@@ -672,6 +672,11 @@ _FAKE_FANIN_STATUS = {"inputs": {}, "pings_skipped": 0}
 _FAKE_OUTPUTD_STATUS = {"dac": {"aec_clock": {"offset_ppm": 0.0}}, "xruns": 0}
 _FAKE_AEC_STATUS = {"requested": {}, "runtime": {}}
 
+#: Stamped on every dict section by the aggregate, so the sets below stay each
+#: section's OWN keys; its presence is pinned separately below. Drop it here
+#: and from _stamp_observed_at together.
+_SECTION_STAMP = {"observed_at"}
+
 _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
     (): {
         "schema_version", "ts", "voice", "microphone", "audio", "audio_graph",
@@ -743,12 +748,60 @@ async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
     block = payload
     for key in path:
         block = block[key]
-    assert set(block) == _STATE_KEY_SETS[path]
+    assert set(block) - _SECTION_STAMP == _STATE_KEY_SETS[path]
 
 
 async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
     payload = await _state_payload(monkeypatch, tmp_path)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+
+
+async def test_every_state_section_says_when_it_was_observed(monkeypatch, tmp_path):
+    """Every dict-valued /state section carries a float observed_at (#4197).
+    Retire with `observed_at` itself."""
+    payload = await _state_payload(monkeypatch, tmp_path)
+
+    stamps = {
+        key: section.get("observed_at")
+        for key, section in payload.items()
+        if isinstance(section, dict)
+    }
+
+    assert stamps
+    assert [key for key, at in stamps.items() if not isinstance(at, float)] == []
+
+
+async def test_a_sampler_fed_section_keeps_its_sample_time(monkeypatch, tmp_path):
+    """A sampler-fed section is stamped with the SAMPLE time, not the read
+    time — a fresh stamp over an old observation is the lie this pins. Retire
+    when no /state section is sampler-fed.
+    """
+    from jasper.control.audio_health import AudioHealthSampler
+
+    class _StubAirPlay:
+        def sample_once(self) -> None:
+            pass
+
+        def snapshot(self) -> dict:
+            return {}
+
+    sampler = AudioHealthSampler(
+        airplay_sampler=_StubAirPlay(),
+        outputd_probe=lambda: None,
+        mux_probe=lambda: None,
+        route_probe=lambda: {},
+        service_probe=lambda: {},
+        output_hardware_probe=lambda: None,
+        output_topology_probe=lambda: None,
+        time_fn=lambda: 1_700_000_000.0,
+    )
+    sampler._tick()
+
+    payload = await _state_payload(
+        monkeypatch, tmp_path, audio_health_snapshot=sampler.snapshot,
+    )
+
+    assert payload["audio_health"]["observed_at"] == 1_700_000_000.0
 
 
 # ---------------------------------------------------------------------------

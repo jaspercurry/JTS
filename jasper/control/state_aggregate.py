@@ -48,6 +48,7 @@ from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
+from ..speaker_name import read_state as _read_speaker_name_state
 from ..route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
@@ -86,7 +87,7 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 # Bump when the key sets pinned in tests/test_wire_contracts.py change shape,
 # so a consumer can branch on the number instead of probing for keys.
 # See ADR-0233 rule 2.
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 
 # One deadline for the whole payload: the daemon fan-out and every section
 # read spend from it. NOT a latency control — the normal path finishes well
@@ -729,6 +730,21 @@ def _sound_runtime_status(
     return runtime
 
 
+def _outputd_section(status: dict | None) -> dict | None:
+    """jasper-outputd's STATUS body as every operator surface publishes it.
+
+    The chip-reference writer's per-write ring is dropped (~25 KB of every
+    response); its one consumer, jasper-aec-init, reads it off the socket
+    directly. One shaper for /state and /system/snapshot (ADR-0233 rule 1).
+    """
+    if isinstance(status, dict):
+        writer = status.get("reference_outputs", {})
+        writer = writer.get("chip_ref_writer") if isinstance(writer, dict) else None
+        if isinstance(writer, dict):
+            writer.pop("recent_writes", None)
+    return status
+
+
 async def _outputd_status(
     *,
     local_status_json: Callable[..., Any] = _local_status_json,
@@ -736,17 +752,9 @@ async def _outputd_status(
     """Probe jasper-outputd's STATUS endpoint.
 
     Missing socket is fail-soft here so /state remains available while
-    jasper-doctor owns the actionable cutover failure. The chip-reference
-    writer's per-write ring is dropped (~25 KB of every response); its one
-    consumer, jasper-aec-init, reads it off this socket directly.
+    jasper-doctor owns the actionable cutover failure.
     """
-    status = await local_status_json(OUTPUTD_STATUS_SOCKET)
-    if isinstance(status, dict):
-        writer = status.get("reference_outputs", {})
-        writer = writer.get("chip_ref_writer") if isinstance(writer, dict) else None
-        if isinstance(writer, dict):
-            writer.pop("recent_writes", None)
-    return status
+    return _outputd_section(await local_status_json(OUTPUTD_STATUS_SOCKET))
 
 
 async def _soft_read(
@@ -1048,6 +1056,46 @@ class _Probes(NamedTuple):
     ha_status: dict[str, Any]
 
 
+def _speaker_name_section() -> dict[str, Any]:
+    """The display-name record every operator surface publishes.
+
+    Named fields rather than the dataclass's ``__dict__``, so a new field
+    reaches a surface by decision (ADR-0233 rule 1).
+    """
+    state = _read_speaker_name_state()
+    return {"name": state.name, "room": state.room, "source": state.source}
+
+
+def _stamp_observed_at(
+    payload: dict[str, Any], *, read_at: float,
+) -> dict[str, Any]:
+    """Say when each section's facts were observed. Epoch seconds (#4197).
+
+    A section a sampler produced carries that sampler's own ``sampled_at`` —
+    what a consumer must age is the observation, not this response. Everything
+    else carries the time this response read it.
+
+    Nested ``audio.output_hardware.observed_at`` is an ISO string owned by the
+    hardware lane (#4027); this top-level stamp is epoch seconds.
+    """
+    return {
+        key: (
+            section if not isinstance(section, dict) else {
+                **section,
+                # Epoch magnitude: a monotonic clock or a bool never reaches
+                # it, so a daemon body cannot retarget the stamp.
+                "observed_at": (
+                    section["sampled_at"]
+                    if isinstance(section.get("sampled_at"), float)
+                    and section["sampled_at"] > 1e9
+                    else read_at
+                ),
+            }
+        )
+        for key, section in payload.items()
+    }
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -1074,7 +1122,6 @@ async def _get_state(
     """
     from datetime import datetime, timezone
 
-    from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import (
         read_active_model_from_env_files,
         read_active_provider_state,
@@ -1172,7 +1219,6 @@ async def _get_state(
         sound_profile["runtime_state"] = runtime["state"]
         sound_profile["runtime_active"] = runtime["active"]
         sound_profile["active_config_path"] = runtime["active_config_path"]
-    speaker_name_state = _read_speaker_name_state()
 
     # USB Audio Input — fourth renderer. Fan-in owns the live DIRECT lane;
     # kernel UDC state owns host connection.
@@ -1230,7 +1276,7 @@ async def _get_state(
     from ..mic_presence import read_mic_presence
     mic_presence = read_mic_presence()
 
-    return {
+    payload: dict[str, Any] = {
         "schema_version": STATE_SCHEMA_VERSION,
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
@@ -1292,14 +1338,10 @@ async def _get_state(
             # consumer can show "off" as distinct from "idle".
             "usbsink": usbsink_state,
         },
-        "speaker_name": {
-            "name": speaker_name_state.name,
-            "room": speaker_name_state.room,
-            "source": speaker_name_state.source,
-        },
+        "speaker_name": _speaker_name_section(),
         "active_source": active_source,
-        # Fan-in's UDS STATUS snapshot, verbatim. null only when the
-        # daemon/socket is unavailable.
+        # Fan-in's UDS STATUS snapshot, flat and unwrapped. null only when
+        # the daemon/socket is unavailable.
         "fanin": probes.fanin,
         # Final-output owner; jasper-doctor owns the actionable failure.
         "outputd": probes.outputd,
@@ -1399,3 +1441,4 @@ async def _get_state(
         "audio_health": audio_health,
         "usb_gadget_forensics": usb_forensics,
     }
+    return _stamp_observed_at(payload, read_at=time.time())
