@@ -6,15 +6,16 @@ from __future__ import annotations
 
 import types
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from jasper.tools import ToolRegistry, dispatch_tool
-from jasper.tools.bus import make_bus_tools
-from jasper.tools.catalog import _CATALOG_HIDDEN
-from jasper.tools.citibike import make_citibike_tools
+from jasper.tools.catalog import (
+    _CATALOG_HIDDEN,
+    _sentinel_tool_deps,
+    _sentinel_transit_tools,
+)
 from jasper.tools.packs import CapabilityPack, ToolDeps, register_packs
-from jasper.tools.subway import make_subway_tools
 
 LEGACY_PACK_ORDER = [
     "audio",
@@ -77,12 +78,10 @@ class DispatchCase:
 
 
 def transit_tool_stubs() -> list[Any]:
-    """The 3 shipped transit tools, built hardware-free with lazy stubs."""
-    tools: list[Any] = []
-    tools += list(make_subway_tools(object()))
-    tools += list(make_bus_tools(types.SimpleNamespace(enabled=True)))
-    tools += list(make_citibike_tools(types.SimpleNamespace(enabled=True)))
-    return tools
+    """The 3 shipped transit tools, built hardware-free with lazy stubs.
+    Delegates to jasper.tools.catalog's sentinel builder so this file and
+    the production catalog can't hand-sync two copies of the same stubs."""
+    return _sentinel_transit_tools()
 
 
 def full_tool_deps(**overrides: Any) -> ToolDeps:
@@ -90,27 +89,13 @@ def full_tool_deps(**overrides: Any) -> ToolDeps:
 
     Tool factories capture deps lazily, so these stubs build the same
     definitions a live daemon would without touching hardware, network, or
-    user state.
+    user state. Delegates to jasper.tools.catalog's sentinel builder (the
+    same one build_catalog's full-registry enumeration uses) so this file
+    and the production catalog can't hand-sync two copies of the same
+    ToolDeps literal.
     """
-    values = {
-        "volume_coordinator": None,
-        "renderer": None,
-        "router": None,
-        "weather": None,
-        "spotify_device_name": "JTS",
-        "spotify_setup_url": "",
-        "transit_tools": transit_tool_stubs(),
-        "google_routes": object(),
-        "ha": object(),
-        "timer_scheduler": object(),
-        "research_scheduler": object(),
-        "google_clients": types.SimpleNamespace(
-            list_account_names=lambda: ["jasper"],
-        ),
-        "wake_event_store": object(),
-    }
-    values.update(overrides)
-    return ToolDeps(**values)
+    deps = _sentinel_tool_deps()
+    return replace(deps, **overrides) if overrides else deps
 
 
 def minimal_tool_deps(**overrides: Any) -> ToolDeps:
@@ -122,6 +107,7 @@ def minimal_tool_deps(**overrides: Any) -> ToolDeps:
         "weather": None,
         "spotify_device_name": "JTS",
         "spotify_setup_url": "",
+        "google_setup_url": "http://sentinel.invalid/google",
         "transit_tools": [],
         "google_routes": None,
         "ha": None,

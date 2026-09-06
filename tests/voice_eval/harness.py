@@ -370,6 +370,7 @@ def _build_test_registry(
         weather=weather,
         spotify_device_name=cfg.spotify_device_name,
         spotify_setup_url=cfg.spotify_setup_url,
+        google_setup_url=cfg.google_setup_url,
         transit_tools=active.tools,
         google_routes=google_routes,
         ha=ha,
