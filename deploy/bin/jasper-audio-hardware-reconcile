@@ -40,6 +40,7 @@ OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWAR
 # per spawn: every one of those spawns is this script's own child, so a single
 # top-level export reaches all of them. Same script/library lockstep as
 # load_env_file_lib below.
+# Removal condition: install.sh runs install_jasper before install_alsa.
 OUTPUT_HARDWARE_PYTHONPATH=""
 if [[ -f "${SCRIPT_DIR}/../../jasper/cli/output_hardware.py" ]]; then
     OUTPUT_HARDWARE_PYTHONPATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
