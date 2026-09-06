@@ -279,7 +279,7 @@ def test_readable_nmcli_error_scrubs_echoed_psk():
     )
     msg = wifi_setup._readable_nmcli_error(proc, psk)
     assert psk not in msg
-    assert "***" in msg
+    assert "<redacted>" in msg
 
 
 def test_readable_nmcli_error_scrubs_password_token_without_literal():
@@ -289,11 +289,22 @@ def test_readable_nmcli_error_scrubs_password_token_without_literal():
     )
     msg = wifi_setup._readable_nmcli_error(proc, None)
     assert "abc123def" not in msg
-    assert "password ***" in msg
+    assert "password <redacted>" in msg
 
 
-def test_nmcli_timeout_log_scrubs_psk_from_secret_argv(monkeypatch, caplog):
-    psk = "timeout-secret-psk"
+# WPA passphrases are 8-63 printable ASCII, quote characters included, and
+# both log sites join the argv for display -- so a quote-bearing PSK is the
+# shape that defeats any pattern applied after the join.
+@pytest.mark.parametrize(
+    "psk",
+    [
+        "timeout-secret-psk",
+        'say "hi" 12345',
+        "don't tell me",
+        "p@ss'w\"rd12",
+    ],
+)
+def test_nmcli_secret_argv_never_logs_the_psk(monkeypatch, caplog, psk):
     cmd = [
         "nmcli",
         "device",
@@ -312,9 +323,18 @@ def test_nmcli_timeout_log_scrubs_psk_from_secret_argv(monkeypatch, caplog):
 
     proc = wifi_setup._run_nmcli_secret(cmd, timeout=1)
 
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == wifi_setup.logger.name and record.levelno == logging.WARNING
+    ]
+
     assert proc.returncode == 124
+    # Without a record to look at, the absence pin below is satisfied by an
+    # empty log.
+    assert len(warnings) == 1
+    assert "password <redacted>" in warnings[0].getMessage()
     assert psk not in caplog.text
-    assert "password ***" in caplog.text
 
 
 def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):

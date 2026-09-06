@@ -94,6 +94,7 @@ from jasper.usage import (
     tuning_usage_db_path,
 )
 from jasper.log_event import log_event
+from jasper.secret_redaction import redact_secrets
 
 from ._common import (
     api_key_token_is_valid,
@@ -244,13 +245,15 @@ def _seed_config_from_state(state: dict[str, str]) -> SimpleNamespace:
 
 
 def _redact_provider_error(exc: Exception, state: dict[str, str]) -> str:
-    """Return a flash-safe error string without raw provider secrets."""
+    """Return a flash-safe error string without raw provider secrets.
+
+    The literal pass is not redundant with the pattern redactor: the wizards
+    accept any `api_key_token_is_valid` token, so a pasted key carrying no
+    recognised prefix is removable only by the literal the caller holds.
+    """
     msg = str(exc) or exc.__class__.__name__
-    for provider in PROVIDERS:
-        secret = _value_for(state, provider.key_env)
-        if secret:
-            msg = msg.replace(secret, mask_secret(secret))
-    msg = " ".join(msg.split())
+    literals = [_value_for(state, key_env) for key_env in _SECRET_KEY_ENVS]
+    msg = " ".join(redact_secrets(msg, literals).split())
     if len(msg) > 220:
         msg = msg[:217] + "..."
     return msg
