@@ -860,7 +860,8 @@ install_deps() {
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
     # hardware-gated USB management network.
     # rustc + cargo are required to build the Rust audio daemons (rust/jasper-fanin/,
-    # rust/jasper-outputd/). Trixie ships rustc 1.85; the effective floor is 1.82 (jasper-daemon).
+    # rust/jasper-outputd/). Trixie ships rustc 1.85; the effective floor is 1.82
+    # (jasper-daemon, jasper-tts-protocol).
     # meson + ninja-build are installed ahead of time for the optional
     # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
     # binding; an explicit Advanced → Software action compiles v2 later in a
@@ -2149,13 +2150,13 @@ main() {
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
+        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
+        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         migrate_calibration_sign_convention  # vendor mic cal files are response curves
         ensure_output_hardware_state
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
@@ -2201,13 +2202,13 @@ main() {
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
+    reassert_secrets_compartment_perms
+    reassert_intsecrets_compartment_perms
     migrate_calibration_sign_convention  # vendor mic cal files are response curves
     ensure_output_hardware_state
     render_outputd_cutover_config
     ensure_outputd_camilla_statefile
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-    reassert_secrets_compartment_perms
-    reassert_intsecrets_compartment_perms
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)

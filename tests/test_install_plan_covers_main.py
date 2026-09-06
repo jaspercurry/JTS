@@ -220,14 +220,12 @@ def test_secret_compartments_and_wifi_guardian_run_on_both_profiles(
     """Both profiles seed the WiFi guardian stash, and re-narrow the two secret
     compartments inside the window where the re-narrow does anything.
 
-    The window is bounded on both sides. Below: each re-assert opens with
-    `getent group jasper-{,int}secrets || return 0` and those groups are
-    created by create_jasper_service_users, and migrate_voice_keys_split reads
-    the jasper.env the profile's python-runtime step seeds -- moved above
-    either, both steps become silent no-ops on a first install. Above: the
-    unit install starts the daemons that read the compartments. These were
-    streambox-only main() rows while the full profile buried them inside
-    install_jasper, where no per-profile check could see them.
+    Each lower bound fails differently. Above create_jasper_service_users the
+    opening `getent group jasper-{,int}secrets || return 0` makes each
+    re-assert a silent no-op. Above the profile's python-runtime step the
+    ownership/mode half still runs, but migrate_voice_keys_split finds no
+    seeded jasper.env and the operator-seed sweep is lost. The upper bound is
+    the unit install, which starts the daemons that read the compartments.
 
     Remove when main() becomes a declarative STEPS table: the table's own
     pin supersedes this one.
