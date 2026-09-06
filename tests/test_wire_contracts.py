@@ -681,6 +681,9 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
         "transit", "debug", "tools", "chat", "research", "measurement",
         "usb_network", "audio_health", "usb_gadget_forensics",
     },
+    # jasper.speaker_name.SpeakerNameState. `room` rides with the name so
+    # /state and /system/snapshot publish one shape of the same record.
+    ("speaker_name",): {"name", "room", "source"},
     # jasper.mic_presence.MicPresence.as_dict. `reason` is the closed
     # MIC_ABSENT_REASONS code a client may switch on; `detail` is the prose
     # beside it, which is displayed and never matched.

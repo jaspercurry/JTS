@@ -95,7 +95,8 @@ STATE_SCHEMA_VERSION = 1
 # bounded-worker control plane is never parked on /state.
 _STATE_AGGREGATE_BUDGET_SEC = 20.0
 
-#: Deadline for the payload in flight; None means untimed.
+#: Deadline for the payload in flight; None means untimed. Retire it, the
+#: pool below and _remaining() together if every section read stops blocking.
 _STATE_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "jasper_state_deadline", default=None,
 )
@@ -106,6 +107,11 @@ _STATE_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
 _STATE_READ_POOL = ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="jasper-state-read",
 )
+
+
+def _remaining(deadline: float | None) -> float | None:
+    """Seconds left on `deadline`, floored at zero; None when untimed."""
+    return None if deadline is None else max(0.0, deadline - time.monotonic())
 _default_ha_status_cache: Any | None = None
 
 _VOICE_STATUS_DIRECT_KEYS = (
@@ -757,12 +763,11 @@ async def _soft_read(
     clause must precede ``exc``: TimeoutError is an OSError subclass, which
     several callers pass.
     """
-    deadline = _STATE_DEADLINE.get()
-    timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
     loop = asyncio.get_running_loop()
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(_STATE_READ_POOL, reader), timeout,
+            loop.run_in_executor(_STATE_READ_POOL, reader),
+            _remaining(_STATE_DEADLINE.get()),
         )
     except asyncio.TimeoutError:
         log_event(
@@ -773,6 +778,13 @@ async def _soft_read(
     except exc:
         logger.exception("/state %s section read failed", section)
         return None
+
+
+async def _soft_read_optional(
+    section: str, snapshot: Callable[[], _T] | None,
+) -> _T | None:
+    """A section whose reader is absent when this daemon runs no sampler."""
+    return None if snapshot is None else await _soft_read(section, snapshot)
 
 
 def _read_persisted_volume() -> tuple[int | None, float | None]:
@@ -844,12 +856,15 @@ def _active_source(
     The audio-health sampler's verdict wins whenever it has one, so it and
     ``audio_health.overall.active_source`` cannot name different sources in one
     response. It models music lanes only and answers None for "cannot confirm",
-    so a voice session still leads and the ladder below (mux's effective
-    source, then the raw renderer probes) still answers when it cannot.
+    so a voice session still leads.
     """
     overall = audio_health.get("overall") if isinstance(audio_health, Mapping) else None
+    overall = overall if isinstance(overall, Mapping) else {}
+    # The sampler keeps the last lane verbatim once its own sample goes stale
+    # and says so with status `unknown`; that must not outrank a live mux.
     health_source = (
-        overall.get("active_source") if isinstance(overall, Mapping) else None
+        None if overall.get("status") == "unknown"
+        else overall.get("active_source")
     )
 
     mux_effective_source = None
@@ -1015,22 +1030,14 @@ async def _mux_status(cmd: Callable[..., Any]) -> dict | None:
 
 
 async def _aec_status(full_status: Callable[[], dict]) -> dict | None:
-    """Additive mirror of GET /aec for one-shot /state consumers.
-
-    On _STATE_READ_POOL, not the loop's default executor, for the reason
-    _soft_read is: asyncio.run joins the default one before the request can
-    return, so a wedged probe there outlasts the deadline meant to bound it.
-    """
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_STATE_READ_POOL, full_status)
-    except Exception:  # noqa: BLE001
-        logger.exception("AEC/profile state probe failed")
-        return None
+    """Additive mirror of GET /aec for one-shot /state consumers."""
+    return await _soft_read("aec", full_status)
 
 
 class _Probes(NamedTuple):
-    """Built positionally: field order IS the gather order, ``ha_status`` last."""
+    """Field order IS the daemon gather's order; the last two are passed by
+    name — ``aec`` reads a file and forks, so it runs with the section reads.
+    """
 
     camilla: dict[str, Any]
     voice: dict | None
@@ -1083,19 +1090,7 @@ async def _get_state(
     deadline = time.monotonic() + _STATE_AGGREGATE_BUDGET_SEC
     _STATE_DEADLINE.set(deadline)
 
-    listening_level, persisted_main_volume_db = await _soft_read(
-        "volume", _read_persisted_volume, exc=(OSError, ValueError),
-    ) or (None, None)
-    sound_profile = await _soft_read("sound_profile", _read_sound_profile)
-
     ha_status = _ha_status(ha_status_snapshot)
-    # The AirPlay health sampler's held MPRIS PlaybackStatus, so no `busctl`
-    # runs per request (ADR-0233 rule 2). None when the sampler is absent or
-    # has no sample yet; freshness is bounded by its own interval.
-    airplay_playing = (
-        None if airplay_playing_snapshot is None
-        else await _soft_read("airplay_playing", airplay_playing_snapshot)
-    )
     try:
         gathered = await asyncio.wait_for(
             asyncio.gather(
@@ -1104,9 +1099,8 @@ async def _get_state(
                 local_status_json(FANIN_STATUS_SOCKET),
                 _outputd_status(local_status_json=local_status_json),
                 _mux_status(mux_socket_command),
-                _aec_status(aec_full_status),
             ),
-            timeout=max(0.0, deadline - time.monotonic()),
+            timeout=_remaining(deadline),
         )
     except asyncio.TimeoutError:
         # A probe blew past its own ceiling. Fail loud (the handler turns this
@@ -1119,7 +1113,52 @@ async def _get_state(
             level=logging.WARNING,
         )
         raise
-    probes = _Probes(*gathered, ha_status=ha_status)
+
+    # One pass over every section read that depends on nothing else, so they
+    # share the pool instead of each waiting out the one before it — serial
+    # submission spends one worker and the deadline a read at a time.
+    (
+        volume_state, sound_profile, airplay_playing, aec_status, audio_health,
+        usb_forensics, audition_state, bass_extension_state, transit_state,
+        output_hardware_state, service_states, tools_state, chat_state,
+    ) = await asyncio.gather(
+        _soft_read("volume", _read_persisted_volume, exc=(OSError, ValueError)),
+        _soft_read("sound_profile", _read_sound_profile),
+        # The AirPlay health sampler's held MPRIS PlaybackStatus, so no
+        # `busctl` runs per request (ADR-0233 rule 2). None when the sampler
+        # is absent or has no sample yet; its interval bounds freshness.
+        _soft_read_optional("airplay_playing", airplay_playing_snapshot),
+        _aec_status(aec_full_status),
+        # The sampler's normalized health contract, read into the payload
+        # rather than bolted on above it: `active_source` below comes out of
+        # THIS object, so the two cannot drift.
+        _soft_read_optional("audio_health", audio_health_snapshot),
+        _soft_read("usb_gadget_forensics", usb_gadget_forensics.snapshot),
+        _soft_read(
+            "audition", _read_audition_state,
+            exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
+        ),
+        _soft_read(
+            "bass_extension", _read_bass_extension,
+            exc=(
+                ImportError, OSError, RuntimeError, TypeError, ValueError,
+                KeyError, AttributeError,
+            ),
+        ),
+        _soft_read("transit", read_transit_state_func),
+        _soft_read("output_hardware", _read_output_hardware),
+        _soft_read_optional("service_states", service_states_snapshot),
+        _soft_read("tools", _read_tool_catalog),
+        # Conversation history is a read-only Feature surface. Settings are
+        # wizard-owned and read fresh; the SQLite store is opened read-only so
+        # jasper-control cannot create or mutate jasper-voice's DB.
+        _soft_read(
+            "chat", _conversation_history_state,
+            exc=(ImportError, OSError, RuntimeError, ValueError),
+        ),
+    )
+    listening_level, persisted_main_volume_db = volume_state or (None, None)
+    probes = _Probes(*gathered, aec=aec_status, ha_status=ha_status)
 
     spotify = _spotify_state()
     if sound_profile is not None:
@@ -1142,16 +1181,6 @@ async def _get_state(
         host_connected=udc_host_connected(
             os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
         ),
-    )
-
-    # Read into the payload here, not bolted onto the response afterwards:
-    # `active_source` below comes out of THIS object, so the two cannot drift.
-    audio_health = (
-        None if audio_health_snapshot is None
-        else await _soft_read("audio_health", audio_health_snapshot)
-    )
-    usb_forensics = await _soft_read(
-        "usb_gadget_forensics", usb_gadget_forensics.snapshot,
     )
 
     voice_status = probes.voice or {}
@@ -1185,48 +1214,10 @@ async def _get_state(
         ),
         exc=(OSError, RuntimeError, TypeError, ValueError, KeyError),
     )
-    audition_state = await _soft_read(
-        "audition",
-        _read_audition_state,
-        exc=(ImportError, OSError, RuntimeError, TypeError, ValueError),
-    )
-    bass_extension_state = await _soft_read(
-        "bass_extension",
-        _read_bass_extension,
-        exc=(
-            ImportError,
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-            KeyError,
-            AttributeError,
-        ),
-    )
-    transit_state = await _soft_read("transit", read_transit_state_func)
-    output_hardware_state = await _soft_read(
-        "output_hardware", _read_output_hardware,
-    )
-    service_states = (
-        await _soft_read("service_states", service_states_snapshot)
-        if service_states_snapshot
-        else None
-    )
-
     audio_graph_state = _audio_graph_state(
         fanin_status=probes.fanin,
         outputd_status=probes.outputd,
         service_states=service_states,
-    )
-    tools_state = await _soft_read("tools", _read_tool_catalog)
-
-    # Conversation history is a read-only Feature surface. Settings are
-    # wizard-owned and read fresh; the SQLite store is opened read-only so
-    # jasper-control cannot create or mutate jasper-voice's DB.
-    chat_state = await _soft_read(
-        "chat",
-        _conversation_history_state,
-        exc=(ImportError, OSError, RuntimeError, ValueError),
     )
     research_state = await _soft_read(
         "research",

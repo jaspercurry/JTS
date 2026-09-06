@@ -1050,10 +1050,11 @@ def test_state_wire_key_set_is_the_pinned_set(
 
     The aggregate builds every top-level key, so a key bolted on in the
     handler instead would reach consumers unpinned — the nesting-drift class
-    the key-set pin exists for. The second case refuses every spawn
-    primitive: no per-request process may be load-bearing for the shape
-    (ADR-0233 rule 2), so a probe that forks and lets the failure escape
-    takes the payload to 502 and fails here. Retire with the key-set pin.
+    the key-set pin exists for. The first case also pins that `aec`, the one
+    section still behind a fork, resolves. The second refuses every spawn
+    primitive and pins the shape only: no per-request process may be
+    load-bearing for it (ADR-0233 rule 2), so a probe that forks and lets the
+    failure escape takes the payload to 502. Retire with the key-set pin.
     """
     if refuse_spawns:
         def refuse(*_args, **_kwargs):
@@ -1071,6 +1072,8 @@ def test_state_wire_key_set_is_the_pinned_set(
 
     assert status == 200
     assert set(body) == _pinned_state_keys()
+    if not refuse_spawns:
+        assert body["aec"] is not None
 
 
 async def test_state_section_read_past_the_deadline_reports_unavailable(
@@ -1105,23 +1108,31 @@ async def test_state_section_read_past_the_deadline_reports_unavailable(
     assert payload["transit"] is None
 
 
+@pytest.mark.parametrize(
+    "overall_status, expected",
+    [("ok", "usbsink"), ("unknown", "idle")],
+)
 async def test_state_active_source_is_the_health_samplers_verdict(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, overall_status, expected,
 ):
     """One active_source on the wire (ADR-0233 rule 2).
 
     The audio-health sampler and the aggregate's renderer ladder are two
     candidate answers in one response, free to name different sources unless
-    one of them defers. Retire when the sampler stops publishing a source.
+    one of them defers. A stale sampler keeps its last lane verbatim under
+    `status: unknown`, which must not outrank the ladder's live answer.
+    Retire when the sampler stops publishing a source.
     """
     from tests.test_wire_contracts import _state_payload
 
     payload = await _state_payload(
         monkeypatch, tmp_path,
-        audio_health_snapshot=lambda: {"overall": {"active_source": "usbsink"}},
+        audio_health_snapshot=lambda: {
+            "overall": {"status": overall_status, "active_source": "usbsink"},
+        },
     )
 
-    assert payload["active_source"] == "usbsink"
+    assert payload["active_source"] == expected
     assert payload["audio_health"]["overall"]["active_source"] == "usbsink"
 
 

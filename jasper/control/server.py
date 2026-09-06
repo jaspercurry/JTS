@@ -455,6 +455,11 @@ CONTROL_REQUEST_QUEUE_SIZE = 16
 CONTROL_REQUEST_TIMEOUT_SEC = 5.0
 CONTROL_OVERLOAD_LOG_INTERVAL_SEC = 5.0
 STATE_RESPONSE_CACHE_TTL_SEC = 1.0
+# How long a /state caller waits on someone else's in-flight aggregate before
+# it is served the last value instead. Admission is non-blocking and there are
+# eight request workers, so a longer wait starves every other route on one slow
+# compute. Retire with the cache's wait timeout.
+STATE_RESPONSE_WAIT_SEC = 2.0
 
 
 _MISSING = object()
@@ -475,6 +480,7 @@ class _SingleFlightTTLCache:
         self._clock = clock
         self._cond = threading.Condition()
         self._value: Any = _MISSING
+        self._computed_at = 0.0
         self._expires_at = 0.0
         self._inflight = False
 
@@ -500,6 +506,12 @@ class _SingleFlightTTLCache:
                     break
                 if not self._cond.wait(timeout=self._wait_timeout_sec):
                     if self._value is not _MISSING:
+                        log_event(
+                            logger,
+                            "state.stale_value_served",
+                            age_sec=round(self._clock() - self._computed_at, 1),
+                            level=logging.WARNING,
+                        )
                         return self._value
                     raise TimeoutError(
                         "state compute did not finish within its budget",
@@ -517,7 +529,8 @@ class _SingleFlightTTLCache:
 
         with self._cond:
             self._value = value
-            self._expires_at = self._clock() + self._ttl_sec
+            self._computed_at = self._clock()
+            self._expires_at = self._computed_at + self._ttl_sec
             self._inflight = False
             self._cond.notify_all()
             return value
@@ -1384,8 +1397,7 @@ def _make_handler(
     # `_get_op` bypasses coordinator/actuator construction.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
     state_response_cache = _SingleFlightTTLCache(
-        STATE_RESPONSE_CACHE_TTL_SEC,
-        _state_aggregate._STATE_AGGREGATE_BUDGET_SEC,
+        STATE_RESPONSE_CACHE_TTL_SEC, STATE_RESPONSE_WAIT_SEC,
     )
     if ha_status_cache is None:
         from .ha_status_cache import HomeAssistantStatusCache
