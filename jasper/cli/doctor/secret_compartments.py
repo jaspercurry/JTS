@@ -63,6 +63,7 @@ REASON_COMPARTMENT_UNDER_AVAILABLE = "compartment_under_available"
 # read this stat'd file?" and "what identity does this unit run as?".
 _process_can_read = privsep._process_can_read
 _describe = privsep._describe
+_is_glob = privsep._is_glob
 
 
 @dataclass(frozen=True)
@@ -74,8 +75,7 @@ class SecretCompartment:
     that MUST be able to read the secrets (the availability side); the drift
     test pins them against each unit's ``SupplementaryGroups=``. Absent
     ``files`` are skipped — absent means "not configured", not the bug class.
-    A ``files`` entry may be a :mod:`~jasper.accounts` resolver instead of a
-    literal, so an env override is read when the check RUNS, not at import.
+    ``files`` may hold a ``jasper.accounts`` resolver, read at check time.
     """
 
     group: str
@@ -83,8 +83,12 @@ class SecretCompartment:
     member_units: tuple[str, ...]
     files: tuple[str | Callable[[], str], ...] = field(default_factory=tuple)
 
-    def resolved_files(self) -> tuple[str, ...]:
-        return tuple(f() if callable(f) else f for f in self.files)
+    def resolved_files(self) -> tuple[tuple[str, bool], ...]:
+        """``(path, may_glob)`` — a resolver yields one literal path, so an
+        override containing ``*?[`` is still stat'd as a file."""
+        return tuple(
+            (f(), False) if callable(f) else (f, True) for f in self.files
+        )
 
 
 # The universe of leak targets is the non-root daemons privsep already models;
@@ -157,10 +161,6 @@ class _Identity:
     uid: int
     gids: frozenset[int]
     user: str
-
-
-def _is_glob(pattern: str) -> bool:
-    return any(c in pattern for c in "*?[")
 
 
 def _unique_names(names: list[str]) -> list[str]:
@@ -269,8 +269,10 @@ def _classify_compartment(
 
     # --- each present secret file ------------------------------------------
     checked = 0
-    for pattern in comp.resolved_files():
-        matches = sorted(glob_fn(pattern)) if _is_glob(pattern) else [pattern]
+    for pattern, may_glob in comp.resolved_files():
+        matches = (
+            sorted(glob_fn(pattern)) if may_glob and _is_glob(pattern) else [pattern]
+        )
         for match in matches:
             try:
                 st = stat_fn(match)

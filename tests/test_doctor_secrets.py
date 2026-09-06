@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import grp
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from jasper import accounts
@@ -470,10 +471,12 @@ def test_no_unit_joins_a_compartment_group_without_membership():
     )
 
 
-def test_secret_files_live_under_their_compartment_dir():
+def test_secret_files_live_under_their_compartment_dir(monkeypatch):
+    for var in ("SPOTIFY_CACHE_PATH", "JASPER_SPOTIFY_ACCOUNTS_PATH"):
+        monkeypatch.delenv(var, raising=False)
     for comp in COMPARTMENTS:
         prefix = comp.directory.rstrip("/") + "/"
-        for path in comp.resolved_files():
+        for path, _ in comp.resolved_files():
             assert path.startswith(prefix), (
                 f"{comp.group}: secret file {path} is outside the compartment dir "
                 f"{comp.directory}"
@@ -482,18 +485,39 @@ def test_secret_files_live_under_their_compartment_dir():
 
 def test_audited_paths_follow_the_spotify_env_overrides(tmp_path, monkeypatch):
     """The Spotify cache + registry paths are env-overridable (jasper.accounts),
-    so the audit must stat the files the box actually uses. No removal
-    condition: this pins non-negotiable 3's observable posture check."""
-    cache = str(tmp_path / "spotify-cache")
+    so the audit must stat the files the box actually uses; a resolver's output
+    is one literal path, never a glob pattern."""
+    cache = str(tmp_path / "cache[1].json")
     accounts_json = str(tmp_path / "accounts.json")
     monkeypatch.setenv("SPOTIFY_CACHE_PATH", cache)
     monkeypatch.setenv("JASPER_SPOTIFY_ACCOUNTS_PATH", accounts_json)
-    comp = next(c for c in COMPARTMENTS if c.group == "jasper-intsecrets")
-    audited = set(comp.resolved_files())
-    assert {cache, accounts_json} <= audited
-    assert audited.isdisjoint(
+    d = tmp_path / "jasper-intsecrets"
+    dir_st = _mk_dir(d, 0o2770)
+    comp = replace(
+        next(c for c in COMPARTMENTS if c.group == "jasper-intsecrets"),
+        directory=str(d),
+    )
+    statted: list[str] = []
+    globbed: list[str] = []
+
+    def _stat(path: str) -> os.stat_result:
+        statted.append(path)
+        return dir_st
+
+    def _glob(pattern: str) -> list[str]:
+        globbed.append(pattern)
+        return []
+
+    sc._classify_compartment(
+        "secret compartment: jasper-intsecrets", comp, [], [],
+        stat_fn=_stat, glob_fn=_glob,
+    )
+    assert {cache, accounts_json} <= set(statted)
+    assert set(statted).isdisjoint(
         {accounts.LEGACY_CACHE_PATH, accounts.DEFAULT_REGISTRY_PATH}
     )
+    # A literal pattern still globs; a resolver's path never does.
+    assert globbed == [f"{accounts.DEFAULT_CACHE_DIR}/*.json"]
 
 
 def test_member_units_are_non_root():

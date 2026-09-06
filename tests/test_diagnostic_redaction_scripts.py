@@ -101,7 +101,7 @@ def test_secret_file_array_covers_every_compartment_env_file():
     compartment_env_files = {
         f
         for compartment in COMPARTMENTS
-        for f in compartment.resolved_files()
+        for f, _ in compartment.resolved_files()
         if f.endswith(".env")
     }
     missing = compartment_env_files - array
