@@ -69,6 +69,17 @@ def test_turn_adapters_conform_to_the_protocols(cls):
     assert isinstance(turn, LiveTurn)
 
 
+def test_fake_live_turn_conforms_to_the_protocol():
+    """`FakeLiveTurn` (tests/_live_turn_fake.py) is hand-maintained rather
+    than derived from `LiveTurn`, so a member added to the Protocol can
+    leave the fake silently half-implemented — tests built on it would
+    still pass, having exercised a shape the real seam no longer has. Pin
+    conformance here so a Protocol change fails loudly instead."""
+    from tests._live_turn_fake import FakeLiveTurn
+
+    assert isinstance(FakeLiveTurn(), LiveTurn)
+
+
 def test_every_provider_declaring_a_reconcile_kind_ships_an_interruptible_turn():
     """The catalog's `interrupt_reconcile` is a REQUIRED field, so declaring
     one is the same act as promising the seam. This pins that the two never

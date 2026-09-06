@@ -792,10 +792,11 @@ class VoiceEvalHarness:
                 })
                 raise
 
+            usage = turn.usage()
             trace.append("turn_complete", {
                 "tokens": {
-                    "input_tokens": turn.usage().input_tokens,
-                    "output_tokens": turn.usage().output_tokens,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
                 },
                 "audio_chunks": len(audio_chunks),
             })

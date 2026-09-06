@@ -561,7 +561,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
 
         Also accumulates the modality breakdown
         (input.audio/text/cached, output.audio/text) so
-        ``usage_breakdown()`` returns the full split for cost
+        ``usage().breakdown`` returns the full split for cost
         estimation."""
         if not usage:
             return

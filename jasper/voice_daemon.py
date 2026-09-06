@@ -524,12 +524,11 @@ CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
 
 
 class ContentActivityTracker:
-    """Cheap observer for music/activity telemetry and server-VAD gating.
+    """Cheap observer for music/activity telemetry.
 
     It never sets TTS gain. Outputd owns the final assistant loudness
     decision; this tracker only keeps a recent best-effort playback RMS
-    value for wake telemetry and the "music is playing, use server VAD"
-    branch.
+    value for ``/state`` and the wake-event columns.
     """
 
     def __init__(
@@ -1928,7 +1927,7 @@ class WakeLoop:
         user_text: str | None,
         assistant_text: str | None,
         *,
-        data_json: dict | str | None = None,
+        data_json: dict | None = None,
         provider: str | None = None,
     ) -> None:
         """Persist one conversation-history row.
@@ -1967,8 +1966,6 @@ class WakeLoop:
                     e,
                 )
                 data_text = None
-        elif data_json is not None:
-            data_text = str(data_json)
         if user_text is None and assistant_text is None and data_text is None:
             return
 
@@ -3610,9 +3607,9 @@ class WakeLoop:
     async def _send_session_audio(self, frame) -> None:
         """Forward one frame to the live turn; end the turn if it refuses.
 
-        One implementation for all three endpointer paths (server VAD,
-        local Silero, push-to-talk), so the failure handling cannot
-        drift between them.
+        One implementation for both endpointer paths (local Silero,
+        push-to-talk), so the failure handling cannot drift between
+        them.
         """
         self._stamp_turn_stage("first_audio_to_provider")
         try:
@@ -4723,7 +4720,16 @@ class WakeLoop:
                 usage=usage.breakdown,
             )
             if research_window_job is None:
-                capture = self._turn.capture()
+                try:
+                    capture = self._turn.capture()
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    log_event(
+                        logger,
+                        "turn.capture_failed",
+                        exc_type=type(exc).__name__,
+                        level=logging.WARNING,
+                    )
+                    capture = None
                 if capture is not None:
                     self._record_conversation_turn(
                         capture.user_text,

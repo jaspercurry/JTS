@@ -8,11 +8,12 @@ session_status() prep helper."""
 
 from __future__ import annotations
 
+from typing import AsyncIterator
 from unittest.mock import MagicMock
 
 import numpy as np
 
-from jasper.voice.session import TurnCapture, TurnUsage
+from jasper.voice.session import AudioOutChunk, TurnCapture, TurnUsage
 
 #: One mic frame as the wake loop sees it — `MicCapture.OUTPUT_FRAME_SAMPLES`
 #: at 16 kHz mono int16, i.e. 80 ms.
@@ -81,6 +82,46 @@ class FakeLiveTurn:
             assistant_text=self._assistant_text,
             data=self._metadata,
         )
+
+    def server_turn_complete(self) -> bool:
+        return False
+
+    async def wait_for_interrupt(self) -> None:
+        return None
+
+    def clear_interrupted(self) -> None:
+        return None
+
+    def _on_connection_lost(self) -> None:
+        return None
+
+    async def send_text_context(self, text: str) -> None:
+        return None
+
+    async def audio_out(self) -> AsyncIterator[bytes]:
+        return
+        yield  # pragma: no cover
+
+    async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
+        return
+        yield  # pragma: no cover
+
+    def request_local_interrupt(self) -> None:
+        return None
+
+    def drop_pending_audio(self) -> int:
+        return 0
+
+    def audio_chunks_pending(self) -> int:
+        return 0
+
+    async def cancel_response(self, reason: str) -> None:
+        return None
+
+    async def truncate_assistant_audio(
+        self, provider_item_id: str | None, audio_played_ms: int,
+    ) -> None:
+        return None
 
 
 def _prep_session_status(wl) -> None:
