@@ -184,6 +184,7 @@ def test_flat_rate_meter_wiring_uses_generic_activity_hook(tmp_path) -> None:
 
 def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
     from jasper.voice.daemon_main import _wire_billable_activity_meter
+    from tests._log_events import event_fields
 
     store = UsageStore(str(tmp_path / "usage.db"))
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
@@ -195,11 +196,8 @@ def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
         )
 
     assert wired is False
-    assert any(
-        "event=pricing.flat_rate_meter_unavailable" in r.getMessage()
-        and "provider=future-flat" in r.getMessage()
-        for r in caplog.records
-    )
+    fields = event_fields(caplog, "pricing.flat_rate_meter_unavailable")
+    assert fields["provider"] == "future-flat"
 
 
 async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
