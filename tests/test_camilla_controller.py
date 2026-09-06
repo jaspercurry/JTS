@@ -160,26 +160,18 @@ def test_crossover_controller_honors_env_overrides(monkeypatch):
     assert cam._port == 1299
 
 
-async def test_set_volume_db_clamps_positive_gain_to_zero():
-    fake = _FakeClient()
-    cam = _controller(fake)
-
-    assert await cam.set_volume_db(6.0)
-
-    assert fake.volume.values == [0.0]
-
-
-async def test_the_clamp_says_so_as_a_structured_event(caplog):
-    """NN-1's runtime ceiling firing has to be greppable, not prose."""
+async def test_set_volume_db_clamps_positive_gain_to_zero(caplog):
+    """NN-1's runtime ceiling, and the greppable proof that it fired."""
     fake = _FakeClient()
     cam = _controller(fake)
     caplog.set_level("WARNING", logger=camilla_module.__name__)
 
     assert await cam.set_volume_db(6.0)
 
+    assert fake.volume.values == [0.0]
     fields = event_fields(caplog, "camilla.main_volume_clamped")
-    assert float(fields["requested_db"]) == 6.0
-    assert float(fields["clamped_db"]) == 0.0
+    assert fields["requested_db"] == "6.0"
+    assert fields["clamped_db"] == "0.0"
 
 
 async def test_set_volume_db_rejects_non_finite_best_effort():
