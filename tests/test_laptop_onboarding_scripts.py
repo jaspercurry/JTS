@@ -766,8 +766,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         calls = fake.calls()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("jasper-doctor\\ --core", calls)
-        # The remote run carries install.sh's bound: a Type=simple transient
-        # unit is "started" once it forks, so RuntimeMaxSec is what bounds it.
+        # The remote run carries install.sh's bound. See ADR-0240.
         self.assertIn("systemd-run", calls)
         self.assertIn("MemoryMax=96M", calls)
         self.assertIn("RuntimeMaxSec=60", calls)

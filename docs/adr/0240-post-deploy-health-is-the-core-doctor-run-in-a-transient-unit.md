@@ -33,28 +33,52 @@ no-provider-configured skip, and a `--core` run that builds no voice `Config`).
    the deploy wrapper's `gate_core_health` runs it through `run_remote_sudo`
    after the restarts, where an unbounded doctor would otherwise sit beside
    freshly restarted daemons immediately before the OOM scan reads the kernel
-   log.
+   log. The two spellings are kept, and pinned independently — a shared
+   constant would have to cross the laptop/Pi boundary the wrapper exists to
+   bridge, and the properties are what the pins assert on either side.
    `RuntimeMaxSec`, not `TimeoutStartSec`: `systemd-run` without
    `--service-type` creates a `Type=simple` unit, which has finished starting
-   the moment it forks, so a start timeout bounds nothing. `MemoryMax` needs
-   the memory cgroup controller, which `migrate_cgroup_memory_enabled` writes
-   into `cmdline.txt` in this same install — so on a box that has never
-   rebooted with it enabled the ceiling is inert, and it bites from the first
-   install after that reboot onward.
+   the moment it forks, so a start timeout bounds nothing.
+   `MemoryMax=96M` is **enforced on every migrated box**, not aspirational:
+   `migrate_cgroup_memory_enabled` strips `cgroup_disable=memory` and writes
+   `cgroup_enable=memory` into `cmdline.txt`, so every box that has rebooted
+   since enforces the ceiling on this deploy — only a box that has never
+   rebooted with the controller on escapes it. 96M is 3x the doctor stream's
+   measured `--core` peak on jts4 (31.8 MB, #4177), but a `MemoryMax` is a
+   WHOLE-CGROUP ceiling: the forked `sudo`, `aplay`, `systemctl` and
+   `journalctl` children of the checks count against the same 96M, and that
+   sum is not measured. **HW-4 is the proof owed before PR-6b arms the gate:**
+   one `memory.peak` read of the transient unit on a Pi, with no OOM line for
+   it in the journal. Until then a cgroup OOM of the unit is advisory — it
+   surfaces through `report_oom_collateral` as a `run-u*.service` victim,
+   which `oom_unit_is_production` does not treat as a production daemon.
+   RAISE CONDITION for the number: that OOM line.
 2. The bound is a TRANSIENT unit, not the shipped oneshot ADR-0233 rule 5
    described: nothing new enters `SYSTEMD_SUPPORT_FILES`, and each caller
    keeps the exit code. The memory ceiling that motivated the low-memory
    branch now applies on every box instead of below 1.2 GB; the 1.2 GB
    threshold survives only in the build sandbox, which is where it describes a
    real cost.
-3. `--core`'s contract is warn-tolerant by construction
+3. **The doctor's OWN exit codes** are warn-tolerant by construction
    (`jasper/doctor_contract.py` `summarize`, `jasper/cli/doctor/_cli.py`):
-   fails exit 1, warns exit 0, skips count for neither — so a bare exit-code
-   gate needs no reason allow-list. **Two surfaces, two lines, two names:** the
-   doctor prints `event=deploy.health status= fail= warn= rows= speaker_silent=`
-   to stdout, which is the deploy transcript the operator reads; the installer
-   logs `event=install.doctor_core rc=` to the journal for the run it bounded.
-   One event name per schema.
+   fails exit 1, warns exit 0, skips count for neither — so for those, a bare
+   exit-code gate needs no reason allow-list. That scope matters, because
+   wrapping the run in `systemd-run` puts codes on the same channel that are
+   NOT a verdict: `RuntimeMaxSec` kills the unit (SIGTERM, 143 / `timeout`),
+   the cgroup OOM killer kills it (SIGKILL, 137 / `oom-kill`), `203` is
+   `EXEC` — the venv path is not runnable — and a `systemd-run` that cannot
+   reach the bus fails before the doctor runs at all. Advisory today, so the
+   deploy reads the same either way. **PR-6b must distinguish them before it
+   arms the gate:** a bound that fired and a venv that is missing are not
+   "the speaker is broken", and failing a deploy on them would be the false
+   positive ADR-0173 exists to avoid. The wrapper already prints
+   `event=deploy.core_health rc=` on any non-zero result, so the code is in
+   the transcript rather than swallowed. **Two surfaces, two lines, two
+   names:** the doctor prints
+   `event=deploy.health status= fail= warn= rows= speaker_silent=` to stdout,
+   which is the deploy transcript the operator reads; the installer logs
+   `event=install.doctor_core rc=` to the journal for the run it bounded. One
+   event name per schema.
 4. **The gate is advisory in this change.** Both installer call sites and the
    wrapper call site swallow the result with `|| true`. Deleting the wrapper's
    swallow is ADR-0173's removal condition firing, and waits on the three-box

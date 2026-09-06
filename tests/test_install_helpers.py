@@ -2320,9 +2320,7 @@ def test_run_doctor_summary_bounds_the_core_doctor_and_returns_its_code(tmp_path
     assert "/opt/jasper/.venv/bin/jasper-doctor" in argv
     assert "--core" in argv
     assert "MemoryMax=96M" in argv
-    # RuntimeMaxSec, not TimeoutStartSec: a Type=simple transient unit has
-    # finished starting once it forks, so only RuntimeMaxSec bounds the run.
-    assert "RuntimeMaxSec=60" in argv
+    assert "RuntimeMaxSec=60" in argv  # not TimeoutStartSec; See ADR-0240.
 
 
 @pytest.mark.parametrize("profile", ["streambox", "full"])
