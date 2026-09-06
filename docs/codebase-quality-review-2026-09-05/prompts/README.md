@@ -59,7 +59,7 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 | 1 | P6 right-sizing #4200 — plan posted 2026-09-06 05:43, still at its gate: paste its kickoff (P1 is done: eight PRs merged, handoff #4279) | P4 observability #4197 — second session driving on the owner's triage; finish rows 15/16, merge or close #4305, post the handoff | **Two sessions.** P12 #4213 (all Phase 3 rows merged; left: H1 and H2 on jts3 with the owner, the #4209 slider on jts.local, the jts4 deploy for HW-3/HW-5, R6, #4317, handoff) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
 | 2 | P3 resilience #4195 (P12, P4 and P6 have posted its rows) | P2 round 2 from the handoff #4248 | P11 web UI #4212, once P12 has handed off |
 | 3 | P7 tests #4201 (execution after P5's moves merge) | P5 structure #4199 (moves after P6's deletions merge) | — |
-| 4 | — | P8 docs #4202 (stale-path pass last; owns the ADR-number uniqueness pin) | — |
+| 4 | — | P8 docs #4202 (stale-path pass last) | — |
 
 **Owner at the box (next session at home).** Nothing needs a deploy first; every build is already
 on its box. jts.local (`162ab4088`): move the host volume slider 0 → 50 → 100 and hold (the #4209
@@ -77,7 +77,9 @@ the warn sweep. P9: 24 PRs merged (ADR-0244), the daemon split in progress. P12:
 merged (#4242 reopened and merged), H3 and the P1/P2 hardware rows PASS on jts3, HW-6's premise
 does not hold on ring boxes. Deployed: jts3 `60c38f5ab`, jts.local and jts4 `162ab4088`. Three
 ADR-number collisions in one night (0238, and 0240 twice): a lane takes the next free number in its
-merge commit, never at draft time.
+merge commit, never at draft time. A filename-uniqueness pin already exists
+(`tests/test_docs_linkcheck.py`, since #3897); what it cannot catch is a stale citation of a
+reassigned number, which #4302 fixed by hand — no new machinery for that.
 
 **Merge word (rule change).** The owner's triage at the plan gate is also the merge word for every
 PR in that plan, sensitive tier included, once `/code-review`, `/simplify` and (where the tier
