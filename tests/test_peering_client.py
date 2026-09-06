@@ -37,16 +37,16 @@ _SOCKET = "/tmp/jasper-peering-test.sock"
 
 async def test_arbitrate_disabled_returns_win_without_io():
     """When peering is off (default), arbitrate is a no-op that
-    returns WIN. send_request must not be called — verified by
-    patching it to raise loudly if called."""
+    returns WIN and never touches the peering UDS."""
     client = PeeringClient(enabled=False, socket_path=_SOCKET)
-    with patch("jasper.peering.uds.send_request",
-               side_effect=AssertionError("send_request must not be called")):
+    mock = AsyncMock()
+    with patch("jasper.peering.uds.send_request", new=mock):
         result = await client.arbitrate(
             score=0.8, snr_db=None, rms_dbfs=-20.0, can_serve=True,
         )
     assert result == "WIN"
     assert client._epoch == ""
+    mock.assert_not_called()
 
 
 @pytest.mark.parametrize(
