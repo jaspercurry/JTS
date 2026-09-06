@@ -44,8 +44,8 @@ CONNECTION_NOISY_TRANSITIONS = frozenset({
 class AudioOutChunk:
     """Provider audio plus playout identity for fan-in flush accounting.
 
-    `pcm` is still the same 24 kHz mono int16 payload yielded by the
-    legacy `audio_out()` iterator. The optional provider item id is the
+    `pcm` is 24 kHz mono int16 payload; see `LiveTurn.audio_out` for
+    the plain-bytes view. The optional provider item id is the
     stable handle needed by provider-specific truncation later (for
     OpenAI, `response.output_item.added.item.id`). Providers that do not
     expose per-response item ids leave it unset; fan-in still accounts
@@ -92,11 +92,7 @@ class LiveTurn(Protocol):
         ...
 
     def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
-        """Yield TTS chunks with optional provider item identity.
-
-        Default daemon code prefers this richer stream when an adapter
-        provides it, and falls back to `audio_out()` for legacy turns.
-        """
+        """Yield TTS chunks with optional provider item identity."""
         ...
 
     async def release(self) -> None:
@@ -227,23 +223,10 @@ class LiveTurn(Protocol):
         ...
 
     # ---- Barge-in capability seam (provider-pack reconciliation) ----
-    #
-    # ``wait_for_interrupt()`` / ``clear_interrupted()`` above stay the
-    # daemon-facing EVENT: "the provider reported (or the daemon observed)
-    # that the user interrupted." The two methods below are
-    # the matching ACTIONS the daemon takes to reconcile *provider* state
-    # after it has already flushed local TTS playback. They are capability-
-    # based, not provider-name-based: the daemon's ``_flush_for_interrupt``
-    # dispatches by getattr-probing these methods (an adapter that omits one
-    # degrades to a no-op), so the spine never branches on ``isinstance`` /
-    # provider id. The registry's ``interrupt_reconcile`` kind in
-    # ``jasper/voice/catalog.py`` (``needs_client_truncate`` /
-    # ``server_self_truncates`` / ``inherits``) is the *declared, test-
-    # validated, observable* contract for which reconciliation a provider
-    # needs — resolved once per daemon and surfaced on ``event=barge.detected``
-    # and ``/state.voice.barge_in`` — not the runtime dispatch switch. Both
-    # methods are safe no-ops in adapters that do not need them, so a single
-    # daemon code path works across providers.
+    # Capability-based, not provider-name-based: the daemon's
+    # ``_flush_for_interrupt`` dispatches by getattr-probing the two
+    # methods below, and both are safe no-ops in adapters that do not
+    # need them. See ADR-0115.
 
     async def cancel_response(self, reason: str) -> None:
         """Explicitly tell the provider to stop generating the in-progress
@@ -272,33 +255,14 @@ class LiveTurn(Protocol):
         self, provider_item_id: str | None, audio_played_ms: int,
     ) -> None:
         """Align the provider's conversation history to what the listener
-        actually heard, after a barge-in cut local playback short.
+        actually heard, after a barge-in cut local playback short. See
+        ADR-0115.
 
-        On WebSocket transports the server keeps the *entire* generated
-        assistant turn in conversation history even though JTS aborted the
-        DAC queue mid-sentence. Left unaligned, the model believes it said
-        more than the user heard and later turns reference unspoken words.
-        Providers that need it (OpenAI/Grok ``conversation.item.truncate``)
-        use the *final playout ledger's* accounting — ``provider_item_id``
-        and ``audio_played_ms`` (how much actually left the speaker) — to
-        truncate history at the heard boundary.
-
-        ``provider_item_id`` MUST be tolerated as ``None`` — for two distinct
-        reasons, so a ``None`` here is not always an edge case:
-
-        - For a ``server_self_truncates`` provider (Gemini) it is the *normal*
-          value on *every* call: Gemini has no OpenAI-style per-response audio
-          item id and reconciles its own history, so this is always a no-op.
-        - For a ``needs_client_truncate`` provider (OpenAI/Grok) a real id is
-          the expected value, but ``None`` can still arrive transiently before
-          the turn has observed its first audio item — also a no-op.
-
-        Either way the caller does not branch on provider: it getattr-probes
-        this method and the adapter's own implementation decides (Gemini's is
-        a no-op; OpenAI/Grok send the truncate). The registry's
-        ``interrupt_reconcile`` kind *declares and pins* that per provider
-        (and is surfaced in observability) but does not gate this call at
-        runtime. Must be idempotent and must never raise."""
+        ``provider_item_id`` MUST be tolerated as ``None`` — the normal
+        value on every call for a ``server_self_truncates`` provider
+        (Gemini), and possible transiently for a ``needs_client_truncate``
+        provider (OpenAI/Grok) before the turn's first audio item. Must be
+        idempotent and must never raise."""
         ...
 
     def request_local_interrupt(self) -> None:

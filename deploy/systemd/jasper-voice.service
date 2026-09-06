@@ -26,26 +26,16 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # avahi-daemon. Paid because Config.from_env freezes cfg.hostname at start.
 Wants=network-online.target jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-accessory-reconcile.service jasper-identity-reconcile.service
 
-# Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
-# accumulated silently because the daemon kept hitting transient
-# audio-device unavailability (Apple dongle de-enumerated mid-run),
-# `Restart=on-failure` + `RestartSec=2` re-tried every 2 s forever,
-# and nothing told the operator. With these limits, 20 failures in
-# 5 min puts the unit in `failed` state — visible to `systemctl
-# status` and `jasper-doctor` — instead of an invisible loop.
+# Caps the crash-restart spiral: 20 failures in 5 min puts the unit in
+# `failed` state — visible to `systemctl status` and `jasper-doctor` —
+# instead of an invisible Restart=on-failure loop.
 StartLimitBurst=20
 StartLimitIntervalSec=300
 
-# Tier 4.5 — escalate to system reboot if the per-service restart
-# spiral exceeds the existing burst limit (20 in 5min). The 20/300
-# values are intentionally tolerant of transient Apple-dongle
-# de-enumeration (per the comment block above re: 2026-05-10).
-# But if the spiral DOES exceed 20 — which means sustained sickness
-# beyond what transient hardware blips can produce — the right
-# answer is a clean system reboot, not the kernel hardware
-# watchdog at Tier 5. `reboot` (not `reboot-force`): we want clean
-# shutdown so zram dirty pages sync; on a 1 GB Pi `reboot-force`
-# can leave the next boot in EXT4 "orphan cleanup" state.
+# Escalates to a clean system reboot if the restart spiral exceeds the
+# burst limit above — sustained sickness beyond what transient hardware
+# blips can produce. `reboot` (not `reboot-force`): a 1 GB Pi needs the
+# clean shutdown for zram dirty pages to sync. See ADR-0146.
 StartLimitAction=reboot
 
 # Voice-input presence gate.

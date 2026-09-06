@@ -2,19 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for the SYSTEM_INSTRUCTION's Unclear Audio section.
-
-Background (2026-05-24): the VAD test matrix surfaced a dangerous failure
-mode where empty or one-word STT transcripts ("What?", "That's...", "")
-still caused the model to confidently call tools — including in one case
-`home_assistant("turn on the bedroom lights")` which actually executed
-and turned the lights on while the user was asking about weather. The
-existing Unclear Audio rule said "don't call any tool" but the model was
-interpreting "unclear" too narrowly. The fix enumerates specific triggers
-(fragments, empty-string arguments) per the prompting playbook's
-"enumerate triggers; conditional rules over absolutes" guidance.
-
-See the rationale block above the Unclear Audio section in jasper/voice/prompt.py.
+"""Regression tests for the SYSTEM_INSTRUCTION's Unclear Audio section
+(jasper/voice/prompt.py), which enumerates fragment and empty-argument
+triggers rather than relying on a single "don't call any tool" rule.
 """
 
 
