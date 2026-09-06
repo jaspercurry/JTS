@@ -142,6 +142,63 @@ def os_environ_get(name: str) -> str | None:
     return os.environ.get(name)
 
 
+# -------------------------------------------------- env-file secret posture
+
+
+_SECRET_ENV_KEYS = (
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "XAI_API_KEY",
+    "GOOGLE_ROUTES_API_KEY",
+    "JASPER_WIFI_PSK",
+    "GOOGLE_CLIENT_SECRET",
+)
+
+
+@pytest.mark.parametrize(
+    "key, value, status",
+    [(k, "notasecretvalue", "fail") for k in _SECRET_ENV_KEYS]
+    + [(k, "", "ok") for k in _SECRET_ENV_KEYS],
+    ids=[f"{k}-nonempty" for k in _SECRET_ENV_KEYS]
+    + [f"{k}-empty" for k in _SECRET_ENV_KEYS],
+)
+def test_check_env_file_secrets_verdict_by_key_and_value(
+    monkeypatch, tmp_path, key, value, status
+):
+    p = tmp_path / "jasper.env"
+    p.write_text(f"{key}={value}\n")
+    monkeypatch.setenv("JASPER_ENV_FILE", str(p))
+
+    r = env.check_env_file_secrets()
+
+    assert r.status == status
+    if status == "fail":
+        assert r.reason == env.REASON_SECRET_IN_ENV_FILE
+        assert value not in r.detail
+
+
+def test_check_env_file_secrets_ok_with_no_secret_keys(monkeypatch, tmp_path):
+    p = tmp_path / "jasper.env"
+    p.write_text("JASPER_HOSTNAME=jts.local\nJASPER_VOICE_PROVIDER=gemini\n")
+    monkeypatch.setenv("JASPER_ENV_FILE", str(p))
+
+    r = env.check_env_file_secrets()
+
+    assert r.status == "ok"
+
+
+def test_check_env_file_secrets_skipped_when_file_absent(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "missing.env"))
+
+    r = env.check_env_file_secrets()
+
+    assert r.status == "skipped"
+
+
+def test_check_env_file_secrets_is_registered():
+    assert "check_env_file_secrets" in _registered_check_names()
+
+
 # -------------------------------------------- shared-state group-writability
 #
 # The whole /var/lib/jasper state tree is group-`jasper` writable so every

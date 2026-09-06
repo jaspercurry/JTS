@@ -5,8 +5,13 @@
 """jasper-doctor checks — env domain."""
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from ...config import Config
+from ...env_load import BASE_ENV_PATH
+from ...env_load import parse_env_file as _shared_parse_env_file
+from ...secret_redaction import SECRET_ENV_NAME_RE
 from ._registry import doctor_check
 from ._shared import CheckResult, _group_writable_dir
 
@@ -18,6 +23,11 @@ REASON_STATE_DIR_MISSING = "state_dir_missing"
 REASON_STATE_DIR_STAT_FAILED = "state_dir_stat_failed"
 REASON_STATE_DIR_NOT_WRITABLE = "state_dir_not_writable"
 REASON_STATE_GROUP_WRITE_VIOLATION = "state_group_write_violation"
+REASON_SECRET_IN_ENV_FILE = "secret_in_env_file"
+
+# Anchored so a key only ever fullmatches (an unanchored search would also
+# flag e.g. "GEMINI_API_KEYWORD").
+_SECRET_KEY_RE = re.compile(SECRET_ENV_NAME_RE)
 
 @doctor_check()
 def check_env_file() -> CheckResult:
@@ -31,6 +41,32 @@ def check_env_file() -> CheckResult:
     if wizard.exists():
         return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
     return CheckResult("env file", "ok", str(p))
+
+@doctor_check()
+def check_env_file_secrets() -> CheckResult:
+    """`/etc/jasper/jasper.env` is `0640` group `jasper` — readable by every
+    daemon. `/var/lib/jasper-secrets/` and `/var/lib/jasper-intsecrets/` are
+    the only legal home for a secret value; a non-empty secret-shaped key
+    left here defeats that compartment split regardless of how it got
+    there (hand edit, restore, a pre-migration seed)."""
+    path = os.environ.get("JASPER_ENV_FILE", BASE_ENV_PATH)
+    if not Path(path).exists():
+        return CheckResult(
+            "env file secrets", "skipped", f"{path} missing",
+            reason=REASON_ENV_FILE_MISSING,
+        )
+    offenders = sorted(
+        key for key, value in _shared_parse_env_file(path).items()
+        if value and _SECRET_KEY_RE.fullmatch(key)
+    )
+    if offenders:
+        return CheckResult(
+            "env file secrets", "fail",
+            f"{path} holds a secret value for: {', '.join(offenders)} — move "
+            "it to /var/lib/jasper-secrets/ or /var/lib/jasper-intsecrets/",
+            reason=REASON_SECRET_IN_ENV_FILE,
+        )
+    return CheckResult("env file secrets", "ok", path)
 
 @doctor_check()
 def check_speaker_name() -> CheckResult:
