@@ -192,9 +192,8 @@ def test_save_token_atomic_replace_on_existing_file(tmp_path):
     save_token(path, refresh_token="second")
     payload = json.loads(Path(path).read_text())
     assert payload["refresh_token"] == "second"
-    # No leftover tempfile of any name (atomic_write_json's mkstemp uses a
-    # random suffix, not the old predictable "<path>.tmp") — the directory
-    # holds only the published token file.
+    # No leftover tempfile of any name — atomic_write_json's mkstemp uses a
+    # random suffix, so the directory holds only the published token file.
     assert [p.name for p in tmp_path.iterdir()] == ["tok.json"]
 
 

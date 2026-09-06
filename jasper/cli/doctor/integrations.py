@@ -179,7 +179,8 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         ))
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            label, "warn", f"probe raised: {_exception_detail(e)}",
+            label, "warn",
+            f"probe raised: {_exception_detail(e, literals=(cfg.ha_token,))}",
             reason=REASON_HOME_ASSISTANT_PROBE_RAISED,
         )
     if not result.get("connected"):

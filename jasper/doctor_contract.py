@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .secret_redaction import redact_secrets
+
 CHECK_STATUSES = frozenset({"ok", "warn", "fail", "skipped"})
 
 # Reason codes for rows NO check produced — synthesized by the doctor
@@ -75,11 +77,17 @@ class CheckResult:
 
 
 def check_row(result: CheckResult) -> dict:
-    """One row of the flat /system-diagnostics schema."""
+    """One row of the flat /system-diagnostics schema.
+
+    ``detail`` is redacted here regardless of which check produced it —
+    the one point every row (including a crash row) passes through on
+    its way to ``jasper-doctor --json`` and jasper-control's
+    ``/system/diagnostics``.
+    """
     return {
         "name": result.name,
         "status": result.status,
-        "detail": result.detail,
+        "detail": redact_secrets(result.detail),
         "reason": result.reason,
         "speaker_silent": result.speaker_silent,
     }

@@ -1572,6 +1572,7 @@ def test_check_spotify_connect_device_redacts_client_build_crash(monkeypatch):
 
     result = renderers.check_spotify_connect_device(cfg)
 
+    assert result.status == "warn"
     assert result.reason == renderers.REASON_SPOTIFY_CLIENT_BUILD_FAILED
     assert "abcdef0123456789" not in result.detail
 
@@ -1607,4 +1608,6 @@ def test_check_spotify_connect_device_redacts_devices_fetch_crash(monkeypatch):
 
     result = renderers.check_spotify_connect_device(cfg)
 
+    assert result.status == "warn"
+    assert result.reason == renderers.REASON_SPOTIFY_DEVICE_VISIBLE_TO_SOME
     assert "abcdef0123456789" not in result.detail

@@ -132,6 +132,22 @@ def test_doctor_check_exception_redacts_secret_like_values():
     assert result.detail.count("<redacted>") == 3
 
 
+def test_check_row_redacts_a_credential_left_in_a_non_crash_detail():
+    """`check_row` is the point every row — a real check's own detail, not
+    only a crash's — passes through on its way to `jasper-doctor --json`
+    and jasper-control's /system/diagnostics; a check that forgot to redact
+    its own detail must not leak past it."""
+    result = CheckResult(
+        "some check", "warn",
+        "found OPENAI_API_KEY=sk-live-abc123 in environment",
+        reason="some_reason",
+    )
+
+    row = _shared.check_row(result)
+
+    assert "sk-live-abc123" not in row["detail"]
+
+
 def test_async_doctor_check_exception_becomes_fail_result():
     async def explode():
         raise RuntimeError("synthetic async failure")

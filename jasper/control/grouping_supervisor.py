@@ -92,6 +92,10 @@ logger = logging.getLogger(__name__)
 OUTPUTD_CONTROL_SOCKET = OUTPUTD_STATUS_SOCKET
 RECONCILE_KICK_HELPER = "/usr/local/sbin/jasper-grouping-reconcile-kick"
 
+# Matches rooms_setup.py's PEER_RESPONSE_MAX_BYTES: bounds the redaction
+# work done on an error body from a peer that may not be a trusted JTS box.
+_PEER_BODY_MAX_BYTES = 64 * 1024
+
 
 def _paired_follower_channel(leader_channel: str) -> str | None:
     """Current /rooms topology is a 2-speaker left/right stereo pair."""
@@ -535,17 +539,27 @@ class GroupingSupervisor:
         self, peer_addr: str, body: dict[str, Any],
     ) -> tuple[bool, str]:
         """POST /grouping/set to the roster peer with the household header."""
+        headers = self.household_headers()
         try:
             resp = await self.peer_client(peer_addr).post(
                 "/grouping/set",
                 body,
-                headers=self.household_headers(),
+                headers=headers,
             )
         except Exception as exc:  # noqa: BLE001 — peer offline is expected IO
             return False, repr(exc)
         detail = f"HTTP {resp.status}"
         if not resp.ok and resp.body:
-            peer_text = redact_secrets(resp.body.decode(errors="replace"))[:160]
+            household_credential_value = (headers or {}).get("X-JTS-Household", "")
+            # Cap before decode so an oversized peer body can't make the
+            # redaction passes below do unbounded work; redact before the
+            # 160-char cap so a value straddling that boundary can't leak
+            # a partial credential ahead of the marker (rooms_setup.py's
+            # post_grouping_to_member does the same peer-POST redaction).
+            peer_text = resp.body[:_PEER_BODY_MAX_BYTES].decode(errors="replace")
+            peer_text = redact_secrets(
+                peer_text, literals=(household_credential_value,),
+            )[:160]
             detail = f"{detail}: {peer_text}"
         return resp.ok, detail
 

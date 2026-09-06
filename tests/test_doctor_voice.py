@@ -59,10 +59,8 @@ def test_provider_key_accepts_each_catalog_provider(
 
     assert r.status == "ok"
     assert r.name == provider.key_env
-    # Presence only — never a prefix or a character count (adversarial N9
-    # on #4223: the row used to print key[:8]).
+    # Presence only — never a prefix or a character count of the key.
     assert r.detail == "configured"
-    assert key[:8] not in r.detail
 
 
 def test_provider_key_warns_on_wrong_prefix(monkeypatch, tmp_path: Path):

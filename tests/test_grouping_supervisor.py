@@ -23,11 +23,15 @@ policy contract:
 """
 from __future__ import annotations
 
+import logging
+
 from jasper.control.client import ControlResponse
 from jasper.control.grouping_supervisor import (
     GroupingSupervisor,
     snapshot,
 )
+from jasper.control.grouping_supervisor import logger as _gs_logger
+from jasper.multiroom.cascade_timeline import _parse_logfmt_event
 from jasper.multiroom.config import GroupingConfig
 
 
@@ -534,27 +538,63 @@ class _FakeErrorBodyClient:
         self._body = body
         self._status = status
 
+    async def get(self, path, *, headers=None):
+        return ControlResponse(404, b"")  # not-ok: forces the POST branch
+
     async def post(self, path, body, *, headers=None):
         return ControlResponse(self._status, self._body)
 
 
-async def test_post_peer_grouping_redacts_secret_shaped_body_before_capping():
-    """A peer's /grouping/set error body can echo secret-shaped request
-    text (the household header, a `token=` value); post_peer_grouping
-    must redact before truncating to 160 chars — redacting after the cap
-    could crop a live credential's tail in ahead of the `<redacted>`
-    marker, and this reaches both the journal and
-    `/state.grouping_supervisor.reassert.last_detail`."""
-    sup = GroupingSupervisor()
+async def test_post_peer_grouping_redacts_secret_shaped_body_before_capping(
+    monkeypatch, tmp_path, caplog,
+):
+    """A peer's /grouping/set error body can echo the household credential
+    in a shape none of `redact_secrets`' keyword patterns recognise (a bare
+    JSON field, no `token=`/`X-JTS-Household:` neighbour) — only a literal
+    pass catches it. post_peer_grouping must present that literal, and must
+    redact before capping to 160 chars: the credential here straddles the
+    cap boundary, so cap-then-redact would leave its leading bytes exposed
+    where redact-then-cap leaves none. Drives the real leader reassert path
+    so both /state's last_detail and the journal line — which read the same
+    detail string — are checked, not just the return value."""
+    import jasper.control.household_credential as hc
+
     household = "kR3n9QpZ7sT2vX8b"
-    body = f"X-JTS-Household: {household}\ntoken=abcdef0123456789".encode()
+    secret_path = tmp_path / "household_secret"
+    secret_path.write_text(household + "\n")
+    monkeypatch.setattr(hc, "SECRET_FILE", str(secret_path))
+
+    # The raw credential starts at byte 150 and runs to 166: it straddles
+    # the 160-char cap (some raw bytes fall inside the cap window, some
+    # past it), so cap-then-redact would leave a visible fragment where
+    # redact-then-cap — replacing the whole value with the 10-byte
+    # "<redacted>" marker before capping — leaves none.
+    prefix = '{"error":"household_mismatch","presented":"'
+    pad = "f" * (150 - len(prefix))
+    body = (prefix + pad + household + '"}').encode()
+
+    sup = GroupingSupervisor()
     sup.peer_client = lambda peer_addr: _FakeErrorBodyClient(body)
+    cfg = _cfg(role="leader", channel="left", peer_addr="192.168.1.9")
 
-    ok, detail = await sup.post_peer_grouping("192.168.1.9", {"enabled": True})
+    with caplog.at_level(logging.WARNING, logger=_gs_logger.name):
+        await sup._reassert_peer_tick(cfg)
 
-    assert ok is False
-    assert household not in detail
-    assert "abcdef0123456789" not in detail
+    assert sup.reassert_last_ok is False
+    assert household not in sup.reassert_last_detail
+    assert "<redacted>" in sup.reassert_last_detail
+
+    events = [
+        fields
+        for event, fields in filter(
+            None,
+            (_parse_logfmt_event(r.getMessage()) for r in caplog.records),
+        )
+        if event == "grouping_supervisor.reassert_failed"
+    ]
+    assert len(events) == 1
+    assert household not in events[0]["detail"]
+    assert "<redacted>" in events[0]["detail"]
 
 
 async def test_unbond_resets_the_journal_noise_latches():

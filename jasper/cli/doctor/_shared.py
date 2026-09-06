@@ -27,6 +27,7 @@ import re
 import shlex
 import stat as _stat
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Awaitable, Callable
 from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
@@ -75,8 +76,15 @@ DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
 
 _EXCEPTION_DETAIL_LIMIT = 240
 
-def _exception_detail(exc: BaseException) -> str:
-    message = redact_secrets(str(exc))
+def _exception_detail(exc: BaseException, *, literals: Iterable[str] = ()) -> str:
+    """Redact + cap an exception's message for a doctor row.
+
+    ``literals`` are secret values the caller holds (e.g. a probed
+    credential) that may appear in the exception text in a shape
+    ``redact_secrets``'s patterns don't recognise; empty values are
+    skipped by ``redact_secrets`` itself.
+    """
+    message = redact_secrets(str(exc), literals=literals)
     if len(message) > _EXCEPTION_DETAIL_LIMIT:
         message = message[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
     if not message:

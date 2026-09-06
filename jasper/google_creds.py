@@ -227,11 +227,12 @@ def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None 
         "scopes": list(scopes) if scopes else list(GOOGLE_SCOPES),
     }
     os.makedirs(os.path.dirname(token_path), mode=0o750, exist_ok=True)
-    # 0o640 group read — the token dir is setgid `jasper-secrets`, so the
-    # tempfile inherits that group on its own; group read lets jasper-voice
-    # load a token jasper-web's OAuth wrote, with no access for any other
-    # daemon. No world read. See GoogleRegistry.save.
-    atomic_write_json(token_path, payload, mode=0o640, group_from_parent=False)
+    # 0o640 group read — the token dir is setgid `jasper-secrets`, and
+    # group_from_parent (the default) republishes that group on the file
+    # even when makedirs above just created a non-setgid dir; group read
+    # lets jasper-voice load a token jasper-web's OAuth wrote, with no
+    # access for any other daemon. No world read. See GoogleRegistry.save.
+    atomic_write_json(token_path, payload, mode=0o640)
 
 
 def load_credentials(
