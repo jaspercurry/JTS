@@ -408,16 +408,10 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         return " ".join(self._user_transcript_parts)
 
     # ---- Barge-in capability seam (OpenAI reference pack) ----
-    #
-    # Reconciliation kind for OpenAI is `needs_client_truncate` (catalog):
-    # the WebSocket transport keeps the whole generated assistant turn
-    # server-side, so after JTS flushes local TTS on a barge-in the client
-    # must (1) stop generation with `response.cancel` and (2) trim the
-    # conversation item to the *heard* boundary with
-    # `conversation.item.truncate`. The daemon's `_flush_for_interrupt`
-    # spine calls these — in this order — once the local flush has the
-    # playout ledger's played-ms; Gemini's pack no-ops both. Grok inherits
-    # this whole pack via `GrokRealtimeConnection`.
+    # `response.cancel` then `conversation.item.truncate`, in that order,
+    # from the flush's playout-ledger accounting. See ADR-0115 and
+    # ``session.py``'s ``cancel_response``/``truncate_assistant_audio``.
+    # Grok inherits this pack via ``GrokRealtimeConnection``.
 
     async def cancel_response(self, reason: str) -> None:
         """Stop the in-progress OpenAI response (the local/manual cancel).
@@ -1012,14 +1006,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             # ``conversation.item.input_audio_transcription.
             # completed`` event per user utterance so we can
             # see what STT actually heard, separate from the
-            # model's tool choice. Without this, every "why
-            # didn't my phrase work?" debug is guesswork
-            # (e.g. "kitchen medium" routed to set_volume(50)
-            # on 2026-05-24 — STT mishearing or model
-            # mis-routing? Could not tell). The model's
-            # decisions still come from the raw audio, not
-            # this transcript — STT here is observability,
-            # not the input path.
+            # model's tool choice, when debugging misrouted
+            # commands. The model's decisions still come from
+            # the raw audio, not this transcript — STT here is
+            # observability, not the input path.
             #
             # gpt-4o-mini-transcribe: OpenAI's recommended
             # successor to whisper-1 (~$0.003/min audio, less
@@ -1477,8 +1467,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             #
             # Reset the pre-response idle anchor — without this, the
             # watchdog fires mid-dispatch at small
-            # JASPER_IDLE_TIMEOUT_SEC values (production 2026-05-21,
-            # IDLE_TIMEOUT_SEC=10, weather query).
+            # JASPER_IDLE_TIMEOUT_SEC values.
             turn._note_activity()
             for fc in function_calls:
                 await self._dispatch_function_call(fc)
