@@ -319,9 +319,12 @@ def _write_profile_mode(tmp_path: Path, profile: str) -> None:
 
 def _write_card(tmp_path: Path, card: str = "Array", channels: int = 6) -> None:
     card_dir = tmp_path / "asound" / card
-    card_dir.mkdir(parents=True)
+    card_dir.mkdir(parents=True, exist_ok=True)
+    # The kernel's stream0 carries a Playback "Channels:" line ahead of the
+    # Capture one; without it a fixture cannot catch a parser that reads the
+    # first match instead of the Capture block's.
     (card_dir / "stream0").write_text(
-        f"Playback:\n  Status: Stop\nCapture:\n  Channels: {channels}\n"
+        f"Playback:\n  Channels: 2\nCapture:\n  Channels: {channels}\n"
     )
 
 
@@ -576,6 +579,38 @@ def test_jasper_env_values_are_data_never_shell(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
     assert _event_values(result.stderr, "aec_reconcile.pass", "current_mic") == [mic]
+
+
+def test_the_configured_card_only_reorders_the_registry_list(
+    tmp_path: Path,
+) -> None:
+    """A configured JASPER_AEC_MIC_DEVICE moves its card to the front of the
+    candidate list; it must never BECOME the list, or the registry's other
+    card names go unreachable on every box that carries one.
+
+    Driven under the `custom` profile, where nothing re-derives the capture
+    card from the detected mic profile — so the candidate list is the only
+    thing that can find the card actually on the box, and a list narrowed to
+    the configured name leaves this speaker published as deaf.
+    """
+    _stage(
+        tmp_path,
+        "udp:9876",
+        extra="JASPER_AEC_MIC_DEVICE=Array\n",
+        profile="custom",
+        card="C16K6Ch",
+        channels=2,
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _event_values(
+        result.stderr, "aec_reconcile.direct_mic_selected", "mic"
+    ) == ["C16K6Ch"]
+    values = _env_assignments(tmp_path / "jasper.env")
+    assert values["JASPER_MIC_DEVICE"] == "C16K6Ch"
+    assert values["JASPER_LOCAL_MIC_PRESENT"] == "1"
 
 
 def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None:
@@ -3402,12 +3437,8 @@ def _write_usb_card(
     tmp_path: Path, card: str, usb_id: str, *, channels: int = 2
 ) -> None:
     """A capture card that also exposes /proc/asound/<card>/usbid."""
-    card_dir = tmp_path / "asound" / card
-    card_dir.mkdir(parents=True, exist_ok=True)
-    (card_dir / "stream0").write_text(
-        f"Playback:\n  Status: Stop\nCapture:\n  Channels: {channels}\n"
-    )
-    (card_dir / "usbid").write_text(f"{usb_id}\n")
+    _write_card(tmp_path, card=card, channels=channels)
+    (tmp_path / "asound" / card / "usbid").write_text(f"{usb_id}\n")
 
 
 def _clear_systemctl_log(tmp_path: Path) -> None:
