@@ -307,32 +307,54 @@ class _ParkPlayout:
     manager that either opens, or fails its connect the way a dead fan-in
     socket does. Callable, so it also stands in for the class itself."""
 
-    def __init__(self, *, connects: bool = True) -> None:
-        self.connects = connects
+    def __init__(self, *, connect_error: BaseException | None = None) -> None:
+        self.connect_error = connect_error
 
     def __call__(self, **_kwargs) -> "_ParkPlayout":
         return self
 
     async def __aenter__(self) -> "_ParkPlayout":
-        if not self.connects:
-            raise OSError("no output path")
+        if self.connect_error is not None:
+            raise self.connect_error
         return self
 
     async def __aexit__(self, *_exc) -> bool:
         return False
 
 
-def _parking_daemon(exc: Exception, monkeypatch, *, connects: bool = True):
+class _ParkCues:
+    """Cue-manager stand-in for the boot-park path: records what was asked
+    for, then returns a play() verdict or raises the failure under test."""
+
+    def __init__(self, result: bool | BaseException = True) -> None:
+        self._result = result
+        self.played: list[str] = []
+
+    async def play(self, slug: str) -> bool:
+        self.played.append(slug)
+        if isinstance(self._result, BaseException):
+            raise self._result
+        return self._result
+
+
+def _parking_daemon(
+    exc: Exception,
+    monkeypatch,
+    *,
+    connect_error: BaseException | None = None,
+    cue_result: bool | BaseException = True,
+):
     """main() whose run() raises `exc` and whose cue path is spied on."""
     from jasper.voice import daemon_main
-    from tests.test_voice_daemon_manual_start_guard import _SpyCues
 
     async def _boom() -> None:
         raise exc
 
-    spy = _SpyCues()
+    spy = _ParkCues(cue_result)
     monkeypatch.setattr(daemon_main, "run", _boom)
-    monkeypatch.setattr(daemon_main, "TtsPlayout", _ParkPlayout(connects=connects))
+    monkeypatch.setattr(
+        daemon_main, "TtsPlayout", _ParkPlayout(connect_error=connect_error),
+    )
     monkeypatch.setattr(daemon_main, "build_env_cue_manager", lambda **_kw: spy)
     return daemon_main, spy
 
@@ -373,8 +395,19 @@ def test_a_boot_park_is_announced_before_main_exits(
     assert spy.played == [slug]
 
 
+@pytest.mark.parametrize(
+    "connect_error",
+    [
+        OSError("no output path"),
+        # TtsPlayout raises TimeoutError on its own 1.0 s connect bound, and
+        # `asyncio.TimeoutError is TimeoutError` on 3.11+ — so a connect that
+        # timed out must NOT be reported as the 12 s park-cue cap expiring.
+        TimeoutError("TTS IPC connect timed out after 1.0s"),
+    ],
+    ids=("connect-refused", "connect-timed-out"),
+)
 def test_a_park_cue_that_cannot_play_still_parks_with_the_same_code(
-    monkeypatch, caplog,
+    connect_error: BaseException, monkeypatch, caplog,
 ) -> None:
     """A dead output path must not take the park with it: the cue never
     changes the exit code, and the failure is named on the wire so a support
@@ -382,7 +415,7 @@ def test_a_park_cue_that_cannot_play_still_parks_with_the_same_code(
     daemon_main, spy = _parking_daemon(
         InputDeviceUnavailable("Array", ValueError("absent")),
         monkeypatch,
-        connects=False,
+        connect_error=connect_error,
     )
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
@@ -392,6 +425,50 @@ def test_a_park_cue_that_cannot_play_still_parks_with_the_same_code(
     assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
     assert spy.played == []
     assert event_fields(caplog, "voice.park_cue")["result"] == "play_error"
+
+
+def test_a_park_cue_interrupted_still_parks_with_the_same_code(
+    monkeypatch, caplog,
+) -> None:
+    """Ctrl-C on a hand-run daemon lands inside the cue, which runs inside
+    main()'s except handler: a BaseException escaping there skips
+    `sys.exit(code)` and the process exits 1 — neither systemd's success
+    code nor its restart-prevent one."""
+    daemon_main, spy = _parking_daemon(
+        InputDeviceUnavailable("Array", ValueError("absent")),
+        monkeypatch,
+        cue_result=KeyboardInterrupt(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        with pytest.raises(SystemExit) as raised:
+            daemon_main.main()
+
+    assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
+    assert spy.played == [NO_ROOM_MIC_CUE_SLUG]
+    assert event_fields(caplog, "voice.park_cue")["result"] == "interrupted"
+
+
+def test_a_park_cue_with_no_cached_asset_is_named_play_failed(
+    monkeypatch, caplog,
+) -> None:
+    """A play() that returns False has five causes (unknown slug, no
+    playout, no cached file, an unreadable one, a write that failed), so the
+    event carries the shared `play_failed` vocabulary the wake loop uses —
+    not a label claiming the asset specifically was missing."""
+    daemon_main, spy = _parking_daemon(
+        InputDeviceUnavailable("Array", ValueError("absent")),
+        monkeypatch,
+        cue_result=False,
+    )
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        with pytest.raises(SystemExit) as raised:
+            daemon_main.main()
+
+    assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
+    assert spy.played == [NO_ROOM_MIC_CUE_SLUG]
+    assert event_fields(caplog, "voice.park_cue")["result"] == "play_failed"
 
 
 def test_check_mic_capture_reports_expected_idle_when_marked(

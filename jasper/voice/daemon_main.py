@@ -269,22 +269,43 @@ def _announce_park_at_boot(slug: str) -> str:
 
     Called from `main()` after `asyncio.run(run())` has returned, so no loop
     is running and this owns its own. Returns the result code it logged:
-    ``ok``, ``no_asset``, ``play_error`` or ``timeout``. Never raises, and
-    never changes the exit code.
+    ``ok``, ``play_failed``, ``play_error``, ``timeout`` or ``interrupted``.
+
+    Never raises — not even a ``BaseException`` — and never changes the exit
+    code. It is called from inside `main()`'s ``except`` handlers, so anything
+    escaping here skips the caller's ``sys.exit()`` and the process exits 1,
+    which is neither a park nor a success code for systemd.
     """
+    # The cap is held out here so the classifier below can ask which bound
+    # fired: TtsPlayout's own 1.0 s connect timeout raises TimeoutError too,
+    # and `asyncio.TimeoutError is TimeoutError` on 3.11+, so the exception
+    # type alone cannot tell the two apart. `asyncio.timeout()` reads the
+    # running loop's clock, so it can only be built inside the coroutine.
+    cap: asyncio.Timeout | None = None
+
     async def _play() -> str:
+        nonlocal cap
         socket_path = os.environ.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET)
-        async with TtsPlayout(socket_path=socket_path) as tts:
+        async with (
+            asyncio.timeout(PARK_CUE_TIMEOUT_SEC) as cap,
+            TtsPlayout(socket_path=socket_path) as tts,
+        ):
             manager = build_env_cue_manager(tts_playout=tts)
-            return "ok" if await manager.play(slug) else "no_asset"
+            return "ok" if await manager.play(slug) else "play_failed"
 
     try:
-        result = asyncio.run(asyncio.wait_for(_play(), PARK_CUE_TIMEOUT_SEC))
+        result = asyncio.run(_play())
     except TimeoutError:
-        result = "timeout"
+        if cap is not None and cap.expired():
+            result = "timeout"
+        else:
+            logger.exception("park cue play failed")
+            result = "play_error"
     except Exception:  # noqa: BLE001
         logger.exception("park cue play failed")
         result = "play_error"
+    except BaseException:  # noqa: BLE001
+        result = "interrupted"
     log_event(
         logger,
         "voice.park_cue",

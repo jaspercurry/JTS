@@ -37,11 +37,18 @@ from .registry import find as find_cue
 from ..logging_setup import configure_logging
 
 
+def _warn(message: str) -> None:
+    """The CLI's own `warn` sink for the cue factory: operator prose on
+    stderr, where `jasper-cues` output has always gone. The factory's default
+    emits a structured event instead, for the daemon that has no console."""
+    print(f"warning: {message}", file=sys.stderr)
+
+
 # --- subcommands ---
 
 
 def _cmd_list(_args) -> int:
-    mgr = build_env_cue_manager(tts_playout=None)
+    mgr = build_env_cue_manager(tts_playout=None, warn=_warn)
     rows = mgr.status()
     if not rows:
         print("no cues registered")
@@ -66,7 +73,7 @@ def _cmd_list(_args) -> int:
 
 
 def _cmd_regenerate(args) -> int:
-    mgr = build_env_cue_manager(tts_playout=None)
+    mgr = build_env_cue_manager(tts_playout=None, warn=_warn)
     try:
         written = mgr.regenerate(slug=args.cue, force=args.force)
     except ValueError as e:

@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import urllib.parse
+from collections.abc import Callable
 from typing import Any
 
 from ..config import Config
 from ..env_load import load_env_files
+from ..log_event import log_event
 from .generator import (
     GEMINI_TTS_MODEL,
     TTS_MAX_ATTEMPTS,
@@ -143,7 +144,23 @@ def build_cue_tts_backend(
     return None, ""
 
 
-def build_env_cue_manager(*, tts_playout: Any | None = None) -> AudioCueManager:
+def _warn_structured(message: str) -> None:
+    """Default `warn` sink: one structured event on the caller's logger.
+
+    The daemon's boot-park path has no console to write prose to — its output
+    is the journal — so the degraded-backend warning has to be greppable
+    there. `jasper-cues` overrides this with its own stderr printer.
+    """
+    log_event(
+        logger, "cue.factory.degraded", detail=message, level=logging.WARNING,
+    )
+
+
+def build_env_cue_manager(
+    *,
+    tts_playout: Any | None = None,
+    warn: Callable[[str], None] = _warn_structured,
+) -> AudioCueManager:
     """Build a cue manager from the environment, with no usable Config needed.
 
     Shared by `jasper-cues` and the voice daemon's boot-park cue
@@ -159,6 +176,9 @@ def build_env_cue_manager(*, tts_playout: Any | None = None) -> AudioCueManager:
 
     `tts_playout` is None for callers that only touch disk (`list`,
     `regenerate`).
+
+    `warn` receives each degradation notice, unprefixed, so the daemon gets a
+    structured event and the CLI gets the operator prose it prints today.
     """
     load_env_files()
     try:
@@ -169,7 +189,7 @@ def build_env_cue_manager(*, tts_playout: Any | None = None) -> AudioCueManager:
     except RuntimeError as e:
         # Missing active-provider key — list still needs to work,
         # regen will exit cleanly with "no TTS backend" later.
-        print(f"warning: TTS backend disabled ({e})", file=sys.stderr)
+        warn(f"TTS backend disabled ({e})")
         backend = None
         voice = ""
         sounds_dir = os.environ.get(
@@ -179,10 +199,9 @@ def build_env_cue_manager(*, tts_playout: Any | None = None) -> AudioCueManager:
             "JASPER_MANAGEMENT_URL", "https://jts.local",
         )
     if backend is None:
-        print(
-            "warning: no TTS backend; regen will fail (playback "
-            "still works off cached files)",
-            file=sys.stderr,
+        warn(
+            "no TTS backend; regen will fail (playback "
+            "still works off cached files)"
         )
     hostname = urllib.parse.urlparse(management_url).hostname or "this speaker"
     return AudioCueManager(
