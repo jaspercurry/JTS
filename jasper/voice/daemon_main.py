@@ -42,6 +42,7 @@ from ..install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
+from ..mic_presence import voice_park_is_transient
 from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import Router, build_router
@@ -61,7 +62,7 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
-from ..voice.input_presence import voice_park_is_transient, voice_parked_no_mic
+from ..voice.input_presence import voice_parked_no_mic
 from ..voice.prompt import _build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator

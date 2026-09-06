@@ -22,7 +22,7 @@ import pytest
 from jasper.camilla import CamillaUnavailable
 from jasper.cli.doctor import audio
 from jasper.cli.doctor._evidence import evidence
-from jasper.mic_presence import MicPresence
+from jasper.mic_presence import MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, MicPresence
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -607,7 +607,11 @@ _CFG = types.SimpleNamespace(
 
 
 def _absent() -> MicPresence:
-    return MicPresence(present=False, reason="No supported XVF3800 ALSA card detected")
+    return MicPresence(
+        present=False,
+        reason=MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
+        detail="no candidate microphone present and no accessory microphone paired",
+    )
 
 
 def _present() -> MicPresence:
