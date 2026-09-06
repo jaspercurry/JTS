@@ -218,3 +218,22 @@ def test_check_home_assistant_verdicts(
 
     assert r.status == status
     assert r.reason == getattr(integrations, reason)
+
+
+def test_check_home_assistant_probe_raised_redacts_credential_shaped_text(
+    monkeypatch,
+):
+    """probe_status runs with the live ha_token; a raised exception's text
+    must route through `_exception_detail` (redact + cap) like every other
+    crash branch, not bare `{e}`."""
+    _ha_probe(
+        monkeypatch,
+        raises=RuntimeError("token=abcdef0123456789 unreachable"),
+    )
+    creds = {"url": "http://ha.local:8123", "token": "t"}
+
+    r = integrations.check_home_assistant(_ha_cfg(monkeypatch, **creds))
+
+    assert r.status == "warn"
+    assert r.reason == integrations.REASON_HOME_ASSISTANT_PROBE_RAISED
+    assert "abcdef0123456789" not in r.detail

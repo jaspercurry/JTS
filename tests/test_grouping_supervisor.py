@@ -23,6 +23,7 @@ policy contract:
 """
 from __future__ import annotations
 
+from jasper.control.client import ControlResponse
 from jasper.control.grouping_supervisor import (
     GroupingSupervisor,
     snapshot,
@@ -526,6 +527,34 @@ def test_module_snapshot_when_disabled():
     started — the /state default for fresh installs and for
     JASPER_GROUPING_SUPERVISOR=disabled."""
     assert snapshot() == {"enabled": False}
+
+
+class _FakeErrorBodyClient:
+    def __init__(self, body: bytes, status: int = 400) -> None:
+        self._body = body
+        self._status = status
+
+    async def post(self, path, body, *, headers=None):
+        return ControlResponse(self._status, self._body)
+
+
+async def test_post_peer_grouping_redacts_secret_shaped_body_before_capping():
+    """A peer's /grouping/set error body can echo secret-shaped request
+    text (the household header, a `token=` value); post_peer_grouping
+    must redact before truncating to 160 chars — redacting after the cap
+    could crop a live credential's tail in ahead of the `<redacted>`
+    marker, and this reaches both the journal and
+    `/state.grouping_supervisor.reassert.last_detail`."""
+    sup = GroupingSupervisor()
+    household = "kR3n9QpZ7sT2vX8b"
+    body = f"X-JTS-Household: {household}\ntoken=abcdef0123456789".encode()
+    sup.peer_client = lambda peer_addr: _FakeErrorBodyClient(body)
+
+    ok, detail = await sup.post_peer_grouping("192.168.1.9", {"enabled": True})
+
+    assert ok is False
+    assert household not in detail
+    assert "abcdef0123456789" not in detail
 
 
 async def test_unbond_resets_the_journal_noise_latches():

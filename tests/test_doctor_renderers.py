@@ -4,6 +4,7 @@
 
 """Unit tests for the jasper-doctor renderers domain."""
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -15,7 +16,7 @@ from jasper.cli.doctor import _evidence, _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
 from jasper.music_sources import MUSIC_SOURCES
 
-from .doctor_test_support import _grouping_cfg, _make_unit_states_fake
+from .doctor_test_support import _fresh_cfg, _grouping_cfg, _make_unit_states_fake
 
 
 def _seed_unit_states(**by_unit):
@@ -1552,3 +1553,58 @@ def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):
 
     assert res.status == "ok"
     assert res.reason == renderers.REASON_MUX_MODE_PINNED
+
+
+# ---------------------------------------------------------------------------
+# Spotify Connect device — exception text must route through
+# `_shared._exception_detail` (redact + length-cap), never bare `{e}`.
+# ---------------------------------------------------------------------------
+
+
+def test_check_spotify_connect_device_redacts_client_build_crash(monkeypatch):
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", SPOTIFY_CLIENT_ID="cid")
+    import jasper.spotify_router as spotify_router_mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("token=abcdef0123456789 client build failed")
+
+    monkeypatch.setattr(spotify_router_mod, "build_clients", _boom)
+
+    result = renderers.check_spotify_connect_device(cfg)
+
+    assert result.reason == renderers.REASON_SPOTIFY_CLIENT_BUILD_FAILED
+    assert "abcdef0123456789" not in result.detail
+
+
+def test_check_spotify_connect_device_redacts_devices_fetch_crash(monkeypatch):
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", SPOTIFY_CLIENT_ID="cid")
+    cfg = dataclasses.replace(cfg, spotify_device_name="jts-test-device")
+    import jasper.spotify_router as spotify_router_mod
+    from jasper.accounts import Account
+
+    class _OkSp:
+        def devices(self):
+            return {"devices": [{"name": "jts-test-device"}]}
+
+    class _BoomSp:
+        def devices(self):
+            raise RuntimeError("token=abcdef0123456789 devices fetch failed")
+
+    clients = {
+        "good": spotify_router_mod.AccountClient(
+            account=Account(name="good"), sp=_OkSp(),
+        ),
+        "bad": spotify_router_mod.AccountClient(
+            account=Account(name="bad"), sp=_BoomSp(),
+        ),
+    }
+    fake_result = spotify_router_mod.BuildResult(
+        clients=clients, statuses=[], default_name="good",
+    )
+    monkeypatch.setattr(
+        spotify_router_mod, "build_clients", lambda *a, **k: fake_result
+    )
+
+    result = renderers.check_spotify_connect_device(cfg)
+
+    assert "abcdef0123456789" not in result.detail

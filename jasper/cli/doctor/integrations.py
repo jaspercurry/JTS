@@ -9,7 +9,7 @@ import os
 
 from ...config import Config
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import CheckResult, _exception_detail
 
 # Machine-stable codes naming which branch of an integrations check produced
 # a result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -179,7 +179,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
         ))
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            label, "warn", f"probe raised: {e}",
+            label, "warn", f"probe raised: {_exception_detail(e)}",
             reason=REASON_HOME_ASSISTANT_PROBE_RAISED,
         )
     if not result.get("connected"):

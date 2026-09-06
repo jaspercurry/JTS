@@ -58,7 +58,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
-from .atomic_io import atomic_write_text
+from .atomic_io import atomic_write_json, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -227,22 +227,11 @@ def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None 
         "scopes": list(scopes) if scopes else list(GOOGLE_SCOPES),
     }
     os.makedirs(os.path.dirname(token_path), mode=0o750, exist_ok=True)
-    tmp = token_path + ".tmp"
-    # 0o640 group read — the token dir is setgid `jasper-secrets`,
-    # so this tempfile inherits that group; group read lets
-    # jasper-voice load a token jasper-web's OAuth wrote, with no access for
-    # any other daemon. No world read. See GoogleRegistry.save.
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f, indent=2)
-    except Exception:  # noqa: BLE001
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, token_path)
+    # 0o640 group read — the token dir is setgid `jasper-secrets`, so the
+    # tempfile inherits that group on its own; group read lets jasper-voice
+    # load a token jasper-web's OAuth wrote, with no access for any other
+    # daemon. No world read. See GoogleRegistry.save.
+    atomic_write_json(token_path, payload, mode=0o640, group_from_parent=False)
 
 
 def load_credentials(

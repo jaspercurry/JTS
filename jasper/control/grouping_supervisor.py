@@ -67,6 +67,7 @@ from typing import Any
 from jasper import identity
 from jasper.log_event import log_event
 from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from jasper.secret_redaction import redact_secrets
 
 from . import household_credential
 from .client import CONTROL_PORT, AsyncControlClient
@@ -544,7 +545,8 @@ class GroupingSupervisor:
             return False, repr(exc)
         detail = f"HTTP {resp.status}"
         if not resp.ok and resp.body:
-            detail = f"{detail}: {resp.body.decode(errors='replace')[:160]}"
+            peer_text = redact_secrets(resp.body.decode(errors="replace"))[:160]
+            detail = f"{detail}: {peer_text}"
         return resp.ok, detail
 
     def peer_client(self, peer_addr: str) -> AsyncControlClient:

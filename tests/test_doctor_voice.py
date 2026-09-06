@@ -59,6 +59,10 @@ def test_provider_key_accepts_each_catalog_provider(
 
     assert r.status == "ok"
     assert r.name == provider.key_env
+    # Presence only — never a prefix or a character count (adversarial N9
+    # on #4223: the row used to print key[:8]).
+    assert r.detail == "configured"
+    assert key[:8] not in r.detail
 
 
 def test_provider_key_warns_on_wrong_prefix(monkeypatch, tmp_path: Path):
@@ -107,6 +111,7 @@ def test_provider_key_checks_the_ssot_provider_not_the_environments(
     assert r.name == "GEMINI_API_KEY"
     assert r.status == "warn"
     assert r.reason == doctor_voice.REASON_PROVIDER_KEY_OK_ENV_DRIFT
+    assert "AIzaSyGemini1234"[:8] not in r.detail
 
 
 @pytest.mark.parametrize(

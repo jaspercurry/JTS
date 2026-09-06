@@ -35,6 +35,7 @@ from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
     REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
+    _exception_detail,
     _parked_follower_result,
     _parse_systemd_environment,
     _run,
@@ -629,7 +630,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             label, "warn",
-            f"could not build Spotify clients: {e}. "
+            f"could not build Spotify clients: {_exception_detail(e)}. "
             f"This usually means no accounts have OAuth tokens — visit "
             f"{cfg.spotify_setup_url} to link an account.",
             reason=REASON_SPOTIFY_CLIENT_BUILD_FAILED,
@@ -649,7 +650,9 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         try:
             devices = ac.sp.devices()
         except Exception as e:  # noqa: BLE001
-            missed_accounts.append(f"{account_name} (devices fetch failed: {e})")
+            missed_accounts.append(
+                f"{account_name} (devices fetch failed: {_exception_detail(e)})"
+            )
             continue
         names = [(d.get("name") or "") for d in devices.get("devices", [])]
         seen_names_overall.update(names)
