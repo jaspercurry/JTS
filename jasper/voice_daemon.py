@@ -74,18 +74,11 @@ from .usage import (
     SpendCap,
     UsageStore,
 )
-from .voice.session import AudioOutChunk, LiveConnection, LiveTurn  # noqa: F401
-from .voice import earcons as _earcons
+from .voice.session import LiveConnection, LiveTurn
 from .voice.earcons import (
-    SYNTHETIC_AUDIO_PROFILE_PROVIDER,  # noqa: F401
-    SYNTHETIC_AUDIO_PROFILE_UPDATED_AT,  # noqa: F401
     _generate_listening_chirp,
     _generate_mute_click,
-    measure_pcm_24k_mono,
-)
-from .voice.prompt import (  # noqa: F401
-    SYSTEM_INSTRUCTION,
-    _build_system_instruction,
+    _synthetic_audio_profile,
 )
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
@@ -114,26 +107,6 @@ INTERNAL_ERROR_CUE_SLUG = "internal_error"
 # restart it on plug-in) instead of crash-looping toward
 # StartLimitAction=reboot.
 VOICE_MIC_UNAVAILABLE_EXIT = 66
-
-
-def _synthetic_audio_profile(
-    *,
-    model: str,
-    voice: str,
-    pcm: bytes,
-    wide: bool = False,
-    fallback_source_lufs: float = -24.0,
-    fallback_peak_dbfs: float = -12.0,
-):
-    _earcons.measure_pcm_24k_mono = measure_pcm_24k_mono
-    return _earcons._synthetic_audio_profile(
-        model=model,
-        voice=voice,
-        pcm=pcm,
-        wide=wide,
-        fallback_source_lufs=fallback_source_lufs,
-        fallback_peak_dbfs=fallback_peak_dbfs,
-    )
 
 
 def _research_confirmation_instruction(job: ResearchJob) -> str:
@@ -2563,8 +2536,8 @@ class WakeLoop:
 
         Wired into `TtsPlayout.set_emission_admission`, so every emitter is
         asked when its bytes would leave, not when its task started (issue
-        #1913). `MeasurementHold.pause` is the only caller that closes
-        admission.
+        #1913). `MeasurementHold.pause_response` is the only caller that
+        closes admission.
         """
         if self._output_gate.admission_paused:
             return "measurement_active"
@@ -3275,7 +3248,7 @@ class WakeLoop:
         local rather than connectivity.
         """
         try:
-            # mute_mic / MeasurementHold.pause can fire after
+            # mute_mic / MeasurementHold.pause_response can fire after
             # _handle_wake_frame spawned this task but before it is scheduled.
             # Both are user-deliberate "stop listening" signals; a chirp plus
             # an LLM session after them is wrong. Checked twice — now, and

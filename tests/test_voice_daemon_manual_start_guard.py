@@ -340,7 +340,7 @@ async def test_measurement_pause_and_resume_transfer_volume_ownership():
         note_measurement_active=note_measurement_active
     )
 
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     assert wl._measurement_active.is_set()
     assert wl._output_gate.admission_paused
     assert ownership == [True]
@@ -378,7 +378,7 @@ async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
         fake_sleep,
     )
 
-    assert await wl.measurement_hold.pause() == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     await wait_signalled(
         timer_started,
         "auto-clear timer started",

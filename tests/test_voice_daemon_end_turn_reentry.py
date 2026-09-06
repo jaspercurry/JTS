@@ -276,7 +276,7 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
 
     assert wl._state is State.SESSION
     assert wl._output_gate.active_kind == "turn"
-    assert await wl.measurement_hold.pause() == "BUSY"
+    assert (await wl.measurement_hold.pause_response())["result"] == "BUSY"
 
     release_drain.set()
     await teardown

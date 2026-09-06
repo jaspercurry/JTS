@@ -25,7 +25,7 @@ def test_system_instruction_speaks_error_field_verbatim():
     is grounded only if SYSTEM_INSTRUCTION still tells the model to
     speak the `error` field verbatim. If that meta-rule is reworded or
     removed, the documented contract is stale."""
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
 
     prompt = _build_system_instruction(location="")
     assert "`error` field" in prompt

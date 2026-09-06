@@ -113,12 +113,6 @@ class MeasurementHold:
         self._safety_task: asyncio.Task | None = None
         self._lease_generation = 0
 
-    async def pause(self) -> str:
-        """Open/renew a measurement pause with the legacy scalar result."""
-
-        result, _drained = await self._pause_detailed()
-        return result
-
     async def pause_response(self) -> dict[str, object]:
         """Open/renew a pause and include additive drain evidence on the wire."""
 

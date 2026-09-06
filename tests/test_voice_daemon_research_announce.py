@@ -844,7 +844,7 @@ async def test_pending_research_queue_is_bounded_and_coalesces():
 
 
 def test_system_instruction_includes_research_nudge_when_unconfigured():
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
 
     prompt = _build_system_instruction(
         location="",
@@ -858,7 +858,7 @@ def test_system_instruction_includes_research_nudge_when_unconfigured():
 
 
 def test_system_instruction_omits_research_nudge_when_configured():
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
 
     prompt = _build_system_instruction(location="", research_configured=True)
 

@@ -14,12 +14,12 @@ interpreting "unclear" too narrowly. The fix enumerates specific triggers
 (fragments, empty-string arguments) per the prompting playbook's
 "enumerate triggers; conditional rules over absolutes" guidance.
 
-See the rationale block above the Unclear Audio section in voice_daemon.py.
+See the rationale block above the Unclear Audio section in jasper/voice/prompt.py.
 """
 
 
 def test_unclear_audio_section_present():
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
     prompt = _build_system_instruction(location="")
     # The section header concept (clarification request) must exist.
     # We don't pin literal wording too tightly — phrasing may evolve —
@@ -35,7 +35,7 @@ def test_unclear_audio_lists_fragment_trigger():
     clear and the user said exactly that one word' and then hallucinates
     a tool call. Pinning these literal example fragments because they
     are the exact ones observed in production failures."""
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
     prompt = _build_system_instruction(location="")
     assert "fragment" in prompt.lower()
     assert "What?" in prompt
@@ -48,6 +48,6 @@ def test_unclear_audio_lists_empty_args_antipattern():
     hallucination signature. Including this anti-pattern in the prompt
     lets the model self-detect: 'I'm about to pass empty strings — I
     must be guessing.'"""
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
     prompt = _build_system_instruction(location="")
     assert "empty-string arguments" in prompt

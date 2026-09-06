@@ -16,7 +16,7 @@ iterated via voice-eval. See the rationale block in jasper/voice/prompt.py.
 
 
 def _build(**kw):
-    from jasper.voice_daemon import _build_system_instruction
+    from jasper.voice.prompt import _build_system_instruction
     return _build_system_instruction(location="Sunset Park, Brooklyn", **kw)
 
 
