@@ -1265,17 +1265,32 @@ select_audio_hardware_roles() {
     export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
+# snd-aloop binds index/pcm_substreams/pcm_notify at module load; jasper-fanin
+# holds the Loopback capture sides, so the unload returns EBUSY on a live box
+# (#4027) and a changed conf can only apply at the next boot. Do not park the
+# graph to force the reload: the remove+add uevents start the udev reconcilers
+# mid-install, against a torn /opt/jasper (#4123).
+install_snd_aloop_options() {
+    local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
+    local installed=/etc/modprobe.d/snd-aloop.conf
+    local changed=0
+    cmp -s "${shipped}" "${installed}" || changed=1
+    install -m 0644 "${shipped}" "${installed}"
+    if { rmmod snd_aloop 2>/dev/null || ! lsmod | grep -q '^snd_aloop '; } \
+            && modprobe snd-aloop; then
+        _set_reboot_required_reason snd_aloop ""
+    elif (( changed )); then
+        _set_reboot_required_reason snd_aloop \
+            "snd-aloop options changed; module busy — reboot to apply"
+    fi
+}
+
 install_alsa() {
     install -d -m 0755 /etc/modules-load.d /etc/alsa/conf.d /etc/modprobe.d
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf" \
-        /etc/modprobe.d/snd-aloop.conf
-    # Reload module so the new card config takes effect (idempotent).
-    rmmod snd_aloop 2>/dev/null || true
-    modprobe snd-aloop || true
+    install_snd_aloop_options
 
     select_audio_hardware_roles
 
