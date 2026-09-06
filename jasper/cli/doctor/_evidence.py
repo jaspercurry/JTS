@@ -262,10 +262,27 @@ class Evidence:
 
         return self.get("camilla_config_text", read)
 
+    def boot_config_text(self) -> str | None:
+        """``config.txt``'s content, read once; None when it could not be
+        read."""
+        from ...audio_hardware.config_txt import read_boot_config_or_none
+
+        return self.get("boot_config_text", read_boot_config_or_none)
+
     def output_hardware_state(self) -> Any:
         from ...output_hardware import load_state
 
         return self.get("output_hardware_state", load_state)
+
+    def output_hardware_degraded(self) -> bool:
+        """Whether the reconciler's last pass hit a probe it depends on
+        being unavailable (the marker carries no other detail — see
+        ``output_hardware.degraded_marker_path``)."""
+        from ...output_hardware import degraded_marker_path
+
+        return self.get(
+            "output_hardware_degraded", lambda: degraded_marker_path().is_file(),
+        )
 
     def output_topology(self) -> Any:
         from ...output_topology import load_output_topology

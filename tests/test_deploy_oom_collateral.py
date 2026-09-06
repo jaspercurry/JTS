@@ -202,3 +202,13 @@ def test_report_oom_collateral_silent_when_no_oom():
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr.strip() == ""
     assert "OOM_PRODUCTION_HIT=0" in proc.stdout
+
+
+def test_report_oom_collateral_ignores_lines_the_scan_did_not_ask_for():
+    # The captured read can carry a line the remote grep never matched (a
+    # sudo prompt on the attended channel, an ssh notice). Re-filtering
+    # locally keeps it from raising the banner.
+    proc = _run_report_oom("[sudo] password for pi: \nsome unrelated line\n")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr.strip() == ""
+    assert "OOM_PRODUCTION_HIT=0" in proc.stdout

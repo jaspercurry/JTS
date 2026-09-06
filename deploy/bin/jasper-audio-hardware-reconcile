@@ -23,11 +23,30 @@ ASOUND_TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}
 RENDER_ASOUND_CONF="${JASPER_RENDER_ASOUND_CONF:-/usr/local/sbin/jasper-render-asound-conf}"
 SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 APLAY="${JASPER_APLAY:-aplay}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_OUTPUT_HARDWARE_PYTHON="python3"
 if [[ -x /opt/jasper/.venv/bin/python ]]; then
     DEFAULT_OUTPUT_HARDWARE_PYTHON="/opt/jasper/.venv/bin/python"
 fi
 OUTPUT_HARDWARE_PYTHON="${JASPER_OUTPUT_HARDWARE_PYTHON:-$DEFAULT_OUTPUT_HARDWARE_PYTHON}"
+# install.sh runs THIS script from the rsynced checkout (install_alsa's
+# --print-env) BEFORE install_jasper refreshes /opt/jasper/.venv, so the venv
+# interpreter would answer a new shell with the PREVIOUS build's emitter --
+# missing keys read as empty and the pass mis-classifies. A checkout that
+# carries the package pins EVERY "$OUTPUT_HARDWARE_PYTHON" spawn below (the
+# emitter, usb_port_role, the audio_config subcommands, the inline `- <<'PY'`
+# probes) to its own tree; the installed copy (/usr/local/sbin) has no such
+# sibling and keeps the venv's own package. Exported once, here, rather than
+# per spawn: every one of those spawns is this script's own child, so a single
+# top-level export reaches all of them. Same script/library lockstep as
+# load_env_file_lib below.
+OUTPUT_HARDWARE_PYTHONPATH=""
+if [[ -f "${SCRIPT_DIR}/../../jasper/cli/output_hardware.py" ]]; then
+    OUTPUT_HARDWARE_PYTHONPATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
+if [[ -n "$OUTPUT_HARDWARE_PYTHONPATH" ]]; then
+    export PYTHONPATH="${OUTPUT_HARDWARE_PYTHONPATH}${PYTHONPATH:+:$PYTHONPATH}"
+fi
 DEFAULT_OUTPUTD_PLAYBACK_DEVICE="outputd_content_playback"
 # The ACTIVE RING's playback PCM — the ONE legal active endpoint. This shell
 # never CHOOSES it; the Python active-lane decision reports which endpoint the
@@ -185,7 +204,6 @@ OBSERVED_AT_PASS_START=""
 I2S_HAT_DESIRED_PROFILE=""
 I2S_HAT_BOOT_CHANGED=""
 I2S_HAT_APPLY_ERROR=0
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASOUND_RENDER_LIB="${JASPER_ASOUND_RENDER_LIB:-}"
 ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 
@@ -198,12 +216,9 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # so installed-first could pair the new script with a stale lib.
 # Sibling-first keeps script and lib versions in lockstep; the
 # installed copy under /usr/local/sbin has no ../lib sibling and falls
-# through to the installed lib. Deliberately diverges from
-# load_asound_render_lib below (left installed-first): the mid-install
-# --print-env run exits before any asound rendering, and install.sh's
-# own rendering sources that lib straight from REPO_DIR at the top of
-# the file — so the render lib has no new-script/stale-lib exposure
-# worth churning its order for.
+# through to the installed lib. load_asound_render_lib below matches
+# this order for the same reason: the mid-install --print-env run does
+# call into that lib too (apply_observed_composite_policy).
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
         if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
@@ -222,22 +237,21 @@ load_env_file_lib() {
 
 load_asound_render_lib() {
     if [[ -z "$ASOUND_RENDER_LIB" ]]; then
-        if [[ -r /usr/local/lib/jasper/jasper-asound-render.sh ]]; then
-            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
-        else
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-asound-render.sh" ]]; then
             ASOUND_RENDER_LIB="${SCRIPT_DIR}/../lib/jasper-asound-render.sh"
+        else
+            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
         fi
     fi
     if [[ ! -r "$ASOUND_RENDER_LIB" ]]; then
         echo "jasper-audio-hardware-reconcile: missing asound render library: ${ASOUND_RENDER_LIB}" >&2
         exit 66
     fi
-    # The path varies at runtime (installed /usr/local/lib vs in-repo
-    # fallback above), but both resolve to the same library — the
-    # directive points at the repo copy so shellcheck can actually
-    # analyze it. Outside the repo root the directive degrades to
-    # info-level SC1091 ("not following"), below the CI gate's
-    # warning severity.
+    # The path varies at runtime (in-repo sibling vs installed fallback
+    # above), but both resolve to the same library — the directive points
+    # at the repo copy so shellcheck can actually analyze it. Outside the
+    # repo root the directive degrades to info-level SC1091 ("not
+    # following"), below the CI gate's warning severity.
     # shellcheck source=deploy/lib/jasper-asound-render.sh
     source "$ASOUND_RENDER_LIB"
 }
@@ -262,7 +276,11 @@ EOF
 log_event() {
     local name="$1"
     shift
-    echo "event=audio_hardware_reconcile.${name} reason=${REASON} $*" >&2
+    # `pass_reason=` (the run's own `--reason`, why the PASS happened) is a
+    # different key from a caller's own `reason=<cause>` (why THIS event
+    # happened) -- distinct keys, so both can appear on one line without
+    # either colliding.
+    echo "event=audio_hardware_reconcile.${name} pass_reason=${REASON} $*" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -304,6 +322,15 @@ done
 # Deliberately ahead of the library loads -- a broken install must still fail
 # loudly in ExecStart rather than be skipped here. REASON is not an input.
 if [[ "$CHECK_CHANGED" == "1" ]]; then
+    if [[ -e "$RECONCILE_DEGRADED_MARKER" ]]; then
+        # write_reconcile_stamp returns early while this marker exists, so an
+        # old stamp from before the outage still matches an unchanged
+        # fingerprint -- without this, the doctor's remedy (`systemctl start
+        # jasper-audio-hardware-reconcile`) would be skipped instead of
+        # re-running the pass.
+        log_event "changed" "reason=degraded_marker_present"
+        exit 0
+    fi
     changed_fingerprint="$(reconcile_fingerprint 2>/dev/null)" || changed_fingerprint=""
     changed_stamp=""
     if [[ -f "$RECONCILE_STAMP_PATH" ]]; then
@@ -390,8 +417,14 @@ observe_output_hardware_state() {
     fi
     # Never fatal: every other failure in this function logs and returns, and a
     # full /run must not skip the DAC-role policy the caller runs next.
-    publish_management_transport_marker \
-        "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
+    # --print-env's usage text promises no mutations (should_write=0), which
+    # holds regardless of caller; today that spares install.sh's mid-install
+    # probe of the PREVIOUS build (#4123) from flipping this gate on a stale
+    # verdict.
+    if [[ "$should_write" == "1" ]]; then
+        publish_management_transport_marker \
+            "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
+    fi
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown} status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}"
 }
@@ -453,51 +486,6 @@ sync_i2s_hat_reboot_marker() {
     install -m 0644 /dev/null "$I2S_HAT_REBOOT_REQUIRED_PATH"
 }
 
-env_file_value() {
-    local key="$1"
-    if [[ ! -f "$ENV_FILE" ]]; then
-        return 0
-    fi
-    awk -v key="$key" '
-        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-            value = $0
-            sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", value)
-            found = value
-            seen = 1
-        }
-        END {
-            if (seen) {
-                print found
-            }
-        }
-    ' "$ENV_FILE" \
-        | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
-}
-
-set_env_var() {
-    local key="$1" value="$2"
-    jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750
-}
-
-set_env_var_if_changed() {
-    local key="$1" value="$2"
-    local current
-    if [[ ! -f "$ENV_FILE" ]]; then
-        set_env_var "$key" "$value"
-        return 0
-    fi
-    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$ENV_FILE"; then
-        set_env_var "$key" "$value"
-        return 0
-    fi
-    current="$(env_file_value "$key")"
-    if [[ "$current" == "$value" ]]; then
-        return 1
-    fi
-    set_env_var "$key" "$value"
-    return 0
-}
-
 env_file_value_from() {
     local file="$1" key="$2"
     if [[ ! -f "$file" ]]; then
@@ -519,9 +507,22 @@ env_file_value_from() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# A refused lock returns 1 WITHOUT writing, and the callers' `&& changed=1`
+# idiom would read that as "changed" and restart jasper-outputd onto the old
+# lane/PCM/format. A write that did not happen fails the pass instead.
 set_env_file_var() {
     local file="$1" key="$2" value="$3"
-    jasper_env_file_set "$file" "$key" "$value" 0640 0750
+    if ! jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
+        log_event "env_write_failed" "file=${file} key=${key}"
+        exit 1
+    fi
+}
+
+unset_env_file_var() {
+    if ! jasper_env_file_unset "$1" "$2" 0640; then
+        log_event "env_write_failed" "file=${1} key=${2}"
+        exit 1
+    fi
 }
 
 set_env_file_var_if_changed() {
@@ -542,6 +543,8 @@ set_env_file_var_if_changed() {
     set_env_file_var "$file" "$key" "$value"
     return 0
 }
+
+set_env_var_if_changed() { set_env_file_var_if_changed "$ENV_FILE" "$1" "$2"; }
 
 cleanup_outputd_env_stage() {
     if [[ -n "${OUTPUTD_ENV_STAGE_FILE:-}" && -f "$OUTPUTD_ENV_STAGE_FILE" ]]; then
@@ -803,8 +806,8 @@ commit_outputd_env_stage() {
 }
 
 repair_generated_env_permissions() {
-    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750
-    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750
+    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640
+    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640
 }
 
 APPLE_DONGLE_PRESENT=0
@@ -827,6 +830,8 @@ OUTPUT_HARDWARE_RECORD_CHANGED=0
 clear_observed_output_state() {
     OBSERVED_OUTPUT_PROFILE_ID=""
     OBSERVED_OUTPUT_PROFILE_STATUS=""
+    OBSERVED_OUTPUT_PROFILE_KIND=""
+    OBSERVED_OUTPUT_HEADPHONE_CONTROL=""
     OBSERVED_OUTPUT_SELECTED_CARD_ID=""
     OBSERVED_OUTPUT_CHILD_DEVICE_IDS=""
     OBSERVED_OUTPUT_APPLE_CARD_IDS=""
@@ -865,25 +870,22 @@ apply_observed_single_policy() {
 }
 
 apply_observed_composite_policy() {
-    if [[ "$OBSERVED_OUTPUT_PROFILE_ID" != "dual_apple_usb_c_dac_4ch" ]]; then
+    if [[ "$OBSERVED_OUTPUT_PROFILE_KIND" != "composite" ]]; then
         return
     fi
+    # The parked shape, up front: a composite is NAMED whatever its status, so
+    # every branch below leaves these exactly here except the one that arms.
+    OUTPUT_DAC_ID="$OBSERVED_OUTPUT_PROFILE_ID"
+    OUTPUT_DAC_CARD=""
+    OUTPUT_DAC_RECOGNIZED=0
+    APPLE_DONGLE_PRESENT=1
+    APPLE_DONGLE_SERVICE_CARD="auto"
     if [[ "$OBSERVED_OUTPUT_PROFILE_STATUS" != "ready" ]]; then
-        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
-        OUTPUT_DAC_CARD=""
-        OUTPUT_DAC_RECOGNIZED=0
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="auto"
         log_event "dual_apple_detected" \
             "status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown} action=park_until_ready"
         return
     fi
     if [[ "$OBSERVED_OUTPUT_DUAL_MAPPING_OK" != "1" ]]; then
-        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
-        OUTPUT_DAC_CARD=""
-        OUTPUT_DAC_RECOGNIZED=0
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="auto"
         log_event "dual_apple_detected" \
             "status=ready action=park_unstable_child_order topology_path=${OUTPUT_TOPOLOGY_PATH} reason=${OBSERVED_OUTPUT_DUAL_MAPPING_REASON:-unknown}"
         return
@@ -901,11 +903,6 @@ apply_observed_composite_policy() {
     # preflights admit — the marker `active_ring_endpoint_proof` demands is
     # derived from exactly this device.
     if ! graph_status="$(active_graph_status 4)"; then
-        OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
-        OUTPUT_DAC_CARD=""
-        OUTPUT_DAC_RECOGNIZED=0
-        APPLE_DONGLE_PRESENT=1
-        APPLE_DONGLE_SERVICE_CARD="auto"
         DUAL_APPLE_DAC_A_PCM=""
         DUAL_APPLE_DAC_B_PCM=""
         DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
@@ -918,11 +915,8 @@ apply_observed_composite_policy() {
             "status=ready action=park_until_active_graph reason=${graph_status:-active_graph_probe_no_output}"
         return
     fi
-    OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
     OUTPUT_DAC_CARD="$DONGLE_CARD"
     OUTPUT_DAC_RECOGNIZED=1
-    APPLE_DONGLE_PRESENT=1
-    APPLE_DONGLE_SERVICE_CARD="auto"
     # Second field of the accepted payload ("<width> <endpoint_device>"), parsed
     # exactly as the single-DAC branch parses it: a payload with no space at all
     # has no device field, so treat it as ABSENT rather than as a device named
@@ -1140,8 +1134,9 @@ emit_dac_format_for_recognized() {
     local dac_id="$1"
     local fields dac_format dac_sink preserved
     fields="$(final_edge_format_for_dac "$dac_id")"
-    dac_format="$(printf '%s\n' "$fields" | sed -n '1p')"
-    dac_sink="$(printf '%s\n' "$fields" | sed -n '2p')"
+    dac_format="${fields%%$'\n'*}"
+    dac_sink=""
+    [[ "$fields" == *$'\n'* ]] && dac_sink="${fields#*$'\n'}"
     if [[ -z "$dac_format" ]]; then
         preserved="$(env_file_value_from "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT")"
         log_event "dac_format_skip" \
@@ -1270,7 +1265,7 @@ apply_route_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
-                    jasper_env_file_unset "$file" "$key" 0640 0750
+                    unset_env_file_var "$file" "$key"
                     file_changed=1
                 fi
                 ;;
@@ -1316,7 +1311,7 @@ apply_latency_floor_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$OUTPUTD_ENV_TARGET_FILE" 2>/dev/null; then
-                    jasper_env_file_unset "$OUTPUTD_ENV_TARGET_FILE" "$key" 0640 0750
+                    unset_env_file_var "$OUTPUTD_ENV_TARGET_FILE" "$key"
                     LATENCY_FLOOR_CHANGED=1
                 fi
                 ;;
@@ -1571,7 +1566,10 @@ restart_dac_init_for_record_change() {
 
 gate_role_services() {
     local apple_output=0
-    if [[ ( "$OUTPUT_DAC_ID" == "apple_usb_c_dongle" || "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" ) && "$APPLE_DONGLE_PRESENT" == "1" ]]; then
+    # The monitor exists to re-pin ONE mixer control, so the DAC the box drives
+    # declaring that control is the whole condition for running it — the
+    # emitter answers it off the registry (ADR-0235 R2).
+    if [[ -n "$OBSERVED_OUTPUT_HEADPHONE_CONTROL" ]]; then
         apple_output=1
     fi
     # The mixer pin is enabled on every box: which controls a DAC pins is the
@@ -1780,8 +1778,7 @@ set_outputd_active_lane_pair() {
 # once nothing reads the key, no box needs healing off it.
 drop_retired_content_pcm() {
     env_file_states_key "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" || return 1
-    jasper_env_file_unset \
-        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640 0750
+    unset_env_file_var "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM"
 }
 
 apply_audio_runtime_env() {
@@ -1808,11 +1805,11 @@ apply_audio_runtime_env() {
         log_event "content_format_skip" \
             "reason=coupling_probe_unavailable outputd_env=${OUTPUTD_ENV_FILE}"
     fi
-    if [[ "$OUTPUT_DAC_ID" == "dual_apple_usb_c_dac_4ch" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
+    if [[ "$OBSERVED_OUTPUT_PROFILE_KIND" == "composite" && "$OUTPUT_DAC_RECOGNIZED" == "1" ]]; then
         OUTPUTD_ACTIVE_MODE=0
         OUTPUTD_ACTIVE_CHANNELS=""
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
+        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "$OUTPUT_DAC_ID" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
         # Two LIVE outputd keys (DAC_FORMAT, SINK) from one registry probe; a

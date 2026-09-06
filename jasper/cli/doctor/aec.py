@@ -587,7 +587,7 @@ def check_aec_bridge_running() -> CheckResult:
     aec_mode = _aec_mode_setting()
     capture_ch = xvf3800.capture_channels()
     chip_present = capture_ch is not None
-    is_6ch = capture_ch == xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    is_6ch = capture_ch == xvf3800.RECOMMENDED_CAPTURE_CHANNELS
 
     if aec_mode != "auto":
         # Explicit operator opt-out is fine.
@@ -609,7 +609,7 @@ def check_aec_bridge_running() -> CheckResult:
         return CheckResult(
             "AEC bridge service", "warn",
             f"off — XVF chip is on {capture_ch}-channel firmware, not "
-            f"{xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch. After flashing: "
+            f"{xvf3800.RECOMMENDED_CAPTURE_CHANNELS}-ch. After flashing: "
             f"sudo systemctl start jasper-aec-reconcile. {_dfu_flash_remedy()}",
             reason=REASON_BRIDGE_WRONG_FIRMWARE,
         )
@@ -1747,7 +1747,7 @@ def check_xvf_firmware_6ch() -> CheckResult:
         return CheckResult("XVF firmware 6-ch", "warn",
                            f"{card} card not present",
                            reason=REASON_XVF_FIRMWARE_CARD_ABSENT)
-    target = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    target = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
     if capture_ch == target:
         return CheckResult("XVF firmware 6-ch", "ok",
                            f"capture is {target}-channel")
@@ -1790,7 +1790,7 @@ def check_xvf_mixer_state() -> CheckResult:
     switch = _extract_values(sw.stdout) or ""
     volume = _extract_values(vol.stdout) or ""
     switch_norm = switch.replace(" ", "")
-    nch = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    nch = xvf3800.RECOMMENDED_CAPTURE_CHANNELS
     expected_sw = ",".join(["on"] * nch)
     try:
         volume_vals = [int(v.strip()) for v in volume.split(",") if v.strip()]

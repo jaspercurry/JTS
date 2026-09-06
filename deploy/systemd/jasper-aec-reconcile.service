@@ -2,6 +2,8 @@
 Description=Reconcile microphone and AEC input-profile state
 After=sound.target jasper-camilla.service
 Wants=sound.target jasper-camilla.service
+# See #4123.
+ConditionPathExists=!/run/jasper-install/in_progress
 
 [Service]
 Type=oneshot

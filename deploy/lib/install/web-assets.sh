@@ -32,10 +32,9 @@
 #   an empty dir can't leave a literal *.css/*.js to fail `install`
 #   and abort the deploy under `set -euo pipefail`.
 #   `shared` carries the cross-page ES modules — same copy shape as a
-#   page, no .css. Deliberately not enumerated here: this comment listed
-#   four of them and had silently fallen behind to eight. The directory
-#   listing of deploy/assets/shared/js/ is the answer, and the loop below
-#   already copies whatever is in it.
+#   page, no .css. Not enumerated here: the directory listing of
+#   deploy/assets/shared/js/ is the answer, and the loop below already
+#   copies whatever is in it.
 #
 # Page dirs are discovered dynamically: every directory under
 # deploy/assets/ (each canonical page's slug, plus `shared`) is
@@ -54,63 +53,59 @@
 # install can never leave a truncated manifest for the doctor to
 # trust; an orphaned temp from a killed run is swept on the next.
 # tests/test_install_web_assets.py pins the copy shape, the manifest
-# contract, the atomic-write promise, and the doctor/installer
-# round-trip.
+# contract, the atomic-write promise, the prune, and the
+# doctor/installer round-trip.
 install_web_assets() {
     local web_root="${JASPER_WEB_SHARE_DIR:-/usr/share/jasper-web}"
     local assets_root="${web_root}/assets"
     local manifest="${assets_root}/.install-manifest"
-    local manifest_tmp asset_dir page f
+    local manifest_tmp asset_dir page f rel
     install -d -m 0755 "${assets_root}"
-    # Upgrade cleanup for the retired ESP32 dial wizard. Page directories are
-    # copied additively, so this exact stale directory would otherwise survive
-    # forever on speakers that had already shipped it.
-    rm -rf -- "${assets_root:?}/dial"
-    # Same class: the retired /balance/ page.
-    rm -rf -- "${assets_root:?}/balance"
-    # Same class: the retired orbs.js and qr.js bundles. Without this, every
-    # speaker that already shipped them keeps serving the deleted,
-    # unmanifested files.
-    rm -f -- "${assets_root:?}/shared/js/orbs.js"
-    rm -f -- "${assets_root:?}/shared/js/qr.js"
     rm -f "${manifest}.tmp."*
     manifest_tmp="$(mktemp "${manifest}.tmp.XXXXXX")"
 
-    install -m 0644 "${REPO_DIR}/deploy/assets/app.css" "${assets_root}/app.css"
-    echo "app.css" >> "${manifest_tmp}"
+    # Installs one asset at its manifest-relative path and records it, so
+    # an installed file is manifested by construction.
+    _ship() {
+        local dest="${assets_root}/${2}"
+        [[ -d "${dest%/*}" ]] || install -d -m 0755 "${dest%/*}"
+        install -m 0644 "${1}" "${dest}"
+        echo "${2}" >> "${manifest_tmp}"
+    }
 
-    install -d -m 0755 "${assets_root}/fonts"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/assets/fonts/"* \
-        "${assets_root}/fonts/"
+    _ship "${REPO_DIR}/deploy/assets/app.css" "app.css"
+
     for f in "${REPO_DIR}/deploy/assets/fonts/"*; do
-        echo "fonts/$(basename "${f}")" >> "${manifest_tmp}"
+        _ship "${f}" "fonts/$(basename "${f}")"
     done
 
     for asset_dir in "${REPO_DIR}/deploy/assets/"*/; do
         page="$(basename "${asset_dir}")"
         [[ "${page}" == "fonts" ]] && continue
-        install -d -m 0755 "${assets_root}/${page}"
         if compgen -G "${asset_dir}"*.css > /dev/null; then
-            install -m 0644 \
-                "${asset_dir}"*.css \
-                "${assets_root}/${page}/"
             for f in "${asset_dir}"*.css; do
-                echo "${page}/$(basename "${f}")" >> "${manifest_tmp}"
+                _ship "${f}" "${page}/$(basename "${f}")"
             done
         fi
         if [[ -d "${asset_dir}js" ]]; then
             while IFS= read -r -d '' f; do
-                local rel dest_dir
-                rel="${f#"${asset_dir}"}"
-                dest_dir="${assets_root}/${page}/$(dirname "${rel}")"
-                install -d -m 0755 "${dest_dir}"
-                install -m 0644 "${f}" "${dest_dir}/"
-                echo "${page}/${rel}" >> "${manifest_tmp}"
+                _ship "${f}" "${page}/${f#"${asset_dir}"}"
             done < <(find "${asset_dir}js" -type f -name '*.js' -print0)
         fi
     done
     LC_ALL=C sort "${manifest_tmp}" -o "${manifest_tmp}"
     chmod 0644 "${manifest_tmp}"
     mv -f "${manifest_tmp}" "${manifest}"
+
+    # Read back from disk so the prune cannot disagree with what the doctor
+    # verifies. LC_ALL=C on comm itself: an ssh session forwards the
+    # laptop's LANG, and comm collates in that ambient locale by default
+    # even though both streams below are C-sorted, desyncing the merge.
+    LC_ALL=C comm -23 <(find "${assets_root}" ! -type d ! -path "${manifest}" | while IFS= read -r f; do
+        printf '%s\n' "${f#"${assets_root}"/}"; done | LC_ALL=C sort) "${manifest}" |
+    while IFS= read -r rel; do
+        rm -f -- "${assets_root}/${rel}"
+        echo "  pruned stale web asset: ${rel}"
+    done
+    find "${assets_root}" -mindepth 1 -type d -empty -delete
 }

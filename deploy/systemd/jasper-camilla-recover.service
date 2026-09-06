@@ -9,11 +9,11 @@ ExecStart=/usr/local/sbin/jasper-camilla-recover --reason start-limit
 # if evidence capture or the bounded restart attempt itself has a bug. Sized so
 # the body finishes its own ladder and the EXIT trap stays the exception, from
 # constants in this tree: 3 captures x CAPTURE_TIMEOUT_SEC 5s = 15, + the stop
-# loop 140 (ten units at their own TimeoutStopSec=5s, plus
-# jasper-camilla-crossover.service, the only one with no override, at systemd's
-# 90s default), + the ladder 373 (fanin restart 5+90, camilla start 50 for the
-# Requires= jasper-audio-hardware-reconcile plus 90, 3s liveness wait, outputd
-# restart 5+90, renderers 2+30+2+2+2+2) = 528s, rounded up.
+# loop 149 (nine units at their own TimeoutStopSec=5s plus jasper-voice at
+# 14s, plus jasper-camilla-crossover.service, the only one with no override, at
+# systemd's 90s default), + the ladder 373 (fanin restart 5+90, camilla start
+# 50 for the Requires= jasper-audio-hardware-reconcile plus 90, 3s liveness
+# wait, outputd restart 5+90, renderers 2+30+2+2+2+2) = 537s, rounded up.
 # PROVISIONAL until measured on hardware: every 90s term is a systemd default
 # that no unit overrides, not an observed duration.
 TimeoutStartSec=600

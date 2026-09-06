@@ -143,16 +143,15 @@ install_jasper() {
     # only), NOT here under the /var/lib/jasper StateDirectory (whose recursive
     # chown would force the group back to `jasper`, re-exposing the refresh
     # tokens to every jasper daemon). ensure_secrets_dir creates the compartment
-    # parent + installs the boot self-heal tmpfiles;
-    # reassert_secrets_compartment_perms (in the list below) re-narrows the
-    # tree's ownership/modes and splits an operator-seeded LLM API key into
-    # voice_keys.env.
+    # parent + installs the boot self-heal tmpfiles; a later main() step,
+    # reassert_secrets_compartment_perms, re-narrows the tree's ownership/modes
+    # and splits an operator-seeded LLM API key into voice_keys.env.
     ensure_secrets_dir
 
     # Home Assistant + Spotify integration secrets live in the
     # sibling group-`jasper-intsecrets` compartment (voice/control/mux/web).
-    # ensure_intsecrets_dir creates the forward path;
-    # reassert_intsecrets_compartment_perms below re-narrows its ownership/modes.
+    # ensure_intsecrets_dir creates the forward path; a later main() step,
+    # reassert_intsecrets_compartment_perms, re-narrows its ownership/modes.
     ensure_intsecrets_dir
 
     # Stop optional work before mutating the live source/venv. Its compiler
@@ -383,20 +382,11 @@ PY
         -e '/^JASPER_CONTROL_PORT=/d'
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
-        sed_inplace "${ENV_DIR}/jasper.env" '/^JASPER_AUDIO_DAC_ID=/d'
-        printf 'JASPER_AUDIO_DAC_ID=%s\n' "${OUTPUT_DAC_ID}" >> "${ENV_DIR}/jasper.env"
-        chmod 0640 "${ENV_DIR}/jasper.env"
+        jasper_env_file_set "${ENV_DIR}/jasper.env" \
+            JASPER_AUDIO_DAC_ID "${OUTPUT_DAC_ID}" 0640 0750
         echo "  audio DAC id: ${OUTPUT_DAC_ID}"
     fi
-    # Re-narrow the jasper-secrets compartment's ownership and
-    # modes on every deploy, and move any operator-seeded LLM API key out of
-    # jasper.env into voice_keys.env.
-    reassert_secrets_compartment_perms
-    # The same re-narrow for the jasper-intsecrets compartment
-    # (Home Assistant token + Spotify credentials/caches).
-    reassert_intsecrets_compartment_perms
     render_voice_provider_ids_manifest
-    migrate_wifi_guardian
 }
 
 jasper_aec3_import_probe() {
@@ -487,8 +477,8 @@ EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: created ${ENV_DIR}/jasper.env"
     else
-        set_jasper_env_value JASPER_INSTALL_PROFILE "streambox"
-        chmod 0640 "${ENV_DIR}/jasper.env"
+        jasper_env_file_set "${ENV_DIR}/jasper.env" \
+            JASPER_INSTALL_PROFILE streambox 0640 0750
         echo "  streambox env: refreshed streambox defaults"
     fi
     # Streambox writes its own env rather than seeding from .env.example, so

@@ -24,6 +24,14 @@ ENV_LOCAL = ROOT / ".env.local"
 ISOLATED_SCRIPTS = (DEPLOY, ONBOARD, LIB, USE)
 
 
+def fake_peer_id(host: str) -> str:
+    """The identity FAKE_SSH reports for a given fake speaker."""
+    hexed = (host.encode().hex() + "0" * 32)[:32]
+    return "-".join(
+        (hexed[:8], hexed[8:12], hexed[12:16], hexed[16:20], hexed[20:32])
+    )
+
+
 def git_head(*args: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", *args],
@@ -36,6 +44,17 @@ set -euo pipefail
 printf 'SSH' >> "$FAKE_LOG"
 for arg in "$@"; do printf ' %q' "$arg" >> "$FAKE_LOG"; done
 printf '\n' >> "$FAKE_LOG"
+
+# Each fake speaker owns a stable, distinct UUID (install.sh writes a
+# uuid4), so a deploy redirected to another host reads another identity.
+# FAKE_PEER_ID overrides it; set-but-empty models a pre-identity Pi.
+fake_peer_id() {
+  local host="" hex
+  if [[ -n "${FAKE_PEER_ID+x}" ]]; then printf '%s' "$FAKE_PEER_ID"; return 0; fi
+  for a in "$@"; do case "$a" in *@*) host="${a#*@}"; break ;; esac; done
+  hex="$(printf '%s' "$host" | od -An -tx1 | tr -d ' \n')00000000000000000000000000000000"
+  printf '%s-%s-%s-%s-%s' "${hex:0:8}" "${hex:8:4}" "${hex:12:4}" "${hex:16:4}" "${hex:20:12}"
+}
 
 # A re-imaged Pi answers on the same hostname with a new host key;
 # StrictHostKeyChecking=accept-new refuses it before authentication.
@@ -51,9 +70,36 @@ BANNER
 fi
 
 cmd="${*: -1}"
+case " $* " in *" -tt "*) tty=1 ;; *) tty=0 ;; esac
+if [[ "$tty" == "1" && "$cmd" == sudo* ]]; then
+  printf '[sudo] password for pi: \n'
+fi
+
 case "$cmd" in
+  mktemp*jts-deploy-facts*)
+    rm -rf "$FAKE_FACTS_DIR"
+    mkdir -m 0700 -p "$FAKE_FACTS_DIR"
+    printf '%s\n' "$FAKE_FACTS_DIR"
+    ;;
+  sudo*jts-deploy-facts*)
+    # publish_root_facts: root stages what this run will read back.
+    if [[ "${FAKE_PUBLISH_RC:-0}" != "0" ]]; then exit "$FAKE_PUBLISH_RC"; fi
+    mkdir -p "$FAKE_FACTS_DIR"
+    id="$(fake_peer_id "$@")"
+    if [[ -n "$id" ]]; then printf '%s\n' "$id" > "$FAKE_FACTS_DIR/peer_id"; fi
+    if [[ -f "${FAKE_MANIFEST:-}" ]]; then cp "$FAKE_MANIFEST" "$FAKE_FACTS_DIR/build.txt"; fi
+    printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}" > "$FAKE_FACTS_DIR/install_profile"
+    : > "$FAKE_FACTS_DIR/journal"
+    ;;
+  *jts-deploy-facts*)
+    # The reads and the cleanup are plain, unprivileged file access.
+    eval "$cmd"
+    ;;
   'printf "%s\n" "$HOME"')
     printf '%s\n' "${FAKE_HOME:-/home/pi}"
+    ;;
+  'date +%s')
+    printf '%s\n' "${FAKE_PI_EPOCH:-1750000000}"
     ;;
   'hostname -s 2>/dev/null || hostname')
     printf '%s\n' "${FAKE_HOSTNAME:-jts3}"
@@ -68,17 +114,11 @@ case "$cmd" in
     exit 0
     ;;
   sudo*cat\ /var/lib/jasper/peer_id*)
-    # Each fake speaker owns a stable, distinct identity, so a deploy
-    # redirected to another host reads another host's peer_id.
-    for a in "$@"; do
-      case "$a" in *@*) printf 'peer-%s\n' "${a#*@}"; break ;; esac
-    done
+    id="$(fake_peer_id "$@")"
+    if [[ -n "$id" ]]; then printf '%s\n' "$id"; fi
     ;;
-  sudo\ -n\ cat\ /var/lib/jasper/build.txt*)
-    printf 'fake-build\n'
-    ;;
-  sudo\ cat\ /var/lib/jasper/build.txt*)
-    printf 'fake-build\n'
+  sudo*cat\ /var/lib/jasper/build.txt*)
+    cat "${FAKE_MANIFEST:-}" 2>/dev/null || true
     ;;
   sudo\ -n\ cat\ /var/lib/jasper/install_profile*)
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
@@ -103,8 +143,54 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
-  *\/deploy\/install.sh*)
-    exit "${FAKE_INSTALL_SSH_RC:-0}"
+  *jts-install-probe*)
+    # The pre-rsync read: is an install already running, and which
+    # invocation would a stale unit carry?
+    printf 'SubState=%s\nInvocationID=%s\n' \
+      "${FAKE_UNIT_PRE_SUBSTATE:-dead}" "${FAKE_PRE_INVOCATION:-}"
+    ;;
+  *jts-install-launch*)
+    # FAKE_LAUNCH_RC=3 is the pre-check refusing to displace a live
+    # install: nothing is started. Any other rc still leaves the unit
+    # queued — systemd-run returned before ssh dropped.
+    rm -f "$FAKE_INSTALL_POLLS"
+    [[ "${FAKE_LAUNCH_RC:-0}" == "3" ]] && exit 3
+    printf 'fake install.sh transcript\n' > "$FAKE_INSTALL_LOG"
+    if [[ "${FAKE_INSTALL_RC:-0}" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
+      # install.sh writes the build manifest ONLY as its final step.
+      sha="${cmd#*JASPER_DEPLOY_SHA_FULL=}"
+      printf 'JASPER_GIT_SHA_FULL=%s\nJASPER_INSTALL_STATUS=ok\n' \
+        "${sha%%[\\ ]*}" > "$FAKE_MANIFEST"
+    fi
+    exit "${FAKE_LAUNCH_RC:-0}"
+    ;;
+  *jts-install-poll*)
+    # The wrapper passes the byte offset it has already printed.
+    offset="${cmd##* }"
+    polls=$(( $(cat "$FAKE_INSTALL_POLLS" 2>/dev/null || printf 0) + 1 ))
+    printf '%s\n' "$polls" > "$FAKE_INSTALL_POLLS"
+    # A severed transport during a poll, not during the install.
+    [[ "$polls" == "${FAKE_POLL_DROP_AT:-}" ]] && exit 255
+    rc="${FAKE_INSTALL_RC:-0}"
+    if [[ "$rc" == "0" ]]; then result=success; else result=exit-code; fi
+    # systemctl answers in D-Bus reply order — Service properties before
+    # Unit ones — never in -p order.
+    if (( polls > ${FAKE_INSTALL_POLLS_UNTIL_DONE:-0} )); then
+      status="${FAKE_UNIT_END_STATUS:-Result=$result ExecMainCode=1 ExecMainStatus=$rc LoadState=loaded SubState=exited InvocationID=${FAKE_INVOCATION:-fresh0001}}"
+    else
+      status="Result=success ExecMainCode=0 ExecMainStatus=0 LoadState=loaded SubState=running InvocationID=${FAKE_INVOCATION:-fresh0001}"
+    fi
+    size="$(wc -c < "$FAKE_INSTALL_LOG" 2>/dev/null | tr -dc '0-9')"
+    [[ -n "$size" ]] || size=0
+    printf '%s\n' "$status" | tr ' ' '\n'
+    printf 'JTS_LOG_SIZE=%s\nJTS_LOG\n' "$size"
+    if [[ "$size" -ge "$offset" ]]; then
+      tail -c +"$offset" "$FAKE_INSTALL_LOG" | head -c "$((size - offset + 1))"
+    fi
+    printf '\nJTS_EOT'
+    ;;
+  *jasper-doctor*)
+    exit "${FAKE_DOCTOR_RC:-0}"
     ;;
   sudo\ -n*)
     exit 0
@@ -128,6 +214,13 @@ printf '\n' >> "$FAKE_LOG"
 
 
 FAKE_PING = r"""#!/usr/bin/env bash
+exit 0
+"""
+
+
+# The install poll waits INSTALL_POLL_INTERVAL_SEC between ticks; the fake
+# remote decides when the install is done, so the wait is dead time here.
+FAKE_SLEEP = r"""#!/usr/bin/env bash
 exit 0
 """
 
@@ -194,6 +287,7 @@ class FakeRemote:
         self._write_executable(self.bin / "ssh", FAKE_SSH)
         self._write_executable(self.bin / "rsync", FAKE_RSYNC)
         self._write_executable(self.bin / "ping", FAKE_PING)
+        self._write_executable(self.bin / "sleep", FAKE_SLEEP)
         self._write_executable(self.bin / "ssh-keygen", FAKE_SSH_KEYGEN)
         test_case.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
 
@@ -212,7 +306,11 @@ class FakeRemote:
             {
                 "PATH": f"{self.bin}{os.pathsep}{env['PATH']}",
                 "FAKE_LOG": str(self.log),
-                "SKIP_RESTART": "1",
+                "FAKE_MANIFEST": str(self.tmp / "build.txt"),
+                # Named like the real one: the fake's arms key off it.
+                "FAKE_FACTS_DIR": str(self.tmp / ".jts-deploy-facts.fake"),
+                "FAKE_INSTALL_LOG": str(self.tmp / ".jts-install.log"),
+                "FAKE_INSTALL_POLLS": str(self.tmp / "install-polls"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
         )
@@ -482,6 +580,147 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("RSYNC", calls)
         self.assertNotIn("deploy/install.sh", calls)
 
+    def test_identity_mismatch_aborts_before_rsync_on_every_sudo_and_flag_path(self):
+        """No path reaches `rsync --delete` with the identity guard unrun.
+
+        .env.local records another speaker's peer_id, so every combination
+        of sudo channel and SKIP_INSTALL must abort before rsync and leave
+        the recorded identity alone.
+
+        Removal condition: delete when the identity and direction guards
+        move out of scripts/deploy-to-pi.sh.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            PI_PEER_ID=00000000-0000-0000-0000-00000000beef
+            """
+        )
+        for use_pty in (False, True):
+            for skip_install in ({}, {"SKIP_INSTALL": "1"}):
+                with self.subTest(use_pty=use_pty, **skip_install):
+                    fake = FakeRemote(self)
+                    # Attended sudo is reachable only from a tty: sudo -n
+                    # fails and stdin is the pty.
+                    env = fake.env(
+                        FAKE_SUDO_N_RC="1" if use_pty else "0", **skip_install
+                    )
+                    with isolated_checkout(env_local) as checkout:
+                        cmd = ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")]
+                        if use_pty:
+                            result = run_with_pty(cmd, cwd=checkout, env=env)
+                        else:
+                            result = subprocess.run(
+                                cmd,
+                                cwd=checkout,
+                                env=env,
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                        recorded = (checkout / ".env.local").read_text(
+                            encoding="utf-8"
+                        )
+
+                    self.assertNotEqual(
+                        result.returncode, 0, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("RSYNC", fake.calls())
+                    self.assertIn(
+                        "PI_PEER_ID=00000000-0000-0000-0000-00000000beef", recorded
+                    )
+
+    def test_a_non_uuid_read_is_reported_unavailable_and_never_recorded(self):
+        """Attended sudo prompts inside every new ssh session, so a captured
+        read can pick up prompt text where a peer_id should be. Only a
+        UUID is an identity: anything else is `unavailable` — nothing is
+        recorded, and the deploy is not blocked by it.
+
+        Removal condition: delete with the peer_id TOFU guard.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            """
+        )
+        for peer_id in ("", "[sudo] password for pi:"):
+            with self.subTest(peer_id=peer_id):
+                fake = FakeRemote(self)
+                env = fake.env(FAKE_SUDO_N_RC="1", FAKE_PEER_ID=peer_id)
+                with isolated_checkout(env_local) as checkout:
+                    result = run_with_pty(
+                        ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")],
+                        cwd=checkout,
+                        env=env,
+                    )
+                    recorded = (checkout / ".env.local").read_text(
+                        encoding="utf-8"
+                    )
+
+                combined = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, combined)
+                self.assertIn("DEPLOY_IDENTITY=unavailable", result.stdout)
+                self.assertNotIn("PI_PEER_ID", recorded)
+                self.assertIn("RSYNC", fake.calls())
+
+    def test_a_fact_that_cannot_be_staged_stops_the_deploy_before_rsync(self):
+        """A root fact the Pi has but will not hand over must abort the
+        deploy, not read back as absent — an unstaged peer_id that reported
+        `unavailable` would skip the identity guard silently.
+
+        Removal condition: delete when the guards stop reading staged facts.
+        """
+        fake = FakeRemote(self)
+        env = fake.env(
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_SUDO_N_RC="1",
+            FAKE_PUBLISH_RC="1",
+        )
+        with isolated_checkout(None) as checkout:
+            result = run_with_pty(
+                ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")],
+                cwd=checkout,
+                env=env,
+            )
+
+        self.assertNotEqual(
+            result.returncode, 0, result.stdout + result.stderr
+        )
+        self.assertNotIn("RSYNC", fake.calls())
+
+    def test_skip_restart_skips_the_restarts_and_still_runs_the_gates(self):
+        """SKIP_RESTART=1 leaves the daemons on prior code — it is not a
+        verification switch, so the post-deploy probes still run.
+
+        Removal condition: delete with the SKIP_RESTART flag.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            SKIP_RESTART="1",
+        )
+
+        calls = fake.calls()
+        sha_full = git_head("HEAD")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("systemctl\\ restart", calls)
+        self.assertIn("/system/data.json", calls)
+        # The asset probe carries the cache key of the build just deployed;
+        # the character class absorbs the log's shell quoting of `?`.
+        self.assertRegex(
+            calls, rf"/assets/app\.css[\\?]+v={sha_full[:7]}[0-9a-f]*"
+        )
+
     def test_changed_host_key_names_the_manual_remedy_and_removes_nothing(self):
         # A re-imaged Pi answers on the same hostname with a new host key,
         # which accept-new refuses (issue #2114). Both operator scripts
@@ -516,7 +755,23 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("status=fail reason=host_key_changed", onboard.stdout)
         self.assertNotIn("SSH-KEYGEN", onboard_fake.calls())
 
-    def test_deploy_preserves_ssh_status_255_and_reports_unknown_outcome(self):
+    @staticmethod
+    def _launch_line(fake: FakeRemote) -> str:
+        """The recorded launch call, with the log's %q escaping removed."""
+        return next(
+            c
+            for c in fake.calls().replace("\\", "").splitlines()
+            if "jts-install-launch" in c
+        )
+
+    def test_the_install_is_launched_as_a_transient_unit(self):
+        """install.sh runs as jts-install.service, not as a child of this
+        ssh session, so a severed transport cannot kill a half-applied
+        install (#4190). The unit name is also the single-instance guard,
+        and the unit is left loaded so its exit status outlives it.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
         fake = FakeRemote(self)
         result = self.run_deploy(
             fake,
@@ -524,19 +779,159 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_INSTALL_SSH_RC="255",
         )
 
-        combined = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 255, combined)
-        self.assertIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
-        self.assertIn("ssh exited 255 while install.sh was", result.stderr)
-        self.assertIn("no trustworthy remote completion", result.stderr)
-        self.assertIn("build manifest was not verified", result.stderr)
-        self.assertNotIn("build manifest was NOT advanced", result.stderr)
-        self.assertNotIn("==> Done.", combined)
+        launch = self._launch_line(fake)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("systemd-run", launch)
+        # The unit name rides as the body's $1, and it is the same name on
+        # every deploy: that is what makes a second launch refuse.
+        self.assertIn('--unit="$1"', launch)
+        self.assertIn("jts-install-launch jts-install ", launch)
+        self.assertIn("-p RemainAfterExit=yes", launch)
+        self.assertIn("-p StandardOutput=append:", launch)
+        self.assertIn("/bin/sh -c", launch)
+        self.assertIn("/deploy/install.sh", launch)
+        # A finished unit is cleared before the next launch; a live one is
+        # not, which is what makes the launch refuse to displace it.
+        self.assertLess(
+            launch.index("reset-failed"), launch.index("systemd-run")
+        )
+        # No body built by remote_sh may carry a newline: printf %q renders
+        # one as bash-only $'…', which a /bin/sh login shell cannot parse.
+        # The call log escapes with %q, so this reads the unescaped form.
+        bodies = [
+            c
+            for c in fake.calls().replace("\\", "").splitlines()
+            if "jts-install-" in c or "jts-deploy-facts" in c
+        ]
+        self.assertTrue(bodies)
+        for line in bodies:
+            self.assertNotIn("$'", line)
+        # The Pi-side ceiling outlives this wrapper: an install it gave up
+        # on must not run forever.
+        self.assertIn("-p RuntimeMaxSec=7200", launch)
+        # The OOM window opens before the install it bounds.
+        calls = fake.calls().replace("\\", "").splitlines()
+        clock = next(c for c in calls if c.endswith("date +%s"))
+        self.assertLess(calls.index(clock), calls.index(launch))
 
-    def test_deploy_preserves_ordinary_install_failure(self):
+    def test_deploy_exits_on_the_status_the_unit_reports(self):
+        """The deploy's exit code is the unit's ExecMainStatus, polled back
+        over a channel that may drop: the launch call itself always returns
+        0, so a non-zero exit here can only have come from the poll.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        signal = "Result=signal ExecMainCode=2 ExecMainStatus=9 " \
+            "LoadState=loaded SubState=failed InvocationID=fresh0001"
+        for label, overrides, expect_rc in (
+            ("clean exit", {}, 0),
+            ("install failed", {"FAKE_INSTALL_RC": "3"}, 3),
+            ("a poll drops", {"FAKE_POLL_DROP_AT": "2"}, 0),
+            # ssh can die after systemd-run already queued the unit, so a
+            # failed launch call is a question for the Pi, not a verdict.
+            ("launch call dies", {"FAKE_LAUNCH_RC": "255"}, 0),
+            ("killed", {"FAKE_UNIT_END_STATUS": signal}, 137),
+        ):
+            with self.subTest(label):
+                fake = FakeRemote(self)
+                result = self.run_deploy(
+                    fake,
+                    env_local=None,
+                    PI_HOST="jts3.local",
+                    PI_USER="pi",
+                    JASPER_HOSTNAME="jts3.local",
+                    FAKE_INSTALL_POLLS_UNTIL_DONE="1",
+                    **overrides,
+                )
+
+                combined = result.stdout + result.stderr
+                calls = fake.calls().replace("\\", "").splitlines()
+                polls = [c for c in calls if "jts-install-poll" in c]
+
+                self.assertEqual(result.returncode, expect_rc, combined)
+                self.assertGreaterEqual(len(polls), 2)
+                self.assertIn("fake install.sh transcript", result.stdout)
+                self.assertEqual("==> Done." in combined, expect_rc == 0)
+                # A failed install still has its OOM collateral scanned.
+                self.assertTrue(
+                    any("journalctl -k" in c for c in calls), combined
+                )
+                if "FAKE_POLL_DROP_AT" in overrides:
+                    self.assertIn(
+                        "event=deploy.install_poll_reconnect ", result.stderr
+                    )
+                    self.assertIn(
+                        "event=deploy.install_poll_reconnected", result.stderr
+                    )
+                else:
+                    self.assertNotIn("install_poll_reconnect", result.stderr)
+                if "FAKE_LAUNCH_RC" in overrides:
+                    self.assertIn(
+                        "event=deploy.install_launch_uncertain", result.stderr
+                    )
+                if expect_rc == 137:
+                    self.assertIn(
+                        "event=deploy.install_signal", result.stderr
+                    )
+
+    def test_a_running_install_is_never_displaced_by_a_second_deploy(self):
+        """Two installs must never interleave. The pre-rsync probe refuses
+        before --delete can rewrite the tree the running install is
+        building from (ADR-0172); the launch's own check is the backstop
+        for a unit that started inside that window. Neither shortens the
+        AirPlay maintenance window, because that install is still going.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        for label, overrides, expect_rsync in (
+            ("before rsync", {"FAKE_UNIT_PRE_SUBSTATE": "running"}, False),
+            ("launch backstop", {"FAKE_LAUNCH_RC": "3"}, True),
+        ):
+            with self.subTest(label):
+                fake = FakeRemote(self)
+                result = self.run_deploy(
+                    fake,
+                    env_local=None,
+                    PI_HOST="jts3.local",
+                    PI_USER="pi",
+                    JASPER_HOSTNAME="jts3.local",
+                    SKIP_AIRPLAY_HEALTH_SUPPRESS="",
+                    **overrides,
+                )
+
+                combined = result.stdout + result.stderr
+                calls = fake.calls().replace("\\", "").splitlines()
+                windows = [
+                    c
+                    for c in calls
+                    if "jasper-airplay-health-suppress-until" in c
+                ]
+                self.assertNotEqual(result.returncode, 0, combined)
+                self.assertIn("event=deploy.install_busy", result.stderr)
+                self.assertEqual([c for c in calls if "install-poll" in c], [])
+                self.assertNotIn("==> Done.", combined)
+                self.assertEqual(
+                    any(c.startswith("RSYNC") for c in calls), expect_rsync
+                )
+                # Whatever was marked, nothing shortened it: that would
+                # blame the running install's restarts on AirPlay.
+                self.assertEqual(len(windows), 1 if expect_rsync else 0)
+                for window in windows:
+                    self.assertIn("+ 2700", window)
+
+    def test_a_launch_that_never_ran_cannot_inherit_the_last_deploys_unit(
+        self,
+    ):
+        """RemainAfterExit leaves the previous deploy's unit sitting in
+        `exited 0`. A launch call that failed before its body ran would
+        otherwise poll that corpse and report someone else's success —
+        and pass the manifest gate on a same-SHA redeploy. The unit only
+        counts when its InvocationID differs from the pre-launch read.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
         fake = FakeRemote(self)
         result = self.run_deploy(
             fake,
@@ -544,18 +939,69 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_INSTALL_SSH_RC="42",
+            FAKE_LAUNCH_RC="255",
+            FAKE_INSTALL_POLLS_UNTIL_DONE="0",
+            FAKE_PRE_INVOCATION="stale0001",
+            FAKE_INVOCATION="stale0001",
         )
 
         combined = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 42, combined)
-        self.assertIn(
-            "DEPLOY FAILED: install.sh exited 42 on jts3.local.",
-            result.stderr,
-        )
-        self.assertIn("build manifest was NOT advanced", result.stderr)
-        self.assertNotIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
+        self.assertNotEqual(result.returncode, 0, combined)
+        self.assertIn("event=deploy.install_lost", result.stderr)
         self.assertNotIn("==> Done.", combined)
+
+    def test_a_vanished_unit_is_reported_lost_without_waiting_out_the_ceiling(
+        self,
+    ):
+        """A Pi that reboots mid-install loses the unit; systemd then
+        reports every other field as a default, so an unloaded unit must
+        fail the deploy rather than read as a clean exit 0.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_UNIT_END_STATUS=(
+                "Result=success ExecMainCode=0 ExecMainStatus=0 "
+                "LoadState=not-found SubState=dead"
+            ),
+        )
+
+        combined = result.stdout + result.stderr
+        polls = [c for c in fake.calls().splitlines() if "jts-install-poll" in c]
+        self.assertNotEqual(result.returncode, 0, combined)
+        self.assertIn("event=deploy.install_lost", result.stderr)
+        self.assertLessEqual(len(polls), 2)
+        self.assertNotIn("==> Done.", combined)
+
+    def test_a_red_core_health_result_does_not_fail_the_deploy(self):
+        """The post-deploy `jasper-doctor --core` gate is advisory.
+
+        Removal condition: flip the expected rc to 1 when the swallow at
+        the gate_core_health call site goes (ADR-0242).
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_DOCTOR_RC="1",
+        )
+
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("jasper-doctor\\ --core", calls)
+        # The remote run carries install.sh's bound. See ADR-0242.
+        self.assertIn("systemd-run", calls)
+        self.assertIn("MemoryMax=96M", calls)
+        self.assertIn("RuntimeMaxSec=60", calls)
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)
@@ -579,7 +1025,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         )
         self.assertNotIn("-dirty", result.stdout)
         self.assertIn("alice@jts3.local:/home/alice/jts/", calls)
-        self.assertIn("sudo\\ -n\\ JASPER_DEPLOY_SHA=", calls)
+        self.assertIn("sudo -n sh -c", self._launch_line(fake))
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)
         self.assertNotIn("SSH -tt", calls)
 
@@ -663,9 +1109,15 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         calls = fake.calls()
         combined = result.stdout + result.stderr + calls
         self.assertEqual(result.returncode, 0, combined)
+        # The attended channel still runs the identity guard, and reports
+        # its outcome on the branch that has nothing to compare against.
+        self.assertIn("DEPLOY_IDENTITY=no_state_file", result.stdout)
         self.assertIn("SSH -tt", calls)
         self.assertIn("sudo\\ -v", calls)
-        self.assertIn("sudo\\ JASPER_DEPLOY_SHA=", calls)
+        # The privileged install launch rides the pty channel too.
+        launch = self._launch_line(fake)
+        self.assertTrue(launch.startswith("SSH -tt "), launch)
+        self.assertIn("sudo sh -c", launch)
         for forbidden in (
             "sudo -S",
             "sudo\\ -S",
@@ -796,7 +1248,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     plain.returncode, 0, plain.stdout + plain.stderr
                 )
             recorded = state.read_bytes()
-            self.assertIn("PI_PEER_ID=peer-jts.local", recorded.decode())
+            self.assertIn(
+                f"PI_PEER_ID={fake_peer_id('jts.local')}", recorded.decode()
+            )
             self.assertNotEqual(recorded, before)
 
             # ...and with that record standing, a redirect neither reads
@@ -852,7 +1306,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     0,
                     onboard_shape.stdout + onboard_shape.stderr,
                 )
-            self.assertIn("PI_PEER_ID=peer-jts.local", state.read_text())
+            self.assertIn(
+                f"PI_PEER_ID={fake_peer_id('jts.local')}", state.read_text()
+            )
 
     def test_lib_keeps_jasper_hostname_as_legacy_pi_host_fallback(self):
         env = os.environ.copy()

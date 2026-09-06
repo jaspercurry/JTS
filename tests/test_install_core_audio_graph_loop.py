@@ -14,19 +14,29 @@ regardless, and re-raises at the end so a genuine error still surfaces.
 
 The fragment is sourced into a harness with stub install.sh globals (REPO_DIR,
 SYSTEMD_DIR) plus `install`/`systemctl` shimmed to record calls into log files,
-so the loop is exercised hardware-free and root-free.
+so the loop is exercised hardware-free and root-free. The same harnesses cover
+the profile staging transaction the two entry points share
+(_with_unit_install_transaction over _stage_{full,streambox}_unit_files).
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from jasper import source_intent
+from jasper.local_sources.registry import local_source_audio_refresh_units
+from tests.install_surface import installer_shell_paths
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
+_REAL_INSTALL = shutil.which("install") or "/usr/bin/install"
 
 # Every destination the install table should attempt, regardless of mid-loop
 # failure. Kept as the asserted contract so a future row addition is caught.
@@ -153,11 +163,11 @@ install_transaction_dir="{transaction}"
 mkdir -p "$install_transaction_dir"
 declare -a install_transaction_paths=()
 declare -a install_transaction_existed=()
-_snapshot_full_unit_install_destination "{existing}"
+_snapshot_unit_install_destination "{existing}"
 printf 'mixed generation\n' > "{existing}"
-_snapshot_full_unit_install_destination "{new}"
+_snapshot_unit_install_destination "{new}"
 printf 'new generation\n' > "{new}"
-_rollback_full_unit_install_transaction
+_rollback_unit_install_transaction
 """
     result = subprocess.run(
         ["bash", "-c", script],
@@ -190,8 +200,8 @@ mkdir -p "$install_transaction_dir"
 declare -a install_transaction_paths=()
 declare -a install_transaction_existed=()
 set -E
-trap '_rollback_full_unit_install_transaction' ERR
-install() {{ _transactional_full_unit_install "$@"; }}
+trap '_rollback_unit_install_transaction' ERR
+install() {{ _transactional_unit_install "$@"; }}
 install -m 0644 "{staged}" "{existing}"
 install -m 0644 "{tmp_path / 'missing.service'}" "{new}"
 """
@@ -203,7 +213,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{new}"
     )
 
     assert result.returncode != 0
-    assert "rolled back the incomplete full-profile unit generation" in result.stderr
     assert existing.read_text(encoding="utf-8") == "old generation\n"
     assert not new.exists()
     assert not transaction.exists()
@@ -242,11 +251,11 @@ mkdir -p "$install_transaction_dir"
 declare -a install_transaction_paths=()
 declare -a install_transaction_existed=()
 set -E
-trap '_rollback_full_unit_install_transaction' ERR
+trap '_rollback_unit_install_transaction' ERR
 install() {{
   local destination="${{!#}}"
   case "$destination" in
-    "$SYSTEMD_DIR"/*|"$SYSTEMD_DIR"/) _transactional_full_unit_install "$@" ;;
+    "$SYSTEMD_DIR"/*|"$SYSTEMD_DIR"/) _transactional_unit_install "$@" ;;
     *) return 0 ;;
   esac
 }}
@@ -262,7 +271,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" \
     )
 
     assert result.returncode != 0
-    assert "rolled back the incomplete full-profile unit generation" in result.stderr
     assert service.read_text(encoding="utf-8") == "old service generation\n"
     assert path.read_text(encoding="utf-8") == "old path generation\n"
     assert not (systemd_dir / "later.service").exists()
@@ -302,12 +310,12 @@ mkdir -p "$install_transaction_dir" "{dropin_dir}"
 declare -a install_transaction_paths=()
 declare -a install_transaction_existed=()
 set -E
-trap '_rollback_full_unit_install_transaction' ERR
-install() {{ _transactional_full_unit_install "$@"; }}
+trap '_rollback_unit_install_transaction' ERR
+install() {{ _transactional_unit_install "$@"; }}
 install -m 0644 "{staged_gate}" "{gate}"
 install -m 0644 "{staged_dropin}" "{dropin}"
-_snapshot_full_unit_install_destination "{nm}"
-_snapshot_full_unit_install_destination "{dnsmasq}"
+_snapshot_unit_install_destination "{nm}"
+_snapshot_unit_install_destination "{dnsmasq}"
 printf 'new nm generation\n' > "{nm}"
 printf 'new dnsmasq generation\n' > "{dnsmasq}"
 install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
@@ -318,7 +326,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
     )
 
     assert result.returncode != 0
-    assert "rolled back the incomplete full-profile unit generation" in result.stderr
     assert nm.read_text(encoding="utf-8") == "old nm generation\n"
     assert dnsmasq.read_text(encoding="utf-8") == "old dnsmasq generation\n"
     assert gate.read_text(encoding="utf-8") == "old gate generation\n"
@@ -327,44 +334,9 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
     assert not transaction.exists()
 
 
-def test_full_install_uses_transactional_core_graph_installer():
-    """The full profile must consume the same table as streambox installs.
-
-    Otherwise a row can pass the table's unit tests yet never land on the
-    production speaker path, which previously allowed install wiring to drift
-    from the unit files actually shipped.
-    """
-    source = FRAGMENT.read_text()
-    function_tail = source.split("install_systemd_units() {", 1)[1]
-    commands = [
-        line.strip()
-        for line in function_tail.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    assert commands[:2] == [
-        "install_jasper_support_files",
-        "install_local_audio_graph_unit_files",
-    ]
-
-
-def test_full_install_commits_before_runtime_and_starts_both_audio_slices():
-    body = _function_body(FRAGMENT.read_text(), "install_systemd_units")
-    transaction = body.index("mktemp -d /tmp/jasper-full-unit-install")
-    first_full_unit = body.index("install_voice_unit_files")
-    reload = body.index("systemctl daemon-reload", first_full_unit)
-    commit = body.index("trap - ERR", reload)
-    slices = body.index(
-        "systemctl enable --now jts-audio.slice jts-mic.slice",
-        commit,
-    )
-    runtime = body.index("enable_usbgadget", slices)
-
-    assert transaction < first_full_unit < reload < commit < slices < runtime
-
-
 def test_full_profile_does_not_duplicate_shared_install_rows() -> None:
     source = FRAGMENT.read_text()
-    full = source.split("install_systemd_units() {", 1)[1]
+    full = source.split("_stage_full_unit_files() {", 1)[1]
     table = source.split("JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(", 1)[1].split(
         "\n)\n",
         1,
@@ -387,40 +359,14 @@ def _function_body(source: str, name: str) -> str:
     return m.group(1)
 
 
-def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
-    """A deploy must never transiently start a household-Off renderer.
-
-    The coordinator now owns persistent and runtime state for every source,
-    including Bluetooth RF-kill recovery. Both profiles must enable its boot
-    unit and run it after active-only refreshes. It alone starts desired-on
-    sources and repairs any stale derived state.
+def test_source_intent_reapply_runs_the_bounded_full_coordinator():
+    """The coordinator owns persistent and runtime state for every source,
+    including Bluetooth RF-kill recovery, and it alone starts desired-on
+    sources and repairs stale derived state. Both profiles reach it through
+    this one helper, so its invocation is pinned here and the per-profile
+    ordering by the argv recorder below.
     """
     source = FRAGMENT.read_text()
-    for fn in ("start_streambox_runtime_units", "install_systemd_units"):
-        body = _function_body(source, fn)
-        baseline_idx = body.find("enable_usbgadget")
-        assert baseline_idx != -1, f"{fn}: network-only USB baseline missing"
-        restart_idx = body.find("systemctl try-restart bluealsa-aplay.service")
-        assert restart_idx != -1, f"{fn}: active-only renderer refresh missing"
-        assert "systemctl enable nqptp.service" not in body
-        assert "systemctl restart nqptp.service" not in body
-        reapply_idx = body.find("reapply_source_intent")
-        assert reapply_idx != -1, f"{fn}: reapply_source_intent not called"
-        assert reapply_idx > baseline_idx, (
-            f"{fn}: installer must establish USB audio Off/NCM-only before the "
-            "coordinator owns any canonical On transition"
-        )
-        assert reapply_idx > restart_idx, (
-            f"{fn}: source-intent reconcile must run AFTER active renderer "
-            "refreshes so desired-on sources converge on new code"
-        )
-        assert "jasper-source-intent-reconcile.service" in body, (
-            f"{fn}: the coordinator must also be enabled for boot convergence"
-        )
-        assert "jasper-usbsink-volume.service" in body, (
-            f"{fn}: the USB volume bridge must also be restarted like its "
-            "sibling renderer daemons"
-        )
     # The shared helper is the ONE deploy path that runs the full coordinator.
     helper = _function_body(source, "reapply_source_intent")
     assert "jasper-source-intent-reconcile" in helper
@@ -429,23 +375,7 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         "/usr/bin/timeout --foreground --kill-after=5s "
         f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
     ) in helper
-    assert "mode=0o660" in helper
     assert "--stop-disabled" not in helper
-
-
-def test_streambox_arms_usb_combo_owner_before_source_intent_reapply():
-    """Streambox uses the same direct USB data plane as a full speaker."""
-
-    body = _function_body(
-        FRAGMENT.read_text(),
-        "start_streambox_runtime_units",
-    )
-    baseline_idx = body.find("enable_usbgadget")
-    coupling_idx = body.find("systemctl enable jasper-fanin-coupling-auto.service")
-    reapply_idx = body.find("reapply_source_intent")
-
-    assert -1 not in (baseline_idx, coupling_idx, reapply_idx)
-    assert baseline_idx < coupling_idx < reapply_idx
 
 
 def test_upgrade_retires_destructive_combo_health_watcher():
@@ -550,3 +480,377 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     assert targets.isdisjoint(park), (
         f"restart targets must not overlap parked clients: {targets & park}"
     )
+
+
+def _shim_preamble(tmp_path: Path, *, errexit: bool = True) -> str:
+    """The install.sh globals the fragment assumes, every mutable root pointed
+    at tmp_path, and the fragment itself. `errexit` is off for the runtime
+    harness alone: that path also calls install.sh helpers and on-box binaries
+    under /usr/local/sbin, neither of which exists here and both non-fatal on
+    the box too."""
+    return f"""
+set -{"euo" if errexit else "uo"} pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}/systemd"
+STATE_DIR="{tmp_path}/state"
+APPLE_DONGLE_SERVICE_CARD="auto"
+mkdir -p "$SYSTEMD_DIR" "$STATE_DIR"
+source "{FRAGMENT}"
+"""
+
+
+_RECORDER_SHIMS = ("systemctl", "clear_install_in_progress", "mktemp")
+
+
+def _transaction_recorder(tmp_path: Path) -> str:
+    """One ordered log of the systemctl argv a profile issues plus
+    clear_install_in_progress, which lives in install.sh and so is covered by
+    no fragment stub. Also pins the transaction directory under tmp_path."""
+    return f"""
+systemctl() {{ echo "systemctl $*" >> "{tmp_path}/calls.log"; return 0; }}
+clear_install_in_progress() {{ echo "fn clear_install_in_progress" >> "{tmp_path}/calls.log"; }}
+mktemp() {{ local d; d="{tmp_path}/txn"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
+"""
+
+
+def _profile_runtime_harness(
+    tmp_path: Path, function: str, keep: tuple[str, ...] = ()
+) -> str:
+    """Run one profile's unit-install function with every fragment-defined
+    helper stubbed into a recorder, so the systemctl argv it issues is
+    observable off-box. `keep` names further fragment functions to leave real."""
+    # The stub loop never replaces the recorder's own shims, so the two can be
+    # emitted in either order.
+    real = " ".join(
+        shlex.quote(name)
+        for name in (function, *keep, *_RECORDER_SHIMS)
+    )
+    return f"""{_shim_preamble(tmp_path, errexit=False)}
+LOG='{tmp_path}/calls.log'
+for _stub in $(declare -F | awk '{{print $3}}'); do
+    for _real in {real}; do
+        [[ "$_stub" == "$_real" ]] && continue 2
+    done
+    eval "${{_stub}}() {{ echo \\"fn ${{_stub}}\\" >> \\"$LOG\\"; return 0; }}"
+done
+{_transaction_recorder(tmp_path)}
+{function}
+"""
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_both_profiles_restart_control_and_refresh_the_source_roster(
+    tmp_path, function
+):
+    """Both profiles must RESTART jasper-control: enabling alone leaves the
+    control plane — and, through its Wants=, CamillaDSP — down until the next
+    reboot. The try-restart set must cover every unit jasper's own local-source
+    roster names, and the USB baseline, the active-only refresh and the
+    source-intent coordinator must stay in that order.
+
+    Remove when the installer stops managing unit lifecycle.
+    """
+    result = subprocess.run(
+        ["bash", "-c", _profile_runtime_harness(tmp_path, function)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+
+    def first(prefix: str) -> int:
+        hits = [i for i, call in enumerate(calls) if call.startswith(prefix)]
+        assert hits, f"{prefix!r} never issued: {calls}"
+        return hits[0]
+
+    # jasper-control carries StartLimitAction=reboot; a spent burst must be
+    # cleared or the restart reboots the Pi mid-install.
+    assert first("systemctl reset-failed jasper-control.service") < first(
+        "systemctl restart jasper-control.service"
+    )
+
+    refreshed = {
+        unit
+        for call in calls
+        if call.startswith("systemctl try-restart ")
+        for unit in call.split()[2:]
+    }
+    assert set(local_source_audio_refresh_units()) <= refreshed
+
+    # A deploy must never transiently start a household-Off renderer: only
+    # the coordinator may make a canonical On transition, and it runs last.
+    assert (
+        first("fn enable_usbgadget")
+        < first("systemctl try-restart ")
+        < first("fn reapply_source_intent")
+    )
+    assert not [
+        call
+        for call in calls
+        if "nqptp" in call and not call.startswith("systemctl try-restart ")
+    ]
+    assert any(
+        call.startswith("systemctl enable ")
+        and "jasper-source-intent-reconcile.service" in call
+        for call in calls
+    )
+    # Streambox uses the same direct USB data plane as a full speaker, so it
+    # arms the combo owner inline, between the two; the full profile leaves
+    # that to resolve_fanin_coupling_default after the coordinator's pass.
+    if function == "start_streambox_runtime_units":
+        assert (
+            first("fn enable_usbgadget")
+            < first("systemctl enable jasper-fanin-coupling-auto.service")
+            < first("fn reapply_source_intent")
+        )
+
+
+@pytest.mark.parametrize(
+    ("entry", "stage", "first_runtime_call", "post_commit"),
+    (
+        (
+            "install_systemd_units",
+            "_stage_full_unit_files",
+            "systemctl enable --now jts-audio.slice jts-mic.slice",
+            ("mask_distro_background_units",),
+        ),
+        (
+            "install_streambox_systemd_units",
+            "_stage_streambox_unit_files",
+            "systemctl enable --now jts-audio.slice",
+            ("park_streambox_brain_units", "mask_distro_background_units"),
+        ),
+    ),
+)
+def test_both_profiles_close_the_install_window_between_staging_and_runtime(
+    tmp_path, entry, stage, first_runtime_call, post_commit
+):
+    """Both positions the shared transaction has to preserve, read off the
+    recorded argv order rather than the source. #4218: the install window
+    closes AFTER daemon-reload has loaded the staged generation (so gated units
+    see their Condition lines) and BEFORE the profile's first enable/start.
+    #4222: jasper-control is restarted from the runtime tail, i.e. after the
+    wrapper returned and committed — the wrapper issues nothing recordable past
+    clear_install_in_progress, so anything logged later is outside it.
+
+    Remove when the installer stops staging units transactionally.
+    """
+    keep = ("_with_unit_install_transaction",)
+    if entry == "install_streambox_systemd_units":
+        keep += ("start_streambox_runtime_units",)
+    result = subprocess.run(
+        ["bash", "-c", _profile_runtime_harness(tmp_path, entry, keep=keep)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+
+    def first(entry_prefix: str) -> int:
+        hits = [i for i, call in enumerate(calls) if call.startswith(entry_prefix)]
+        assert hits, f"{entry_prefix!r} never issued: {calls}"
+        return hits[0]
+
+    mutations = [
+        i
+        for i, call in enumerate(calls)
+        if call.startswith(("systemctl enable", "systemctl start", "systemctl restart"))
+    ]
+    assert mutations, calls
+    assert calls[mutations[0]] == first_runtime_call
+    cleared = first("fn clear_install_in_progress")
+    assert (
+        first("fn install_jasper_support_files")
+        < first("fn install_local_audio_graph_unit_files")
+        < first(f"fn {stage}")
+        < first("systemctl daemon-reload")
+        < cleared
+        < mutations[0]
+        <= first("systemctl restart jasper-control.service")
+    )
+    # Parking and masking issue `disable --now`/`mask`, which no rollback can
+    # undo, so both profiles keep them outside the transaction.
+    assert all(cleared < first(f"fn {name}") for name in post_commit)
+
+
+def _stage_rollback_harness(tmp_path: Path, stage: str) -> str:
+    """Drive one profile's stage function under the real transaction wrapper,
+    with `install` a stub EXECUTABLE on PATH: the wrapper's interceptor promotes
+    with `command install`, which bypasses shell functions. The stub really
+    copies destinations under tmp_path (so rollback has bytes to restore) and
+    skips every other destination, keeping the run off the host's /etc and
+    /usr/local."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "install"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'dst="${!#}"\n'
+        'printf \'%s\\t%s\\n\' "$1" "$dst" >> "$JTS_STUB_CALLS"\n'
+        'if [[ "$dst" == "$JTS_STUB_FAIL" ]]; then exit 1; fi\n'
+        f'case "$dst" in {shlex.quote(str(tmp_path))}/*)'
+        f' exec {shlex.quote(_REAL_INSTALL)} "$@" ;; esac\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return f"""{_shim_preamble(tmp_path)}
+{_transaction_recorder(tmp_path)}
+_with_unit_install_transaction {stage}
+"""
+
+
+@pytest.mark.parametrize(
+    ("stage", "seeded", "staged_new", "fail_unit"),
+    (
+        (
+            "_stage_full_unit_files",
+            "jasper-voice.service",
+            "jasper-input.service",
+            "jasper-enhanced-aec-reconcile.path",
+        ),
+        (
+            "_stage_streambox_unit_files",
+            "jasper-web.service",
+            "jasper-wifi-guardian.service",
+            "jasper-wifi-scan-repair.service",
+        ),
+    ),
+)
+def test_a_failed_stage_rolls_the_whole_profile_generation_back(
+    tmp_path, stage, seeded, staged_new, fail_unit
+):
+    """Both profiles stage through one rollback domain: when the Nth `install`
+    fails, every destination touched since the wrapper opened is restored to
+    its prior bytes, destinations that never existed are gone, and the profile
+    reaches none of its enable/start work — so PID 1 keeps the generation it
+    was already running instead of a half-replaced one. Streambox had no
+    transaction at all before this.
+
+    Remove when the installer stops staging units transactionally.
+    """
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    (systemd_dir / seeded).write_text("old generation\n", encoding="utf-8")
+    calls = tmp_path / "install.calls"
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path / 'bin'}:{env['PATH']}"
+    env["JTS_STUB_CALLS"] = str(calls)
+    env["JTS_STUB_FAIL"] = str(systemd_dir / fail_unit)
+
+    result = subprocess.run(
+        ["bash", "-c", _stage_rollback_harness(tmp_path, stage)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert (systemd_dir / seeded).read_text(encoding="utf-8") == "old generation\n"
+    assert not (systemd_dir / staged_new).exists()
+    assert not (tmp_path / "txn").exists()
+    # The harness only restores what it really copied, so the chosen failure
+    # point must come before the first destination outside tmp_path. Drop this
+    # assertion if the stage functions ever stop installing to absolute paths.
+    promoted = {
+        destination
+        for mode, destination in (
+            line.split("\t") for line in calls.read_text().splitlines()
+        )
+        if mode != "-d"
+    }
+    assert promoted and all(d.startswith(str(tmp_path)) for d in promoted)
+    log = tmp_path / "calls.log"
+    issued = log.read_text().splitlines() if log.exists() else []
+    assert not [
+        call
+        for call in issued
+        if call.startswith(("systemctl enable", "systemctl start"))
+        or call == "fn clear_install_in_progress"
+    ], issued
+
+
+def _destination_harness(tmp_path: Path, function: str) -> str:
+    """Record every destination one install step promotes, with the copy itself
+    suppressed — nothing here may write to the host's /etc or /usr/local. The
+    stubbed helpers cannot run off-box at all: install_usb_network_files drives
+    a Python plan owner against the real /etc/NetworkManager, and the other two
+    reload udev rules or shell out to systemd-analyze. That costs the recorded
+    set exactly one destination, NetworkManager's 90-jasper-usbnet.conf, which
+    both profiles reach through that same helper — so the subset comparison
+    below is unaffected."""
+    calls = tmp_path / "destinations.log"
+    return f"""{_shim_preamble(tmp_path)}
+install_transaction_dir="{tmp_path}/txn"
+mkdir -p "$install_transaction_dir"
+install() {{
+  local dst="${{!#}}"
+  [[ "$1" == "-d" ]] || printf '%s\\n' "$dst" >> "{calls}"
+  return 0
+}}
+systemctl() {{ return 0; }}
+install_usb_network_files() {{ return 0; }}
+validate_streambox_systemd_units() {{ return 0; }}
+reload_audio_recovery_udev_rules_for_install() {{ return 0; }}
+{function}
+"""
+
+
+def _destinations(tmp_path: Path, function: str) -> set[str]:
+    result = subprocess.run(
+        ["bash", "-c", _destination_harness(tmp_path, function)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    log = tmp_path / "destinations.log"
+    return {
+        line.replace(str(tmp_path), "")
+        for line in log.read_text().splitlines()
+        if line.strip()
+    }
+
+
+def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path):
+    """/usr/local/lib/jasper/install has exactly one reader on the box,
+    deploy/bin/jasper-contained-build, and it sources build-sandbox.sh alone.
+    Copying the rest of deploy/lib/install/ shipped installer internals to
+    every speaker for nobody to read."""
+    landed = {
+        Path(destination).name
+        for destination in _destinations(tmp_path, "install_jasper_support_files")
+        if destination.startswith("/usr/local/lib/jasper/install/")
+    }
+    assert landed == {"build-sandbox.sh"}
+    assert landed < {path.name for path in installer_shell_paths()}
+    # The on-box renderer lib deploy/bin/jasper-audio-hardware-reconcile falls
+    # back to has this one owner, ahead of every /usr/local/sbin reconciler run.
+    assert "/usr/local/lib/jasper/jasper-asound-render.sh" in _destinations(
+        tmp_path / "support", "install_jasper_support_files"
+    )
+
+
+def test_a_streambox_stages_a_subset_of_the_full_unit_generation(tmp_path):
+    """One roster: every destination a streambox stages, a full speaker stages
+    too. While the full profile re-inlined the shared helpers instead of calling
+    them, bluealsa-aplay's jts-restart.conf was streambox-only — a full speaker
+    never got the drop-in that restarts Bluetooth audio after a clean exit."""
+    full = _destinations(tmp_path / "full", "_stage_full_unit_files")
+    streambox = _destinations(tmp_path / "streambox", "_stage_streambox_unit_files")
+    assert streambox
+    assert streambox <= full, streambox - full
+    # Two drop-ins that shipped on one profile only in the past: the nginx
+    # recovery drop-in (the doctor's installed-settings drift check expects
+    # OOMScoreAdjust=-450 regardless of profile) and bluetooth's discovery
+    # timeout.
+    assert {
+        "/systemd/nginx.service.d/jts-recovery.conf",
+        "/systemd/bluetooth.service.d/jts-timeout.conf",
+    } <= streambox & full

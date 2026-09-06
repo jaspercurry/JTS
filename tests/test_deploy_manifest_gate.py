@@ -38,10 +38,11 @@ JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 # column-0 '}'. eval defines it; nothing else in the deploy script runs.
 eval "$(awk '/^verify_manifest_advanced\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
 declare -F verify_manifest_advanced >/dev/null || { echo "harness: extraction failed" >&2; exit 99; }
-# Stub the external seams: the ssh manifest read returns $MANIFEST; the
+# Stub the external seams: the Pi-file read returns $MANIFEST; the
 # maintenance finalizer is a no-op (it would otherwise try to ssh).
-run_remote_sudo() { printf '%s\n' "$MANIFEST"; }
+read_pi_file() { printf '%s\n' "$MANIFEST"; }
 finish_airplay_health_maintenance() { :; }
+cleanup_remote_facts() { :; }
 trap - EXIT
 SHA_FULL="@FULL@"; DIRTY=""; SHA="${SHA_FULL:0:8}"; PI_HOST="bench-pi.local"
 verify_manifest_advanced

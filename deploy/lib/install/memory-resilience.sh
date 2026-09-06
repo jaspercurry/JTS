@@ -47,7 +47,8 @@ REBOOT_REQUIRED_MARKER="${JTS_REBOOT_REQUIRED_MARKER:-/run/jasper-install/reboot
 # marker, identified by `key`. Each migration calls this unconditionally
 # on every run — clearing when its own condition is no longer true — so
 # the file always reflects only what THIS run still needs a reboot for,
-# regardless of the other migration's call order.
+# regardless of the other migration's call order. A writer may instead leave
+# its key untouched when an earlier run's ask is still pending.
 _set_reboot_required_reason() {
     local key="$1" reason="$2"
     local dir tmp
@@ -74,6 +75,31 @@ _print_reboot_required_marker() {
     if [[ -s "${REBOOT_REQUIRED_MARKER}" ]]; then
         echo "  REBOOT REQUIRED (${REBOOT_REQUIRED_MARKER}): $(paste -sd';' "${REBOOT_REQUIRED_MARKER}")"
     fi
+}
+
+
+# --- Install-in-progress marker (issue #4123) ---
+#
+# Lives here because this file already owns /run/jasper-install. The resolved
+# default is repeated as a `ConditionPathExists=!` literal in each gated [Unit]
+# section and in jasper-wifi-recover; a test pins the three together.
+INSTALL_IN_PROGRESS_MARKER="${REBOOT_REQUIRED_MARKER%/*}/in_progress"
+
+# The accessory reconciler takes the window as a stop, not a Condition:
+# PathExists= is level-triggered, so a service that keeps going inactive
+# re-triggers until TriggerLimitBurst fails the .path unit.
+mark_install_in_progress() {
+    install -d -m 0755 "${INSTALL_IN_PROGRESS_MARKER%/*}"
+    printf 'sha=%s\n' "${JASPER_DEPLOY_SHA_FULL:-unknown}" > "${INSTALL_IN_PROGRESS_MARKER}"
+    systemctl stop jasper-accessory-reconcile.path 2>/dev/null || true
+    _mem_log install_in_progress "state=set marker=${INSTALL_IN_PROGRESS_MARKER}"
+}
+
+clear_install_in_progress() {
+    rm -f "${INSTALL_IN_PROGRESS_MARKER}"
+    systemctl is-enabled --quiet jasper-accessory-reconcile.path 2>/dev/null \
+        && systemctl start jasper-accessory-reconcile.path 2>/dev/null || true
+    _mem_log install_in_progress "state=cleared marker=${INSTALL_IN_PROGRESS_MARKER}"
 }
 
 

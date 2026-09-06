@@ -58,16 +58,11 @@
 #                                 directly by this script — see
 #                                 ring_conf_parsed_frames.
 #                                 Default: /etc/alsa/conf.d/60-jts-ring.conf.
-#   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
-#                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES,
-#                                 the fallback when outputd STATUS offers
-#                                 no live DAC delay. The
-#                                 renderer intentionally ignores
-#                                 outputd knobs from /etc/jasper/jasper.env
-#                                 and the process environment because the
-#                                 outputd unit overrides those with
-#                                 packaged defaults before loading this
-#                                 retune file.
+#   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file, the first
+#                                 layer read for
+#                                 JASPER_OUTPUTD_DAC_BUFFER_FRAMES when
+#                                 outputd STATUS offers no live DAC delay
+#                                 (layer order: outputd_dac_buffer_frames).
 #                                 Default: /var/lib/jasper/outputd.env.
 #   JASPER_GROUPING_AIRPLAY_ENV_FILE — optional reconciler-owned file
 #                                 carrying JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC,
@@ -83,8 +78,10 @@
 #                                 Default: /var/lib/jasper/renderer_lanes.env.
 #   JASPER_STATUS_PYTHON        — interpreter used for both the daemon
 #                                 STATUS reads and the jasper.ring_assets
-#                                 parse. Default: /opt/jasper/.venv/bin/python
-#                                 if present, else python3 on PATH.
+#                                 parse; process environment only, no env
+#                                 file names it. Default:
+#                                 /opt/jasper/.venv/bin/python if present,
+#                                 else python3 on PATH.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -132,6 +129,39 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # so a retune that moves the conf and forgets these constants fails loud.
 DEFAULT_RING_A_LATENCY_FRAMES=256
 DEFAULT_RING_B_LATENCY_FRAMES=128
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
+
+# Shared env-file reader (jasper_env_file_get). Sibling-first, installed path
+# as fallback — same order and rationale as jasper-aec-reconcile's loader,
+# which states it; the installed copy has no ../lib sibling and falls through.
+# Fatal, like the reconcilers': the lib is this script's only reader of the
+# configured name and lane, so without it every read takes its default and a
+# named box would advertise as JTS on the shipped lane. install_renderers runs
+# the REPO copy for its seed render, whose sibling lib is always present, so
+# refusing here cannot abort a fresh install. Readable is not usable either: a
+# zeroed lib sources cleanly and defines nothing.
+load_env_file_lib() {
+    if [[ -z "$ENV_FILE_LIB" ]]; then
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
+            ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+        else
+            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
+        fi
+    fi
+    if [[ ! -r "$ENV_FILE_LIB" ]]; then
+        echo "jasper-apply-airplay-mode: missing env-file library: ${ENV_FILE_LIB}" >&2
+        exit 66
+    fi
+    # shellcheck disable=SC1090
+    source "$ENV_FILE_LIB"
+    if ! declare -F jasper_env_file_get >/dev/null; then
+        echo "jasper-apply-airplay-mode: unusable env-file library: ${ENV_FILE_LIB}" >&2
+        exit 66
+    fi
+}
+load_env_file_lib
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -210,27 +240,6 @@ camilla_devices_ints() {
             print result["samplerate"] "|" result["chunksize"] "|" result["target_level"]
         }
     ' "$config"
-}
-
-env_file_value() {
-    local file="$1"
-    local key="$2"
-    [[ -r "$file" ]] || return 0
-    awk -F= -v key="$key" '
-        $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
-            sub(/^[^=]*=[[:space:]]*/, "")
-            sub(/[[:space:]]*(#.*)?$/, "")
-            value = $0
-            found = 1
-        }
-        END { if (found) print value }
-    ' "$file"
-}
-
-env_file_has_key() {
-    local file="$1"
-    local key="$2"
-    [[ -r "$file" ]] && grep -Eq "^[[:space:]]*${key}[[:space:]]*=" "$file"
 }
 
 # The caller below strips surrounding whitespace/quotes, then a leading
@@ -393,11 +402,10 @@ PY
 # non-numeric is terminal, as it is for systemd: the daemon then sees that
 # value, not a lower layer's, and falls to its own default.
 outputd_dac_buffer_frames() {
-    local file value
+    local file raw value
     for file in "$OUTPUTD_ENV_FILE" "$JASPER_ENV_FILE"; do
-        env_file_has_key "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || continue
-        value="$(nonnegative_int_or_empty \
-            "$(env_file_value "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)")"
+        raw="$(jasper_env_file_get "$file" JASPER_OUTPUTD_DAC_BUFFER_FRAMES)" || continue
+        value="$(nonnegative_int_or_empty "$raw")"
         if [[ -n "$value" && "$value" -gt 0 ]]; then
             printf '%s\n' "$value"
             return
@@ -519,13 +527,8 @@ bonded_extra_delay_sec() {
     # negative value is ignored (0.0) so a bad write can never advance
     # playout PAST the anchor (a worse desync than the lag we correct).
     local value
-    value="$(env_file_value "$GROUPING_AIRPLAY_ENV_FILE" \
+    value="$(jasper_env_file_get "$GROUPING_AIRPLAY_ENV_FILE" \
         JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC || true)"
-    value="${value//[[:space:]]/}"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
     if [[ "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         printf '%s\n' "$value"
     else
@@ -655,13 +658,6 @@ derive_audio_backend_latency_offset() {
     '
 }
 
-# Source the airplay_mode.env file if it exists. Default the variable
-# AFTER sourcing so an explicit-but-empty value still falls back to the
-# safe default.
-if [[ -f "$ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$ENV_FILE" 2>/dev/null || true
-fi
 # U3/P6d: the renderer device comes from the lane map's already-resolved
 # JASPER_SHAIRPORT_DEVICE line (shairport_ring_lane when the airplay lane
 # is armed, shairport_substream otherwise). Empty/missing — a fleet box
@@ -669,24 +665,27 @@ fi
 # back to shairport_substream, the shipped snd-aloop lane. Reading the
 # RESOLVED value (never the armed set) keeps the armed→device rule stated
 # once, in jasper/renderer_lanes.py.
-renderer_device="$(env_file_value "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
+renderer_device="$(jasper_env_file_get "$RENDERER_LANES_FILE" JASPER_SHAIRPORT_DEVICE || true)"
 if [[ -z "$renderer_device" ]]; then
     renderer_device="shairport_substream"
 fi
-# Also source jasper.env (mode 0640, readable by root only — this
-# script runs with the leading `+` privilege escalation from
-# shairport-sync.service's ExecStartPre, so root-read is fine).
-if [[ -r "$JASPER_ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$JASPER_ENV_FILE" 2>/dev/null || true
-fi
-if [[ -r "$SPEAKER_NAME_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$SPEAKER_NAME_FILE" 2>/dev/null || true
-fi
-mode="${JASPER_AIRPLAY_FREE_RUNNING:-no}"
 
-airplay_name="${JASPER_SPEAKER_NAME:-JTS}"
+# Mode and display name, layered lowest-precedence first: inherited
+# environment (install.sh and the CLI can pass one), then airplay_mode.env,
+# then jasper.env, then speaker_name.env. A file that DEFINES the key wins
+# even when empty; the `:-` defaults below turn that empty into the fallback.
+mode="${JASPER_AIRPLAY_FREE_RUNNING:-}"
+airplay_name="${JASPER_SPEAKER_NAME:-}"
+for env_layer in "$ENV_FILE" "$JASPER_ENV_FILE" "$SPEAKER_NAME_FILE"; do
+    if layer_value="$(jasper_env_file_get "$env_layer" JASPER_AIRPLAY_FREE_RUNNING)"; then
+        mode="$layer_value"
+    fi
+    if layer_value="$(jasper_env_file_get "$env_layer" JASPER_SPEAKER_NAME)"; then
+        airplay_name="$layer_value"
+    fi
+done
+mode="${mode:-no}"
+airplay_name="${airplay_name:-JTS}"
 
 case "$mode" in
     yes|YES|true|TRUE|1)
@@ -705,10 +704,14 @@ case "$mode" in
 esac
 
 latency_offset="$(derive_audio_backend_latency_offset)"
+# Name and renderer device both land inside a libconfig quoted string, so \
+# and " are escaped for shairport-sync's lexer BEFORE the sed-replacement
+# escape below; an unescaped " ends the string and the daemon refuses to start.
+airplay_name="${airplay_name//\\/\\\\}"
+airplay_name="${airplay_name//\"/\\\"}"
 airplay_name_sed="$(printf '%s' "$airplay_name" | sed -e 's/[\/&]/\\&/g')"
-# The map's writer only ever renders two known literals here, but the value
-# crosses a sed replacement like the speaker name does, so it gets the same
-# escape rather than a trust argument.
+renderer_device="${renderer_device//\\/\\\\}"
+renderer_device="${renderer_device//\"/\\\"}"
 renderer_device_sed="$(printf '%s' "$renderer_device" | sed -e 's/[\/&]/\\&/g')"
 
 tmp="${TARGET}.tmp.$$"

@@ -8,6 +8,7 @@ import dataclasses
 import json
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ from jasper.output_hardware import (
     detected_hardware_adoption_precondition,
     detected_hardware_identity,
     parse_aplay_listing,
+    probe_aplay_listing,
     probe_system_cards,
     topology_hardware_from_state,
 )
@@ -158,6 +160,24 @@ hw:CARD=DAC8XStudio,DEV=0
     assert [card.card_id for card in cards] == ["A", "DAC8XStudio"]
     assert cards[0].device_id == APPLE_USB_C_DONGLE_DEVICE_ID
     assert cards[1].device_id == HIFIBERRY_DAC8X_STUDIO_DEVICE_ID
+
+
+def test_probe_aplay_listing_bounds_a_hung_aplay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The only caller runs on the DAC-vanished path under a unit with a 50 s
+    TimeoutStartSec; a wedged USB stack must not block it indefinitely."""
+    monkeypatch.setattr(output_hardware, "_APLAY_LISTING_TIMEOUT_SEC", 0.2)
+    stub = tmp_path / "aplay"
+    stub.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+    started = time.monotonic()
+    result = probe_aplay_listing(aplay=str(stub))
+    elapsed = time.monotonic() - started
+
+    assert result == ""
+    assert elapsed < 2.0
 
 
 def test_probe_system_cards_uses_usb_device_path_as_stable_path(
@@ -1410,6 +1430,8 @@ def test_active_dac_profile_id_reads_only_the_reconciler_record(
 _ENV_CONTRACT_KEYS = {
     "OBSERVED_OUTPUT_PROFILE_ID",
     "OBSERVED_OUTPUT_PROFILE_STATUS",
+    "OBSERVED_OUTPUT_PROFILE_KIND",
+    "OBSERVED_OUTPUT_HEADPHONE_CONTROL",
     "OBSERVED_OUTPUT_SELECTED_CARD_ID",
     "OBSERVED_OUTPUT_CHILD_DEVICE_IDS",
     "OBSERVED_OUTPUT_APPLE_CARD_IDS",
@@ -1422,6 +1444,15 @@ _ENV_CONTRACT_KEYS = {
     "OBSERVED_OUTPUT_DUAL_DAC_A_PCM",
     "OBSERVED_OUTPUT_DUAL_DAC_B_PCM",
 }
+
+
+def _emitted_env(payload: str) -> dict[str, str]:
+    emitted = {}
+    for line in payload.splitlines():
+        key, _, quoted = line.partition("=")
+        parts = shlex.split(quoted)
+        emitted[key] = parts[0] if parts else ""
+    return emitted
 
 
 @pytest.mark.parametrize(
@@ -1450,11 +1481,7 @@ def test_env_emitter_hands_bash_the_whole_contract_and_nothing_it_must_parse(
     state = classify_output_cards((card,))
     payload = output_hardware_cli.env_lines(state, (card,), record_changed=True)
 
-    emitted = {}
-    for line in payload.splitlines():
-        key, _, quoted = line.partition("=")
-        parts = shlex.split(quoted)
-        emitted[key] = parts[0] if parts else ""
+    emitted = _emitted_env(payload)
     assert set(emitted) == _ENV_CONTRACT_KEYS
     assert emitted["OBSERVED_OUTPUT_SELECTED_CARD_ID"] == card_id
     assert emitted["OBSERVED_OUTPUT_APPLE_CARD_IDS"] == card_id
@@ -1472,3 +1499,81 @@ def test_env_emitter_hands_bash_the_whole_contract_and_nothing_it_must_parse(
     assert seen.returncode == 0, seen.stderr
     assert seen.stdout.splitlines() == [emitted[key] for key in keys]
     assert not (tmp_path / "pwned").exists()
+
+
+def _apple_cards(*card_ids: str) -> tuple[OutputCardFact, ...]:
+    return tuple(
+        OutputCardFact(
+            card_id=card_id,
+            label="Apple USB-C to 3.5mm Headphone Jack Adapter",
+            device_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+            vendor_id="05ac",
+            product_id="110a",
+            pcm=f"hw:CARD={card_id},DEV=0",
+        )
+        for card_id in card_ids
+    )
+
+
+def _declared_percent_control(profile_id: str) -> str:
+    """The registry row's own percent-pinned control name, re-derived here
+    off the raw dataclass fields (a composite inherits its children's) so the
+    pin cannot pass by agreeing with the accessor it is pinning."""
+    profile = dac.by_id(profile_id)
+    assert profile is not None
+    rows = [profile] if profile.kind == "single" else [
+        dac.by_id(child_id) for child_id in profile.child_profile_ids
+    ]
+    names = {
+        control.name
+        for row in rows
+        if row is not None
+        for control in row.mixer_controls
+        if control.target_percent is not None
+    }
+    return names.pop() if len(names) == 1 else ""
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "cards"),
+    [
+        pytest.param(
+            APPLE_USB_C_DONGLE_DEVICE_ID, _apple_cards("A"), id="single-usb"
+        ),
+        pytest.param(
+            DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+            _apple_cards("A", "A_1"),
+            id="composite",
+        ),
+        pytest.param(
+            HIFIBERRY_DAC8X_DEVICE_ID,
+            (
+                OutputCardFact(
+                    card_id="sndrpihifiberry",
+                    label="HiFiBerry DAC8x",
+                    device_id=HIFIBERRY_DAC8X_DEVICE_ID,
+                    pcm="hw:CARD=sndrpihifiberry,DEV=0",
+                ),
+            ),
+            id="i2s-single",
+        ),
+    ],
+)
+def test_the_emitter_answers_shape_and_mixer_control_from_the_registry(
+    profile_id: str, cards: tuple[OutputCardFact, ...],
+) -> None:
+    """The two facts the shell owner branches on: which DAC shape to route
+    (a composite goes to the paired sink) and which mixer control the drift
+    monitor pins (no control, no monitor). A composite answers both while
+    still PARKED, which is exactly when the shell has to name it.
+    """
+    state = classify_output_cards(cards)
+    emitted = _emitted_env(output_hardware_cli.env_lines(state, cards))
+    profile = dac.by_id(profile_id)
+    assert profile is not None
+
+    assert state.profile_id == profile_id
+    assert emitted["OBSERVED_OUTPUT_PROFILE_KIND"] == profile.kind
+    assert emitted["OBSERVED_OUTPUT_HEADPHONE_CONTROL"] == (
+        _declared_percent_control(profile_id)
+    )

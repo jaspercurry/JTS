@@ -24,15 +24,21 @@ WIZARD_UNITS=(
     jasper-chat-web
 )
 
+# Legacy migration cleanup: the removed endpoint tier served /sources/ from a
+# standalone socket on 8773, the port both profiles now serve from the combined
+# jasper-web bundle. Retire it before any jasper-web.socket enable; a
+# `systemctl disable --now` is never part of a unit-staging transaction.
+retire_legacy_sources_web_socket() {
+    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
+        >/dev/null 2>&1 || true
+}
+
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
         /usr/local/lib/jasper/jasper-asound-render.sh
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh" \
-        /usr/local/lib/jasper/jasper-alsa-card.sh
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
         /usr/local/lib/jasper/jasper-env-file.sh
@@ -41,13 +47,16 @@ install_jasper_support_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
         /usr/local/lib/jasper/jasper-core-graph-park-units.sh
+    # deploy/bin/jasper-contained-build is the only reader of this directory,
+    # and it sources build-sandbox.sh alone.
     install -d -m 0755 /usr/local/lib/jasper/install
     install -m 0644 \
-        "${REPO_DIR}"/deploy/lib/install/*.sh \
-        /usr/local/lib/jasper/install/
+        "${REPO_DIR}/deploy/lib/install/build-sandbox.sh" \
+        /usr/local/lib/jasper/install/build-sandbox.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-contained-build" \
         /usr/local/sbin/jasper-contained-build
+    retire_legacy_sources_web_socket
 }
 
 # Core audio-graph unit + helper-binary install table. One row per file:
@@ -149,7 +158,7 @@ install_local_audio_graph_unit_files() {
     fi
 }
 
-_snapshot_full_unit_install_destination() {
+_snapshot_unit_install_destination() {
     local destination="$1" seen
     if (( ${#install_transaction_paths[@]} > 0 )); then
         for seen in "${install_transaction_paths[@]}"; do
@@ -172,7 +181,7 @@ _snapshot_full_unit_install_destination() {
     fi
 }
 
-_transactional_full_unit_install() {
+_transactional_unit_install() {
     # Directory creation is harmless to retain on rollback. Every file
     # promotion is snapshotted exactly once before the ordinary atomic
     # `install` replacement, including installs performed by nested helpers.
@@ -184,11 +193,11 @@ _transactional_full_unit_install() {
         fi
     done
     destination="${!#}"
-    _snapshot_full_unit_install_destination "${destination}"
+    _snapshot_unit_install_destination "${destination}"
     command install "$@"
 }
 
-_rollback_full_unit_install_transaction() {
+_rollback_unit_install_transaction() {
     local index destination backup restore
     # A rollback failure must terminate normally, not recursively re-enter the
     # ERR trap with a half-consumed backup set.
@@ -199,18 +208,56 @@ _rollback_full_unit_install_transaction() {
     for ((index=${#install_transaction_paths[@]} - 1; index >= 0; index--)); do
         destination="${install_transaction_paths[index]}"
         backup="${install_transaction_dir}/existing${destination}"
+        # Best effort per destination: one unrestorable path must not abort
+        # the loop under `set -e` and skip the reload tail below. The promotion
+        # stays gated on the copy so a truncated copy is never promoted.
         if [[ "${install_transaction_existed[index]}" == "1" ]]; then
             restore="${destination}.jasper-rollback.$$"
-            rm -f -- "${restore}"
-            cp -a -- "${backup}" "${restore}"
-            mv -f -- "${restore}" "${destination}"
+            rm -f -- "${restore}" || true
+            if cp -a -- "${backup}" "${restore}"; then
+                mv -f -- "${restore}" "${destination}" || true
+            fi
         else
-            rm -f -- "${destination}"
+            rm -f -- "${destination}" || true
         fi
     done
     systemctl daemon-reload 2>/dev/null || true
+    udevadm control --reload-rules 2>/dev/null || true
     rm -rf -- "${install_transaction_dir:?}"
-    echo "  ERROR: rolled back the incomplete full-profile unit generation" >&2
+    echo "  ERROR: rolled back the incomplete unit generation" >&2
+}
+
+# Stage one profile's unit generation as a single rollback domain: a failed
+# copy or render restores every `install` destination, reloads systemd against
+# the prior generation, and fails before the caller reaches its first
+# enable/start. The four transaction variables are locals here and reach the
+# mechanism helpers — and the stage function — by dynamic scoping.
+_with_unit_install_transaction() {
+    local install_transaction_dir
+    install_transaction_dir="$(mktemp -d /tmp/jasper-unit-install.XXXXXX)"
+    local -a install_transaction_paths=()
+    local -a install_transaction_existed=()
+    local install_transaction_errtrace_was_set=0
+    [[ $- == *E* ]] && install_transaction_errtrace_was_set=1
+    set -E
+    trap '_rollback_unit_install_transaction' ERR
+    install() { _transactional_unit_install "$@"; }
+
+    "$1"
+
+    systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition lines,
+    # and before the caller's first installer-issued start.
+    clear_install_in_progress
+    # Commit only after systemd accepted the complete generation. The caller's
+    # runtime mutations are deliberately outside the staging transaction.
+    trap - ERR
+    if [[ "${install_transaction_errtrace_was_set}" == "0" ]]; then
+        set +E
+    fi
+    unset -f install
+    rm -rf -- "${install_transaction_dir:?}"
 }
 
 # Bluetooth accessory units, shared by BOTH install profiles. A paired remote
@@ -419,6 +466,8 @@ install_resilience_identity_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
         /usr/local/sbin/jasper-wifi-recover
+    # The 5-min timer cadence is deliberate: an mDNS collision rename lands
+    # when the OTHER device joins the LAN, not when this one boots.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
@@ -535,16 +584,13 @@ install_usb_network_files() {
     local pending_path="${usb_network_state_dir}/migration_pending"
     local nm_path="/etc/NetworkManager/system-connections/jts-usb.nmconnection"
     local dnsmasq_path="/etc/jasper/usbnet-dnsmasq.conf"
-    # Full-profile installs already own a rollback domain for the gate unit and
-    # NetworkManager drop-in. Include the two generated consumers before the
+    # Unit staging owns a rollback domain for the gate unit and NetworkManager
+    # drop-in on both profiles. Include the two generated consumers before the
     # plan owner replaces either one, so any later catchable staging failure
     # restores the complete prior generation rather than old ungated units with
-    # a partially promoted address pair. Streambox installs have no surrounding
-    # transaction and converge directly.
-    if declare -p install_transaction_paths >/dev/null 2>&1; then
-        _snapshot_full_unit_install_destination "${nm_path}"
-        _snapshot_full_unit_install_destination "${dnsmasq_path}"
-    fi
+    # a partially promoted address pair.
+    _snapshot_unit_install_destination "${nm_path}"
+    _snapshot_unit_install_destination "${dnsmasq_path}"
     local plan_output
     if ! plan_output="$(PYTHONPATH="${REPO_DIR}" "${plan_python}" \
             -m jasper.usb_network converge \
@@ -663,6 +709,12 @@ enable_usbgadget() {
 
 install_grouping_unit_files() {
     local distro_unit
+    # All three ship DISABLED: a solo speaker runs none of them, and the
+    # reconciler is the only thing that enables them on explicit opt-in. The
+    # snapcast binaries the units reference are deliberately not apt-installed
+    # here either — jasper.multiroom.provision.ensure_snapcast_installed pulls
+    # them the first time grouping is enabled, so a solo box never carries an
+    # enabled-by-default snapserver socket or its runtime deps.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
         "${SYSTEMD_DIR}/jasper-snapserver.service"
@@ -682,6 +734,11 @@ install_grouping_unit_files() {
         "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-kick" \
         /usr/local/sbin/jasper-grouping-reconcile-kick
 
+    # Trixie's snapserver package ships an enabled-by-default snapserver.service
+    # that squats :1704 and advertises _snapcast._tcp on the LAN — a rogue
+    # second server a bare snapclient will auto-discover instead of the JTS
+    # leader. JTS owns jasper-snapserver/jasper-snapclient; the distro units
+    # must never run. A no-op when the packages are absent.
     for distro_unit in snapserver.service snapclient.service; do
         if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
                 | grep -q "^${distro_unit}"; then
@@ -691,6 +748,10 @@ install_grouping_unit_files() {
 }
 
 install_renderer_source_unit_files() {
+    # A box installed against an older codepath can still carry
+    # shairport-sync.service.d/jts-output.conf, whose ExecStart points at the
+    # apt-package binary this stack does not build — the service then
+    # crash-loops. Remove it on every install so an rsync cannot revive it.
     if [[ -e "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf" ]]; then
         rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
         rmdir "${SYSTEMD_DIR}/shairport-sync.service.d" 2>/dev/null || true
@@ -711,6 +772,10 @@ install_renderer_source_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-mux.service" \
         "${SYSTEMD_DIR}/jasper-mux.service"
+    # bluealsa-aplay and bluealsa are apt-owned units, so JTS routing
+    # (loopback output instead of ALSA default), Restart=always (their apt
+    # default treats a status=0 exit as "stop Bluetooth audio") and the
+    # jts-audio.slice assignment all have to land as drop-ins.
     install -d -m 0755 "${SYSTEMD_DIR}/bluealsa-aplay.service.d"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-output.conf" \
@@ -735,6 +800,8 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
         "${SYSTEMD_DIR}/jasper-dongle-recover.service"
+    # No hardware stage may limit or boost: dynamic volume belongs to
+    # CamillaDSP, or to the source's own slider.
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-dac-init" \
         /usr/local/bin/jasper-dac-init
@@ -744,18 +811,30 @@ install_audio_output_recovery_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
         /usr/local/bin/jasper-headphone-monitor
+    # APPLE_DONGLE_SERVICE_CARD is always "auto": the monitor resolves the card
+    # on every start, so a card id sampled during a re-enumeration cannot be
+    # frozen into its unit. Render into the caller's transaction directory and
+    # promote with `install`, so the result is snapshot-able like every other
+    # destination (install_transaction_dir is a _with_unit_install_transaction
+    # local, reached here by dynamic scoping).
     sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
-        > "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
-    chmod 0644 "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+        > "${install_transaction_dir}/jasper-headphone-monitor.service"
+    install -m 0644 \
+        "${install_transaction_dir}/jasper-headphone-monitor.service" \
+        "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
     install -d -m 0755 /etc/udev/rules.d
+    # Two upstream defects make this rule necessary: Trixie's alsa-utils
+    # 1.2.14-1 ships a /usr/lib/udev/rules.d/90-alsa-restore.rules whose GOTO
+    # points at the wrong label, so `alsactl restore` never fires on hotplug
+    # (Debian #1093057); and the Apple dongle's UAC firmware reports a
+    # Headphone default of 80/120 (-20 dB) on every probe.
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
         /etc/udev/rules.d/99-jasper-apple-dongle.rules
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
-    reload_audio_recovery_udev_rules_for_install
 }
 
 pin_attached_apple_dongle_power_control() {
@@ -850,6 +929,21 @@ reset_failed_core_graph_restart_targets() {
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
 }
+
+# The local music sources a deploy refreshes in place, plus the two support
+# daemons that are not sources (nqptp clocks AirPlay 2, bt-agent answers
+# pairing). The source half must stay a superset of
+# jasper.local_sources.registry.local_source_audio_refresh_units(), whose
+# docstring owns the try-restart-only rule.
+JASPER_LOCAL_SOURCE_REFRESH_UNITS=(
+    bluealsa-aplay.service
+    nqptp.service
+    shairport-sync.service
+    librespot.service
+    bt-agent.service
+    jasper-usbsink.service
+    jasper-usbsink-volume.service
+)
 
 # Second phase of the low-memory build park: the core graph itself plus the
 # control plane. Deliberately disjoint from JASPER_CORE_GRAPH_PARK_UNITS (phase
@@ -1122,8 +1216,6 @@ park_streambox_brain_units() {
         camillagui.socket camillagui.service camillagui-proxy.service; do
         systemctl disable --now "${brain_unit}" >/dev/null 2>&1 || true
     done
-    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
-        >/dev/null 2>&1 || true
     # Both markers' only writer (jasper-aec-reconcile) is parked above, so
     # neither can be corrected until the next boot, and each fails in its own
     # direction. A stale voice-input-absent would condition-fail every
@@ -1163,6 +1255,7 @@ reapply_source_intent() {
     # name lives inside an older release's strict owned namespace, so leaving it
     # behind would make a rollback reject the whole intent file. Migrate it to
     # the deliberately rollback-ignorable key before either reconciler reads.
+    # Delete once grep JASPER_SOURCE_INTENT_BLUETOOTH /var/lib/jasper/source_intent.env is empty on every box, spares included.
     if [[ -e "${STATE_DIR}/source_intent.env" || -L "${STATE_DIR}/source_intent.env" ]]; then
         /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
 import sys
@@ -1191,13 +1284,15 @@ PY
     # Remove the old acknowledgement immediately, then again under the
     # coordinator lock. The long lock wait drains any legitimate in-flight
     # pass (bounded by the unit's 2693 s ceiling); a failed/timeout path removes
-    # the file once more so deploy health cannot accept an older generation.
+    # the file once more so no reader can mistake an older generation for this
+    # install's.
     rm -f /run/jasper-source-intent/status.json
     if ! /usr/bin/timeout --foreground --kill-after=5s 2703s \
         /opt/jasper/.venv/bin/jasper-source-intent-reconcile \
             --reason install --invalidate-status-before; then
         rm -f /run/jasper-source-intent/status.json
         echo "  WARN: source intent reconcile failed. Check logs with: journalctl -u jasper-source-intent-reconcile -e"
+        logger -t jasper-install -- "event=source_intent.replay_failed" 2>/dev/null || true
     fi
 }
 
@@ -1230,9 +1325,7 @@ start_streambox_runtime_units() {
     # is cheaper and safer than coupling output policy to aggregate source state.
     systemctl enable --now jasper-mux.service
     systemctl enable jasper-fanin-coupling-auto.service
-    systemctl try-restart bluealsa-aplay.service nqptp.service \
-        shairport-sync.service librespot.service bt-agent.service \
-        jasper-usbsink-volume.service \
+    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
         2>/dev/null || true
     reapply_source_intent
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
@@ -1251,7 +1344,10 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl restart jasper-control.service
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
+    systemctl restart jasper-control.service || \
+        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # Enabling only arms these for the NEXT boot; deploy health checks this
     # boot. Mirrors the full path: restart the bridge so an already-paired
     # remote picks up new code, then let the reconciler publish the mic source
@@ -1297,9 +1393,7 @@ mask_distro_background_units() {
     fi
 }
 
-install_streambox_systemd_units() {
-    install_jasper_support_files
-    install_local_audio_graph_unit_files
+_stage_streambox_unit_files() {
     install_streambox_web_unit_files
     install_resilience_identity_unit_files
     install_usbsink_unit_files
@@ -1309,36 +1403,23 @@ install_streambox_systemd_units() {
     install_hid_accessory_unit_files
     install_voice_unit_files
     install_audio_output_recovery_unit_files
+    reload_audio_recovery_udev_rules_for_install
+    validate_streambox_systemd_units
+}
+
+install_streambox_systemd_units() {
+    install_jasper_support_files
+    install_local_audio_graph_unit_files
+    _with_unit_install_transaction _stage_streambox_unit_files
     park_streambox_brain_units
     mask_distro_background_units
-
-    validate_streambox_systemd_units
-    systemctl daemon-reload
     systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
     enable_streambox_web_sockets
     start_streambox_runtime_units
     echo "Streambox units enabled. Local sources, DSP, /sound/, /system/, and grouping reconcile are live; voice/AEC remain parked."
 }
 
-install_systemd_units() {
-    # Full speakers and streamboxes consume the same support-file and core-graph
-    # owners before any profile-specific units are staged or started.
-    install_jasper_support_files
-    install_local_audio_graph_unit_files
-    # Stage the remaining full-profile generation as one rollback domain. A
-    # failed copy/render restores every destination touched since this point,
-    # reloads systemd against that prior generation, and exits before any unit
-    # enable/start mutation below. The wrapper is removed at commit; a staging
-    # failure exits the installer immediately after rollback.
-    local install_transaction_dir
-    install_transaction_dir="$(mktemp -d /tmp/jasper-full-unit-install.XXXXXX)"
-    local -a install_transaction_paths=()
-    local -a install_transaction_existed=()
-    local install_transaction_errtrace_was_set=0
-    [[ $- == *E* ]] && install_transaction_errtrace_was_set=1
-    set -E
-    trap '_rollback_full_unit_install_transaction' ERR
-    install() { _transactional_full_unit_install "$@"; }
+_stage_full_unit_files() {
     # The enhanced-AEC installed marker authorizes loading native code. Keep
     # its containing directory outside group-writable StateDirectory=jasper so
     # a non-root service in the shared `jasper` group cannot replace the proof.
@@ -1413,59 +1494,8 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
-    # WiFi profile guardian. Type=oneshot boot-time recreate of a lost
-    # /etc/NetworkManager/system-connections/<SSID>.nmconnection from
-    # the wizard-owned stash at /var/lib/jasper/wifi_guardian.env. This
-    # defends against the 2026-05-23 incident.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
-        "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.service" \
-        "${SYSTEMD_DIR}/jasper-wifi-recover.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-recover.timer" \
-        "${SYSTEMD_DIR}/jasper-wifi-recover.timer"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
-        "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
-        /usr/local/sbin/jasper-wifi-guardian
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
-        /usr/local/sbin/jasper-wifi-recover
 
-    # Identity reconciler. Type=oneshot snapshot of the speaker's
-    # effective mDNS identity (OS hostname vs Avahi's post-collision
-    # name vs JASPER_HOSTNAME) into /var/lib/jasper/identity.env, on a
-    # 5-min timer because a collision rename lands when the OTHER
-    # device joins the LAN. jasper.http_security reads the file so a
-    # renamed speaker's management UI stays reachable instead of
-    # 403ing.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.timer" \
-        "${SYSTEMD_DIR}/jasper-identity-reconcile.timer"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
-        /usr/local/sbin/jasper-identity-reconcile
-
-    # Boot-loop guard. Type=oneshot cross-boot circuit breaker for the
-    # T5.1 StartLimitAction=reboot ladder: on the Nth boot inside the
-    # window it writes runtime drop-ins (StartLimitAction=none) so a
-    # PERMANENT daemon failure parks the sick unit failed (visible to
-    # systemctl/doctor; systemctl reset-failed + start to recover) but
-    # leaves the Pi reachable instead of rebooting forever. Runtime
-    # drop-ins live in /run and self-clear on the next healthy boot.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-bootloop-guard.service" \
-        "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
-        /usr/local/sbin/jasper-bootloop-guard
+    install_resilience_identity_unit_files
 
     # jasper-usbgadget: composite ConfigFS gadget owner. It carries the
     # USB management network (ncm) when gadget hardware is available AND the wizard-toggled USB audio
@@ -1476,186 +1506,23 @@ install_systemd_units() {
     # role must be active (handled by reconcile_usb_data_role above).
     install_usbsink_unit_files
 
-    # jasper multi-room grouping (snapcast). snapserver is the timing
-    # master; snapclient plays a single channel on each speaker. The
-    # reconcile oneshot maps the wizard-owned /var/lib/jasper/grouping.env
-    # role to which units run (leader => snapserver + snapclient;
-    # follower => snapclient only; off/invalid => neither). All three ship
-    # DISABLED — a solo speaker runs none of them, and the reconciler is
-    # the only thing that enables/starts them on explicit opt-in. We do
-    # NOT auto-enable grouping here. See jasper.multiroom.reconcile.
-    #
-    # Packages: we deliberately do NOT apt-install snapserver/snapclient
-    # in the core install. The vast majority of speakers are solo, the
-    # snapcast packages pull in extra runtime deps (libsoxr, libvorbis,
-    # libflac, avahi client, etc.) and an enabled-by-default snapserver
-    # daemon socket — pure dead weight + attack surface on a box that
-    # will never group. Mirrors the off-by-default posture of the
-    # usbsink dtoverlay (staged but inert until the wizard opts in). The units reference
-    # /usr/bin/snapserver and /usr/bin/snapclient (Trixie's `snapserver`
-    # / `snapclient` apt packages); installing those is the grouping
-    # OPT-IN's job:
-    # the grouping reconciler apt-installs them the first time grouping is
-    # enabled (jasper.multiroom.provision.ensure_snapcast_installed), surfacing
-    # "Installing Snapcast…" in /rooms via /state.grouping.provision. So a solo
-    # install stays binary-free, a grouping box self-heals if the binaries are
-    # missing, and jasper-doctor's check_grouping_snapcast_installed surfaces the
-    # gap regardless. The reconciler's plan is also fail-safe — if the binaries
-    # are absent the unit simply fails to start and grouping stays off, never
-    # wedging a solo speaker.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-snapserver.service" \
-        "${SYSTEMD_DIR}/jasper-snapserver.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-snapclient.service" \
-        "${SYSTEMD_DIR}/jasper-snapclient.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile.service" \
-        "${SYSTEMD_DIR}/jasper-grouping-reconcile.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-grouping-reconcile-trailing.service" \
-        "${SYSTEMD_DIR}/jasper-grouping-reconcile-trailing.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-trailing" \
-        /usr/local/sbin/jasper-grouping-reconcile-trailing
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-kick" \
-        /usr/local/sbin/jasper-grouping-reconcile-kick
+    install_grouping_unit_files
 
-    # If the snapcast apt packages ARE present (the grouping opt-in
-    # installed them), neutralise their DISTRO units: Trixie's snapserver
-    # package ships an enabled-by-default snapserver.service that squats
-    # :1704, advertises _snapcast._tcp on the LAN, and burns RAM on every
-    # boot — a rogue second server JTS never manages (observed live on a
-    # lab Pi 2026-06-11: a bare `snapclient` auto-discovered the rogue
-    # instead of the JTS leader). JTS owns jasper-snapserver /
-    # jasper-snapclient; the distro units must never run. Idempotent and
-    # safe when the packages are absent (no unit files → no-op).
-    local distro_unit
-    for distro_unit in snapserver.service snapclient.service; do
-        if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
-                | grep -q "^${distro_unit}"; then
-            systemctl disable --now "${distro_unit}" >/dev/null 2>&1 || true
-        fi
-    done
-
-    # Triggered by the udev rule installed below when the Apple dongle
-    # re-enumerates: reset-failed, restart Camilla, then run the
-    # mic/AEC reconciler so a hardware reconnect recovers without
-    # manual intervention.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
-        "${SYSTEMD_DIR}/jasper-dongle-recover.service"
+    install_audio_output_recovery_unit_files
     # Experimental microphone-rig guard: a CH340 tty hot-plug starts one
     # bounded identity-check-and-stop attempt. It is never enabled or polled.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-turntable-autostop@.service" \
         "${SYSTEMD_DIR}/jasper-turntable-autostop@.service"
-    # Pin every mixer control the classified DAC's profile declares at each
-    # boot — dynamic volume happens in CamillaDSP (or the source's own
-    # slider) and no hardware stage should be limiting or boosting us.
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-dac-init" \
-        /usr/local/bin/jasper-dac-init
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
-        "${SYSTEMD_DIR}/jasper-dac-init.service"
-    # Diagnostic monitor: 1Hz poll on the dongle's Headphone control,
-    # logs every change to journald. Companion to jasper-dac-init —
-    # if something moves the control after boot, this surfaces when
-    # and how often. See deploy/bin/jasper-headphone-monitor.
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
-        /usr/local/bin/jasper-headphone-monitor
-    # The Apple-only drift monitor receives APPLE_DONGLE_SERVICE_CARD, always
-    # "auto": it resolves the card on every start, so a card id sampled during
-    # a re-enumeration cannot be frozen into its unit.
-    sed -e "s/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g" \
-        "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
-        > "${install_transaction_dir}/jasper-headphone-monitor.service"
-    install -m 0644 \
-        "${install_transaction_dir}/jasper-headphone-monitor.service" \
-        "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
-    # Custom udev rule: re-pins the dongle's Headphone control to 100%
-    # on every USB (re-)enumeration AND disables autosuspend on the
-    # device. Compensates for two upstream issues:
-    #   * Trixie's alsa-utils 1.2.14-1 ships a broken
-    #     /usr/lib/udev/rules.d/90-alsa-restore.rules where a GOTO
-    #     points at the wrong label, so `alsactl restore` never fires
-    #     on hotplug (Debian bug #1093057, still open).
-    #   * The Apple dongle's UAC firmware default for the Headphone
-    #     control is 80/120 (-20 dB), surfaced via UAC GET_CUR each
-    #     time the device probes. Without our rule, every speaker
-    #     re-plug or USB resume that triggers re-enumeration costs
-    #     the user 20 dB of analog attenuation until they reboot or
-    #     run `systemctl start jasper-dac-init` manually.
-    # Active reset is also done by jasper-headphone-monitor (1 Hz
-    # poller); this rule is the fast path on hotplug, the monitor
-    # catches anything the rule doesn't.
-    install -d -m 0755 /etc/udev/rules.d
-    install -m 0644 \
-        "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
-        /etc/udev/rules.d/99-jasper-apple-dongle.rules
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-aec-reconcile.rules" \
         /etc/udev/rules.d/99-jasper-aec-reconcile.rules
-    install -m 0644 \
-        "${REPO_DIR}/deploy/udev/99-jasper-audio-hardware-reconcile.rules" \
-        /etc/udev/rules.d/99-jasper-audio-hardware-reconcile.rules
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-turntable-autostop.rules" \
         /etc/udev/rules.d/99-jasper-turntable-autostop.rules
     reload_audio_recovery_udev_rules_for_install
 
-    # We own the full systemd units for each renderer + nqptp + the
-    # no-code Bluetooth pairing agent.
-    #
-    # Defense in depth: a Pi installed against an older codepath could
-    # still have /etc/systemd/system/shairport-sync.service.d/jts-output.conf
-    # on disk, which would override our ExecStart with
-    # /usr/bin/shairport-sync (the apt-package path) — that binary doesn't
-    # exist on this stack and the service crash-loops. Actively remove
-    # the drop-in on every install so it can't reappear after rsync.
-    if [[ -e "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf" ]]; then
-        rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
-        rmdir "${SYSTEMD_DIR}/shairport-sync.service.d" 2>/dev/null || true
-        echo "  removed stale shairport drop-in from a previous install"
-    fi
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/librespot.service" \
-        "${SYSTEMD_DIR}/librespot.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/shairport-sync.service" \
-        "${SYSTEMD_DIR}/shairport-sync.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/nqptp.service" \
-        "${SYSTEMD_DIR}/nqptp.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bt-agent.service" \
-        "${SYSTEMD_DIR}/bt-agent.service"
-    # jasper-mux: latest-source-wins preemption between Spotify,
-    # AirPlay, and Bluetooth.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jasper-mux.service" \
-        "${SYSTEMD_DIR}/jasper-mux.service"
-    # Drop-in routing bluealsa-aplay's output into the JTS loopback
-    # instead of ALSA default (HDMI on a fresh Pi).
-    install -d -m 0755 "${SYSTEMD_DIR}/bluealsa-aplay.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-output.conf" \
-        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf"
-    # Drop-in flipping bluealsa.service (the apt-installed system unit)
-    # to Restart=always with a StartLimit guard. Same logic as the
-    # source-built renderers' service files: a clean exit (status=0)
-    # silently disables Bluetooth audio under the apt default.
-    install -d -m 0755 "${SYSTEMD_DIR}/bluealsa.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
-        "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
-    install -d -m 0755 "${SYSTEMD_DIR}/bluetooth.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluetooth.service.d/jts-timeout.conf" \
-        "${SYSTEMD_DIR}/bluetooth.service.d/jts-timeout.conf"
+    install_renderer_source_unit_files
 
     # sshd OOM-protection drop-in: Debian's openssh-server package
     # ships ssh.service WITHOUT an OOMScoreAdjust= directive. JTS
@@ -1687,24 +1554,14 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jts-mic.slice" \
         "${SYSTEMD_DIR}/jts-mic.slice"
-    # bluealsa-aplay's Slice= assignment lands as a drop-in (we don't
-    # own that unit file fully — the package ships it). The 4 services
-    # we DO own (jasper-camilla, jasper-aec-bridge, shairport-sync,
-    # librespot) have Slice= directly in the .service file installed
-    # above; no separate drop-in needed for them.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
-        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
+}
 
-    systemctl daemon-reload
-    # Commit only after systemd accepted the complete generation. Runtime
-    # mutations below are deliberately outside the staging transaction.
-    trap - ERR
-    if [[ "${install_transaction_errtrace_was_set}" == "0" ]]; then
-        set +E
-    fi
-    unset -f install
-    rm -rf -- "${install_transaction_dir:?}"
+install_systemd_units() {
+    # Full speakers and streamboxes consume the same support-file and core-graph
+    # owners before any profile-specific units are staged or started.
+    install_jasper_support_files
+    install_local_audio_graph_unit_files
+    _with_unit_install_transaction _stage_full_unit_files
 
     # Exercise both cgroup protection slices now as well as enabling them for
     # boot — both carry [Install], so a copy alone is not enough.
@@ -1717,14 +1574,6 @@ install_systemd_units() {
     # skips cleanly when the resolved role cannot provide management transport
     # or no UDC exists yet.
     enable_usbgadget
-
-    # Legacy migration cleanup: an old endpoint-tier box (the removed third
-    # install tier) served /sources/ from a tiny standalone socket on 8773.
-    # Full speakers serve /sources/ from the combined jasper-web bundle, so
-    # disable that lingering legacy socket before enabling jasper-web.socket
-    # on the same port. No-op on a box that never had it (idempotent).
-    systemctl disable --now jasper-sources-web.socket jasper-sources-web.service \
-        >/dev/null 2>&1 || true
 
     # Migrate wizard services from always-on to socket-activated.
     # Older installs had jasper-X-web.service enabled directly; the new
@@ -1808,9 +1657,7 @@ install_systemd_units() {
     # on a fresh install as well as enabling boot; its role ExecCondition skips
     # a bonded follower safely.
     systemctl enable --now jasper-mux.service
-    systemctl try-restart bluealsa-aplay.service nqptp.service \
-        shairport-sync.service librespot.service bt-agent.service \
-        jasper-usbsink-volume.service \
+    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
         2>/dev/null || true
     reapply_source_intent
     # The wizard services are socket-activated now. Any currently-
@@ -1821,6 +1668,10 @@ install_systemd_units() {
     for unit in "${WIZARD_UNITS[@]}"; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
+    systemctl restart jasper-control.service || \
+        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # jasper-input is always-on (HID accessory bridge) — restart so any
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true
@@ -1846,8 +1697,8 @@ install_systemd_units() {
     # WiFi profile guardian: oneshot at boot, gated by
     # ConditionPathExists= on the wizard's stash file. Enabling is safe
     # on fresh installs because the unit silently no-ops until the
-    # wizard saves once. See migrate_wifi_guardian (called from
-    # ensure_env_file above) for the SSH-driven-setup seed path.
+    # wizard saves once. main()'s migrate_wifi_guardian step, which runs
+    # after this function returns, seeds that stash for SSH-driven setup.
     systemctl enable jasper-wifi-guardian.service
     # WiFi recover timer: no resident RAM. Every few minutes it runs a tiny
     # oneshot that exits after one NM active-connection read when WiFi is
