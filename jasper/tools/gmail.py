@@ -43,7 +43,7 @@ from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
 from . import fence_untrusted, tool
-from .google_errors import no_account_error, no_credentials_error
+from .google_errors import api_error, no_account_error, no_credentials_error
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
@@ -188,22 +188,6 @@ def _header(headers: list[dict], name: str) -> str:
 
 
 # ----------------------------------------------------------------------
-# Error helpers (mirror calendar.py shape so the model gets consistent
-# responses across both tool families).
-# ----------------------------------------------------------------------
-
-
-def _api_error(account_name: str, exc: Exception) -> dict:
-    logger.warning(
-        "gmail API error for %s: %s", account_name, exc, exc_info=True,
-    )
-    return {
-        "ok": False,
-        "error": "Couldn't reach Gmail just now. Try again in a moment.",
-    }
-
-
-# ----------------------------------------------------------------------
 # Sync API wrappers — invoked through asyncio.to_thread so the voice
 # loop's event loop isn't blocked on networking.
 # ----------------------------------------------------------------------
@@ -289,7 +273,7 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
                 _list_unread_sync, service, max_results=n,
             )
         except Exception as e:  # noqa: BLE001
-            return _api_error(canonical, e)
+            return api_error(logger, "gmail", "Gmail", canonical, e)
         if not stub_list:
             return {
                 "ok": True,
@@ -393,7 +377,7 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
                 _get_thread_sync, service, thread_id,
             )
         except Exception as e:  # noqa: BLE001
-            return _api_error(canonical, e)
+            return api_error(logger, "gmail", "Gmail", canonical, e)
         messages = (thread.get("messages") or [])[:_MAX_THREAD_MESSAGES]
         out_messages: list[dict[str, Any]] = []
         thread_subject = ""

@@ -24,7 +24,7 @@ from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from . import fence_untrusted, tool
-from .google_errors import no_account_error, no_credentials_error
+from .google_errors import api_error, no_account_error, no_credentials_error
 
 if TYPE_CHECKING:
     from ..google_creds import GoogleClients
@@ -104,19 +104,6 @@ def _serialise_event(item: dict) -> dict:
     return out
 
 
-def _api_error(account_name: str, exc: Exception) -> dict:
-    """Generic fallback for a googleapiclient HttpError or transport
-    failure. Logged with the full traceback for debugging; the model
-    speaks the short version."""
-    logger.warning(
-        "calendar API error for %s: %s", account_name, exc, exc_info=True,
-    )
-    return {
-        "ok": False,
-        "error": "Couldn't reach Google Calendar just now. Try again in a moment.",
-    }
-
-
 def _list_events_sync(service, *, time_min: datetime, time_max: datetime) -> list[dict]:
     """Blocking call into the discovery client. Run in a thread via
     asyncio.to_thread so the voice loop's event loop isn't blocked."""
@@ -158,8 +145,8 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
         Use this for "what's on my calendar today", "what's Brittany
         doing today", "do I have anything this afternoon".
 
-        `account` is the member's name as configured at
-        jts.local/google (e.g. 'jasper', 'brittany'); empty string
+        `account` is the member's name as configured on the Google
+        setup page (e.g. 'jasper', 'brittany'); empty string
         uses the default account. When the user names a household
         member ("Brittany's calendar"), pass that name; otherwise
         omit and the default is used.
@@ -195,7 +182,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
                 service, time_min=now, time_max=end_of_day,
             )
         except Exception as e:  # noqa: BLE001
-            return _api_error(canonical, e)
+            return api_error(logger, "calendar", "Google Calendar", canonical, e)
         events = [_serialise_event(it) for it in items]
         if events and monitor is not None:
             monitor.mark()
@@ -256,7 +243,7 @@ def make_calendar_tools(clients: "GoogleClients | None", *, monitor=None):
                 service, time_min=now, time_max=cutoff,
             )
         except Exception as e:  # noqa: BLE001
-            return _api_error(canonical, e)
+            return api_error(logger, "calendar", "Google Calendar", canonical, e)
         events = [_serialise_event(it) for it in items]
         if events and monitor is not None:
             monitor.mark()

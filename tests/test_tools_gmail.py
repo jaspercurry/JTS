@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import types
 from datetime import datetime, timezone
 
 import pytest
@@ -225,6 +226,20 @@ async def test_unread_summary_no_accounts_points_to_wizard(monkeypatch):
     out = await unread()
     assert out["ok"] is False
     assert "jts.local/google" in out["error"]
+
+
+def test_no_account_error_uses_resolved_hostname_not_a_literal(monkeypatch):
+    """S1: the wizard URL must track THIS speaker's own hostname — a
+    speaker renamed to jts3.local must never tell the model to visit
+    jts.local (a different speaker)."""
+    from jasper.tools import google_errors
+
+    monkeypatch.setattr(google_errors, "resolve_hostname", lambda: "jts3.local")
+    clients = types.SimpleNamespace(list_account_names=lambda: [])
+    out = google_errors.no_account_error(clients, "")
+    assert out["ok"] is False
+    assert "jts3.local/google" in out["error"]
+    assert "jts.local" not in out["error"]
 
 
 async def test_unread_summary_unknown_account_lists_available(monkeypatch):

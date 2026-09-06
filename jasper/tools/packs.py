@@ -149,12 +149,6 @@ class CapabilityPack:
     catalog_pack: CatalogPack | None = None
 
 
-# Compatibility name for the Phase-1 registry. New code should use
-# CapabilityPack; old tests/imports keep working until the rename can be
-# made without churn.
-ToolPack = CapabilityPack
-
-
 @dataclass(frozen=True)
 class PackOutcome:
     """The observability record for one pack's registration — what makes

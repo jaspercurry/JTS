@@ -42,7 +42,6 @@ from jasper.tools.packs import (
     CatalogPack,
     PackOutcome,
     ToolDeps,
-    ToolPack,
     outcomes_to_state,
     register_packs,
 )
@@ -134,10 +133,6 @@ def test_pack_order_matches_legacy_sequence():
     """A reorder of TOOL_PACKS must fail loudly — registration order is
     load-bearing (models over-rely on it)."""
     assert [p.name for p in TOOL_PACKS] == LEGACY_PACK_ORDER
-
-
-def test_toolpack_is_compatibility_alias_for_capabilitypack():
-    assert ToolPack is CapabilityPack
 
 
 def test_data_driven_walk_equals_legacy_sequence():
@@ -527,9 +522,9 @@ def test_broken_pack_is_isolated_other_packs_still_register():
         raise RuntimeError("simulated import/factory failure")
 
     packs = (
-        ToolPack("good_a", lambda _d: make_time_tools()),
-        ToolPack("broken", _boom),
-        ToolPack("good_b", lambda _d: make_weather_tools(None)),
+        CapabilityPack("good_a", lambda _d: make_time_tools()),
+        CapabilityPack("broken", _boom),
+        CapabilityPack("good_b", lambda _d: make_weather_tools(None)),
     )
 
     deps = full_tool_deps()
@@ -580,15 +575,15 @@ def test_registration_failure_rolls_back_partial_pack_and_continues():
         )
 
     packs = (
-        ToolPack("seed", lambda _d: [explicit_tool("shared_tool", "seed")]),
-        ToolPack(
+        CapabilityPack("seed", lambda _d: [explicit_tool("shared_tool", "seed")]),
+        CapabilityPack(
             "broken",
             lambda _d: [
                 explicit_tool("broken_tool", "broken"),
                 object(),  # not callable and not a Tool: registration fails
             ],
         ),
-        ToolPack("tail", lambda _d: make_time_tools()),
+        CapabilityPack("tail", lambda _d: make_time_tools()),
     )
 
     reg = ToolRegistry()
@@ -714,9 +709,9 @@ def test_register_packs_marks_failed_pack_with_error():
         raise RuntimeError("simulated import/factory failure")
 
     packs = (
-        ToolPack("good_a", lambda _d: make_time_tools()),
-        ToolPack("broken", _boom),
-        ToolPack("good_b", lambda _d: make_weather_tools(None)),
+        CapabilityPack("good_a", lambda _d: make_time_tools()),
+        CapabilityPack("broken", _boom),
+        CapabilityPack("good_b", lambda _d: make_weather_tools(None)),
     )
     import jasper.tools.packs as packs_mod
     original = packs_mod.TOOL_PACKS
@@ -745,9 +740,9 @@ def test_register_packs_isolates_raising_gate_and_continues():
         raise RuntimeError("simulated gate failure")
 
     packs = (
-        ToolPack("good_a", lambda _d: make_time_tools()),
-        ToolPack("broken_gate", lambda _d: (), gate=_gate_boom),
-        ToolPack("good_b", lambda _d: make_weather_tools(None)),
+        CapabilityPack("good_a", lambda _d: make_time_tools()),
+        CapabilityPack("broken_gate", lambda _d: (), gate=_gate_boom),
+        CapabilityPack("good_b", lambda _d: make_weather_tools(None)),
     )
     reg = ToolRegistry()
 
