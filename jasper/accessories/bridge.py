@@ -60,6 +60,7 @@ from .registry import (
 )
 from .status import STATUS_PATH
 from .supervisor import Bridge, supervise
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -822,10 +823,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(level=getattr(logging, args.log_level.upper(), logging.INFO))
 
     try:
         asyncio.run(_run_bridges(args.control_url))

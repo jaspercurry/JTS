@@ -39,6 +39,7 @@ import sys
 import time
 
 from . import debug_mode
+from .logging_setup import REDACTING_FILTER
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,9 @@ class RingFlushHandler(logging.Handler):
         self.buffer: collections.deque = collections.deque(maxlen=capacity)
         self.dump_stream = dump_stream
         self.setFormatter(logging.Formatter(_FLIGHTREC_FORMAT))
+        # Redacts at capture, independently of configure_logging: the ring
+        # must be clean whatever order the two installs run in.
+        self.addFilter(REDACTING_FILTER)
         self._dumping = False
         # Monotonic time of the last auto-flush per WARNING+ signature.
         self._last_auto_flush: dict[str, float] = {}
@@ -175,10 +179,10 @@ def install(
     subsystem: str, *, capacity: int = DEFAULT_CAPACITY, dump_stream=None,
 ) -> bool:
     """Install the flight recorder for a daemon (call right after
-    ``logging.basicConfig``). Sets the ``jasper`` logger to DEBUG, pins the
-    live journal handler at INFO, attaches the ring, applies the Tier-B
-    debug toggle, and wires SIGUSR1. Returns whether the recorder was
-    installed (False if disabled by env)."""
+    ``logging_setup.configure_logging``). Sets the ``jasper`` logger to
+    DEBUG, pins the live journal handler at INFO, attaches the ring, applies
+    the Tier-B debug toggle, and wires SIGUSR1. Returns whether the recorder
+    was installed (False if disabled by env)."""
     global _ring
     # Install the SIGUSR1 -> dump handler UNCONDITIONALLY, even when the
     # recorder is disabled: an *unhandled* SIGUSR1 terminates the process by

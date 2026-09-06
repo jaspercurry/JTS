@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
-from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
@@ -95,6 +93,7 @@ from jasper.identity import (
     read_identity,
     speaker_url,
 )
+from ..logging_setup import configure_logging
 
 #: Authority tier for the generated tool-menu index (ADR-0204).
 AUTHORITY_TIER = "advisory (`stage` mutates)"
@@ -1455,11 +1454,11 @@ def main(argv: list[str] | None = None) -> int:
     # ``event=crossover_v2.prescription_staged`` (INFO) reached neither an
     # operator's terminal nor the journal, leaving the one state transition
     # this CLI performs unobservable. Deliberately NOT
-    # ``_logging.configure_verbose_logging``, which floors at WARNING without a
-    # ``--verbose`` flag; its FORMAT is reused. In ``main`` rather than at
-    # import, because configuring the root logger on import imposes that choice
-    # on every importer.
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    # ``configure_verbose_logging``, which floors at WARNING without a
+    # ``--verbose`` flag. In ``main`` rather than at import, because
+    # configuring the root logger on import imposes that choice on every
+    # importer.
+    configure_logging()
     args = build_parser().parse_args(argv)
     result: int = args.func(args)
     return result

@@ -75,6 +75,7 @@ from jasper.measurement_window import (
 from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.aec_commission")
 _T = TypeVar("_T")
@@ -914,9 +915,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s aec-commission %(levelname)s %(message)s"
-    )
+    configure_logging(fmt="%(asctime)s aec-commission %(levelname)s %(message)s")
     # `prepare_volume`/`restore_volume` write the main fader through
     # `camilla.declare_main_volume_db`, which declares through the process
     # owner. Registered AFTER the `--emit-class-entry` early exit: that

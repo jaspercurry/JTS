@@ -64,6 +64,7 @@ from jasper.local_sources import (
 from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1919,10 +1920,7 @@ def main(argv: list[str] | None = None) -> int:
         help="remove the prior acknowledgement after acquiring the reconcile lock",
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     if args.reason:
         log_event(logger, "source_intent.begin", reason=args.reason)
     try:

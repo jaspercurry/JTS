@@ -134,6 +134,7 @@ from jasper.cli.aec_bridge_telemetry import (
 )
 from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
+from ..logging_setup import configure_logging
 
 AEC3_SWEEP_VARIANTS = DEFAULT_AEC3_SWEEP_VARIANTS
 
@@ -1065,10 +1066,7 @@ def _aec_loop(  # noqa: PLR0915
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s aec-bridge %(levelname)s %(message)s",
-    )
+    configure_logging(fmt="%(asctime)s aec-bridge %(levelname)s %(message)s")
     # Log flight recorder + runtime debug toggle. See
     # jasper/flight_recorder.py.
     from .. import flight_recorder

@@ -246,5 +246,22 @@ def test_dump_flushes_installed_ring_with_captured_context(
     assert "a debug breadcrumb" in out
 
 
+def test_the_ring_is_redacted_where_it_is_filled(
+    logging_sandbox, monkeypatch, tmp_path
+):
+    """A DEBUG breadcrumb the journal never sees still leaves the process in
+    a dump, so the ring carries the redacting filter itself rather than
+    relying on the flush to scrub (non-negotiable 3)."""
+    monkeypatch.setattr(debug_mode, "DEBUG_FILE", str(tmp_path / "debug.env"))
+    dump_stream = io.StringIO()
+    fr.install("voice", capacity=50, dump_stream=dump_stream)
+    log = logging.getLogger("jasper.somewhere")
+    log.debug("token exchange OPENAI_API_KEY=sk-live-abc123456789")
+    log.warning("boom")  # WARNING+ dumps the ring behind it
+    out = dump_stream.getvalue()
+    assert "sk-live-abc123456789" not in out
+    assert "OPENAI_API_KEY=<redacted>" in out
+
+
 def test_dump_without_install_is_noop(logging_sandbox):
     assert fr.dump("x") == 0

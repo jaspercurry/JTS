@@ -42,13 +42,10 @@ What a taken walk then does, and what it deliberately does not publish, is
 from __future__ import annotations
 
 import argparse
-import logging
 import shlex
 import sys
 from pathlib import Path
 from typing import Any, Sequence
-
-from ._logging import CLI_LOG_FORMAT
 
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
@@ -96,6 +93,7 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
 
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED, answered, failed
+from ..logging_setup import configure_logging
 
 #: The rig ``serve`` drives. One today; the flag is what a second one would
 #: join, and it is NOT ``MOVERS`` (that says who moves the mic in a DECLARED
@@ -1041,7 +1039,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # REPLACE another, with nothing anywhere saying so. In ``main`` rather than
     # at import, because a module that configures the root logger on import
     # imposes its choice on every importer, the test suite included.
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    configure_logging()
     fields = list(argv) if argv is not None else sys.argv[1:]
     args = build_parser().parse_args(fields)
     args.invocation = fields

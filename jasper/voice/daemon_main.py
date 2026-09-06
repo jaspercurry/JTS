@@ -85,6 +85,7 @@ from ..voice_daemon import (
     _configured_wake_legs,
     _track_task,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -654,7 +655,7 @@ async def _serve_while_connecting(
 
 async def run() -> None:
     cfg = Config.from_env()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    configure_logging()
     # Log flight recorder + runtime debug toggle (/system Debug card).
     # install() holds the jasper logger at DEBUG for the in-RAM ring,
     # keeps the journal at INFO, and applies the debug toggle. See
@@ -1301,10 +1302,7 @@ def main() -> None:
     try:
         asyncio.run(run())
     except InputDeviceUnavailable as e:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
+        configure_logging()
         # Intentionally idle, not a crash: the primary mic could not be
         # opened. Exit VOICE_MIC_UNAVAILABLE_EXIT so jasper-voice.service
         # parks the unit cleanly (SuccessExitStatus + RestartPreventExitStatus)
@@ -1320,10 +1318,7 @@ def main() -> None:
         print(str(e), file=sys.stderr)
         sys.exit(VOICE_MIC_UNAVAILABLE_EXIT)
     except VoiceProviderNotConfigured as e:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
+        configure_logging()
         log_event(
             logger,
             "voice.unconfigured",
@@ -1333,10 +1328,7 @@ def main() -> None:
         print(str(e), file=sys.stderr)
         sys.exit(VOICE_PROVIDER_NOT_CONFIGURED_EXIT)
     except SpeechVADSetupError as e:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
+        configure_logging()
         log_event(
             logger,
             "voice.vad_setup_failed",

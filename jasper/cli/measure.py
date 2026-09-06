@@ -27,7 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
     EXIT_OK as EXIT_OK,
     answered,
@@ -37,6 +36,7 @@ from jasper.cli._refusal import (
     failed,
 )
 from jasper.log_event import log_event
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1073,7 +1073,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     # INFO floor: this door's `event=` lines are the record of which graph the
     # speaker was measured through.
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    configure_logging()
     from jasper.env_load import load_env_files
     from jasper.volume_coordinator import install_env_canonical_target_provider
 

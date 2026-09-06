@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ._logging import configure_verbose_logging
+from ..logging_setup import configure_verbose_logging
 from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
 #: Where this door banks one JSON row per played coordinate, beside the

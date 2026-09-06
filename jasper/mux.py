@@ -104,6 +104,7 @@ from .source_state import (
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
+from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1960,10 +1961,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(level=getattr(logging, args.log_level.upper(), logging.INFO))
     try:
         asyncio.run(_amain(args))
     except KeyboardInterrupt:

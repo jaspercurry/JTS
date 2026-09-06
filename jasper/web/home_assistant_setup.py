@@ -95,6 +95,7 @@ from ._common import (
     write_env_file,
     SECRET_ENV_MODE,
 )
+from ..logging_setup import configure_logging
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
@@ -1341,10 +1342,7 @@ def main(argv: list[str] | None = None) -> int:
         "--state", default=os.environ.get("JASPER_HA_FILE", HA_ENV_FILE),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server((args.host, args.port), state_path=args.state)
     logger.info("jasper-homeassistant-web listening on http://%s:%d", args.host, args.port)
     try:

@@ -12,6 +12,7 @@ import signal
 import sys
 
 from jasper.usbsink.volume_bridge import VolumeBridge
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.usbsink.volume")
 
@@ -50,10 +51,7 @@ async def _run() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     del argv
-    logging.basicConfig(
-        level=os.environ.get("JASPER_USBSINK_LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(level=os.environ.get("JASPER_USBSINK_LOG_LEVEL", "INFO"))
     try:
         return asyncio.run(_run())
     except KeyboardInterrupt:

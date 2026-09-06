@@ -58,6 +58,7 @@ from .effective_role import (
 )
 from .grouping_ring import GROUPING_RING_PCM
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1627,10 +1628,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reason", default="manual")
     args, _unknown = parser.parse_known_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     # Step 5 below swaps the live CamillaDSP graph, so its swap duck needs a
     # canonical target to release to.
     from jasper.volume_coordinator import install_env_canonical_target_provider

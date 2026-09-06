@@ -60,7 +60,7 @@ import numpy as np
 
 from jasper.wake_conditions import CORPUS_DIR_CONDITIONS
 
-from ._logging import configure_verbose_logging
+from ..logging_setup import configure_verbose_logging
 
 logger = logging.getLogger("jasper-wake-score")
 

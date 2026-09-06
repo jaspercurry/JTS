@@ -24,6 +24,7 @@ from .adapter import (
     untrust_unbonded,
 )
 from .agent import NoCodeAgent, register_agent, unregister_agent
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         description="JTS no-code BlueZ pairing agent",
     )
     parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     try:
         asyncio.run(_run())
     except KeyboardInterrupt:
