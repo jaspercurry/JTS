@@ -561,6 +561,87 @@ async def test_refusal_is_a_structured_event(
         assert played == [INTERNAL_ERROR_CUE_SLUG]
 
 
+class _ParkedPeeringNotify:
+    """`_notify_peering_session_ended` as a real teardown finds it: a write
+    to the peering daemon that can park on its socket. It sits between the
+    teardown's episode capture and every output action guarded on
+    ownership — the END_SEGMENT, the chirp, the drain wait, the duck
+    restore, the gate release — so a surrender landing inside it is the
+    window a single ownership answer read once at the top would miss."""
+
+    def __init__(self, timeline: list[str]) -> None:
+        self._timeline = timeline
+        self.parked = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def __call__(self, _reason: str) -> None:
+        self._timeline.append("peering_notify")
+        self.parked.set()
+        await asyncio.wait_for(self.resume.wait(), timeout=5.0)
+
+
+async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
+    """`_end_turn_inner` losing output ownership after it has begun and
+    before it has written anything: the research cancel timeout's handover,
+    landing inside the peering notify."""
+    wl = WakeLoop.for_tests()
+    timeline: list[str] = []
+    wl._ducker = _OrderedDucker(timeline)
+    _record_output_writes(wl, timeline)
+
+    async def _end_segment() -> None:
+        timeline.append("end_segment")
+
+    wl._tts.end_segment = _end_segment
+    notify = _ParkedPeeringNotify(timeline)
+    wl._notify_peering_session_ended = notify
+
+    _prepare_teardown(
+        wl, bytes_sent=4096, chunks_received=1,
+        input_ended=True, manual=False, user_speech=True,
+    )
+    await wl._begin_turn_output_episode()
+    await wl._ducker.duck()
+    opener_episode = wl._turn_output_episode
+    assert opener_episode is not None
+
+    teardown = asyncio.create_task(wl._end_turn_inner("test"))
+    try:
+        await asyncio.wait_for(notify.parked.wait(), timeout=5.0)
+        cue_episode = await wl._output_gate.hand_over_if_current(
+            opener_episode, "admin",
+        )
+        assert cue_episode is not None
+        timeline.append("surrender")
+        notify.resume.set()
+        await asyncio.wait_for(teardown, timeout=5.0)
+    finally:
+        notify.resume.set()
+        teardown.cancel()
+    return wl, timeline
+
+
+async def test_a_surrender_inside_the_teardown_stops_every_later_write() -> None:
+    """NN-6, inside `_end_turn_inner`: ownership is re-asked AT each output
+    action, so a surrender landing in an await before them stops all of
+    them — the END_SEGMENT included, which goes down the shared TTS stream
+    and would close the segment of whatever took the gate and bill its
+    loudness to this turn. One answer read at the top lets every one
+    through."""
+    wl, timeline = await _surrender_inside_end_turn_inner()
+
+    # Nothing after the surrender: no end_segment, no chirp write, no drain
+    # wait, no duck restore.
+    assert timeline == ["duck", "peering_notify", "surrender"]
+    # The cue that took the gate still owns it — the teardown released
+    # nothing — while the opener still finished the turn it was holding.
+    assert wl._output_gate.active_kind == "admin"
+    assert wl._turn is None
+    assert wl._session_id is None
+    assert wl._turn_output_episode is None
+    assert wl._state is State.WAKE
+
+
 @pytest.mark.parametrize("teardown", ["failed_begin", "success_arm"])
 @pytest.mark.parametrize(
     "resume_during_cue",

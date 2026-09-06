@@ -5,6 +5,14 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jasper.voice.output_gate import (
+        AssistantOutputEpisode,
+        AssistantOutputGate,
+        AssistantOutputKind,
+    )
 
 
 async def test_turn_preempts_stale_proactive_before_claiming_output() -> None:
@@ -163,33 +171,68 @@ async def test_paused_gate_boundedly_drains_only_the_preexisting_episode() -> No
     assert await gate.begin_if_idle("feedback") is not None
 
 
-async def test_the_swap_beats_a_turn_waiter_queued_before_it() -> None:
+async def _hand_over_against_a_turn_queued_on_the_lock(
+    gate: AssistantOutputGate,
+) -> tuple[
+    AssistantOutputEpisode,
+    AssistantOutputEpisode | None,
+    asyncio.Task[AssistantOutputEpisode],
+]:
+    """Run the handover with a `begin_turn` waiter already queued on the
+    gate's own lock, and hand back what each of the three got.
+
+    Nothing yields between an end and a begin while the lock is free, so an
+    uncontended caller cannot tell one lock hold from two — which is why a
+    test that does not contend the lock passes against both. A third task
+    holds the lock, the handover and the waiter queue behind it in that
+    order, and the lock's FIFO decides the rest: one hold keeps the waiter
+    out until the cue owns output, two holds hand it the open gate in
+    between and the sound that had to be heard is skipped (NN-6).
+    """
+    turn = await gate.begin_turn()
+
+    held = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def _hold_the_lock() -> None:
+        async with gate._lock:
+            held.set()
+            await asyncio.wait_for(release_holder.wait(), timeout=5.0)
+
+    holder = asyncio.create_task(_hold_the_lock())
+    try:
+        await asyncio.wait_for(held.wait(), timeout=1.0)
+        # One step each is enough to reach — and park on — the lock.
+        handover = asyncio.create_task(
+            gate.hand_over_if_current(turn, "admin"),
+        )
+        await asyncio.sleep(0)
+        waiter = asyncio.create_task(gate.begin_turn())
+        await asyncio.sleep(0)
+
+        release_holder.set()
+        cue = await asyncio.wait_for(handover, timeout=1.0)
+    finally:
+        release_holder.set()
+        await asyncio.wait_for(holder, timeout=1.0)
+    return turn, cue, waiter
+
+
+async def test_the_handover_beats_a_turn_waiter_queued_before_it() -> None:
     """A sound that MUST be heard cannot end its blocker and then ask for
-    the gate: `end` wakes every queued `begin_turn` waiter, and one of them
-    owns output before the ask lands — the sound is skipped (NN-6). The two
-    halves therefore happen inside one hold of the gate's single lock, so a
-    waiter queued before the swap cannot observe the gap."""
+    the gate: `end` releases the lock, and a `begin_turn` queued on it owns
+    output before the ask lands — the sound is skipped (NN-6). The two
+    halves therefore happen inside one hold of the gate's single lock."""
     from jasper.voice.output_gate import AssistantOutputGate
 
     gate = AssistantOutputGate()
-    blocker = await gate.begin_if_idle("proactive")
-    assert blocker is not None
+    turn, cue, waiter = await _hand_over_against_a_turn_queued_on_the_lock(
+        gate,
+    )
 
-    # Queued while a non-turn episode owns output, so it is a real waiter
-    # rather than a caller that joins an open turn.
-    waiter = asyncio.create_task(gate.begin_turn())
-    await asyncio.sleep(0)
-    assert not waiter.done()
-
-    # The blocker ends and the turn takes the gate with no yield in
-    # between: the waiter has been signalled but has not run.
-    await gate.end(blocker)
-    turn = await gate.begin_turn()
-    assert turn.kind == "turn"
-    assert not waiter.done()
-
-    cue = await gate.end_and_begin_if_idle(turn, "admin")
     assert cue is not None
+    assert cue.kind == "admin"
+    assert not gate.is_current(turn)
     for _ in range(5):
         await asyncio.sleep(0)
     assert gate.active_kind == "admin"
@@ -201,3 +244,73 @@ async def test_the_swap_beats_a_turn_waiter_queued_before_it() -> None:
     queued = await asyncio.wait_for(waiter, timeout=1.0)
     assert queued.kind == "turn"
     assert queued.id > cue.id
+
+
+async def test_a_two_hold_handover_loses_the_gate_to_the_queued_turn() -> None:
+    """Proof that the pin above discriminates. The same driver, against a
+    gate whose handover ends and begins in two lock holds: the queued turn
+    takes the gate in the gap, the cue is refused, and the wake it was
+    answering goes unheard."""
+    from jasper.voice.output_gate import AssistantOutputGate
+
+    class _TwoHoldHandoverGate(AssistantOutputGate):
+        async def hand_over_if_current(
+            self,
+            episode: AssistantOutputEpisode,
+            kind: AssistantOutputKind,
+        ) -> AssistantOutputEpisode | None:
+            async with self._lock:
+                if self._admission_paused or not self.is_current(episode):
+                    return None
+                self._end_locked(episode, kind=None)
+            async with self._lock:
+                return self._begin_if_idle_locked(kind)
+
+    gate = _TwoHoldHandoverGate()
+    turn, cue, waiter = await _hand_over_against_a_turn_queued_on_the_lock(
+        gate,
+    )
+
+    assert cue is None
+    stolen = await asyncio.wait_for(waiter, timeout=1.0)
+    assert stolen.kind == "turn"
+    assert stolen.id > turn.id
+    assert gate.active_kind == "turn"
+
+
+async def test_the_handover_refuses_without_ending_anything() -> None:
+    """A refusal leaves the caller owning what it still owns: it is the
+    caller's episode to finish, its duck to hand back and its gate to
+    release. Ending first and asking afterwards would strand a caller that
+    still believes it owns output — and would open the gate for a queued
+    turn rather than for the sound the handover exists to let through."""
+    from jasper.voice.output_gate import (
+        AssistantOutputEpisode,
+        AssistantOutputGate,
+    )
+
+    gate = AssistantOutputGate()
+    turn = await gate.begin_turn()
+
+    # Paused admission: nothing may be admitted, so nothing is ended.
+    await gate.pause_admission()
+    assert await gate.hand_over_if_current(turn, "admin") is None
+    assert gate.is_current(turn)
+    assert gate.active_kind == "turn"
+    await gate.resume_admission()
+
+    # Same id, earlier epoch: the caller was already preempted once.
+    superseded = AssistantOutputEpisode(
+        id=turn.id, kind="turn", epoch=turn.epoch - 1,
+    )
+    assert await gate.hand_over_if_current(superseded, "admin") is None
+    assert gate.is_current(turn)
+    assert gate.active_kind == "turn"
+
+    # An episode this gate never had active.
+    stale = AssistantOutputEpisode(
+        id=turn.id + 1, kind="turn", epoch=turn.epoch,
+    )
+    assert await gate.hand_over_if_current(stale, "admin") is None
+    assert gate.is_current(turn)
+    assert gate.active_kind == "turn"

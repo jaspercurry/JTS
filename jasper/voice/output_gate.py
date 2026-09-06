@@ -116,12 +116,20 @@ class AssistantOutputGate:
         async with self._lock:
             return self._begin_if_idle_locked(kind)
 
-    async def end_and_begin_if_idle(
+    async def hand_over_if_current(
         self,
         episode: AssistantOutputEpisode,
         kind: AssistantOutputKind,
     ) -> AssistantOutputEpisode | None:
-        """End ``episode`` and take a ``kind`` episode under one lock hold.
+        """Hand ``episode``'s ownership to a fresh ``kind`` episode, or refuse.
+
+        Returns ``None`` having changed nothing — so ``episode`` is still
+        its caller's to finish — when ``episode`` is no longer the active
+        one, or when admission is paused. Refusing before ending is the
+        whole difference between a refusal and a silence: ending first
+        would strand a caller that still believes it owns output, and would
+        open the gate for a queued `begin_turn` waiter rather than for the
+        sound this call exists to let through.
 
         The caller that surrenders an episode so a specific sound can be
         heard needs the succession, not the two halves: `end` then
@@ -134,6 +142,8 @@ class AssistantOutputGate:
         """
 
         async with self._lock:
+            if self._admission_paused or not self.is_current(episode):
+                return None
             self._end_locked(episode, kind=None)
             return self._begin_if_idle_locked(kind)
 
