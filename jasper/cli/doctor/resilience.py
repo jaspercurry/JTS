@@ -19,11 +19,11 @@ from ... import outputd_failure_reconcile_state
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    REASON_SYSTEMCTL_UNAVAILABLE,
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     CheckResult,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
+    _systemctl_unavailable_result,
 )
 
 # Machine-stable codes naming which branch of a resilience check produced a
@@ -75,11 +75,7 @@ def check_service_runtime_state() -> CheckResult:
     acted on."""
     states = evidence.unit_states()
     if states is None:
-        return CheckResult(
-            "service runtime state", "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result("service runtime state")
     failed: list[str] = []
     restarted: list[str] = []
     for unit in _RUNTIME_STATE_UNITS:
@@ -151,10 +147,7 @@ def check_required_units_active() -> CheckResult:
     label = "required units active"
     states = evidence.unit_states()
     if states is None:
-        return CheckResult(
-            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result(label)
     down: list[str] = []
     for unit in _REQUIRED_ACTIVE_UNITS:
         state = states.get(unit) or {}

@@ -70,6 +70,26 @@ def test_check_correction_web_service_skips_without_systemctl(monkeypatch):
     assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
+def test_check_correction_web_service_skips_when_only_one_unit_answers(
+    monkeypatch,
+):
+    """systemctl answered the socket but carried no record at all for the
+    service (neither unit is on DOCTOR_UNIT_ROSTER, so each is a separate
+    per-unit read) — the service was never observed, so this must not fall
+    through to a verdict about it being inactive."""
+    def fake_read_unit_states(units, *, timeout):
+        if "jasper-correction-web.socket" in units:
+            return {
+                "jasper-correction-web.socket": {"active_state": "active"},
+            }
+        return {}
+
+    monkeypatch.setattr(_evidence, "read_unit_states", fake_read_unit_states)
+    r = correction.check_correction_web_service()
+    assert r.status == "skipped"
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
+
+
 # ---------- #1860: long-outstanding idle-exit holds
 
 
@@ -410,12 +430,12 @@ def test_check_correction_current_config_verdicts(
     assert r.reason == reason
 
 
-def test_check_correction_current_config_skips_on_an_unreadable_statefile(
+def test_check_correction_current_config_warns_on_an_unreadable_statefile(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     r = correction.check_correction_current_config()
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
 
 
@@ -1154,11 +1174,25 @@ def test_cert_check_compares_the_san_to_the_advertised_name(
     assert r.reason == reason
 
 
-def test_cert_check_skips_when_the_san_cannot_be_read(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("openssl"),
+        # PermissionError stands in for every plain OSError the narrower
+        # (FileNotFoundError, TimeoutExpired) clause would miss — including
+        # a fork failure (ENOMEM) under memory pressure on the Zero 2 W.
+        PermissionError("openssl not executable"),
+        subprocess.TimeoutExpired(cmd=["openssl"], timeout=5),
+    ],
+    ids=["absent", "oserror", "timeout"],
+)
+def test_cert_check_skips_when_the_san_cannot_be_read(
+    monkeypatch, tmp_path, failure,
+):
     _with_cert(monkeypatch, tmp_path)
     _write_identity_env(tmp_path, monkeypatch, avahi="jts3.local")
 
-    with patch("subprocess.run", side_effect=FileNotFoundError("openssl")):
+    with patch("subprocess.run", side_effect=failure):
         r = correction.check_correction_cert_hostname()
 
     assert r.status == "skipped"

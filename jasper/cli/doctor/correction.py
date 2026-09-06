@@ -127,7 +127,11 @@ def check_correction_web_service() -> CheckResult:
     """
     socket_raw = evidence.unit_state("jasper-correction-web.socket")
     service_raw = evidence.unit_state("jasper-correction-web.service")
-    if socket_raw is None and service_raw is None:
+    if socket_raw is None or service_raw is None:
+        # `unit_state()` returns None for UNKNOWN (systemctl unavailable, or
+        # a reply with no record under this name) — a one-sided None means
+        # that unit was never observed, so this must not fall through to a
+        # verdict about it being "inactive".
         return _systemctl_unavailable_result("correction web")
     socket_state = str((socket_raw or {}).get("active_state") or "")
     service_state = str((service_raw or {}).get("active_state") or "")
@@ -431,6 +435,10 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
 # The three ways `_active_camilla_config_path` below leaves a caller with no
 # config to read. Homed here, beside the reader, and imported by every doctor
 # module that calls it (ADR-0233 rule 1).
+# STATEFILE_UNREADABLE stays `warn`: `read_camilla_statefile_config_path`
+# returns None both for an unreadable statefile (unobserved) and a readable
+# one with no `config_path:` line (observed-malformed) — splitting these
+# needs the reader to return a tri-state, not just this callsite (handoff).
 REASON_CAMILLA_STATEFILE_UNREADABLE = "camilla_statefile_unreadable"
 REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
 REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
@@ -454,7 +462,7 @@ def check_correction_current_config() -> CheckResult:
     statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
     if config_path is None:
         return CheckResult(
-            "current correction", "skipped",
+            "current correction", "warn",
             f"could not read config_path from {statefile}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
@@ -633,7 +641,7 @@ def check_correction_cert_hostname() -> CheckResult:
              "-ext", "subjectAltName"],
             capture_output=True, text=True, timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return CheckResult(
             label, "skipped", f"could not read cert SAN: {e}",
             reason=REASON_CERT_SAN_UNREADABLE,

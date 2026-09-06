@@ -26,7 +26,7 @@ import grp
 import os
 from pathlib import Path
 
-from jasper.cli.doctor import privsep
+from jasper.cli.doctor import _shared, privsep
 from jasper.cli.doctor import secret_compartments as sc
 from jasper.cli.doctor.secret_compartments import COMPARTMENTS
 from tests.systemd_unit_helpers import value_for, values_for
@@ -309,7 +309,7 @@ def test_decorated_checks_skip_without_systemctl(monkeypatch):
     ):
         result = fn()
         assert result.status == "skipped"
-        assert result.reason == sc.REASON_SYSTEMCTL_UNAVAILABLE
+        assert result.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_decorated_checks_skip_absent_compartment(monkeypatch):

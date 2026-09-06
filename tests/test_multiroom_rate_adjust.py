@@ -335,20 +335,25 @@ def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
     "check_name", ["check_grouping_rate_adjust", "check_grouping_leader_pipe"],
 )
 @pytest.mark.parametrize(
-    "unreadable, reason_name",
+    "unreadable, status, reason_name",
     [
-        ("statefile", "REASON_CAMILLA_STATEFILE_UNREADABLE"),
-        ("config", "REASON_CAMILLA_CONFIG_UNREADABLE"),
+        # `read_camilla_statefile_config_path` returns None both for an
+        # unreadable statefile (unobserved) and a readable one with no
+        # `config_path:` line (observed-malformed) — the reader conflates
+        # the two, so this arm stays `warn` (same rule as
+        # REASON_RATE_ADJUST_UNCONFIRMED below).
+        ("statefile", "warn", "REASON_CAMILLA_STATEFILE_UNREADABLE"),
+        # The config path resolved; `open()` on it raised — unambiguously
+        # the doctor's own read failing, nothing about the config observed.
+        ("config", "skipped", "REASON_CAMILLA_CONFIG_UNREADABLE"),
     ],
     ids=["statefile-unreadable", "config-unreadable"],
 )
-def test_doctor_backstops_skip_when_the_active_config_is_unreadable(
-    monkeypatch, tmp_path, check_name, unreadable, reason_name,
+def test_doctor_backstops_on_an_unreadable_active_config(
+    monkeypatch, tmp_path, check_name, unreadable, status, reason_name,
 ):
     """Both backstops read the active CamillaDSP config through the same
-    reader (correction._active_camilla_config_path) — either failure mode is
-    the doctor's own evidence channel, not a verdict about the check's own
-    subject (rate_adjust / the leader's pipe)."""
+    reader (correction._active_camilla_config_path)."""
     import jasper.cli.doctor.correction as corrmod
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
@@ -373,7 +378,7 @@ def test_doctor_backstops_skip_when_the_active_config_is_unreadable(
 
     result = getattr(groupmod, check_name)()
 
-    assert result.status == "skipped"
+    assert result.status == status
     assert result.reason == getattr(corrmod, reason_name)
 
 

@@ -537,7 +537,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )
@@ -606,7 +606,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     config_path = evidence.camilla_config_path()
     if config_path is None:
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             f"could not read config_path from {camilla_statefile_path()}",
             reason=REASON_CAMILLA_STATEFILE_UNREADABLE,
         )

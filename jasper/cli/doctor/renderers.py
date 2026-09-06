@@ -39,6 +39,7 @@ from ._shared import (
     _parked_follower_result,
     _parse_systemd_environment,
     _run,
+    _systemctl_unavailable_result,
 )
 
 # Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
@@ -355,12 +356,7 @@ def check_jasper_mux() -> CheckResult:
         return parked
     unit_state = evidence.unit_state("jasper-mux.service")
     if unit_state is None:
-        return CheckResult(
-            "jasper-mux",
-            "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result("jasper-mux")
     state = unit_state.get("active_state") or "unknown"
     if state == "active":
         return CheckResult(
