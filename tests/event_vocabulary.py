@@ -20,13 +20,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "active_speaker_program_bake_config_written",
     "active_speaker_program_config_written",
     "active_speaker_startup_config_written",
-    "aec3_sweep_config_invalid",
-    "aec3_sweep_config_loaded",
-    "aec3_sweep_source_invalid",
-    "aec_ref_source_retired",
-    "chip_aec_init",
-    "chip_aec_primary_invalid",
-    "chip_aec_primary_missing",
     "correction_autolevel_volume_restored",
     "correction_bundle_dependency_ignored",
     "correction_bundle_manifest_entry_dropped",
@@ -39,8 +32,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "correction_replay_artifacts_written",
     "correction_runtime_integrity_issue",
     "correction_runtime_probe_failed",
-    "duck",
-    "duck_failed",
     "level_feed_stream_reset",
     "level_lock_stored",
     "level_match_done",
@@ -67,11 +58,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "ramp_settled",
     "ramp_start",
     "ramp_volume_restored",
-    "voice_loudness_seed",
-    "voice_model_discovery",
-    "weather_geocode",
-    "weather_http_error",
-    "weather_response_error",
 )
 
 # Top-level event prefixes emitted from more than one package, mapped to the
@@ -115,6 +101,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "volume": ("control", "jasper", "tools"),
     "wake": ("control", "jasper", "voice", "web"),
     "wake_corpus": ("wake_corpus", "web"),
+    "weather": ("jasper", "web"),
 }
 
 # Event names a jasper/ reader names but no jasper/ site emits: `usbsink_name.*`

@@ -147,7 +147,7 @@ class BridgeConfig:
             if log_sweep:
                 log_event(
                     log,
-                    "aec3_sweep_source_invalid",
+                    "aec.sweep_source_invalid",
                     error=str(e),
                     fallback=AEC3_SWEEP_SOURCE_XVF,
                     level=logging.WARNING,
@@ -157,7 +157,7 @@ class BridgeConfig:
         if log_sweep:
             log_event(
                 log,
-                "aec3_sweep_config_loaded",
+                "aec.sweep_config_loaded",
                 source=sweep_config.source,
                 path=sweep_config.path,
                 hash=sweep_config.config_hash,
@@ -336,7 +336,7 @@ def _chip_aec_primary_leg(
         return value
     log_event(
         logger,
-        "chip_aec_primary_invalid",
+        "aec.primary_leg_invalid",
         value=repr(value),
         fallback=fallback,
         level=logging.WARNING,
@@ -419,7 +419,7 @@ def resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
     if config.ref_source == RETIRED_REF_SOURCE_ALSA:
         log_event(
             logger,
-            "aec_ref_source_retired",
+            "aec.ref_source_retired",
             level=logging.WARNING,
             retired=config.ref_source,
             using=REF_SOURCE,

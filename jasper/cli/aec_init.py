@@ -1159,7 +1159,7 @@ def main() -> int:
             )
             log_event(
                 logger,
-                "chip_aec_init",
+                "chip_aec_init.result",
                 level=logging.WARNING if disclosure else logging.INFO,
                 outcome=record.status,
                 sys_delay=banked.sys_delay,
@@ -1180,7 +1180,7 @@ def main() -> int:
             apply_profile(dev, plan, delay, card=card)
             log_event(
                 logger,
-                "chip_aec_init",
+                "chip_aec_init.result",
                 outcome="ready",
                 mode="corpus",
                 sys_delay=delay,
@@ -1188,7 +1188,7 @@ def main() -> int:
         else:
             # Only explicit custom/lab routing reaches this path.
             apply_bypass_profile(dev, card=card)
-            log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
+            log_event(logger, "chip_aec_init.result", outcome="bypassed", mode=mode)
         return 0
     except OutputdEnvStale as exc:
         # Distinct from a fault: nothing is broken, the output declaration just
@@ -1201,7 +1201,7 @@ def main() -> int:
         if dev is not None:
             _safe_bypass(dev)
         log_event(
-            logger, "chip_aec_init", outcome="deferred",
+            logger, "chip_aec_init.result", outcome="deferred",
             reason=str(exc),
             action=f"wait for {OUTPUTD_UNIT} to restart, then run jasper-aec-reconcile",
             level=logging.ERROR,
@@ -1214,7 +1214,7 @@ def main() -> int:
         if dev is not None:
             _safe_bypass(dev)
         log_event(
-            logger, "chip_aec_init", outcome="parked",
+            logger, "chip_aec_init.result", outcome="parked",
             reason=str(exc), action="run jasper-aec-commission", level=logging.ERROR,
         )
         return COMMISSION_REQUIRED_EXIT
@@ -1225,7 +1225,7 @@ def main() -> int:
         if dev is not None:
             _safe_bypass(dev)
         log_event(
-            logger, "chip_aec_init", outcome="failed", reason=str(exc),
+            logger, "chip_aec_init.result", outcome="failed", reason=str(exc),
             action="inspect jasper-aec-init and outputd", level=logging.ERROR,
         )
         return 1

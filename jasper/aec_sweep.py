@@ -421,7 +421,7 @@ def load_aec3_sweep_config(
         if logger is not None:
             log_event(
                 logger,
-                "aec3_sweep_config_invalid",
+                "aec_sweep.config_invalid",
                 path=config_path,
                 error=str(e),
                 fallback="default",

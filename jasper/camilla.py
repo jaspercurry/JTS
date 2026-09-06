@@ -1285,7 +1285,7 @@ class Ducker:
         landed = self._owner.target_db()
         log_event(
             logger,
-            "duck",
+            "camilla.duck",
             on="true",
             new_db="" if landed is None else f"{landed:.1f}",
             duck_db=f"{self._duck_db:.1f}",
@@ -1308,7 +1308,7 @@ class Ducker:
             await self._owner.release(claim, household_level_db=target_db)
         log_event(
             logger,
-            "duck",
+            "camilla.duck",
             on="false",
             target_db=f"{target_db:.1f}",
         )

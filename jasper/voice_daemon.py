@@ -264,7 +264,7 @@ class FanInDucker:
             return
         log_event(
             logger,
-            "duck",
+            "camilla.duck",
             on="true",
             transport="fanin",
             socket=self._socket_path,
@@ -283,7 +283,7 @@ class FanInDucker:
             if ok:
                 log_event(
                     logger,
-                    "duck",
+                    "camilla.duck",
                     on="false",
                     transport="fanin",
                     socket=self._socket_path,
@@ -301,7 +301,7 @@ class FanInDucker:
         except OSError as e:
             log_event(
                 logger,
-                "duck_failed",
+                "camilla.duck_failed",
                 transport="fanin",
                 socket=self._socket_path,
                 detail=str(e),
