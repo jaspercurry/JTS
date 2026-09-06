@@ -556,7 +556,6 @@ def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> No
     assert not (_REPO / "deploy" / "correction-preflight.html").exists()
 
     install = _INSTALL_PATH.read_text(encoding="utf-8")
-    assert "rm -f /usr/share/jasper-web/correction-preflight.html" in install
     assert "deploy/correction-preflight.html" not in install
 
     correction_js = (
@@ -725,15 +724,6 @@ def test_nginx_serves_sync_measurement_over_https() -> None:
     assert https_block.index("location /sync/") < https_block.index(
         "return 302 http://$host$request_uri;"
     )
-
-
-def test_install_prunes_retired_integrations_page() -> None:
-    # The /integrations page was deleted; install.sh must remove the orphaned
-    # file from previously-deployed Pis so it does not linger unreachable.
-    # (The retired correction preflight's prune is pinned by the #2632
-    # inventory guard above, which owns that artifact end to end.)
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-    assert "rm -f /usr/share/jasper-web/integrations.html" in install
 
 
 def test_install_stamps_app_css_cache_bust_version() -> None:

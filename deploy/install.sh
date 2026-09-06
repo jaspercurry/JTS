@@ -1043,13 +1043,6 @@ install_camilladsp() {
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # aec-bridge is no longer a CamillaDSP instance. It is now a
-    # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
-    # that either runs WebRTC AEC3 for the software fallback profile or,
-    # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
-    # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
-    # removed if present from a prior install.
-    rm -f "${CAMILLA_CONF}/aec-bridge.yml"
     # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
     # installed by this function. Remove any copy left behind by a prior
     # install: an upgraded box that keeps it on disk indefinitely is still
@@ -1098,14 +1091,6 @@ _render_outputd_cutover_configs() {
     # boots cannot depend on which writer ran last. An inline heredoc here is
     # exactly how a second spelling gets born.
     /opt/jasper/.venv/bin/jasper-sound render-flat-cutover
-
-    # The ring sibling collapsed into outputd-cutover.yml (ADR-0100), and the
-    # renderer only SKIPS writing files — it never removes one. A box upgraded
-    # across the collapse keeps a stale full-range outputd-cutover-ring.yml that
-    # nothing selects but the camillagui config browser still lists. Remove it
-    # here, on the one deploy path that owns these bytes. Best-effort: a failed
-    # unlink is cosmetic, never a failed deploy.
-    rm -f "${CAMILLA_CONF}/outputd-cutover-ring.yml" 2>/dev/null || true
 }
 
 render_outputd_cutover_config() {
@@ -1299,18 +1284,8 @@ install_alsa() {
     # PCM names. /etc/asound.conf at mode 0644 is the
     # canonical Linux pattern for "ALSA config visible to all users."
     #
-    # Migration: any existing /root/.asoundrc gets backed up
-    # (.pre-jasper.<unix-ts>) and removed so it can't silently
-    # shadow /etc/asound.conf for root processes (ALSA evaluates
-    # ~/.asoundrc before /etc/asound.conf).
-    if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
-        cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
-        rm -f /root/.asoundrc
-        echo "  Migrated old /root/.asoundrc to backup (.pre-jasper.*); see PR #223 for why."
-    fi
-    # Same backup discipline at the new location. Hand-edited or
-    # apt-installed /etc/asound.conf files (rare on JTS, but possible)
-    # shouldn't be silently overwritten. The grep guard makes this
+    # Hand-edited or apt-installed /etc/asound.conf files (rare on JTS, but
+    # possible) shouldn't be silently overwritten. The grep guard makes this
     # idempotent — once our content is in place, subsequent deploys
     # see `shairport_substream` and skip the backup (no .pre-jasper
     # spam). Symlinks are not backed up here because JTS intentionally
@@ -1680,13 +1655,6 @@ install_management_static_assets() {
     # deploy/lib/install/web-assets.sh for the copy shape and the
     # manifest contract.
     install_web_assets
-
-    # Prune retired static pages from prior installs. Their nginx routes and
-    # install copies are gone (the correction preflight's self-signed-HTTPS
-    # hop was removed per issue #2632); remove the orphaned files so a
-    # previously-deployed Pi does not keep unreachable pages on disk.
-    rm -f /usr/share/jasper-web/integrations.html
-    rm -f /usr/share/jasper-web/correction-preflight.html
 }
 
 tune_nginx_worker_processes() {

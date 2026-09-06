@@ -655,8 +655,6 @@ widen_control_secret_env_modes() {
     #     privsep MANIFEST) and weather.env (coords + units, no secret; the
     #     /weather/ wizard reads it off disk as jasper-web). Both readers are
     #     non-root and in group `jasper`.
-    # Drop the chgrp once every box has installed past the atomic_io
-    # default-group change; the chmod half heals an older 0600 class and stays.
     # The WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays
@@ -666,8 +664,8 @@ widen_control_secret_env_modes() {
     # spotify_credentials.env + home_assistant.env moved to jasper-intsecrets.
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).
-    # Lock entries: chmod, never unlink — a live holder may hold the flock. Drop
-    # them once every box has installed past the shared-lock-mode default.
+    # Lock entries: chmod, never unlink — a live holder may hold the flock.
+    # Drop this loop's chgrp — the 0640 file-class entries and the 0660 lock entries alike — once every box's JASPER_INSTALL_AT in /var/lib/jasper/build.txt is past 2026-09-05, the atomic_io group-publishing commits; the chmod halves stay, healing an older 0600 class.
     local entry f m path
     for entry in voice_provider.env:0640 control_token:0640 \
                  household_secret:0640 sound_profile.json:0640 \

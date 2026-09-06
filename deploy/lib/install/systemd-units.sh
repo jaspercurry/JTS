@@ -1163,6 +1163,7 @@ reapply_source_intent() {
     # name lives inside an older release's strict owned namespace, so leaving it
     # behind would make a rollback reject the whole intent file. Migrate it to
     # the deliberately rollback-ignorable key before either reconciler reads.
+    # Delete once grep JASPER_SOURCE_INTENT_BLUETOOTH /var/lib/jasper/source_intent.env is empty on every box, spares included.
     if [[ -e "${STATE_DIR}/source_intent.env" || -L "${STATE_DIR}/source_intent.env" ]]; then
         /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
 import sys
