@@ -55,8 +55,7 @@ DEPLOY_START_EPOCH=0
 # Set to 1 by report_oom_collateral when a live production daemon was
 # OOM-killed during the install window. See ADR-0174.
 OOM_PRODUCTION_HIT=0
-# What run_install_detached learned: exited (install_rc is the install's
-# own status), running (still going on the Pi), or unknown.
+# What run_install_detached learned: exited | running | unknown.
 INSTALL_OUTCOME=exited
 # Set by preflight_deploy_direction (same/forward/downgrade/diverged/
 # unknown_installed) so the post-install verification can call out a
@@ -438,8 +437,7 @@ PY
 # See _lib.sh's usb_gadget_management_cidrs/ipv4_in_cidr docstrings for the
 # "why" (issue #2340): a mid-install gadget rebuild can sever a deploy whose
 # own ssh session is riding ncm.usb0. Since the install runs as its own unit
-# (#4190) that costs poll reconnects rather than the install, so this is now
-# only a "your transport may bounce" notice.
+# (#4190) that costs poll reconnects, not the install.
 # Degrades to a quiet skip whenever the subnet or PI_HOST's address can't
 # be determined (a checkout missing deploy/usb-network/, offline, an
 # unresolvable hostname): the goal is to warn when we KNOW, never to guess
@@ -484,11 +482,10 @@ warn_if_pi_host_on_gadget_network() {
 ─────────────────────────────────────────────────────────────
  ⚠ ${PI_HOST} resolves to ${matched}, inside the USB gadget
    management allocation (${matched_cidr}).
-   If that is this deploy's own transport and the gadget's composition
-   actually changes mid-install, the link drops: the install keeps
-   running as its own unit and this deploy reconnects to it, printing
-   event=deploy.install_poll_reconnect while the link is down.
-   To avoid the gap entirely, deploy over the Wi-Fi/LAN address:
+   If the gadget's composition changes mid-install, this deploy's own
+   link drops; the install keeps running as its own unit and this
+   reconnects (event=deploy.install_poll_reconnect). To avoid the gap,
+   deploy over the Wi-Fi/LAN address instead:
      PI_HOST=<pi-lan-hostname-or-ip> bash scripts/deploy-to-pi.sh
 ─────────────────────────────────────────────────────────────
 EOF
@@ -644,30 +641,25 @@ surface_system_health() {
 }
 
 # The install must outlive this ssh session (#4190): it runs as a
-# transient unit and this only observes it. The fixed name guards
-# against a second deploy starting a second install.
+# transient unit, whose fixed name also stops a second one starting.
 INSTALL_UNIT=jts-install
-# Each tick is a fresh sshd session, so a quiet build backs off.
 INSTALL_POLL_INTERVAL_SEC=10
-INSTALL_POLL_IDLE_INTERVAL_SEC=30
-INSTALL_POLL_IDLE_TICKS=3
 # A Zero 2 W cold Rust build is the slowest supported install; the unit
 # carries this too, so one this wrapper gave up on cannot run on.
 INSTALL_POLL_CEILING_SEC=7200
 run_install_detached() {
     local body launch_rc=0 chunk status transcript log="~${PI_USER}/.jts-install.log"
-    local load sub code main size ended="" offset=1 deadline down_since=0 quiet=0
+    local load sub code main size ended="" offset=1 deadline down_since=0
 
     install_rc=1
     INSTALL_OUTCOME=unknown
-    # The unit stays loaded so its exit status survives it: a finished
-    # one is cleared before launch, a live one refuses (exit 3).
+    # The unit stays loaded so its status survives it; a live one refuses.
     remote_body body \
         'case "$(systemctl show -p SubState --value -- "$1" 2>/dev/null)" in running|start|start-pre|start-post|reload) exit 3 ;; esac' \
         'systemctl stop -- "$1" >/dev/null 2>&1 || true; systemctl reset-failed -- "$1" >/dev/null 2>&1 || true' \
-        'l=$(getent passwd "$3" | cut -d: -f6)/.jts-install.log' \
-        ': > "$l"; chown "$3" "$l" 2>/dev/null || true; chmod 0600 "$l"' \
-        "exec systemd-run --quiet --unit=\"\$1\" -p RuntimeMaxSec=${INSTALL_POLL_CEILING_SEC} -p RemainAfterExit=yes -p StandardOutput=append:\"\$l\" -p StandardError=inherit /bin/sh -c \"\$2\""
+        'h=$(getent passwd "$3" | cut -d: -f6); [ -n "$h" ] || exit 4; l="$h/.jts-install.log"' \
+        'install -m 0600 -o "$3" /dev/null "$l"' \
+        "exec systemd-run --quiet --unit=\"\$1\" -p RuntimeMaxSec=${INSTALL_POLL_CEILING_SEC} -p RemainAfterExit=yes -p StandardOutput=append:\"\$l\" /bin/sh -c \"\$2\""
     run_remote_sudo "$(remote_sh jts-install-launch "$body" "$INSTALL_UNIT" \
         "${install_env} bash $(shell_quote "${REMOTE_REPO_DIR}/deploy/install.sh")" "$PI_USER")" \
         || launch_rc=$?
@@ -680,20 +672,17 @@ run_install_detached() {
     [[ "$launch_rc" == "0" ]] || \
         echo "deploy-to-pi: event=deploy.install_launch_uncertain host=${PI_HOST} rc=${launch_rc}" >&2
 
-    # systemctl show answers in D-Bus reply order, NOT -p order, so every
-    # field is read by key; the transcript by byte offset the remote sizes.
+    # systemctl show answers in D-Bus reply order, NOT -p order: by key.
     remote_body body \
         'l="$HOME/.jts-install.log"; size=$(wc -c < "$l" 2>/dev/null | tr -dc "0-9"); [ -n "$size" ] || size=0' \
-        'systemctl show -p LoadState -p SubState -p Result -p ExecMainCode -p ExecMainStatus -- "$1" 2>/dev/null || true' \
+        'systemctl show -p LoadState -p SubState -p InvocationID -p Result -p ExecMainCode -p ExecMainStatus -- "$1" 2>/dev/null || true' \
         'printf "JTS_LOG_SIZE=%s\nJTS_LOG\n" "$size"' \
         'if [ "$size" -ge "$2" ]; then tail -c +"$2" -- "$l" 2>/dev/null | head -c "$((size - $2 + 1))"; fi' \
         'printf "\nJTS_EOT"'
     deadline=$(( $(date +%s) + INSTALL_POLL_CEILING_SEC ))
     while :; do
         chunk="$(ssh_remote "$(remote_sh jts-install-poll "$body" "$INSTALL_UNIT" "$offset")" 2>/dev/null)" || chunk=""
-        quiet=$(( quiet + 1 ))
-        # Only a chunk carrying the marker AND the terminator is whole: a
-        # cut mid-transcript must not advance the offset past lost bytes.
+        # Marker AND terminator, or the offset advances past lost bytes.
         if [[ "$chunk" != *"JTS_LOG"$'\n'*$'\n'"JTS_EOT" ]]; then
             # A dropped poll is a reconnect, not a failed deploy.
             [[ "$down_since" != "0" ]] || {
@@ -709,7 +698,6 @@ run_install_detached() {
             transcript="${chunk#*JTS_LOG$'\n'}"
             transcript="${transcript%$'\n'JTS_EOT}"
             printf '%s' "$transcript"
-            [[ -z "$transcript" ]] || quiet=0
             load="$(build_manifest_value "$status" LoadState)"
             sub="$(build_manifest_value "$status" SubState)"
             code="$(build_manifest_value "$status" ExecMainCode)"
@@ -718,7 +706,11 @@ run_install_detached() {
             [[ -n "$size" ]] && offset=$(( size + 1 ))
             [[ "$sub" == "exited" || "$sub" == "failed" ]] && ended=1
             # A vanished unit defaults every other field, so it is first.
-            if [[ "$load" == "not-found" || ( -n "$ended" && ! "$main" =~ ^[0-9]+$ ) ]]; then
+            # An unchanged invocation is the PREVIOUS deploy's unit, which
+            # a launch that never ran its body would otherwise inherit.
+            if [[ "$load" == "not-found" || ( -n "$ended" && ( \
+                "$(build_manifest_value "$status" InvocationID)" == "$INSTALL_INVOCATION" \
+                || ! "$main" =~ ^[0-9]+$ ) ) ]]; then
                 echo "deploy-to-pi: event=deploy.install_lost host=${PI_HOST} unit=${INSTALL_UNIT} transcript=${log}" >&2
                 return 0
             fi
@@ -738,7 +730,7 @@ run_install_detached() {
             INSTALL_OUTCOME=running
             return 0
         fi
-        sleep "$(( quiet >= INSTALL_POLL_IDLE_TICKS ? INSTALL_POLL_IDLE_INTERVAL_SEC : INSTALL_POLL_INTERVAL_SEC ))"
+        sleep "$INSTALL_POLL_INTERVAL_SEC"
     done
 }
 
@@ -829,6 +821,21 @@ case "$identity_outcome" in
 esac
 
 preflight_deploy_direction
+
+# Never rewrite REMOTE_REPO_DIR under a running install (ADR-0172): it
+# would finish building from the tree this one just replaced. The same
+# read records the unit's invocation, so a previous deploy's finished
+# unit can never be read as this one's result.
+install_probe="$(ssh_remote "$(remote_sh jts-install-probe \
+    'systemctl show -p SubState -p InvocationID -- "$1" 2>/dev/null || true' \
+    "$INSTALL_UNIT")" 2>/dev/null || true)"
+INSTALL_INVOCATION="$(build_manifest_value "$install_probe" InvocationID)"
+case "$(build_manifest_value "$install_probe" SubState)" in
+    running|start|start-pre|start-post|reload)
+        echo "deploy-to-pi: event=deploy.install_busy host=${PI_HOST} unit=${INSTALL_UNIT} transcript=~${PI_USER}/.jts-install.log" >&2
+        exit 1
+        ;;
+esac
 
 # Rsync — same exclude set documented in CLAUDE.md.
 # macOS ships BSD rsync 2.6.9 (no --info= flag); use --stats which
@@ -924,10 +931,12 @@ if [[ "$install_rc" -ne 0 ]]; then
         echo " The build manifest was NOT advanced, so the Pi still"       >&2
         echo " advertises its prior good build to the next deploy (no"     >&2
         echo " half-updated lie)."                                         >&2
+    elif [[ "$INSTALL_OUTCOME" == "running" ]]; then
+        echo " DEPLOY FAILED: the install is still running on ${PI_HOST}"    >&2
+        echo " (see the event= line above); its manifest may yet advance."   >&2
     else
-        echo " DEPLOY FAILED: no exit status from install.sh on ${PI_HOST} —" >&2
-        echo " see the event= line above. The install may still be running"   >&2
-        echo " there, so the manifest may yet advance without this deploy."   >&2
+        echo " DEPLOY FAILED: ${INSTALL_UNIT} on ${PI_HOST} is gone with no" >&2
+        echo " exit status — a reboot? Transcript: ~${PI_USER}/.jts-install.log" >&2
     fi
     echo " Diagnose on the Pi:"                                            >&2
     echo "   sudo /opt/jasper/.venv/bin/jasper-doctor"                     >&2

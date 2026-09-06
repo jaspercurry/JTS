@@ -322,8 +322,10 @@ verify_or_record_peer_id() {
 
 # build_manifest_value <manifest_text> <key>
 #
-# Extract the value of a KEY=value line from a /var/lib/jasper/build.txt
-# manifest read over ssh. Tolerates CRLF (interactive-sudo deploys read
+# Extract the value of a KEY=value line from a block read over ssh — a
+# /var/lib/jasper/build.txt manifest, or a `systemctl show` reply, whose
+# properties come back in D-Bus order rather than the order asked for.
+# Tolerates CRLF (interactive-sudo deploys read
 # through `ssh -tt`, which rewrites line endings) and surrounding
 # whitespace; last occurrence wins. Echoes "" when the key is absent.
 # pipefail-safe: every stage exits 0 on no-match.

@@ -143,6 +143,12 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
+  *jts-install-probe*)
+    # The pre-rsync read: is an install already running, and which
+    # invocation would a stale unit carry?
+    printf 'SubState=%s\nInvocationID=%s\n' \
+      "${FAKE_UNIT_PRE_SUBSTATE:-dead}" "${FAKE_PRE_INVOCATION:-}"
+    ;;
   *jts-install-launch*)
     # FAKE_LAUNCH_RC=3 is the pre-check refusing to displace a live
     # install: nothing is started. Any other rc still leaves the unit
@@ -170,9 +176,9 @@ case "$cmd" in
     # systemctl answers in D-Bus reply order — Service properties before
     # Unit ones — never in -p order.
     if (( polls > ${FAKE_INSTALL_POLLS_UNTIL_DONE:-0} )); then
-      status="${FAKE_UNIT_END_STATUS:-Result=$result ExecMainCode=1 ExecMainStatus=$rc LoadState=loaded SubState=exited}"
+      status="${FAKE_UNIT_END_STATUS:-Result=$result ExecMainCode=1 ExecMainStatus=$rc LoadState=loaded SubState=exited InvocationID=${FAKE_INVOCATION:-fresh0001}}"
     else
-      status="Result=success ExecMainCode=0 ExecMainStatus=0 LoadState=loaded SubState=running"
+      status="Result=success ExecMainCode=0 ExecMainStatus=0 LoadState=loaded SubState=running InvocationID=${FAKE_INVOCATION:-fresh0001}"
     fi
     size="$(wc -c < "$FAKE_INSTALL_LOG" 2>/dev/null | tr -dc '0-9')"
     [[ -n "$size" ]] || size=0
@@ -815,7 +821,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         Removal condition: delete with the transient-unit install launch.
         """
         signal = "Result=signal ExecMainCode=2 ExecMainStatus=9 " \
-            "LoadState=loaded SubState=failed"
+            "LoadState=loaded SubState=failed InvocationID=fresh0001"
         for label, overrides, expect_rc in (
             ("clean exit", {}, 0),
             ("install failed", {"FAKE_INSTALL_RC": "3"}, 3),
@@ -868,9 +874,58 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     )
 
     def test_a_running_install_is_never_displaced_by_a_second_deploy(self):
-        """A deploy that finds jts-install.service already running refuses
-        rather than interleaving two installs, and leaves the long AirPlay
-        maintenance window in place because the install is still going.
+        """Two installs must never interleave. The pre-rsync probe refuses
+        before --delete can rewrite the tree the running install is
+        building from (ADR-0172); the launch's own check is the backstop
+        for a unit that started inside that window. Neither shortens the
+        AirPlay maintenance window, because that install is still going.
+
+        Removal condition: delete with the transient-unit install launch.
+        """
+        for label, overrides, expect_rsync in (
+            ("before rsync", {"FAKE_UNIT_PRE_SUBSTATE": "running"}, False),
+            ("launch backstop", {"FAKE_LAUNCH_RC": "3"}, True),
+        ):
+            with self.subTest(label):
+                fake = FakeRemote(self)
+                result = self.run_deploy(
+                    fake,
+                    env_local=None,
+                    PI_HOST="jts3.local",
+                    PI_USER="pi",
+                    JASPER_HOSTNAME="jts3.local",
+                    SKIP_AIRPLAY_HEALTH_SUPPRESS="",
+                    **overrides,
+                )
+
+                combined = result.stdout + result.stderr
+                calls = fake.calls().replace("\\", "").splitlines()
+                windows = [
+                    c
+                    for c in calls
+                    if "jasper-airplay-health-suppress-until" in c
+                ]
+                self.assertNotEqual(result.returncode, 0, combined)
+                self.assertIn("event=deploy.install_busy", result.stderr)
+                self.assertEqual([c for c in calls if "install-poll" in c], [])
+                self.assertNotIn("==> Done.", combined)
+                self.assertEqual(
+                    any(c.startswith("RSYNC") for c in calls), expect_rsync
+                )
+                # Whatever was marked, nothing shortened it: that would
+                # blame the running install's restarts on AirPlay.
+                self.assertEqual(len(windows), 1 if expect_rsync else 0)
+                for window in windows:
+                    self.assertIn("+ 2700", window)
+
+    def test_a_launch_that_never_ran_cannot_inherit_the_last_deploys_unit(
+        self,
+    ):
+        """RemainAfterExit leaves the previous deploy's unit sitting in
+        `exited 0`. A launch call that failed before its body ran would
+        otherwise poll that corpse and report someone else's success —
+        and pass the manifest gate on a same-SHA redeploy. The unit only
+        counts when its InvocationID differs from the pre-launch read.
 
         Removal condition: delete with the transient-unit install launch.
         """
@@ -881,24 +936,16 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_LAUNCH_RC="3",
-            SKIP_AIRPLAY_HEALTH_SUPPRESS="",
+            FAKE_LAUNCH_RC="255",
+            FAKE_INSTALL_POLLS_UNTIL_DONE="0",
+            FAKE_PRE_INVOCATION="stale0001",
+            FAKE_INVOCATION="stale0001",
         )
 
         combined = result.stdout + result.stderr
-        calls = fake.calls().replace("\\", "").splitlines()
-        windows = [
-            c for c in calls if "jasper-airplay-health-suppress-until" in c
-        ]
         self.assertNotEqual(result.returncode, 0, combined)
-        self.assertIn("event=deploy.install_busy", result.stderr)
-        self.assertEqual(len([c for c in calls if "jts-install-launch" in c]), 1)
-        self.assertEqual([c for c in calls if "jts-install-poll" in c], [])
+        self.assertIn("event=deploy.install_lost", result.stderr)
         self.assertNotIn("==> Done.", combined)
-        # Only the deploy-length window was marked: shortening it would
-        # blame the running install's restarts on AirPlay reliability.
-        self.assertEqual(len(windows), 1)
-        self.assertIn("+ 2700", windows[0])
 
     def test_a_vanished_unit_is_reported_lost_without_waiting_out_the_ceiling(
         self,
