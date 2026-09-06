@@ -81,8 +81,7 @@ class FakeLiveTurn:
 
 
 def _prep_session_status(wl) -> None:
-    """Set the few attrs session_status() reads beyond the fire path, so
-    it can be called on a __new__-built WakeLoop."""
+    """Seed wl._state, _input_ended, _ducker, and _content_activity so session_status() can run."""
     from jasper.voice_daemon import State
     wl._state = State.WAKE
     wl._input_ended = False
