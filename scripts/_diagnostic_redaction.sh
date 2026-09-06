@@ -20,6 +20,9 @@
 # Python venv is the broken thing being diagnosed. Its shapes are pinned
 # side by side with jasper/secret_redaction.py's in
 # tests/test_secret_redaction.py.
+#
+# Bash-only: the array below is unsourceable by /bin/sh, and every
+# consumer is `#!/usr/bin/env bash`.
 
 JASPER_SECRET_ENV_NAME_RE='([A-Za-z_][A-Za-z0-9_]*(_API_KEY|_TOKEN|_SECRET|_PSK|_PASSWORD|_PASSPHRASE)|JASPER_MTA_BUSTIME_KEY)'
 
@@ -27,10 +30,7 @@ JASPER_SECRET_ENV_NAME_RE='([A-Za-z_][A-Za-z0-9_]*(_API_KEY|_TOKEN|_SECRET|_PSK|
 # collect. Only KEY=value files belong here: this redactor keys on names
 # (JASPER_SECRET_ENV_NAME_RE above), so a raw-value file with no such shape
 # — e.g. /var/lib/jasper/control_token, .../household_secret — cannot be
-# scrubbed by it and must never be added. fetch-pi-logs.sh (laptop) and
-# pi-bundle.sh (Pi) both iterate this array so the two stay in lockstep
-# with each other and with jasper/cli/doctor/secret_compartments.py's file
-# inventory instead of drifting independently.
+# scrubbed by it and must never be added.
 # shellcheck disable=SC2034  # consumed by the sourcing scripts, not here
 JASPER_SECRET_ENV_FILES=(
     /etc/jasper/jasper.env
