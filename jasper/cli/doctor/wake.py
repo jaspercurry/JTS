@@ -5,6 +5,7 @@
 """jasper-doctor checks — wake domain."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from ...audio_profile_state import (
     AecIntent,
@@ -35,6 +36,7 @@ REASON_WAKE_LEGS_PUSH_TO_TALK_ONLY = "wake_legs_push_to_talk_only"
 REASON_WAKE_LEGS_AEC_MODE_OFF = "wake_legs_aec_mode_off"
 REASON_WAKE_LEGS_INTENT_ONLY = "wake_legs_intent_only"
 REASON_WAKE_LEGS_MISSING = "wake_legs_not_armed"
+REASON_WAKE_LEGS_DEAD = "wake_legs_dead"
 REASON_WAKE_LEGS_UNEXPECTED = "wake_legs_unexpected_armed"
 REASON_WAKE_LEGS_MATCH = "wake_legs_armed_matches_configured"
 
@@ -157,6 +159,24 @@ def _voice_wake_legs_runtime() -> "set[str] | None":
         return None
     return {str(t) for t in legs}
 
+# Each secondary wake leg's reconciler-owned device var; jasper-voice plans a
+# leg only when its var is non-empty. The primary "on" leg is absent by design
+# — always planned, never dropped from the live set. See
+# voice_daemon._LEG_DEVICE_ATTR (not imported: 5k lines, and the doctor runs on
+# a Pi Zero 2 W). Delete when session_status() publishes the planned legs.
+_SECONDARY_LEG_DEVICE_ENV: tuple[tuple[str, str], ...] = (
+    ("off", "JASPER_MIC_DEVICE_RAW"),
+    ("dtln", "JASPER_MIC_DEVICE_DTLN"),
+    ("chip_aec_150", "JASPER_MIC_DEVICE_CHIP_AEC_150"),
+    ("chip_aec_210", "JASPER_MIC_DEVICE_CHIP_AEC_210"),
+)
+
+def _applied_wake_legs() -> set[str]:
+    """Secondary legs jasper-voice plans from the applied runtime env — the
+    same device vars ``_configured_wake_legs`` (voice_daemon) reads, out of
+    the env files ``_cli._load_env_files()`` merged before any check ran."""
+    return {tok for tok, var in _SECONDARY_LEG_DEVICE_ENV if os.environ.get(var)}
+
 def _push_to_talk_only_speaker() -> bool:
     """This box has no microphone of its own but a push-to-talk accessory —
     the one shape where jasper-voice arms ZERO wake legs deliberately.
@@ -183,9 +203,16 @@ def _assess_wake_legs(
     aec_mode: str, raw: bool, dtln: bool, armed_runtime: "set[str] | None",
     *, chip_aec: bool = False, chip_aec_150: bool = False,
     chip_aec_210: bool = False, push_to_talk_only: bool = False,
+    applied: "set[str] | None" = None,
 ) -> CheckResult:
-    """Compare configured wake-leg intent against what jasper-voice actually
-    opened. Pure — the runtime set is passed in.
+    """Compare three views of the wake-leg set: wizard INTENT (the
+    profile-resolved booleans), what the AEC reconciler APPLIED (`applied`:
+    the secondary legs whose device var it left set, which is what the daemon
+    plans from), and what jasper-voice has RUNNING (`armed_runtime`). An
+    applied leg absent from the running set is a dead task and fails; intent
+    that never reached the runtime only warns, because the reconciler
+    legitimately drops legs a box cannot carry. Pure — both observed sets are
+    passed in.
 
     Maps the operator/config vocabulary to jasper.wake_legs tokens: the
     primary/session master is "on", the "raw" toggle is the chip-direct "off"
@@ -246,14 +273,25 @@ def _assess_wake_legs(
             f"{', '.join(configured)}. {hint}",
             reason=REASON_WAKE_LEGS_INTENT_ONLY,
         )
+    dead = (applied or set()) - armed_runtime
+    if dead:
+        return CheckResult(
+            "Wake legs", "fail",
+            f"wake leg(s) {sorted(dead)} are configured on this box (their "
+            f"device var is set) but jasper-voice is not running them — the "
+            f"leg's consumer task died (`journalctl -u jasper-voice | grep "
+            f"event=wake.leg_died`). {hint}",
+            reason=REASON_WAKE_LEGS_DEAD,
+        )
     missing = expected - armed_runtime
     if missing:
         return CheckResult(
-            "Wake legs", "fail",
+            "Wake legs", "warn",
             f"configured {sorted(expected)} but jasper-voice armed only "
             f"{sorted(armed_runtime)}; {sorted(missing)} not running "
             f"(bridge down, chip not on 6-ch firmware, or see `journalctl "
-            f"-u jasper-voice | grep event=wake.leg_skipped`). {hint}",
+            rf"-u jasper-voice | grep -E 'event=wake\.leg_(skipped|died)'`). "
+            f"{hint}",
             reason=REASON_WAKE_LEGS_MISSING,
         )
     unexpected = armed_runtime - expected
@@ -279,10 +317,11 @@ def check_wake_legs_configured() -> CheckResult:
     DTLN neural, and the XVF3800 chip-AEC beam legs); check_aec_bridge_running
     reports the AEC3 master leg.
 
-    Cross-checks configured intent from aec_mode.env against what jasper-voice
-    currently has running (/state.voice.wake_legs is a live view: a leg
-    whose task has since died drops out), so a startup leg-skip or an
-    in-flight leg death surfaces here rather than only in the journal.
+    Cross-checks wizard intent (aec_mode.env) and the legs the reconciler
+    applied (the JASPER_MIC_DEVICE_* device vars jasper-voice plans from)
+    against what it currently has running (/state.voice.wake_legs is a live
+    view: a leg whose task has since died drops out), so a startup leg-skip
+    or an in-flight leg death surfaces here rather than only in the journal.
     Fail-soft: with jasper-control unreachable, reports intent alone. Skips
     when AEC is disabled — leg booleans are meaningless without the bridge
     emitting on the UDP ports they consume — and on a push-to-talk-only
@@ -319,4 +358,5 @@ def check_wake_legs_configured() -> CheckResult:
         chip_aec_150=effective.chip_aec_150_enabled,
         chip_aec_210=effective.chip_aec_210_enabled,
         push_to_talk_only=_push_to_talk_only_speaker(),
+        applied=_applied_wake_legs(),
     )
