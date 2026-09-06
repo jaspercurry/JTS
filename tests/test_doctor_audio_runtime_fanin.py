@@ -292,6 +292,7 @@ def test_check_fanin_service_fails_on_a_non_ring_live_transport(monkeypatch):
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_TRANSPORT_NOT_RING
+    assert r.speaker_silent is True
 
 
 def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch):
@@ -302,6 +303,20 @@ def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch
 
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MISSING_RING
+    assert r.speaker_silent is True
+
+
+def test_check_fanin_service_fails_when_status_carries_no_output_block(monkeypatch):
+    payload = json.loads(_fanin_status_payload().decode())
+    payload["output"] = []
+    _seed_units()
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+    r = audio_runtime_fanin.check_fanin_service()
+
+    assert r.status == "fail"
+    assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_MISSING_OUTPUT
+    assert r.speaker_silent is True
 
 
 def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
@@ -469,6 +484,7 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
     r = audio_runtime_fanin.check_fanin_service()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_FANIN_STATUS_UNREACHABLE
+    assert r.speaker_silent is True
 
 
 def test_check_fanin_service_warns_on_small_runtime_input_buffer(monkeypatch):
