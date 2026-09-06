@@ -82,3 +82,24 @@ def test_check_cue_cache_classifies_the_registry(
     result = cues.check_cue_cache(cfg)
     assert result.status == status
     assert result.reason == (getattr(cues, reason_name) if reason_name else "")
+
+
+def test_check_cue_cache_lists_sounds_dir_once_per_run(monkeypatch, tmp_path: Path):
+    """One os.listdir call classifies every slug missing from is_cached,
+    not one per slug: a large registry must not turn into N directory reads."""
+    monkeypatch.setattr(cues, "CUES", _THREE_HOP)
+    cfg = _fresh_cfg(
+        monkeypatch, GEMINI_API_KEY="AIzaSyTest", JASPER_SOUNDS_DIR=str(tmp_path),
+    )
+    # Nothing cached anywhere: every slug in the chain misses is_cached and
+    # falls through to the any-cached-anywhere lookup this test counts.
+    calls = []
+    real_listdir = cues.os.listdir
+    monkeypatch.setattr(
+        cues.os, "listdir",
+        lambda path: (calls.append(path), real_listdir(path))[1],
+    )
+
+    cues.check_cue_cache(cfg)
+
+    assert calls == [str(tmp_path)]

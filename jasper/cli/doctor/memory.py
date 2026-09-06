@@ -39,7 +39,6 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _run,
-    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a memory check produced a
@@ -100,7 +99,7 @@ def check_ram() -> CheckResult:
                         # (a Zero 2 W -> streambox), so a board-size warn
                         # there is a false positive — live memory pressure is
                         # caught SKU-agnostically by check_memory_headroom.
-                        if install_profile_is_streambox():
+                        if evidence.install_profile_is_streambox():
                             return CheckResult(
                                 "RAM", "ok",
                                 f"{mb} MB total (streambox tier; live "

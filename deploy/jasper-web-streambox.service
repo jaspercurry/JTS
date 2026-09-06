@@ -41,8 +41,7 @@ RestartSec=2
 # lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
 UMask=0007
 
-# Wizard: recoverable dashboard, idle-exits already — make it one of
-# OOM's first picks (jasper/_oom_adj.py wizard tier).
+# OOM wizard tier — see jasper/_oom_adj.py
 OOMScoreAdjust=200
 ProtectSystem=full
 ProtectHome=true

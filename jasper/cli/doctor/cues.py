@@ -5,6 +5,7 @@
 """jasper-doctor checks — cue cache: catches a missing baked cue before AudioCueManager.play() silently WARNs instead of telling the operator."""
 from __future__ import annotations
 
+import os
 import urllib.parse
 from collections import defaultdict
 
@@ -35,18 +36,21 @@ _SEVERITY: tuple[tuple[str, str, str, str], ...] = (
 )
 
 def _cue_state(
-    manager: AudioCueManager, cue: CueDef, by_slug: dict[str, CueDef], memo: dict[str, str],
+    manager: AudioCueManager, cue: CueDef, by_slug: dict[str, CueDef], memo: dict[str, str], cached: set[str],
 ) -> str:
-    """ok | stale | fallback_only | missing."""
+    """ok | stale | fallback_only | missing. ``cached`` is every slug with SOME
+    cached WAV (any hash) found by ONE directory listing — mirrors
+    AudioCueManager._find_any_cached's prefix/suffix match without that
+    method's per-slug os.listdir."""
     if cue.slug in memo:
         return memo[cue.slug]
     memo[cue.slug] = "missing"  # breaks a self-referential fallback cycle
     fallback = by_slug.get(cue.fallback) if cue.fallback else None
     if manager.is_cached(cue):
         memo[cue.slug] = "ok"
-    elif manager._find_any_cached(cue) is not None:
+    elif cue.slug in cached:
         memo[cue.slug] = "stale"
-    elif fallback and _cue_state(manager, fallback, by_slug, memo) != "missing":
+    elif fallback and _cue_state(manager, fallback, by_slug, memo, cached) != "missing":
         memo[cue.slug] = "fallback_only"
     return memo[cue.slug]
 
@@ -56,10 +60,12 @@ def check_cue_cache(cfg: Config) -> CheckResult:
     hostname = urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
     manager = AudioCueManager(cfg.sounds_dir, hostname, voice, backend)
     by_slug = {cue.slug: cue for cue in CUES}
+    entries = os.listdir(cfg.sounds_dir) if os.path.isdir(cfg.sounds_dir) else []
+    cached = {s for s in by_slug if any(e.startswith(f"{s}-") and e.endswith(".wav") for e in entries)}
     memo: dict[str, str] = {}
     buckets: dict[str, list[str]] = defaultdict(list)
     for cue in CUES:
-        buckets[_cue_state(manager, cue, by_slug, memo)].append(cue.slug)
+        buckets[_cue_state(manager, cue, by_slug, memo, cached)].append(cue.slug)
     # speaker_silent stays default False (doctor_contract.CheckResult): the
     # assistant goes silent here, not the output chain.
     for bucket, status, reason, template in _SEVERITY:
