@@ -1703,20 +1703,18 @@ def test_write_build_manifest_is_atomic_tempfile_rename():
     [
         (None, False),
         ("", False),
-        ("3f2a91c4-88de-4b", False),
-        ("not-a-uuid\n", False),
-        ("3f2a91c4-88de-4b0c-9a71-2d5e6f70a1b2\n", True),
+        ("   \n", False),
         ("3f2a91c4-88de-4b0c-9a71-2d5e6f70a1b2\r\n", True),
-        ("3f2a91c4-88de-4b0c-9a71-2d5e6f70a1b2 \n", True),
+        ("not-a-uuid\n", True),
     ],
 )
 def test_ensure_peer_id_publishes_a_valid_id(tmp_path, seeded, preserved):
-    """peer_id is the whole evidence base of the deploy direction guard
-    (scripts/_lib.sh verify_or_record_peer_id), and its writer used to be a
-    bare redirect behind an EXISTENCE check — so a truncated id survived every
-    later install and aborted every later deploy with an identity mismatch.
-    Unusable content is now replaced with a fresh UUID, published atomically;
-    a valid id is still left exactly as it was."""
+    """peer_id is the evidence the deploy direction guard reads
+    (scripts/_lib.sh verify_or_record_peer_id), and it and
+    jasper/peering/config.py both accept ANY non-empty id — so replacing one
+    that merely looks odd is what would abort the next deploy blaming a
+    re-image. Only an absent or blank id is generated, atomically; anything
+    with content survives byte for byte, trailing CR included."""
     state = tmp_path / "state"
     state.mkdir()
     peer_id = state / "peer_id"
@@ -1729,15 +1727,14 @@ def test_ensure_peer_id_publishes_a_valid_id(tmp_path, seeded, preserved):
 
     assert result.returncode == 0, result.stderr
     written = peer_id.read_bytes().decode()
-    assert re.fullmatch(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        written.strip(),
-    )
     assert not list(state.glob(".peer_id.*")), "tempfile left behind"
     if preserved:
         assert written == seeded
     else:
-        assert written != seeded
+        assert re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            written.strip(),
+        )
         assert stat.S_IMODE(peer_id.stat().st_mode) == 0o644
 
 

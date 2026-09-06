@@ -474,9 +474,15 @@ env_file_value() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# A refused lock returns 1 WITHOUT writing, and the callers' `&& changed=1`
+# idiom would read that as "changed" and restart jasper-outputd onto the old
+# lane/PCM/format. A write that did not happen fails the pass instead.
 set_env_var() {
     local key="$1" value="$2"
-    jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750
+    if ! jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750; then
+        log_event "env_write_failed" "file=${ENV_FILE} key=${key}"
+        exit 1
+    fi
 }
 
 set_env_var_if_changed() {
@@ -521,7 +527,10 @@ env_file_value_from() {
 
 set_env_file_var() {
     local file="$1" key="$2" value="$3"
-    jasper_env_file_set "$file" "$key" "$value" 0640 0750
+    if ! jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
+        log_event "env_write_failed" "file=${file} key=${key}"
+        exit 1
+    fi
 }
 
 set_env_file_var_if_changed() {

@@ -992,6 +992,19 @@ def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
     assert "--no-block restart jasper-aec-reconcile.service" in commands
 
 
+def test_a_refused_env_lock_fails_the_pass_without_restarting(tmp_path: Path):
+    """A refused lock returns 1 from jasper_env_file_set WITHOUT writing. The
+    `set_env_*_if_changed … && changed=1` idiom would otherwise read that as
+    "changed" and restart jasper-outputd onto the OLD lane/PCM/format while
+    the unit exited 0. Removal condition: the bash env writers are gone."""
+    os.mkfifo(tmp_path / ".jasper.env.lock")
+
+    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode != 0
+    assert "restart" not in _systemctl_log(tmp_path)
+
+
 def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--reason", "test")
 

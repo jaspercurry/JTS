@@ -1896,19 +1896,19 @@ widen_jasper_web_writable_dirs() {
 }
 
 ensure_peer_id() {
-    # The identity peers key on across reboots, and the evidence
-    # scripts/_lib.sh's verify_or_record_peer_id aborts a deploy over: a
-    # truncated id (power loss mid-write) must be regenerated, not preserved.
-    # The strip is that reader's twin — it compares after the same `tr -d`,
-    # so a trailing CR can never read as drift in one place and not the other.
+    # The identity peers key on across reboots. Regenerate only when there is
+    # nothing usable: jasper/peering/config.py and scripts/_lib.sh's
+    # verify_or_record_peer_id both accept any non-empty id, so replacing an
+    # odd-looking one is what would abort the next deploy blaming a re-image.
+    # The strip is that reader's twin, so a trailing CR is not "empty" here
+    # and a recorded id there.
     local file="${STATE_DIR}/peer_id" pid tmp
-    local uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     if [[ -f "${file}" ]] \
-        && [[ "$(tr -d '[:space:]' 2>/dev/null < "${file}")" =~ ${uuid_re} ]]; then
+        && [[ -n "$(tr -d '[:space:]' 2>/dev/null < "${file}")" ]]; then
         return 0
     fi
     pid="$(tr -d '[:space:]' 2>/dev/null < /proc/sys/kernel/random/uuid || true)"
-    if [[ ! "${pid}" =~ ${uuid_re} ]]; then
+    if [[ -z "${pid}" ]]; then
         echo "  ERROR: could not generate peer_id (kernel uuid unreadable)" >&2
         exit 1
     fi

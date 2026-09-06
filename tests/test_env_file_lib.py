@@ -16,6 +16,7 @@ makes the fix the single implementation for every env-file writer.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -133,30 +134,37 @@ def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
     assert env_file.read_text(encoding="utf-8") == "SEED=1\nHOLDER=1\nWRITER=2\n"
 
 
-@pytest.mark.parametrize("plant", ["symlink", "fifo"])
+@pytest.mark.parametrize("plant", ["live_symlink", "dangling_symlink", "fifo"])
 def test_env_file_set_refuses_a_planted_lock(tmp_path: Path, plant: str) -> None:
     """/var/lib/jasper is group-writable, so a jasper-group process can plant
-    something at the lock path. Bash has no O_NOFOLLOW, so the writer refuses
-    anything that is not a regular file rather than following it — and a FIFO
-    must not hang the open either. Removal condition: the bash writers are
-    gone and only jasper/atomic_io.py (which passes O_NOFOLLOW) writes these.
+    anything at the lock path, and bash has no O_NOFOLLOW. Nothing may be
+    created or re-moded BY NAME: a live symlink must not carry the lock's
+    0660 onto its target (transit.env, control_token live in that directory)
+    and a dangling one must not make root create the target. Removal
+    condition: only jasper/atomic_io.py, which opens O_NOFOLLOW, writes these.
     """
     env_file = tmp_path / "jasper.env"
     env_file.write_text("A=1\n", encoding="utf-8")
     victim = tmp_path / "victim"
-    victim.write_text("untouched\n", encoding="utf-8")
     lock = tmp_path / f".{env_file.name}.lock"
-    if plant == "symlink":
-        lock.symlink_to(victim)
-    else:
+    if plant == "fifo":
         os.mkfifo(lock)
+    else:
+        if plant == "live_symlink":
+            victim.write_text("secret\n", encoding="utf-8")
+            victim.chmod(0o600)
+        lock.symlink_to(victim)
 
     result = _bash(f'jasper_env_file_set "{env_file}" A 2')
 
     assert result.returncode == 1
-    assert "event=env_file.lock_refused" in result.stderr
+    assert "event=env_file.lock_failed" in result.stderr
     assert env_file.read_text(encoding="utf-8") == "A=1\n"
-    assert victim.read_text(encoding="utf-8") == "untouched\n"
+    if plant == "live_symlink":
+        assert victim.read_text(encoding="utf-8") == "secret\n"
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+    else:
+        assert not victim.exists(), "root created the symlink's dangling target"
 
 
 def test_env_file_set_upserts_and_dedupes(tmp_path: Path) -> None:
@@ -202,14 +210,13 @@ def test_env_file_set_assigns_parent_group_before_publish(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
-    # Two publishes, both taking the parent group: the advisory lock, then
-    # the tempfile that becomes the env file.
+    # Two publishes, both taking the parent group: the advisory lock, then the
+    # tempfile that becomes the env file. The lock is addressed by DESCRIPTOR
+    # — a rename over its name after the create cannot redirect the chgrp.
     args = chgrp_log.read_text().splitlines()
-    assert args[:3] == [
-        f"--reference={env_file.parent}",
-        str(env_file.parent / f".{env_file.name}.lock"),
-        f"--reference={env_file.parent}",
-    ]
+    assert args[0] == f"--reference={env_file.parent}"
+    assert args[1].startswith("/dev/fd/")
+    assert args[2] == f"--reference={env_file.parent}"
     assert args[3].startswith(str(env_file.parent / ".KEY."))
 
 
@@ -255,10 +262,10 @@ def test_env_file_set_preserves_existing_ownership_before_rename(
     assert args[0] == f"--reference={env_file}"
     assert args[1].startswith(str(env_file.parent / ".A."))
     assert args[1] != str(env_file)
-    assert chgrp_log.read_text().splitlines() == [
-        f"--reference={env_file.parent}",
-        str(env_file.parent / f".{env_file.name}.lock"),
-    ], "only the advisory lock takes the parent group; the rewrite keeps the file's"
+    chgrp_args = chgrp_log.read_text().splitlines()
+    assert chgrp_args[0] == f"--reference={env_file.parent}"
+    assert chgrp_args[1].startswith("/dev/fd/"), chgrp_args
+    assert len(chgrp_args) == 2, "the rewrite must keep the file's own group"
 
 
 def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:
