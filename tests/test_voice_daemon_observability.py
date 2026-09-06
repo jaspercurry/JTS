@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.tts_routing import FANIN_TTS_SOCKET
-from tests._live_turn_fake import silent_frame
+from tests._live_turn_fake import _prep_session_status, silent_frame
 from jasper.voice.daemon_main import _tts_ready_detail
 from jasper.voice.daemon_main import _serve_while_connecting
 
@@ -444,3 +444,63 @@ async def test_stop_cancels_a_still_dialling_connect() -> None:
     stop.set()
     await asyncio.wait_for(task, timeout=5.0)
     assert cancelled.is_set()
+
+
+# ---------------------------------------------------------------------------
+# session_status — runtime-armed legs surfaced in /state (observability)
+# ---------------------------------------------------------------------------
+
+
+def _wake_loop_with_legs(*tokens):
+    """A WakeLoop with exactly the given wake-input legs armed, in order."""
+    from unittest.mock import MagicMock
+
+    from jasper.voice_daemon import WakeLoop, _LegRuntime
+    from jasper.wake_legs import by_token
+
+    return WakeLoop.for_tests(legs=[
+        _LegRuntime(by_token(token), MagicMock(), MagicMock(), None)
+        for token in tokens
+    ])
+
+
+def test_session_status_reports_armed_legs_triple():
+    """session_status surfaces the actually-armed leg tokens (runtime
+    truth, in jasper.wake_legs order) so a startup leg-skip is visible in
+    /state.voice — /aec only shows configured intent from aec_mode.env."""
+    wl = _wake_loop_with_legs("on", "off", "dtln")
+    _prep_session_status(wl)
+    assert wl.session_status()["wake_legs"] == ["on", "off", "dtln"]
+
+
+def test_session_status_reports_only_armed_legs_when_optional_absent():
+    """Dual-stream (no DTLN leg) reports exactly the armed legs — the
+    field reflects what the daemon opened, not what was configured."""
+    wl = _wake_loop_with_legs("on", "off")
+    _prep_session_status(wl)
+    assert wl.session_status()["wake_legs"] == ["on", "off"]
+
+
+def test_session_status_surfaces_tool_pack_outcomes():
+    """session_status surfaces the per-pack tool-registration outcomes so a
+    pack that silently failed to build (event=tool_pack.build_failed) is
+    visible in /state.voice + jasper-doctor, not only the journal. The
+    field is opaque passthrough — whatever outcomes_to_state produced."""
+    wl = _wake_loop_with_legs("on")
+    _prep_session_status(wl)
+    packs = [
+        {"name": "audio", "status": "registered", "tool_count": 5,
+         "error": None},
+        {"name": "spotify", "status": "failed", "tool_count": 0,
+         "error": "ImportError('spotipy')"},
+    ]
+    wl._tool_packs = packs
+    assert wl.session_status()["tool_packs"] == packs
+
+
+def test_session_status_tool_packs_defaults_empty():
+    """Built without the pack walk (the test seam / a caller that omits
+    tool_packs), the field is an empty list, never missing."""
+    wl = _wake_loop_with_legs("on")
+    _prep_session_status(wl)
+    assert wl.session_status()["tool_packs"] == []
