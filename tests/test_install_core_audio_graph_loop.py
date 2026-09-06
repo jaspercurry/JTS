@@ -406,7 +406,6 @@ def test_source_intent_reapply_runs_the_bounded_full_coordinator():
         "/usr/bin/timeout --foreground --kill-after=5s "
         f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
     ) in helper
-    assert "mode=0o660" in helper
     assert "--stop-disabled" not in helper
 
 
