@@ -831,14 +831,48 @@ def test_migrate_wake_events_cap_seed(
 
 def test_mic_device_candidates_is_never_seeded_on_a_fresh_install():
     """A seeded value outranks the mic registry on every installed box, so the
-    key ships commented out and no installer writes it."""
+    key ships commented out and the installer only ever deletes it."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
 
     python_runtime = _INSTALL_LIB_DIR.joinpath("python-runtime.sh").read_text(
         encoding="utf-8"
     )
-    assert "JASPER_MIC_DEVICE_CANDIDATES" not in python_runtime
+    assert [
+        match
+        for match in re.findall(
+            r"JASPER_MIC_DEVICE_CANDIDATES=[^\s']*", python_runtime
+        )
+        if not match.endswith("$/d")
+    ] == []
+
+
+@pytest.mark.parametrize(
+    ("seeded_line", "survives"),
+    [
+        ("JASPER_MIC_DEVICE_CANDIDATES=Array", False),
+        ("JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch", False),
+        ("JASPER_MIC_DEVICE_CANDIDATES=UsbMic,Array", True),
+    ],
+    ids=("seed-array", "seed-array-l16k6ch", "operator-list-preserved"),
+)
+def test_migrate_mic_device_candidates_seed(
+    tmp_path: Path, seeded_line: str, survives: bool,
+) -> None:
+    """Both shapes .env.example ever shipped migrate away, so the mic registry
+    is reachable on an installed box; any operator list survives untouched."""
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "jasper.env").write_text(
+        f"JASPER_HOSTNAME=jts.local\n{seeded_line}\n"
+    )
+
+    proc = _run_install_helper("migrate_mic_device_candidates_seed", tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+    lines = (env_dir / "jasper.env").read_text().splitlines()
+    assert "JASPER_HOSTNAME=jts.local" in lines
+    assert (seeded_line in lines) is survives
 
 
 def test_wifi_tuning_persists_retry_forever_and_power_save_disable():

@@ -119,6 +119,13 @@ migrate_wake_events_cap_seed() {
         '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d'
 }
 
+# A seeded value outranks the mic registry; only the two shapes .env.example shipped are removed.
+migrate_mic_device_candidates_seed() {
+    sed_inplace "${ENV_DIR}/jasper.env" \
+        -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array$/d' \
+        -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch$/d'
+}
+
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     ensure_state_dir
@@ -381,6 +388,7 @@ PY
         -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d' \
         -e '/^JASPER_CONTROL_PORT=/d'
     migrate_wake_events_cap_seed
+    migrate_mic_device_candidates_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         jasper_env_file_set "${ENV_DIR}/jasper.env" \
             JASPER_AUDIO_DAC_ID "${OUTPUT_DAC_ID}" 0640 0750

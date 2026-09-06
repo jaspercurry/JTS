@@ -2079,14 +2079,8 @@ OUTPUTD_CHIP_REF_SAMPLE_RATE="${JASPER_XVF_CHIP_REF_RATE:-16000}"
 OUTPUTD_CHIP_REF_PERIOD_FRAMES="${JASPER_XVF_CHIP_REF_PERIOD:-128}"
 OUTPUTD_CHIP_REF_BUFFER_FRAMES="${JASPER_XVF_CHIP_REF_BUFFER:-256}"
 UDP_DEVICE="udp:${AEC_UDP_PORT}"
-MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}"
-if [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
-    MIC_DEVICE_CANDIDATES_DEFAULT="${JASPER_XVF_ALSA_CARD},${MIC_DEVICE_CANDIDATES_DEFAULT}"
-fi
-# JASPER_MIC_DEVICE_CANDIDATES is the operator override. Without it the
-# configured card only REORDERS the registry list (ADR-0235 G10) — it must
-# never replace it, or the other supported card names become unreachable.
-split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${AEC_MIC_DEVICE},${MIC_DEVICE_CANDIDATES_DEFAULT}}"
+# Detected, then configured, then the registry — the override REPLACES; anything else only reorders (ADR-0235 G10).
+split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-${JASPER_XVF_ALSA_CARD:-},${AEC_MIC_DEVICE},${JASPER_XVF_SUPPORTED_ALSA_CARDS:-}}"
 prime_measurement_usb_ids
 derive_profile_managed_aec_mic_device
 if [[ -z "$AEC_MIC_DEVICE" ]]; then
