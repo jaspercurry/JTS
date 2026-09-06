@@ -650,7 +650,7 @@ def check_outputd_service() -> CheckResult:
         "jasper-outputd.service",
         missing=REASON_OUTPUTD_UNIT_MISSING,
         not_enabled=REASON_OUTPUTD_UNIT_NOT_ENABLED,
-        inactive=REASON_OUTPUTD_INACTIVE, speaker_silent=True,
+        inactive=REASON_OUTPUTD_INACTIVE,
     )
     if service_failure is not None:
         return service_failure
