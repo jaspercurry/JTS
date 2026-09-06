@@ -501,8 +501,11 @@ def test_bluetooth_control_timeout_dropin_is_installed_for_both_profiles() -> No
     )
     source = "deploy/systemd/bluetooth.service.d/jts-timeout.conf"
     destination = 'bluetooth.service.d/jts-timeout.conf"'
-    assert installer.count(source) == 2
-    assert installer.count(destination) == 4
+    assert installer.count(source) == 1
+    assert installer.count(destination) == 2
+    for stage in ("_stage_full_unit_files", "_stage_streambox_unit_files"):
+        body = installer.split(f"{stage}() {{", 1)[1].split("\n}\n", 1)[0]
+        assert "install_renderer_source_unit_files" in body
 
 
 def test_source_action_budget_keeps_outer_ceiling_honest() -> None:
