@@ -1251,11 +1251,11 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
 
 
 def _wake_leg_cfg():
-    """Streambox-shaped `_cfg` (tests/test_voice_daemon_wake_triple_stream.py):
+    """Streambox-shaped `_cfg` (tests/test_voice_daemon_wake_leg_planning.py):
     `mic_device` still carries the literal `"Array"` default and the AEC
     reconciler never ran there, so nothing in the config says "no
     always-listening mic", plus a paired remote's manual mic source."""
-    from tests.test_voice_daemon_wake_triple_stream import _cfg
+    from tests.test_voice_daemon_wake_leg_planning import _cfg
     return _cfg(
         mic_device="Array",
         manual_mic_sources={"wiim_remote_2": "udp:9892"},
