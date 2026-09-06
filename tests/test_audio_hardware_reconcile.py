@@ -1407,10 +1407,10 @@ def test_outputd_env_stage_publishes_when_the_hold_is_refused(
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_PCM=stale\n", encoding="utf-8")
 
-    # Outlasts the lib's own bounded `flock -w 10` by enough that a loaded box
-    # still reaches the first stage inside the hold, so the stage provably runs
-    # after the give-up rather than after a handover.
-    with spawn_lock_holder(outputd_env, hold_seconds=16):
+    # Held for the whole reconciler run — spawn_lock_holder's __exit__ kills
+    # the holder instead of waiting hold_seconds out — so it always outlasts
+    # the lib's own bounded `flock -w 10`, no matter how loaded the box is.
+    with spawn_lock_holder(outputd_env, hold_seconds=300):
         result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
@@ -1431,10 +1431,12 @@ def test_outputd_env_stage_refused_hold_leaves_a_foreign_candidate_in_place(
     foreign_candidate = tmp_path / ".outputd.env.candidate.live"
     foreign_candidate.write_text("JASPER_OUTPUTD_BACKEND=inflight\n", encoding="utf-8")
 
-    # This script stages twice per pass (pre- and post-graph-convergence), each
-    # retrying the hold with its own `flock -w 10`; outlasts both back-to-back
-    # timeouts so neither call legitimately acquires the lock and sweeps.
-    with spawn_lock_holder(outputd_env, hold_seconds=25):
+    # This script stages twice per pass (pre- and post-graph-convergence),
+    # each retrying the hold with its own `flock -w 10`. Held for the whole
+    # reconciler run — spawn_lock_holder's __exit__ kills the holder instead
+    # of waiting hold_seconds out — so BOTH attempts always time out, no
+    # matter how loaded the box is.
+    with spawn_lock_holder(outputd_env, hold_seconds=300):
         result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr

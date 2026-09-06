@@ -21,12 +21,20 @@ def spawn_lock_holder(
     write_back: str = "",
     reap_timeout: float = 60.0,
 ) -> Iterator[None]:
-    """Hold ``env_file``'s advisory lock for ``hold_seconds``.
+    """Hold ``env_file``'s advisory lock for up to ``hold_seconds``.
 
     With ``write_back``, republish the file on release as the snapshot taken
     under the lock plus that text — the write-back an unlocked writer loses to.
     Without it the holder only occupies the lock, which is what a pin of the
     give-up path needs. The block runs once the lock is provably held.
+
+    Exiting the context always terminates the holder before reaping it. A
+    caller that needs the lock held for its whole body, not just
+    ``hold_seconds``, can pass a hold far longer than the body ever takes:
+    the lock still releases the instant the block ends, with no added
+    wall-clock. A holder whose sleep already finished naturally — the usual
+    case for a short hold pinning a write-back — is unaffected: terminating
+    an already-exited process is a no-op.
     """
     lock = env_file.parent / f".{env_file.name}.lock"
     holding = env_file.parent / f".{env_file.name}.holding"
@@ -53,4 +61,5 @@ def spawn_lock_holder(
             time.sleep(0.01)
         yield
     finally:
+        holder.terminate()
         holder.wait(timeout=reap_timeout)
