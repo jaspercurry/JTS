@@ -249,6 +249,10 @@ class OutageTracker:
         self._announced: str | None = None
         self._network_streak = 0
         self._cb: CuePlayer | None = None
+        # Strong refs for the fire-and-forget cue tasks `_announce` spawns:
+        # asyncio only holds a weak reference, so an uncollected task could
+        # otherwise be garbage-collected mid-flight.
+        self._tasks: set[asyncio.Task] = set()
 
     @property
     def wake_cue(self) -> str:
@@ -265,11 +269,30 @@ class OutageTracker:
         if self._cb is None:
             return
         # Fire-and-forget: cue playback must not stall the reconnect
-        # cadence.
-        asyncio.create_task(
+        # cadence. Kept in `_tasks` (see __init__) and given a done
+        # callback so a failure is observable instead of an "exception was
+        # never retrieved" warning at GC time.
+        task = asyncio.create_task(
             self._cb(cue),
             name="jasper-supervisor-escalation-cue",
         )
+        self._tasks.add(task)
+        task.add_done_callback(lambda done: self._on_cue_task_done(done, cue))
+
+    def _on_cue_task_done(self, task: asyncio.Task, cue: str) -> None:
+        self._tasks.discard(task)
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            log_event(
+                logger,
+                "cue.task_failed",
+                cue=cue,
+                exc_type=type(exc).__name__,
+                level=logging.WARNING,
+            )
 
     def on_failure(
         self, exc: BaseException, *, literals: tuple[str, ...] = (),

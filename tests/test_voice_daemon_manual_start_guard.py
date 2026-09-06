@@ -575,7 +575,7 @@ async def test_ptt_only_speaker_still_serves_a_named_source():
     assert wl._active_manual_source == "wiim_remote_2"
 
 
-async def test_source_less_refusal_reads_the_single_derivation():
+async def test_source_less_refusal_reads_the_single_derivation(caplog):
     """The refusal consults `_push_to_talk_only`, not its own `_mic is None`.
 
     Push-to-talk-only is ONE derived fact with one owner; a site that
@@ -596,8 +596,11 @@ async def test_source_less_refusal_reads_the_single_derivation():
     wl2._state = State.SESSION
     wl2._push_to_talk_only = False
     assert wl2._mic is None  # unchanged: only the derived fact moved
-    assert await wl2.manual_session_start() == "BUSY"
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await wl2.manual_session_start() == "BUSY"
     assert wl2._cues.played == []
+    assert event_fields(caplog, "session.manual_refused") == {"reason": "busy"}
 
 
 async def test_no_room_mic_outranks_the_transient_gates():

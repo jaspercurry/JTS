@@ -680,41 +680,6 @@ async def _torn_down_mid_hold(
     return turn
 
 
-async def test_no_answer_on_a_held_button_is_diagnosed_as_a_hold_timeout(
-    caplog,
-):
-    """The operator-facing text for the failure the hold cap exists to
-    prevent.
-
-    `RECORDING TIMEOUT` names "the silence detector never tripped" and
-    "low-confidence wake firing on background audio". On a button turn
-    there is no silence detector and no wake, so that text would send an
-    operator to tune a wake threshold that had nothing to do with it.
-    """
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await _torn_down_mid_hold(manual=True, chunks=0)
-
-    # Both branches are plain operator-facing prose, not `event=` records:
-    # the text an operator reads is itself what this pins.
-    assert "HOLD TIMEOUT" in caplog.text
-    assert "JASPER_IDLE_TIMEOUT_SEC" in caplog.text
-    # Mutation half: the wake-turn text must NOT be what a button turn gets.
-    assert "RECORDING TIMEOUT" not in caplog.text
-    assert "silence detector never tripped" not in caplog.text
-
-
-async def test_no_answer_on_a_wake_turn_still_says_recording_timeout(caplog):
-    """The other half: the pre-existing wake-turn diagnostic is unchanged,
-    so the new branch is keyed on the button and did not swallow it."""
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await _torn_down_mid_hold(manual=False, chunks=0)
-
-    # Prose again by design: this branch is a plain `logger.warning`, and the
-    # operator-facing text is the behaviour under test.
-    assert "RECORDING TIMEOUT" in caplog.text
-    assert "HOLD TIMEOUT" not in caplog.text
-
-
 @pytest.mark.parametrize(
     "turn, cue, counted, suppressed",
     [

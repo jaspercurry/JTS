@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import logging
 import socket
 import warnings
 
@@ -32,6 +33,7 @@ from jasper.voice._supervisor import (
     is_transient,
     outage_cue,
 )
+from tests._log_events import event_fields
 from tests.failure_detail_fixtures import Rejected
 
 try:
@@ -376,6 +378,28 @@ async def test_a_transient_failure_restarts_the_network_streak() -> None:
 
     await _drive(tracker, [_dns()])
     assert calls == [NETWORK_DOWN_CUE_SLUG]
+
+
+async def test_announce_task_failure_is_logged_not_swallowed(caplog) -> None:
+    """`_announce`'s fire-and-forget cue task must not vanish as an
+    unretrieved-exception warning at GC time: a callback failure is
+    promoted to `event=cue.task_failed` instead."""
+
+    async def boom(_slug: str) -> None:
+        raise RuntimeError("cue backend wedged")
+
+    tracker = OutageTracker()
+    tracker.set_callback(boom)
+    with caplog.at_level(logging.WARNING, logger="jasper.voice._supervisor"):
+        tracker.on_failure(_Terminal())
+        # The task and its done callback are each one `call_soon` tick.
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    assert tracker._tasks == set()
+    fields = event_fields(caplog, "cue.task_failed")
+    assert fields["cue"] == NEEDS_ATTENTION_CUE_SLUG
+    assert fields["exc_type"] == "RuntimeError"
 
 
 # ---------------------------------------------------------------------------

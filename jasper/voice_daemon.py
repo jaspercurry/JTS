@@ -1322,6 +1322,7 @@ class WakeLoop:
                 return None
 
         cfg = SimpleNamespace(
+            active_voice_model="",
             duck_db=0.0,
             idle_timeout_sec=10.0,
             mic_device="udp:9876",
@@ -2911,10 +2912,21 @@ class WakeLoop:
                         timeout=RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        "research confirmation window cancellation timed out "
-                        "while opening; dropping wake to avoid turn collision"
+                    # NN-6: a dropped wake must never be silent. The
+                    # confirmation window's own opening race lost the
+                    # cancellation, so the wake is abandoned here rather
+                    # than risk colliding with it — but the household
+                    # still needs to hear something happened.
+                    log_event(
+                        logger,
+                        "research.confirmation_window_cancel_timeout",
+                        job_id=(
+                            self._research_window_job.id
+                            if self._research_window_job is not None else ""
+                        ),
+                        level=logging.WARNING,
                     )
+                    await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
                     return
             elif self._state is State.SESSION:
                 await self._end_turn("research_window_wake")
@@ -3276,7 +3288,7 @@ class WakeLoop:
 
             # Gate cues: only the arbitration winner pays this cost.
             if not spend_allowed:
-                logger.warning("daily spend cap reached; voice disabled until rollover")
+                log_event(logger, "wake.refused", reason="spend_cap_reached")
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "spend_cap_reached")
                 await self._play_cue("spend_cap_reached")
@@ -3288,10 +3300,7 @@ class WakeLoop:
             if conn_paused and not await self._await_connection(
                 PAUSED_CONNECTION_WAIT_SEC,
             ):
-                logger.warning(
-                    "wake detected but live connection is paused (reconnect/backoff); "
-                    "ignoring this wake event",
-                )
+                log_event(logger, "wake.refused", reason="connection_paused")
                 await self._telemetry_stage("gate_blocked")
                 await self._telemetry_outcome("gate_blocked", "connection_paused")
                 # The cue comes first: it is the household's answer, and
@@ -3328,6 +3337,12 @@ class WakeLoop:
                 await self._telemetry_stage("speech_detected")
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
+            log_event(
+                logger,
+                "wake.refused",
+                reason="acquire_error",
+                exc_type=type(e).__name__,
+            )
             await self._telemetry_outcome("session_failed", str(e)[:200])
             # A connection cue here is a false alarm unless the connection
             # actually dropped mid-acquire; see the internal_error CueDef.
@@ -4025,6 +4040,7 @@ class WakeLoop:
             self._spawn_manual_refusal_cue(NO_ROOM_MIC_CUE_SLUG)
             return "NO_ROOM_MIC"
         if self._state is State.SESSION:
+            log_event(logger, "session.manual_refused", reason="busy")
             return "BUSY"
         # User-deliberate "stop listening" gates — mirror the wake path's
         # _wake_late_cancelled. Mic-mute and an open room-correction
@@ -4757,9 +4773,25 @@ class WakeLoop:
                 and not self._turn.server_turn_complete()
             )
             silent = chunks_received == 0 and not self._turn.turn_lost()
-            if (
-                bytes_sent > 0
-                and (silent or lost_mid_reply)
+            if bytes_sent == 0 and not expected_research_silence_dismiss:
+                # No frame ever left the mic before teardown (idle-watchdog
+                # reap of a wake that fired on noise, or a push-to-talk
+                # release before any audio was captured) — distinct from
+                # `silent`, which requires bytes sent but no reply.
+                log_event(
+                    logger,
+                    "turn.silent_response",
+                    provider=self._cfg.voice_provider,
+                    model=_active_model(self._cfg),
+                    reason="no_audio_sent",
+                    bytes_sent=bytes_sent,
+                    chunks_received=chunks_received,
+                    turn_lost=lost_mid_reply,
+                    endpointer=self._endpointer_label(),
+                    level=logging.WARNING,
+                )
+            elif (
+                (silent or lost_mid_reply)
                 and not expected_research_silence_dismiss
             ):
                 model = _active_model(self._cfg)
@@ -4801,15 +4833,18 @@ class WakeLoop:
                     # operator hunting a wake-threshold problem that isn't
                     # there. The button was held past the point where the
                     # idle watchdog gave up waiting for the model.
-                    logger.warning(
-                        "HOLD TIMEOUT: sent %d bytes of audio to %s but the "
-                        "button was never released and the hold cap did not "
-                        "close input first — the idle watchdog "
-                        "(JASPER_IDLE_TIMEOUT_SEC=%.0fs) ended the turn "
-                        "before the model was asked to answer. Check the "
-                        "accessory's release event, and that the hold cap "
-                        "sits below the idle timeout.",
-                        bytes_sent, model, float(self._cfg.idle_timeout_sec),
+                    log_event(
+                        logger,
+                        "turn.silent_response",
+                        provider=self._cfg.voice_provider,
+                        model=model,
+                        reason="hold_timeout",
+                        bytes_sent=bytes_sent,
+                        chunks_received=chunks_received,
+                        turn_lost=lost_mid_reply,
+                        idle_timeout_sec=float(self._cfg.idle_timeout_sec),
+                        endpointer=self._endpointer_label(),
+                        level=logging.WARNING,
                     )
                 elif silent:
                     logger.warning(

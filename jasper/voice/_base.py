@@ -325,6 +325,14 @@ class BaseLiveConnection:
 
     def is_paused(self) -> bool:
         return self._state in (
+            # The pre-`start()` shape (`_serve_while_connecting` runs the
+            # first connect and the wake loop concurrently, so a wake can
+            # land here before `_do_initial_connect` sets CONNECTING) is
+            # "the first connect is still dialling" per this method's own
+            # contract in session.py — and ADR-0238 gives it no separate
+            # cue/park path, so counting it here is the same `wake_cue()`
+            # a moment later under CONNECTING would give, not a second cue.
+            ConnectionState.IDLE_INIT,
             ConnectionState.CONNECTING,
             ConnectionState.RECONNECTING,
             ConnectionState.PAUSED_FOR_BACKOFF,
