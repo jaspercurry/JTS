@@ -4271,7 +4271,7 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     broken = _python_double(
         tmp_path,
         "broken-measurement-python",
-        failing_module="jasper.cli.measurement_mic",
+        failing_module="jasper.cli.capture_card",
     )
     _stage(
         tmp_path,
@@ -4302,7 +4302,7 @@ def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
     tripwire = _python_double(
         tmp_path,
         "tripwire-python",
-        failing_module="jasper.cli.measurement_mic",
+        failing_module="jasper.cli.capture_card",
         stderr_message="measurement resolver was spawned",
     )
     # stream0 only, no usbid.

@@ -7,9 +7,9 @@ to recognise one as measurement-class hardware.
 
 Split out of :mod:`jasper.audio_measurement.calibration` (which re-exports
 everything here) with one hard constraint: **this module imports nothing
-beyond the stdlib**. It backs ``python -m jasper.cli.measurement_mic``, which
+beyond the stdlib**. It backs ``python -m jasper.cli.capture_card``, which
 ``deploy/bin/jasper-aec-reconcile`` spawns from the hotplug path on every
-managed-XVF pass; pulling numpy in here re-inflates that spawn to a 190-module
+pass that sees a USB capture card; pulling numpy in here re-inflates that spawn to a 190-module
 interpreter (~85 ms measured on the dev host). Keep it pure data plus dict
 lookups.
 """
@@ -102,10 +102,10 @@ DEFAULT_SIGN_CONVENTION = "response"
 def measurement_mic_usb_ids() -> tuple[str, ...]:
     """Every USB ``vid:pid`` this registry declares for a measurement mic.
 
-    ``jasper.cli.measurement_mic`` prints this list so
-    ``deploy/bin/jasper-aec-reconcile`` can keep a calibrated measurement mic
-    out of the voice-input candidate set — a measurement mic has no wake/AEC
-    contract. Lower-cased and de-duplicated, matching how the kernel writes
+    ``jasper.cli.capture_card`` classifies local capture cards against this
+    list so ``deploy/bin/jasper-aec-reconcile`` can keep a calibrated
+    measurement mic out of the voice-input candidate set — a measurement mic
+    has no wake/AEC contract. Lower-cased and de-duplicated, matching how the kernel writes
     ``/proc/asound/<card>/usbid`` (``%04x:%04x``); order follows the registry.
     """
     ids: list[str] = []
