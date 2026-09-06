@@ -144,10 +144,11 @@ case "$cmd" in
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
   *jts-install-launch*)
-    # systemd-run returns as soon as the unit is queued; FAKE_LAUNCH_RC=3
-    # is the pre-check refusing to displace a live install.
+    # FAKE_LAUNCH_RC=3 is the pre-check refusing to displace a live
+    # install: nothing is started. Any other rc still leaves the unit
+    # queued — systemd-run returned before ssh dropped.
     rm -f "$FAKE_INSTALL_POLLS"
-    [[ -n "${FAKE_LAUNCH_RC:-}" ]] && exit "$FAKE_LAUNCH_RC"
+    [[ "${FAKE_LAUNCH_RC:-0}" == "3" ]] && exit 3
     printf 'fake install.sh transcript\n' > "$FAKE_INSTALL_LOG"
     if [[ "${FAKE_INSTALL_RC:-0}" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
       # install.sh writes the build manifest ONLY as its final step.
@@ -155,6 +156,7 @@ case "$cmd" in
       printf 'JASPER_GIT_SHA_FULL=%s\nJASPER_INSTALL_STATUS=ok\n' \
         "${sha%%[\\ ]*}" > "$FAKE_MANIFEST"
     fi
+    exit "${FAKE_LAUNCH_RC:-0}"
     ;;
   *jts-install-poll*)
     # The wrapper passes the byte offset it has already printed.
@@ -165,18 +167,21 @@ case "$cmd" in
     [[ "$polls" == "${FAKE_POLL_DROP_AT:-}" ]] && exit 255
     rc="${FAKE_INSTALL_RC:-0}"
     if [[ "$rc" == "0" ]]; then result=success; else result=exit-code; fi
+    # systemctl answers in D-Bus reply order — Service properties before
+    # Unit ones — never in -p order.
     if (( polls > ${FAKE_INSTALL_POLLS_UNTIL_DONE:-0} )); then
-      status="${FAKE_UNIT_END_STATUS:-loaded active exited $result $rc}"
+      status="${FAKE_UNIT_END_STATUS:-Result=$result ExecMainCode=1 ExecMainStatus=$rc LoadState=loaded SubState=exited}"
     else
-      status="loaded active running - 0"
+      status="Result=success ExecMainCode=0 ExecMainStatus=0 LoadState=loaded SubState=running"
     fi
     size="$(wc -c < "$FAKE_INSTALL_LOG" 2>/dev/null | tr -dc '0-9')"
     [[ -n "$size" ]] || size=0
-    printf 'JTS_STATUS=%s\nJTS_LOG_SIZE=%s\nJTS_LOG\n' "$status" "$size"
+    printf '%s\n' "$status" | tr ' ' '\n'
+    printf 'JTS_LOG_SIZE=%s\nJTS_LOG\n' "$size"
     if [[ "$size" -ge "$offset" ]]; then
       tail -c +"$offset" "$FAKE_INSTALL_LOG" | head -c "$((size - offset + 1))"
     fi
-    printf .
+    printf '\nJTS_EOT'
     ;;
   sudo\ -n*)
     exit 0
@@ -783,9 +788,24 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertLess(
             launch.index("reset-failed"), launch.index("systemd-run")
         )
-        # No remote body may carry a newline: printf %q renders one as
-        # bash-only $'…', which a /bin/sh login shell cannot parse.
-        self.assertNotIn("$'", fake.calls())
+        # No body built by remote_sh may carry a newline: printf %q renders
+        # one as bash-only $'…', which a /bin/sh login shell cannot parse.
+        # The call log escapes with %q, so this reads the unescaped form.
+        bodies = [
+            c
+            for c in fake.calls().replace("\\", "").splitlines()
+            if "jts-install-" in c or "jts-deploy-facts" in c
+        ]
+        self.assertTrue(bodies)
+        for line in bodies:
+            self.assertNotIn("$'", line)
+        # The Pi-side ceiling outlives this wrapper: an install it gave up
+        # on must not run forever.
+        self.assertIn("-p RuntimeMaxSec=7200", launch)
+        # The OOM window opens before the install it bounds.
+        calls = fake.calls().replace("\\", "").splitlines()
+        clock = next(c for c in calls if c.endswith("date +%s"))
+        self.assertLess(calls.index(clock), calls.index(launch))
 
     def test_deploy_exits_on_the_status_the_unit_reports(self):
         """The deploy's exit code is the unit's ExecMainStatus, polled back
@@ -794,12 +814,18 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
 
         Removal condition: delete with the transient-unit install launch.
         """
-        for install_rc, drop_at, expect_done in (
-            ("0", "", True),
-            ("3", "", False),
-            ("0", "2", True),
+        signal = "Result=signal ExecMainCode=2 ExecMainStatus=9 " \
+            "LoadState=loaded SubState=failed"
+        for label, overrides, expect_rc in (
+            ("clean exit", {}, 0),
+            ("install failed", {"FAKE_INSTALL_RC": "3"}, 3),
+            ("a poll drops", {"FAKE_POLL_DROP_AT": "2"}, 0),
+            # ssh can die after systemd-run already queued the unit, so a
+            # failed launch call is a question for the Pi, not a verdict.
+            ("launch call dies", {"FAKE_LAUNCH_RC": "255"}, 0),
+            ("killed", {"FAKE_UNIT_END_STATUS": signal}, 137),
         ):
-            with self.subTest(install_rc=install_rc, drop_at=drop_at):
+            with self.subTest(label):
                 fake = FakeRemote(self)
                 result = self.run_deploy(
                     fake,
@@ -807,22 +833,23 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     PI_HOST="jts3.local",
                     PI_USER="pi",
                     JASPER_HOSTNAME="jts3.local",
-                    FAKE_INSTALL_RC=install_rc,
                     FAKE_INSTALL_POLLS_UNTIL_DONE="1",
-                    FAKE_POLL_DROP_AT=drop_at,
+                    **overrides,
                 )
 
                 combined = result.stdout + result.stderr
                 calls = fake.calls().replace("\\", "").splitlines()
                 polls = [c for c in calls if "jts-install-poll" in c]
 
-                self.assertEqual(
-                    result.returncode, int(install_rc), combined
-                )
+                self.assertEqual(result.returncode, expect_rc, combined)
                 self.assertGreaterEqual(len(polls), 2)
                 self.assertIn("fake install.sh transcript", result.stdout)
-                self.assertEqual("==> Done." in combined, expect_done)
-                if drop_at:
+                self.assertEqual("==> Done." in combined, expect_rc == 0)
+                # A failed install still has its OOM collateral scanned.
+                self.assertTrue(
+                    any("journalctl -k" in c for c in calls), combined
+                )
+                if "FAKE_POLL_DROP_AT" in overrides:
                     self.assertIn(
                         "event=deploy.install_poll_reconnect ", result.stderr
                     )
@@ -831,14 +858,14 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     )
                 else:
                     self.assertNotIn("install_poll_reconnect", result.stderr)
-                # The OOM window opens before the install it bounds, and a
-                # failed install still has its collateral scanned.
-                clock = next(c for c in calls if c.endswith("date +%s"))
-                launch = self._launch_line(fake)
-                self.assertLess(calls.index(clock), calls.index(launch))
-                self.assertTrue(
-                    any("journalctl -k" in c for c in calls), combined
-                )
+                if "FAKE_LAUNCH_RC" in overrides:
+                    self.assertIn(
+                        "event=deploy.install_launch_uncertain", result.stderr
+                    )
+                if expect_rc == 137:
+                    self.assertIn(
+                        "event=deploy.install_signal", result.stderr
+                    )
 
     def test_a_running_install_is_never_displaced_by_a_second_deploy(self):
         """A deploy that finds jts-install.service already running refuses
@@ -889,7 +916,10 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_UNIT_END_STATUS="not-found inactive dead success 0",
+            FAKE_UNIT_END_STATUS=(
+                "Result=success ExecMainCode=0 ExecMainStatus=0 "
+                "LoadState=not-found SubState=dead"
+            ),
         )
 
         combined = result.stdout + result.stderr
