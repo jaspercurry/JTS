@@ -43,6 +43,7 @@ F = TypeVar(
 MODULE_ROSTER: tuple[str, ...] = (
     "env",
     "voice",
+    "cues",
     "audio",
     "active_speaker",
     "boot_config",
@@ -85,6 +86,7 @@ CORE_MODULES: frozenset[str] = frozenset({
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
     "voice",
+    "cues",
     "wake",
     "integrations",
     "aec",
