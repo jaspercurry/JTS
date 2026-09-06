@@ -44,10 +44,21 @@ class _SpyCalls:
 
 
 class _SpyCues:
-    """Stand-in cue manager so the REAL _play_cue path runs end to end."""
+    """Stand-in cue manager so the REAL _play_cue path runs end to end.
+
+    Shared: the wake-path tests only reach `play()`, the daemon-lifetime
+    tests also drive the two hooks `run()` wires (`attach_tts` once the
+    playout is open, `prerender_text` from the timer pre-render hook).
+    """
 
     def __init__(self) -> None:
         self.played: list[str] = []
+
+    def attach_tts(self, _tts) -> None:
+        return None
+
+    async def prerender_text(self, _text: str) -> bool:
+        return True
 
     async def play(self, slug: str) -> bool:
         self.played.append(slug)

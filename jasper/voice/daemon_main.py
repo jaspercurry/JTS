@@ -13,7 +13,7 @@ import sys
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from functools import partial
-from typing import Any
+from typing import Any, TypeVar
 
 from jasper.log_event import log_event
 
@@ -97,6 +97,8 @@ from ..voice_daemon import (
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
+
+_T = TypeVar("_T")
 
 
 def _active_model(cfg: Config) -> str:
@@ -759,6 +761,69 @@ async def _serve_while_connecting(
                 await task
 
 
+def _log_teardown_failed(name: str, exc: BaseException) -> None:
+    log_event(
+        logger,
+        "voice.teardown_failed",
+        resource=name,
+        exc_type=type(exc).__name__,
+        detail=str(exc),
+        level=logging.WARNING,
+    )
+
+
+def _release(
+    stack: contextlib.AsyncExitStack,
+    name: str,
+    fn: Callable[..., object],
+    *args: Any,
+) -> None:
+    """Register `fn(*args)` as a teardown that cannot eat the park.
+
+    `AsyncExitStack` REPLACES the body's exception with any callback's
+    exception (demoting the original to `__context__`), so one unlucky
+    teardown turns the `InputDeviceUnavailable` / `VoiceProviderNotConfigured`
+    park raised inside the body into a plain crash: no cue, exit 1, and a
+    systemd restart loop instead of a park (NN-6; ADR-0239). Every release
+    in `run()` goes through here or `_arelease`. `CancelledError` is a
+    `BaseException`, so cancellation still propagates.
+    """
+    def _tolerant() -> None:
+        try:
+            fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            _log_teardown_failed(name, exc)
+
+    stack.callback(_tolerant)
+
+
+def _arelease(
+    stack: contextlib.AsyncExitStack,
+    name: str,
+    fn: Callable[..., Awaitable[object]],
+    *args: Any,
+) -> None:
+    """`_release` for an awaitable teardown."""
+    async def _tolerant() -> None:
+        try:
+            await fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            _log_teardown_failed(name, exc)
+
+    stack.push_async_callback(_tolerant)
+
+
+async def _aenter(
+    stack: contextlib.AsyncExitStack,
+    name: str,
+    cm: contextlib.AbstractAsyncContextManager[_T],
+) -> _T:
+    """`stack.enter_async_context`, with `_release`'s tolerant exit."""
+    entered = await cm.__aenter__()
+    _arelease(stack, name, cm.__aexit__, None, None, None)
+    return entered
+
+
 async def run() -> None:
     cfg = Config.from_env()
     configure_logging()
@@ -834,332 +899,332 @@ async def run() -> None:
         conversation_store = ConversationStore(conversation_settings.db_path)
 
     # One exit stack owns every teardown here: each resource registers its
-    # release at the site that creates (or starts) it, so the unwind is the
-    # exact reverse of construction — which is dependency order, since each
-    # resource is built from the ones above it. Entered below as
-    # `async with stack:`; a callback that raises does not abort the rest.
-    stack = contextlib.AsyncExitStack()
-
-    camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
-    stack.push_async_callback(camilla.close)
-    renderer = RendererClient(
-        librespot_state_path=cfg.librespot_state_path,
-    )
-    weather = WeatherClient(
-        cfg.weather_default_location,
-        cfg.weather_units,
-        default_lat=cfg.weather_default_lat,
-        default_lon=cfg.weather_default_lon,
-        default_name=cfg.weather_default_display_name,
-        setup_url=f"{cfg.hostname}/weather",
-    )
-    stack.push_async_callback(weather.aclose)
-    # Transit (subway / bus / Citi Bike today; future city packs add more).
-    # One call builds every provider in the household's ENABLED city packs
-    # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns a
-    # managed ActiveTransit: the flat tool list, a `configured` flag for the
-    # system-prompt nudge, and an `aclose()` that releases any client owning a
-    # pool. Each provider self-gates on its own config, so an
-    # enabled-but-unconfigured mode produces no tool — `transit_configured`
-    # is exactly "at least one transit tool registered", the same gate as
-    # before. Adding a city needs no edit here; see
-    # jasper.transit.active_transit. os.environ carries
-    # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
-    transit_active = transit.active_transit(os.environ)
-    stack.push_async_callback(transit_active.aclose)
-    transit_tools = transit_active.tools
-    transit_configured = transit_active.configured
-    logger.info(
-        "transit: packs=%s tools=%d",
-        ",".join(transit.enabled_pack_ids(os.environ)) or "(none)",
-        len(transit_tools),
-    )
-    google_routes = build_google_routes_client(os.environ)
-    travel_routes_configured = google_routes is not None
-    logger.info(
-        "google_routes: %s",
-        "enabled" if travel_routes_configured else "disabled",
-    )
-    # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
-    # is unset; the tool factory short-circuits to [] in that case so
-    # the model never sees a tool whose every call would fail. The
-    # client owns a long-lived httpx.AsyncClient for the daemon's lifetime.
-    ha = build_ha_client(cfg)
-    if ha is not None:
-        stack.push_async_callback(ha.aclose)
-        logger.info("home_assistant: enabled url=%s agent_id=%s",
-                    ha.url, ha.agent_id or "(default)")
-    else:
-        logger.info(
-            "home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN, "
-            "or visit http://%s/ha to configure)",
-            cfg.hostname,
+    # release (through _release / _arelease / _aenter) at the site that
+    # creates or starts it, so the unwind is the exact reverse of
+    # construction — which is dependency order, since each resource is
+    # built from the ones above it.
+    async with contextlib.AsyncExitStack() as stack:
+        # No release registered for the controller: it caches its websocket
+        # for the process lifetime by design, and close() can spend
+        # CAMILLA_ATTEMPT_BUDGET_S on a wedged socket inside the 14 s stop
+        # budget that already carries the mic-loss cue (ADR-0239).
+        camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
+        renderer = RendererClient(
+            librespot_state_path=cfg.librespot_state_path,
         )
-    # Volume coordinator: owns the canonical listening_level (0-100),
-    # follows mux's effective source, and dispatches voice/accessory-driven
-    # changes to the right volume carrier (Camilla-master for
-    # AirPlay/USB/idle, push-mode for Spotify/BT). Boot path applies
-    # a safety regression to extreme stale values.
-    volume_persistence = VolumePersistence(cfg.volume_state_path)
-    # Build the multi-account Spotify router once; reused by both the
-    # coordinator (for outbound volume control via Web API) and the
-    # voice tool registry (transport / spotify_play). Same instance,
-    # one OAuth refresh cycle per account.
-    volume_spotify_router = _build_router(cfg)
-    # Google Calendar + Gmail clients — built once, used by the tool
-    # registry AND captured by the system-instruction lambda so the
-    # model knows which household members have linked accounts. None
-    # if Google's CLIENT_ID/SECRET aren't configured (the tools are
-    # gated and never appear to the model in that case).
-    google_clients = build_google_clients(cfg)
-    if google_clients is not None:
-        names = google_clients.list_account_names()
-        if names:
-            logger.info(
-                "google: %d account(s) linked: %s (default: %s)",
-                len(names), ", ".join(names),
-                google_clients.default_account_name() or "(none)",
-            )
+        weather = WeatherClient(
+            cfg.weather_default_location,
+            cfg.weather_units,
+            default_lat=cfg.weather_default_lat,
+            default_lon=cfg.weather_default_lon,
+            default_name=cfg.weather_default_display_name,
+            setup_url=f"{cfg.hostname}/weather",
+        )
+        _arelease(stack, "weather", weather.aclose)
+        # Transit (subway / bus / Citi Bike today; future city packs add more).
+        # One call builds every provider in the household's ENABLED city packs
+        # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns a
+        # managed ActiveTransit: the flat tool list, a `configured` flag for the
+        # system-prompt nudge, and an `aclose()` that releases any client owning a
+        # pool. Each provider self-gates on its own config, so an
+        # enabled-but-unconfigured mode produces no tool — `transit_configured`
+        # is exactly "at least one transit tool registered", the same gate as
+        # before. Adding a city needs no edit here; see
+        # jasper.transit.active_transit. os.environ carries
+        # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
+        transit_active = transit.active_transit(os.environ)
+        _arelease(stack, "transit", transit_active.aclose)
+        transit_tools = transit_active.tools
+        transit_configured = transit_active.configured
+        logger.info(
+            "transit: packs=%s tools=%d",
+            ",".join(transit.enabled_pack_ids(os.environ)) or "(none)",
+            len(transit_tools),
+        )
+        google_routes = build_google_routes_client(os.environ)
+        travel_routes_configured = google_routes is not None
+        logger.info(
+            "google_routes: %s",
+            "enabled" if travel_routes_configured else "disabled",
+        )
+        # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
+        # is unset; the tool factory short-circuits to [] in that case so
+        # the model never sees a tool whose every call would fail. The
+        # client owns a long-lived httpx.AsyncClient for the daemon's lifetime.
+        ha = build_ha_client(cfg)
+        if ha is not None:
+            _arelease(stack, "ha", ha.aclose)
+            logger.info("home_assistant: enabled url=%s agent_id=%s",
+                        ha.url, ha.agent_id or "(default)")
         else:
             logger.info(
-                "google: CLIENT_ID/SECRET configured but no accounts "
-                "linked yet — visit %s to add one",
-                cfg.google_setup_url,
+                "home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN, "
+                "or visit http://%s/ha to configure)",
+                cfg.hostname,
             )
-    from ..assistant_volume import volume_context_publisher_for_runtime
+        # Volume coordinator: owns the canonical listening_level (0-100),
+        # follows mux's effective source, and dispatches voice/accessory-driven
+        # changes to the right volume carrier (Camilla-master for
+        # AirPlay/USB/idle, push-mode for Spotify/BT). Boot path applies
+        # a safety regression to extreme stale values.
+        volume_persistence = VolumePersistence(cfg.volume_state_path)
+        # Build the multi-account Spotify router once; reused by both the
+        # coordinator (for outbound volume control via Web API) and the
+        # voice tool registry (transport / spotify_play). Same instance,
+        # one OAuth refresh cycle per account.
+        volume_spotify_router = _build_router(cfg)
+        # Google Calendar + Gmail clients — built once, used by the tool
+        # registry AND captured by the system-instruction lambda so the
+        # model knows which household members have linked accounts. None
+        # if Google's CLIENT_ID/SECRET aren't configured (the tools are
+        # gated and never appear to the model in that case).
+        google_clients = build_google_clients(cfg)
+        if google_clients is not None:
+            names = google_clients.list_account_names()
+            if names:
+                logger.info(
+                    "google: %d account(s) linked: %s (default: %s)",
+                    len(names), ", ".join(names),
+                    google_clients.default_account_name() or "(none)",
+                )
+            else:
+                logger.info(
+                    "google: CLIENT_ID/SECRET configured but no accounts "
+                    "linked yet — visit %s to add one",
+                    cfg.google_setup_url,
+                )
+        from ..assistant_volume import volume_context_publisher_for_runtime
 
-    volume_coordinator = VolumeCoordinator(
-        camilla=camilla,
-        persistence=volume_persistence,
-        backend=renderer,
-        spotify_router=volume_spotify_router,
-        spotify_device_name=cfg.spotify_device_name,
-        volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
-    )
-    stack.push_async_callback(volume_coordinator.aclose)
-    # Every duck holder in this process — Ducker, CueDuck, and the graph-swap
-    # bracket — releases against the coordinator's canonical target so their
-    # interleavings cannot strand the fader at a value one of them had ducked.
-    set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
-    # This daemon INJECTS its owner (Ducker and CueDuck take it as a
-    # constructor argument), so it needs no registration to work. It registers
-    # anyway, and registers the SAME instance: leaving `volume_owner()`
-    # answering None in a process that has an owner is precisely how a later
-    # caller ends up minting the second one.
-    install_volume_owner(volume_coordinator.volume_owner)
-    # Built after the coordinator so restore follows the active output topology,
-    # and so the Camilla duck shares the coordinator's fader owner rather than
-    # writing beside it.
-    ducker = build_ducker(
-        cfg,
-        volume_owner=volume_coordinator.volume_owner,
-        target_db_provider=volume_coordinator.get_camilla_target_db,
-    )
-    try:
-        target_level, restore_reason = await volume_coordinator.initialize(
-            stale_after_sec=cfg.volume_regress_after_sec,
-            safe_low_pct=cfg.volume_regress_safe_low_pct,
-            safe_high_pct=cfg.volume_regress_safe_high_pct,
-            first_boot_default_pct=cfg.volume_first_boot_default_pct,
+        volume_coordinator = VolumeCoordinator(
+            camilla=camilla,
+            persistence=volume_persistence,
+            backend=renderer,
+            spotify_router=volume_spotify_router,
+            spotify_device_name=cfg.spotify_device_name,
+            volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
+        )
+        _arelease(stack, "volume_coordinator", volume_coordinator.aclose)
+        # Every duck holder in this process — Ducker, CueDuck, and the graph-swap
+        # bracket — releases against the coordinator's canonical target so their
+        # interleavings cannot strand the fader at a value one of them had ducked.
+        set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
+        # This daemon INJECTS its owner (Ducker and CueDuck take it as a
+        # constructor argument), so it needs no registration to work. It registers
+        # anyway, and registers the SAME instance: leaving `volume_owner()`
+        # answering None in a process that has an owner is precisely how a later
+        # caller ends up minting the second one.
+        install_volume_owner(volume_coordinator.volume_owner)
+        # Built after the coordinator so restore follows the active output topology,
+        # and so the Camilla duck shares the coordinator's fader owner rather than
+        # writing beside it.
+        ducker = build_ducker(
+            cfg,
+            volume_owner=volume_coordinator.volume_owner,
+            target_db_provider=volume_coordinator.get_camilla_target_db,
+        )
+        try:
+            target_level, restore_reason = await volume_coordinator.initialize(
+                stale_after_sec=cfg.volume_regress_after_sec,
+                safe_low_pct=cfg.volume_regress_safe_low_pct,
+                safe_high_pct=cfg.volume_regress_safe_high_pct,
+                first_boot_default_pct=cfg.volume_first_boot_default_pct,
+            )
+            logger.info(
+                "volume coordinator: %s → listening_level=%d%%",
+                restore_reason, target_level,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "volume coordinator: initialize failed (%s); proceeding with "
+                "in-memory default", e,
+            )
+
+        # Inbound source-volume observers: poll shairport (DBus),
+        # librespot (state file written by --onevent hook), and bluez-alsa
+        # (DBus) once per second so iPhone slider movements / Spotify app
+        # slider drags / BT volume button presses sync into the
+        # coordinator's listening_level.
+        volume_observer = VolumeObserver(
+            volume_coordinator,
+            librespot_state_path=cfg.librespot_state_path,
+        )
+        await volume_observer.start()
+        _arelease(stack, "volume_observer", volume_observer.stop)
+
+        # Timer scheduler — owns persistence + asyncio task lifecycle for
+        # kitchen timers. Constructed BEFORE _build_registry so set_timer
+        # / list_timers / cancel_timer are visible to the model from the
+        # very first session.start. The on_fire announcement callback is
+        # wired after WakeLoop exists (it can't fire before then anyway —
+        # SQLite restore happens in scheduler.start() further down).
+        timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
+
+        # Research scheduler — same lifecycle shape as timers. Constructed
+        # before tool registration so research(query) is visible from the first
+        # model session when a text provider key is configured; the WakeLoop
+        # announcement callback is wired after WakeLoop exists.
+        active_research = active_research_provider(os.environ)
+        research_scheduler: ResearchScheduler | None = None
+        if active_research is not None:
+            _arelease(stack, "active_research", active_research.aclose)
+            research_scheduler = ResearchScheduler(
+                active_research.client,
+                db_path=cfg.research_db_path,
+                max_runtime_sec=cfg.research_max_runtime_sec,
+                concurrency=cfg.research_concurrency,
+                max_result_chars=cfg.research_max_result_chars,
+                retention=cfg.research_retention,
+                usage_store=usage_store,
+                usage_provider=active_research.provider_id,
+                usage_model=str(getattr(active_research.client, "model", "")),
+            )
+            # The store opens in __init__; stop() is registered at the start()
+            # site below, so the unwind cancels jobs before closing the store.
+            _release(stack, "research_store", research_scheduler.close)
+            _warn_if_research_model_unpriced(
+                str(getattr(active_research.client, "model", "")),
+                pricing_overrides=pricing_overrides,
+            )
+        research_configured = research_scheduler is not None
+
+        # Cue manager — built early so timer tools can pre-render their
+        # fire announcements at set_timer time. The TtsPlayout isn't open
+        # yet (that lives inside the async with block below); the manager
+        # is constructed without it and `attach_tts` wires playback once
+        # the playout is up. Pre-render and regen don't need playback.
+        cues_manager = _build_cues_manager(cfg, tts=None)
+
+        # Wake-event telemetry store.
+        # Opens the SQLite DB synchronously at startup so the daemon
+        # is "ready" only after the schema migration is applied —
+        # avoids racy "begin_event before CREATE TABLE" failures on
+        # first-ever boot. Failure to open is logged + the daemon
+        # continues with telemetry disabled (the wake / session path
+        # is unaffected; only the flag_recent_issue tool is silently
+        # withheld from the model in that mode).
+        #
+        # Created BEFORE `_build_registry` because make_diagnostic_tools
+        # gates on the store and the LLM `session.update` is sent once
+        # at WS handshake time — tools added to the registry after the
+        # connection opens are invisible to the live session until the
+        # next reconnect.
+        wake_event_store: WakeEventStore | None = None
+        try:
+            wake_event_store = WakeEventStore(
+                cfg.wake_events_dir,
+                max_audio_bytes=cfg.wake_events_max_audio_bytes,
+            )
+            wake_event_store.open()
+            _release(stack, "wake_events", wake_event_store.close)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: failed to open store at %s: %s "
+                "(continuing with telemetry disabled)",
+                cfg.wake_events_dir, e,
+            )
+            wake_event_store = None
+
+        research_delivery_recorder_ref = {"fn": None}
+
+        def _record_research_delivery(job, assistant_text, decision) -> None:
+            fn = research_delivery_recorder_ref["fn"]
+            if fn is not None:
+                fn(job, assistant_text, decision)
+
+        registry = _build_registry(
+            cfg, renderer, weather, transit_tools,
+            volume_coordinator=volume_coordinator,
+            spotify_router=volume_spotify_router,
+            timer_scheduler=timer_scheduler,
+            research_scheduler=research_scheduler,
+            spend_cap=spend_cap,
+            research_delivery_recorder=_record_research_delivery,
+            google_clients=google_clients,
+            google_routes=google_routes,
+            ha=ha,
+            wake_event_store=wake_event_store,
+        )
+
+        # Apply user-edited prompt overrides before any provider serializes the
+        # registry, then write the /run catalog the /tools/ wizard reads. Includes
+        # EVERY tool (needs_setup ones via sentinel deps), with status from the
+        # live registry + the user's disabled pack/tool sets. Fail-soft.
+        from ..tool_prompt_overrides import read_prompt_overrides
+        from ..tool_state import read_tool_state
+        from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
+        tool_state = read_tool_state()
+        prompt_overrides = read_prompt_overrides()
+        registry.apply_prompt_overrides(prompt_overrides)
+        write_catalog(
+            registry,
+            tool_state.disabled_tools,
+            disabled_packs=tool_state.disabled_packs,
+            prompt_overrides=prompt_overrides,
+            path=DEFAULT_CATALOG_PATH,
+        )
+
+        # Wire the timer pre-render hook so set_timer (and start-time
+        # restore for persisted timers) synthesises + caches the
+        # fire-time announcement WAV ahead of time. Saves the user from
+        # a 1–8 s gap between duck and audio at fire time.
+        async def _prerender_timer(t: Timer) -> None:
+            await cues_manager.prerender_text(announcement_text(t))
+        timer_scheduler.set_pre_render(_prerender_timer)
+
+        startup_fire_and_forget: set[asyncio.Task] = set()
+        stop_event = asyncio.Event()
+
+        def _shutdown(*_):
+            logger.info("shutdown requested")
+            stop_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _shutdown)
+        # Deliberately never unregistered: a second SIGTERM arriving during
+        # the unwind must still land on _shutdown rather than terminate the
+        # process mid-cue (ADR-0239). asyncio.run() closes the loop — and
+        # with it these handlers — as soon as run() returns.
+
+        # `wake=` must report what this daemon actually DOES, not what the config
+        # happens to name — see `_wake_ready_detail`. Resolved once here because
+        # the mics below are opened from this same list.
+        #
+        # The install marker is static for the process, so it is read once here
+        # and passed down rather than re-read per decision. See ADR-0217.
+        planned_wake_legs = _configured_wake_legs(
+            cfg,
+            wake_detection_supported=_wake_detection_supported(),
         )
         logger.info(
-            "volume coordinator: %s → listening_level=%d%%",
-            restore_reason, target_level,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "volume coordinator: initialize failed (%s); proceeding with "
-            "in-memory default", e,
+            "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
+            cfg.voice_provider, _active_model(cfg),
+            _wake_ready_detail(cfg, planned_wake_legs),
+            cfg.mic_device or "(none)", _tts_ready_detail(cfg),
         )
 
-    # Inbound source-volume observers: poll shairport (DBus),
-    # librespot (state file written by --onevent hook), and bluez-alsa
-    # (DBus) once per second so iPhone slider movements / Spotify app
-    # slider drags / BT volume button presses sync into the
-    # coordinator's listening_level.
-    volume_observer = VolumeObserver(
-        volume_coordinator,
-        librespot_state_path=cfg.librespot_state_path,
-    )
-    await volume_observer.start()
-    stack.push_async_callback(volume_observer.stop)
-
-    # Timer scheduler — owns persistence + asyncio task lifecycle for
-    # kitchen timers. Constructed BEFORE _build_registry so set_timer
-    # / list_timers / cancel_timer are visible to the model from the
-    # very first session.start. The on_fire announcement callback is
-    # wired after WakeLoop exists (it can't fire before then anyway —
-    # SQLite restore happens in scheduler.start() further down).
-    timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
-
-    # Research scheduler — same lifecycle shape as timers. Constructed
-    # before tool registration so research(query) is visible from the first
-    # model session when a text provider key is configured; the WakeLoop
-    # announcement callback is wired after WakeLoop exists.
-    active_research = active_research_provider(os.environ)
-    research_scheduler: ResearchScheduler | None = None
-    if active_research is not None:
-        stack.push_async_callback(active_research.aclose)
-        research_scheduler = ResearchScheduler(
-            active_research.client,
-            db_path=cfg.research_db_path,
-            max_runtime_sec=cfg.research_max_runtime_sec,
-            concurrency=cfg.research_concurrency,
-            max_result_chars=cfg.research_max_result_chars,
-            retention=cfg.research_retention,
+        # Open the persistent live connection ONCE at daemon startup and
+        # keep it open for the daemon's lifetime. Wake events acquire/release
+        # turns against this connection — they don't open new WebSockets.
+        # Pass a lambda (not the rendered string) so the time-injection
+        # inside _build_system_instruction stays accurate across context
+        # resets and reconnects — the connection re-renders on every
+        # fresh open. The location is captured at startup; if you change
+        # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
+        connection = _make_connection(cfg, speech_policy=speech_policy)
+        # Its release is registered further down, at the escalation-callback
+        # site: the connection speaks its failure cue through the wake loop,
+        # so it has to stop before the playout and mics that cue uses.
+        # Time-billed providers (Grok: flat $/hour) price their per-turn token
+        # rows to $0. Wire a meter before start(); the connection will record
+        # active turn intervals that spend queries fold in. No meter for
+        # token-billed providers (flat_per_hour_usd == 0).
+        _wire_billable_activity_meter(
+            connection=connection,
             usage_store=usage_store,
-            usage_provider=active_research.provider_id,
-            usage_model=str(getattr(active_research.client, "model", "")),
+            provider=cfg.voice_provider,
+            flat_per_hour_usd=pricing.flat_per_hour_usd,
         )
-        # The store opens in __init__; stop() is registered at the start()
-        # site below, so the unwind cancels jobs before closing the store.
-        stack.callback(research_scheduler.close)
-        _warn_if_research_model_unpriced(
-            str(getattr(active_research.client, "model", "")),
-            pricing_overrides=pricing_overrides,
-        )
-    research_configured = research_scheduler is not None
-
-    # Cue manager — built early so timer tools can pre-render their
-    # fire announcements at set_timer time. The TtsPlayout isn't open
-    # yet (that lives inside the async with block below); the manager
-    # is constructed without it and `attach_tts` wires playback once
-    # the playout is up. Pre-render and regen don't need playback.
-    cues_manager = _build_cues_manager(cfg, tts=None)
-
-    # Wake-event telemetry store.
-    # Opens the SQLite DB synchronously at startup so the daemon
-    # is "ready" only after the schema migration is applied —
-    # avoids racy "begin_event before CREATE TABLE" failures on
-    # first-ever boot. Failure to open is logged + the daemon
-    # continues with telemetry disabled (the wake / session path
-    # is unaffected; only the flag_recent_issue tool is silently
-    # withheld from the model in that mode).
-    #
-    # Created BEFORE `_build_registry` because make_diagnostic_tools
-    # gates on the store and the LLM `session.update` is sent once
-    # at WS handshake time — tools added to the registry after the
-    # connection opens are invisible to the live session until the
-    # next reconnect.
-    wake_event_store: WakeEventStore | None = None
-    try:
-        wake_event_store = WakeEventStore(
-            cfg.wake_events_dir,
-            max_audio_bytes=cfg.wake_events_max_audio_bytes,
-        )
-        wake_event_store.open()
-
-        def _close_wake_event_store(store: WakeEventStore) -> None:
-            try:
-                store.close()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("wake_events store close: %s", e)
-        stack.callback(_close_wake_event_store, wake_event_store)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "wake_events: failed to open store at %s: %s "
-            "(continuing with telemetry disabled)",
-            cfg.wake_events_dir, e,
-        )
-        wake_event_store = None
-
-    research_delivery_recorder_ref = {"fn": None}
-
-    def _record_research_delivery(job, assistant_text, decision) -> None:
-        fn = research_delivery_recorder_ref["fn"]
-        if fn is not None:
-            fn(job, assistant_text, decision)
-
-    registry = _build_registry(
-        cfg, renderer, weather, transit_tools,
-        volume_coordinator=volume_coordinator,
-        spotify_router=volume_spotify_router,
-        timer_scheduler=timer_scheduler,
-        research_scheduler=research_scheduler,
-        spend_cap=spend_cap,
-        research_delivery_recorder=_record_research_delivery,
-        google_clients=google_clients,
-        google_routes=google_routes,
-        ha=ha,
-        wake_event_store=wake_event_store,
-    )
-
-    # Apply user-edited prompt overrides before any provider serializes the
-    # registry, then write the /run catalog the /tools/ wizard reads. Includes
-    # EVERY tool (needs_setup ones via sentinel deps), with status from the
-    # live registry + the user's disabled pack/tool sets. Fail-soft.
-    from ..tool_prompt_overrides import read_prompt_overrides
-    from ..tool_state import read_tool_state
-    from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
-    tool_state = read_tool_state()
-    prompt_overrides = read_prompt_overrides()
-    registry.apply_prompt_overrides(prompt_overrides)
-    write_catalog(
-        registry,
-        tool_state.disabled_tools,
-        disabled_packs=tool_state.disabled_packs,
-        prompt_overrides=prompt_overrides,
-        path=DEFAULT_CATALOG_PATH,
-    )
-
-    # Wire the timer pre-render hook so set_timer (and start-time
-    # restore for persisted timers) synthesises + caches the
-    # fire-time announcement WAV ahead of time. Saves the user from
-    # a 1–8 s gap between duck and audio at fire time.
-    async def _prerender_timer(t: Timer) -> None:
-        await cues_manager.prerender_text(announcement_text(t))
-    timer_scheduler.set_pre_render(_prerender_timer)
-
-    startup_fire_and_forget: set[asyncio.Task] = set()
-    stop_event = asyncio.Event()
-
-    def _shutdown(*_):
-        logger.info("shutdown requested")
-        stop_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _shutdown)
-        stack.callback(loop.remove_signal_handler, sig)
-
-    # `wake=` must report what this daemon actually DOES, not what the config
-    # happens to name — see `_wake_ready_detail`. Resolved once here because
-    # the AsyncExitStack below opens its mics from this same list.
-    #
-    # The install marker is static for the process, so it is read once here
-    # and passed down rather than re-read per decision. See ADR-0217.
-    planned_wake_legs = _configured_wake_legs(
-        cfg,
-        wake_detection_supported=_wake_detection_supported(),
-    )
-    logger.info(
-        "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
-        cfg.voice_provider, _active_model(cfg),
-        _wake_ready_detail(cfg, planned_wake_legs),
-        cfg.mic_device or "(none)", _tts_ready_detail(cfg),
-    )
-
-    # Open the persistent live connection ONCE at daemon startup and
-    # keep it open for the daemon's lifetime. Wake events acquire/release
-    # turns against this connection — they don't open new WebSockets.
-    # Pass a lambda (not the rendered string) so the time-injection
-    # inside _build_system_instruction stays accurate across context
-    # resets and reconnects — the connection re-renders on every
-    # fresh open. The location is captured at startup; if you change
-    # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
-    connection = _make_connection(cfg, speech_policy=speech_policy)
-    stack.push_async_callback(connection.stop)
-    # Time-billed providers (Grok: flat $/hour) price their per-turn token
-    # rows to $0. Wire a meter before start(); the connection will record
-    # active turn intervals that spend queries fold in. No meter for
-    # token-billed providers (flat_per_hour_usd == 0).
-    _wire_billable_activity_meter(
-        connection=connection,
-        usage_store=usage_store,
-        provider=cfg.voice_provider,
-        flat_per_hour_usd=pricing.flat_per_hour_usd,
-    )
-    async with stack:
         # Capture the linked-Google-accounts list at startup so the
         # system instruction tells the model which `account` values
         # are valid for the calendar/gmail tools. Wizard-driven account
@@ -1223,12 +1288,14 @@ async def run() -> None:
         legs: list[_LegRuntime] = []
         for spec, device in planned_wake_legs:
             try:
-                leg_mic = await stack.enter_async_context(
+                leg_mic = await _aenter(
+                    stack,
+                    f"wake_mic.{spec.token}",
                     make_mic_capture(
                         device,
                         capture_rate=cfg.mic_capture_rate,
                         capture_channels=cfg.mic_capture_channels,
-                    )
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001
                 if spec.token == "on":
@@ -1260,12 +1327,14 @@ async def run() -> None:
         manual_mics: list[_ManualMicRuntime] = []
         for source_id, device in cfg.manual_mic_sources.items():
             try:
-                manual_mic = await stack.enter_async_context(
+                manual_mic = await _aenter(
+                    stack,
+                    f"manual_mic.{source_id}",
                     make_mic_capture(
                         device,
                         capture_rate=cfg.mic_capture_rate,
                         capture_channels=cfg.mic_capture_channels,
-                    )
+                    ),
                 )
             except (
                 InputDeviceUnavailable,
@@ -1293,7 +1362,7 @@ async def run() -> None:
         _require_usable_input(
             legs, manual_mics, cfg.manual_mic_sources.values(),
         )
-        tts = await stack.enter_async_context(TtsPlayout(
+        tts = await _aenter(stack, "tts", TtsPlayout(
             socket_path=cfg.tts_outputd_socket,
             # outputd owns the final gain decision; this initial value
             # only matters for chirps that play before the first real
@@ -1306,8 +1375,10 @@ async def run() -> None:
             profile_path=cfg.assistant_loudness_profile_path,
         ))
         content_activity = ContentActivityTracker(camilla)
+        # Registered BEFORE start(): stop() is a no-op on a tracker with no
+        # task yet, so a start() that raises still gets torn down.
+        _arelease(stack, "content_activity", content_activity.stop)
         await content_activity.start()
-        stack.push_async_callback(content_activity.stop)
 
         # Wire the playout into the cue manager that was already
         # constructed up top so timer tools could register with a
@@ -1320,8 +1391,9 @@ async def run() -> None:
         # daemon's other voice paths still work.
         _schedule_cue_regen(cues_manager, startup_fire_and_forget)
         _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
-        stack.push_async_callback(
-            _cancel_tracked_tasks, startup_fire_and_forget,
+        _arelease(
+            stack, "startup_tasks", _cancel_tracked_tasks,
+            startup_fire_and_forget,
         )
 
         # Tier 1 of the resilience ladder. Bumped on every mic
@@ -1333,7 +1405,7 @@ async def run() -> None:
         # jasper/watchdog.py header.
         heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
         heartbeat.start()
-        stack.callback(heartbeat.stop)
+        _release(stack, "heartbeat", heartbeat.stop)
         # `wake_event_store` was opened at the top of run() —
         # see the comment block above `_build_registry` for the
         # timing rationale. We just hand it to WakeLoop here.
@@ -1350,7 +1422,7 @@ async def run() -> None:
             conversation_store=conversation_store,
             manual_mics=manual_mics,
         )
-        stack.callback(wake_loop.close_conversation_store)
+        _release(stack, "wake_loop", wake_loop.close_conversation_store)
         # Host-compose the wake funnel at the single cross-provider
         # dispatch seam. Tool implementations and provider adapters stay
         # unaware of WakeLoop / SQLite; the narrow observer records only
@@ -1358,10 +1430,16 @@ async def run() -> None:
         registry.set_dispatch_observer(
             wake_loop.record_tool_dispatch_stage,
         )
-        stack.callback(registry.set_dispatch_observer, None)
+        _release(
+            stack, "dispatch_observer", registry.set_dispatch_observer, None,
+        )
         connection.set_failure_escalation_cb(
             wake_loop.play_supervisor_cue,
         )
+        # Registered here rather than at construction: the escalation cue
+        # above speaks through the wake loop's TtsPlayout, so the connection
+        # must stop before that playout and the mics unwind.
+        _arelease(stack, "connection", connection.stop)
         research_delivery_recorder_ref["fn"] = (
             wake_loop.record_research_delivery
         )
@@ -1376,7 +1454,7 @@ async def run() -> None:
         await timer_scheduler.start()
         # Registered after the TtsPlayout so the unwind cancels in-flight
         # announcements before the playout they speak through closes.
-        stack.push_async_callback(timer_scheduler.stop)
+        _arelease(stack, "timer_scheduler", timer_scheduler.stop)
         if research_scheduler is not None:
             wake_loop.set_research_scheduler(
                 research_scheduler,
@@ -1385,18 +1463,14 @@ async def run() -> None:
             )
             research_scheduler.set_on_done(wake_loop.announce_research_ready)
             await research_scheduler.start()
-            stack.push_async_callback(research_scheduler.stop)
+            _arelease(stack, "research_scheduler", research_scheduler.stop)
         control_socket = await _start_control_socket(
             wake_loop, cfg.voice_control_socket,
         )
 
         # Registered last, so it unwinds first: the socket dispatches into
         # the wake loop and must not take a command after that teardown began.
-        async def _close_control_socket() -> None:
-            control_socket.close()
-            with contextlib.suppress(Exception):
-                await control_socket.wait_closed()
-        stack.push_async_callback(_close_control_socket)
+        await _aenter(stack, "control_socket", control_socket)
         await _serve_while_connecting(
             connect_live_session, wake_loop.run,
         )
