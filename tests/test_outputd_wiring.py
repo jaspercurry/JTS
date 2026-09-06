@@ -230,17 +230,23 @@ def _amixer_double(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _start_monitor(
-    tmp_path: Path, bin_dir: Path, board: dict[str, str], *, card: str = "auto"
+    tmp_path: Path,
+    bin_dir: Path,
+    board: dict[str, str],
+    *,
+    card: str = "auto",
+    control: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """The drift monitor plus its journal, reading `board` through the
-    classifier's own seams."""
+    classifier's own seams. Argv matches the unit's: the card alone, so the
+    control under test is the one the emitter names."""
     journal = tmp_path / "monitor.log"
     return (
         subprocess.Popen(
             [
                 "/bin/bash",
                 str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
-                card, "Headphone",
+                card, *([control] if control is not None else []),
             ],
             cwd=REPO,
             env={
@@ -279,6 +285,11 @@ def _await(
     raise AssertionError(f"monitor never reached {expected}; {log.name}: {text!r}")
 
 
+def _event_fields(line: str) -> dict[str, str]:
+    """One `event=... key=value` journal line as its fields."""
+    return dict(token.split("=", 1) for token in line.split() if "=" in token)
+
+
 def _empty_board(tmp_path: Path) -> dict[str, str]:
     sys_class = tmp_path / "sys" / "class" / "sound"
     proc_asound = tmp_path / "proc" / "asound"
@@ -291,11 +302,11 @@ def _empty_board(tmp_path: Path) -> dict[str, str]:
 
 
 def test_the_boot_pin_and_the_drift_monitor_resolve_their_card_at_runtime():
-    """Neither helper may carry a card id baked in at install time. The monitor
-    unit renders `<helper> auto Headphone` and resolves the dongle on every
-    start; the boot pin takes no card argument at all — it reads the card off
-    the reconciler's record, and is ordered after alsa-restore so a restored
-    snapshot cannot outrun the pin."""
+    """Neither helper may carry a card id — or a mixer control name — baked in
+    at install time. The monitor unit renders `<helper> auto` and resolves both
+    the dongle and the control it pins on every start; the boot pin takes no
+    argument at all — it reads the card off the reconciler's record, and is
+    ordered after alsa-restore so a restored snapshot cannot outrun the pin."""
     init_unit = (REPO / "deploy" / "systemd" / "jasper-dac-init.service").read_text()
     monitor_unit = (
         REPO / "deploy" / "systemd" / "jasper-headphone-monitor.service"
@@ -304,7 +315,7 @@ def test_the_boot_pin_and_the_drift_monitor_resolve_their_card_at_runtime():
     assert "After=sound.target alsa-restore.service" in init_unit
     assert "__APPLE_DONGLE_CARD__" not in init_unit
     assert (
-        "ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__ Headphone"
+        "ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__\n"
         in monitor_unit
     )
     assert 's/__APPLE_DONGLE_CARD__/${APPLE_DONGLE_SERVICE_CARD}/g' in installer_text()
@@ -332,19 +343,43 @@ def test_the_drift_monitor_pins_every_apple_card_the_classifier_names(tmp_path):
 def test_the_drift_monitor_trusts_an_explicit_configured_card(tmp_path):
     """A non-`auto` argument is an operator override (ADR-0235 R2 carries this
     branch forward from the deleted `resolve_cards`): the monitor pins that
-    card directly and never asks the classifier, so no Python is needed."""
+    card directly and never asks the classifier, so no Python is needed — and
+    naming the card is therefore also naming the control on it."""
     bin_dir, log = _amixer_double(tmp_path)
     monitor, _ = _start_monitor(
         tmp_path,
         bin_dir,
         _empty_board(tmp_path),
         card="Dongle_1",
+        control="Headphone",
     )
     try:
         _await(monitor, log, ("-c Dongle_1 sset Headphone 100% unmute",))
     finally:
         monitor.kill()
         monitor.wait()
+
+
+def test_the_drift_monitor_refuses_an_explicit_card_with_no_control(tmp_path):
+    """The override skips the emitter, so it carries no control either: naming
+    a card without one leaves nothing to pin, and the monitor has to say so and
+    exit rather than poll a control name it never resolved."""
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
+            "Dongle_1",
+        ],
+        env={**os.environ, **_empty_board(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    fields = _event_fields(result.stderr.strip())
+    assert fields["event"] == "apple_dongle.headphone_monitor.failed"
+    assert fields["reason"] == "control_required"
 
 
 def test_the_drift_monitor_stays_up_and_re_asks_when_a_card_appears(tmp_path):
@@ -420,7 +455,7 @@ def test_the_drift_monitor_fails_loudly_when_the_classifier_cannot_run(tmp_path)
         [
             "/bin/bash",
             str(REPO / "deploy" / "bin" / "jasper-headphone-monitor"),
-            "auto", "Headphone",
+            "auto",
         ],
         env={**os.environ, "JASPER_OUTPUT_HARDWARE_PYTHON": str(tmp_path / "absent")},
         capture_output=True,
@@ -473,8 +508,18 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "jasper-headphone-monitor.service" not in before_line
     assert 'ACTION=="add|remove|change", SUBSYSTEM=="sound", KERNEL=="controlC*"' in rule
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in rule
-    assert 'ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="5ac/110a/*"' in rule
-    assert 'ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="05ac/110a/*"' in rule
+    # The kernel prints the USB uevent as `PRODUCT=%x/%x/%x`, so the vendor id
+    # arrives unpadded: a second `05ac` spelling matches nothing and only
+    # doubles the RUN if the format ever changes under it.
+    apple_matches = [
+        line
+        for line in rule.splitlines()
+        if "ENV{PRODUCT}" in line and not line.lstrip().startswith("#")
+    ]
+    assert apple_matches == [
+        'ACTION=="remove", SUBSYSTEM=="usb", ENV{PRODUCT}=="5ac/110a/*", '
+        'RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"'
+    ]
     assert 'RUN+="/usr/local/sbin/jasper-output-hardware-hotplug"' in rule
     hotplug = (REPO / "deploy" / "bin" / "jasper-output-hardware-hotplug").read_text()
     assert "--no-block start jasper-audio-hardware-reconcile.service" in hotplug

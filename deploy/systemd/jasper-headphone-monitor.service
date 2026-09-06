@@ -13,7 +13,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__ Headphone
+ExecStart=/usr/local/bin/jasper-headphone-monitor __APPLE_DONGLE_CARD__
 Restart=always
 RestartSec=2
 Nice=10
