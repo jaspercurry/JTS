@@ -83,38 +83,33 @@ REASON_JOURNALD_CAP_REGRESSED = "journald_retention_cap_regressed"
 
 @doctor_check()
 def check_ram() -> CheckResult:
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    kb = int(line.split()[1])
-                    mb = kb // 1024
-                    if mb < 1500:
-                        # The "recommend a bigger board" signal is a
-                        # full-speaker sizing check. Streambox is the
-                        # deliberately-light tier a small board resolves to
-                        # (a Zero 2 W -> streambox), so a board-size warn
-                        # there is a false positive — live memory pressure is
-                        # caught SKU-agnostically by check_memory_headroom.
-                        if evidence.install_profile_is_streambox():
-                            return CheckResult(
-                                "RAM", "ok",
-                                f"{mb} MB total (streambox tier; live "
-                                "pressure covered by the memory-headroom "
-                                "check)",
-                                reason=REASON_RAM_STREAMBOX_TIER,
-                            )
-                        return CheckResult(
-                            "RAM", "warn",
-                            f"{mb} MB total — recommend 2GB Pi 5 for v1 stack",
-                            reason=REASON_RAM_UNDERSIZED,
-                        )
-                    return CheckResult("RAM", "ok", f"{mb} MB total")
-    except Exception:  # noqa: BLE001
-        pass
-    return CheckResult(
-        "RAM", "warn", "couldn't read /proc/meminfo", reason=REASON_RAM_UNREADABLE,
-    )
+    kb = meminfo_kb("MemTotal")
+    if kb is None:
+        return CheckResult(
+            "RAM", "skipped", "couldn't read /proc/meminfo",
+            reason=REASON_RAM_UNREADABLE,
+        )
+    mb = kb // 1024
+    if mb < 1500:
+        # The "recommend a bigger board" signal is a full-speaker sizing
+        # check. Streambox is the deliberately-light tier a small board
+        # resolves to (a Zero 2 W -> streambox), so a board-size warn there
+        # is a false positive — live memory pressure is caught
+        # SKU-agnostically by check_memory_headroom.
+        if evidence.install_profile_is_streambox():
+            return CheckResult(
+                "RAM", "ok",
+                f"{mb} MB total (streambox tier; live "
+                "pressure covered by the memory-headroom "
+                "check)",
+                reason=REASON_RAM_STREAMBOX_TIER,
+            )
+        return CheckResult(
+            "RAM", "warn",
+            f"{mb} MB total — recommend 2GB Pi 5 for v1 stack",
+            reason=REASON_RAM_UNDERSIZED,
+        )
+    return CheckResult("RAM", "ok", f"{mb} MB total")
 
 # "memory-sample" keeps this off the wire while another check is holding a
 # large transient allocation of its own. Today that is voice.py's
@@ -145,12 +140,12 @@ def check_memory_headroom() -> CheckResult:
     avail_kb = meminfo_kb("MemAvailable")
     if avail_kb is None or total_kb == 0:
         return CheckResult(
-            "memory headroom", "warn", "couldn't read /proc/meminfo",
+            "memory headroom", "skipped", "couldn't read /proc/meminfo",
             reason=REASON_MEMORY_HEADROOM_UNREADABLE,
         )
     avail_mb = avail_kb // 1024
     total_mb = total_kb // 1024
-    pct = (avail_kb * 100) // total_kb if total_kb else 0
+    pct = (avail_kb * 100) // total_kb
     warn_mb, fail_mb = memory_headroom_thresholds(total_mb)
     if avail_mb < fail_mb:
         return CheckResult(
@@ -231,8 +226,10 @@ def check_zram_size_ratio() -> CheckResult:
             reason=REASON_ZRAM_UNSIZED,
         )
     if usage.total_bytes == 0:
+        # See ZramUsage's docstring: this zero means MemTotal, not disksize.
         return CheckResult(
-            "zram size", "warn", "couldn't compute ratio",
+            "zram size", "skipped",
+            "couldn't read MemTotal from /proc/meminfo",
             reason=REASON_ZRAM_RATIO_UNREADABLE,
         )
     pct = usage.percent_of_ram
@@ -290,7 +287,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
         controllers = p.read_text().strip().split()
     except OSError:
         return CheckResult(
-            "cgroup memory", "warn", "couldn't read cgroup.controllers",
+            "cgroup memory", "skipped", "couldn't read cgroup.controllers",
             reason=REASON_CGROUP_UNREADABLE,
         )
     if "memory" not in controllers:
