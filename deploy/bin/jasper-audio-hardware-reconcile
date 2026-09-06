@@ -198,12 +198,9 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # so installed-first could pair the new script with a stale lib.
 # Sibling-first keeps script and lib versions in lockstep; the
 # installed copy under /usr/local/sbin has no ../lib sibling and falls
-# through to the installed lib. Deliberately diverges from
-# load_asound_render_lib below (left installed-first): the mid-install
-# --print-env run exits before any asound rendering, and install.sh's
-# own rendering sources that lib straight from REPO_DIR at the top of
-# the file — so the render lib has no new-script/stale-lib exposure
-# worth churning its order for.
+# through to the installed lib. load_asound_render_lib below matches
+# this order for the same reason: the mid-install --print-env run does
+# call into that lib too (apply_observed_composite_policy).
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
         if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
@@ -222,22 +219,21 @@ load_env_file_lib() {
 
 load_asound_render_lib() {
     if [[ -z "$ASOUND_RENDER_LIB" ]]; then
-        if [[ -r /usr/local/lib/jasper/jasper-asound-render.sh ]]; then
-            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
-        else
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-asound-render.sh" ]]; then
             ASOUND_RENDER_LIB="${SCRIPT_DIR}/../lib/jasper-asound-render.sh"
+        else
+            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
         fi
     fi
     if [[ ! -r "$ASOUND_RENDER_LIB" ]]; then
         echo "jasper-audio-hardware-reconcile: missing asound render library: ${ASOUND_RENDER_LIB}" >&2
         exit 66
     fi
-    # The path varies at runtime (installed /usr/local/lib vs in-repo
-    # fallback above), but both resolve to the same library — the
-    # directive points at the repo copy so shellcheck can actually
-    # analyze it. Outside the repo root the directive degrades to
-    # info-level SC1091 ("not following"), below the CI gate's
-    # warning severity.
+    # The path varies at runtime (in-repo sibling vs installed fallback
+    # above), but both resolve to the same library — the directive points
+    # at the repo copy so shellcheck can actually analyze it. Outside the
+    # repo root the directive degrades to info-level SC1091 ("not
+    # following"), below the CI gate's warning severity.
     # shellcheck source=deploy/lib/jasper-asound-render.sh
     source "$ASOUND_RENDER_LIB"
 }
@@ -390,8 +386,14 @@ observe_output_hardware_state() {
     fi
     # Never fatal: every other failure in this function logs and returns, and a
     # full /run must not skip the DAC-role policy the caller runs next.
-    publish_management_transport_marker \
-        "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
+    # --print-env's usage text promises no mutations (should_write=0), which
+    # holds regardless of caller; today that spares install.sh's mid-install
+    # probe of the PREVIOUS build (#4123) from flipping this gate on a stale
+    # verdict.
+    if [[ "$should_write" == "1" ]]; then
+        publish_management_transport_marker \
+            "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
+    fi
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown} status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}"
 }
