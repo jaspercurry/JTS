@@ -749,9 +749,9 @@ def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
     tmp_path: Path,
 ) -> None:
     """`clear`'s reason is whatever the marker body it just removed carried —
-    not a description of what un-parked voice this pass. Free-prose today
-    (a MIC_ABSENT_REASONS code since R7) and emitted as-is: this pass reads
-    the body it is deleting, it does not re-derive it.
+    not a description of what un-parked voice this pass. It is a
+    MIC_ABSENT_REASONS code, emitted as-is: this pass reads the body it is
+    deleting, it does not re-derive it.
 
     ``profile="custom"``, not ``mode="auto"``: a bare auto pass over a
     real 6-channel XVF card resolves the managed chip-AEC profile and marks
@@ -1605,7 +1605,7 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
 
 
-# --- the marker body is a closed code vocabulary (R7) ------------------------
+# --- the marker body is a closed code vocabulary -----------------------------
 #
 # Every `mark_voice_input_absent` site writes `reason=<code>` from
 # jasper.mic_presence.MIC_ABSENT_REASONS plus the prose that code cannot carry

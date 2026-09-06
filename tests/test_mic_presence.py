@@ -19,8 +19,10 @@ import pytest
 from jasper.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
     MIC_ABSENT_CHIP_AEC_VALIDATING,
+    MIC_ABSENT_GENERIC_DETAIL,
     MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
     MIC_ABSENT_UNKNOWN,
+    MicPresence,
     read_mic_presence,
     voice_park_is_transient,
 )
@@ -127,25 +129,42 @@ def test_marker_present_is_absent(paths: tuple[Path, Path]) -> None:
     assert "reconciles automatically" in mp.summary
 
 
+def test_summary_falls_back_to_generic_prose_never_the_code() -> None:
+    """An absent detail must not leak the machine `reason` code into the
+    human-facing summary — it falls back to generic prose instead."""
+    mp = MicPresence(present=False, reason=MIC_ABSENT_UNKNOWN, detail="")
+    assert mp.summary == (
+        f"input unavailable — {MIC_ABSENT_GENERIC_DETAIL}; jasper-voice is "
+        "parked and reconciles automatically when the condition is resolved"
+    )
+
+
 @pytest.mark.parametrize(
-    ("body", "reason"),
+    ("body", "reason", "detail"),
     [
-        (f"reason={MIC_ABSENT_ACCESSORY_UNKNOWN}\n", MIC_ABSENT_ACCESSORY_UNKNOWN),
+        (f"reason={MIC_ABSENT_ACCESSORY_UNKNOWN}\n", MIC_ABSENT_ACCESSORY_UNKNOWN, ""),
         # An older build's free prose, and a marker with no reason line at all:
-        # neither may pass through as a code a consumer could switch on.
-        ("reason=no candidate microphone present\n", MIC_ABSENT_UNKNOWN),
-        ("", MIC_ABSENT_UNKNOWN),
+        # neither may pass through as a code a consumer could switch on. The
+        # prose case's raw token becomes `detail` instead, since the marker
+        # carries no `detail=` of its own — the pre-upgrade prose still shows.
+        (
+            "reason=no candidate microphone present\n",
+            MIC_ABSENT_UNKNOWN,
+            "no candidate microphone present",
+        ),
+        ("", MIC_ABSENT_UNKNOWN, ""),
     ],
     ids=("known", "prose", "no-reason-line"),
 )
 def test_only_a_vocabulary_code_reads_back_as_one(
-    paths: tuple[Path, Path], body: str, reason: str
+    paths: tuple[Path, Path], body: str, reason: str, detail: str
 ) -> None:
     _, marker = paths
     marker.write_text(body)
     mp = read_mic_presence()
     assert mp.present is False
     assert mp.reason == reason
+    assert mp.detail == detail
 
 
 @pytest.mark.parametrize(

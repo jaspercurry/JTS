@@ -65,6 +65,7 @@ from pathlib import Path
 
 from jasper.accessories.mic_env import read_accessory_mic_sources
 from jasper.atomic_io import read_json_mapping
+from jasper.env_load import parse_env_text
 from jasper.voice.input_presence import (
     voice_input_absent_marker_lines,
     voice_parked_no_mic,
@@ -112,6 +113,10 @@ MIC_ABSENT_REASONS: frozenset[str] = frozenset(
 TRANSIENT_MIC_ABSENT_REASONS: frozenset[str] = frozenset(
     {MIC_ABSENT_CHIP_AEC_VALIDATING}
 )
+
+#: ``summary``'s fallback when a park carries no ``detail=`` prose. Never the
+#: ``reason`` code itself — that is a machine token, not a headline.
+MIC_ABSENT_GENERIC_DETAIL = "no usable microphone detected"
 
 
 @dataclass(frozen=True)
@@ -183,7 +188,7 @@ class MicPresence:
     def summary(self) -> str:
         """One-line, human-facing status for headlines / dashboards."""
         if not self.present:
-            why = self.detail or self.reason or "no usable microphone detected"
+            why = self.detail or MIC_ABSENT_GENERIC_DETAIL
             return (
                 f"input unavailable — {why}; jasper-voice is parked and "
                 "reconciles automatically when the condition is resolved"
@@ -247,15 +252,15 @@ def _marker_fields() -> tuple[str, str]:
 
     An unrecognised or missing ``reason=`` is ``MIC_ABSENT_UNKNOWN``, never the
     raw token: the code is a closed wire vocabulary, so prose from an older
-    build must not pass through as one.
+    build must not pass through as one. When that happens and the marker
+    carries no ``detail=`` of its own, the unrecognised token becomes the
+    detail instead, so an older build's free-form reason still displays.
     """
-    code = ""
-    detail = ""
-    for line in voice_input_absent_marker_lines():
-        if not code and line.startswith("reason="):
-            code = line[len("reason="):].strip()
-        if not detail and line.startswith("detail="):
-            detail = line[len("detail="):].strip()
+    fields = parse_env_text("\n".join(voice_input_absent_marker_lines()))
+    code = fields.get("reason", "")
+    detail = fields.get("detail", "")
+    if code and code not in MIC_ABSENT_REASONS and not detail:
+        detail = code
     return (
         code if code in MIC_ABSENT_REASONS else MIC_ABSENT_UNKNOWN,
         detail,
