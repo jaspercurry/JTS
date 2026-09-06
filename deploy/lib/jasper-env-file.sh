@@ -449,7 +449,10 @@ jasper_env_file_unset() {
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
         { print }
     ' "$file" > "$tmp"
-    _jasper_env_file_publish "$tmp" "$file" "$file_mode" || rc=1
+    if ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+        rm -f "$tmp"
+        rc=1
+    fi
     exec {lock_fd}>&-
     return "$rc"
 }

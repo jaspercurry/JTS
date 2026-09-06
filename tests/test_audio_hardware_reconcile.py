@@ -171,6 +171,7 @@ def _run_reconcile(
         env=env,
         text=True,
         capture_output=True,
+        timeout=180,
     )
 
 
