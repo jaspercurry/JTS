@@ -409,7 +409,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing output{}",
-            reason=REASON_FANIN_STATUS_MISSING_OUTPUT,
+            reason=REASON_FANIN_STATUS_MISSING_OUTPUT, speaker_silent=True,
         )
     # The ring is the only transport a running fan-in can be on (ADR-0100), so
     # the expectation is a constant, NOT a mapping from the persisted file:
@@ -435,7 +435,7 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS is missing output.ring metrics — "
             "fan-in is not actually writing Ring A. Check "
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
-            reason=REASON_FANIN_STATUS_MISSING_RING,
+            reason=REASON_FANIN_STATUS_MISSING_RING, speaker_silent=True,
         )
 
     inputs = data.get("inputs")

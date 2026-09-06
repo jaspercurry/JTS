@@ -32,23 +32,27 @@ def test_check_camilla_service_ok_when_enabled_and_active(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "enabled, active, reason",
+    "enabled, active, reason, silent",
     [
         # The clean-stop state (#2163): enabled, cleanly inactive, never
         # `failed`, so neither check_service_runtime_state nor
         # check_camilla_websocket names it.
-        ("enabled", "inactive", audio_runtime_camilla.REASON_CAMILLA_INACTIVE),
-        ("disabled", "inactive", audio_runtime_camilla.REASON_CAMILLA_UNIT_NOT_ENABLED),
-        ("not-found", "inactive", audio_runtime_camilla.REASON_CAMILLA_UNIT_MISSING),
+        ("enabled", "inactive",
+         audio_runtime_camilla.REASON_CAMILLA_INACTIVE, True),
+        ("disabled", "inactive",
+         audio_runtime_camilla.REASON_CAMILLA_UNIT_NOT_ENABLED, True),
+        ("not-found", "inactive",
+         audio_runtime_camilla.REASON_CAMILLA_UNIT_MISSING, True),
     ],
 )
-def test_check_camilla_service_failures(monkeypatch, enabled, active, reason):
+def test_check_camilla_service_failures(monkeypatch, enabled, active, reason, silent):
     _seed_units(enabled=enabled, active=active)
 
     result = audio_runtime_camilla.check_camilla_service()
 
-    assert result.status == "fail"
-    assert result.reason == reason
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "fail", reason, silent,
+    )
 
 
 @pytest.mark.parametrize(
@@ -88,28 +92,31 @@ def test_status_consumers_classify_non_object_root_without_crashing(
     assert result.reason == expected_reason
 
 
-# The output chain's three unit checks, in chain order, each with the reason
-# their one systemd ladder (`_shared._service_state_failure`) reports for an
-# enabled-but-not-active unit. The guards below pin that ladder; delete them
-# when it is replaced.
+# Renderer → ring → fan-in → CamillaDSP → outputd → DAC is the only path out,
+# so a fail from any of these three means no source can be heard now. They
+# share one systemd ladder, `_shared._service_state_failure`; delete the
+# guards below when it is replaced.
 _OUTPUT_CHAIN_CHECKS = (
-    (audio_runtime_fanin.check_fanin_service,
-     audio_runtime_fanin.REASON_FANIN_INACTIVE),
-    (audio_runtime_camilla.check_camilla_service,
-     audio_runtime_camilla.REASON_CAMILLA_INACTIVE),
-    (audio_runtime_outputd.check_outputd_service,
-     audio_runtime_outputd.REASON_OUTPUTD_INACTIVE),
+    audio_runtime_fanin.check_fanin_service,
+    audio_runtime_camilla.check_camilla_service,
+    audio_runtime_outputd.check_outputd_service,
 )
-_OUTPUT_CHAIN_IDS = [check.__name__ for check, _ in _OUTPUT_CHAIN_CHECKS]
+_OUTPUT_CHAIN_IDS = [check.__name__ for check in _OUTPUT_CHAIN_CHECKS]
 
 
 @pytest.mark.parametrize(
-    "check, reason", _OUTPUT_CHAIN_CHECKS, ids=_OUTPUT_CHAIN_IDS,
+    "check, reason",
+    [
+        (audio_runtime_fanin.check_fanin_service,
+         audio_runtime_fanin.REASON_FANIN_INACTIVE),
+        (audio_runtime_outputd.check_outputd_service,
+         audio_runtime_outputd.REASON_OUTPUTD_INACTIVE),
+    ],
+    ids=["check_fanin_service", "check_outputd_service"],
 )
 def test_a_stopped_output_chain_unit_reads_speaker_silent(check, reason):
-    """Renderer → ring → fan-in → CamillaDSP → outputd → DAC is the only path
-    out, so a unit of it that is enabled and not active means no source can be
-    heard now."""
+    """camilla's own ladder rows are pinned by
+    ``test_check_camilla_service_failures`` above."""
     _seed_units(active="inactive")
 
     result = check()
@@ -119,9 +126,7 @@ def test_a_stopped_output_chain_unit_reads_speaker_silent(check, reason):
     )
 
 
-@pytest.mark.parametrize(
-    "check", [check for check, _ in _OUTPUT_CHAIN_CHECKS], ids=_OUTPUT_CHAIN_IDS,
-)
+@pytest.mark.parametrize("check", _OUTPUT_CHAIN_CHECKS, ids=_OUTPUT_CHAIN_IDS)
 def test_no_systemd_claims_nothing_about_the_speaker(check):
     """Nothing was observed at all, so the row may assert no silence."""
     evidence.seed("units", None)
@@ -137,7 +142,7 @@ def test_a_broken_output_chain_makes_the_whole_report_read_silent():
     """The report-level consequence an operator sees at the top of a run."""
     _seed_units(active="inactive")
 
-    assert summarize([check() for check, _ in _OUTPUT_CHAIN_CHECKS]) == {
+    assert summarize([check() for check in _OUTPUT_CHAIN_CHECKS]) == {
         "fails": 3, "warns": 0, "speaker_silent": True,
     }
 

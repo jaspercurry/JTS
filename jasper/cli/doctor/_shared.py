@@ -280,7 +280,8 @@ def _service_state_failure(
     section, so anything other than ``enabled``/``enabled-runtime`` (including
     ``static``, ``disabled``, ``indirect``, ``masked``) means the unit will not
     come up on its own. `journalctl -u <unit>` is the next step for every
-    caller, so the detail says so rather than repeating a per-unit sentence."""
+    caller, so the detail says so rather than repeating a per-unit sentence.
+    ``speaker_silent`` rides the fail arms only: `skipped` observed nothing."""
     from ._evidence import evidence
 
     state = evidence.unit_state(unit)
