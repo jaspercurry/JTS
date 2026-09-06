@@ -116,8 +116,9 @@ class _BaseTts:
         self.end_segment_calls = 0
         self.wait_drained_calls = 0
 
-    async def write_segment(self, *_a, **_k) -> None:
+    async def write_segment(self, *_a, **_k) -> bool:
         self.write_calls += 1
+        return True
 
     async def end_segment(self) -> None:
         self.end_segment_calls += 1
@@ -140,10 +141,11 @@ class _ChunkBargeTts(_BaseTts):
         super().__init__()
         self._turn = turn
 
-    async def write_segment(self, *_a, **_k) -> None:
+    async def write_segment(self, *_a, **_k) -> bool:
         if self.write_calls == 0:
             self._turn.request_local_interrupt()
         self.write_calls += 1
+        return True
 
 
 class _DrainBargeTts(_BaseTts):
@@ -158,6 +160,16 @@ class _DrainBargeTts(_BaseTts):
         self.wait_drained_calls += 1
         self._turn.request_local_interrupt()
         await asyncio.sleep(0.02)
+
+
+class _RefusedFirstWriteTts(_BaseTts):
+    """The admission seam refuses the first chunk — an armed correction
+    window drops the PCM rather than queueing it (see
+    ``TtsPlayout.set_emission_admission``)."""
+
+    async def write_segment(self, *_a, **_k) -> bool:
+        self.write_calls += 1
+        return self.write_calls > 1
 
 
 class _FlushRaisesTts(_ChunkBargeTts):
@@ -193,6 +205,24 @@ def test_response_started_observed_once_before_first_playout_write():
 
     assert write_counts == [0]
     assert first_write_counts == [1]
+    assert tts.write_calls == 3
+
+
+def test_first_write_waits_for_a_write_the_playout_accepted():
+    """`first_write` is the hand-off to fan-in, so a refused write must not
+    stamp it: those bytes are dropped, not queued, and nobody heard them.
+    Stamping on the attempt would time a chunk that never reached a
+    speaker."""
+    turn = _FakeTurn(n_chunks=3)
+    tts = _RefusedFirstWriteTts()
+    first_write_counts: list[int] = []
+
+    async def first_write() -> None:
+        first_write_counts.append(tts.write_calls)
+
+    asyncio.run(_play_responses(turn, tts, on_first_write=first_write))
+
+    assert first_write_counts == [2]
     assert tts.write_calls == 3
 
 
@@ -379,10 +409,11 @@ class _LedgerTts(_BaseTts):
         self._turn = turn
         self._played_ms = played_ms
 
-    async def write_segment(self, *_a, **_k) -> None:
+    async def write_segment(self, *_a, **_k) -> bool:
         if self.write_calls == 0:
             self._turn.request_local_interrupt()
         self.write_calls += 1
+        return True
 
     async def flush(self):
         self.flush_calls += 1
@@ -428,10 +459,11 @@ class _SeamFlushRaisesTts(_BaseTts):
         super().__init__()
         self._turn = turn
 
-    async def write_segment(self, *_a, **_k) -> None:
+    async def write_segment(self, *_a, **_k) -> bool:
         if self.write_calls == 0:
             self._turn.request_local_interrupt()
         self.write_calls += 1
+        return True
 
     async def flush(self):
         self.flush_calls += 1

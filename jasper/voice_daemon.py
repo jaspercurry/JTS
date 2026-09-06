@@ -1276,8 +1276,8 @@ class WakeLoop:
             def set_emission_admission(self, _admission) -> None:
                 return None
 
-            async def write_segment(self, *_args, **_kwargs) -> None:
-                return None
+            async def write_segment(self, *_args, **_kwargs) -> bool:
+                return True
 
             async def resume_content_meter(self) -> None:
                 return None
@@ -4267,26 +4267,32 @@ class WakeLoop:
         """Publish this turn's ledger and close the timeline.
 
         Every line carries `outcome=` so a journal reader can filter; a turn
-        that died inside `_begin_turn` emits one too — it had already ducked
-        the music and chirped. Closing the timeline keeps teardown stages
-        (the off-chirp, the teardown end_input) out of the next turn.
+        that died on the way into the session emits one too — it had already
+        ducked the music and chirped. `/state.voice.last_turn_ms` keeps only
+        `complete` turns: it is read as "how long a turn takes", and an
+        aborted one's stages are a truncated ruler. Closing the timeline
+        keeps teardown stages (the off-chirp, the teardown end_input) out of
+        the next turn, so it happens even if the log write raises.
         """
         timeline = self._turn_timeline_ms()
-        if timeline:
-            log_event(
-                logger,
-                "turn.timeline",
-                anchor=self._turn_anchor_kind,
-                endpointer=self._endpointer_label(),
-                outcome=outcome,
-                **timeline,
-            )
-            self._last_turn_ms = {
-                "anchor": self._turn_anchor_kind,
-                "outcome": outcome,
-                **timeline,
-            }
-        self._turn_anchor = 0.0
+        try:
+            if timeline:
+                log_event(
+                    logger,
+                    "turn.timeline",
+                    anchor=self._turn_anchor_kind,
+                    endpointer=self._endpointer_label(),
+                    outcome=outcome,
+                    **timeline,
+                )
+                if outcome == "complete":
+                    self._last_turn_ms = {
+                        "anchor": self._turn_anchor_kind,
+                        "outcome": outcome,
+                        **timeline,
+                    }
+        finally:
+            self._turn_anchor = 0.0
 
     def session_status(self) -> dict:
         """Diagnostic snapshot — exposed via the control socket so
@@ -4343,9 +4349,9 @@ class WakeLoop:
             # is WAKE it reports the previous turn's mechanism (`input_ended`
             # above has the same shape). Read either alongside `state`.
             "endpointer": self._endpointer_label(),
-            # The previous turn's `event=turn.timeline` deltas (`anchor`
-            # says what ms 0 is). Same not-cleared-at-turn-end shape as
-            # `endpointer`; `{}` until this daemon has served a turn.
+            # The last COMPLETE turn's `event=turn.timeline` deltas
+            # (`anchor` says what ms 0 is). Same not-cleared-at-turn-end
+            # shape as `endpointer`; `{}` until this daemon served a turn.
             "last_turn_ms": dict(self._last_turn_ms),
             "music_dbfs": (
                 round(self._content_activity.music_dbfs, 1)
@@ -4692,7 +4698,7 @@ class WakeLoop:
         # plus the cleanup awaits below.
         await run_phase(
             "turn_timeline",
-            lambda: self._emit_turn_timeline("begin_failed"),
+            lambda: self._emit_turn_timeline("aborted"),
         )
         if turn is not None:
             await run_phase("turn_release", turn.release)

@@ -254,15 +254,17 @@ async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
     assert int(fields["total_ms"]) < 1000
 
 
-async def test_a_begin_that_dies_after_the_anchor_still_publishes_a_line(
+async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
     caplog,
 ):
-    """A turn can duck the music, chirp, and then die inside `_begin_turn`
-    (acquire failure, connection lost mid-open). It reached the household's
-    ears, so it owes a ledger line — an unrecorded turn reads as "the
-    speaker did nothing" when the operator counts turns against `outcome`.
-    The failed turn must also close its timeline, so the next one is not
-    measured from the dead one's anchor."""
+    """A turn can duck the music, chirp, and then die on the way into the
+    session (acquire failure, peering notify, connection lost mid-open). It
+    reached the household's ears, so it owes a journal line — an unrecorded
+    turn reads as "the speaker did nothing" when the operator counts turns
+    against `outcome`. It does NOT owe `/state.voice.last_turn_ms`, which is
+    read as "how long a turn takes": a truncated ruler there is a wrong
+    number, not a blank one. The aborted turn must also close its timeline,
+    so the next one is not measured from the dead one's anchor."""
     import logging
 
     from tests._log_events import event_field_maps
@@ -273,11 +275,11 @@ async def test_a_begin_that_dies_after_the_anchor_still_publishes_a_line(
 
     await wl._cleanup_after_failed_begin()
 
-    (failed,) = event_field_maps(caplog, "turn.timeline", outcome="begin_failed")
-    assert failed["anchor"] == "wake"
-    assert int(failed["cue_ms"]) >= 0
+    (aborted,) = event_field_maps(caplog, "turn.timeline", outcome="aborted")
+    assert aborted["anchor"] == "wake"
+    assert int(aborted["cue_ms"]) >= 0
     assert wl._turn_anchor == 0.0
-    assert wl.session_status()["last_turn_ms"]["outcome"] == "begin_failed"
+    assert wl.session_status()["last_turn_ms"] == {}
 
     # The next turn anchors fresh rather than inheriting the dead anchor.
     _arm_turn(wl, wake=False)
@@ -287,6 +289,7 @@ async def test_a_begin_that_dies_after_the_anchor_still_publishes_a_line(
     (served,) = event_field_maps(caplog, "turn.timeline", outcome="complete")
     assert int(served["total_ms"]) < 1000
     assert "cue_ms" not in served
+    assert wl.session_status()["last_turn_ms"]["outcome"] == "complete"
 
 
 async def test_push_to_talk_release_stamps_end_of_input(caplog):

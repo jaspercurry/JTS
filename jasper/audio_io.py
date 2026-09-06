@@ -1193,11 +1193,12 @@ class TtsPlayout:
         segment_kind: str = "assistant",
         source_profile=None,
         pcm_wide: bool = False,
-    ) -> None:
+    ) -> bool:
         """Sole emission seam: every assistant byte passes through here —
         cues, earcons, announcements and live-session TTS, directly or via
-        `write`. Refused bytes are dropped, not queued, so drain accounting
-        is untouched and an episode holding output still releases it."""
+        `write`. False means the admission authority refused: the bytes are
+        dropped, not queued, so drain accounting is untouched and an episode
+        holding output still releases it."""
         admission = self._emission_admission
         refusal = admission() if admission is not None else None
         if refusal is not None:
@@ -1212,7 +1213,7 @@ class TtsPlayout:
                     reason=refusal,
                     segment_kind=segment_kind,
                 )
-            return
+            return False
         self._emission_refusal_logged = False
         await self._write_segment(
             pcm,
@@ -1221,6 +1222,7 @@ class TtsPlayout:
             source_profile=source_profile,
             pcm_wide=pcm_wide,
         )
+        return True
 
     def expected_drain_at(self) -> float:
         """Monotonic deadline at which the last-queued sample's tail
