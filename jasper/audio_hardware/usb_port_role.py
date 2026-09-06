@@ -35,6 +35,7 @@ from .i2s_hat import (
     I2sHatCollision,
     configured_i2s_overlays,
     detected_i2s_hat_profile,
+    hat_managed,
     read_i2s_hat_intent,
     render_i2s_hat_boot_config,
 )
@@ -353,7 +354,7 @@ def reconcile_boot_config(
     if desired_profile is None and intent_declared:
         assert i2s_hat_intent_path is not None
         desired_profile = read_i2s_hat_intent(i2s_hat_intent_path)
-    manage_hat = detected_id is not None or intent_declared
+    manage_hat = hat_managed(detected_id, i2s_hat_intent_path)
     config_path = Path(boot_config_path)
     if not config_path.is_file():
         state = resolve_system_usb_port_role(

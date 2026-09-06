@@ -13,6 +13,7 @@ import pytest
 from jasper.audio_hardware.i2s_hat import I2S_HAT_BLOCK_BEGIN, I2S_HAT_BLOCK_END
 from jasper.cli.doctor.boot_config import (
     REASON_BOOT_CONFIG_UNREADABLE,
+    REASON_I2S_HAT_BLOCK_MALFORMED,
     REASON_ORPHAN_MANAGED_I2S_BLOCK,
     REASON_OVERLAY_MISSING,
     REASON_OVERLAY_PRESENT,
@@ -138,34 +139,57 @@ def test_i2s_dac_check_skips_with_no_saved_topology(monkeypatch, tmp_path):
 # ---------------------------------- orphaned managed I2S HAT block ----------
 
 
-def test_i2s_hat_block_orphaned_warns_when_no_hat_is_managed(monkeypatch, tmp_path):
-    """A HAT that was only ever auto-detected, once removed, leaves its block
-    behind forever (i2s_hat_apply never touches an unmanaged block, #4027 R3)."""
+@pytest.mark.parametrize(
+    "intent_file_present,expected_status,expected_reason",
+    [
+        pytest.param(
+            False, "warn", REASON_ORPHAN_MANAGED_I2S_BLOCK, id="not_managed",
+        ),
+        pytest.param(True, "ok", None, id="managed_via_intent_file"),
+    ],
+)
+def test_i2s_hat_block_orphan_check_reflects_whether_the_hat_is_managed(
+    monkeypatch, tmp_path, intent_file_present, expected_status, expected_reason
+):
+    """A managed block with no HAT to justify it WARNs (i2s_hat_apply never
+    touches an unmanaged block, #4027 R3); an intent file at
+    ``JASPER_I2S_HAT_INTENT_FILE`` -- the real ``i2s_hat_managed``, no
+    monkeypatch -- is what clears it, same env var the reconciler shell
+    resolves and hands to its own CLI."""
     boot_config = tmp_path / "config.txt"
     boot_config.write_text(_MANAGED_I2S_BLOCK, encoding="utf-8")
     monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(boot_config))
-    monkeypatch.setattr(
-        "jasper.cli.doctor.boot_config.i2s_hat_managed", lambda: False
+    intent_file = tmp_path / "i2s_hat.env"
+    if intent_file_present:
+        intent_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("JASPER_I2S_HAT_INTENT_FILE", str(intent_file))
+
+    result = check_i2s_hat_block_orphaned()
+
+    assert result.status == expected_status
+    if expected_reason is None:
+        assert result.reason != REASON_ORPHAN_MANAGED_I2S_BLOCK
+    else:
+        assert result.reason == expected_reason
+
+
+def test_i2s_hat_block_orphan_check_warns_on_a_malformed_block(monkeypatch, tmp_path):
+    """A mangled BEGIN marker with a live ``dtoverlay=`` line still inside it
+    is neither a clean absence nor a parseable block -- the canonical parser
+    raises, and this must surface as a warn, not a false "ok" (#4027 R3)."""
+    boot_config = tmp_path / "config.txt"
+    boot_config.write_text(
+        f"## {I2S_HAT_BLOCK_BEGIN[2:]}\n"
+        "dtoverlay=hifiberry-dac8x\n"
+        f"{I2S_HAT_BLOCK_END}\n",
+        encoding="utf-8",
     )
+    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(boot_config))
 
     result = check_i2s_hat_block_orphaned()
 
     assert result.status == "warn"
-    assert result.reason == REASON_ORPHAN_MANAGED_I2S_BLOCK
-
-
-def test_i2s_hat_block_present_and_managed_is_ok(monkeypatch, tmp_path):
-    boot_config = tmp_path / "config.txt"
-    boot_config.write_text(_MANAGED_I2S_BLOCK, encoding="utf-8")
-    monkeypatch.setenv("JTS_BOOT_CONFIG_FILE", str(boot_config))
-    monkeypatch.setattr(
-        "jasper.cli.doctor.boot_config.i2s_hat_managed", lambda: True
-    )
-
-    result = check_i2s_hat_block_orphaned()
-
-    assert result.status == "ok"
-    assert result.reason != REASON_ORPHAN_MANAGED_I2S_BLOCK
+    assert result.reason == REASON_I2S_HAT_BLOCK_MALFORMED
 
 
 def test_i2s_hat_block_orphan_check_skips_the_hat_read_with_no_block(

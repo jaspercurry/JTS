@@ -262,6 +262,13 @@ class Evidence:
 
         return self.get("camilla_config_text", read)
 
+    def boot_config_text(self) -> str | None:
+        """``config.txt``'s content, read once; None when it could not be
+        read."""
+        from ...audio_hardware.config_txt import read_boot_config_or_none
+
+        return self.get("boot_config_text", read_boot_config_or_none)
+
     def output_hardware_state(self) -> Any:
         from ...output_hardware import load_state
 

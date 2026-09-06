@@ -17,17 +17,12 @@ HAT block staying in config.txt after the HAT it was written for is gone
 """
 from __future__ import annotations
 
-from ...audio_hardware.config_txt import (
-    boot_config_path,
-    managed_block_present,
-    overlay_declared_anywhere,
-    read_boot_config_or_none,
-)
+from ...audio_hardware.config_txt import boot_config_path, overlay_declared_anywhere
 from ...audio_hardware.dac import by_id
 from ...audio_hardware.i2s_hat import (
-    I2S_HAT_BLOCK_BEGIN,
     configured_i2s_overlays,
     i2s_hat_managed,
+    managed_i2s_hat_block_present,
 )
 from ...control.transport_park import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
 from ...output_topology import OutputTopologyError
@@ -41,6 +36,7 @@ REASON_OVERLAY_PRESENT = "overlay_present"
 REASON_OVERLAY_PRESENT_SCOPED = "overlay_present_scoped"
 REASON_OVERLAY_MISSING = "overlay_missing"
 REASON_ORPHAN_MANAGED_I2S_BLOCK = "orphan_managed_i2s_block"
+REASON_I2S_HAT_BLOCK_MALFORMED = "i2s_hat_block_malformed"
 
 
 def _skipped(detail: str) -> CheckResult:
@@ -70,7 +66,7 @@ def check_i2s_dac_overlay_persists() -> CheckResult:
         return _skipped(f"{device_id} is not an I2S HAT DAC")
 
     config_path = boot_config_path()
-    content = read_boot_config_or_none(config_path)
+    content = evidence.boot_config_text()
     if content is None:
         return CheckResult(
             label,
@@ -116,7 +112,7 @@ def check_i2s_hat_block_orphaned() -> CheckResult:
 
     label = "I2S HAT boot block"
     config_path = boot_config_path()
-    content = read_boot_config_or_none(config_path)
+    content = evidence.boot_config_text()
     if content is None:
         return CheckResult(
             label,
@@ -125,7 +121,17 @@ def check_i2s_hat_block_orphaned() -> CheckResult:
             "I2S HAT block remains",
             reason=REASON_BOOT_CONFIG_UNREADABLE,
         )
-    if not managed_block_present(content, I2S_HAT_BLOCK_BEGIN):
+    try:
+        block_present = managed_i2s_hat_block_present(content)
+    except ValueError:
+        return CheckResult(
+            label,
+            "warn",
+            f"a managed I2S HAT block in {config_path} is malformed; repair "
+            "or remove it by hand",
+            reason=REASON_I2S_HAT_BLOCK_MALFORMED,
+        )
+    if not block_present:
         return CheckResult(label, "ok", "no managed I2S HAT block present")
     if i2s_hat_managed():
         return CheckResult(
