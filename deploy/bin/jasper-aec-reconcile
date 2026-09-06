@@ -112,11 +112,7 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # with a stale lib. Sibling-first keeps script and lib versions in
 # lockstep wherever the script runs from; the installed copy under
 # /usr/local/sbin has no ../lib/jasper-env-file.sh sibling, so it falls
-# through to the installed lib. This deliberately diverges from
-# load_asound_render_lib's installed-first order in
-# jasper-audio-hardware-reconcile — see the rationale comment there
-# (the render lib's functions are never exercised by a mid-install
-# repo-script run, so its order is left alone).
+# through to the installed lib.
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
         if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
@@ -287,20 +283,6 @@ observe_mic_profile_state() {
     fi
 }
 
-load_env_file() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        set -a
-        # Runtime-only env files (/etc/jasper/jasper.env and the
-        # wizard-owned /var/lib/jasper/*.env) — they don't exist in the
-        # repo, so shellcheck can never follow them. Directives bind to
-        # the next command, so this must sit on the `source` line itself.
-        # shellcheck source=/dev/null
-        source "$file"
-        set +a
-    fi
-}
-
 ensure_mode_file() {
     local inferred_profile
     if [[ -f "$MODE_FILE" ]]; then
@@ -350,9 +332,8 @@ ensure_mode_file() {
 # specs like plughw:CARD=<card>,DEV=0 and breaking read-back
 # idempotence).
 set_env_var() {
-    # /etc/jasper/jasper.env is non-secret runtime config. jasper-control
-    # fresh-reads it for /state after this reconciler mutates AEC/profile
-    # keys, so keep the file group-readable (install migration owns group).
+    # jasper-control fresh-reads this file for /state after the reconciler
+    # mutates AEC/profile keys, so keep it group-readable (group is install's).
     mark_voice_restart_if_changed "$2" "$3"
     jasper_env_file_set "$1" "$2" "$3" 0640 0755
 }
@@ -396,14 +377,14 @@ voice_relevant_env_key() {
 }
 
 # The pass-start snapshot of $ENV_FILE that mark_voice_restart_if_changed
-# compares against. Taken from the SHELL immediately after load_env_file
-# "$ENV_FILE" (so the shared lib's own parse supplies the unquoted values),
-# and never refreshed: the live shell variables are NOT a usable "before",
-# because observe_mic_profile_state and the chip-AEC policy resolver eval
-# resolver payloads over them mid-pass — comparing a resolved value against
-# itself made all ten JASPER_XVF_* writes a tautology that could never trip
-# the gate. Names are captured too (PASS_START_ENV_KEYS) so "absent at pass
-# start" reads as "", the same answer an absent key gave before.
+# compares against. Taken from the SHELL immediately after
+# jasper_env_file_export "$ENV_FILE" (so the shared lib's own parse supplies
+# the unquoted values) and never refreshed: the live shell variables are NOT a
+# usable "before", because observe_mic_profile_state and the chip-AEC policy
+# resolver eval resolver payloads over them mid-pass — comparing a resolved
+# value against itself made all ten JASPER_XVF_* writes a tautology that could
+# never trip the gate. Names are captured too (PASS_START_ENV_KEYS) so "absent
+# at pass start" reads as "", the same answer an absent key gave before.
 PASS_START_ENV_KEYS=""
 snapshot_pass_start_env() {
     local line key
@@ -866,17 +847,7 @@ chip_aec_block_detail() {
 }
 
 mode_file_value() {
-    local key="$1"
-    local default="$2"
-    local line
-    if [[ -f "$MODE_FILE" ]]; then
-        line="$(grep -E "^${key}=" "$MODE_FILE" | tail -n 1 || true)"
-        if [[ -n "$line" ]]; then
-            printf '%s\n' "${line#*=}"
-            return
-        fi
-    fi
-    printf '%s\n' "$default"
+    jasper_env_file_get "$MODE_FILE" "$1" || printf '%s\n' "$2"
 }
 
 # The closest profile for a mode file written before profiles existed. A
@@ -1627,15 +1598,24 @@ accessory_mic_present() {
 # bridge's dead udp: carrier.
 # Do NOT re-mode the parent dir here — same trap as ensure_mode_file (#827).
 mark_voice_input_absent() {
-    local reason="${1:-no usable microphone present}"
+    # $1 is a code from the closed vocabulary in jasper/mic_presence.py
+    # (MIC_ABSENT_REASONS); anything outside it reads back as `unknown`, and
+    # whether the park is a transient round trip is a property of the code
+    # there, not a flag written here. $2 is operator prose for that code — a
+    # probe status, the unit to inspect — published as
+    # /state.microphone.detail and matched on by nobody.
+    local code="${1:-unknown}"
+    local detail="${2:-}"
     # The parent dir (/var/lib/jasper) is guaranteed by ensure_mode_file,
     # which runs earlier in every non-check-only pass; we deliberately do
     # NOT create or re-mode it here (re-moding 0770 root:jasper -> 0755
     # strips the group-write bit the non-root daemons need — the #827
     # trap).
-    if printf 'reason=%s\n' "$reason" > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
+    if { printf 'reason=%s\n' "$code"
+         [[ -z "$detail" ]] || printf 'detail=%s\n' "$detail"
+       } > "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null; then
         chmod 0644 "$VOICE_INPUT_ABSENT_MARKER" 2>/dev/null || true
-        log "event=aec_reconcile.voice_input_absent state=marked reason=${reason}"
+        log "event=aec_reconcile.voice_input_absent state=marked reason=${code} detail=${detail}"
         return
     fi
     # No marker means no gate, and exit 66 cannot stand in for one: it needs a
@@ -1645,7 +1625,7 @@ mark_voice_input_absent() {
     # boot/enable-driven start, not an explicit `systemctl restart`), but it is
     # a stop that actually fires, where the exit-66 backstop this branch used
     # to name is a stop that cannot. clear_voice_input_absent re-enables.
-    log "event=aec_reconcile.voice_input_marker_write_failed marker=${VOICE_INPUT_ABSENT_MARKER} reason=${reason}"
+    log "event=aec_reconcile.voice_input_marker_write_failed marker=${VOICE_INPUT_ABSENT_MARKER} reason=${code}"
     run_systemctl disable jasper-voice.service
 }
 
@@ -1707,8 +1687,8 @@ park_managed_xvf() {
     # exit 66 needs a device that will not open, and a udp: socket always
     # opens. That is why disclose_stale_chip_aec normalises the mic device
     # before it starts voice.
-    local reason="$1"
-    mark_voice_input_absent "$reason"
+    local code="$1" reason="$2"
+    mark_voice_input_absent "$code" "$reason"
     revoke_aec_bridge_ready
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service
@@ -1726,12 +1706,15 @@ park_to_reference_leg() {
     # this is reached from a bridge restart that just failed for real, so
     # Restart=on-failure is re-arming every 2 s and the ~6-8 s those steps take
     # is enough standing marker to spend the rest of StartLimitBurst.
-    # park_managed_xvf withdraws again; the call is idempotent.
-    revoke_aec_bridge_ready
+    # park_managed_xvf's revoke below owns the bridge_ready-revoked event.
+    rm -f "$AEC_BRIDGE_READY_MARKER" 2>/dev/null || true
     publish_alignment_record "$disposition" || true
     write_leg_env "reference" "0" "0" "1" "0" "0"
     restart_outputd_if_needed
-    park_managed_xvf "$park_reason"
+    # One microphone-axis code for all three: the mic itself is fine, the
+    # chip-AEC bring-up that carries it is not. WHICH step failed is the
+    # $disposition above, published on the alignment record's own axis.
+    park_managed_xvf chip_aec_bringup_failed "$park_reason"
 }
 
 # Copy the record now in the JASPER_AEC_CHIP_AEC_ALIGNMENT_* variables into
@@ -1894,7 +1877,11 @@ activate_managed_chip_aec() {
     # must not be able to gate itself off.
     VOICE_RESTART_NEEDED=1
     publish_alignment_record checking || true
-    mark_voice_input_absent "validating commissioned chip-AEC alignment"
+    # chip_aec_validating is a transient code (jasper/mic_presence.py): this
+    # park is the ~8s validation round trip, not a real absence, so the
+    # daemon's shutdown cue (ADR-0239) must not fire for it.
+    mark_voice_input_absent chip_aec_validating \
+        "validating commissioned chip-AEC alignment"
     run_systemctl stop jasper-voice.service jasper-aec-bridge.service
     reset_failed_units jasper-voice.service jasper-aec-bridge.service
     # Init must sample outputd's final writer; bridge/voice stay parked.
@@ -2021,12 +2008,14 @@ stop_voice() {
         return
     fi
     # Say which of the two we know. Either way voice parks (fail-closed), but
-    # the reason reaches /state.microphone.reason and the doctor headline, so it
-    # must not claim a check that did not happen.
+    # the code reaches /state.microphone.reason and its detail the doctor
+    # headline, so neither may claim a check that did not happen.
     if [[ "$ACCESSORY_MIC_PROBE_STATUS" == "resolved" ]]; then
-        mark_voice_input_absent "no candidate microphone present and no accessory microphone paired"
+        mark_voice_input_absent no_local_or_accessory_mic \
+            "no candidate microphone present and no accessory microphone paired"
     else
-        mark_voice_input_absent "no candidate microphone present; accessory microphone state could not be determined (probe ${ACCESSORY_MIC_PROBE_STATUS}) — check the journal for jasper-aec-reconcile"
+        mark_voice_input_absent accessory_mic_unknown \
+            "no candidate microphone present; accessory microphone state could not be determined (probe ${ACCESSORY_MIC_PROBE_STATUS}) — check the journal for jasper-aec-reconcile"
     fi
     run_systemctl stop jasper-voice.service
     reset_failed_units jasper-voice.service
@@ -2048,7 +2037,7 @@ restart_voice_for_accessory_mic() {
     fi
 }
 
-load_env_file "$ENV_FILE"
+jasper_env_file_export "$ENV_FILE"
 # Snapshot the pass-start world BEFORE anything can move it: the env-file
 # values before any resolver eval overwrites them, and the installed build
 # before any env write — so every mark_voice_restart_if_changed comparison
@@ -2062,7 +2051,7 @@ if [[ "$COMMISSION_ARM" != "1" ]]; then
     # (the arm dispatch never restarts voice).
     consume_voice_restart_intent
 fi
-load_env_file "$MODE_FILE"
+jasper_env_file_export "$MODE_FILE"
 observe_mic_profile_state
 
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
@@ -2214,7 +2203,7 @@ if managed_xvf_policy_applies; then
             # Park first: the marker has to exist before the bridge goes down
             # (see mark_voice_input_absent). stop_aec_and_clear_legs then
             # disables the bridge and publishes the resting leg vector.
-            park_managed_xvf "$MANAGED_XVF_PARK_REASON"
+            park_managed_xvf xvf_capture_absent "$MANAGED_XVF_PARK_REASON"
             stop_aec_and_clear_legs
             exit 0
         fi

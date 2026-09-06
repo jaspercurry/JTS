@@ -88,11 +88,11 @@ ConditionPathExists=!/var/lib/jasper/voice-input-absent
 # than ending it, so the pats continue while the speaker cannot
 # hear. Runtime liveness for that path is issue #2243 (connection
 # state, owned by the accessory reconciler) — not this watchdog.
-# `TimeoutStopSec=5s` cuts the default 90 s SIGTERM grace — a wedged
-# daemon should get to restart fast, not accumulate wedge time.
+# The stop budget is sized for the mic-loss cue (ADR-0239): an 8.7 s
+# worst-case cue path plus teardown. A wedged daemon pays the same 14 s.
 Type=notify
 WatchdogSec=30s
-TimeoutStopSec=5s
+TimeoutStopSec=14s
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify CLIENT_ID/OAUTH_MODE written by the setup wizard at

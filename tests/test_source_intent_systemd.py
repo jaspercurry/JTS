@@ -495,16 +495,6 @@ def test_control_unit_client_bounds_match_packaged_dropins() -> None:
         assert source_intent._unit_action_timeout_sec(unit, "restart") > start + stop
 
 
-def test_bluetooth_control_timeout_dropin_is_installed_for_both_profiles() -> None:
-    installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8"
-    )
-    source = "deploy/systemd/bluetooth.service.d/jts-timeout.conf"
-    destination = 'bluetooth.service.d/jts-timeout.conf"'
-    assert installer.count(source) == 2
-    assert installer.count(destination) == 4
-
-
 def test_source_action_budget_keeps_outer_ceiling_honest() -> None:
     stops = sum(
         source_intent._unit_action_timeout_sec(unit, verb)

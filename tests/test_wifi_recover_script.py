@@ -108,11 +108,15 @@ def _run_recover(
     python_rc: int = 0,
     guardian_rc: int = 0,
     python_path: str | None = None,
+    install_in_progress: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     paths = _setup_fakes(tmp_path)
     stash_path = tmp_path / "wifi_guardian.env"
     if stash:
         stash_path.write_text("JASPER_WIFI_SSID=Home\n", encoding="utf-8")
+    install_marker = tmp_path / "in_progress"
+    if install_in_progress:
+        install_marker.write_text("pid=1 sha=test\n", encoding="utf-8")
 
     # python_path=None → use the fake (venv-python-present path); pass a
     # bogus path to exercise the "venv python missing → skip repair" branch.
@@ -134,6 +138,7 @@ def _run_recover(
         "JASPER_JOURNALCTL_KERNEL": kernel,
         "JASPER_PYTHON_RC": str(python_rc),
         "JASPER_GUARDIAN_RC": str(guardian_rc),
+        "JASPER_INSTALL_IN_PROGRESS_MARKER": str(install_marker),
     })
     proc = subprocess.run(
         ["bash", str(SCRIPT), "--reason", reason],
@@ -198,6 +203,26 @@ def test_active_wifi_with_scan_suppression_runs_repair_without_guardian(tmp_path
     )
     assert _read(paths["guardian_log"]) == ""
     assert '"attempted":true' in proc.stdout
+
+
+def test_scan_repair_skipped_while_an_install_is_in_progress(tmp_path):
+    """#4123: the repair imports out of /opt/jasper, which an install rewrites
+    in place. The rest of the tick — including the nmcli-only guardian handoff
+    that is the only self-heal for a Wi-Fi drop DURING a long install — must
+    keep running."""
+    proc, paths = _run_recover(
+        tmp_path,
+        kernel="brcmf_cfg80211_scan: Scanning suppressed: status (4)\n",
+        install_in_progress=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert _read(paths["python_log"]) == ""
+    assert (
+        "event=wifi_recover.scan_repair_skip iface=wlan0 reason=install_in_progress"
+        in proc.stderr
+    )
+    assert "--reason wifi-recover" in _read(paths["guardian_log"])
 
 
 def test_active_wifi_scan_suppression_repairs_even_without_guardian_stash(tmp_path):

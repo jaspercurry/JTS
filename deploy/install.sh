@@ -45,6 +45,7 @@ INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
 source "${REPO_DIR}/deploy/lib/jasper-sed-inplace.sh"
+source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
@@ -176,7 +177,7 @@ detect_default_install_profile() {
 # in a later build step is then self-evident in the deploy transcript. It
 # is the first step toward one shared tier vocabulary for the build knobs
 # that today read RAM independently (rust-daemons.sh's low-memory flip;
-# _webrtc_compile_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
+# build_sandbox_jobs' ~1.5 GB/job -j cap). Converging those knobs onto
 # this helper is Workstream A; this change does NOT alter any build behavior.
 # See docs/install-hardware-tier-and-staleness.md.
 #
@@ -206,12 +207,7 @@ detect_hardware_tier() {
     # The low boundary REUSES rust-daemons.sh's threshold (one source of
     # truth) so the label can't drift from the build knob it describes —
     # below it, the Rust low-memory build profile is already active.
-    # install.sh always sources rust-daemons.sh, so the var is set; the
-    # :- fallback only guards a partial source in a stray test context.
-    # The 2 GB split is the one tier-owned constant: it separates the jts2
-    # OOM band (where _webrtc_compile_jobs caps at -j1) from parallel-build
-    # headroom.
-    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
+    local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB}"
     local tier
     if (( mem_kb == 0 )); then
         tier="unknown"
@@ -383,6 +379,9 @@ Run for real from a Pi-local checkout:
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
    - A legacy persisted endpoint/satellite marker normalizes to
      streambox, so the box auto-migrates to the streambox install path.
+   - Mark the install in progress (/run/jasper-install/in_progress) so
+     udev- and timer-started reconcilers skip the half-synced tree; the
+     accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. The real install fails
@@ -541,6 +540,9 @@ Profile guard:
   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
   - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+  - Mark the install in progress (/run/jasper-install/in_progress) so
+    udev- and timer-started reconcilers skip the half-synced tree; the
+    accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
@@ -639,8 +641,13 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
 
 4. Config and migrations
    - Seed /etc/jasper/jasper.env on fresh installs.
-   - Sweep an operator-seeded LLM API key or Google Routes key out of
-     /etc/jasper/jasper.env into the jasper-secrets compartment.
+   - Create, then re-assert ownership and modes on, the
+     /var/lib/jasper-secrets compartment holding the assistant provider
+     API keys jasper-voice reads, relocating any operator-seeded LLM API
+     key or Google Routes key out of the broad /etc/jasper/jasper.env.
+   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
+     integration-secret compartment holding the HA token and Spotify
+     credentials/caches.
    - Seed defaults for speaker name, AirPlay mode, ALSA quality,
      wake model, AEC mode, peer_id, journald persistence, memory
      resilience, WiFi guardian recovery, and correction TLS CA/cert files.
@@ -852,9 +859,9 @@ install_deps() {
     # package, which would enable a global dnsmasq.service. The scoped,
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
     # hardware-gated USB management network.
-    # rustc + cargo are required to build the Rust audio daemons
-    # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
-    # our crate's rust-version=1.75 floor.
+    # rustc + cargo are required to build the Rust audio daemons (rust/jasper-fanin/,
+    # rust/jasper-outputd/). Trixie ships rustc 1.85; the effective floor is 1.82
+    # (jasper-daemon, jasper-tts-protocol).
     # meson + ninja-build are installed ahead of time for the optional
     # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
     # binding; an explicit Advanced → Software action compiles v2 later in a
@@ -1037,13 +1044,6 @@ install_camilladsp() {
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # aec-bridge is no longer a CamillaDSP instance. It is now a
-    # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
-    # that either runs WebRTC AEC3 for the software fallback profile or,
-    # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
-    # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
-    # removed if present from a prior install.
-    rm -f "${CAMILLA_CONF}/aec-bridge.yml"
     # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
     # installed by this function. Remove any copy left behind by a prior
     # install: an upgraded box that keeps it on disk indefinitely is still
@@ -1092,14 +1092,6 @@ _render_outputd_cutover_configs() {
     # boots cannot depend on which writer ran last. An inline heredoc here is
     # exactly how a second spelling gets born.
     /opt/jasper/.venv/bin/jasper-sound render-flat-cutover
-
-    # The ring sibling collapsed into outputd-cutover.yml (ADR-0100), and the
-    # renderer only SKIPS writing files — it never removes one. A box upgraded
-    # across the collapse keeps a stale full-range outputd-cutover-ring.yml that
-    # nothing selects but the camillagui config browser still lists. Remove it
-    # here, on the one deploy path that owns these bytes. Best-effort: a failed
-    # unlink is cosmetic, never a failed deploy.
-    rm -f "${CAMILLA_CONF}/outputd-cutover-ring.yml" 2>/dev/null || true
 }
 
 render_outputd_cutover_config() {
@@ -1265,51 +1257,44 @@ select_audio_hardware_roles() {
     export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
+# snd-aloop binds index/pcm_substreams/pcm_notify at module load, and on a
+# full-RAM box jasper-fanin holds the Loopback capture sides, so the unload is
+# EBUSY (#4027) and changed options wait for the next boot. The low-RAM
+# profiles park fanin first; there the reload succeeds, gated by #4218.
+install_snd_aloop_options() {
+    local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
+    local installed=/etc/modprobe.d/snd-aloop.conf
+    local changed=0 module_busy=0 sysfs="$1"
+    cmp -s "${shipped}" "${installed}" || changed=1
+    install -m 0644 "${shipped}" "${installed}"
+    if [[ -d "${sysfs}" ]] && ! rmmod snd_aloop 2>/dev/null; then
+        module_busy=1
+    fi
+    modprobe snd-aloop
+    if (( ! module_busy )); then
+        _set_reboot_required_reason snd_aloop ""
+    elif (( changed )); then
+        echo "  snd-aloop: options changed but module busy; deferred to reboot"
+        _set_reboot_required_reason snd_aloop \
+            "snd-aloop options changed, module busy — reboot to apply"
+    fi
+}
+
 install_alsa() {
     install -d -m 0755 /etc/modules-load.d /etc/alsa/conf.d /etc/modprobe.d
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf" \
-        /etc/modprobe.d/snd-aloop.conf
-    # Reload module so the new card config takes effect (idempotent).
-    rmmod snd_aloop 2>/dev/null || true
-    modprobe snd-aloop || true
+    install_snd_aloop_options /sys/module/snd_aloop
 
     select_audio_hardware_roles
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions; its own
     # header owns what they are and why (deploy/alsa/asoundrc.jasper).
-    #
-    # Location matters: this file MUST be world-readable so that
-    # renderer processes running as non-root users (shairport-sync as
-    # `shairport-sync`, librespot as `pi`) can resolve the user-space
-    # PCM names declared in it. The pre-2026-05-23 location
-    # (/root/.asoundrc, mode 0600) was visible only to root, which
-    # was fine while renderers wrote to raw/plughw Loopback names (a
-    # kernel-built-in shape needing no asoundrc to resolve) but broke
-    # AirPlay and Spotify Connect once renderers switched to user-space
-    # PCM names. /etc/asound.conf at mode 0644 is the
-    # canonical Linux pattern for "ALSA config visible to all users."
-    #
-    # Migration: any existing /root/.asoundrc gets backed up
-    # (.pre-jasper.<unix-ts>) and removed so it can't silently
-    # shadow /etc/asound.conf for root processes (ALSA evaluates
-    # ~/.asoundrc before /etc/asound.conf).
-    if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
-        cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
-        rm -f /root/.asoundrc
-        echo "  Migrated old /root/.asoundrc to backup (.pre-jasper.*); see PR #223 for why."
-    fi
-    # Same backup discipline at the new location. Hand-edited or
-    # apt-installed /etc/asound.conf files (rare on JTS, but possible)
-    # shouldn't be silently overwritten. The grep guard makes this
-    # idempotent — once our content is in place, subsequent deploys
-    # see `shairport_substream` and skip the backup (no .pre-jasper
-    # spam). Symlinks are not backed up here because JTS intentionally
-    # replaces /etc/asound.conf with a symlink to its rendered, public
-    # ALSA config below.
+    # It MUST stay world-readable: renderers run as non-root users
+    # (shairport-sync, librespot as `pi`) and cannot otherwise resolve the
+    # user-space PCM names it declares. The backup's grep guard keys on our
+    # own content; a symlink is ours (created below) and is never backed up.
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
             && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
@@ -1317,17 +1302,12 @@ install_alsa() {
     fi
     install -d -m 0755 "${ENV_DIR}"
     ensure_state_dir
-    install -d -m 0755 /usr/local/lib/jasper
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
-        /usr/local/lib/jasper/jasper-asound-render.sh
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
         /usr/local/sbin/jasper-render-asound-conf
     if [[ ! -e "${STATE_DIR}/audio_quality.env" ]]; then
-        printf 'JASPER_ALSA_RATE_CONVERTER=samplerate_medium\n' \
-            > "${STATE_DIR}/audio_quality.env"
-        chmod 0644 "${STATE_DIR}/audio_quality.env"
+        jasper_env_file_set "${STATE_DIR}/audio_quality.env" \
+            JASPER_ALSA_RATE_CONVERTER samplerate_medium 0644 0770
         echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
     fi
     install -d -m 0755 /var/lib/jasper-asound
@@ -1412,17 +1392,6 @@ EOF
     echo "  Build manifest (verified install): ${git_sha} on ${git_branch}"
 }
 
-# Generic "delete-and-append" rewrite of one KEY=value line in
-# /etc/jasper/jasper.env. Shared by the streambox env-refresh path.
-set_jasper_env_value() {
-    local key="$1"
-    local value="$2"
-    sed_inplace "${ENV_DIR}/jasper.env" "/^${key}=/d"
-    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_DIR}/jasper.env"
-}
-
-
-
 migrate_calibration_sign_convention() {
     # A measurement mic's vendor calibration file (miniDSP UMIK, Dayton)
     # states the MICROPHONE'S RESPONSE; the correction JTS applies is its
@@ -1499,45 +1468,7 @@ reconcile_aec_state() {
             > "${STATE_DIR}/usb_mic.env"
         chmod 0644 "${STATE_DIR}/usb_mic.env"
     fi
-    # These keys live in aec_mode.env, all owned by the /wake/
-    # input-profile / wake-detection cards:
-    #   - JASPER_AUDIO_INPUT_PROFILE  canonical profile selection
-    #                                 (auto, xvf_chip_aec,
-    #                                 xvf_chip_aec_testing,
-    #                                 xvf_software_aec3, direct_mic,
-    #                                 custom)
-    #   - JASPER_AEC_MODE             master AEC bridge toggle
-    #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
-    #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
-    #   - JASPER_WAKE_LEG_CHIP_AEC    XVF3800 chip-AEC profile gate
-    #                                 (hardware-conditional, mutually
-    #                                 exclusive with raw/DTLN)
-    #   - JASPER_WAKE_LEG_CHIP_AEC_150 optional extra 150° chip-AEC wake
-    #                                  detector (~30 MB)
-    #   - JASPER_WAKE_LEG_CHIP_AEC_210 optional extra 210° chip-AEC wake
-    #                                  detector (~30 MB)
-    #   - JASPER_AEC_CHIP_REF_OBSERVE opt-in: on the software-AEC3 path,
-    #                                 arm outputd's chip-ref writer FOR
-    #                                 MEASUREMENT ONLY so the Layer-0 SRO
-    #                                 drift estimator gets fed (mic path
-    #                                 stays software AEC3). Default off.
-    # Defaults: profile auto. A managed XVF3800 resolves to the commissioned
-    # fixed chip-AEC profile only on supported mic/output hardware; otherwise
-    # the reconciler parks voice with an actionable reason. Named testing,
-    # software-AEC3, and direct-mic intents do not bypass that policy. Software
-    # AEC3/direct fallback remains available for non-XVF microphones, while
-    # low-level DTLN/raw/extra-beam lab work requires the explicit custom
-    # profile.
-    #
-    # On upgrade, the reconciler's ensure_mode_file appends any
-    # missing keys with these same defaults — preserving an
-    # operator's hand-set JASPER_AEC_MODE/leg fields while inferring a
-    # profile for pre-profile installs.
-    if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\nJASPER_AEC_CHIP_REF_OBSERVE=0\n' \
-            > "${STATE_DIR}/aec_mode.env"
-        chmod 0644 "${STATE_DIR}/aec_mode.env"
-    fi
+    # aec_mode.env has one BASH writer: ensure_mode_file in the run below.
     local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
     systemctl enable jasper-aec-reconcile.service
     if ! /usr/local/sbin/jasper-aec-reconcile --reason install; then
@@ -1674,13 +1605,6 @@ install_management_static_assets() {
     # deploy/lib/install/web-assets.sh for the copy shape and the
     # manifest contract.
     install_web_assets
-
-    # Prune retired static pages from prior installs. Their nginx routes and
-    # install copies are gone (the correction preflight's self-signed-HTTPS
-    # hop was removed per issue #2632); remove the orphaned files so a
-    # previously-deployed Pi does not keep unreachable pages on disk.
-    rm -f /usr/share/jasper-web/integrations.html
-    rm -f /usr/share/jasper-web/correction-preflight.html
 }
 
 tune_nginx_worker_processes() {
@@ -1732,6 +1656,40 @@ tune_nginx_worker_processes() {
     echo "  nginx worker_processes pinned to 1 in ${main}"
 }
 
+install_nginx_site_conf() {
+    # <site conf source> <nginx config root>. A conf in sites-enabled is on
+    # disk at once and the next nginx restart loads it (Restart=always, see
+    # nginx.service.d/jts-recovery.conf), so what `nginx -t` rejects is put
+    # back — site conf and its snippet — from a fixed-name snapshot dir
+    # outside sites-enabled, which nginx.conf includes unfiltered. Drop this
+    # guard once the conf ships from a package that tests before enabling.
+    local src="${1}" root="${2}" prev="${2}/.jasper-site-prev" rel=""
+    local site="sites-enabled/jasper.conf" snip="snippets/jts-proxy-headers.conf"
+    rm -rf "${prev}"
+    install -d -m 0755 "${root}/snippets" "${prev}"
+    for rel in "${site}" "${snip}"; do
+        [[ -f "${root}/${rel}" ]] || continue
+        cp -a "${root}/${rel}" "${prev}/"
+    done
+    install -m 0644 "${REPO_DIR}/deploy/nginx-proxy-headers.conf" "${root}/${snip}"
+    install -m 0644 "${src}" "${root}/${site}"
+    # nginx-light's enabled `default` site clashes with our default_server.
+    rm -f "${root}/sites-enabled/default"
+    if ! nginx -t; then
+        echo "  ERROR: event=install.nginx_conf_rejected src=${src}" >&2
+        for rel in "${site}" "${snip}"; do
+            rm -f "${root}/${rel}"
+            [[ -f "${prev}/${rel##*/}" ]] || continue
+            cp -a "${prev}/${rel##*/}" "${root}/${rel}"
+        done
+        rm -rf "${prev}"
+        return 1
+    fi
+    rm -rf "${prev}"
+    systemctl enable --now nginx 2>/dev/null || true
+    systemctl reload nginx
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
@@ -1746,30 +1704,10 @@ install_nginx_site() {
     # URIs, so it uses the same GitHub Pages bounce pattern as Spotify. The
     # correction-only cert is provisioned by provision_correction_tls() before
     # this function runs.
-    install -d -m 0755 /etc/nginx/snippets
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
-        /etc/nginx/snippets/jts-proxy-headers.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
-
-    # Disable Debian's default site so it doesn't clash with our
-    # default_server directives. nginx-light installs an enabled
-    # `default` symlink; remove it idempotently.
-    rm -f /etc/nginx/sites-enabled/default
     tune_nginx_worker_processes
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
-    else
-        echo "  ERROR: nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
+    install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper.conf" /etc/nginx
+    echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
 }
 
 install_streambox_nginx_site() {
@@ -1777,26 +1715,10 @@ install_streambox_nginx_site() {
     # plus an nginx route set limited to local sources, DSP, grouping, and
     # system health. That keeps the frontend shared while omitting voice/wake
     # surfaces whose daemons are intentionally absent from this profile.
-    install -d -m 0755 /etc/nginx/snippets
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
-        /etc/nginx/snippets/jts-proxy-headers.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
-    rm -f /etc/nginx/sites-enabled/default
     tune_nginx_worker_processes
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
-    else
-        echo "  ERROR: streambox nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
+    install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" /etc/nginx
+    echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
 }
 
 install_avahi_jasper_control() {
@@ -1944,6 +1866,30 @@ widen_jasper_web_writable_dirs() {
     fi
 }
 
+ensure_peer_id() {
+    # The identity peers key on across reboots. Regenerate only when there is
+    # nothing usable: jasper/peering/config.py and scripts/_lib.sh's
+    # verify_or_record_peer_id both accept any non-empty id, so replacing an
+    # odd-looking one is what would abort the next deploy blaming a re-image.
+    # The strip is that reader's twin, so a trailing CR is not "empty" here
+    # and a recorded id there.
+    local file="${STATE_DIR}/peer_id" pid tmp
+    if [[ -f "${file}" ]] \
+        && [[ -n "$(tr -d '[:space:]' 2>/dev/null < "${file}")" ]]; then
+        return 0
+    fi
+    pid="$(tr -d '[:space:]' 2>/dev/null < /proc/sys/kernel/random/uuid || true)"
+    if [[ -z "${pid}" ]]; then
+        echo "  ERROR: could not generate peer_id (kernel uuid unreadable)" >&2
+        exit 1
+    fi
+    tmp="$(mktemp "${STATE_DIR}/.peer_id.XXXXXX")"
+    printf '%s\n' "${pid}" > "${tmp}"
+    chmod 0644 "${tmp}"
+    mv -f "${tmp}" "${file}"
+    echo "  Generated stable peer_id at ${file}"
+}
+
 install_peering_template() {
     # Multi-device peering. The TEMPLATE goes under /etc/jasper/ so
     # Avahi doesn't try to parse it as a service file (the
@@ -1956,31 +1902,12 @@ install_peering_template() {
     # page). When peering is off (the default), no
     # rendered file exists and this Pi is invisible to siblings —
     # the goal property of "zero cost when alone".
-    #
-    # Also generates the per-install stable peer_id (a UUID) if one
-    # doesn't already exist. This ID persists across reboots and
-    # package upgrades — peers don't see a "new" device on every
-    # restart.
     install -d -m 0755 /etc/jasper/avahi-templates
     install -m 0644 \
         "${REPO_DIR}/deploy/avahi/jasper-peer.service.template" \
         /etc/jasper/avahi-templates/jasper-peer.service
     ensure_state_dir
-    if [[ ! -f /var/lib/jasper/peer_id ]]; then
-        # Guard the redirect: a `python3` failure (missing binary,
-        # broken `uuid` import) without this would leave an empty
-        # peer_id file. The daemon's load_config falls back to an
-        # *ephemeral* per-process UUID in that case — peers would see
-        # a new "device" on every restart, which silently breaks
-        # session-stickiness across reboots.
-        if ! pid="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)"; then
-            echo "  ERROR: could not generate peer_id (python3 missing or uuid failed)" >&2
-            exit 1
-        fi
-        printf '%s\n' "${pid}" > /var/lib/jasper/peer_id
-        chmod 0644 /var/lib/jasper/peer_id
-        echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
-    fi
+    ensure_peer_id
     echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/sound/pair/"
 }
 
@@ -2118,50 +2045,17 @@ install_camillagui() {
     echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 
+# See ADR-0242 for both properties. RAISE CONDITION for MemoryMax=96M: an
+# OOM kill of this transient run-u*.service unit in the journal (the deploy
+# wrapper's report_oom_collateral lists it).
 run_doctor_summary() {
-    # Final pre-flight: run jasper-doctor so the operator sees status of
-    # every subsystem (env file, mic, firmware, AEC bridge, renderers,
-    # provider keys, …) at install time. Non-blocking — install is done
-    # by the time we get here; this is just a status report.
-    #
-    # Critical for catching the "silent productization gaps" — e.g. an
-    # XVF chip on 6-ch firmware but with the ALSA mixer's ch2-5 muted,
-    # otherwise invisible until a wake-word test fails days later.
-    if [[ ! -x /opt/jasper/.venv/bin/jasper-doctor ]]; then
-        return 0
-    fi
-    echo
-    if build_swap_required; then
-        echo "=== low-memory deploy health pre-flight ==="
-        if "${REPO_DIR}/deploy/bin/jasper-deploy-health"; then
-            echo "✓ low-memory deploy health checks pass."
-        else
-            echo
-            echo "─────────────────────────────────────────────────────────────"
-            echo " low-memory deploy health reports failures (see above)."
-            echo " Install finished, but core runtime health isn't clean."
-            echo " Re-run after fixing: sudo ${REPO_DIR}/deploy/bin/jasper-deploy-health"
-            echo "─────────────────────────────────────────────────────────────"
-        fi
-        return 0
-    fi
-
-    echo "=== jasper-doctor pre-flight ==="
-    local doctor_status
-    set +e
-    /opt/jasper/.venv/bin/jasper-doctor
-    doctor_status=$?
-    set -e
-    if (( doctor_status == 0 )); then
-        echo "✓ all critical doctor checks pass."
-    else
-        echo
-        echo "─────────────────────────────────────────────────────────────"
-        echo " jasper-doctor reports failures (see above)."
-        echo " Install finished, but at least one subsystem isn't healthy."
-        echo " Re-run after fixing: sudo /opt/jasper/.venv/bin/jasper-doctor"
-        echo "─────────────────────────────────────────────────────────────"
-    fi
+    echo; echo "=== jasper-doctor --core ==="
+    local rc=0
+    systemd-run --quiet --wait --pipe --collect \
+        -p MemoryMax=96M -p RuntimeMaxSec=60 \
+        /opt/jasper/.venv/bin/jasper-doctor --core || rc=$?
+    logger -t jasper-install -- "event=install.doctor_core rc=${rc}" 2>/dev/null || true
+    return "${rc}"
 }
 
 main() {
@@ -2204,10 +2098,11 @@ main() {
     hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
+        trap install_exit_cleanup EXIT
+        mark_install_in_progress
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
-        trap install_exit_cleanup EXIT
         create_jasper_service_users  # before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
@@ -2218,27 +2113,30 @@ main() {
         reconcile_usb_data_role
         tune_wifi_for_airplay
         install_streambox_jasper
+        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
+        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         migrate_calibration_sign_convention  # vendor mic cal files are response curves
         ensure_output_hardware_state
         render_outputd_cutover_config
         ensure_outputd_camilla_statefile
         ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
         build_install_jasper_fanin
         build_install_jasper_outputd
         install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+        # With JASPER_PEERING=on, jasper-control renders its advert from the
+        # template and reads /var/lib/jasper/peer_id at startup — both created
+        # here, so this runs BEFORE the unit install restarts it.
+        install_avahi_jasper_control
+        install_peering_template
         install_streambox_systemd_units
         remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
         migrate_wifi_guardian
         migrate_memory_resilience
         migrate_cgroup_memory_enabled
         install_journald_persistent_storage
-        install_avahi_jasper_control
         install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
         install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
         widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-        install_peering_template
         provision_correction_tls
         install_streambox_nginx_site
         widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
@@ -2248,14 +2146,15 @@ main() {
         # state change so a failure anywhere above leaves the prior good
         # manifest. See ADR-0172.
         write_build_manifest
-        run_doctor_summary
+        run_doctor_summary || true  # advisory; removal condition in ADR-0242
         return 0
     fi
     require_root
+    trap install_exit_cleanup EXIT
+    mark_install_in_progress
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
-    trap install_exit_cleanup EXIT
     create_jasper_service_users  # before unit install + state-dir creation
     park_low_memory_build_units
     install_deps
@@ -2266,6 +2165,8 @@ main() {
     reconcile_usb_data_role
     tune_wifi_for_airplay
     install_jasper
+    reassert_secrets_compartment_perms
+    reassert_intsecrets_compartment_perms
     migrate_calibration_sign_convention  # vendor mic cal files are response curves
     ensure_output_hardware_state
     render_outputd_cutover_config
@@ -2274,16 +2175,20 @@ main() {
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
+    # With JASPER_PEERING=on, jasper-control renders its advert from the
+    # template and reads /var/lib/jasper/peer_id at startup — both created
+    # here, so this runs BEFORE the unit install restarts it.
+    install_avahi_jasper_control
+    install_peering_template
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
+    migrate_wifi_guardian
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
-    install_avahi_jasper_control
     install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
     install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
     widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-    install_peering_template
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui
@@ -2295,7 +2200,7 @@ main() {
     # change so a failure anywhere above leaves the prior good manifest.
     # See ADR-0172.
     write_build_manifest
-    run_doctor_summary
+    run_doctor_summary || true  # advisory; removal condition in ADR-0242
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests

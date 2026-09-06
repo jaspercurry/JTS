@@ -15,7 +15,10 @@ from __future__ import annotations
 import re
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ASSETS_LIB = ROOT / "deploy" / "lib" / "install" / "web-assets.sh"
@@ -40,12 +43,16 @@ def _extract_function() -> str:
     return helper
 
 
-def _run(repo_dir: Path, web_root: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo_dir: Path, web_root: Path, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "REPO_DIR": str(repo_dir),
         "JASPER_WEB_SHARE_DIR": str(web_root),
     }
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [
             "/bin/bash",
@@ -113,24 +120,119 @@ def test_empty_page_dir_is_tolerated_under_strict_mode(tmp_path: Path):
     assert r.returncode == 0, r.stderr
     manifest = (web_root / "assets" / MANIFEST_NAME).read_text()
     assert "empty-page" not in manifest
-    # The page dir itself is still created — matches the historical loop.
-    assert (web_root / "assets" / "empty-page").is_dir()
 
 
-def test_retired_dial_assets_are_removed_on_upgrade(tmp_path: Path):
-    repo = _fake_repo(tmp_path)
-    web_root = tmp_path / "web"
-    stale = web_root / "assets" / "dial" / "js" / "main.js"
+def _seed_stale_nested_file(assets_root: Path) -> list[Path]:
+    stale = assets_root / "ghost" / "ghost.css"
     stale.parent.mkdir(parents=True)
     stale.write_text("retired")
+    (assets_root / "ghost" / "js" / "unused").mkdir(parents=True)
+    return [stale, assets_root / "ghost"]
+
+
+def _seed_stale_symlink(assets_root: Path) -> list[Path]:
+    link = assets_root / "ghost.link"
+    link.symlink_to(assets_root / "does-not-exist")
+    return [link]
+
+
+def _seed_stale_dash_name(assets_root: Path) -> list[Path]:
+    dash = assets_root / "-s"
+    dash.write_text("retired")
+    return [dash]
+
+
+@pytest.mark.parametrize(
+    "make_stale",
+    [
+        pytest.param(_seed_stale_nested_file, id="nested-file-and-empty-dir"),
+        pytest.param(_seed_stale_symlink, id="symlink"),
+        pytest.param(_seed_stale_dash_name, id="leading-dash-name"),
+    ],
+)
+def test_stale_assets_absent_from_the_manifest_are_pruned(tmp_path: Path, make_stale):
+    """A retired page needs no hand-added rm line: anything on disk that
+    the freshly-written manifest doesn't name is deleted (files, stale
+    symlinks, and dash-leading names alike), along with any directory
+    left empty by the deletion. Removal condition: until assets are
+    installed from a package with its own file list."""
+    repo = _fake_repo(tmp_path)
+    web_root = tmp_path / "web"
+    assets_root = web_root / "assets"
+    assets_root.mkdir(parents=True)
+    stale_paths = make_stale(assets_root)
 
     result = _run(repo, web_root)
 
     assert result.returncode == 0, result.stderr
-    assert not (web_root / "assets" / "dial").exists()
-    assert "dial/" not in (
-        web_root / "assets" / MANIFEST_NAME
-    ).read_text(encoding="utf-8")
+    for stale in stale_paths:
+        assert not stale.is_symlink() and not stale.exists()
+    manifest_path = assets_root / MANIFEST_NAME
+    assert manifest_path.is_file()
+    for rel in manifest_path.read_text(encoding="utf-8").splitlines():
+        assert (assets_root / rel).is_file(), f"{rel} missing on disk"
+
+
+def _comm_expresses_utf8_collation_bug(lang: str) -> bool:
+    """True if bare `comm` under ambient LANG=<lang> (no LC_ALL pin)
+    misreads a C-sorted merge and reports a line present in both
+    inputs as unique to the first — the failure the pruner's LC_ALL=C
+    pin on comm exists to prevent. Seeded with the real failure's
+    names: a leading-dot manifest name collates differently from
+    `airplay/airplay.css` and `app.css` under UTF-8 than under C.
+    """
+    disk = sorted([".install-manifest", "airplay/airplay.css", "app.css"])
+    shared = {"airplay/airplay.css", "app.css"}
+    manifest = sorted(shared)
+    with (
+        tempfile.NamedTemporaryFile("w", suffix=".disk") as f1,
+        tempfile.NamedTemporaryFile("w", suffix=".manifest") as f2,
+    ):
+        f1.write("\n".join(disk) + "\n")
+        f1.flush()
+        f2.write("\n".join(manifest) + "\n")
+        f2.flush()
+        result = subprocess.run(
+            ["comm", "-23", f1.name, f2.name],
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": lang},
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0:
+        return True
+    return bool(set(result.stdout.splitlines()) & shared)
+
+
+def test_prune_survives_ambient_utf8_locale(tmp_path: Path):
+    """comm must diff under its own C collation, not the caller's locale.
+
+    ssh forwards the laptop's LANG to the Pi. Both comm inputs are
+    C-sorted, but comm collates in the ambient locale by default; under
+    UTF-8 collation the manifest's leading dot sorts differently than
+    under C, desyncing the merge against a live manifest and pruning
+    freshly installed files.
+
+    The probe below proves this platform's `comm` can actually express
+    that desync before trusting a pass here as a regression guard (BSD
+    `comm` never collates by locale; glibc falls back to C silently
+    when the candidate locale isn't generated).
+    """
+    for lang in ("en_GB.UTF-8", "en_US.UTF-8"):
+        if _comm_expresses_utf8_collation_bug(lang):
+            break
+    else:
+        pytest.skip("platform cannot express glibc UTF-8 collation of comm")
+
+    repo = _fake_repo(tmp_path)
+    web_root = tmp_path / "web"
+    r = _run(repo, web_root, extra_env={"LANG": lang})
+    assert r.returncode == 0, r.stderr
+
+    assets = web_root / "assets"
+    manifest = (assets / MANIFEST_NAME).read_text().splitlines()
+    assert manifest
+    for rel in manifest:
+        assert (assets / rel).is_file(), f"{rel} missing on disk after install"
 
 
 def test_manifest_name_parity_between_installer_and_doctor():

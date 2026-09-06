@@ -369,7 +369,7 @@ async def test_a_connect_that_returns_leaves_the_daemon_serving() -> None:
 
 async def test_stop_cancels_a_still_dialling_connect() -> None:
     """SIGTERM ends the wake loop; a connect still waiting on the WAN must
-    not outlive it — the unit's TimeoutStopSec is 5 s."""
+    not outlive it — the unit's TimeoutStopSec bounds the stop."""
     dialling = asyncio.Event()
     cancelled = asyncio.Event()
     stop = asyncio.Event()

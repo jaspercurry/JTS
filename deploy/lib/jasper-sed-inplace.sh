@@ -4,10 +4,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# This fragment is sourced, never executed. It carries a `#!/bin/sh` shebang
-# where its deploy/lib siblings declare bash, which holds the body to POSIX
-# under the static linter — keep it that way: deploy/configure-bluez.sh, one
-# of the two scripts that source it, declares sh too.
+# This fragment is sourced, never executed. The `#!/bin/sh` shebang, where its
+# deploy/lib siblings declare bash, holds the body to POSIX under the static
+# linter.
 
 # sed_inplace FILE EXPRESSION...
 #
