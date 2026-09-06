@@ -72,20 +72,30 @@ async def test_mute_idempotent_second_call_is_noop(tmp_path) -> None:
     assert list(on_ring) == [b"raced"]
 
 
-async def test_mute_nulls_idle_level_fields_but_not_wake_recency(tmp_path) -> None:
-    """The condition refresh stops ticking while muted (R-013), so the
-    idle-level fields would otherwise go stale — but last_wake_at is
-    daemon-lifetime and is never nulled on mute."""
+@pytest.mark.parametrize("hold", ["muted", "measurement_hold"])
+async def test_session_status_nulls_idle_level_fields_while_mic_not_feeding(
+    tmp_path, hold,
+) -> None:
+    """The condition refresh stops ticking whenever the frame-dispatch
+    gates (mic mute or a measurement hold) skip `_handle_wake_frame`, so
+    `session_status()` — the single owner of "is the mic feeding the
+    refresh" — reports the idle-level fields as None rather than a stale
+    frozen value under either gate. last_wake_at is daemon-lifetime and
+    is never nulled by either."""
     wl, _, _ = _wake_loop_for_mute(tmp_path)
     wl._idle_rms_dbfs = -40.0
     wl._input_last_above_floor_at = 123.0
     wl._last_wake_at = 456.0
 
-    assert await wl.mute_mic() == "ok"
+    if hold == "muted":
+        assert await wl.mute_mic() == "ok"
+    else:
+        wl._measurement_active.set()
 
-    assert wl._idle_rms_dbfs is None
-    assert wl._input_last_above_floor_at is None
-    assert wl._last_wake_at == 456.0
+    status = wl.session_status()
+    assert status["idle_rms_dbfs"] is None
+    assert status["input_last_above_floor_at"] is None
+    assert status["last_wake_at"] == 456.0
 
 
 async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:

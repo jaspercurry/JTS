@@ -904,12 +904,11 @@ class WakeLoop:
         # Loop-clock timestamp of the last condition recompute; 0.0 forces
         # a refresh on the first WAKE frame.
         self._condition_refreshed_at: float = 0.0
-        # Wake-recency observability (R-013): daemon-lifetime, never nulled
-        # on mute. Set in _handle_wake_frame.
+        # last_wake_at is daemon-lifetime and never nulled.
         self._last_wake_at: float | None = None
-        # Derived by _maybe_refresh_condition; nulled by mute_mic since the
-        # refresh stops ticking while muted and they would otherwise go
-        # stale.
+        # Derived by _maybe_refresh_condition; session_status() reads these
+        # as None while the mic is not feeding the refresh (muted or a
+        # measurement hold), since the refresh stops ticking then.
         self._idle_rms_dbfs: float | None = None
         self._input_last_above_floor_at: float | None = None
         self._connection = connection
@@ -2770,10 +2769,6 @@ class WakeLoop:
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
         self._mic_muted = True
-        # The condition refresh stops ticking while muted, so these would
-        # otherwise go stale rather than reflect "unknown while muted".
-        self._idle_rms_dbfs = None
-        self._input_last_above_floor_at = None
         # Drop already-buffered room audio, not just future frames. The
         # pre-roll otherwise survives the mute and is replayed into the
         # first turn after unmute (~560 ms of pre-mute room audio sent
@@ -3024,9 +3019,7 @@ class WakeLoop:
             threshold=f"{firing_threshold:.2f}",
             fired=fired_legs,
         )
-        # Daemon-lifetime wake-recency: "this box's wake pipeline is alive",
-        # not "this box served the turn" — set before arbitration, never
-        # nulled on mute.
+        # Marks the wake pipeline alive even if this attempt isn't served.
         self._last_wake_at = time.time()
 
         # In peering mode `can_serve` is broadcast in the WAKE message so the
@@ -4312,6 +4305,10 @@ class WakeLoop:
             or leg not in self._leg_tasks
             or not self._leg_tasks[leg].done()
         ]
+        # Neither gate feeds _maybe_refresh_condition (see the dispatch
+        # sites in run() / _manual_mic_loop / _wake_leg_loop), so the level
+        # fields below go stale, not just missing, while either is set.
+        mic_feeding = not (self._mic_muted or self._measurement_active.is_set())
         return {
             "state": self._state.name,
             "input_ended": self._input_ended,
@@ -4365,14 +4362,15 @@ class WakeLoop:
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
             ),
-            # Wake-recency observability (R-013). Epoch-second floats (never
-            # ISO strings), or None before the daemon has seen the signal —
-            # last_wake_at is daemon-lifetime and never nulled on mute; the
-            # other two are nulled by mute_mic (the refresh stops ticking
-            # while muted).
+            # Epoch-second floats (never ISO strings), or None before the
+            # daemon has seen the signal. last_wake_at is daemon-lifetime
+            # and never nulled; the other two read None while mic_feeding
+            # is false (see above) rather than a stale frozen value.
             "last_wake_at": self._last_wake_at,
-            "idle_rms_dbfs": self._idle_rms_dbfs,
-            "input_last_above_floor_at": self._input_last_above_floor_at,
+            "idle_rms_dbfs": self._idle_rms_dbfs if mic_feeding else None,
+            "input_last_above_floor_at": (
+                self._input_last_above_floor_at if mic_feeding else None
+            ),
             "wake_legs": _wake_legs,
             # Per-pack tool-registration outcomes (registered / skipped /
             # failed), same motivation as wake_legs: a tool family that

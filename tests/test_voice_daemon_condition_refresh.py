@@ -92,7 +92,7 @@ def test_maybe_refresh_condition_skips_within_window():
 def test_maybe_refresh_condition_derives_idle_rms_and_above_floor(
     amplitude, expect_above_floor,
 ):
-    """idle_rms_dbfs (R-013) always takes the refreshed noise floor;
+    """idle_rms_dbfs always takes the refreshed noise floor;
     input_last_above_floor_at is stamped only when that floor clears
     AMBIENT_FLOOR_DBFS — the same comparison classify_condition makes."""
     from collections import deque
