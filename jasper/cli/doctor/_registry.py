@@ -85,7 +85,13 @@ CORE_MODULES: frozenset[str] = frozenset({
 })
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
-    "voice",
+    # "voice" is NOT here: 4 of its 6 checks gate themselves at runtime on
+    # ADR-0217's accessory-presence test (jasper/cli/doctor/voice.py
+    # _voice_gated_skip), the same one check_voice_unit_running applies, so
+    # a streambox with a paired accessory still gets real coverage. The
+    # other 2 stay below (check_provider_key, check_spend_cap).
+    # cues (check_cue_cache) needs cfg.sounds_dir, which the streambox
+    # doctor cfg lacks for the same reason (#4256) — still true at HEAD.
     "cues",
     "wake",
     "integrations",
@@ -101,6 +107,14 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     # rather than the whole module.
     "check_crossover_v2_cloud_pipeline",
     "check_crossover_v2_applied_is_graded",
+    # Unlike their voice module neighbours, these two need Config fields
+    # (voice_provider, API keys, daily_spend_cap_*) the streambox doctor cfg
+    # (_cli._local_audio_config_from_env) does not carry, so reading them
+    # would be a false verdict rather than a skip. Remove once that cfg
+    # surface carries the voice Config fields, and gate on live accessory
+    # presence like check_provider_importable instead.
+    "check_provider_key",
+    "check_spend_cap",
 })
 
 

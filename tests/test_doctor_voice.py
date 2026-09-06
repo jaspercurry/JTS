@@ -14,7 +14,9 @@ import pytest
 from jasper.cli import doctor
 from jasper.cli.doctor import renderers
 from jasper.cli.doctor import voice as doctor_voice
+from jasper.cli.doctor._evidence import evidence
 from jasper.config import Config
+from jasper.mic_presence import MicPresence
 from jasper.tools.packs import TOOL_PACKS
 from jasper.voice.catalog import PROVIDERS, default_model_id, provider_ids_manifest_text
 
@@ -521,3 +523,85 @@ def test_check_tool_packs_is_registered_in_the_voice_module():
     )
 
     assert entry.module == "voice"
+
+
+# --------------------------------------------------- ADR-0217 streambox gate
+#
+# #4256 omitted the whole "voice" module on every streambox. check_provider_
+# importable, check_tool_packs and check_pricing instead gate themselves at
+# run time on the accessory-presence test check_voice_unit_running already
+# applies (ADR-0217 — the assistant runs on a streambox only while a
+# mic-bearing accessory is paired), and check_voice_provider_ids_manifest
+# gates on the profile alone (python-runtime.sh never renders it for
+# streambox — deploy/lib/install/env-migrations.sh). check_provider_key and
+# check_spend_cap stay statically omitted (_registry.STREAMBOX_OMITTED_
+# DOCTOR_CHECKS): the streambox doctor cfg carries none of the Config
+# fields they read.
+
+
+def _mic(accessory: bool) -> MicPresence:
+    return MicPresence(
+        present=accessory, accessory_sources=("wiim_remote_2",) if accessory else (),
+    )
+
+
+def _gated_check_rows(monkeypatch, tmp_path: Path):
+    """(check, not-gated status, not-gated reason) for the checks that gate
+    themselves on live profile/accessory state.
+
+    The not-gated branch is pinned by stubbing each check's own first real
+    dependency to a deterministic "nothing configured yet" outcome — never a
+    live probe — so the row is about the GATE, not the check's own logic
+    (already covered above)."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: _state("missing"),
+    )
+    monkeypatch.setattr(doctor_voice, "_voice_tool_packs_runtime", lambda: None)
+    manifest = tmp_path / "voice_provider_ids"
+    manifest.write_text(provider_ids_manifest_text())
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
+    return [
+        (doctor_voice.check_provider_importable,
+         "ok", doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED),
+        (doctor_voice.check_tool_packs,
+         "skipped", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        (doctor_voice.check_pricing,
+         "ok", doctor_voice.REASON_PRICING_MODEL_NOT_CONFIGURED),
+        (doctor_voice.check_voice_provider_ids_manifest,
+         "ok", doctor_voice.REASON_MANIFEST_CURRENT),
+    ]
+
+
+def _expected_gate_reason(check, profile: str, accessory: bool) -> str | None:
+    streambox = profile == "streambox"
+    if check is doctor_voice.check_voice_provider_ids_manifest:
+        return doctor_voice.REASON_MANIFEST_NOT_RENDERED if streambox else None
+    return doctor_voice.REASON_NOT_INSTALLED if streambox and not accessory else None
+
+
+@pytest.mark.parametrize(
+    "profile, accessory",
+    [("full", False), ("full", True), ("streambox", False), ("streambox", True)],
+    ids=[
+        "full-no-accessory", "full-with-accessory",
+        "streambox-no-accessory", "streambox-with-accessory",
+    ],
+)
+def test_voice_checks_gate_on_streambox_without_accessory(
+    monkeypatch, tmp_path: Path, profile, accessory,
+):
+    """A streambox with a paired accessory gets real rows from every
+    self-gating voice check; one without gets `skipped` rows, never `warn`
+    — no second gate."""
+    monkeypatch.setattr(
+        doctor_voice, "install_profile_is_streambox", lambda: profile == "streambox",
+    )
+    evidence.seed("mic_presence", _mic(accessory))
+
+    for check, off_status, off_reason in _gated_check_rows(monkeypatch, tmp_path):
+        result = check()
+        gate_reason = _expected_gate_reason(check, profile, accessory)
+        expected = (
+            ("skipped", gate_reason) if gate_reason else (off_status, off_reason)
+        )
+        assert (result.status, result.reason) == expected, check.__name__

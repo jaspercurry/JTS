@@ -25,7 +25,9 @@ from ...secret_redaction import redact_secrets
 from ._shared import (
     _EXCEPTION_DETAIL_LIMIT,
     CheckResult,
+    REASON_NOT_INSTALLED,
     _run,
+    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a voice check produced a
@@ -46,6 +48,7 @@ REASON_MANIFEST_MISSING = "manifest_missing"
 REASON_MANIFEST_CURRENT = "manifest_current"
 REASON_MANIFEST_NONCANONICAL = "manifest_noncanonical_order"
 REASON_MANIFEST_STALE = "manifest_stale"
+REASON_MANIFEST_NOT_RENDERED = "manifest_not_rendered_for_profile"
 
 REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE = "tool_packs_runtime_unavailable"
 REASON_TOOL_PACKS_BUILD_FAILED = "tool_packs_build_failed"
@@ -64,6 +67,24 @@ REASON_PRICING_MODEL_NOT_CONFIGURED = "pricing_active_model_not_configured"
 REASON_PRICING_MODEL_UNPRICED = "pricing_active_model_unpriced"
 REASON_PRICING_MODEL_PRICED = "pricing_active_model_priced"
 REASON_PRICING_UNREADABLE = "pricing_unreadable"
+
+# ADR-0217: a streambox grants ASSISTANT without WAKE_DETECTION and runs
+# jasper-voice only while a mic-bearing accessory is paired — the same test
+# resilience.check_voice_unit_running gates on. check_provider_importable,
+# check_tool_packs and check_pricing read facts that only mean something
+# while the daemon can run, so they share it (check_provider_key and
+# check_spend_cap need Config fields the streambox cfg surface lacks; see
+# their own docstrings).
+def _voice_gated_skip(label: str) -> CheckResult | None:
+    if install_profile_is_streambox() and not evidence.mic_presence().accessory_present:
+        return CheckResult(
+            label, "skipped",
+            "streambox tier with no mic-bearing remote paired — the "
+            "assistant runs only while one is (ADR-0217)",
+            reason=REASON_NOT_INSTALLED,
+        )
+    return None
+
 
 def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
@@ -89,7 +110,13 @@ def check_provider_key(cfg: Config) -> CheckResult:
     a re-paste) or not, and either is fine.
 
     Also the module's adjudicator for the *selection* itself: an unreadable or
-    unsupported SSOT value is reported here, once."""
+    unsupported SSOT value is reported here, once.
+
+    Gated statically in ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``, not on
+    live accessory presence like its neighbours: the streambox doctor `cfg`
+    (``_cli._local_audio_config_from_env``) carries no ``voice_provider`` or
+    API-key fields at all, so reading them here would be a false PASS/FAIL,
+    not a skip. Remove from that set once that surface carries them."""
     state = read_active_provider_state()
     env_provider = cfg.voice_provider
     if state.status == "invalid":
@@ -215,6 +242,8 @@ def check_provider_importable() -> CheckResult:
     deferred SDK import. It does NOT prove jasper-voice starts (keys, mic,
     ALSA, network are separate) and opens no session.
     """
+    if (skip := _voice_gated_skip("voice provider imports")) is not None:
+        return skip
     state = read_active_provider_state()
     if state.status in _PROVIDER_UNDETERMINED:
         return CheckResult(
@@ -291,7 +320,19 @@ def check_voice_provider_ids_manifest() -> CheckResult:
 
     Missing or stale parks jasper-voice — `jasper-aec-reconcile` accepts the
     active provider only as an exact line here — so both `fail` (ADR-0165;
-    non-negotiable 6). Non-canonical order still matches its `grep -Fxq`."""
+    non-negotiable 6). Non-canonical order still matches its `grep -Fxq`.
+
+    On a streambox `jasper-aec-reconcile` is not the input-gate owner
+    (ADR-0217) and `install_streambox_jasper` never renders this file
+    (`deploy/lib/install/python-runtime.sh`), so its absence there is a
+    profile fact, not a fault."""
+    if install_profile_is_streambox():
+        return CheckResult(
+            "voice provider ids", "skipped",
+            "not rendered on the streambox profile — only the full "
+            "profile's installer writes this projection",
+            reason=REASON_MANIFEST_NOT_RENDERED,
+        )
     path = _voice_provider_ids_manifest_path()
     expected = provider_ids_manifest_text().splitlines()
     if not path.exists():
@@ -414,6 +455,8 @@ def check_tool_packs() -> CheckResult:
     Cross-checks the static registry (jasper.tools.packs.TOOL_PACKS) against
     what jasper-voice actually registered (/state.voice.tool_packs).
     Fail-soft: with jasper-control unreachable, reports the registry alone."""
+    if (skip := _voice_gated_skip("Tool packs")) is not None:
+        return skip
     from ...tools.packs import TOOL_PACKS
     expected = [p.name for p in TOOL_PACKS]
     return _assess_tool_packs(expected, _voice_tool_packs_runtime())
@@ -421,6 +464,9 @@ def check_tool_packs() -> CheckResult:
 
 @doctor_check(label="daily spend cap", needs_cfg=True)
 def check_spend_cap(cfg: Config) -> CheckResult:
+    """Gated statically in ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``, not
+    on live accessory presence like its neighbours — see
+    ``check_provider_key``'s docstring for why."""
     try:
         from ...usage import (
             SpendCap,
@@ -481,6 +527,8 @@ def check_pricing() -> CheckResult:
     loading and the active model having a rate. Surface both, since a
     missing/corrupt model_pricing.json or an unpriced active model silently
     drops cost to $0 (the cap then can't bound anything)."""
+    if (skip := _voice_gated_skip("voice model pricing")) is not None:
+        return skip
     try:
         from ...usage import (
             load_default_pricing,
