@@ -112,11 +112,7 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # with a stale lib. Sibling-first keeps script and lib versions in
 # lockstep wherever the script runs from; the installed copy under
 # /usr/local/sbin has no ../lib/jasper-env-file.sh sibling, so it falls
-# through to the installed lib. This deliberately diverges from
-# load_asound_render_lib's installed-first order in
-# jasper-audio-hardware-reconcile — see the rationale comment there
-# (the render lib's functions are never exercised by a mid-install
-# repo-script run, so its order is left alone).
+# through to the installed lib.
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
         if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
