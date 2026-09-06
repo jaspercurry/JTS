@@ -84,13 +84,17 @@ FAILURE_DETAIL_LIMIT = 300
 _SCAN_LIMIT = FAILURE_DETAIL_LIMIT * 4
 
 
-def _rejection_text(exc: BaseException) -> str:
+def _rejection_text(exc: BaseException, *, literals: tuple[str, ...] = ()) -> str:
     """The provider's own reason, redacted and collapsed, untruncated.
 
     ``str(exc)`` discards the part that matters: websockets renders a
     refused handshake as a bare "server rejected WebSocket connection:
     HTTP 403" while ``.response.body`` holds the reason a household can
     act on. Prefer the body; fall back to ``str(exc)`` otherwise.
+
+    ``literals`` are secret values the caller holds (its own API key,
+    say) that may not match `redact_secrets`'s generic prefix patterns —
+    see ADR-0243.
 
     Redaction precedes any truncation by a caller so a clipped tail
     cannot leave half a credential behind.
@@ -104,12 +108,13 @@ def _rejection_text(exc: BaseException) -> str:
         text = f"HTTP {status}: {body}" if status else body
     else:
         text = str(exc)
-    return " ".join(redact_secrets(text[:_SCAN_LIMIT]).split())
+    redacted = redact_secrets(text[:_SCAN_LIMIT], literals=literals)
+    return " ".join(redacted.split())
 
 
-def failure_detail(exc: BaseException) -> str:
+def failure_detail(exc: BaseException, *, literals: tuple[str, ...] = ()) -> str:
     """A one-line, secret-free cause for logs and ``/state``."""
-    text = _rejection_text(exc)
+    text = _rejection_text(exc, literals=literals)
     if len(text) > FAILURE_DETAIL_LIMIT:
         text = text[:FAILURE_DETAIL_LIMIT - 3] + "..."
     return text
@@ -266,9 +271,16 @@ class OutageTracker:
             name="jasper-supervisor-escalation-cue",
         )
 
-    def on_failure(self, exc: BaseException) -> None:
-        """Record a failed session open, announcing a terminal one once."""
-        self.detail = failure_detail(exc)
+    def on_failure(
+        self, exc: BaseException, *, literals: tuple[str, ...] = (),
+    ) -> None:
+        """Record a failed session open, announcing a terminal one once.
+
+        ``literals`` are secret values the connection holds that
+        `redact_secrets`'s generic patterns may not recognise — passed
+        through to `failure_detail` before this reaches ``/state``.
+        """
+        self.detail = failure_detail(exc, literals=literals)
         # Latest failure wins, so a transient failure after a terminal
         # one reads as transient again.
         cue = outage_cue(exc)

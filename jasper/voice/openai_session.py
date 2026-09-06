@@ -761,6 +761,17 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
 
         self._server_vad_active: bool = False
 
+    def _secret_literals(self) -> tuple[str, ...]:
+        """The API key, so a rejection body that echoes it still redacts.
+
+        `_KEY_PREFIX_RE` in `secret_redaction.py` only knows the `sk-`
+        shape; a rotated or legacy OpenAI key can miss it, and this is
+        the fallback. `GrokRealtimeConnection` inherits this unchanged —
+        its `xai-` keys are already prefix-covered, but the exact value
+        still redacts either way.
+        """
+        return (self._api_key,) if self._api_key else ()
+
     # ------------------------------------------------------------------
     # Public LiveConnection protocol
     # ------------------------------------------------------------------

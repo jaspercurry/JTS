@@ -333,6 +333,16 @@ class BaseLiveConnection:
     def last_failure_detail(self) -> str | None:
         return self._outage.detail
 
+    def _secret_literals(self) -> tuple[str, ...]:
+        """Secret values this connection holds, for redaction fallback.
+
+        A rejection body can echo a credential in a shape
+        `redact_secrets`'s prefix patterns don't know; passing the exact
+        value here catches it. Base has nothing to retain — see
+        `OpenAIRealtimeConnection` for the one provider that does.
+        """
+        return ()
+
     def wake_cue(self) -> str:
         return self._outage.wake_cue
 
@@ -383,7 +393,7 @@ class BaseLiveConnection:
         try:
             await self._open_session_attempt()
         except Exception as e:  # noqa: BLE001
-            self._outage.on_failure(e)
+            self._outage.on_failure(e, literals=self._secret_literals())
             raise
         self._outage.on_recovery()
 

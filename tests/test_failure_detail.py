@@ -77,3 +77,14 @@ def test_redaction_precedes_truncation() -> None:
     secret = "xai-" + "a" * 40
     body = b'{"error":"' + b"padding " * 40 + b'","api_key":"' + secret.encode() + b'"}'
     assert secret not in failure_detail(Rejected(401, body))
+
+
+def test_a_prefix_less_key_redacts_only_when_passed_as_a_literal() -> None:
+    """`key` isn't one of the redactor's keywords and `plainvalue123`
+    matches no provider prefix, so only a caller-supplied literal
+    catches it — see ADR-0243."""
+    body = b'{"error":"bad key","key":"plainvalue123"}'
+    detail = failure_detail(Rejected(401, body), literals=("plainvalue123",))
+    assert "plainvalue123" not in detail
+    assert "bad key" in detail
+    assert "401" in detail

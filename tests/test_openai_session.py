@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
+from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
@@ -198,6 +199,16 @@ def test_upsample_state_continuity_across_chunks():
 def test_invalid_noise_reduction_rejected_at_construction():
     with pytest.raises(RuntimeError, match="OpenAI noise_reduction"):
         _make_conn(noise_reduction="potato")
+
+
+def test_secret_literals_reports_the_api_key():
+    """A rejection body echoing the key in a shape `redact_secrets`'s
+    prefix patterns don't know still redacts, because the connection
+    hands its own key back as a literal (ADR-0243). The base class
+    returns none — it holds no secret of its own."""
+    conn = OpenAIRealtimeConnection(api_key="plainvalue123")
+    assert conn._secret_literals() == ("plainvalue123",)
+    assert BaseLiveConnection._secret_literals(conn) == ()
 
 
 # ---------------------------------------------------------------------------
