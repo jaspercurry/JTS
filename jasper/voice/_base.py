@@ -17,7 +17,6 @@ Lines logged from here go to the subclass's own `_logger` and carry its
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time as _time
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -190,8 +189,7 @@ class BaseLiveTurn:
         if self._released or self._turn_lost:
             return
         self._turn_lost = True
-        with contextlib.suppress(asyncio.QueueFull):
-            self._audio_q.put_nowait(None)
+        self._audio_q.put_nowait(None)
 
 
 class BaseLiveConnection:
