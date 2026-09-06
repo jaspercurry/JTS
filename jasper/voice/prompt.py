@@ -15,27 +15,18 @@ from __future__ import annotations
 # realtime models" docs:
 #
 #   1. POSITIVE framing for tool calls — "Call X when Y", not "Don't
-#      forget X". An earlier version of this prompt had ~15 "Do NOT"
-#      clauses and zero positive "Call the tool when…" instructions,
-#      which is exactly the pattern OpenAI says causes gpt-realtime to
-#      drift from rules, skip phases, or misuse tools. Verified
-#      2026-05-21 via voice-eval: that prompt produced ZERO tool calls
-#      across 5 consecutive read-only scenarios.
+#      forget X".
 #
 #   2. CONDITIONAL framing for preamble suppression — "Skip the
-#      preamble when X, Y, Z" instead of "Never preamble". Absolute
-#      prohibitions get partially ignored (~33% compliance per the
-#      OpenAI community thread); the model has been RLHF-trained on
-#      the conditional pattern.
+#      preamble when X, Y, Z" instead of "Never preamble".
 #
-# Path B applied 2026-05-23: per-tool conditional rules (when to call,
-# voice-answer style, response-shape handling) now live in each
-# tool's docstring and reach the model via build_tool() sending the
-# full cleaned docstring. This system instruction keeps only
-# cross-tool meta-rules — role, persona, verbosity, preamble policy,
-# unclear-audio handling, tool-result meta-rules, and the small set
-# of cross-tool routing rules where two similar tools need
-# disambiguation.
+# Per-tool conditional rules (when to call, voice-answer style,
+# response-shape handling) live in each tool's docstring and reach the
+# model via build_tool() sending the full cleaned docstring. This
+# system instruction keeps only cross-tool meta-rules — role, persona,
+# verbosity, preamble policy, unclear-audio handling, tool-result
+# meta-rules, and the small set of cross-tool routing rules where two
+# similar tools need disambiguation. See ADR-0155.
 SYSTEM_INSTRUCTION = (
     # ---- Role & Objective ------------------------------------------------
     "You are Jarvis, a voice assistant in a household smart speaker. "
@@ -130,24 +121,6 @@ SYSTEM_INSTRUCTION = (
     "tool, then speak the result.\n"
 
     # ---- Unclear audio ---------------------------------------------------
-    # Per OpenAI's Realtime Prompting Guide. Mic mishears are a real
-    # input on a voice-only device; without this rule the model
-    # confidently answers a wrong-interpreted utterance.
-    #
-    # The "fragment" and "empty-string arguments" clauses were added
-    # 2026-05-24 after the VAD test matrix surfaced a dangerous
-    # failure mode: when STT returned empty or one-word transcripts
-    # ("What?", "That's...", ""), the model would still confidently
-    # call tools — calendar_today_summary, get_subway_arrivals with
-    # `direction=''`, set_volume(60), and in one case home_assistant
-    # ("turn on the bedroom lights") which actually executed and
-    # turned the lights on while the user was asking about weather.
-    # The original "don't call any tool" rule was being interpreted
-    # too narrowly — the model didn't perceive "transcript is a
-    # fragment" as "unclear audio." Enumerating those triggers
-    # explicitly and flagging the empty-arguments anti-pattern is
-    # per the prompting playbook's "enumerate triggers; conditional
-    # rules over absolutes" guidance.
     "If the user's audio is unclear — partial, garbled, talking-"
     "over-music, side conversation, words trailing off, a short "
     "fragment like 'What?' or 'That's', or nothing intelligible "
@@ -277,7 +250,7 @@ def _build_system_instruction(
     unset or unknown value) get nothing, so their prompt is byte-identical
     to the shared base; ``gemini`` gets the small delta in
     ``_PROVIDER_AUGMENTATION``. The daemon passes ``cfg.voice_provider``;
-    tests and other callers may omit it."""
+    tests and other callers may omit it. See ADR-0158."""
     from datetime import datetime
     now_local = datetime.now().astimezone()
     # The session-open timestamp is provided as orienting context only —

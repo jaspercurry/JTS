@@ -591,8 +591,7 @@ async def _start_control_socket(
                               click. Idempotent.
 
     The socket lives in /run (tmpfs) so it gets created fresh each boot
-    via systemd's RuntimeDirectory=jasper. Both jasper-voice and
-    jasper-control run as root, so default 0o600 perms are fine."""
+    via systemd's RuntimeDirectory=jasper."""
     import json as _json
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
