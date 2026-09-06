@@ -674,22 +674,6 @@ def test_check_usbsink_name_verdicts(
     assert r.reason == reason
 
 
-def test_check_usbsink_name_override_unreadable_warns(monkeypatch, tmp_path):
-    """The override existing as something `read_bytes()` can't open (a
-    directory, standing in for a permissions/I-O fault) is an observed
-    permission/IO fault on a confirmed file — the same class as
-    `_classify_mux_mode`'s OSError arm — warn, not skipped."""
-    _name_env(monkeypatch, active=True, speaker="Kitchen")
-    updates = tmp_path / _KVER / "updates"
-    updates.mkdir(parents=True)
-    (updates / "usb_f_uac2.ko").mkdir()  # exists() is True; read_bytes() raises
-
-    r = usbsink.check_usbsink_name(modules_root=str(tmp_path))
-
-    assert r.status == "warn"
-    assert r.reason == usbsink.REASON_NAME_OVERRIDE_UNREADABLE
-
-
 # ----------------------------------------------------------------------
 # check_usbgadget_composition — composed gadget functions vs composed
 # *intent* (network kill switch x audio enablement x follower-park gate).

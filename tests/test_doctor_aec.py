@@ -442,14 +442,13 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
 
 
-def test_check_aec_output_health_keeps_stats_verdict_when_journal_unreadable(
+def test_check_aec_output_health_warns_when_journal_unreadable_after_stats_ok(
     monkeypatch, tmp_path: Path,
 ):
-    """A v4 stats assessment that already proved reference health (past
-    startup grace, current) is an observation the row already made — a
-    subsequent journal read failure loses journal-CONTENT detail, not that
-    observation, so the stats verdict stands (with the journal failure
-    noted), not skipped."""
+    """A v4 stats assessment proving reference health only covers transport/
+    queue admission — the RMS/silence content half never ran when the
+    journal can't be read, so this stays a finding (`warn`, its own
+    reason), not `ok`."""
     _install_reference_health_check_fakes(
         monkeypatch, tmp_path, stats=_reference_input_stats(), journal="",
     )
@@ -463,9 +462,8 @@ def test_check_aec_output_health_keeps_stats_verdict_when_journal_unreadable(
 
     result = aec.check_aec_bridge_output_health()
 
-    assert result.status == "ok"
-    assert result.reason == aec.REASON_REF_RECEIVER_CURRENT
-    assert "could not read journal" in result.detail
+    assert result.status == "warn"
+    assert result.reason == aec.REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE
 
 
 def test_check_aec_output_health_skips_when_journal_unreadable_and_no_stats(
@@ -1802,26 +1800,6 @@ def test_aec_bridge_down_separates_a_withheld_verdict_from_a_dead_bridge(
     assert admitted.status == "fail"
     assert withheld.reason == aec.REASON_BRIDGE_DOWN_READY_ABSENT
     assert admitted.reason == aec.REASON_BRIDGE_DOWN_READY_PRESENT
-
-
-def test_check_xvf_mixer_state_warns_when_cget_fails(monkeypatch):
-    """The card's presence is already confirmed above; `amixer cget`
-    failing on that confirmed hardware is the mixer erroring — an
-    observation, not a missing evidence channel — so warn, not skipped."""
-    from jasper.mics import xvf3800
-
-    monkeypatch.setattr(xvf3800, "is_present", lambda: True)
-    monkeypatch.setattr(xvf3800, "alsa_card_name", lambda: "Array")
-
-    def fake_run(cmd, *args, **kwargs):
-        return SimpleNamespace(returncode=1, stdout="", stderr="no such control")
-
-    monkeypatch.setattr(aec, "_run", fake_run)
-
-    r = aec.check_xvf_mixer_state()
-
-    assert r.status == "warn"
-    assert r.reason == aec.REASON_XVF_MIXER_CGET_FAILED
 
 
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):

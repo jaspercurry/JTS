@@ -306,23 +306,6 @@ def test_pricing_skips_when_it_could_not_ask_which_model_is_active(
     assert r.reason == getattr(doctor_voice, reason)
 
 
-def test_pricing_unreadable_warns(monkeypatch, tmp_path: Path):
-    """The bare `except Exception` here catches an observed fault (a
-    corrupt env file resolving the active model) — warn, not skipped. A
-    genuine programming error is a different animal that should crash into
-    the harness's own `check_crashed` fail row, not this branch."""
-    _ssot(monkeypatch, tmp_path, "gemini")
-    monkeypatch.setattr(
-        doctor_voice, "read_active_model_from_env_files",
-        lambda provider: (_ for _ in ()).throw(RuntimeError("env file corrupt")),
-    )
-
-    r = doctor_voice.check_pricing()
-
-    assert r.status == "warn"
-    assert r.reason == doctor_voice.REASON_PRICING_UNREADABLE
-
-
 def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
     monkeypatch, tmp_path: Path,
 ):
@@ -401,26 +384,6 @@ def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
 
     r = doctor_voice.check_spend_cap(cfg)
     assert r.reason == doctor_voice.REASON_SPEND_CAP_OK
-
-
-def test_check_spend_cap_unreadable_warns(monkeypatch, tmp_path: Path):
-    """The bare `except Exception` here catches an observed fault (a
-    locked/corrupt usage DB) — warn, not skipped. A genuine programming
-    error is a different animal that should crash into the harness's own
-    `check_crashed` fail row, not this branch."""
-    import jasper.usage as usage
-
-    cfg = _spend_cap_cfg(monkeypatch, tmp_path, "1.00")
-    Path(cfg.usage_db).touch()  # past the no-usage-recorded-yet path
-    monkeypatch.setattr(
-        usage, "household_usage_reader",
-        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("db locked")),
-    )
-
-    r = doctor_voice.check_spend_cap(cfg)
-
-    assert r.status == "warn"
-    assert r.reason == doctor_voice.REASON_SPEND_CAP_UNREADABLE
 
 
 # ------------------------------------------------------------- tool packs

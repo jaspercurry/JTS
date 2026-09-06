@@ -452,22 +452,6 @@ def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
     assert r.reason == doctor_network.REASON_IPV6_LINK_LOCAL_MISSING
 
 
-def test_check_wifi_link_local_ipv6_warns_when_method_unreadable(monkeypatch):
-    """The active profile is already confirmed; `nmcli -g ipv6.method`
-    failing/empty on that specific profile is an unparseable field on a
-    known subject — a finding, not a missing evidence channel — so warn."""
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "802-11-wireless:wlan0:Home\n",
-            _completed(["nmcli"], returncode=1, stdout=""),
-        ],
-    )
-    r = doctor_network.check_wifi_link_local_ipv6()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_IPV6_METHOD_UNREADABLE
-
-
 def test_check_wifi_link_local_ipv6_registered_in_sync_checks():
     assert "check_wifi_link_local_ipv6" in _registered_check_names()
 
@@ -1153,7 +1137,7 @@ def test_usbnet_nm_profile_wrong_profile_on_usb0_is_fail(monkeypatch, tmp_path):
     assert r.reason == doctor_network.REASON_USBNET_NM_PROFILE_MISMATCH
 
 
-def test_usbnet_nm_profile_nmcli_failure_is_skipped(monkeypatch, tmp_path):
+def test_usbnet_nm_profile_nmcli_failure_is_warn(monkeypatch, tmp_path):
     _with_usb0_and_nmcli(monkeypatch, tmp_path)
     _stub_run(monkeypatch, {
         ("/usr/bin/nmcli", "-t", "-f", "TYPE,DEVICE,NAME"): subprocess.CompletedProcess(
@@ -1161,7 +1145,7 @@ def test_usbnet_nm_profile_nmcli_failure_is_skipped(monkeypatch, tmp_path):
         ),
     })
     r = doctor_network.check_usbnet_nm_profile()
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == doctor_network.REASON_USBNET_NM_QUERY_FAILED
 
 

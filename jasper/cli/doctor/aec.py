@@ -1280,16 +1280,12 @@ def check_aec_bridge_output_health() -> CheckResult:
     )
     if proc.returncode != 0:
         if stats_assessment is not None:
-            # The v4 stats assessor already proved reference-input health
-            # (fail and startup-grace both return above) — a journal read
-            # failure here loses journal-CONTENT detail, not that
-            # observation, so keep the stats verdict rather than discard it.
-            stats_verdict, _ = stats_assessment
-            stats_verdict.detail += (
-                f"; could not read journal for content assessment: "
-                f"{proc.stderr.strip() or 'unknown error'}"
+            return CheckResult(
+                "AEC bridge output", "warn",
+                f"could not read journal for content assessment: "
+                f"{proc.stderr.strip() or 'unknown error'}; {stats_result.detail}",
+                reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
             )
-            return stats_verdict
         return CheckResult(
             "AEC bridge output", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
@@ -1682,12 +1678,6 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
         timeout=8.0,
     )
     if proc.returncode != 0:
-        # Unlike check_aec_bridge_output_health's stats path, reaching here
-        # means no DTLN-specific observation exists: the bridge unit being
-        # active says nothing about DTLN itself (that gap is why this check
-        # exists), and any stats snapshot was absent or too stale to
-        # answer. The journal is this row's only evidence, so a failed
-        # read really did observe nothing.
         return CheckResult(
             "DTLN-aec engine", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",

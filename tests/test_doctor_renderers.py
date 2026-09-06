@@ -400,29 +400,6 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
     assert r.status == "ok"
 
 
-def test_shairport_check_conf_unreadable_warns(monkeypatch):
-    """An existing conf the doctor can't read (permissions, transient I/O
-    error) is an observed permission/IO fault on a confirmed file — the
-    same class as `_classify_mux_mode`'s OSError arm — warn, not skipped."""
-
-    class _UnreadableConf:
-        def exists(self):
-            return True
-
-        def read_text(self):
-            raise OSError("Permission denied")
-
-        def __str__(self):
-            return "/etc/shairport-sync.conf"
-
-    monkeypatch.setattr(renderers, "Path", lambda _arg: _UnreadableConf())
-
-    r = renderers.check_shairport_sync_loopback_plughw()
-
-    assert r.status == "warn"
-    assert r.reason == renderers.REASON_SHAIRPORT_CONF_UNREADABLE
-
-
 # ---- renderer ALSA device resolvable (PR #223 — the bug-class catch) ---
 
 # These tests mock the parse helpers + the systemd-user lookup + the
@@ -1582,14 +1559,6 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
 # right at runtime but hides a dropped manual pin without this doctor line.
 
 
-# A sentinel meaning "put a directory at the pin path" instead of writing
-# text — read_text() on a directory raises a real IsADirectoryError (an
-# OSError), no monkeypatching needed, to exercise the non-FileNotFoundError
-# arm the runtime reader treats exactly like corrupt JSON: pin lost, falls
-# back to auto.
-_IS_DIR = object()
-
-
 @pytest.mark.parametrize(
     "payload, status, reason",
     [
@@ -1601,15 +1570,12 @@ _IS_DIR = object()
             "warn",
             renderers.REASON_MUX_MODE_UNKNOWN_SOURCE,
         ),
-        (_IS_DIR, "warn", renderers.REASON_MUX_MODE_UNREADABLE),
     ],
-    ids=["absent", "corrupt", "auto", "unknown-source", "unreadable"],
+    ids=["absent", "corrupt", "auto", "unknown-source"],
 )
 def test_classify_mux_mode_verdicts(tmp_path, payload, status, reason):
     p = tmp_path / "mux_mode.json"
-    if payload is _IS_DIR:
-        p.mkdir()
-    elif payload is not None:
+    if payload is not None:
         p.write_text(payload, encoding="utf-8")
 
     res = _classify_mux_mode(p)

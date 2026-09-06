@@ -954,7 +954,7 @@ def check_usbnet_nm_profile() -> CheckResult:
     proc = _cached_nmcli_active(nmcli)
     if proc.returncode != 0:
         return CheckResult(
-            label, "skipped",
+            label, "warn",
             f"`nmcli connection show --active` failed: "
             f"{proc.stderr.strip() or 'no output'}",
             reason=REASON_USBNET_NM_QUERY_FAILED,
