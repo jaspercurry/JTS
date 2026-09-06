@@ -83,6 +83,7 @@ from .voice.earcons import (
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
 from .voice.measurement_hold import MeasurementHold
+from .voice.peering_client import PeeringClient
 from .voice.output_gate import (
     AssistantOutputEpisode,
     AssistantOutputGate,
@@ -1175,13 +1176,11 @@ class WakeLoop:
         self._acquiring: bool = False
         self._acquire_buffer: deque = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
 
-        # Multi-device peering: epoch UUID assigned by the peering
-        # daemon when this Pi wins arbitration. Used to correlate the
-        # SESSION_STARTED / SESSION_ENDED notifications back to the
-        # specific wake event. Empty string means "no peer-tracked
-        # session" — either peering is disabled, or this is a
-        # remote-driven session that didn't go through arbitration.
-        self._peering_current_epoch: str = ""
+        # Multi-device peering: arbitrates wake ownership and notifies
+        # session lifecycle over jasper-control's UDS. See PeeringClient.
+        self._peering = PeeringClient(
+            enabled=cfg.peering_enabled, socket_path=cfg.peering_uds_socket,
+        )
 
     @classmethod
     def for_tests(
@@ -3324,7 +3323,7 @@ class WakeLoop:
                 await self._telemetry_outcome("late_cancel", "pre_arb")
                 return  # finally clears _acquiring + buffer
 
-            decision = await self._peer_arbitrate(
+            decision = await self._peering.arbitrate(
                 score=score, snr_db=None, rms_dbfs=rms_dbfs,
                 can_serve=can_serve,
             )
@@ -3370,7 +3369,7 @@ class WakeLoop:
             await self._telemetry_stage("turn_opened")
             # Starts the winner-only heartbeat. Fire-and-forget: voice's own
             # session lifecycle is the source of truth.
-            await self._notify_peering_session_started()
+            await self._peering.session_started(has_turn=self._turn is not None)
 
             try:
                 drained, speech_in_acquire = await self._drain_acquire_audio()
@@ -3454,104 +3453,6 @@ class WakeLoop:
             )
             return True
         return False
-
-    async def _peering_send(
-        self, cmd: str, *, timeout: float = 0.5,
-    ) -> dict | None:
-        """Send one command to jasper-control's peering UDS.
-
-        Returns the parsed JSON response, or None if peering is
-        disabled / the daemon is unreachable / any error occurs.
-
-        This is the only place that touches the peering UDS — every
-        caller is fail-open by construction (no exception escapes,
-        no peering issue can silence the speaker). Callers
-        differentiate "WIN-by-default" semantics by treating None
-        as the no-op response."""
-        if not self._cfg.peering_enabled:
-            return None
-        try:
-            from .peering.uds import send_request
-        except ImportError:
-            # peering package not installed — keep wake working.
-            return None
-        try:
-            return await send_request(
-                self._cfg.peering_uds_socket, cmd, timeout=timeout,
-            )
-        except FileNotFoundError:
-            # Peering daemon isn't running (mode=on in voice config
-            # but mode=off / failed in jasper-control). Fall back to
-            # solo behavior silently — this isn't an error condition.
-            return None
-        except (OSError, asyncio.TimeoutError) as e:
-            logger.warning("peering %s failed: %s; treating as solo",
-                           cmd.split(maxsplit=1)[0], e)
-            return None
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "peering %s raised; treating as solo",
-                cmd.split(maxsplit=1)[0],
-            )
-            return None
-
-    async def _peer_arbitrate(
-        self,
-        *,
-        score: float,
-        snr_db: float | None,
-        rms_dbfs: float | None,
-        can_serve: bool,
-    ) -> str:
-        """Ask jasper-control's peering daemon whether this Pi should
-        take the turn. Returns "WIN" or "LOSE".
-
-        Side effect: sets `self._peering_current_epoch` from the
-        daemon's response so `_notify_peering_session_*` can reference
-        the same arbitration round.
-
-        Fast-path: when peering is disabled OR no peering daemon is
-        running OR the UDS errors, returns "WIN" immediately, and
-        `_peering_send` short-circuits before any I/O.
-        """
-        self._peering_current_epoch = ""
-        import json as _json  # noqa: PLC0415
-        payload = _json.dumps({
-            "score": float(score),
-            "snr_db": snr_db,
-            "rms_dbfs": rms_dbfs,
-            "can_serve": bool(can_serve),
-        })
-        resp = await self._peering_send(f"ARBITRATE {payload}")
-        if resp is None:
-            return "WIN"  # peering disabled or daemon unreachable
-        self._peering_current_epoch = str(resp.get("epoch") or "")
-        result = (resp.get("result") or "").upper()
-        if result not in ("WIN", "LOSE"):
-            logger.warning(
-                "peer arbitrate returned %r; defaulting to WIN", result,
-            )
-            return "WIN"
-        return result
-
-    async def _notify_peering_session_started(self) -> None:
-        """Fire-and-forget notice that this speaker opened a session.
-
-        The peering daemon transitions WINNER → ACTIVE and broadcasts
-        heartbeats so peers stay suppressed for the session. No-op when
-        peering is disabled; errors are swallowed so voice keeps going.
-        """
-        if self._turn is None:
-            return  # no active turn to announce
-        await self._peering_send(
-            f"SESSION_STARTED {self._peering_current_epoch}",
-        )
-
-    async def _notify_peering_session_ended(self, reason: str) -> None:
-        """Fire-and-forget notice. Mirrors _notify_peering_session_started."""
-        await self._peering_send(
-            f"SESSION_ENDED {self._peering_current_epoch} {reason}",
-        )
 
     def _resolve_barge_in_for_turn(self) -> None:
         """Decide whether in-session barge-in is active for the turn about
@@ -4755,8 +4656,7 @@ class WakeLoop:
         # un-suppress promptly: waiting for our chirp and duck restore would
         # add ~300 ms of suppression before other devices can arbitrate a
         # fresh wake. No-op when peering is off or the session was untracked.
-        await self._notify_peering_session_ended(reason)
-        self._peering_current_epoch = ""
+        await self._peering.session_ended(reason)
 
         for t in self._bg_tasks:
             t.cancel()

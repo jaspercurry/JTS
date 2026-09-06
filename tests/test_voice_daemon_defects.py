@@ -273,7 +273,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
                 return True
 
         wl._wake_late_cancelled = lambda *_a, **_k: False
-        wl._peer_arbitrate = _win
+        wl._peering.arbitrate = _win
         wl._prepare_assistant_loudness_context = _noop
         wl._play_listening_chirp = _noop
         wl._begin_turn_inner = _begin_boom
@@ -337,7 +337,7 @@ async def test_turn_open_failure_releases_output_gate_before_cue():
             return True
 
     wl._wake_late_cancelled = lambda *_a, **_k: False
-    wl._peer_arbitrate = _win
+    wl._peering.arbitrate = _win
     wl._prepare_assistant_loudness_context = _noop
     wl._play_listening_chirp = _noop
     wl._begin_turn_inner = _begin_boom
