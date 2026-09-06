@@ -4,34 +4,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Shared env-file reader + quoting + atomic single-key writer for the bash
-# consumers of /etc/jasper/jasper.env and the wizard-owned
+# Shared env-file reader + quoting + atomic, locked single-key writer for the
+# bash consumers of /etc/jasper/jasper.env and the wizard-owned
 # /var/lib/jasper*/*.env files.
 #
-# Why this exists — and why NOT `printf %q`: bash 5.2 (Trixie) quotes
-# values containing commas with backslash escaping, so
-# `printf %q 'hw:CARD=A,DEV=0'` emits `hw:CARD=A\,DEV=0`. systemd's
-# EnvironmentFile= parser keeps that backslash literally, corrupting
-# ALSA device specs, and the reconcilers' own read-back no longer
-# matches the intended value — breaking idempotence and causing
-# restart churn. Single-quote wrapping is stable across bash versions.
-#
-# source/EnvironmentFile= parity caveat: bash `source` round-trips
-# every value this writer emits, but systemd's EnvironmentFile= parser
-# does NOT do shell quote-concatenation, so the '\'' idiom used for
-# embedded single quotes diverges between the two readers. That is
-# fine for every value written today (ALSA pcm specs, profile ids,
-# udp:PORT — none contain apostrophes); do not route apostrophe-
-# bearing values through this writer into a file systemd reads via
-# EnvironmentFile= without revisiting the quoting.
-# The %q bug was first fixed in jasper-audio-hardware-reconcile
-# (PR #534); this lib is the single shared implementation so the bug
-# class cannot fork between the reconcilers again.
+# Values are single-quote wrapped, never `printf %q`: bash 5.2 escapes commas
+# (`hw:CARD=A\,DEV=0`), systemd's EnvironmentFile= parser keeps that backslash
+# literally, and the corrupted read-back turns idempotence into restart churn
+# (PR #534). EnvironmentFile= also does no shell quote-concatenation, so the
+# '\'' idiom emitted for an apostrophe reads differently to `source` than to
+# systemd — no value written today contains one.
 
 # jasper_env_quote_value VALUE
-# Print VALUE quoted for an env file. Safe-charset values pass
-# through verbatim; anything else is single-quote wrapped with
-# embedded single quotes escaped as '\''.
+# Print VALUE quoted for an env file. Safe-charset values pass through
+# verbatim; anything else is single-quote wrapped with embedded single
+# quotes escaped as '\''.
 jasper_env_quote_value() {
     local value="$1" rest
     if [[ -z "$value" ]]; then
@@ -40,24 +27,13 @@ jasper_env_quote_value() {
     fi
     case "$value" in
         *[!A-Za-z0-9_./:@,+=-]*)
-            # Production values (ALSA pcm specs, profile ids, ports) are
-            # all in the safe charset above; reaching this splice path
-            # means an unexpected value shape. Quote it correctly anyway
-            # (defense in depth), but say so — quoting subtleties are
-            # where every bug in this lib's history has lived.
+            # Reaching here means a value shape production does not produce.
             echo "event=env_file.quote_splice_engaged value_class=non_safe_charset" >&2
             printf "'"
-            # Quote-in-variable pattern ("$q") rather than an escaped \'
-            # in the expansion pattern — both work on the bashes tested
-            # (5.2.21, 5.3.0), but the variable form needs no reasoning
-            # about escape parsing inside ${...%%pattern} at all.
             local q="'"
             rest="$value"
-            # Emit the '\'' idiom via %s ARGUMENTS, never via the printf
-            # FORMAT string: bash printf interprets backslash escapes in
-            # the format, so a format-embedded \' silently drops the
-            # backslash and emits a malformed quote run (latent bug in
-            # the pre-lib PR #534 copy of this loop).
+            # The '\'' idiom goes in as a %s ARGUMENT, never in the FORMAT:
+            # bash printf eats a format's backslashes, malforming the run.
             while [[ "$rest" == *"'"* ]]; do
                 printf '%s%s' "${rest%%"$q"*}" "'\''"
                 rest="${rest#*"$q"}"
@@ -167,36 +143,86 @@ jasper_env_file_export() {
     done <<<"${parsed%x}"
 }
 
+# _jasper_env_lock_acquire DIR FILE FDVAR
+# Hold FILE's advisory lock in the descriptor FDVAR names (a nameref; the
+# caller closes it). Path and create-time mode/group are jasper/atomic_io.py's
+# _env_lock_path / advisory_file_lock, whose group bit matters only where DIR
+# carries group jasper (/var/lib/jasper).
+#
+# NOTHING acts on the lock by name: a jasper-group process can swap a symlink
+# into that 0770 directory between two lookups, and a by-name `touch`/`chmod`
+# lands on its target (transit.env, control_token). So mode and group are only
+# ever published on a descriptor, and only on one this call created: bash adds
+# O_EXCL under noclobber solely when its pre-open stat FAILS, so a raced
+# symlink to a DEVICE is opened and followed, and the descriptor is re-checked
+# before anything touches it. An existing lock opens READ-ONLY, because `>>`
+# would follow a raced symlink and CREATE its target while flock(2) ignores
+# the open mode. A raced symlink is still opened before it is rejected, and
+# closed without a chmod, chgrp, write or create; the one Pi device where a
+# bare open has a side effect, /dev/watchdog0, is single-open and held by PID
+# 1, so that open gets EBUSY. A pre-planted FIFO is refused without opening;
+# one raced in blocks either open, which bash cannot make non-blocking.
+_jasper_env_lock_acquire() {
+    local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0
+    local -n fd_ref="$3"
+    if [[ ! -e "$lock" && ! -L "$lock" ]]; then
+        set -C
+        if { exec {fd_ref}>"$lock"; } 2>/dev/null; then
+            if [[ -f "/dev/fd/${fd_ref}" ]]; then
+                chmod 0660 "/dev/fd/${fd_ref}" 2>/dev/null || true
+                chgrp --reference="$dir" "/dev/fd/${fd_ref}" 2>/dev/null || true
+            else
+                exec {fd_ref}>&-
+                fd_ref=''
+            fi
+        fi
+        set +C
+    fi
+    if [[ -z "${fd_ref:-}" && ! -L "$lock" && -f "$lock" ]]; then
+        { exec {fd_ref}<"$lock"; } 2>/dev/null || rc=$?
+        if (( rc != 0 )); then
+            echo "event=env_file.lock_failed file=${lock} reason=open rc=${rc}" >&2
+            return 1
+        fi
+    fi
+    if [[ -z "${fd_ref:-}" ]] || [[ ! -f "/dev/fd/${fd_ref}" ]]; then
+        echo "event=env_file.lock_failed file=${lock} reason=not_regular rc=1" >&2
+        if [[ -n "${fd_ref:-}" ]]; then
+            exec {fd_ref}>&-
+        fi
+        return 1
+    fi
+    flock -w 10 "$fd_ref" || rc=$?
+    if (( rc != 0 )); then
+        echo "event=env_file.lock_failed file=${lock} reason=flock rc=${rc} wait_s=10" >&2
+        exec {fd_ref}>&-
+        return 1
+    fi
+}
+
 # jasper_env_file_set FILE KEY VALUE [FILE_MODE] [DIR_MODE]
-# Atomic (tempfile + rename) single-key upsert: replaces the first
-# KEY= line in FILE (dropping duplicates) or appends one. Modes
-# default to the historical jasper-aec-reconcile posture (0600 file,
-# 0755 dir); callers with a different posture pass theirs explicitly.
+# Atomic (tempfile + rename) single-key upsert under FILE's advisory lock:
+# replaces the first KEY= line in FILE (dropping duplicates) or appends one.
+# Returns 1 without writing when the lock is refused. Every caller passes its
+# own modes; the defaults only keep the arguments optional.
 jasper_env_file_set() {
     local file="$1" key="$2" value="$3"
-    local file_mode="${4:-0600}" dir_mode="${5:-0755}"
-    local dir tmp quoted
+    local file_mode="${4:-0600}" dir_mode="${5:-0750}"
+    local dir tmp quoted rc=0 lock_fd=''
 
     dir="$(dirname "$file")"
-    # Only CREATE an absent dir; never re-mode an EXISTING one. The installer
-    # owns each env dir's canonical mode/group (/var/lib/jasper is 0770
-    # root:jasper so the now-non-root daemons can write group-shared state;
-    # /etc/jasper is 0755 so the group-jasper doctor-json oneshot can traverse)
-    # and this writer runs on every boot / udev reconcile — a blanket
-    # `install -d -m $dir_mode` re-strips those bits (the trap #827 closed for
-    # the audio-hardware reconciler's own writers; closing it here covers every
-    # caller of the shared lib, e.g. jasper-aec-reconcile).
+    # Only CREATE an absent dir; never re-mode an existing one: the installer
+    # owns each env dir's mode/group and a blanket `install -d -m` on every
+    # boot/udev reconcile re-strips them (#827).
     [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
+    _jasper_env_lock_acquire "$dir" "$file" lock_fd || return 1
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     quoted="$(jasper_env_quote_value "$value")"
 
     if [[ -f "$file" ]]; then
-        # The replacement line goes in via ENVIRON, never `awk -v`:
-        # -v values get escape-sequence processing (gawk and mawk
-        # disagree on unknown escapes like the \' inside a quoted
-        # value), which corrupted apostrophe-bearing lines on CI's
-        # mawk while passing on others. ENVIRON is escape-free by
-        # POSIX on every awk.
+        # ENVIRON, never `awk -v`: -v applies escape-sequence processing and
+        # gawk/mawk disagree on unknown escapes like the \' inside a quoted
+        # value, which corrupted apostrophe-bearing lines on CI's mawk.
         JASPER_ENV_FILE_LINE="${key}=${quoted}" awk -v key="$key" '
             $0 ~ "^[[:space:]]*" key "=" {
                 if (!done) {
@@ -222,47 +248,45 @@ jasper_env_file_set() {
         chgrp --reference="$dir" "$tmp" 2>/dev/null || true
     fi
     chmod "$file_mode" "$tmp"
-    mv "$tmp" "$file"
+    mv "$tmp" "$file" || rc=1
+    exec {lock_fd}>&-
+    return "$rc"
 }
 
-# jasper_env_file_repair_permissions FILE [FILE_MODE] [DIR_MODE]
-# Repair mode + parent-directory group on an existing generated env file without
-# changing its contents. This closes the no-op reconcile case: if an old file is
-# already content-current but root:root, non-root status daemons cannot read it
-# and /state drifts from root doctor.
+# jasper_env_file_repair_permissions FILE [FILE_MODE]
+# Repair mode + parent group on an existing generated env file without touching
+# its contents: a content-current but root:root file is unreadable to the
+# non-root status daemons and /state then drifts from root doctor.
 jasper_env_file_repair_permissions() {
     local file="$1"
-    local file_mode="${2:-0600}" dir_mode="${3:-0755}"
+    local file_mode="${2:-0600}"
     local dir
 
-    dir="$(dirname "$file")"
-    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
     [[ -f "$file" ]] || return 0
+    dir="$(dirname "$file")"
     chgrp --reference="$dir" "$file" 2>/dev/null || true
     chmod "$file_mode" "$file"
 }
 
-# jasper_env_file_unset FILE KEY [FILE_MODE] [DIR_MODE]
-# Atomically REMOVE every KEY= line from FILE (no-op when FILE or the key is
-# absent). Distinct from `jasper_env_file_set FILE KEY ""`, which leaves an
-# explicit `KEY=` empty assignment: that empty assignment, in a file systemd
-# loads via EnvironmentFile= AFTER an earlier file, OVERRIDES the earlier
-# value with empty rather than deferring to it. When an operator-set key in an
-# earlier-loaded file (jasper.env) must win, the reconciler-owned later file
-# (outputd.env) must DROP the key entirely so systemd never sees a shadowing
-# assignment — that is what this helper provides. Returns 0 always; sets nothing
-# new. Modes default to the historical 0600/0755 posture.
+# jasper_env_file_unset FILE KEY [FILE_MODE]
+# Atomically REMOVE every KEY= line from FILE under its advisory lock (no-op
+# when FILE or the key is absent; 1 without writing if the lock is refused).
+# Distinct from `jasper_env_file_set FILE KEY ""`: an explicit empty `KEY=` in
+# a file systemd loads via EnvironmentFile= AFTER another OVERRIDES the earlier
+# value rather than deferring, so an operator's jasper.env key only wins if the
+# reconciler-owned outputd.env DROPS its own.
 jasper_env_file_unset() {
     local file="$1" key="$2"
-    local file_mode="${3:-0600}" dir_mode="${4:-0755}"
-    local dir tmp
+    local file_mode="${3:-0600}"
+    local dir tmp rc=0 lock_fd=''
 
     [[ -f "$file" ]] || return 0
+    dir="$(dirname "$file")"
+    _jasper_env_lock_acquire "$dir" "$file" lock_fd || return 1
     if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file"; then
+        exec {lock_fd}>&-
         return 0
     fi
-    dir="$(dirname "$file")"
-    [[ -d "$dir" ]] || install -d -m "$dir_mode" "$dir"
     tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
     awk -v key="$key" '
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
@@ -270,5 +294,7 @@ jasper_env_file_unset() {
     ' "$file" > "$tmp"
     chown --reference="$file" "$tmp" 2>/dev/null || true
     chmod "$file_mode" "$tmp"
-    mv "$tmp" "$file"
+    mv "$tmp" "$file" || rc=1
+    exec {lock_fd}>&-
+    return "$rc"
 }

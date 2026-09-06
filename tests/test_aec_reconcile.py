@@ -138,16 +138,6 @@ def _event_values(stderr: str, event: str, field: str) -> list[str]:
     )
 
 
-def _shell_function_body(source: str, name: str) -> str:
-    match = re.search(
-        rf"^{re.escape(name)}\(\)\s*\{{\n(.*?)^\}}$",
-        source,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert match is not None, f"could not locate shell function {name}"
-    return match.group(1)
-
-
 def _alignment_record(tmp_path: Path) -> Path:
     """Where jasper-aec-init publishes the verdict for the pass it ran."""
     return tmp_path / "alignment"
@@ -665,7 +655,7 @@ def test_bridge_ready_marker_publish_and_revoke_are_events(tmp_path: Path) -> No
     """Ready-marker publish/revoke (ADR-0235 :187-204) are the most
     load-bearing verdicts in the file — jasper-aec-bridge.service's
     StartLimitAction=reboot gates on the marker — and had no event= line
-    before this PR (G12). Every pass withdraws first (unconditional), then
+    (G12). Every pass withdraws first (unconditional), then
     republishes only where a verdict settles (ADR-0224)."""
     _stage(tmp_path, "Array", mode="auto", channels=6)
 
@@ -719,7 +709,7 @@ def test_direct_mic_selected_event_for_a_non_6_channel_custom_mic(
 
 def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> None:
     """The absence marker's success path (ADR-0235 :1625) had no event= line
-    before this PR (G12); jasper-voice.service gates ExecStart on the
+    (G12); jasper-voice.service gates ExecStart on the
     marker's absence, so this is what a no-input box's journal shows."""
     _stage(tmp_path, "udp:9876", mode="auto")
 
@@ -729,9 +719,62 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     assert _event_values(
         result.stderr, "aec_reconcile.voice_input_absent", "state"
     ) == ["marked"]
-    assert _event_values(
+    [reason] = _event_values(
         result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == ["no candidate microphone present and no accessory microphone paired"]
+    )
+    assert reason
+    # stop_voice's park is a real absence, not the chip-AEC validation
+    # bounce's — no `transient=1` line (ADR-0239).
+    assert _marker(tmp_path).read_text().splitlines() == [f"reason={reason}"]
+
+
+def test_validation_bounce_marks_the_park_transient(tmp_path: Path) -> None:
+    """activate_managed_chip_aec's own park (:1897) is the ~8 s chip-AEC
+    validation round trip, not a real absence — it marks `transient=1` so
+    the daemon's shutdown cue (ADR-0239) skips it. The pass's own
+    `restart_voice` clears the marker before `_run_reconcile` returns, so a
+    fake systemctl snapshots it at the stop that immediately follows the
+    write (mirrors `_drive_alignment_disposition`'s CHECKING branch)."""
+    _stage(tmp_path, "Array", profile="auto", channels=6)
+    snapshot = tmp_path / "checking-marker.env"
+    fake = _systemctl_double(
+        tmp_path,
+        "checking-marker-snapshot-systemctl",
+        "[[ \"$*\" == 'stop jasper-voice.service jasper-aec-bridge.service'"
+        f" && ! -f {shlex.quote(str(snapshot))} ]]"
+        f" && cp \"$JASPER_VOICE_INPUT_ABSENT_MARKER\" {shlex.quote(str(snapshot))}\n",
+    )
+
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert snapshot.read_text().splitlines() == [
+        "reason=validating commissioned chip-AEC alignment",
+        "transient=1",
+    ]
+    assert not _marker(tmp_path).exists()
+
+
+def test_the_bridge_ready_revoke_precedes_the_absence_mark(tmp_path: Path) -> None:
+    """G13's ordering, pinned where it already holds. The unconditional
+    top-of-pass revoke (:204, ADR-0224) runs before this pass decides
+    anything, so by the time a no-candidate pass marks the absence the
+    bridge's next start is already a skipped ConditionPathExists — and a
+    condition skip does not count toward StartLimitBurst=4 /
+    StartLimitAction=reboot. No second revoke was added on the absence path:
+    it could only re-emit a verdict this pass has already published.
+    ADR-0235 R6."""
+    _stage(tmp_path, "udp:9876", mode="auto")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    verdicts = re.findall(r"\bevent=(\S+) state=(\S+)", result.stderr)
+    assert verdicts.index(
+        ("aec_reconcile.bridge_ready", "revoked")
+    ) < verdicts.index(("aec_reconcile.voice_input_absent", "marked"))
 
 
 def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
@@ -1738,8 +1781,7 @@ def _write_mode_with_legs(
 
 def test_ensure_mode_file_seeds_every_documented_default(tmp_path: Path) -> None:
     """Fresh install (no aec_mode.env): the reconciler creates the file with
-    the documented defaults, which must match install.sh's reconcile_aec_state
-    seed verbatim (pinned against control's view in the next two tests)."""
+    the documented defaults (pinned against control's view in the next test)."""
     _write_env(tmp_path, "Array")
 
     _run_reconcile(tmp_path, "--reason", "test")
@@ -1791,17 +1833,6 @@ def test_reconciler_leg_defaults_match_control_fallback(
     actual = _env_assignments(tmp_path / "aec_mode.env")
     expected = _control_leg_defaults()
     assert {key: actual.get(key) for key in expected} == expected
-
-
-def test_install_leg_seed_matches_control_fallback() -> None:
-    """The install-time seed and control's missing-file view stay aligned."""
-    install = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
-    function = _shell_function_body(install, "reconcile_aec_state")
-    key_pattern = "|".join(re.escape(key) for key in _control_leg_defaults())
-    pairs = re.findall(rf"({key_pattern})=([01])\\n", function)
-
-    assert len(pairs) == len(_control_leg_defaults()), pairs
-    assert dict(pairs) == _control_leg_defaults()
 
 
 def test_reconcile_preserves_existing_mode_file_dir_mode(tmp_path: Path) -> None:

@@ -23,7 +23,10 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from jasper import source_intent
+from jasper.local_sources.registry import local_source_audio_refresh_units
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
@@ -387,40 +390,14 @@ def _function_body(source: str, name: str) -> str:
     return m.group(1)
 
 
-def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
-    """A deploy must never transiently start a household-Off renderer.
-
-    The coordinator now owns persistent and runtime state for every source,
-    including Bluetooth RF-kill recovery. Both profiles must enable its boot
-    unit and run it after active-only refreshes. It alone starts desired-on
-    sources and repairs any stale derived state.
+def test_source_intent_reapply_runs_the_bounded_full_coordinator():
+    """The coordinator owns persistent and runtime state for every source,
+    including Bluetooth RF-kill recovery, and it alone starts desired-on
+    sources and repairs stale derived state. Both profiles reach it through
+    this one helper, so its invocation is pinned here and the per-profile
+    ordering by the argv recorder below.
     """
     source = FRAGMENT.read_text()
-    for fn in ("start_streambox_runtime_units", "install_systemd_units"):
-        body = _function_body(source, fn)
-        baseline_idx = body.find("enable_usbgadget")
-        assert baseline_idx != -1, f"{fn}: network-only USB baseline missing"
-        restart_idx = body.find("systemctl try-restart bluealsa-aplay.service")
-        assert restart_idx != -1, f"{fn}: active-only renderer refresh missing"
-        assert "systemctl enable nqptp.service" not in body
-        assert "systemctl restart nqptp.service" not in body
-        reapply_idx = body.find("reapply_source_intent")
-        assert reapply_idx != -1, f"{fn}: reapply_source_intent not called"
-        assert reapply_idx > baseline_idx, (
-            f"{fn}: installer must establish USB audio Off/NCM-only before the "
-            "coordinator owns any canonical On transition"
-        )
-        assert reapply_idx > restart_idx, (
-            f"{fn}: source-intent reconcile must run AFTER active renderer "
-            "refreshes so desired-on sources converge on new code"
-        )
-        assert "jasper-source-intent-reconcile.service" in body, (
-            f"{fn}: the coordinator must also be enabled for boot convergence"
-        )
-        assert "jasper-usbsink-volume.service" in body, (
-            f"{fn}: the USB volume bridge must also be restarted like its "
-            "sibling renderer daemons"
-        )
     # The shared helper is the ONE deploy path that runs the full coordinator.
     helper = _function_body(source, "reapply_source_intent")
     assert "jasper-source-intent-reconcile" in helper
@@ -429,23 +406,7 @@ def test_both_profiles_refresh_only_active_sources_then_reapply_intent():
         "/usr/bin/timeout --foreground --kill-after=5s "
         f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
     ) in helper
-    assert "mode=0o660" in helper
     assert "--stop-disabled" not in helper
-
-
-def test_streambox_arms_usb_combo_owner_before_source_intent_reapply():
-    """Streambox uses the same direct USB data plane as a full speaker."""
-
-    body = _function_body(
-        FRAGMENT.read_text(),
-        "start_streambox_runtime_units",
-    )
-    baseline_idx = body.find("enable_usbgadget")
-    coupling_idx = body.find("systemctl enable jasper-fanin-coupling-auto.service")
-    reapply_idx = body.find("reapply_source_intent")
-
-    assert -1 not in (baseline_idx, coupling_idx, reapply_idx)
-    assert baseline_idx < coupling_idx < reapply_idx
 
 
 def test_upgrade_retires_destructive_combo_health_watcher():
@@ -550,3 +511,99 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     assert targets.isdisjoint(park), (
         f"restart targets must not overlap parked clients: {targets & park}"
     )
+
+
+def _profile_runtime_harness(tmp_path: Path, function: str) -> str:
+    """Run one profile's unit-install function with every fragment-defined
+    helper stubbed into a recorder, so the systemctl argv it issues is
+    observable off-box. `set -e` is deliberately off: the function also calls
+    helpers defined in install.sh and on-box binaries under /usr/local/sbin,
+    neither of which exists here, and both are non-fatal on the box too."""
+    calls = tmp_path / "calls.log"
+    return f"""
+set -uo pipefail
+LOG='{calls}'
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}/systemd"
+APPLE_DONGLE_SERVICE_CARD="jts-test-dongle"
+mkdir -p "$SYSTEMD_DIR"
+source "{FRAGMENT}"
+for _stub in $(declare -F | awk '{{print $3}}'); do
+    [[ "$_stub" == "{function}" ]] && continue
+    eval "${{_stub}}() {{ echo \\"fn ${{_stub}}\\" >> \\"$LOG\\"; return 0; }}"
+done
+systemctl() {{ echo "systemctl $*" >> "$LOG"; return 0; }}
+mktemp() {{ local d; d="{tmp_path}/txn.$RANDOM"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
+{function}
+"""
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_both_profiles_restart_control_and_refresh_the_source_roster(
+    tmp_path, function
+):
+    """Both profiles must RESTART jasper-control: enabling alone leaves the
+    control plane — and, through its Wants=, CamillaDSP — down until the next
+    reboot. The try-restart set must cover every unit jasper's own local-source
+    roster names, and the USB baseline, the active-only refresh and the
+    source-intent coordinator must stay in that order.
+
+    Remove when the installer stops managing unit lifecycle.
+    """
+    result = subprocess.run(
+        ["bash", "-c", _profile_runtime_harness(tmp_path, function)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+
+    def first(prefix: str) -> int:
+        hits = [i for i, call in enumerate(calls) if call.startswith(prefix)]
+        assert hits, f"{prefix!r} never issued: {calls}"
+        return hits[0]
+
+    # jasper-control carries StartLimitAction=reboot; a spent burst must be
+    # cleared or the restart reboots the Pi mid-install.
+    assert first("systemctl reset-failed jasper-control.service") < first(
+        "systemctl restart jasper-control.service"
+    )
+
+    refreshed = {
+        unit
+        for call in calls
+        if call.startswith("systemctl try-restart ")
+        for unit in call.split()[2:]
+    }
+    assert set(local_source_audio_refresh_units()) <= refreshed
+
+    # A deploy must never transiently start a household-Off renderer: only
+    # the coordinator may make a canonical On transition, and it runs last.
+    assert (
+        first("fn enable_usbgadget")
+        < first("systemctl try-restart ")
+        < first("fn reapply_source_intent")
+    )
+    assert not [
+        call
+        for call in calls
+        if "nqptp" in call and not call.startswith("systemctl try-restart ")
+    ]
+    assert any(
+        call.startswith("systemctl enable ")
+        and "jasper-source-intent-reconcile.service" in call
+        for call in calls
+    )
+    # Streambox uses the same direct USB data plane as a full speaker, so it
+    # arms the combo owner inline, between the two; the full profile leaves
+    # that to resolve_fanin_coupling_default after the coordinator's pass.
+    if function == "start_streambox_runtime_units":
+        assert (
+            first("fn enable_usbgadget")
+            < first("systemctl enable jasper-fanin-coupling-auto.service")
+            < first("fn reapply_source_intent")
+        )

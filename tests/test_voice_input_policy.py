@@ -70,6 +70,24 @@ def test_udp_mic_device_classified_against_configured_aec3_port(
     assert contract.profile == expected_profile
 
 
+@pytest.mark.parametrize(
+    "mic_device, expected_provenance",
+    [
+        ("Array", "default"),  # known XVF3800 ALSA card name
+        ("L16K6Ch", "default"),  # known flex-linear ALSA card name
+        ("Some USB Mic", "operator"),  # not a known ALSA card name
+        (None, "default"),  # not configured
+    ],
+)
+def test_direct_mic_provenance_reflects_known_alsa_cards(
+    mic_device, expected_provenance,
+):
+    contract = contract_from_config(_cfg(mic_device=mic_device))
+
+    assert contract.profile == "direct_mic"
+    assert contract.provenance == expected_provenance
+
+
 def test_auto_uses_far_field_for_raw_direct_mic_input():
     policy = build_effective_speech_input_policy(_cfg(mic_device="Array"))
 

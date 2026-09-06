@@ -198,12 +198,9 @@ ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 # so installed-first could pair the new script with a stale lib.
 # Sibling-first keeps script and lib versions in lockstep; the
 # installed copy under /usr/local/sbin has no ../lib sibling and falls
-# through to the installed lib. Deliberately diverges from
-# load_asound_render_lib below (left installed-first): the mid-install
-# --print-env run exits before any asound rendering, and install.sh's
-# own rendering sources that lib straight from REPO_DIR at the top of
-# the file — so the render lib has no new-script/stale-lib exposure
-# worth churning its order for.
+# through to the installed lib. load_asound_render_lib below matches
+# this order for the same reason: the mid-install --print-env run does
+# call into that lib too (apply_observed_composite_policy).
 load_env_file_lib() {
     if [[ -z "$ENV_FILE_LIB" ]]; then
         if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
@@ -222,22 +219,21 @@ load_env_file_lib() {
 
 load_asound_render_lib() {
     if [[ -z "$ASOUND_RENDER_LIB" ]]; then
-        if [[ -r /usr/local/lib/jasper/jasper-asound-render.sh ]]; then
-            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
-        else
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-asound-render.sh" ]]; then
             ASOUND_RENDER_LIB="${SCRIPT_DIR}/../lib/jasper-asound-render.sh"
+        else
+            ASOUND_RENDER_LIB="/usr/local/lib/jasper/jasper-asound-render.sh"
         fi
     fi
     if [[ ! -r "$ASOUND_RENDER_LIB" ]]; then
         echo "jasper-audio-hardware-reconcile: missing asound render library: ${ASOUND_RENDER_LIB}" >&2
         exit 66
     fi
-    # The path varies at runtime (installed /usr/local/lib vs in-repo
-    # fallback above), but both resolve to the same library — the
-    # directive points at the repo copy so shellcheck can actually
-    # analyze it. Outside the repo root the directive degrades to
-    # info-level SC1091 ("not following"), below the CI gate's
-    # warning severity.
+    # The path varies at runtime (in-repo sibling vs installed fallback
+    # above), but both resolve to the same library — the directive points
+    # at the repo copy so shellcheck can actually analyze it. Outside the
+    # repo root the directive degrades to info-level SC1091 ("not
+    # following"), below the CI gate's warning severity.
     # shellcheck source=deploy/lib/jasper-asound-render.sh
     source "$ASOUND_RENDER_LIB"
 }
@@ -390,8 +386,14 @@ observe_output_hardware_state() {
     fi
     # Never fatal: every other failure in this function logs and returns, and a
     # full /run must not skip the DAC-role policy the caller runs next.
-    publish_management_transport_marker \
-        "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
+    # --print-env's usage text promises no mutations (should_write=0), which
+    # holds regardless of caller; today that spares install.sh's mid-install
+    # probe of the PREVIOUS build (#4123) from flipping this gate on a stale
+    # verdict.
+    if [[ "$should_write" == "1" ]]; then
+        publish_management_transport_marker \
+            "$OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE" || true
+    fi
     log_event "state_${action}" \
         "path=${OUTPUT_HARDWARE_STATE_PATH} profile_id=${OBSERVED_OUTPUT_PROFILE_ID:-unknown} status=${OBSERVED_OUTPUT_PROFILE_STATUS:-unknown}"
 }
@@ -453,51 +455,6 @@ sync_i2s_hat_reboot_marker() {
     install -m 0644 /dev/null "$I2S_HAT_REBOOT_REQUIRED_PATH"
 }
 
-env_file_value() {
-    local key="$1"
-    if [[ ! -f "$ENV_FILE" ]]; then
-        return 0
-    fi
-    awk -v key="$key" '
-        $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
-            value = $0
-            sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", value)
-            found = value
-            seen = 1
-        }
-        END {
-            if (seen) {
-                print found
-            }
-        }
-    ' "$ENV_FILE" \
-        | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
-}
-
-set_env_var() {
-    local key="$1" value="$2"
-    jasper_env_file_set "$ENV_FILE" "$key" "$value" 0640 0750
-}
-
-set_env_var_if_changed() {
-    local key="$1" value="$2"
-    local current
-    if [[ ! -f "$ENV_FILE" ]]; then
-        set_env_var "$key" "$value"
-        return 0
-    fi
-    if ! grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$ENV_FILE"; then
-        set_env_var "$key" "$value"
-        return 0
-    fi
-    current="$(env_file_value "$key")"
-    if [[ "$current" == "$value" ]]; then
-        return 1
-    fi
-    set_env_var "$key" "$value"
-    return 0
-}
-
 env_file_value_from() {
     local file="$1" key="$2"
     if [[ ! -f "$file" ]]; then
@@ -519,9 +476,22 @@ env_file_value_from() {
         | sed -E "s/^[[:space:]]+//; s/[[:space:]]+$//; s/^[\"']//; s/[\"']$//"
 }
 
+# A refused lock returns 1 WITHOUT writing, and the callers' `&& changed=1`
+# idiom would read that as "changed" and restart jasper-outputd onto the old
+# lane/PCM/format. A write that did not happen fails the pass instead.
 set_env_file_var() {
     local file="$1" key="$2" value="$3"
-    jasper_env_file_set "$file" "$key" "$value" 0640 0750
+    if ! jasper_env_file_set "$file" "$key" "$value" 0640 0750; then
+        log_event "env_write_failed" "file=${file} key=${key}"
+        exit 1
+    fi
+}
+
+unset_env_file_var() {
+    if ! jasper_env_file_unset "$1" "$2" 0640; then
+        log_event "env_write_failed" "file=${1} key=${2}"
+        exit 1
+    fi
 }
 
 set_env_file_var_if_changed() {
@@ -542,6 +512,8 @@ set_env_file_var_if_changed() {
     set_env_file_var "$file" "$key" "$value"
     return 0
 }
+
+set_env_var_if_changed() { set_env_file_var_if_changed "$ENV_FILE" "$1" "$2"; }
 
 cleanup_outputd_env_stage() {
     if [[ -n "${OUTPUTD_ENV_STAGE_FILE:-}" && -f "$OUTPUTD_ENV_STAGE_FILE" ]]; then
@@ -803,8 +775,8 @@ commit_outputd_env_stage() {
 }
 
 repair_generated_env_permissions() {
-    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640 0750
-    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640 0750
+    jasper_env_file_repair_permissions "$OUTPUTD_ENV_FILE" 0640
+    jasper_env_file_repair_permissions "$FANIN_ENV_FILE" 0640
 }
 
 APPLE_DONGLE_PRESENT=0
@@ -1140,8 +1112,9 @@ emit_dac_format_for_recognized() {
     local dac_id="$1"
     local fields dac_format dac_sink preserved
     fields="$(final_edge_format_for_dac "$dac_id")"
-    dac_format="$(printf '%s\n' "$fields" | sed -n '1p')"
-    dac_sink="$(printf '%s\n' "$fields" | sed -n '2p')"
+    dac_format="${fields%%$'\n'*}"
+    dac_sink=""
+    [[ "$fields" == *$'\n'* ]] && dac_sink="${fields#*$'\n'}"
     if [[ -z "$dac_format" ]]; then
         preserved="$(env_file_value_from "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT")"
         log_event "dac_format_skip" \
@@ -1270,7 +1243,7 @@ apply_route_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
-                    jasper_env_file_unset "$file" "$key" 0640 0750
+                    unset_env_file_var "$file" "$key"
                     file_changed=1
                 fi
                 ;;
@@ -1316,7 +1289,7 @@ apply_latency_floor_env() {
                 ;;
             unset)
                 if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$OUTPUTD_ENV_TARGET_FILE" 2>/dev/null; then
-                    jasper_env_file_unset "$OUTPUTD_ENV_TARGET_FILE" "$key" 0640 0750
+                    unset_env_file_var "$OUTPUTD_ENV_TARGET_FILE" "$key"
                     LATENCY_FLOOR_CHANGED=1
                 fi
                 ;;
@@ -1780,8 +1753,7 @@ set_outputd_active_lane_pair() {
 # once nothing reads the key, no box needs healing off it.
 drop_retired_content_pcm() {
     env_file_states_key "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" || return 1
-    jasper_env_file_unset \
-        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640 0750
+    unset_env_file_var "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM"
 }
 
 apply_audio_runtime_env() {

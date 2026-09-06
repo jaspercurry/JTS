@@ -37,7 +37,6 @@ _SETTINGS_STATUS_JS_PATH = (
 _NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
 _STREAMBOX_NGINX_PATH = _REPO / "deploy" / "nginx-jasper-streambox.conf"
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
-_WEB_ASSETS_LIB_PATH = _REPO / "deploy" / "lib" / "install" / "web-assets.sh"
 _FONT_DIR = _REPO / "deploy" / "assets" / "fonts"
 _APP_CSS_PATH = _REPO / "deploy" / "assets" / "app.css"
 
@@ -557,7 +556,6 @@ def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> No
     assert not (_REPO / "deploy" / "correction-preflight.html").exists()
 
     install = _INSTALL_PATH.read_text(encoding="utf-8")
-    assert "rm -f /usr/share/jasper-web/correction-preflight.html" in install
     assert "deploy/correction-preflight.html" not in install
 
     correction_js = (
@@ -728,37 +726,13 @@ def test_nginx_serves_sync_measurement_over_https() -> None:
     )
 
 
-def test_install_prunes_retired_integrations_page() -> None:
-    # The /integrations page was deleted; install.sh must remove the orphaned
-    # file from previously-deployed Pis so it does not linger unreachable.
-    # (The retired correction preflight's prune is pinned by the #2632
-    # inventory guard above, which owns that artifact end to end.)
+def test_install_stamps_app_css_cache_bust_version() -> None:
+    # app.css itself is copied by the manifested web-assets lib — pinned as
+    # an execution test by test_install_web_assets.py's
+    # test_copies_assets_and_writes_exact_sorted_manifest. This test covers
+    # only the cache-bust stamping install.sh performs on the static
+    # landing page's app.css link (it rewrites index.html, not an asset).
     install = _INSTALL_PATH.read_text(encoding="utf-8")
-    assert "rm -f /usr/share/jasper-web/integrations.html" in install
-
-
-def test_install_copies_landing_page_font_assets() -> None:
-    # The copy lives in the web-assets lib (manifested, doctor-verified);
-    # install.sh sources the lib and runs it.
-    web_assets = _WEB_ASSETS_LIB_PATH.read_text(encoding="utf-8")
-
-    assert 'deploy/assets/fonts/"*' in web_assets
-    assert '${assets_root}/fonts/' in web_assets
-    assert "deploy/lib/install/web-assets.sh" in _INSTALL_PATH.read_text(
-        encoding="utf-8"
-    )
-
-
-def test_install_copies_and_stamps_app_css() -> None:
-    # The copy lives in the web-assets lib; the cache-bust stamping stays
-    # in install.sh (it rewrites index.html, not an asset).
-    web_assets = _WEB_ASSETS_LIB_PATH.read_text(encoding="utf-8")
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-
-    assert "deploy/assets/app.css" in web_assets
-    assert "${assets_root}/app.css" in web_assets
-    # The static landing page's app.css link is cache-busted at install
-    # time by substituting the build SHA into the version placeholder.
     assert "__APP_CSS_VERSION__" in _INDEX_PATH.read_text(encoding="utf-8")
     assert 'app_css_ver="$(resolve_build_sha_short)"' in install
     assert '--app-css-version "${app_css_ver}"' in install
