@@ -223,6 +223,11 @@ def test_env_file_hold_excludes_another_writer_until_dropped(
     env_file = tmp_path / "outputd.env"
     env_file.write_text("SEED=1\n", encoding="utf-8")
     lock = tmp_path / f".{env_file.name}.lock"
+    # Production always finds this already present (the installer or a prior
+    # writer created it) and takes the read-only `exec 9<` branch before
+    # moving the hold to fd 8; an absent lock would take the create branch
+    # instead and leave that path unpinned.
+    lock.touch()
     contend = (
         f'if bash -c \'exec 9>>"{lock}"; flock -n 9\' 2>/dev/null; '
         'then printf "free\\n"; else printf "excluded\\n"; fi\n'
@@ -593,9 +598,9 @@ def test_env_file_export_fails_when_the_parser_cannot_run(tmp_path: Path) -> Non
         # the lib would make the child find its guard already set and
         # define nothing.
         ("_JASPER_ENV_FILE_LIB_LOADED", "1", "JASPER_OK", "1"),
-        # The hold's descriptor number: an exported one would point
-        # jasper_env_file_drop's close at an unrelated descriptor.
-        ("_JASPER_ENV_HOLD_FD", "2", "JASPER_OK", "1"),
+        # The hold's held flag: an exported one would make
+        # jasper_env_file_drop close an fd 8 this lib never opened.
+        ("_JASPER_ENV_HOLD_HELD", "1", "JASPER_OK", "1"),
     ],
 )
 def test_env_file_export_skips_jasper_prefixed_keys(
@@ -606,7 +611,7 @@ def test_env_file_export_skips_jasper_prefixed_keys(
     plain_value: str,
 ) -> None:
     """_JASPER_-prefixed keys are this lib's own state (include guard, parser,
-    hold descriptor). jasper_env_file_export must never re-export one: every
+    hold flag). jasper_env_file_export must never re-export one: every
     other key still reaches a child's environment, and the pass still
     succeeds."""
     env_file = tmp_path / "jasper.env"
