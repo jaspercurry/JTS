@@ -103,9 +103,11 @@ def _frame(samples: int = 1280) -> np.ndarray:
 async def test_single_stream_on_fires_when_threshold_crossed(caplog):
     """No detector_off → existing single-stream behavior. AEC ON
     frame with score >= threshold fires wake exactly once and sets
-    refractory_until."""
+    refractory_until. Also stamps last_wake_at — marking this box's wake
+    pipeline alive, before arbitration, regardless of who serves the turn."""
     wl = _make_wake_loop(detector_off=None)
     wl._detector.score_frame.return_value = 0.85
+    assert wl.session_status()["last_wake_at"] is None
 
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
@@ -116,6 +118,9 @@ async def test_single_stream_on_fires_when_threshold_crossed(caplog):
     wl._arbitrate_acquire_drain.assert_called_once()
     # Log line includes both per-leg scores and the firing leg
     assert event_fields(caplog, "wake.detected")["leg"] == "on"
+    last_wake_at = wl.session_status()["last_wake_at"]
+    assert isinstance(last_wake_at, float)
+    assert last_wake_at > 0
 
 
 async def test_subthreshold_frame_updates_recent_score_but_does_not_fire():

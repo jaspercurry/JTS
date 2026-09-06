@@ -54,7 +54,7 @@ from .wake_events import (
 from .cues import AudioCueManager
 from .vad import SpeechVAD
 from .wake_legs import LegSpec, by_token, wake_input_legs
-from .wake_condition_context import classify_condition
+from .wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
@@ -904,6 +904,13 @@ class WakeLoop:
         # Loop-clock timestamp of the last condition recompute; 0.0 forces
         # a refresh on the first WAKE frame.
         self._condition_refreshed_at: float = 0.0
+        # last_wake_at is daemon-lifetime and never nulled.
+        self._last_wake_at: float | None = None
+        # Derived by _maybe_refresh_condition; session_status() reads these
+        # as None while the mic is not feeding the refresh (muted or a
+        # measurement hold), since the refresh stops ticking then.
+        self._idle_rms_dbfs: float | None = None
+        self._input_last_above_floor_at: float | None = None
         self._connection = connection
         self._ducker = ducker
         self._output_gate = AssistantOutputGate()
@@ -2806,10 +2813,14 @@ class WakeLoop:
         # path must never break because of ancillary condition estimation.
         self._condition_refreshed_at = now_loop
         try:
+            noise_floor_dbfs = _ring_noise_floor_dbfs(self._capture_ring_on)
             self._current_condition = classify_condition(
                 music_dbfs=self._read_music_dbfs(),
-                noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
+                noise_floor_dbfs=noise_floor_dbfs,
             ).condition
+            self._idle_rms_dbfs = noise_floor_dbfs
+            if noise_floor_dbfs is not None and noise_floor_dbfs > AMBIENT_FLOOR_DBFS:
+                self._input_last_above_floor_at = time.time()
         except Exception:  # noqa: BLE001
             # Keep the last good condition: an unguarded raise here would
             # propagate out of the frame loop and stop wake detection.
@@ -3008,6 +3019,8 @@ class WakeLoop:
             threshold=f"{firing_threshold:.2f}",
             fired=fired_legs,
         )
+        # Marks the wake pipeline alive even if this attempt isn't served.
+        self._last_wake_at = time.time()
 
         # In peering mode `can_serve` is broadcast in the WAKE message so the
         # fleet's ranking function can prefer a peer that can serve. We bid
@@ -4292,6 +4305,10 @@ class WakeLoop:
             or leg not in self._leg_tasks
             or not self._leg_tasks[leg].done()
         ]
+        # Neither gate feeds _maybe_refresh_condition (see the dispatch
+        # sites in run() / _manual_mic_loop / _wake_leg_loop), so the level
+        # fields below go stale, not just missing, while either is set.
+        mic_feeding = not (self._mic_muted or self._measurement_active.is_set())
         return {
             "state": self._state.name,
             "input_ended": self._input_ended,
@@ -4344,6 +4361,15 @@ class WakeLoop:
             "music_dbfs": (
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
+            ),
+            # Epoch-second floats (never ISO strings), or None before the
+            # daemon has seen the signal. last_wake_at is daemon-lifetime
+            # and never nulled; the other two read None while mic_feeding
+            # is false (see above) rather than a stale frozen value.
+            "last_wake_at": self._last_wake_at,
+            "idle_rms_dbfs": self._idle_rms_dbfs if mic_feeding else None,
+            "input_last_above_floor_at": (
+                self._input_last_above_floor_at if mic_feeding else None
             ),
             "wake_legs": _wake_legs,
             # Per-pack tool-registration outcomes (registered / skipped /

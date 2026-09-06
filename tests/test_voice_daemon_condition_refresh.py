@@ -9,8 +9,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from jasper.voice_daemon import WakeLoop
+from jasper.wake_condition_context import AMBIENT_FLOOR_DBFS
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +83,32 @@ def test_maybe_refresh_condition_skips_within_window():
     wl._maybe_refresh_condition(now_loop=5.0)  # 0.5 s < CONDITION_REFRESH_SEC
     assert wl._current_condition == "quiet"  # unchanged
     assert wl._condition_refreshed_at == 4.5  # unchanged
+
+
+@pytest.mark.parametrize(
+    ("amplitude", "expect_above_floor"),
+    [(2000, True), (10, False)],
+)
+def test_maybe_refresh_condition_derives_idle_rms_and_above_floor(
+    amplitude, expect_above_floor,
+):
+    """idle_rms_dbfs always takes the refreshed noise floor;
+    input_last_above_floor_at is stamped only when that floor clears
+    AMBIENT_FLOOR_DBFS — the same comparison classify_condition makes."""
+    from collections import deque
+    wl = _wakeloop_for_condition(music_dbfs=None)  # no music signal in play
+    frame = np.full(1280, amplitude, dtype=np.int16)
+    wl._capture_ring_on = deque([frame] * 4, maxlen=8)
+
+    wl._maybe_refresh_condition(now_loop=5.0)
+
+    assert wl._idle_rms_dbfs is not None
+    assert (wl._idle_rms_dbfs > AMBIENT_FLOOR_DBFS) is expect_above_floor
+    if expect_above_floor:
+        assert isinstance(wl._input_last_above_floor_at, float)
+        assert wl._input_last_above_floor_at > 0
+    else:
+        assert wl._input_last_above_floor_at is None
 
 
 def test_maybe_refresh_condition_fail_soft_on_classify_error(monkeypatch):
