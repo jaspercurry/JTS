@@ -28,6 +28,7 @@ import pytest
 
 from jasper.voice_daemon import WakeLoop, _LegRuntime
 from jasper.wake_legs import by_token
+from tests._log_events import event_fields
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
@@ -343,13 +344,12 @@ async def test_wake_log_omits_unconfigured_leg_scores(caplog):
     wl._detector.score_frame.return_value = 0.91
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
-    msg = next(
-        r.message for r in caplog.records if "event=wake.detected" in r.message
-    )
-    assert "score_on=0.91" in msg
-    assert "score_off" not in msg
-    assert "score_dtln" not in msg
-    assert "score_chip_aec" not in msg
+    fields = event_fields(caplog, "wake.detected")
+    assert fields["score_on"] == "0.91"
+    assert "score_off" not in fields
+    assert "score_dtln" not in fields
+    assert "score_chip_aec_150" not in fields
+    assert "score_chip_aec_210" not in fields
 
 
 async def test_wake_log_emits_only_active_legs_with_chip(caplog):
@@ -364,10 +364,8 @@ async def test_wake_log_emits_only_active_legs_with_chip(caplog):
     wl._detector.score_frame.return_value = 0.88
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
-    msg = next(
-        r.message for r in caplog.records if "event=wake.detected" in r.message
-    )
-    assert "score_on=0.88" in msg
-    assert "score_chip_aec_150" in msg and "score_chip_aec_210" in msg
-    assert "score_off" not in msg
-    assert "score_dtln" not in msg
+    fields = event_fields(caplog, "wake.detected")
+    assert fields["score_on"] == "0.88"
+    assert "score_chip_aec_150" in fields and "score_chip_aec_210" in fields
+    assert "score_off" not in fields
+    assert "score_dtln" not in fields

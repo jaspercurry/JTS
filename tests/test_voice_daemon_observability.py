@@ -87,6 +87,7 @@ def test_unpriced_research_model_warns(caplog) -> None:
 
     from jasper.usage import load_pricing_overrides
     from jasper.voice.daemon_main import _warn_if_research_model_unpriced
+    from tests._log_events import event_fields
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         fired = _warn_if_research_model_unpriced(
@@ -95,12 +96,9 @@ def test_unpriced_research_model_warns(caplog) -> None:
         )
 
     assert fired is True
-    assert any(
-        "event=pricing.unpriced" in r.getMessage()
-        and "surface=research" in r.getMessage()
-        and "model=gpt-realtime-3" in r.getMessage()
-        for r in caplog.records
-    )
+    fields = event_fields(caplog, "pricing.unpriced")
+    assert fields["surface"] == "research"
+    assert fields["model"] == "gpt-realtime-3"
 
 
 def test_priced_research_model_does_not_warn(caplog) -> None:
@@ -112,6 +110,7 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
     from jasper.research.providers import openai_research
     from jasper.usage import load_pricing_overrides
     from jasper.voice.daemon_main import _warn_if_research_model_unpriced
+    from tests._log_events import event_records
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         fired = _warn_if_research_model_unpriced(
@@ -120,9 +119,7 @@ def test_priced_research_model_does_not_warn(caplog) -> None:
         )
 
     assert fired is False
-    assert not any(
-        "event=pricing.unpriced" in r.getMessage() for r in caplog.records
-    )
+    assert not event_records(caplog, "pricing.unpriced")
 
 
 # ---------------------------------------------------------------------------
