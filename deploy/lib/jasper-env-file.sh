@@ -162,6 +162,14 @@ jasper_env_file_export() {
     done <<<"${_jef_parsed%x}"
 }
 
+# jasper_env_lock_path FILE
+# Print FILE's advisory-lock sibling path — the one formula jasper.atomic_io's
+# _env_lock_path also emits, so a bash writer and the Python one name the same
+# lock file for the same FILE.
+jasper_env_lock_path() {
+    printf '%s/.%s.lock' "$(dirname "$1")" "${1##*/}"
+}
+
 # _jasper_env_lock_acquire DIR FILE FDVAR
 # Hold FILE's advisory lock in the descriptor FDVAR names (a nameref; the
 # caller closes it). Path and create-time mode/group are jasper/atomic_io.py's
@@ -182,7 +190,8 @@ jasper_env_file_export() {
 # 1, so that open gets EBUSY. A pre-planted FIFO is refused without opening;
 # one raced in blocks either open, which bash cannot make non-blocking.
 _jasper_env_lock_acquire() {
-    local dir="$1" file="$2" lock="${1}/.${2##*/}.lock" rc=0
+    local dir="$1" file="$2" rc=0
+    local lock; lock="$(jasper_env_lock_path "$file")"
     local -n fd_ref="$3"
     if [[ ! -e "$lock" && ! -L "$lock" ]]; then
         set -C
@@ -253,10 +262,11 @@ _jasper_env_file_ensure_dir() {
 
 # jasper_env_file_seed_absent FILE FILE_MODE DIR_MODE KEY=VALUE...
 # Append every KEY=VALUE whose KEY the file does not already state — one lock
-# hold, one awk pass, one publish. A key the file states keeps the value its
-# writer published. The presence test runs INSIDE the hold, so a seed can
-# neither overwrite a value written since the caller last looked nor append a
-# second line for a key that value already states.
+# hold, one awk pass, and a publish only when a key was actually appended: a
+# pass that finds nothing absent leaves FILE's inode untouched. A key the file
+# states keeps the value its writer published. The presence test runs INSIDE
+# the hold, so a seed can neither overwrite a value written since the caller
+# last looked nor append a second line for a key that value already states.
 #
 # Returns 75 (EX_TEMPFAIL) when the lock was refused and nothing was written, 1
 # when the write itself failed, 0 otherwise. The two are distinct codes because
@@ -308,7 +318,12 @@ jasper_env_file_seed_absent() {
             }
         }
     ' "$src" > "$tmp"; then
-        _jasper_env_file_publish "$tmp" "$file" "$file_mode" || rc=1
+        if [[ -f "$file" ]] && cmp -s "$tmp" "$file"; then
+            rm -f "$tmp"
+        elif ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+            rm -f "$tmp"
+            rc=1
+        fi
     else
         rc=1
         rm -f "$tmp"
@@ -352,7 +367,10 @@ _jasper_env_file_upsert() {
         printf '%s=%s\n' "$key" "$quoted" > "$tmp"
     fi
 
-    _jasper_env_file_publish "$tmp" "$file" "$file_mode" || rc=1
+    if ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+        rm -f "$tmp"
+        rc=1
+    fi
     exec {lock_fd}>&-
     return "$rc"
 }
@@ -372,9 +390,7 @@ _jasper_env_file_upsert() {
 # the inner open is denied once `flock -w 10` gives up. The descriptor is
 # dynamic, so it is carried in this lib-level variable rather than a literal
 # digit; the parser skips every `_JASPER_`-prefixed key, so no parsed env file
-# can plant an fd number here. A second hold replaces the first instead of
-# leaking it, and drop is idempotent, so an exit trap may call it
-# unconditionally.
+# can plant an fd number here.
 # Removal condition: drop both when jasper-audio-hardware-reconcile's
 # stage_outputd_env — the one caller — no longer stages a whole env file.
 _JASPER_ENV_HOLD_FD=''

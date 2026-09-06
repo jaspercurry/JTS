@@ -2,16 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hold an env file's advisory lock the way its other writers do.
-
-``jasper/atomic_io.py``'s ``locked_update_env_file`` (jasper-control's
-``aec_endpoints._write_aec_leg``) takes ``<dir>/.<basename>.lock``, reads the
-file, and writes the WHOLE file back. A bash writer that does not take the
-same lock either loses its write to that write-back or appends a second line
-for a key the holder just set — and every reader of these files takes the last
-line. The pins that hold the bash writers to the lock all need the same
-process: take the lock, announce it, hold it, optionally republish.
-"""
+"""Hold an env file's advisory lock the way its other writers do."""
 from __future__ import annotations
 
 import os

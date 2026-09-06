@@ -1375,17 +1375,7 @@ def _stage_candidate_debris(tmp_path: Path) -> list[str]:
 def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
     tmp_path: Path,
 ) -> None:
-    """The stage→validate→rename sequence must be serialized, not just atomic.
-
-    Two passes of this script both publish outputd.env from a `cp -p` snapshot
-    taken pages earlier, so whichever renames second discards the other's file
-    entirely, however atomic each rename is. A stage that waits for the holder
-    snapshots the holder's file, so both writers' keys reach the committed one.
-    Bash-vs-bash: the other writer of this file, jasper/fanin/
-    coupling_reconcile.py, still publishes unlocked (ADR-0235 G8) and this lock
-    does not reach it. Removal condition: a single Python owner writes every
-    env file.
-    """
+    """The stage→validate→rename sequence must be serialized, not just atomic."""
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
         "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n", encoding="utf-8"
@@ -1412,14 +1402,7 @@ def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
 def test_outputd_env_stage_publishes_when_the_hold_is_refused(
     tmp_path: Path,
 ) -> None:
-    """A hold nobody will hand over must not fail the pass.
-
-    Contention on this lock is bash-vs-bash and needs a stale or planted lock
-    file: systemd serializes the oneshot and install.sh's direct run is fenced.
-    Declining to reconcile the box's audio because a lock file outlived its
-    holder trades a real outage for a race that is not running, so the stage
-    proceeds unlocked and names itself in the journal instead.
-    """
+    """A hold nobody will hand over must not fail the pass."""
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_PCM=stale\n", encoding="utf-8")
 
@@ -1438,12 +1421,29 @@ def test_outputd_env_stage_publishes_when_the_hold_is_refused(
     assert _outputd_env_key_present(_outputd_env(tmp_path), "JASPER_OUTPUTD_BACKEND")
 
 
+def test_outputd_env_stage_refused_hold_leaves_a_foreign_candidate_in_place(
+    tmp_path: Path,
+) -> None:
+    """A refused hold must not sweep a live holder's in-flight candidate."""
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_PCM=stale\n", encoding="utf-8")
+    foreign_candidate = tmp_path / ".outputd.env.candidate.live"
+    foreign_candidate.write_text("JASPER_OUTPUTD_BACKEND=inflight\n", encoding="utf-8")
+
+    # This script stages twice per pass (pre- and post-graph-convergence), each
+    # retrying the hold with its own `flock -w 10`; outlasts both back-to-back
+    # timeouts so neither call legitimately acquires the lock and sweeps.
+    with spawn_lock_holder(outputd_env, hold_seconds=25):
+        result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert _stage_candidate_debris(tmp_path) == [foreign_candidate.name]
+
+
 def test_outputd_env_stage_sweeps_debris_from_an_earlier_pass(
     tmp_path: Path,
 ) -> None:
-    """A pass killed between the mktemp and its trap leaves a candidate and the
-    advisory lock the single-key writer put beside it. Nothing else ever
-    revisits those per-pass names, so the next stage owns the sweep."""
+    """A pass killed between the mktemp and its trap must not leave a candidate."""
     stale_candidate = tmp_path / ".outputd.env.candidate.aaaaaa"
     stale_lock = tmp_path / "..outputd.env.candidate.aaaaaa.lock"
     stale_candidate.write_text("JASPER_OUTPUTD_BACKEND=stale\n", encoding="utf-8")

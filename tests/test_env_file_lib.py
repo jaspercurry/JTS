@@ -152,6 +152,21 @@ def test_env_file_seed_absent_appends_only_the_keys_the_file_omits(
     assert (env_file.stat().st_mode & 0o777) == 0o644
 
 
+def test_env_file_seed_absent_noop_leaves_the_inode_unchanged(
+    tmp_path: Path,
+) -> None:
+    """A seed whose keys are all already present must not publish a new file."""
+    env_file = tmp_path / "aec_mode.env"
+    env_file.write_text("KEY=1\n", encoding="utf-8")
+    before = env_file.stat().st_ino
+
+    result = _bash(f'jasper_env_file_seed_absent "{env_file}" 0644 0755 KEY=0')
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.stat().st_ino == before
+    assert env_file.read_text(encoding="utf-8") == "KEY=1\n"
+
+
 def test_env_file_seed_absent_reports_a_refused_lock_apart_from_a_failed_write(
     tmp_path: Path,
 ) -> None:
@@ -227,6 +242,17 @@ def test_env_file_hold_excludes_another_writer_until_dropped(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["excluded", "free"]
+
+
+def test_env_lock_path_matches_atomic_io(tmp_path: Path) -> None:
+    """Bash and jasper.atomic_io must name the same lock file for FILE."""
+    from jasper.atomic_io import _env_lock_path
+
+    target = tmp_path / "outputd.env"
+    result = _bash(f'jasper_env_lock_path "{target}"')
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _env_lock_path(str(target))
 
 
 @pytest.mark.parametrize(

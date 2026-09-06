@@ -559,12 +559,9 @@ set_env_var_if_changed() { set_env_file_var_if_changed "$ENV_FILE" "$1" "$2"; }
 cleanup_outputd_env_stage() {
     local stage="${OUTPUTD_ENV_STAGE_FILE:-}"
     if [[ -n "$stage" ]]; then
-        # jasper_env_file_set leaves an advisory lock beside every file it
-        # writes, and the candidate carries a fresh mktemp name each pass —
-        # unswept, that is one dead sibling per changing pass, forever.
-        # Exempt from "never unlink a live lock", which is about SHARED locks:
-        # this name is a per-pass private mktemp only this process ever locks.
-        rm -f "$stage" "$(dirname "$stage")/.${stage##*/}.lock"
+        # The stage lock is scoped to this candidate's private mktemp path,
+        # dead once the candidate is removed.
+        rm -f "$stage" "$(jasper_env_lock_path "$stage")"
     fi
     jasper_env_file_drop
 }
@@ -573,29 +570,21 @@ stage_outputd_env() {
     local dir stale
     dir="$(dirname "$OUTPUTD_ENV_FILE")"
     [[ -d "$dir" ]] || install -d -m 0750 "$dir"
-    # Held from here to the publishing `mv` in commit_outputd_env_stage, so a
-    # second bash pass cannot rename its own candidate over the snapshot this
-    # one copied — whichever renamed second would win the whole file. Never
-    # held across the graph convergence between the two passes. Bash-vs-bash
-    # only: jasper/fanin/coupling_reconcile.py, the other writer of this file,
-    # publishes it unlocked (ADR-0235 G8, open until the Python side joins this
-    # path). Contention here therefore needs a stale or planted lock file —
-    # systemd serializes this oneshot and install.sh's direct run is fenced —
-    # so a hold refused after `flock -w 10` proceeds unlocked and says so
-    # rather than failing a pass nothing is actually racing.
-    if ! jasper_env_file_hold "$OUTPUTD_ENV_FILE"; then
+    # See ADR-0235 G8.
+    if jasper_env_file_hold "$OUTPUTD_ENV_FILE"; then
+        # Debris an earlier pass could not clean (a kill between mktemp and the
+        # trap). Swept before this pass names its own candidate, so the glob
+        # can never reach it. Gated on the hold: a refused hold means a live
+        # holder mid-stage, whose in-flight candidate this must not delete.
+        for stale in "${dir}"/.outputd.env.candidate.*; do
+            if [[ -e "$stale" ]]; then
+                rm -f "$stale" "$(jasper_env_lock_path "$stale")"
+            fi
+        done
+    else
         log_event "outputd_env_stage_unlocked" \
             "outputd_env=${OUTPUTD_ENV_FILE} reason=stage_lock_unheld"
     fi
-    # Debris an earlier pass could not clean (a kill between mktemp and the
-    # trap). Swept before this pass names its own candidate, so the glob can
-    # never reach it.
-    for stale in "${dir}"/.outputd.env.candidate.* \
-                 "${dir}"/..outputd.env.candidate.*.lock; do
-        if [[ -e "$stale" ]]; then
-            rm -f "$stale"
-        fi
-    done
     OUTPUTD_ENV_STAGE_FILE="$(mktemp "${dir}/.outputd.env.candidate.XXXXXX")"
     if [[ -f "$OUTPUTD_ENV_FILE" ]]; then
         cp -p "$OUTPUTD_ENV_FILE" "$OUTPUTD_ENV_STAGE_FILE"
@@ -816,8 +805,6 @@ outputd_endpoint_contract_failed_exit() {
     exit 66
 }
 
-# The trailer every path that ends a stage runs: release the candidate and the
-# hold, then point the writers back at the live file.
 finish_outputd_env_stage() {
     cleanup_outputd_env_stage
     OUTPUTD_ENV_STAGE_FILE=""
