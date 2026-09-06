@@ -15,12 +15,9 @@
 # PSK-owning guardian stash exists before delegating profile
 # activation/recreation to jasper-wifi-guardian.
 #
-# The small arg-parse / emit() / stash-gate boilerplate here intentionally
-# mirrors jasper-wifi-guardian rather than sourcing a shared library: both
-# are standalone root recovery scripts installed to /usr/local/sbin, and a
-# sourced lib would add a runtime "source-or-die" dependency to the exact
-# path that must keep working when the box is in a degraded state. Two
-# self-contained ~100-line scripts is the more resilient trade here.
+# The small arg-parse / emit() / stash-gate boilerplate here is inlined
+# rather than factored out: this script only tests whether the stash EXISTS
+# and never reads a value out of it, so it needs no reader library at all.
 
 set -uo pipefail
 

@@ -27,8 +27,7 @@
 # after NetworkManager-wait-online). Pure bash, mirrors
 # jasper-aec-reconcile's shape and test seams.
 #
-# PSK redaction: $PSK never appears in any `log` / `emit` call. nmcli
-# stderr is captured and scrubbed of `password \S+` before re-emission.
+# PSK exposure: it sits on nmcli's argv for the 30 s connect window.
 
 set -uo pipefail
 
@@ -89,51 +88,50 @@ emit() {
     fi
 }
 
-# Scrub PSK occurrences from a string. Used to clean nmcli stderr
-# before logging it on a recreate failure. Mirrors
-# jasper.web.wifi_setup._scrub_argv's intent for log lines.
-#
-# Two passes:
-#   1. Replace any literal occurrence of $PSK with `***` (defends
-#      against nmcli quoting the PSK as 'PSK' in echo-back errors).
-#   2. Replace `password <non-whitespace>` with `password ***`
-#      (defends against argv echo, --password variants).
-# We do (1) only when PSK is non-empty (open networks have no PSK to
-# scrub, and an empty-string s/// would replace every char boundary).
-scrub_psk() {
-    local sed_args=()
-    if [[ -n "$PSK" ]]; then
-        # `:` is the sed-script separator we use because PSKs can
-        # contain `/`. PSKs may also contain `:`; in that case sed
-        # would itself error out. Real-world WPA PSKs typically don't
-        # use these, but if we hit one we degrade to pattern (2) only.
-        if [[ "$PSK" != *":"* ]]; then
-            sed_args+=("-e" "s:${PSK}:***:g")
-        fi
-    fi
-    sed_args+=("-e" "s/password[[:space:]]+[^[:space:]]+/password ***/g")
-    sed -E "${sed_args[@]}"
-}
-
 if [[ ! -f "$STASH_FILE" ]]; then
-    # No stash configured. Pre-PR-state of the world; we have nothing
-    # to recover from. This is the fresh-install case and the deliberately-
-    # disabled case (operator removed the file). Either way, no-op.
+    # Nothing to recover from: fresh install, or the operator deliberately
+    # removed the file. Either way, no-op.
     emit absent ""
     exit 0
 fi
 
-# Load the stash with `set -a` so the file's exports populate our env.
-# We never re-export to anything we spawn (the only spawn is nmcli, which
-# doesn't read JASPER_*).
-set -a
-# shellcheck disable=SC1090
-source "$STASH_FILE"
-set +a
+# Verbatim `^KEY=` reads, never `source`: a WPA PSK is 8-63 printable
+# ASCII, so a space, `$`, `#` or backtick would be split, expanded or
+# executed as root. Sibling lib first keeps a repo run on the repo lib
+# (same order and vocabulary as jasper-aec-reconcile's loader).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE_LIB="${JASPER_ENV_FILE_LIB:-}"
 
-SSID="${JASPER_WIFI_SSID:-}"
-PSK="${JASPER_WIFI_PSK:-}"
-KEY_MGMT="${JASPER_WIFI_KEY_MGMT:-none}"
+load_env_file_lib() {
+    if [[ -z "$ENV_FILE_LIB" ]]; then
+        if [[ -r "${SCRIPT_DIR}/../lib/jasper-env-file.sh" ]]; then
+            ENV_FILE_LIB="${SCRIPT_DIR}/../lib/jasper-env-file.sh"
+        else
+            ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"
+        fi
+    fi
+    if [[ ! -r "$ENV_FILE_LIB" ]]; then
+        emit lib_missing "path=$ENV_FILE_LIB reason=absent"
+        exit 66
+    fi
+    # shellcheck disable=SC1090
+    source "$ENV_FILE_LIB"
+    # Readable is not usable. A zeroed or truncated lib — the same ext4
+    # journal-recovery loss this script exists to repair — sources cleanly
+    # and defines nothing; every read would then come back empty and the
+    # guardian would report `absent reason=stash_empty` with rc 0 while
+    # the Pi sits off the LAN.
+    declare -F jasper_env_file_get >/dev/null || {
+        emit lib_missing "path=$ENV_FILE_LIB reason=unusable"
+        exit 66
+    }
+}
+load_env_file_lib
+
+SSID="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_SSID)"
+PSK="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_PSK)"
+KEY_MGMT="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_KEY_MGMT)"
+[[ -n "$KEY_MGMT" ]] || KEY_MGMT="none"
 
 if [[ -z "$SSID" ]]; then
     emit absent "reason=stash_empty"
@@ -280,7 +278,7 @@ fi
 emit recreate_attempt "ssid=$SSID"
 
 # Capture nmcli's stderr in a private temp file. nmcli can echo the PSK
-# back in its error text (scrub_psk exists precisely for that), so the
+# back in its error text (the scrub below exists precisely for that), so the
 # file must never be world-readable. mktemp creates it 0600 (not the
 # shell's ~0644 default from a bare `2>/tmp/foo.$$`), and the unit sets
 # PrivateTmp=true so the whole /tmp is process-private. The trap deletes
@@ -318,7 +316,14 @@ fi
 # defense in depth) don't collide; the EXIT trap removes it.
 err_line=""
 if [[ -s "$stderr_tmp" ]]; then
-    err_line="$(scrub_psk < "$stderr_tmp" | head -1 | tr -d '\n')"
+    # The literal pass is a bash string replacement, NOT a sed splice: a
+    # PSK is 8-63 printable ASCII, so it can carry regex metacharacters
+    # and whatever separator a sed script would pick. Quoting the pattern
+    # in ${err_line//"$PSK"/} is what keeps it literal.
+    err_line="$(head -1 "$stderr_tmp" | tr -d '\n')"
+    [[ -z "$PSK" ]] || err_line="${err_line//"$PSK"/***}"
+    err_line="$(printf '%s' "$err_line" |
+        sed -E 's/password[[:space:]]+[^[:space:]]+/password ***/g')"
 fi
 
 emit recreate_fail "ssid=$SSID rc=$rc err=\"${err_line}\""
