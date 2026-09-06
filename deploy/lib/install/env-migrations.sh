@@ -655,8 +655,9 @@ widen_control_secret_env_modes() {
     #     privsep MANIFEST) and weather.env (coords + units, no secret; the
     #     /weather/ wizard reads it off disk as jasper-web). Both readers are
     #     non-root and in group `jasper`.
-    # Drop the chgrp once every box has installed past the atomic_io
-    # default-group change; the chmod half heals an older 0600 class and stays.
+    # Drop the chgrp once every fleet box has installed past 2026-09-05 (the
+    # atomic_io default-group change); the chmod half heals an older 0600
+    # class and stays.
     # The WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of
     # (only the SSID, which it derives from nmcli/the journal), so it stays
