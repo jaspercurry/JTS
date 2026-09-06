@@ -65,11 +65,18 @@ def _set_range(bridge: VolumeBridge) -> None:
 
 class _FakeMixer:
     """One simple-mixer element backed by a real pipe, so the bridge's
-    `loop.add_reader` on `polldescriptors()` is exercised for real."""
+    `loop.add_reader` on `polldescriptors()` is exercised for real.
 
-    def __init__(self, raw: int = 41) -> None:
+    `playback` models the merged "PCM" element's playback half, present
+    whenever the USB mic export is on. It sits above the 0..50 capture span
+    (IDX_MAX) so a getvolume() call that forgets `pcmtype` is caught rather
+    than coincidentally matching the capture value (#4209).
+    """
+
+    def __init__(self, raw: int = 41, *, playback: int = 80) -> None:
         self._read_fd, self._write_fd = os.pipe()
         self.raw = raw
+        self.playback = playback
         self.rec = [1]
         self.fail: BaseException | None = None
         self.handled = 0
@@ -85,9 +92,13 @@ class _FakeMixer:
             raise self.fail
         return 1
 
-    def getvolume(self, units=None):
+    def getvolume(self, pcmtype=None, units=None):
         if self.fail is not None:
             raise self.fail
+        # Mirrors pyalsaaudio: unqualified getvolume() resolves to the
+        # PLAYBACK half whenever the element has one.
+        if pcmtype is None:
+            return [self.playback]
         return [self.raw]
 
     def getrec(self):
@@ -109,6 +120,8 @@ class _FakeMixer:
 def _fake_alsaaudio(*mixers: _FakeMixer) -> ModuleType:
     module = ModuleType("alsaaudio")
     module.VOLUME_UNITS_RAW = 1  # type: ignore[attr-defined]
+    # Matches real pyalsaaudio 0.11 (SND_PCM_STREAM_{PLAYBACK,CAPTURE}).
+    module.PCM_CAPTURE = 1  # type: ignore[attr-defined]
     module.cards = lambda: ["UMIK2", "UAC2Gadget"]  # type: ignore[attr-defined]
     module.card_indexes = lambda: [0, 4]  # type: ignore[attr-defined]
     pending = list(mixers)
@@ -622,6 +635,27 @@ async def test_repeated_identical_observation_is_deduplicated(monkeypatch):
     assert posted == [100]
 
 
+@pytest.mark.parametrize("raw", [0, 18, 25, 43])
+async def test_observe_reads_capture_volume_not_merged_playback_default(
+    monkeypatch, raw,
+):
+    """_observe() must read the capture half, not the merged element's
+    playback default modeled by _FakeMixer.playback (#4209)."""
+    mixer = _FakeMixer(raw=raw)
+    bridge = _ready_bridge(mixer)
+    bridge._mixer = mixer
+    posted: list[int] = []
+
+    async def _accept(pct: int, *, initial: bool = False) -> bool:
+        posted.append(pct)
+        return True
+
+    monkeypatch.setattr(bridge, "_post", _accept)
+
+    await bridge._observe()
+    assert posted == [bridge._raw_to_pct(raw)]
+
+
 async def test_mute_overrides_to_zero(monkeypatch):
     """When the capture switch reports muted, the POSTed percent is 0
     regardless of the volume control's value."""
@@ -644,7 +678,7 @@ async def test_mute_overrides_to_zero(monkeypatch):
 async def test_observe_skips_when_mixer_reports_no_values(monkeypatch):
     """An empty read is skipped entirely — don't POST a stale value."""
     mixer = _FakeMixer()
-    mixer.getvolume = lambda units=None: []  # type: ignore[method-assign]
+    mixer.getvolume = lambda pcmtype=None, units=None: []  # type: ignore[method-assign]
     bridge = _ready_bridge(mixer)
     bridge._mixer = mixer
     posted: list[int] = []
