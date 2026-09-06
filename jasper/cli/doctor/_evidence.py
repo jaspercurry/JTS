@@ -33,6 +33,7 @@ from ...service_units import (
     read_unit_states,
 )
 from ._shared import _run
+from ._shared import install_profile_is_streambox as _install_profile_is_streambox
 
 T = TypeVar("T")
 
@@ -316,6 +317,16 @@ class Evidence:
         from ...mic_presence import read_mic_presence
 
         return self.get("mic_presence", read_mic_presence)
+
+    def install_profile_is_streambox(self) -> bool:
+        return self.get("install_profile_is_streambox", _install_profile_is_streambox)
+
+    def streambox_awaiting_accessory(self) -> bool:
+        """ADR-0217: streambox tier, no mic-bearing accessory paired yet."""
+        return (
+            self.install_profile_is_streambox()
+            and not self.mic_presence().accessory_present
+        )
 
     def active_speaker_setup_status(self) -> Any:
         from ...active_speaker.setup_status import read_active_speaker_setup_status

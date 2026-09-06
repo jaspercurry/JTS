@@ -25,9 +25,8 @@ from ...secret_redaction import redact_secrets
 from ._shared import (
     _EXCEPTION_DETAIL_LIMIT,
     CheckResult,
-    REASON_NOT_INSTALLED,
+    REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     _run,
-    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a voice check produced a
@@ -68,20 +67,17 @@ REASON_PRICING_MODEL_UNPRICED = "pricing_active_model_unpriced"
 REASON_PRICING_MODEL_PRICED = "pricing_active_model_priced"
 REASON_PRICING_UNREADABLE = "pricing_unreadable"
 
-# ADR-0217: a streambox grants ASSISTANT without WAKE_DETECTION and runs
-# jasper-voice only while a mic-bearing accessory is paired — the same test
-# resilience.check_voice_unit_running gates on. check_provider_importable,
-# check_tool_packs and check_pricing read facts that only mean something
-# while the daemon can run, so they share it (check_provider_key and
-# check_spend_cap need Config fields the streambox cfg surface lacks; see
-# their own docstrings).
+# check_provider_importable, check_tool_packs and check_pricing share
+# resilience.check_voice_unit_running's ADR-0217 gate (check_provider_key
+# and check_spend_cap need Config fields the streambox cfg lacks; see
+# _registry.STREAMBOX_OMITTED_DOCTOR_CHECKS).
 def _voice_gated_skip(label: str) -> CheckResult | None:
-    if install_profile_is_streambox() and not evidence.mic_presence().accessory_present:
+    if evidence.streambox_awaiting_accessory():
         return CheckResult(
             label, "skipped",
             "streambox tier with no mic-bearing remote paired — the "
             "assistant runs only while one is (ADR-0217)",
-            reason=REASON_NOT_INSTALLED,
+            reason=REASON_VOICE_UNIT_NOT_FULL_PROFILE,
         )
     return None
 
@@ -112,11 +108,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
     Also the module's adjudicator for the *selection* itself: an unreadable or
     unsupported SSOT value is reported here, once.
 
-    Gated statically in ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``, not on
-    live accessory presence like its neighbours: the streambox doctor `cfg`
-    (``_cli._local_audio_config_from_env``) carries no ``voice_provider`` or
-    API-key fields at all, so reading them here would be a false PASS/FAIL,
-    not a skip. Remove from that set once that surface carries them."""
+    Gated statically — see ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``."""
     state = read_active_provider_state()
     env_provider = cfg.voice_provider
     if state.status == "invalid":
@@ -326,7 +318,7 @@ def check_voice_provider_ids_manifest() -> CheckResult:
     (ADR-0217) and `install_streambox_jasper` never renders this file
     (`deploy/lib/install/python-runtime.sh`), so its absence there is a
     profile fact, not a fault."""
-    if install_profile_is_streambox():
+    if evidence.install_profile_is_streambox():
         return CheckResult(
             "voice provider ids", "skipped",
             "not rendered on the streambox profile — only the full "
@@ -464,9 +456,7 @@ def check_tool_packs() -> CheckResult:
 
 @doctor_check(label="daily spend cap", needs_cfg=True)
 def check_spend_cap(cfg: Config) -> CheckResult:
-    """Gated statically in ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``, not
-    on live accessory presence like its neighbours — see
-    ``check_provider_key``'s docstring for why."""
+    """Gated statically — see ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``."""
     try:
         from ...usage import (
             SpendCap,

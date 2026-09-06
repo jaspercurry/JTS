@@ -20,10 +20,10 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_SYSTEMCTL_UNAVAILABLE,
+    REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     CheckResult,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
-    install_profile_is_streambox,
 )
 
 # Machine-stable codes naming which branch of a resilience check produced a
@@ -35,7 +35,6 @@ REASON_UNITS_RESTARTED = "units_restarted"
 
 REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
 
-REASON_VOICE_UNIT_NOT_FULL_PROFILE = "voice_unit_not_full_profile"
 REASON_VOICE_UNIT_UNOBSERVED = "voice_unit_unobserved"
 REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
 REASON_VOICE_UNIT_INACTIVE = "voice_unit_inactive"
@@ -212,8 +211,8 @@ def check_voice_unit_running() -> CheckResult:
     and a unit systemd cannot load was not observed.
     """
     label = "voice daemon running"
-    streambox = install_profile_is_streambox()
-    if streambox and not evidence.mic_presence().accessory_present:
+    streambox = evidence.install_profile_is_streambox()
+    if evidence.streambox_awaiting_accessory():
         return CheckResult(
             label, "skipped",
             "streambox tier with no mic-bearing remote paired — the "

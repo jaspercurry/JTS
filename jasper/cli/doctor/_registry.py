@@ -85,13 +85,8 @@ CORE_MODULES: frozenset[str] = frozenset({
 })
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
-    # "voice" is NOT here: 4 of its 6 checks gate themselves at runtime on
-    # ADR-0217's accessory-presence test (jasper/cli/doctor/voice.py
-    # _voice_gated_skip), the same one check_voice_unit_running applies, so
-    # a streambox with a paired accessory still gets real coverage. The
-    # other 2 stay below (check_provider_key, check_spend_cap).
-    # cues (check_cue_cache) needs cfg.sounds_dir, which the streambox
-    # doctor cfg lacks for the same reason (#4256) — still true at HEAD.
+    # "voice" is NOT here — 4 of its 6 checks self-gate on ADR-0217; the
+    # other 2 are named below in STREAMBOX_OMITTED_DOCTOR_CHECKS.
     "cues",
     "wake",
     "integrations",
