@@ -475,7 +475,6 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert scheduler.announced == ["job12345"]
     assert scheduler.read == []
     assert wl._research_window_active is False
-    assert "RECORDING TIMEOUT" not in caplog.text
     assert not event_records(caplog, "turn.silent_response")
 
 

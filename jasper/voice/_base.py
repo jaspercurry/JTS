@@ -325,6 +325,12 @@ class BaseLiveConnection:
 
     def is_paused(self) -> bool:
         return self._state in (
+            # `LiveConnection.is_paused` (session.py) counts a first
+            # connect still dialling as paused, and the state stays
+            # IDLE_INIT until `start()` runs — which daemon_main reaches
+            # one tick after it opens the control socket, so a manual
+            # start can read this state.
+            ConnectionState.IDLE_INIT,
             ConnectionState.CONNECTING,
             ConnectionState.RECONNECTING,
             ConnectionState.PAUSED_FOR_BACKOFF,
