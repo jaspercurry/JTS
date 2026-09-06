@@ -3,6 +3,8 @@ Description=Reconcile output DAC hardware role
 After=sound.target
 Wants=sound.target
 Before=jasper-outputd.service
+# See #4123.
+ConditionPathExists=!/run/jasper-install/in_progress
 
 [Service]
 Type=oneshot

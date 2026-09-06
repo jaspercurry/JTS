@@ -378,6 +378,9 @@ Run for real from a Pi-local checkout:
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
    - A legacy persisted endpoint/satellite marker normalizes to
      streambox, so the box auto-migrates to the streambox install path.
+   - Mark the install in progress (/run/jasper-install/in_progress) so
+     udev- and timer-started reconcilers skip the half-synced tree; the
+     accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. The real install fails
@@ -536,6 +539,9 @@ Profile guard:
   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
   - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+  - Mark the install in progress (/run/jasper-install/in_progress) so
+    udev- and timer-started reconcilers skip the half-synced tree; the
+    accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
@@ -1032,13 +1038,6 @@ install_camilladsp() {
     # contract which graph is legal and fails closed if no protected graph
     # exists.
 
-    # aec-bridge is no longer a CamillaDSP instance. It is now a
-    # Python bridge (`jasper-aec-bridge`, see jasper/cli/aec_bridge.py)
-    # that either runs WebRTC AEC3 for the software fallback profile or,
-    # in chip-AEC profiles, carries the selected XVF hardware-AEC beam to
-    # jasper-voice while WebRTC AEC3 is bypassed. Old aec-bridge.yml is
-    # removed if present from a prior install.
-    rm -f "${CAMILLA_CONF}/aec-bridge.yml"
     # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
     # installed by this function. Remove any copy left behind by a prior
     # install: an upgraded box that keeps it on disk indefinitely is still
@@ -1087,14 +1086,6 @@ _render_outputd_cutover_configs() {
     # boots cannot depend on which writer ran last. An inline heredoc here is
     # exactly how a second spelling gets born.
     /opt/jasper/.venv/bin/jasper-sound render-flat-cutover
-
-    # The ring sibling collapsed into outputd-cutover.yml (ADR-0100), and the
-    # renderer only SKIPS writing files — it never removes one. A box upgraded
-    # across the collapse keeps a stale full-range outputd-cutover-ring.yml that
-    # nothing selects but the camillagui config browser still lists. Remove it
-    # here, on the one deploy path that owns these bytes. Best-effort: a failed
-    # unlink is cosmetic, never a failed deploy.
-    rm -f "${CAMILLA_CONF}/outputd-cutover-ring.yml" 2>/dev/null || true
 }
 
 render_outputd_cutover_config() {
@@ -1260,11 +1251,10 @@ select_audio_hardware_roles() {
     export OUTPUT_DAC_CARD OUTPUT_DAC_ID OUTPUT_DAC_RECOGNIZED
 }
 
-# snd-aloop binds index/pcm_substreams/pcm_notify at module load; on a full-RAM
-# box jasper-fanin holds the Loopback capture sides, so the unload is EBUSY
-# (#4027) and changed options wait for the next boot. The low-RAM profiles park
-# fanin before this runs, so there the reload succeeds and the reconcilers its
-# uevents wake are gated by the install-in-progress marker (#4218).
+# snd-aloop binds index/pcm_substreams/pcm_notify at module load, and on a
+# full-RAM box jasper-fanin holds the Loopback capture sides, so the unload is
+# EBUSY (#4027) and changed options wait for the next boot. The low-RAM
+# profiles park fanin first; there the reload succeeds, gated by #4218.
 install_snd_aloop_options() {
     local shipped="${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf"
     local installed=/etc/modprobe.d/snd-aloop.conf
@@ -1297,17 +1287,8 @@ install_alsa() {
     # header owns what they are and why (deploy/alsa/asoundrc.jasper).
     # It MUST stay world-readable: renderers run as non-root users
     # (shairport-sync, librespot as `pi`) and cannot otherwise resolve the
-    # user-space PCM names it declares. A /root/.asoundrc would shadow it for
-    # root processes — ALSA reads ~/.asoundrc first — so one is backed up and
-    # removed.
-    if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
-        cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
-        rm -f /root/.asoundrc
-        echo "  Migrated old /root/.asoundrc to backup (.pre-jasper.*); see PR #223 for why."
-    fi
-    # Back up a hand-edited or apt-installed /etc/asound.conf once: the grep
-    # guard keys on our own content, so later deploys do not re-spam backups.
-    # A symlink is ours (created below) and is never backed up.
+    # user-space PCM names it declares. The backup's grep guard keys on our
+    # own content; a symlink is ours (created below) and is never backed up.
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
             && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
@@ -1672,13 +1653,6 @@ install_management_static_assets() {
     # deploy/lib/install/web-assets.sh for the copy shape and the
     # manifest contract.
     install_web_assets
-
-    # Prune retired static pages from prior installs. Their nginx routes and
-    # install copies are gone (the correction preflight's self-signed-HTTPS
-    # hop was removed per issue #2632); remove the orphaned files so a
-    # previously-deployed Pi does not keep unreachable pages on disk.
-    rm -f /usr/share/jasper-web/integrations.html
-    rm -f /usr/share/jasper-web/correction-preflight.html
 }
 
 tune_nginx_worker_processes() {
@@ -1730,6 +1704,40 @@ tune_nginx_worker_processes() {
     echo "  nginx worker_processes pinned to 1 in ${main}"
 }
 
+install_nginx_site_conf() {
+    # <site conf source> <nginx config root>. A conf in sites-enabled is on
+    # disk at once and the next nginx restart loads it (Restart=always, see
+    # nginx.service.d/jts-recovery.conf), so what `nginx -t` rejects is put
+    # back — site conf and its snippet — from a fixed-name snapshot dir
+    # outside sites-enabled, which nginx.conf includes unfiltered. Drop this
+    # guard once the conf ships from a package that tests before enabling.
+    local src="${1}" root="${2}" prev="${2}/.jasper-site-prev" rel=""
+    local site="sites-enabled/jasper.conf" snip="snippets/jts-proxy-headers.conf"
+    rm -rf "${prev}"
+    install -d -m 0755 "${root}/snippets" "${prev}"
+    for rel in "${site}" "${snip}"; do
+        [[ -f "${root}/${rel}" ]] || continue
+        cp -a "${root}/${rel}" "${prev}/"
+    done
+    install -m 0644 "${REPO_DIR}/deploy/nginx-proxy-headers.conf" "${root}/${snip}"
+    install -m 0644 "${src}" "${root}/${site}"
+    # nginx-light's enabled `default` site clashes with our default_server.
+    rm -f "${root}/sites-enabled/default"
+    if ! nginx -t; then
+        echo "  ERROR: event=install.nginx_conf_rejected src=${src}" >&2
+        for rel in "${site}" "${snip}"; do
+            rm -f "${root}/${rel}"
+            [[ -f "${prev}/${rel##*/}" ]] || continue
+            cp -a "${prev}/${rel##*/}" "${root}/${rel}"
+        done
+        rm -rf "${prev}"
+        return 1
+    fi
+    rm -rf "${prev}"
+    systemctl enable --now nginx 2>/dev/null || true
+    systemctl reload nginx
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
@@ -1744,30 +1752,10 @@ install_nginx_site() {
     # URIs, so it uses the same GitHub Pages bounce pattern as Spotify. The
     # correction-only cert is provisioned by provision_correction_tls() before
     # this function runs.
-    install -d -m 0755 /etc/nginx/snippets
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
-        /etc/nginx/snippets/jts-proxy-headers.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
-
-    # Disable Debian's default site so it doesn't clash with our
-    # default_server directives. nginx-light installs an enabled
-    # `default` symlink; remove it idempotently.
-    rm -f /etc/nginx/sites-enabled/default
     tune_nginx_worker_processes
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
-    else
-        echo "  ERROR: nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
+    install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper.conf" /etc/nginx
+    echo "  nginx reloaded — http://<host>/{,spotify,voice} + https://<host>/{correction,google} are live"
 }
 
 install_streambox_nginx_site() {
@@ -1775,26 +1763,10 @@ install_streambox_nginx_site() {
     # plus an nginx route set limited to local sources, DSP, grouping, and
     # system health. That keeps the frontend shared while omitting voice/wake
     # surfaces whose daemons are intentionally absent from this profile.
-    install -d -m 0755 /etc/nginx/snippets
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
-        /etc/nginx/snippets/jts-proxy-headers.conf
-    install -m 0644 \
-        "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" \
-        /etc/nginx/sites-enabled/jasper.conf
-
     install_management_static_assets "${REPO_DIR}/deploy/index.html"
-    rm -f /etc/nginx/sites-enabled/default
     tune_nginx_worker_processes
-
-    if nginx -t 2>/dev/null; then
-        systemctl enable --now nginx 2>/dev/null || true
-        systemctl reload nginx
-        echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
-    else
-        echo "  ERROR: streambox nginx config test failed; not reloading. Run 'nginx -t' to debug." >&2
-        return 1
-    fi
+    install_nginx_site_conf "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" /etc/nginx
+    echo "  streambox nginx reloaded — http://<host>/{,spotify,sources,sound,system,voice,google,transit,weather,ha,tools,chat} + https://<host>/{correction,sync} are live"
 }
 
 install_avahi_jasper_control() {
@@ -2202,10 +2174,11 @@ main() {
     hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
     if [[ "${install_profile}" == "streambox" ]]; then
         require_root
+        trap install_exit_cleanup EXIT
+        mark_install_in_progress
         persist_install_profile "${install_profile}"
         require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
         setup_build_swap_if_needed
-        trap install_exit_cleanup EXIT
         create_jasper_service_users  # before unit install + state-dir creation
         park_low_memory_build_units
         install_streambox_deps
@@ -2250,10 +2223,11 @@ main() {
         return 0
     fi
     require_root
+    trap install_exit_cleanup EXIT
+    mark_install_in_progress
     persist_install_profile "${install_profile}"
     require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
     setup_build_swap_if_needed
-    trap install_exit_cleanup EXIT
     create_jasper_service_users  # before unit install + state-dir creation
     park_low_memory_build_units
     install_deps

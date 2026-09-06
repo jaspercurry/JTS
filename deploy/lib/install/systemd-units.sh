@@ -1163,6 +1163,7 @@ reapply_source_intent() {
     # name lives inside an older release's strict owned namespace, so leaving it
     # behind would make a rollback reject the whole intent file. Migrate it to
     # the deliberately rollback-ignorable key before either reconciler reads.
+    # Delete once grep JASPER_SOURCE_INTENT_BLUETOOTH /var/lib/jasper/source_intent.env is empty on every box, spares included.
     if [[ -e "${STATE_DIR}/source_intent.env" || -L "${STATE_DIR}/source_intent.env" ]]; then
         /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
 import sys
@@ -1314,6 +1315,10 @@ install_streambox_systemd_units() {
 
     validate_streambox_systemd_units
     systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition
+    # lines, and before the first installer-issued start below (#4123).
+    clear_install_in_progress
     systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
     enable_streambox_web_sockets
     start_streambox_runtime_units
@@ -1697,6 +1702,10 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
 
     systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition
+    # lines, and before the first installer-issued start below (#4123).
+    clear_install_in_progress
     # Commit only after systemd accepted the complete generation. Runtime
     # mutations below are deliberately outside the staging transaction.
     trap - ERR
