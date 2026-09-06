@@ -69,12 +69,10 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 #     ring-wire default went WIDE that is now only a box an operator has
 #     PINNED to S16_LE, not the fleet (the residual is #2597);
 #   - a wire declaring a non-default sample FORMAT is refused at the arm by
-#     `ring_wire_caps_ready`, so the verdict is `fail`, and install.sh's
-#     closing `run_doctor_summary` prints its failure banner on this same
-#     deploy. An UNDECLARED box is in this class: it resolves S32_LE while the
-#     plugin's compiled-in default is S16_LE. (The capability predicate reads
-#     the format, the Ring A/B channel counts, and the ACTIVE block's own
-#     `channels` key.)
+#     `ring_wire_caps_ready`, so the verdict is `fail`. An UNDECLARED box is in
+#     this class: it resolves S32_LE while the plugin's compiled-in default is
+#     S16_LE. (The capability predicate reads the format, the Ring A/B channel
+#     counts, and the ACTIVE block's own `channels` key.)
 #
 # Two build-failure shapes, and what the doctor sees for each:
 #   - First-ever build fails (no prior .so): so_dest is absent, so the

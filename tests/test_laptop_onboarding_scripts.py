@@ -150,6 +150,9 @@ case "$cmd" in
     fi
     exit "$rc"
     ;;
+  *jasper-doctor*)
+    exit "${FAKE_DOCTOR_RC:-0}"
+    ;;
   sudo\ -n*)
     exit 0
     ;;
@@ -743,6 +746,30 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("build manifest was NOT advanced", result.stderr)
         self.assertNotIn("DEPLOY OUTCOME UNKNOWN", result.stderr)
         self.assertNotIn("==> Done.", combined)
+
+    def test_a_red_core_health_result_does_not_fail_the_deploy(self):
+        """The post-deploy `jasper-doctor --core` gate is advisory.
+
+        Removal condition: flip the expected rc to 1 when the swallow at
+        the gate_core_health call site goes (ADR-0242).
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_DOCTOR_RC="1",
+        )
+
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("jasper-doctor\\ --core", calls)
+        # The remote run carries install.sh's bound. See ADR-0242.
+        self.assertIn("systemd-run", calls)
+        self.assertIn("MemoryMax=96M", calls)
+        self.assertIn("RuntimeMaxSec=60", calls)
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)

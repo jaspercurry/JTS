@@ -1993,12 +1993,15 @@ def test_build_manifest_is_the_final_main_mutation():
         "write_build_manifest"
     )
     # run_doctor_summary is the TERMINAL step: nothing mutating follows the
-    # manifest stamp. After the last run_doctor_summary call, only branch-
-    # closing tokens remain (return 0 / fi / comments / whitespace).
+    # manifest stamp. On its own line only the advisory swallow may trail it;
+    # after that line, only branch-closing tokens (return 0 / fi / comments /
+    # whitespace).
     tail = body[body.rindex("run_doctor_summary") + len("run_doctor_summary"):]
+    call_line, _, rest = tail.partition("\n")
+    assert call_line.split("#", 1)[0].strip() == "|| true", call_line
     leftover = [
         ln.strip()
-        for ln in tail.splitlines()
+        for ln in rest.splitlines()
         if ln.strip()
         and not ln.strip().startswith("#")
         and ln.strip() not in {"return 0", "fi"}
@@ -2291,16 +2294,51 @@ def test_low_memory_build_parks_runtime_units_before_python_and_rust_builds():
     )
 
 
-def test_low_memory_install_uses_lightweight_health_probe_instead_of_doctor():
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    start = text.index("run_doctor_summary()")
-    end = text.index("\n}\n\nmain()", start)
-    body = text[start:end]
+def _systemd_run_stub(tmp_path: Path, rc: int) -> tuple[dict[str, str], Path]:
+    """A `systemd-run` first on PATH that records its argv and exits `rc`."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    argv_log = tmp_path / "systemd-run.argv"
+    stub = fake_bin / "systemd-run"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" > {shlex.quote(str(argv_log))}\n'
+        f"exit {rc}\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}, argv_log
 
-    assert "build_swap_required" in body
-    assert "jasper-deploy-health" in body
-    low_memory_body = body[body.index("if build_swap_required; then"):body.index("fi\n\n    echo \"=== jasper-doctor")]
-    assert "jasper-doctor" not in low_memory_body
+
+def test_run_doctor_summary_bounds_the_core_doctor_and_returns_its_code(tmp_path):
+    env, argv_log = _systemd_run_stub(tmp_path, 3)
+
+    r = _run_contained_build("run_doctor_summary", extra_env=env)
+
+    assert r.returncode == 3, r.stderr + r.stdout
+    argv = argv_log.read_text(encoding="utf-8").split()
+    assert "/opt/jasper/.venv/bin/jasper-doctor" in argv
+    assert "--core" in argv
+    assert "MemoryMax=96M" in argv
+    assert "RuntimeMaxSec=60" in argv  # not TimeoutStartSec; See ADR-0242.
+
+
+@pytest.mark.parametrize("profile", ["streambox", "full"])
+def test_a_failed_core_doctor_does_not_abort_either_install_profile(tmp_path, profile):
+    """Removal condition: expect a non-zero rc here once the swallow at both
+    run_doctor_summary call sites goes (ADR-0242)."""
+    env, _ = _systemd_run_stub(tmp_path, 1)
+    # Neuter every install step so only main()'s control flow, the profile
+    # branch and run_doctor_summary run for real.
+    r = _run_contained_build(
+        "for f in $(declare -F | awk '{print $3}'); do "
+        'case "$f" in main|run_doctor_summary|_is_truthy|_is_falsey_or_empty) '
+        'continue ;; esac; eval "${f}() { :; }"; done; '
+        f"resolve_install_profile() {{ printf '%s\\n' {profile}; }}; main",
+        extra_env=env,
+    )
+
+    assert r.returncode == 0, r.stderr + r.stdout
 
 
 # --- run_contained_build: graceful degradation, no double-run ----------
