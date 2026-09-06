@@ -547,6 +547,8 @@ async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
     max_audio_played_ms=0) means the ledger saw no rendered audio. Truncating
     on bytes-received instead would push audio_end_ms past the heard boundary
     and the server errors. So 0 is a no-op + WARN, never a guess."""
+    from tests._log_events import event_fields
+
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -564,12 +566,8 @@ async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
         assert _find_event(
             sess.sent[baseline:], "conversation.item.truncate",
         ) is None, "must NOT truncate when the ledger reports 0 played-ms"
-        skipped = [
-            r for r in caplog.records
-            if "barge.truncate_skipped" in r.getMessage()
-            and "zero_played_ms" in r.getMessage()
-        ]
-        assert len(skipped) == 1, (
+        fields = event_fields(caplog, "barge.truncate_skipped")
+        assert fields["reason"] == "zero_played_ms", (
             "a 0-played-ms truncate must WARN once, never silently no-op"
         )
     finally:
@@ -582,6 +580,8 @@ async def test_truncate_clamps_to_item_received_ms(caplog):
     in-flight one, so the max would exceed THIS item's duration — the
     out-of-range case OpenAI rejects. truncate clamps audio_end_ms to what
     this item actually received."""
+    from tests._log_events import event_records
+
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -604,9 +604,9 @@ async def test_truncate_clamps_to_item_received_ms(caplog):
             "audio_end_ms must be clamped to the item's received duration, "
             f"not the turn-wide max; got {ev['audio_end_ms']}"
         )
-        assert any(
-            "barge.truncate_clamped" in r.getMessage() for r in caplog.records
-        ), "a clamp must be observable"
+        assert len(event_records(caplog, "barge.truncate_clamped")) == 1, (
+            "a clamp must be observable"
+        )
     finally:
         await conn.stop()
 
@@ -781,6 +781,8 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
     ``response.output_audio_transcript.delta`` for assistant speech. The
     adapter logs only metadata, because the flight recorder buffers
     DEBUG records and dumps them to journald around failures."""
+    from tests._log_events import event_fields, event_records
+
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -804,20 +806,17 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
         await _wait_until(lambda: turn.server_turn_complete(), timeout=2.0)
         assert turn.assistant_transcript() == "Transport error."
         await turn.release()
-        transcript_records = [
-            r for r in caplog.records
-            if "event=openai.assistant_transcript" in r.getMessage()
-        ]
-        assert len(transcript_records) == 1
-        assert transcript_records[0].levelno == logging.DEBUG
-        message = transcript_records[0].getMessage()
-        assert "chars=16" in message
-        assert "Transport error." not in message
+        (record,) = event_records(caplog, "openai.assistant_transcript")
+        assert record.levelno == logging.DEBUG
+        assert event_fields(caplog, "openai.assistant_transcript")["chars"] == "16"
+        assert "Transport error." not in record.getMessage()
     finally:
         await conn.stop()
 
 
 async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
+    from tests._log_events import event_fields, event_records
+
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -829,18 +828,13 @@ async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
             "transcript": "turn on the kitchen lights",
         })
         await _wait_until(
-            lambda: "event=openai.user_transcript" in caplog.text,
+            lambda: bool(event_records(caplog, "openai.user_transcript")),
             timeout=2.0,
         )
-        transcript_records = [
-            r for r in caplog.records
-            if "event=openai.user_transcript" in r.getMessage()
-        ]
-        assert len(transcript_records) == 1
-        assert transcript_records[0].levelno == logging.DEBUG
-        message = transcript_records[0].getMessage()
-        assert "chars=26" in message
-        assert "turn on the kitchen lights" not in message
+        (record,) = event_records(caplog, "openai.user_transcript")
+        assert record.levelno == logging.DEBUG
+        assert event_fields(caplog, "openai.user_transcript")["chars"] == "26"
+        assert "turn on the kitchen lights" not in record.getMessage()
     finally:
         await conn.stop()
 
