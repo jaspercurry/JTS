@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 
-from jasper.control.client import ControlResponse
+from jasper.control.client import PEER_DETAIL_MAX_CHARS, ControlResponse
 from jasper.control.grouping_supervisor import (
     GroupingSupervisor,
     snapshot,
@@ -564,13 +564,10 @@ async def test_post_peer_grouping_redacts_secret_shaped_body_before_capping(
     secret_path.write_text(household + "\n")
     monkeypatch.setattr(hc, "SECRET_FILE", str(secret_path))
 
-    # The raw credential starts at byte 150 and runs to 166: it straddles
-    # the 160-char cap (some raw bytes fall inside the cap window, some
-    # past it), so cap-then-redact would leave a visible fragment where
-    # redact-then-cap — replacing the whole value with the 10-byte
-    # "<redacted>" marker before capping — leaves none.
+    # A straddling credential is what distinguishes redact-then-cap from
+    # cap-then-redact; one wholly inside the cap window would pass either way.
     prefix = '{"error":"household_mismatch","presented":"'
-    pad = "f" * (150 - len(prefix))
+    pad = "f" * (PEER_DETAIL_MAX_CHARS - len(prefix) - len("<redacted>"))
     body = (prefix + pad + household + '"}').encode()
 
     sup = GroupingSupervisor()

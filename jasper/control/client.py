@@ -36,6 +36,8 @@ import json
 import os
 from urllib.parse import urlsplit
 
+from ..secret_redaction import redact_secrets
+
 # No module logger by design: the client's failure surface is the ControlError
 # it raises (which carries method + path + cause); callers log it with their
 # own context (event=knob.adjust.failed, event=usbsink.volume_post_failed, …).
@@ -76,6 +78,20 @@ DEFAULT_TIMEOUT = 2.0
 # work. Peer-to-peer only (grouping's household requests, the rooms wizard's
 # probes) — a peer, unlike jasper-control itself, is not this box.
 PEER_RESPONSE_MAX_BYTES = 64 * 1024
+
+# Cap on the peer-supplied detail `peer_detail()` returns, for a caller to
+# carry into `/state`, a journal line or a flash.
+PEER_DETAIL_MAX_CHARS = 160
+
+
+def peer_detail(raw: bytes, *literals: str) -> str:
+    """Redact, then cap, a peer's HTTP response body for `/state`, a
+    journal line or a flash. Order matters: capping first can crop a
+    credential that straddles the boundary, leaving its head exposed with
+    no marker at all (ADR-0243).
+    """
+    text = raw[:PEER_RESPONSE_MAX_BYTES].decode(errors="replace")
+    return redact_secrets(text, literals=literals)[:PEER_DETAIL_MAX_CHARS]
 
 
 class ControlError(RuntimeError):
