@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared stand-ins for voice-daemon lifecycle tests: a configurable
-LiveTurn, and the 80 ms silent mic frame those tests feed the wake loop."""
+LiveTurn, the 80 ms silent mic frame those tests feed the wake loop, and a
+session_status() prep helper."""
 
 from __future__ import annotations
+
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -75,3 +78,14 @@ class FakeLiveTurn:
 
     def conversation_metadata(self) -> dict | str | None:
         return self._metadata
+
+
+def _prep_session_status(wl) -> None:
+    """Seed wl._state, _input_ended, _ducker, and _content_activity so session_status() can run."""
+    from jasper.voice_daemon import State
+    wl._state = State.WAKE
+    wl._input_ended = False
+    wl._ducker = MagicMock()
+    wl._ducker.is_ducked = False
+    wl._content_activity = MagicMock()
+    wl._content_activity.music_dbfs = -32.0
