@@ -2,18 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared logging setup for interactive maintenance CLIs."""
+"""Re-export of the logging bootstrap, for the parked tuning-zone CLIs only.
+
+The bootstrap and its redacting filter live in :mod:`jasper.logging_setup`.
+Delete this module when ``grep -rn '_logging import' jasper/`` returns
+nothing — the parked tuning-zone CLIs having adopted ``configure_logging``
+(#3769 wave 10, after #4138).
+"""
 from __future__ import annotations
 
-import logging
+from ..logging_setup import LOG_FORMAT as CLI_LOG_FORMAT, configure_verbose_logging
 
-CLI_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-
-
-def configure_verbose_logging(*, verbose: bool) -> None:
-    """Use DEBUG for ``--verbose`` and WARNING otherwise."""
-
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
-        format=CLI_LOG_FORMAT,
-    )
+__all__ = ["CLI_LOG_FORMAT", "configure_verbose_logging"]

@@ -63,6 +63,7 @@ from jasper.install_profile import (
 from jasper.log_event import log_event
 
 from . import _systemd
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -553,10 +554,7 @@ def _specs_for_role(role: str) -> tuple[WizardSpec, ...]:
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     # `/sound/eq/` and `/sound/` apply generated DSP configs from this process, so
     # their graph swaps need a canonical target to release the swap duck to.
     from jasper.volume_coordinator import install_env_canonical_target_provider

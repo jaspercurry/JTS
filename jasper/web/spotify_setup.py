@@ -124,6 +124,7 @@ from ._common import (
     send_json_response,
     write_env_file,
 )
+from ..logging_setup import configure_logging
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
@@ -1450,7 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Loopback redirect URI for manual mode.",
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    configure_logging()
     # Standalone CLI path — bind directly. The jasper-web multi-wizard
     # process calls make_server() with a target picked per-port from
     # systemd's handed-off sockets.

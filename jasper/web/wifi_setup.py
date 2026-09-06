@@ -81,6 +81,7 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1484,10 +1485,7 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775")),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server((args.host, args.port))
     logger.info("jasper-wifi-web listening on http://%s:%d", args.host, args.port)
     try:

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from jasper.log_event import log_event
+from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
@@ -2115,10 +2116,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
     # the journal at INFO, applies the /system Debug card's toggle, and wires
     # SIGUSR1 -> dump. See jasper/flight_recorder.py.

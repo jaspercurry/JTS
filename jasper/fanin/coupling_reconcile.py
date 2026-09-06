@@ -94,6 +94,7 @@ from jasper.fanin.ring_health import (
     graph_at_active_ring_endpoint as graph_at_active_ring_endpoint,
     JASPER_ENV_PATH as JASPER_ENV_PATH,
 )
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -2031,10 +2032,7 @@ def main(argv: "list[str] | None" = None) -> int:
     # journal is where INFO-level transition evidence lands. Without a configured
     # handler the root logger falls back to Python's lastResort handler (WARNING+)
     # and silently drops normal confirmations.
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
 
     # `reconcile_current_dsp` swaps the live graph from this process, so its
     # swap duck needs a canonical target to release to.

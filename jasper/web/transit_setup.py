@@ -93,6 +93,7 @@ from ._common import (
     value_for_env as _value_for,
     write_env_file,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1673,10 +1674,7 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("JASPER_GOOGLE_ROUTES_FILE", GOOGLE_ROUTES_SECRET_FILE),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server(
         (args.host, args.port),
         state_path=args.state,

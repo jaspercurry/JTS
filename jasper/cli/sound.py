@@ -17,6 +17,7 @@ from typing import Any
 from jasper.log_event import log_event
 from jasper.sound.profile import PROFILE_PATH
 from jasper.sound.runtime import DEFAULT_CONFIG_DIR, reconcile_current_dsp
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_logging(fmt="%(levelname)s %(message)s")
     # Hydrate os.environ from the wizard-owned env files (same set the daemons
     # load, fanin.env wins last) so a reconcile run from the CLI / install.sh —
     # neither of which pre-sources those files — sees the persisted

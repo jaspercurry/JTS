@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import advisory_file_lock
-from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.enhanced_aec import (
     INSTALL_LOCK_PATH,
     SOURCE_ROOT,
@@ -33,6 +32,7 @@ from jasper.enhanced_aec import (
     write_installed_marker,
     write_job_state,
 )
+from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -667,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     # INFO floor, not configure_verbose_logging's WARNING: no --verbose flag
     # exists here, and the install outcome is the only line this job prints.
-    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    configure_logging()
     try:
         result = install()
     except SourceChanged as exc:

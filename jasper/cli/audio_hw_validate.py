@@ -48,6 +48,7 @@ from ..audio_validation import (
     write_latest_pointer,
 )
 from ..log_event import log_event
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.cli.audio_hw_validate")
 
@@ -259,7 +260,7 @@ def run_audio_hardware_validation(
     )
     if poll_interval_seconds <= 0:
         raise ValueError("poll interval must be positive")
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_logging(fmt="%(message)s")
     log_event(
         logger,
         "audio_hw_validation.start",

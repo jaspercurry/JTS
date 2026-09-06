@@ -119,6 +119,7 @@ from ._common import (
     SECRET_ENV_MODE,
     value_for_env as _value_for,
 )
+from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1784,10 +1785,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging()
     server = make_server(
         (args.host, args.port),
         state_path=args.state,
