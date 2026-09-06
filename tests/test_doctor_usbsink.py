@@ -674,11 +674,11 @@ def test_check_usbsink_name_verdicts(
     assert r.reason == reason
 
 
-def test_check_usbsink_name_override_unreadable_is_skipped(monkeypatch, tmp_path):
+def test_check_usbsink_name_override_unreadable_warns(monkeypatch, tmp_path):
     """The override existing as something `read_bytes()` can't open (a
-    directory, standing in for a permissions/I-O fault) is the evidence
-    channel failing, not an observation about the patch — skipped, not
-    warn."""
+    directory, standing in for a permissions/I-O fault) is an observed
+    permission/IO fault on a confirmed file — the same class as
+    `_classify_mux_mode`'s OSError arm — warn, not skipped."""
     _name_env(monkeypatch, active=True, speaker="Kitchen")
     updates = tmp_path / _KVER / "updates"
     updates.mkdir(parents=True)
@@ -686,7 +686,7 @@ def test_check_usbsink_name_override_unreadable_is_skipped(monkeypatch, tmp_path
 
     r = usbsink.check_usbsink_name(modules_root=str(tmp_path))
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == usbsink.REASON_NAME_OVERRIDE_UNREADABLE
 
 

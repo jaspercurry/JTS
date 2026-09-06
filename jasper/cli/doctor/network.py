@@ -937,7 +937,7 @@ def check_usbnet_nm_profile() -> CheckResult:
     systemd-networkd, no dispatcher scripts); the profile is shipped
     from the persisted plan. A different active connection on usb0 means either a
     manual `nmcli` override or a profile-install regression — either way
-    the plan-derived address is not guaranteed. Skips (ok) when
+    the plan-derived address is not guaranteed. Skipped when
     usb0 doesn't exist yet or nmcli isn't on PATH (dev host)."""
     label = "USB network NM profile"
     if not _usbnet_iface_present():

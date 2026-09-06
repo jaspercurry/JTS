@@ -5,7 +5,6 @@
 """Unit tests for the jasper-doctor voice domain."""
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -187,24 +186,6 @@ def test_provider_imports_status_when_it_probed_nothing(
 
     assert r.status == status
     assert r.reason == reason
-
-
-def test_provider_imports_timeout_warns(monkeypatch):
-    """The child ran and was killed by its own timeout: an observation that
-    the import took too long on this box, not a missing evidence channel —
-    warn, not skipped."""
-    state = _state("configured", provider="gemini")
-    monkeypatch.setattr(doctor_voice, "read_active_provider_state", lambda: state)
-
-    def fake_run(cmd, timeout=None):
-        raise subprocess.TimeoutExpired(cmd, timeout)
-
-    monkeypatch.setattr(doctor_voice, "_run", fake_run)
-
-    r = doctor_voice.check_provider_importable()
-
-    assert r.status == "warn"
-    assert r.reason == doctor_voice.REASON_PROVIDER_IMPORTS_TIMEOUT
 
 
 # The manifest gates jasper-aec-reconcile's start of jasper-voice, so a

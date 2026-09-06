@@ -92,6 +92,13 @@ def _run_bt_pairing_probe(monkeypatch, *, exec_path: str, bt_result):
         (_JTS_BT_AGENT_EXEC, _bt_show("no", "no"), "ok", ""),
         ("/usr/bin/bt-agent", _bt_show("no", "no"), "fail", "REASON_BT_PAIRING_WRONG_AGENT"),
         (
+            # The wrong-agent fail must win even when bluetoothctl would
+            # itself be unavailable — it must never reach bluetoothctl at
+            # all, so a skip can never mask this fail.
+            "/usr/bin/bt-agent", FileNotFoundError("bluetoothctl"), "fail",
+            "REASON_BT_PAIRING_WRONG_AGENT",
+        ),
+        (
             _JTS_BT_AGENT_EXEC, _bt_show("no", "yes"), "warn",
             "REASON_BT_PAIRING_PAIRABLE_WITHOUT_DISCOVERABLE",
         ),
@@ -112,7 +119,8 @@ def _run_bt_pairing_probe(monkeypatch, *, exec_path: str, bt_result):
         ),
     ],
     ids=[
-        "ok", "wrong-agent", "pairable-without-discoverable", "window-open",
+        "ok", "wrong-agent", "wrong-agent-bluetoothctl-also-missing",
+        "pairable-without-discoverable", "window-open",
         "bluetoothctl-missing", "show-failed", "state-not-reported",
     ],
 )
@@ -392,10 +400,10 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
     assert r.status == "ok"
 
 
-def test_shairport_check_conf_unreadable_is_skipped(monkeypatch):
+def test_shairport_check_conf_unreadable_warns(monkeypatch):
     """An existing conf the doctor can't read (permissions, transient I/O
-    error) is the evidence channel failing, not an observation about
-    output_device — skipped, not warn."""
+    error) is an observed permission/IO fault on a confirmed file — the
+    same class as `_classify_mux_mode`'s OSError arm — warn, not skipped."""
 
     class _UnreadableConf:
         def exists(self):
@@ -411,7 +419,7 @@ def test_shairport_check_conf_unreadable_is_skipped(monkeypatch):
 
     r = renderers.check_shairport_sync_loopback_plughw()
 
-    assert r.status == "skipped"
+    assert r.status == "warn"
     assert r.reason == renderers.REASON_SHAIRPORT_CONF_UNREADABLE
 
 

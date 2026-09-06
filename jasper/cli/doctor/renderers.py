@@ -733,7 +733,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
         text = p.read_text()
     except OSError as e:
         return CheckResult(
-            label, "skipped", f"can't read {p}: {e}",
+            label, "warn", f"can't read {p}: {e}",
             reason=REASON_SHAIRPORT_CONF_UNREADABLE,
         )
     # Look for an active (non-comment) output_device line. Comments in

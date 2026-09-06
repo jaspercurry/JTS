@@ -978,7 +978,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
             )
     except OSError as exc:
         return CheckResult(
-            "usbsink name", "skipped",
+            "usbsink name", "warn",
             f"can't read {override}: {exc}",
             reason=REASON_NAME_OVERRIDE_UNREADABLE,
         )

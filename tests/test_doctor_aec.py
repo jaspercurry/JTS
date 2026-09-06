@@ -442,10 +442,41 @@ def test_check_aec_output_health_skips_when_bridge_not_running(monkeypatch):
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING
 
 
-def test_check_aec_output_health_skips_when_journal_unreadable(monkeypatch):
-    """`journalctl` failing is the evidence channel breaking, not an
-    observation about bridge output — skipped, not warn."""
-    _stage_bridge_journal(monkeypatch, _healthy_journal())
+def test_check_aec_output_health_keeps_stats_verdict_when_journal_unreadable(
+    monkeypatch, tmp_path: Path,
+):
+    """A v4 stats assessment that already proved reference health (past
+    startup grace, current) is an observation the row already made — a
+    subsequent journal read failure loses journal-CONTENT detail, not that
+    observation, so the stats verdict stands (with the journal failure
+    noted), not skipped."""
+    _install_reference_health_check_fakes(
+        monkeypatch, tmp_path, stats=_reference_input_stats(), journal="",
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[:3] == ["journalctl", "-u", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="journalctl: failed")
+        raise AssertionError(f"unexpected command: {command!r}")
+
+    monkeypatch.setattr(aec, "_run", fake_run)
+
+    result = aec.check_aec_bridge_output_health()
+
+    assert result.status == "ok"
+    assert result.reason == aec.REASON_REF_RECEIVER_CURRENT
+    assert "could not read journal" in result.detail
+
+
+def test_check_aec_output_health_skips_when_journal_unreadable_and_no_stats(
+    monkeypatch,
+):
+    """With no v4 stats snapshot at all, a journal read failure really is
+    the only evidence channel available — nothing was observed — skipped,
+    not warn."""
+    monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
+    _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
+    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
     monkeypatch.setattr(
         aec, "_run",
         lambda *a, **k: SimpleNamespace(  # noqa: ARG005
