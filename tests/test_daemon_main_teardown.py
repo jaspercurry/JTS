@@ -85,9 +85,9 @@ async def _traced_cm(trace: _Trace, name: str, **attrs):
 class _FakeControlSocket:
     """`asyncio.AbstractServer`'s close surface, traced.
 
-    Real `close()`/`wait_closed()`, not attributes on a namespace: `run()`
-    calls these directly on the server it gets back from
-    `_start_control_socket`, bounded by `asyncio.wait_for`.
+    Real `close()`/`wait_closed()`, not attributes on a namespace:
+    `control_socket.close()` calls these on the server `run()` gets back
+    from `control_socket.serve`, bounded by `asyncio.wait_for`.
     """
 
     def __init__(self, trace: _Trace) -> None:
@@ -326,10 +326,12 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     patch("_cancel_tracked_tasks", _cancel_tracked_tasks)
     patch("WakeLoop", lambda *a, **k: _FakeWakeLoop(trace, *a, **k))
 
-    async def _start_control_socket(*_a, **_kw):
+    async def _serve_control_socket(*_a, **_kw):
         return _FakeControlSocket(trace)
 
-    patch("_start_control_socket", _start_control_socket)
+    monkeypatch.setattr(
+        daemon_main.control_socket_mod, "serve", _serve_control_socket,
+    )
 
     async def _serve_while_connecting(_connect, _serve) -> None:
         return None
