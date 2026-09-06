@@ -4,7 +4,7 @@
 
 """The one Python redactor for text bound for logs, ``/state`` or doctor.
 
-See ADR-0240.
+See ADR-0243.
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ _SECRET_WORD_RE = re.compile(
 _URL_PARAM_RE = re.compile(r"(?i)([?&]key=)[^&\s'\"<>]+")
 
 # Live provider key prefixes: Google (AIza), OpenAI (sk-), xAI (xai-),
-# Google OAuth client secret (GOCSPX-). See ADR-0240.
+# Google OAuth client secret (GOCSPX-). See ADR-0243.
 _KEY_PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:AIza|sk-|xai-|GOCSPX-)[A-Za-z0-9_-]{8,}",
 )
@@ -112,7 +112,7 @@ def redact_secrets(message: str, literals: Iterable[str] = ()) -> str:
 
     `literals` are secret values the caller holds. They are replaced first
     and by value, which is the only way a credential in an unrecognised
-    shape comes out — the patterns run after either way (ADR-0240).
+    shape comes out — the patterns run after either way (ADR-0243).
     """
     for literal in literals:
         if literal:

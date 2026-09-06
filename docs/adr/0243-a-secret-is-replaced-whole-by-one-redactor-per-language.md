@@ -1,4 +1,4 @@
-# ADR-0240: A secret is replaced whole, by one redactor per language
+# ADR-0243: A secret is replaced whole, by one redactor per language
 
 - **Date:** 2026-09-06
 - **Status:** Accepted. Supersedes the redaction paragraph in the
