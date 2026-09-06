@@ -616,54 +616,39 @@ def test_start_time_hostname_readers_order_behind_the_identity_oneshot(reader):
 
 # Remove when the installer stops mutating /opt/jasper in place.
 _INSTALL_MARKER_GATE = "!/run/jasper-install/in_progress"
-_RUN_RE = re.compile(r'RUN\+="([^"\s]+)')
-_START_RE = re.compile(r"\b(?:re)?start\s+([A-Za-z0-9@._-]+\.service)")
-# Directories a udev RUN+= path can resolve into, in shipped-file terms.
-_HELPER_DIRS = (_DEPLOY / "bin", _DEPLOY / "usbsink")
 
 # Async-activated units that deliberately carry NO gate, with the reason each
-# is safe on a half-synced tree. Explicit rather than derived from "does the
-# ExecStart name /opt/jasper", because an ExecStart can be a bash wrapper that
-# execs venv Python (jasper-wifi-recover does exactly that) — the derivation
-# would silently under-report. Stale entries fail: an ungated unit that stops
-# being async-activated has to leave this list too.
+# is safe enough on a half-synced tree. Explicit rather than derived from "does
+# the ExecStart name /opt/jasper", because an ExecStart can be a bash wrapper
+# that execs venv Python (jasper-wifi-recover does exactly that) — the
+# derivation would silently under-report. Stale entries fail: an ungated unit
+# that stops being async-activated has to leave this list too.
 _UNGATED_ASYNC_UNITS = {
     "jasper-identity-reconcile.service": "pure bash; no /opt/jasper reference",
-    "jasper-dongle-recover.service": "only systemctl-starts units gated themselves",
+    "jasper-dongle-recover.service": "its two reconciler legs are gated, but it also "
+                                     "starts jasper-camilla and jasper-outputd — "
+                                     "pre-existing mid-install exposure #4123 does "
+                                     "not address",
     "jasper-wifi-recover.service": "bash recovery that must keep running during a "
                                    "long install; its Python branch self-gates on "
                                    "the marker instead",
 }
 
 
-def _uncommented(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
-
-
 def _async_activated_units() -> set[str]:
     """Units something other than the installer can start mid-install.
 
-    udev SYSTEMD_WANTS targets, the units a RUN+= helper starts, and every
-    timer's service. Path-activated services are excluded: a Condition there
-    leaves the level-triggered .path re-triggering until TriggerLimitBurst
-    fails it, so the installer stops those units instead.
+    udev SYSTEMD_WANTS targets and every timer's service. Path-activated
+    services are excluded: a Condition there leaves the level-triggered .path
+    re-triggering until TriggerLimitBurst fails it, so the installer stops
+    those units instead.
     """
     units: set[str] = set()
     for rules in sorted(_DEPLOY.glob("udev/*.rules")):
-        text = rules.read_text(encoding="utf-8")
-        units.update(_shipped_unit_name(u) for u in _WANTS_RE.findall(text))
-        for run in _RUN_RE.findall(text):
-            for helper_dir in _HELPER_DIRS:
-                helper = helper_dir / Path(run).name
-                if helper.is_file():
-                    units.update(
-                        _START_RE.findall(
-                            _uncommented(helper.read_text(encoding="utf-8"))
-                        )
-                    )
-                    break
+        units.update(
+            _shipped_unit_name(u)
+            for u in _WANTS_RE.findall(rules.read_text(encoding="utf-8"))
+        )
     for timer in sorted(_DEPLOY.glob("systemd/*.timer")):
         unit = value_for(timer.read_text(encoding="utf-8"), "Unit")
         units.add(unit or f"{timer.stem}.service")

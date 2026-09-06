@@ -192,20 +192,10 @@ cleanup_build_swap() {
     _build_sandbox_log "swap_removed" "path=${path}"
 }
 
-# Call `$1` when defined, absorbing its status; both guards are load-bearing.
-#
-# `declare -F`: the callees live in memory-resilience.sh and systemd-units.sh,
-# which install.sh always sources, so a partial source (a stray test context)
-# degrades to skipping the step rather than erroring inside the EXIT trap.
-#
-# `|| true`: a caller's guard suspends `set -e` for the callee's ENTIRE body,
-# not just for the call itself. That is what lets the unpark's three
-# `_build_sandbox_log` calls stay bare — one that failed would otherwise abort
-# the restore loop mid-pass, stranding every unit after it AND clobbering the
-# status the trap just captured. Measured (bash 3.2.57), six parked units with
-# one refusing to start: guarded -> exit 5, 5 of 6 restored, summary line
-# emitted; bare -> exit 1, 1 of 6 restored, summary never reached. Pinned by
-# test_exit_trap_finishes_the_unpark_when_its_own_logging_fails.
+# Call `$1` when defined, absorbing its status. `declare -F`: the callees live
+# in memory-resilience.sh and systemd-units.sh, which install.sh always
+# sources, so a partial source (a stray test context) degrades to skipping the
+# step rather than erroring inside the EXIT trap.
 _call_if_defined() {
     declare -F "$1" >/dev/null 2>&1 || return 0
     "$@" || true
@@ -240,17 +230,19 @@ install_exit_cleanup() {
     # silent. Note the capture rescues only that shape: it cannot rescue an
     # aborting command, which returns 1 with or without it.
     #
-    # Order: tear the build swap down before the unpark. It must happen on
-    # every exit path, and `systemctl start` blocks on its job — unparking
-    # first lets one hung unit strand a 2 GB swap file and its swapon entry.
-    # This is NOT "give the daemons their RAM back first": swapoff PULLS pages
-    # back into RAM, so this instant is a pressure spike, not relief. Doing it
-    # first means the graph restarts onto the box's ordinary memory
-    # configuration instead of onto a temporary swap about to be yanked.
+    # Order: swapoff first (it pulls pages back in; the unpark can strand it), gate last.
     local rc=$?
-    _call_if_defined clear_install_in_progress
     cleanup_build_swap || true
+    # The `|| true` inside _call_if_defined suspends `set -e` for the unpark's
+    # ENTIRE body, which is the only reason its three bare `_build_sandbox_log`
+    # calls cannot abort the restore loop mid-pass. Measured (bash 3.2.57), six
+    # parked units with one refusing to start: guarded -> exit 5, 5 of 6
+    # restored, summary emitted; bare -> exit 1, 1 of 6 restored, no summary.
+    # Pinned by test_exit_trap_finishes_the_unpark_when_its_own_logging_fails.
     _call_if_defined unpark_low_memory_build_units
+    # Last: an aborted install must not lift the gate — and re-arm the
+    # level-triggered accessory .path — while the graph is still down.
+    _call_if_defined clear_install_in_progress
     return "${rc}"
 }
 

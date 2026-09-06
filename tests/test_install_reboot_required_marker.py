@@ -2,18 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The two /run/jasper-install markers deploy/lib/install/memory-resilience.sh
-writes.
+"""The two /run/jasper-install markers memory-resilience.sh writes.
 
-reboot_required (issue #2110): one canonical, machine-readable file that
-onboard.sh and deploy-to-pi.sh read instead of parsing install.sh's log prose
-for "REBOOT REQUIRED". Each migration owns one key in the file and clears it
-on every run before possibly re-setting it, so two migrations can't step on
-each other's reason regardless of call order.
+reboot_required (#2110): one canonical, machine-readable file that onboard.sh
+and deploy-to-pi.sh read instead of parsing install.sh's log prose for "REBOOT
+REQUIRED". Each migration owns one key and clears it on every run before
+possibly re-setting it, so two migrations can't step on each other's reason
+regardless of call order.
 
-in_progress (issue #4123): present for the window in which the installer is
-mutating /opt/jasper, so asynchronously activated units skip the pass rather
-than import a half-synced tree."""
+in_progress (#4123): present while the installer mutates /opt/jasper, so
+asynchronously activated units skip the pass rather than import a half-synced
+tree."""
 from __future__ import annotations
 
 import os
@@ -27,6 +26,7 @@ REPO_ROOT = Path(__file__).parent.parent
 MEMORY_RESILIENCE_SH = REPO_ROOT / "deploy" / "lib" / "install" / "memory-resilience.sh"
 BUILD_SANDBOX_SH = REPO_ROOT / "deploy" / "lib" / "install" / "build-sandbox.sh"
 GATED_UNIT = REPO_ROOT / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
+WIFI_RECOVER = REPO_ROOT / "deploy" / "bin" / "jasper-wifi-recover"
 
 
 def _run(script: str, marker: Path) -> subprocess.CompletedProcess[str]:
@@ -115,16 +115,29 @@ def test_install_in_progress_marker_survives_the_window_and_the_exit_trap_clears
     assert not in_progress.exists()
 
 
-def test_the_marker_seams_default_is_the_path_the_units_gate_on() -> None:
-    """Units cannot read the shell seam, so the literal in their
-    ConditionPathExists= and this default have to be kept in step by hand."""
-    r = subprocess.run(
+def test_all_three_install_marker_defaults_name_the_path_the_units_gate_on() -> None:
+    """A unit cannot read the shell seam and neither can jasper-wifi-recover,
+    so the three copies of this path have to be kept in step by hand."""
+    gate = value_for(GATED_UNIT.read_text(encoding="utf-8"), "ConditionPathExists")
+    marker = gate.lstrip("!")
+
+    seam = subprocess.run(
         ["bash", "-c", "set -euo pipefail; "
          f"source {shlex.quote(str(MEMORY_RESILIENCE_SH))} >/dev/null; "
          'printf "%s" "${INSTALL_IN_PROGRESS_MARKER}"'],
         capture_output=True, text=True, timeout=5,
         env={k: v for k, v in os.environ.items() if k != "JTS_REBOOT_REQUIRED_MARKER"},
     )
-    assert r.returncode == 0, r.stderr
-    gate = value_for(GATED_UNIT.read_text(encoding="utf-8"), "ConditionPathExists")
-    assert r.stdout == gate.lstrip("!")
+    assert seam.returncode == 0, seam.stderr
+    assert seam.stdout == marker
+
+    # `--help` returns after the assignments, and xtrace reports the value the
+    # script really resolved — an execution read, not a grep of its source.
+    recover = subprocess.run(
+        ["bash", "-x", str(WIFI_RECOVER), "--help"],
+        capture_output=True, text=True, timeout=5,
+        env={k: v for k, v in os.environ.items()
+             if k != "JASPER_INSTALL_IN_PROGRESS_MARKER"},
+    )
+    assert recover.returncode == 0, recover.stderr
+    assert f"INSTALL_MARKER={marker}\n" in recover.stderr
