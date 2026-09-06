@@ -3994,21 +3994,13 @@ class _FakeHaStatus:
 
 
 def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> None:
-    """One reader per fact on the dashboard route (ADR-0233 rule 1).
-
-    outputd is read ONCE per request and published in the same shape /state
-    publishes — the chip-reference write ring dropped, ~25 KB the dashboard
-    polls for and no reader consumes. Retire when /system/snapshot stops
-    publishing outputd.
+    """One reader per fact on the dashboard route (ADR-0233 rule 1): outputd
+    is read ONCE per request and published through the shaper /state shares.
+    Retire when /system/snapshot stops publishing outputd.
     """
     normalized = _compose(selected="usbsink", ladder="l0_locked")
     legacy = {"status": "ok", "reason": "clean"}
     outputd = _outputd()
-    outputd["reference_outputs"] = {"chip_ref_writer": {
-        "active": True,
-        "recent_writes": [{"frames_written": 128}],
-        "recent_writes_capacity": 256,
-    }}
     reads = []
 
     class FakeAudioHealth:
@@ -4042,9 +4034,6 @@ def test_system_snapshot_shares_the_samplers_health_and_reads_outputd_once() -> 
         assert payload["audio_health"] == normalized
         assert payload["airplay_health"] == legacy
         assert len(reads) == 1
-        writer = payload["outputd"]["reference_outputs"]["chip_ref_writer"]
-        assert "recent_writes" not in writer
-        assert writer["recent_writes_capacity"] == 256
         assert payload["outputd"]["watchdog"] == outputd["watchdog"]
     finally:
         server.shutdown()

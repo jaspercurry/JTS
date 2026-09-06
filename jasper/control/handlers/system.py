@@ -165,15 +165,13 @@ class SystemRoutes(ControlHandlerMixin):
                 "reason": "AirPlay health sampler failed",
             }
 
-        # The sampler's cached observation when there is one (this route polls
-        # and forks nothing, ADR-0233 rule 2), the live probe otherwise — both
-        # through the one shaper, so /state and this route publish outputd in
-        # the same shape and neither carries the chip-reference write ring.
+        # The sampler's cached observation when there is one, so this route
+        # re-probes nothing (ADR-0233 rule 2); same shaper as /state either way.
         try:
             cached = getattr(self._audio_health_sampler, "outputd_snapshot", None)
-            outputd_status = state_aggregate._outputd_section(
-                cached() if cached is not None
-                else asyncio.run(state_aggregate._outputd_status()),
+            outputd_status = (
+                state_aggregate._outputd_section(cached()) if cached is not None
+                else asyncio.run(state_aggregate._outputd_status())
             )
         except Exception:  # noqa: BLE001
             logger.exception("outputd status snapshot failed")

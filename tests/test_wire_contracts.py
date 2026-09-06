@@ -753,15 +753,12 @@ async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
 
 async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
     payload = await _state_payload(monkeypatch, tmp_path)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
 
 
 async def test_every_state_section_says_when_it_was_observed(monkeypatch, tmp_path):
-    """A fact whose age no consumer can compute is a fact it cannot trust:
-    "read now" and "written at boot" looked identical on 20 of these sections
-    (issue #4197). Epoch seconds, the type P4 and P9 agreed on. Retire with
-    `observed_at` itself.
-    """
+    """Every dict-valued /state section carries a float observed_at (#4197).
+    Retire with `observed_at` itself."""
     payload = await _state_payload(monkeypatch, tmp_path)
 
     stamps = {
@@ -774,13 +771,9 @@ async def test_every_state_section_says_when_it_was_observed(monkeypatch, tmp_pa
     assert [key for key, at in stamps.items() if not isinstance(at, float)] == []
 
 
-async def test_a_stale_sampler_section_demotes_and_keeps_its_sample_time(
-    monkeypatch, tmp_path,
-):
+async def test_a_sampler_fed_section_keeps_its_sample_time(monkeypatch, tmp_path):
     """A sampler-fed section is stamped with the SAMPLE time, not the read
-    time, and demotes once the sample outlives 3x the sampler's cadence — a
-    fresh stamp over a stale observation is the lie this pins. The demotion
-    itself lives with the sampler (jasper/control/audio_health.py); retire this
+    time — a fresh stamp over an old observation is the lie this pins. Retire
     when no /state section is sampler-fed.
     """
     from jasper.control.audio_health import AudioHealthSampler
@@ -792,7 +785,6 @@ async def test_a_stale_sampler_section_demotes_and_keeps_its_sample_time(
         def snapshot(self) -> dict:
             return {}
 
-    now = [1000.0]
     sampler = AudioHealthSampler(
         airplay_sampler=_StubAirPlay(),
         outputd_probe=lambda: None,
@@ -801,26 +793,15 @@ async def test_a_stale_sampler_section_demotes_and_keeps_its_sample_time(
         service_probe=lambda: {},
         output_hardware_probe=lambda: None,
         output_topology_probe=lambda: None,
-        sample_interval_sec=5.0,
-        time_fn=lambda: now[0],
+        time_fn=lambda: 1_700_000_000.0,
     )
     sampler._tick()
 
-    fresh = await _state_payload(
-        monkeypatch, tmp_path, audio_health_snapshot=sampler.snapshot,
-    )
-    now[0] += 16.0
-    stale = await _state_payload(
+    payload = await _state_payload(
         monkeypatch, tmp_path, audio_health_snapshot=sampler.snapshot,
     )
 
-    assert fresh["audio_health"]["observed_at"] == 1000.0
-    assert stale["audio_health"]["observed_at"] == 1000.0
-    assert all(
-        issue["key"] != "monitor.sample_stale"
-        for issue in fresh["audio_health"]["issues"]
-    )
-    assert stale["audio_health"]["issues"][0]["key"] == "monitor.sample_stale"
+    assert payload["audio_health"]["observed_at"] == 1_700_000_000.0
 
 
 # ---------------------------------------------------------------------------

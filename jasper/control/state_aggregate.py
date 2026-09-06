@@ -87,7 +87,7 @@ _CAMILLA_PROBE_TIMEOUT_SEC = 2.0
 # Bump when the key sets pinned in tests/test_wire_contracts.py change shape,
 # so a consumer can branch on the number instead of probing for keys.
 # See ADR-0233 rule 2.
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 
 # One deadline for the whole payload: the daemon fan-out and every section
 # read spend from it. NOT a latency control — the normal path finishes well
@@ -1073,21 +1073,27 @@ def _stamp_observed_at(
 
     A section a sampler produced carries that sampler's own ``sampled_at`` —
     what a consumer must age is the observation, not this response. Everything
-    else carries the time this response read it. A section that failed soft
-    stays null.
+    else carries the time this response read it.
+
+    Nested ``audio.output_hardware.observed_at`` is an ISO string owned by the
+    hardware lane (#4027); this top-level stamp is epoch seconds.
     """
-    for key, section in list(payload.items()):
-        if not isinstance(section, dict):
-            continue
-        sampled_at = section.get("sampled_at")
-        payload[key] = {
-            **section,
-            "observed_at": (
-                float(sampled_at) if isinstance(sampled_at, (int, float))
-                else read_at
-            ),
-        }
-    return payload
+    return {
+        key: (
+            section if not isinstance(section, dict) else {
+                **section,
+                # Epoch magnitude: a monotonic clock or a bool never reaches
+                # it, so a daemon body cannot retarget the stamp.
+                "observed_at": (
+                    section["sampled_at"]
+                    if isinstance(section.get("sampled_at"), float)
+                    and section["sampled_at"] > 1e9
+                    else read_at
+                ),
+            }
+        )
+        for key, section in payload.items()
+    }
 
 
 async def _get_state(
