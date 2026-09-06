@@ -97,11 +97,15 @@ install_web_assets() {
     chmod 0644 "${manifest_tmp}"
     mv -f "${manifest_tmp}" "${manifest}"
 
-    # Read back from disk so the prune cannot disagree with what the doctor verifies.
-    comm -23 <(find "${assets_root}" ! -type d | while IFS= read -r f; do
+    # Read back from disk so the prune cannot disagree with what the doctor
+    # verifies. LC_ALL=C on comm itself: an ssh session forwards the
+    # laptop's LANG, and comm collates in that ambient locale by default
+    # even though both streams below are C-sorted, desyncing the merge.
+    # The manifest is excluded at the find, not inside the loop, so it
+    # never enters the diff either side.
+    LC_ALL=C comm -23 <(find "${assets_root}" ! -type d ! -name "${manifest##*/}" | while IFS= read -r f; do
         printf '%s\n' "${f#"${assets_root}"/}"; done | LC_ALL=C sort) "${manifest}" |
     while IFS= read -r rel; do
-        [[ "${rel}" == "${manifest##*/}" ]] && continue
         rm -f -- "${assets_root}/${rel}"
         echo "  pruned stale web asset: ${rel}"
     done

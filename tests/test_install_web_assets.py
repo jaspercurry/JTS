@@ -42,12 +42,16 @@ def _extract_function() -> str:
     return helper
 
 
-def _run(repo_dir: Path, web_root: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo_dir: Path, web_root: Path, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "REPO_DIR": str(repo_dir),
         "JASPER_WEB_SHARE_DIR": str(web_root),
     }
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [
             "/bin/bash",
@@ -166,6 +170,32 @@ def test_stale_assets_absent_from_the_manifest_are_pruned(tmp_path: Path, make_s
     assert manifest_path.is_file()
     for rel in manifest_path.read_text(encoding="utf-8").splitlines():
         assert (assets_root / rel).is_file(), f"{rel} missing on disk"
+
+
+@pytest.mark.parametrize(
+    "lang",
+    [pytest.param("en_GB.UTF-8", id="ssh-forwarded-utf8")],
+)
+def test_prune_survives_ambient_utf8_locale(tmp_path: Path, lang: str):
+    """comm must diff under its own C collation, not the caller's locale.
+
+    ssh forwards the laptop's LANG to the Pi. Both comm inputs are
+    C-sorted, but comm collates in the ambient locale by default; under
+    UTF-8 collation the manifest's leading dot sorts differently than
+    under C, desyncing the merge against a live manifest and pruning
+    freshly installed files. LC_ALL is deliberately left unset (env=
+    replaces the child's environment rather than inheriting it).
+    """
+    repo = _fake_repo(tmp_path)
+    web_root = tmp_path / "web"
+    r = _run(repo, web_root, extra_env={"LANG": lang})
+    assert r.returncode == 0, r.stderr
+
+    assets = web_root / "assets"
+    manifest = (assets / MANIFEST_NAME).read_text().splitlines()
+    assert manifest
+    for rel in manifest:
+        assert (assets / rel).is_file(), f"{rel} missing on disk after install"
 
 
 def test_manifest_name_parity_between_installer_and_doctor():
