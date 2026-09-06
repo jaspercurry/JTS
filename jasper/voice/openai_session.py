@@ -4,14 +4,10 @@
 
 """OpenAI Realtime API adapter for jasper-voice.
 
-Mirrors the Gemini Live adapter (gemini_session.py): same
-``LiveConnection`` + ``LiveTurn`` protocols, same supervisor / backoff /
-escalation-cue helpers, same manual-VAD pattern where the daemon owns
-turn boundaries via wake-then-silence-detect. Differences from Gemini
-are wire-format only — events are JSON-shaped dicts (or typed Pydantic
-in the SDK) with names like ``input_audio_buffer.append`` and
-``response.output_audio.delta`` instead of Google's ``send_realtime_input``
-/ ``server_content`` envelopes.
+The wire half of the ``LiveConnection`` / ``LiveTurn`` contract; the
+provider-independent half lives in ``_base.py``. Events are JSON-shaped
+dicts (or typed Pydantic in the SDK) with names like
+``input_audio_buffer.append`` and ``response.output_audio.delta``.
 
 Audio
   Input: PCM16 mono, **24 kHz** (OpenAI Realtime's ``audio/pcm`` is
@@ -19,35 +15,30 @@ Audio
     enum). We polyphase-upsample the XVF3800's native 16 kHz mic
     capture to 24 kHz inside the turn's ``send_audio`` path so the
     rest of the daemon stays 16 kHz everywhere.
-  Output: PCM16 mono, 24 kHz — matches Gemini, so the existing
-    ``TtsPlayout`` 24→48 kHz upsampler handles playback unchanged.
+  Output: PCM16 mono, 24 kHz, which the existing ``TtsPlayout``
+    24→48 kHz upsampler handles unchanged.
 
 Manual VAD
   ``session.update`` sets ``turn_detection: None`` (literally JSON
   ``null``, Python ``None``). The server does not auto-create
   responses; the client commits each turn explicitly. ``end_input()``
   sends ``input_audio_buffer.commit()`` followed by
-  ``response.create()`` to flush audio and trigger inference. This is
-  the same overall shape as Gemini's ``activity_start`` /
-  ``activity_end`` markers — daemon code at the wake-loop level is
-  unchanged.
+  ``response.create()`` to flush audio and trigger inference.
 
 Tool calls
   Registry produces flat OpenAI tool schemas via
   ``registry.openai_tools()``. The model emits
   ``response.function_call_arguments.done`` with the arguments as a
   single JSON string; we ``json.loads`` it, dispatch the registered
-  callable with the same 12 s timeout the Gemini adapter uses, and
-  reply with ``conversation.item.create`` of type
+  callable, and reply with ``conversation.item.create`` of type
   ``function_call_output`` plus a fresh ``response.create()``.
 
 Session lifecycle
-  60-minute hard cap, no resumption mechanism (unlike Gemini). When the
-  cap or any drop is hit, the supervisor reconnects the same way as for
-  any other drop. Lost conversational context is acceptable — the
-  daemon already biases toward fresh sessions via the opt-in idle
-  context-reset, which on OpenAI is just a reopen since there's no
-  handle to drop.
+  60-minute hard cap, no resumption mechanism. When the cap or any drop
+  is hit, the supervisor reconnects the same way as for any other drop.
+  Lost conversational context is acceptable — the daemon already biases
+  toward fresh sessions via the opt-in idle context-reset, which here is
+  just a reopen since there is no handle to drop.
 """
 from __future__ import annotations
 
@@ -59,25 +50,15 @@ import json
 import logging
 import os
 import time as _time
-from typing import AsyncIterator, Callable
 
-from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
 
-from ..tools import ToolRegistry, dispatch_tool
-from ._supervisor import (
-    Deferred,
-    OutageTracker,
-    await_connected,
-    hand_off_first_connect,
-    request_planned_reopen,
-    run_supervisor_loop,
-)
+from ..tools import dispatch_tool
+from ._base import BaseLiveConnection, BaseLiveTurn
+from ._supervisor import await_connected, failure_detail, request_unplanned_reopen
 from .session import (
-    CONNECTION_NOISY_TRANSITIONS,
     AudioOutChunk,
     ConnectionState,
-    CuePlayer,
     LiveTurn,
     log_first_chunk,
 )
@@ -155,17 +136,17 @@ def _upsample_16k_to_24k(
 # ---------- Per-turn adapter ------------------------------------------------
 
 
-class OpenAIRealtimeTurn:
+class OpenAIRealtimeTurn(BaseLiveTurn):
     """A single turn against an open ``OpenAIRealtimeConnection``.
 
-    Owns the per-turn audio queue, the resampler state, and per-turn
-    counters. The connection's receive loop routes incoming server
-    events here while a turn is active.
+    Adds the resampler state, OpenAI's modality-aware usage accumulator
+    and its transcript/barge-in wire state to ``BaseLiveTurn``. The
+    connection's receive loop routes incoming server events here while a
+    turn is active.
     """
 
     def __init__(self, conn: "OpenAIRealtimeConnection", started_at: float) -> None:
-        self._conn = conn
-        self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
+        super().__init__(conn, started_at)
         self._usage = {"input_tokens": 0, "output_tokens": 0}
         # Modality-aware breakdown accumulator. OpenAI Realtime emits
         # `response.usage.input_token_details.{audio,text,cached}_tokens`
@@ -188,26 +169,13 @@ class OpenAIRealtimeTurn:
                 "text_tokens": 0,
             },
         }
-        self._interrupt_event = asyncio.Event()
-        self._last_activity_at: float = started_at
-        self._last_chunk_at: float = 0.0
-        self._first_chunk_logged = False
-        self._started_at_monotonic: float = _time.monotonic()
-        # When `response.create` went out, from either end-of-input path
-        # (daemon end_input, or the server-VAD trigger). 0.0 = not yet asked.
-        self._end_input_at_monotonic: float = 0.0
-        self._bytes_sent: int = 0
-        self._chunks_received: int = 0
         # Tracks chunk-size distribution per turn; logged at release so a uniform vs. front-loaded delivery is visible post hoc.
         self._chunk_bytes_total: int = 0
         self._chunk_bytes_max: int = 0
         self._first_chunk_bytes: int = 0
-        # Tracks whether `commit()` + `response.create()` has been sent.
-        # Idempotent like Gemini's _activity_end_sent.
+        # Whether `commit()` + `response.create()` has been sent; makes
+        # `end_input` idempotent.
         self._committed = False
-        self._released = False
-        self._turn_lost = False
-        self._server_turn_complete = False
         # Text transcript of the user audio / assistant audio streamed by
         # Realtime. Production still uses audio for interaction; the strings
         # are retained on the turn only so WakeLoop can write opt-in
@@ -337,8 +305,8 @@ class OpenAIRealtimeTurn:
     async def end_input(self) -> None:
         """Commit the user audio buffer and trigger a response.
 
-        Equivalent of Gemini's ``activity_end``: server stops listening
-        for more user audio and starts generating. Idempotent.
+        The server stops listening for more user audio and starts
+        generating. Idempotent.
 
         No-op when server_vad is active — the server already committed
         the buffer via speech_stopped + committed events."""
@@ -357,19 +325,6 @@ class OpenAIRealtimeTurn:
             )
             self._turn_lost = True
             await self._audio_q.put(None)
-
-    async def audio_out(self) -> AsyncIterator[bytes]:
-        async for chunk in self.audio_out_chunks():
-            yield chunk.pcm
-
-    async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
-        while True:
-            chunk = await self._audio_q.get()
-            if chunk is None:
-                return
-            if isinstance(chunk, bytes):
-                chunk = AudioOutChunk(pcm=chunk)
-            yield chunk
 
     async def release(self) -> None:
         if self._released:
@@ -430,23 +385,8 @@ class OpenAIRealtimeTurn:
                 elapsed_ms, self._chunks_received, self._bytes_sent,
             )
 
-    def last_activity_at(self) -> float:
-        return self._last_activity_at
-
-    def last_chunk_at(self) -> float:
-        return self._last_chunk_at
-
-    def server_turn_complete(self) -> bool:
-        return self._server_turn_complete
-
     def audio_chunks_pending(self) -> int:
         return self._audio_q.qsize()
-
-    def bytes_sent(self) -> int:
-        return self._bytes_sent
-
-    def chunks_received(self) -> int:
-        return self._chunks_received
 
     def usage_tokens(self) -> dict[str, int]:
         return dict(self._usage)
@@ -461,20 +401,11 @@ class OpenAIRealtimeTurn:
             "output_token_details": dict(self._usage_breakdown["output_token_details"]),
         }
 
-    def turn_lost(self) -> bool:
-        return self._turn_lost
-
     def assistant_transcript(self) -> str:
         return "".join(self._assistant_transcript_parts)
 
     def user_transcript(self) -> str:
         return " ".join(self._user_transcript_parts)
-
-    async def wait_for_interrupt(self) -> None:
-        await self._interrupt_event.wait()
-
-    def clear_interrupted(self) -> None:
-        self._interrupt_event.clear()
 
     # ---- Barge-in capability seam (OpenAI reference pack) ----
     #
@@ -580,38 +511,10 @@ class OpenAIRealtimeTurn:
         except Exception as e:  # noqa: BLE001
             log_event(
                 logger, "barge.truncate_failed",
-                item_id=item_id, error=type(e).__name__, detail=str(e),
+                item_id=item_id, error=type(e).__name__,
+                detail=failure_detail(e),
                 level=logging.WARNING,
             )
-
-    def request_local_interrupt(self) -> None:
-        # Local barge-in (PR-2 spine): arm the local playback flush only —
-        # this does NOT itself send conversation.item.truncate / response.cancel.
-        # Provider reconciliation is the seam above (cancel_response /
-        # truncate_assistant_audio), which the daemon's _flush_for_interrupt
-        # drives *after* the flush. OpenAI/Grok never set _interrupt_event from
-        # the server side, so this is the only path that arms the flush race
-        # for these providers.
-        self._interrupt_event.set()
-
-    def drop_pending_audio(self) -> int:
-        # The "distinct signal" anticipated by _on_response_done's sentinel
-        # comment. A local-barge flush clears the DAC ring, but the response
-        # was burst-delivered into _audio_q, so the play loop would resume
-        # writing the backlog and the assistant would talk over the user.
-        # Drain the queued chunks now, PRESERVING any terminal None sentinel
-        # so audio_out_chunks still ends the turn.
-        dropped = 0
-        try:
-            while True:
-                item = self._audio_q.get_nowait()
-                if item is None:
-                    self._audio_q.put_nowait(None)
-                    break
-                dropped += 1
-        except asyncio.QueueEmpty:
-            pass
-        return dropped
 
     # ---- Server VAD ----
 
@@ -685,23 +588,6 @@ class OpenAIRealtimeTurn:
             pcm=data,
             provider_item_id=item_id,
         ))
-
-    def _note_activity(self) -> None:
-        """Reset the pre-response idle anchor.
-
-        Called by the connection's receive loop on intermediate server
-        events (e.g. a tool-call response.done) where the model is
-        producing output but no audio chunk has arrived yet. The
-        watchdog in ``jasper/voice_daemon.py:_idle_watchdog`` reads
-        ``last_activity_at()`` to decide when to abandon a turn that
-        looks stuck; without this reset it measures from turn-start
-        across the entire tool dispatch and fires mid-flight at small
-        ``JASPER_IDLE_TIMEOUT_SEC`` values (production: 20 s).
-
-        ``_on_audio_delta`` does NOT call this — chunks arrive on a
-        hot path and the loop clock is already read inline for the
-        ``_last_chunk_at`` companion update."""
-        self._last_activity_at = asyncio.get_event_loop().time()
 
     def _record_usage(self, usage: dict | None) -> None:
         """Accumulate tokens from one response.done. A tool-using turn
@@ -778,30 +664,23 @@ class OpenAIRealtimeTurn:
             if merged != current:
                 self._user_transcript_parts = [merged]
 
-    def _on_connection_lost(self) -> None:
-        if self._released or self._turn_lost:
-            return
-        self._turn_lost = True
-        with contextlib.suppress(asyncio.QueueFull):
-            self._audio_q.put_nowait(None)
-
 
 # ---------- Long-lived connection ------------------------------------------
 
 
-class OpenAIRealtimeConnection:
+class OpenAIRealtimeConnection(BaseLiveConnection):
     """Long-lived OpenAI Realtime connection.
 
     One instance per daemon. Holds the SDK client, the active WebSocket
-    session, and a state machine that survives reconnects. Mirrors the
-    structure of ``GeminiLiveConnection`` so the daemon's wake/turn loop
-    is provider-agnostic.
+    session, and the wire half of the lifecycle ``BaseLiveConnection``
+    drives.
     """
 
     PROVIDER_NAME = "openai"
-    # This provider schedules no session rotation of its own: every
-    # reconnect it asks for is a failure, and backs off from attempt 1.
-    _planned_rotate = False
+    _logger = logger
+    # The watchdog below pre-empts a server cap rather than rotating on
+    # our own schedule, so its reconnect backs off from attempt 1.
+    _watchdog_is_planned = False
 
     def __init__(
         self,
@@ -811,7 +690,7 @@ class OpenAIRealtimeConnection:
         context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         noise_reduction: str = DEFAULT_NOISE_REDUCTION,
-        # Proactive pre-cap reconnect — see `_proactive_reconnect_watchdog`.
+        # Proactive pre-cap reconnect — see `_watchdog_delay_sec`.
         # Both default to 0 (disabled) so tests and bare-construction don't
         # spawn surprise tasks. Production wires production values from
         # Config (3600 / 300 → fires at 55 min uptime). Cap and buffer
@@ -839,18 +718,20 @@ class OpenAIRealtimeConnection:
         # without touching the rest of the wiring.
         base_url: str | None = None,
     ) -> None:
+        super().__init__(
+            model=model,
+            voice=voice,
+            context_reset_sec=context_reset_sec,
+            backoff_schedule=backoff_schedule,
+            sleep=sleep,
+            nudge_clock=clock,
+        )
         self._api_key = api_key
-        self._model = model
-        self._voice = voice
-        self._context_reset_sec = context_reset_sec
         self._reasoning_effort = reasoning_effort
         self._noise_reduction = _normalize_noise_reduction(noise_reduction)
         self._session_max_sec = session_max_sec
         self._proactive_buffer_sec = proactive_buffer_sec
-        self._backoff_schedule = backoff_schedule
         self._connect_factory = connect_factory
-        self._monotonic = clock if clock is not None else _time.monotonic
-        self._sleep = sleep if sleep is not None else asyncio.sleep
         self._base_url = base_url
         self._log_tag = f"{self.PROVIDER_NAME} connection:"
         # Lazy SDK client — only built when ``connect_factory`` is None.
@@ -858,23 +739,10 @@ class OpenAIRealtimeConnection:
         # object without the openai package installed.
         self._client = None
 
-        self._registry: ToolRegistry | None = None
-        self._system_instruction_provider: Callable[[], str] | None = None
-
-        self._state = ConnectionState.IDLE_INIT
-        self._state_lock = asyncio.Lock()
-        # CONNECTED ↔ IN_TURN cycles every wake; logging each transition
-        # at INFO floods the journal. Filter mirrors gemini_session.
-        self._noisy_transitions = CONNECTION_NOISY_TRANSITIONS
-
         # SDK connection + context manager (cleared during reconnect).
         self._conn = None
         self._conn_cm = None
         self._send_lock = asyncio.Lock()
-
-        self._last_turn_end_at: float = 0.0
-        self._active_turn: OpenAIRealtimeTurn | None = None
-        self._turn_lock = asyncio.Lock()
 
         # Count of `response.output_audio.delta` events that arrived
         # while `_active_turn is None` (server response that landed
@@ -884,15 +752,6 @@ class OpenAIRealtimeConnection:
         # `response.done` warning, then reset.
         self._orphan_delta_count: int = 0
 
-        self._receive_task: asyncio.Task | None = None
-        self._reconnect_event: asyncio.Event = asyncio.Event()
-        # Separate from `_reconnect_event` (which means "the session
-        # dropped"): this one only shortens an in-flight backoff wait.
-        self._nudge_event: asyncio.Event = asyncio.Event()
-        self._supervisor_task: asyncio.Task | None = None
-        self._stopping = asyncio.Event()
-        self._connected_event: asyncio.Event = asyncio.Event()
-
         # Optional billable-activity meter (time-billed providers, e.g.
         # Grok). Wired by the daemon before start() when the active
         # provider bills realtime activity; None for token-billed providers.
@@ -900,41 +759,11 @@ class OpenAIRealtimeConnection:
         self._billable_activity_meter = None
         self._billable_activity_interval_open: bool = False
 
-        # Proactive pre-cap reconnect — watchdog state.
-        # Task that fires at (session_max_sec - proactive_buffer_sec); set
-        # by `_open_session`, cancelled by `_teardown_session`.
-        self._proactive_watchdog_task: asyncio.Task | None = None
-        # When the watchdog fires mid-turn we defer the reconnect to
-        # avoid tearing down the user's in-flight conversation; the
-        # shared primitive is checked in `_on_turn_released` to fire the
-        # deferred reconnect (provider-agnostic mechanism; OpenAI's
-        # trigger is the proactive pre-cap watchdog — see _supervisor).
-        self._deferred_reconnect = Deferred()
         self._server_vad_active: bool = False
-
-        self._outage = OutageTracker()
-        # Rate gate for `request_reconnect_now`.
-        self._reconnect_nudge = ReconnectNudge(clock=self._monotonic)
 
     # ------------------------------------------------------------------
     # Public LiveConnection protocol
     # ------------------------------------------------------------------
-
-    def _set_state(self, new_state: ConnectionState) -> None:
-        old = self._state
-        if old is new_state:
-            return
-        self._state = new_state
-        if (old, new_state) not in self._noisy_transitions:
-            logger.info(
-                "%s connection state: %s → %s",
-                self.PROVIDER_NAME, old.value, new_state.value,
-            )
-
-    def set_failure_escalation_cb(self, cb: CuePlayer | None) -> None:
-        """Wire the cue player for a terminal connection failure. The
-        daemon calls this once the ``WakeLoop`` exists."""
-        self._outage.set_callback(cb)
 
     def set_billable_activity_meter(self, meter) -> None:
         """Wire a ``BillableActivityMeter`` for time-billed providers.
@@ -959,44 +788,6 @@ class OpenAIRealtimeConnection:
             return
         meter.mark_ended()
         self._billable_activity_interval_open = False
-
-    async def start(
-        self,
-        registry: ToolRegistry,
-        system_instruction: "str | Callable[[], str]",
-    ) -> None:
-        """Connect and start the reconnect supervisor.
-
-        A first connect that fails leaves the connection FAILED and the
-        retry with the supervisor — see ``hand_off_first_connect``."""
-        self._registry = registry
-        if callable(system_instruction):
-            self._system_instruction_provider = system_instruction
-        else:
-            instruction = system_instruction or ""
-            self._system_instruction_provider = lambda: instruction
-        await self._do_initial_connect()
-        self._supervisor_task = asyncio.create_task(run_supervisor_loop(self))
-
-    async def stop(self) -> None:
-        if self._state is ConnectionState.CLOSED:
-            return
-        self._stopping.set()
-        for task in (self._supervisor_task, self._receive_task):
-            if task is not None:
-                task.cancel()
-        for task in (self._supervisor_task, self._receive_task):
-            if task is not None:
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await task
-        self._supervisor_task = None
-        self._receive_task = None
-        await self._teardown_session()
-        if self._active_turn is not None:
-            self._active_turn._on_connection_lost()
-            self._active_turn = None
-        async with self._state_lock:
-            self._set_state(ConnectionState.CLOSED)
 
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
@@ -1026,35 +817,6 @@ class OpenAIRealtimeConnection:
                     self._set_state(ConnectionState.IN_TURN)
             logger.info("openai turn: started")
             return turn
-
-    def is_paused(self) -> bool:
-        return self._state in (
-            ConnectionState.CONNECTING,
-            ConnectionState.RECONNECTING,
-            ConnectionState.PAUSED_FOR_BACKOFF,
-            ConnectionState.FAILED,
-        )
-
-    def last_failure_detail(self) -> str | None:
-        return self._outage.detail
-
-    def wake_cue(self) -> str:
-        return self._outage.wake_cue
-
-    def request_reconnect_now(self) -> bool:
-        """Cut the current backoff wait short and retry at once.
-
-        The daemon calls this when it refuses a wake because the
-        connection is paused: during the 15-minute terminal poll the
-        wake word is the household asking whether the outage is over,
-        and they should not wait out the interval. Rate-gated, so
-        repeated wakes cannot outpace the transient ramp."""
-        if not self.is_paused():
-            return False
-        if not self._reconnect_nudge.allow():
-            return False
-        self._nudge_event.set()
-        return True
 
     def supports_server_vad(self) -> bool:
         return True
@@ -1203,19 +965,7 @@ class OpenAIRealtimeConnection:
                     type(e).__name__, e,
                 )
         self._mark_billable_activity_ended()
-        async with self._turn_lock:
-            if self._active_turn is turn:
-                self._active_turn = None
-                self._last_turn_end_at = asyncio.get_event_loop().time()
-        async with self._state_lock:
-            if self._state is ConnectionState.IN_TURN:
-                self._set_state(ConnectionState.CONNECTED)
-        # Fire any reconnect the proactive watchdog deferred for this turn.
-        if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
-            logger.info(
-                f"{self._log_tag} proactive reconnect — turn just ended, "
-                "firing the watchdog-deferred reconnect",
-            )
+        await super()._on_turn_released(turn)
 
     # ------------------------------------------------------------------
     # Internal — connection lifecycle
@@ -1327,16 +1077,6 @@ class OpenAIRealtimeConnection:
             session["reasoning"] = {"effort": self._reasoning_effort}
         return session
 
-    async def _do_initial_connect(self) -> None:
-        async with self._state_lock:
-            self._set_state(ConnectionState.CONNECTING)
-        try:
-            await self._open_session()
-        except Exception as e:  # noqa: BLE001
-            async with self._state_lock:
-                self._set_state(ConnectionState.FAILED)
-            hand_off_first_connect(self, e)
-
     def _resolve_connect_call(self):
         """Return a callable ``(model: str) -> AsyncContextManager[conn]``
         that opens a Realtime WebSocket. Built lazily so test paths
@@ -1352,18 +1092,6 @@ class OpenAIRealtimeConnection:
                 kwargs["websocket_base_url"] = self._base_url
             self._client = AsyncOpenAI(**kwargs)
         return lambda model: self._client.realtime.connect(model=model)
-
-    async def _open_session(self) -> None:
-        """Open a session, recording the outcome on the outage tracker.
-
-        Every session open funnels through here, so the tracker follows
-        the live connection by construction."""
-        try:
-            await self._open_session_attempt()
-        except Exception as e:  # noqa: BLE001
-            self._outage.on_failure(e)
-            raise
-        self._outage.on_recovery()
 
     async def _open_session_attempt(self) -> None:
         connect_call = self._resolve_connect_call()
@@ -1397,7 +1125,7 @@ class OpenAIRealtimeConnection:
             logger.warning(
                 f"{self._log_tag} session.update failed (%s: %s); "
                 "closing and re-raising for supervisor retry",
-                type(e).__name__, e,
+                type(e).__name__, failure_detail(e),
             )
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
@@ -1405,69 +1133,39 @@ class OpenAIRealtimeConnection:
             self._conn_cm = None
             raise
         self._deferred_reconnect.clear()
-        self._receive_task = asyncio.create_task(self._receive_loop(conn))
-        async with self._state_lock:
-            self._set_state(ConnectionState.CONNECTED)
-        self._connected_event.set()
-        # Kick off the proactive pre-cap watchdog. No-op when either
-        # `session_max_sec` or `proactive_buffer_sec` is 0 (disabled).
-        self._start_proactive_watchdog()
+        await self._mark_connected(asyncio.create_task(self._receive_loop(conn)))
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
         # Cancel the proactive watchdog first — its only job is to fire on
         # a CONNECTED session, and we're about to leave that state.
-        if self._proactive_watchdog_task is not None:
-            self._proactive_watchdog_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._proactive_watchdog_task
-            self._proactive_watchdog_task = None
+        await self._cancel_task(self._proactive_watchdog_task)
+        self._proactive_watchdog_task = None
         self._deferred_reconnect.clear()
-        if self._receive_task is not None:
-            self._receive_task.cancel()
-            try:
-                await asyncio.wait_for(self._receive_task, timeout=3.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
-                pass
-            self._receive_task = None
-        if self._conn is not None:
-            try:
-                await asyncio.wait_for(self._conn.close(), timeout=3.0)
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug(f"{self._log_tag} close error (ignored): %s", e)
-        if self._conn_cm is not None:
-            try:
-                await asyncio.wait_for(
-                    self._conn_cm.__aexit__(None, None, None), timeout=3.0,
-                )
-            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                logger.debug(f"{self._log_tag} __aexit__ error (ignored): %s", e)
+        await self._cancel_task(self._receive_task)
+        self._receive_task = None
+        await self._close_with_timeout(self._conn)
+        await self._close_cm_with_timeout(self._conn_cm)
         self._conn_cm = None
         self._conn = None
         self._connected_event.clear()
         # Close any in-flight billable-activity interval (time-billed
         # providers). Idle WebSocket lifetime is not counted.
         self._mark_billable_activity_ended()
-        teardown_ms = (_time.monotonic() - t0) * 1000
-        logger.info(f"{self._log_tag} session torn down in %.0fms", teardown_ms)
+        self._log_teardown(_time.monotonic() - t0)
 
-    def _start_proactive_watchdog(self) -> None:
-        """Schedule the proactive pre-cap reconnect for the just-opened
-        session.
+    def _watchdog_delay_sec(self) -> float:
+        """How long into a session to pre-empt OpenAI's hard cap.
 
-        OpenAI Realtime enforces a hard cap (60 min today, no resumption,
-        no pre-cap warning event — verified against the realtime-
-        conversations docs as of 2026-05). When the cap fires, the
-        server sends a 1001 close and the supervisor reactively
-        reconnects — that costs the user a ~3 s `cant_connect` cue. The
-        watchdog avoids that by tearing the session down voluntarily a
-        bit before the cap, during an idle window, so the next wake
-        hits a fresh connection.
-
-        Disabled when either knob is 0 — bare construction in tests
-        doesn't spawn a surprise task."""
+        The cap is 60 min today, with no resumption and no pre-cap
+        warning event (verified against the realtime-conversations docs
+        as of 2026-05). When it fires the server sends a 1001 close and
+        the supervisor reconnects reactively, costing the user a ~3 s
+        `cant_connect` cue; firing a buffer ahead of it, in an idle
+        window, means the next wake hits a fresh connection instead.
+        Disabled when either knob is 0."""
         if self._session_max_sec <= 0 or self._proactive_buffer_sec <= 0:
-            return
+            return 0.0
         delay = self._session_max_sec - self._proactive_buffer_sec
         if delay <= 0:
             # Misconfiguration (buffer ≥ cap). Log loudly and skip — a
@@ -1479,60 +1177,8 @@ class OpenAIRealtimeConnection:
                 "session_max_sec=%.0f ≤ proactive_buffer_sec=%.0f",
                 self._session_max_sec, self._proactive_buffer_sec,
             )
-            return
-        self._proactive_watchdog_task = asyncio.create_task(
-            self._proactive_reconnect_watchdog(delay),
-            name="jasper-openai-proactive-watchdog",
-        )
-
-    async def _proactive_reconnect_watchdog(self, delay_sec: float) -> None:
-        """Sleep until just before the cap, then trigger a reconnect.
-
-        If a turn is in flight when the timer fires, set a pending flag
-        and let `_on_turn_released` fire the reconnect once the turn
-        ends. The 5-minute default buffer covers any realistic turn —
-        the daemon's own idle watchdog ends turns within ~12 s — so the
-        deferral always resolves well before the real cap.
-        """
-        try:
-            await asyncio.sleep(delay_sec)
-        except asyncio.CancelledError:
-            raise
-        if self._state in (
-            ConnectionState.RECONNECTING,
-            ConnectionState.PAUSED_FOR_BACKOFF,
-            ConnectionState.FAILED,
-            ConnectionState.CLOSED,
-        ):
-            # Already reconnecting / closing for another reason; the
-            # current watchdog task is about to be cancelled by the
-            # teardown path anyway.
-            return
-        if self._active_turn is not None:
-            logger.info(
-                f"{self._log_tag} proactive watchdog fired mid-turn — "
-                "deferring reconnect until turn release "
-                "(uptime≈%.0fs, buffer=%.0fs)",
-                delay_sec, self._proactive_buffer_sec,
-            )
-            self._deferred_reconnect.request()
-            return
-        logger.info(
-            f"{self._log_tag} proactive reconnect — preempting "
-            "%.0f-min cap (firing at %.0fs uptime, %.0fs buffer)",
-            self._session_max_sec / 60.0, delay_sec,
-            self._proactive_buffer_sec,
-        )
-        self._reconnect_event.set()
-
-    def _on_reconnect_attempt_failed(
-        self, exc: Exception, attempt: int, transient: bool,
-    ) -> None:
-        logger.warning(
-            f"{self._log_tag} reconnect attempt %d failed "
-            "(%s: %s, transient=%s)",
-            attempt, type(exc).__name__, self._outage.detail, transient,
-        )
+            return 0.0
+        return delay
 
     async def _receive_loop(self, conn) -> None:
         """Iterate the SDK connection's event stream and route events.
@@ -1559,26 +1205,14 @@ class OpenAIRealtimeConnection:
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            close_code = getattr(getattr(e, "rcvd", None), "code", None)
-            close_reason = getattr(getattr(e, "rcvd", None), "reason", None)
-            if close_code is not None:
-                logger.warning(
-                    f"{self._log_tag} disconnected (code=%s reason=%r), reconnecting",
-                    close_code, close_reason,
-                )
-            else:
-                logger.warning(
-                    f"{self._log_tag} receive loop error (%s: %s), reconnecting",
-                    type(e).__name__, e,
-                )
-            self._reconnect_event.set()
+            self._on_receive_loop_error(e)
             return
         if not self._stopping.is_set():
             logger.warning(
                 f"{self._log_tag} receive iteration ended cleanly "
                 "(server closed, likely the 60-minute hard cap); reconnecting",
             )
-            self._reconnect_event.set()
+            request_unplanned_reopen(self)
 
     async def _dispatch_event(self, etype: str, event) -> None:
         turn = self._active_turn
@@ -1716,32 +1350,6 @@ class OpenAIRealtimeConnection:
             return
 
         logger.debug(f"{self._log_tag} event %s", etype)
-
-    async def _maybe_reset_context(self) -> None:
-        """OpenAI Realtime has no resumption handle, so 'context reset'
-        is just 'reopen'. Long idle gaps theoretically bleed
-        conversational context across hours — in practice the
-        terse-tool system prompt makes this a hypothetical concern, so
-        the reset is opt-in (default 0 = disabled). When enabled, busts
-        the prompt cache on the first turn after reset and blocks the
-        wake event for the reopen, so use a long threshold (hours, not
-        minutes) if at all. Skipped if no prior turn has happened on
-        this connection."""
-        if self._context_reset_sec <= 0:
-            return
-        if self._last_turn_end_at <= 0.0:
-            return
-        idle_for = asyncio.get_event_loop().time() - self._last_turn_end_at
-        if idle_for < self._context_reset_sec:
-            return
-        logger.info(
-            "openai context reset: idle for %.0fs > threshold (%.0fs); "
-            "reopening for a fresh session",
-            idle_for, self._context_reset_sec,
-        )
-        request_planned_reopen(self)
-        await await_connected(self)
-        self._last_turn_end_at = asyncio.get_event_loop().time()
 
     async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:
         """Dispatch a `response.done` event.
@@ -1904,10 +1512,7 @@ class OpenAIRealtimeConnection:
         function_call_output. The caller in `_handle_response_done`
         sends a single ``response.create`` after all function_calls in
         the round have been dispatched (NOT once per call — that would
-        produce overlapping response.creates which the server rejects).
-
-        Log format mirrors the Gemini adapter's dispatch logging so
-        journalctl is provider-uniform."""
+        produce overlapping response.creates which the server rejects)."""
         assert self._registry is not None
         name = _event_field(fc, "name") or ""
         call_id = _event_field(fc, "call_id") or ""

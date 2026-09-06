@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from jasper.voice._base import close_code_and_reason
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     run_reconnect_with_backoff,
@@ -42,7 +43,6 @@ try:
     from jasper.voice.gemini_session import (
         ConnectionState,
         GeminiLiveConnection,
-        _close_code_and_reason,
     )
     from jasper.tools import ToolRegistry
     _HAVE_GENAI = True
@@ -1310,7 +1310,7 @@ async def test_planned_rotation_defers_until_the_active_turn_ends():
 def test_close_code_extraction(exc, expected):
     """Both exception shapes the receive loop can see must yield the
     close code as a value, not just as prose inside the message."""
-    assert _close_code_and_reason(exc) == expected
+    assert close_code_and_reason(exc) == expected
 
 
 async def test_unplanned_drop_does_not_inherit_the_rotation_zero_backoff():
