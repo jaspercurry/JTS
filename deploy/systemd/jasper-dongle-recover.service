@@ -19,6 +19,7 @@ Wants=sound.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=550
 # `reset-failed` clears the StartLimitBurst counter so subsequent
 # `start` calls aren't no-ops. Both commands are idempotent against
 # already-active or non-failed units.

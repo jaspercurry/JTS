@@ -19,6 +19,7 @@ exceptions are explicit, not silent.
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -28,8 +29,15 @@ from jasper.accessories import reconcile as accessory_reconcile
 from jasper.accessories import status as accessory_status
 from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
+from tests.systemd_unit_helpers import (
+    assignments_for,
+    never_stays_complete,
+    pulled_ordered_dependencies,
+    seconds_for,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+SYSTEMD_UNIT_DIR = ROOT / "deploy/systemd"
 USBSINK_READINESS_UNIT = ROOT / "deploy/systemd/jasper-usbsink.service"
 
 # Tier-A unit -> its file (jasper-web lives in deploy/, the rest in deploy/systemd/).
@@ -69,6 +77,10 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     "jasper-source-intent-reconcile": str(
         int(source_intent.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)
     ),
+    # The udev dongle recovery blocks on a chain of `systemctl start` clients;
+    # the arithmetic is derived and pinned by
+    # test_dongle_recover_timeout_covers_its_whole_blocking_start_chain below.
+    "jasper-dongle-recover": "550",
 }
 
 RECONCILE_ONESHOTS = {
@@ -86,6 +98,7 @@ RECONCILE_ONESHOTS = {
     "jasper-source-intent-reconcile": (
         ROOT / "deploy/systemd/jasper-source-intent-reconcile.service"
     ),
+    "jasper-dongle-recover": ROOT / "deploy/systemd/jasper-dongle-recover.service",
 }
 
 # Directives every Tier-A unit must carry (key -> required value, or None = any value).
@@ -308,6 +321,97 @@ def test_accessory_parallel_budget_matches_owner_and_caller_barriers():
             source_intent._ACCESSORY_RECONCILE_UNIT
         ]
         == owner_timeout + 5.0
+    )
+
+
+def _units_started_by(unit_text: str) -> list[str]:
+    """Unit names an ExecStart chain blocks on, in the order it starts them."""
+    started: list[str] = []
+    for command in assignments_for(unit_text, "ExecStart"):
+        argv = shlex.split(command.lstrip("-@+!:"))
+        if not argv or PurePosixPath(argv[0]).name != "systemctl":
+            continue
+        if "--no-block" in argv:
+            continue
+        words = [word for word in argv[1:] if not word.startswith("-")]
+        if not words or words[0] != "start":
+            continue
+        for name in words[1:]:
+            assert (SYSTEMD_UNIT_DIR / name).is_file(), (
+                f"`{command}` starts {name}, which ships no unit file under "
+                "deploy/systemd/, so its start budget cannot be derived here"
+            )
+            started.append(name)
+    return started
+
+
+def _blocking_start_cost_sec(name: str, active: set[str]) -> float:
+    """Worst-case seconds a blocking `systemctl start <name>` holds its client.
+
+    PID 1 completes the start job only once the named unit *and* every unit it
+    pulls with Wants=/Requires=/BindsTo= while ordering itself After= them have
+    reported terminal, recursively -- the rule jasper.source_intent already
+    models for the USB gadget and AirPlay. Each unit's own ceiling is its
+    declared TimeoutStartSec, or the manager default when it declares none;
+    Type= does not shorten that, because an ExecStartPre= can hang a Type=simple
+    unit for the whole window (jasper-camilla.service has one).
+
+    ``active`` carries what earlier lines already started: those cost nothing on
+    a later line, except a Type=oneshot without RemainAfterExit, which is
+    inactive between runs and so is re-queued and charged every time. Mutually
+    unordered dependencies are summed rather than maxed, so this is a ceiling
+    rather than an expected wait.
+    """
+    total = 0.0
+    queue, charged = [name], set()
+    while queue:
+        current = queue.pop()
+        if current in charged:
+            continue
+        charged.add(current)
+        path = SYSTEMD_UNIT_DIR / current
+        if not path.is_file():
+            assert current.endswith(".target"), (
+                f"{name} pulls {current}, which ships no unit file and is not a "
+                "passive target, so its start budget cannot be derived here"
+            )
+            continue
+        text = path.read_text(encoding="utf-8")
+        if current not in active or never_stays_complete(text):
+            total += seconds_for(
+                text,
+                "TimeoutStartSec",
+                source_intent._SYSTEMD_DEFAULT_TIMEOUT_START_SEC,
+            )
+        active.add(current)
+        queue.extend(pulled_ordered_dependencies(text))
+    return total
+
+
+def test_dongle_recover_timeout_covers_its_whole_blocking_start_chain():
+    """The udev recovery is a chain of BLOCKING systemctl clients, so its own
+    budget has to outlast the sum of theirs. Too small and PID 1 SIGTERMs the
+    client while the jobs it queued keep running: the unit reports failed for a
+    recovery that in fact completed. Pinned as the RELATIONSHIP, so raising an
+    inner unit's TimeoutStartSec, or adding a leg, re-derives the outer bound
+    instead of silently re-opening the gap.
+    """
+    unit_path = RECONCILE_ONESHOTS["jasper-dongle-recover"]
+    text = unit_path.read_text(encoding="utf-8")
+
+    started = _units_started_by(text)
+    assert started, "the recovery must still drive its legs through systemctl start"
+
+    active: set[str] = set()
+    per_leg = [_blocking_start_cost_sec(name, active) for name in started]
+    inner_budget = sum(per_leg)
+    assert inner_budget > 0
+
+    outer_budget = seconds_for(text, "TimeoutStartSec")
+    assert outer_budget > inner_budget, (
+        outer_budget,
+        inner_budget,
+        list(zip(started, per_leg)),
     )
 
 

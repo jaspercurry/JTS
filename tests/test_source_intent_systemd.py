@@ -10,6 +10,12 @@ from jasper import source_intent
 from jasper.control import restart_broker
 from jasper.local_sources import local_source_lifecycles
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
+from tests.systemd_unit_helpers import (
+    never_stays_complete,
+    pulled_ordered_dependencies,
+    seconds_for,
+    value_for,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,13 +84,12 @@ def test_source_intent_reconcile_runs_at_boot_after_rfkill_restore() -> None:
 
 
 def test_grouping_effective_role_fact_has_root_owned_persistent_parent() -> None:
-    directives = _service_directives(GROUPING_UNIT)
+    text = GROUPING_UNIT.read_text(encoding="utf-8")
 
     assert FOLLOWER_STATUS_FILE == "/var/lib/jasper-grouping/effective-role.json"
-    assert directives["StateDirectory"] == "jasper-grouping"
-    assert directives["StateDirectoryMode"] == "0755"
-    assert "RuntimeDirectory" not in directives
-    text = GROUPING_UNIT.read_text(encoding="utf-8")
+    assert value_for(text, "StateDirectory") == "jasper-grouping"
+    assert value_for(text, "StateDirectoryMode") == "0755"
+    assert value_for(text, "RuntimeDirectory") is None
     assert "User=" not in text
     assert "Group=" not in text
 
@@ -155,24 +160,6 @@ def test_source_reconcile_timeout_hierarchy_covers_all_owner_waits() -> None:
     ) in installer
 
 
-def _seconds(raw: str) -> float:
-    return float(raw.removesuffix("s"))
-
-
-def _service_directives(path: Path) -> dict[str, str]:
-    section = ""
-    result: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        text = line.strip()
-        if text.startswith("[") and text.endswith("]"):
-            section = text
-            continue
-        if section == "[Service]" and "=" in text and not text.startswith("#"):
-            key, _, value = text.partition("=")
-            result[key] = value
-    return result
-
-
 def test_owned_source_unit_client_bounds_outlast_explicit_systemd_contracts() -> None:
     """No blocking client may return while its owned systemd job is still legal."""
 
@@ -185,9 +172,9 @@ def test_owned_source_unit_client_bounds_outlast_explicit_systemd_contracts() ->
     assert set(source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC) == declared
 
     for unit, path in SOURCE_UNIT_FILES.items():
-        directives = _service_directives(path)
-        start = _seconds(directives["TimeoutStartSec"])
-        stop = _seconds(directives["TimeoutStopSec"])
+        text = path.read_text(encoding="utf-8")
+        start = seconds_for(text, "TimeoutStartSec")
+        stop = seconds_for(text, "TimeoutStopSec")
         assert source_intent._SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC[unit] == (start, stop)
         assert source_intent._unit_action_timeout_sec(unit, "start") > start
         assert source_intent._unit_action_timeout_sec(unit, "stop") > stop
@@ -284,53 +271,24 @@ def test_source_cold_start_dependencies_are_preordered_or_budgeted() -> None:
         assert source_intent.RECONCILE_UNIT not in path.read_text(encoding="utf-8")
 
 
-def _unit_section_lists(path: Path, keys: tuple[str, ...]) -> dict[str, set[str]]:
-    section = ""
-    result: dict[str, set[str]] = {key: set() for key in keys}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        text = line.strip()
-        if text.startswith("[") and text.endswith("]"):
-            section = text
-            continue
-        if section != "[Unit]" or text.startswith("#") or "=" not in text:
-            continue
-        key, _, value = text.partition("=")
-        if key in result:
-            result[key].update(value.split())
-    return result
-
-
 def _pulled_ordered_dependencies(path: Path) -> set[str]:
-    """Units a start of ``path`` both orders ``After=`` and pulls into its job.
-
-    Requirement dependencies join the same job transaction, and the ordering
-    edge makes PID 1 hold this unit's start job until they report terminal. Type
-    is deliberately not filtered: a long-running dependency that happens to be
-    inactive is waited on exactly like a oneshot that is inactive by design.
-    """
-
-    edges = _unit_section_lists(path, ("After", "Wants", "Requires"))
-    return edges["After"] & (edges["Wants"] | edges["Requires"])
+    return pulled_ordered_dependencies(path.read_text(encoding="utf-8"))
 
 
 def _declared_start_ceiling(name: str) -> float:
     """A shipped unit's start ceiling, falling back to the manager default."""
 
-    dependency = ROOT / "deploy/systemd" / name
-    directives = _service_directives(dependency)
-    raw = directives.get("TimeoutStartSec")
-    if raw is None:
-        return source_intent._SYSTEMD_DEFAULT_TIMEOUT_START_SEC
-    return _seconds(raw)
+    text = (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
+    return seconds_for(
+        text, "TimeoutStartSec", source_intent._SYSTEMD_DEFAULT_TIMEOUT_START_SEC
+    )
 
 
 def _never_stays_complete(name: str) -> bool:
     """True when a shipped dependency is inactive between runs by construction."""
 
-    directives = _service_directives(ROOT / "deploy/systemd" / name)
-    return (
-        directives.get("Type") == "oneshot"
-        and directives.get("RemainAfterExit", "no") == "no"
+    return never_stays_complete(
+        (ROOT / "deploy/systemd" / name).read_text(encoding="utf-8")
     )
 
 
@@ -452,9 +410,9 @@ def test_owner_client_bounds_mirror_their_shipped_unit_ceilings() -> None:
     """
 
     for unit, client in source_intent._OWNER_UNIT_ACTION_TIMEOUT_SEC.items():
-        directives = _service_directives(ROOT / "deploy/systemd" / unit)
-        assert directives["Type"] == "oneshot", unit
-        declared = _seconds(directives["TimeoutStartSec"])
+        text = (ROOT / "deploy/systemd" / unit).read_text(encoding="utf-8")
+        assert value_for(text, "Type") == "oneshot", unit
+        declared = seconds_for(text, "TimeoutStartSec")
         assert client == declared + 5.0, (unit, client, declared)
 
 
@@ -483,9 +441,9 @@ def test_control_unit_client_bounds_match_packaged_dropins() -> None:
         CONTROL_UNIT_FILES
     )
     for unit, path in CONTROL_UNIT_FILES.items():
-        directives = _service_directives(path)
-        start = _seconds(directives["TimeoutStartSec"])
-        stop = _seconds(directives["TimeoutStopSec"])
+        text = path.read_text(encoding="utf-8")
+        start = seconds_for(text, "TimeoutStartSec")
+        stop = seconds_for(text, "TimeoutStopSec")
         assert source_intent._CONTROL_UNIT_SYSTEMD_TIMEOUT_SEC[unit] == (
             start,
             stop,
