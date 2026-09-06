@@ -854,9 +854,8 @@ install_deps() {
     # package, which would enable a global dnsmasq.service. The scoped,
     # device-activated jasper-usbnet-dhcp.service runs it against usb0 for the
     # hardware-gated USB management network.
-    # rustc + cargo are required to build the Rust audio daemons
-    # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
-    # our crate's rust-version=1.75 floor.
+    # rustc + cargo are required to build the Rust audio daemons (rust/jasper-fanin/,
+    # rust/jasper-outputd/). Trixie ships rustc 1.85; the effective floor is 1.82 (jasper-daemon).
     # meson + ninja-build are installed ahead of time for the optional
     # enhanced-AEC root oneshot. A normal deploy builds only the quick v1
     # binding; an explicit Advanced → Software action compiles v2 later in a
@@ -2202,6 +2201,8 @@ main() {
     render_outputd_cutover_config
     ensure_outputd_camilla_statefile
     ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
+    reassert_secrets_compartment_perms
+    reassert_intsecrets_compartment_perms
     build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
     build_install_jasper_outputd  # Rust mainline final-output owner
     install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
@@ -2212,6 +2213,7 @@ main() {
     install_peering_template
     install_systemd_units
     remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
+    migrate_wifi_guardian
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage

@@ -24,13 +24,20 @@ Maintenance contract, enforced by the meta-assertions below:
 
 Markers are matched against whitespace-normalized plan text because the
 plan hard-wraps at ~72 columns mid-phrase ("memory\\n     resilience").
+
+The same parse drives an execution pin below: main() runs once per
+profile with every step stubbed, which makes the per-profile step list
+observable without slicing install.sh's source text.
 """
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
+
+import pytest
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
 # Function-group libraries sourced by install.sh; step functions called
@@ -155,6 +162,79 @@ def _dry_run_plan_normalized(*, profile: str | None = None) -> str:
     )
     assert result.returncode == 0, result.stderr
     return " ".join(result.stdout.split())
+
+
+def _executed_steps(profile: str) -> list[str]:
+    """main()'s step calls in execution order, for one profile.
+
+    Sources install.sh (its `BASH_SOURCE == $0` guard keeps main from
+    running), replaces every parsed step with a stub that echoes its own
+    name, then calls main. Nothing but the stubs runs, so the list is what
+    the profile branch would really have executed, in order.
+    """
+    stubs = "\n".join(
+        f'{name}() {{ echo "STEP={name}"; }}'
+        for name in sorted(set(_steps_called_in_main()))
+    )
+    script = "\n".join(
+        [
+            f"source {shlex.quote(str(_INSTALL_SH))}",
+            stubs,
+            f"resolve_install_profile() {{ echo {profile}; }}",
+            # The two things main reaches that the step stubs do not cover,
+            # both of which touch the real host: the EXIT trap (rm of
+            # /run/jasper-install/in_progress + systemctl) and the
+            # persisted-marker read under /var/lib/jasper.
+            "install_exit_cleanup() { :; }",
+            "install_profile_legacy_marker_migrating() { return 1; }",
+            "main",
+        ]
+    )
+    env = os.environ.copy()
+    env.pop("JASPER_INSTALL_PROFILE", None)
+    env.pop("JASPER_INSTALL_DRY_RUN", None)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    return [
+        line[len("STEP=") :]
+        for line in result.stdout.splitlines()
+        if line.startswith("STEP=")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("profile", "unit_step"),
+    [
+        ("full", "install_systemd_units"),
+        ("streambox", "install_streambox_systemd_units"),
+    ],
+)
+def test_secret_compartments_and_wifi_guardian_run_on_both_profiles(profile, unit_step):
+    """Both profiles re-narrow the two secret compartments before the unit
+    install that starts the daemons reading them, and both seed the WiFi
+    guardian stash. These were streambox-only main() rows while the full
+    profile buried them inside install_jasper, where no per-profile check
+    could see them.
+
+    Remove when main() becomes a declarative STEPS table: the table's own
+    pin supersedes this one.
+    """
+    steps = _executed_steps(profile)
+    hoisted = (
+        "reassert_secrets_compartment_perms",
+        "reassert_intsecrets_compartment_perms",
+        "migrate_wifi_guardian",
+    )
+    assert set(hoisted) <= set(steps), f"{profile}: missing {sorted(set(hoisted) - set(steps))}"
+    assert unit_step in steps
+    assert steps.index("reassert_secrets_compartment_perms") < steps.index(unit_step)
+    assert steps.index("reassert_intsecrets_compartment_perms") < steps.index(unit_step)
 
 
 def test_main_steps_were_parsed():

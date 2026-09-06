@@ -609,11 +609,11 @@ def test_secrets_compartment_phase4b():
 
 
 def test_streambox_spotify_uses_intsecrets_compartment():
-    """The streambox profile serves /spotify/ too, so its web unit and install
-    path must use the same Phase 4b compartment as the full profile. This guards
-    against split-brain saves where the shared wizard writes
-    /var/lib/jasper-intsecrets but the profile-specific unit still sources the
-    retired /var/lib/jasper path."""
+    """The streambox profile serves /spotify/ too, so its web unit must use the
+    same Phase 4b compartment as the full profile. This guards against
+    split-brain saves where the shared wizard writes /var/lib/jasper-intsecrets
+    but the profile-specific unit still sources the retired /var/lib/jasper
+    path."""
     int_spotify = "/var/lib/jasper-intsecrets/spotify_credentials.env"
     int_dir = "/var/lib/jasper-intsecrets"
     old_spotify = "/var/lib/jasper/spotify_credentials.env"
@@ -626,16 +626,6 @@ def test_streambox_spotify_uses_intsecrets_compartment():
     assert int_spotify in envfiles
     assert old_spotify not in envfiles
     assert int_dir in rwpaths
-
-    install_sh = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
-    streambox_branch = install_sh.split(
-        'if [[ "${install_profile}" == "streambox" ]]; then',
-        1,
-    )[1].split("return 0", 1)[0]
-    assert "reassert_intsecrets_compartment_perms" in streambox_branch, (
-        "streambox installs must create the Phase 4b compartment and re-narrow "
-        "its perms before installing the profile-scoped jasper-web unit"
-    )
 
 
 # The one env file the streambox web unit may omit: /wake/ is a WAKE_DETECTION
