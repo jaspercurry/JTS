@@ -38,10 +38,8 @@ _SEVERITY: tuple[tuple[str, str, str, str], ...] = (
 def _cue_state(
     manager: AudioCueManager, cue: CueDef, by_slug: dict[str, CueDef], memo: dict[str, str], cached: set[str],
 ) -> str:
-    """ok | stale | fallback_only | missing. ``cached`` is every slug with SOME
-    cached WAV (any hash) found by ONE directory listing — mirrors
-    AudioCueManager._find_any_cached's prefix/suffix match without that
-    method's per-slug os.listdir."""
+    """ok | stale | fallback_only | missing. ``cached``: slugs with an
+    any-hash cache hit, from one listing under `_find_any_cached`'s filename rule."""
     if cue.slug in memo:
         return memo[cue.slug]
     memo[cue.slug] = "missing"  # breaks a self-referential fallback cycle

@@ -36,10 +36,7 @@ from ...wake_events import (
 )
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import (
-    CheckResult,
-    _run,
-)
+from ._shared import CheckResult, _run
 
 # Machine-stable codes naming which branch of a memory check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
