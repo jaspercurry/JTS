@@ -94,6 +94,53 @@ def test_build_config_keeps_manual_vad_and_no_interruption():
 
 
 # ---------------------------------------------------------------------------
+# typed SDK fields (thinking_level / response_modalities /
+# function_declarations) — the enum-member + model_validate rewrite must
+# produce the identical wire payload as the raw string/dict forms it
+# replaced.
+# ---------------------------------------------------------------------------
+
+
+def test_build_config_uses_typed_enums_and_validated_tool_declarations():
+    """``_build_config`` passes ``ThinkingLevel``/``Modality`` enum members
+    and ``FunctionDeclaration`` models (not raw strings/dicts). Pydantic
+    coerces the old raw forms into the same models, so the assertions below
+    prove the typed rewrite changes nothing on the wire."""
+    from jasper.tools import ToolRegistry, tool
+
+    @tool()
+    def sample_tool() -> dict:
+        """A sample tool for the structured config pin."""
+        return {}
+
+    registry = ToolRegistry()
+    registry.register(sample_tool)
+    decls = registry.function_declarations()
+
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    conn._registry = registry
+    cfg = conn._build_config()
+
+    assert cfg.thinking_config.thinking_level == genai_types.ThinkingLevel.LOW
+    assert cfg.response_modalities == [genai_types.Modality.AUDIO]
+    assert cfg.tools[0].function_declarations[0].name == decls[0]["name"]
+
+    # Wire-shape proof: the raw string/dict forms this replaced coerce,
+    # via pydantic, into the identical serialized payload.
+    legacy_thinking = genai_types.ThinkingConfig(thinking_level="low")
+    assert (
+        legacy_thinking.model_dump(exclude_none=True)
+        == cfg.thinking_config.model_dump(exclude_none=True)
+    )
+    assert ["AUDIO"] == [m.value for m in cfg.response_modalities]
+    legacy_tool = genai_types.Tool(function_declarations=decls)
+    assert (
+        legacy_tool.model_dump(exclude_none=True)
+        == cfg.tools[0].model_dump(exclude_none=True)
+    )
+
+
+# ---------------------------------------------------------------------------
 # points 1+2 — local gate sets the event; the reconcile seam is a no-op.
 # ---------------------------------------------------------------------------
 

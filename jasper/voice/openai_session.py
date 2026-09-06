@@ -50,8 +50,12 @@ import json
 import logging
 import os
 import time as _time
+from typing import TYPE_CHECKING
 
 from jasper.log_event import log_event
+
+if TYPE_CHECKING:
+    import wave
 
 from ..tools import dispatch_tool
 from ._base import BaseLiveConnection, BaseLiveTurn
@@ -193,7 +197,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # so it stays off in production. Lets us answer "did the user's
         # full sentence reach OpenAI" without guessing — the WAV here
         # is exactly what OpenAI's STT model received.
-        self._debug_wav = None
+        self._debug_wav: wave.Wave_write | None = None
         self._debug_wav_path: str | None = None
         # The most recent assistant audio item id seen (set from
         # `response.output_item.added`). `truncate_assistant_audio` uses
@@ -837,6 +841,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     turn._debug_wav = w
                     turn._debug_wav_path = path
                     logger.info("debug: recording OpenAI send audio → %s", path)
+                assert turn._debug_wav is not None
                 turn._debug_wav.writeframes(pcm_24khz)
             except Exception as e:  # noqa: BLE001
                 logger.warning("debug record failed (will skip rest of turn): %s", e)

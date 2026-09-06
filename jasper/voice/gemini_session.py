@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time as _time
 
 from google import genai
 from google.genai import types
+from google.genai.live import AsyncSession
 
 from ..tools import dispatch_tool
 from ._base import BaseLiveConnection, BaseLiveTurn
@@ -428,8 +430,8 @@ class GeminiLiveConnection(BaseLiveConnection):
         self._rotate_after_sec = rotate_after_sec
 
         # Active SDK session + context manager (cleared during reconnect).
-        self._session = None
-        self._session_cm = None
+        self._session: AsyncSession | None = None
+        self._session_cm: contextlib.AbstractAsyncContextManager[AsyncSession] | None = None
 
         # Latest session-resumption handle from the server. Used on
         # reconnect to resume the conversation. Cleared explicitly when
@@ -624,13 +626,23 @@ class GeminiLiveConnection(BaseLiveConnection):
         # construct-then-add try block.
         gen_kwargs: dict = {}
         try:
-            gen_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+            gen_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.LOW,
+            )
         except Exception:  # noqa: BLE001
             pass
         return types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
+            response_modalities=[types.Modality.AUDIO],
             system_instruction=instruction or None,
-            tools=[types.Tool(function_declarations=decls)] if decls else None,
+            tools=(
+                [types.Tool(
+                    function_declarations=[
+                        types.FunctionDeclaration.model_validate(d) for d in decls
+                    ],
+                )]
+                if decls
+                else None
+            ),
             temperature=0.3,
             **gen_kwargs,
             # Pin the prebuilt voice so it's consistent across sessions
@@ -710,11 +722,11 @@ class GeminiLiveConnection(BaseLiveConnection):
         # the old session are no longer relevant.
         self._unack_activity_end_times = []
         config = self._build_config()
-        connect_call = (
-            self._connect_factory
-            if self._connect_factory is not None
-            else self._client.aio.live.connect
-        )
+        if self._connect_factory is not None:
+            connect_call = self._connect_factory
+        else:
+            assert self._client is not None
+            connect_call = self._client.aio.live.connect
         t0 = _time.monotonic()
         cm = connect_call(model=self._model, config=config)
         try:
