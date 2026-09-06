@@ -26,6 +26,7 @@ import grp
 import os
 from pathlib import Path
 
+from jasper import accounts
 from jasper.cli.doctor import privsep
 from jasper.cli.doctor import secret_compartments as sc
 from jasper.cli.doctor.secret_compartments import COMPARTMENTS
@@ -472,11 +473,27 @@ def test_no_unit_joins_a_compartment_group_without_membership():
 def test_secret_files_live_under_their_compartment_dir():
     for comp in COMPARTMENTS:
         prefix = comp.directory.rstrip("/") + "/"
-        for path in comp.files:
+        for path in comp.resolved_files():
             assert path.startswith(prefix), (
                 f"{comp.group}: secret file {path} is outside the compartment dir "
                 f"{comp.directory}"
             )
+
+
+def test_audited_paths_follow_the_spotify_env_overrides(tmp_path, monkeypatch):
+    """The Spotify cache + registry paths are env-overridable (jasper.accounts),
+    so the audit must stat the files the box actually uses. No removal
+    condition: this pins non-negotiable 3's observable posture check."""
+    cache = str(tmp_path / "spotify-cache")
+    accounts_json = str(tmp_path / "accounts.json")
+    monkeypatch.setenv("SPOTIFY_CACHE_PATH", cache)
+    monkeypatch.setenv("JASPER_SPOTIFY_ACCOUNTS_PATH", accounts_json)
+    comp = next(c for c in COMPARTMENTS if c.group == "jasper-intsecrets")
+    audited = set(comp.resolved_files())
+    assert {cache, accounts_json} <= audited
+    assert audited.isdisjoint(
+        {accounts.LEGACY_CACHE_PATH, accounts.DEFAULT_REGISTRY_PATH}
+    )
 
 
 def test_member_units_are_non_root():

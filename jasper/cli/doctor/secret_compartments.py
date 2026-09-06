@@ -45,9 +45,10 @@ import glob as _glob
 import grp
 import os
 import stat as _stat
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from ...accounts import DEFAULT_CACHE_DIR, DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH
+from ...accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
 from . import privsep
 from ._registry import doctor_check
 from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
@@ -73,12 +74,17 @@ class SecretCompartment:
     that MUST be able to read the secrets (the availability side); the drift
     test pins them against each unit's ``SupplementaryGroups=``. Absent
     ``files`` are skipped — absent means "not configured", not the bug class.
+    A ``files`` entry may be a :mod:`~jasper.accounts` resolver instead of a
+    literal, so an env override is read when the check RUNS, not at import.
     """
 
     group: str
     directory: str
     member_units: tuple[str, ...]
-    files: tuple[str, ...] = field(default_factory=tuple)
+    files: tuple[str | Callable[[], str], ...] = field(default_factory=tuple)
+
+    def resolved_files(self) -> tuple[str, ...]:
+        return tuple(f() if callable(f) else f for f in self.files)
 
 
 # The universe of leak targets is the non-root daemons privsep already models;
@@ -131,9 +137,8 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
         files=(
             "/var/lib/jasper-intsecrets/home_assistant.env",
             "/var/lib/jasper-intsecrets/spotify_credentials.env",
-            # Legacy single-account Spotify cache + the multi-account tree.
-            LEGACY_CACHE_PATH,
-            DEFAULT_REGISTRY_PATH,
+            legacy_cache_path,
+            registry_path,
             f"{DEFAULT_CACHE_DIR}/*.json",
         ),
     ),
@@ -264,7 +269,7 @@ def _classify_compartment(
 
     # --- each present secret file ------------------------------------------
     checked = 0
-    for pattern in comp.files:
+    for pattern in comp.resolved_files():
         matches = sorted(glob_fn(pattern)) if _is_glob(pattern) else [pattern]
         for match in matches:
             try:
