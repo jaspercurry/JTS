@@ -131,6 +131,13 @@ load_env_file_lib() {
     fi
     # shellcheck disable=SC1090
     source "$ENV_FILE_LIB"
+    # Readable is not usable: a zeroed or truncated lib sources cleanly and
+    # defines nothing, and every env read would then come back empty — a pass
+    # that silently reconciles against a blank world.
+    if ! declare -F jasper_env_file_export >/dev/null; then
+        echo "jasper-aec-reconcile: unusable env-file library: ${ENV_FILE_LIB}" >&2
+        exit 66
+    fi
 }
 load_env_file_lib
 
@@ -287,20 +294,6 @@ observe_mic_profile_state() {
     fi
 }
 
-load_env_file() {
-    local file="$1"
-    if [[ -f "$file" ]]; then
-        set -a
-        # Runtime-only env files (/etc/jasper/jasper.env and the
-        # wizard-owned /var/lib/jasper/*.env) — they don't exist in the
-        # repo, so shellcheck can never follow them. Directives bind to
-        # the next command, so this must sit on the `source` line itself.
-        # shellcheck source=/dev/null
-        source "$file"
-        set +a
-    fi
-}
-
 ensure_mode_file() {
     local inferred_profile
     if [[ -f "$MODE_FILE" ]]; then
@@ -350,9 +343,8 @@ ensure_mode_file() {
 # specs like plughw:CARD=<card>,DEV=0 and breaking read-back
 # idempotence).
 set_env_var() {
-    # /etc/jasper/jasper.env is non-secret runtime config. jasper-control
-    # fresh-reads it for /state after this reconciler mutates AEC/profile
-    # keys, so keep the file group-readable (install migration owns group).
+    # jasper-control fresh-reads this file for /state after the reconciler
+    # mutates AEC/profile keys, so keep it group-readable (group is install's).
     mark_voice_restart_if_changed "$2" "$3"
     jasper_env_file_set "$1" "$2" "$3" 0640 0755
 }
@@ -396,14 +388,14 @@ voice_relevant_env_key() {
 }
 
 # The pass-start snapshot of $ENV_FILE that mark_voice_restart_if_changed
-# compares against. Taken from the SHELL immediately after load_env_file
-# "$ENV_FILE" (so the shared lib's own parse supplies the unquoted values),
-# and never refreshed: the live shell variables are NOT a usable "before",
-# because observe_mic_profile_state and the chip-AEC policy resolver eval
-# resolver payloads over them mid-pass — comparing a resolved value against
-# itself made all ten JASPER_XVF_* writes a tautology that could never trip
-# the gate. Names are captured too (PASS_START_ENV_KEYS) so "absent at pass
-# start" reads as "", the same answer an absent key gave before.
+# compares against. Taken from the SHELL immediately after
+# jasper_env_file_export "$ENV_FILE" (so the shared lib's own parse supplies
+# the unquoted values) and never refreshed: the live shell variables are NOT a
+# usable "before", because observe_mic_profile_state and the chip-AEC policy
+# resolver eval resolver payloads over them mid-pass — comparing a resolved
+# value against itself made all ten JASPER_XVF_* writes a tautology that could
+# never trip the gate. Names are captured too (PASS_START_ENV_KEYS) so "absent
+# at pass start" reads as "", the same answer an absent key gave before.
 PASS_START_ENV_KEYS=""
 snapshot_pass_start_env() {
     local line key
@@ -866,17 +858,7 @@ chip_aec_block_detail() {
 }
 
 mode_file_value() {
-    local key="$1"
-    local default="$2"
-    local line
-    if [[ -f "$MODE_FILE" ]]; then
-        line="$(grep -E "^${key}=" "$MODE_FILE" | tail -n 1 || true)"
-        if [[ -n "$line" ]]; then
-            printf '%s\n' "${line#*=}"
-            return
-        fi
-    fi
-    printf '%s\n' "$default"
+    jasper_env_file_get "$MODE_FILE" "$1" || printf '%s\n' "$2"
 }
 
 # The closest profile for a mode file written before profiles existed. A
@@ -2048,7 +2030,7 @@ restart_voice_for_accessory_mic() {
     fi
 }
 
-load_env_file "$ENV_FILE"
+jasper_env_file_export "$ENV_FILE"
 # Snapshot the pass-start world BEFORE anything can move it: the env-file
 # values before any resolver eval overwrites them, and the installed build
 # before any env write — so every mark_voice_restart_if_changed comparison
@@ -2062,7 +2044,7 @@ if [[ "$COMMISSION_ARM" != "1" ]]; then
     # (the arm dispatch never restarts voice).
     consume_voice_restart_intent
 fi
-load_env_file "$MODE_FILE"
+jasper_env_file_export "$MODE_FILE"
 observe_mic_profile_state
 
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"

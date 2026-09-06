@@ -426,6 +426,7 @@ echo "==> pytest always-on fast guards"
 lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
   tests/test_dependency_groups.py tests/test_lint_contracts.py \
   tests/test_deploy_wiring_guards.py tests/test_shell_awk_environ_convention.py \
+  tests/test_shell_env_source_convention.py \
   tests/test_docs_impact.py tests/test_correction_boundary_ssot.py \
   tests/test_runtime_import_closure.py "$@"
 _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))

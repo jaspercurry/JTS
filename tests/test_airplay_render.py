@@ -39,10 +39,12 @@ def _render(
     camilla_yaml: str,
     outputd_env: object = None,
     jasper_env_content: str = "",
+    speaker_name_content: str = 'JASPER_SPEAKER_NAME="Unit Test"\n',
     grouping_airplay_content: str | None = None,
     fanin_status_socket: Path | None = None,
     outputd_status_socket: Path | None = None,
     ring_alsa_conf_content: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     template = tmp_path / "shairport-sync.conf.template"
     target = tmp_path / "shairport-sync.conf"
@@ -73,7 +75,7 @@ def _render(
     statefile.write_text(f"config_path: {camilla}\n")
     airplay_env.write_text("JASPER_AIRPLAY_FREE_RUNNING=no\n")
     jasper_env_path.write_text(jasper_env_content)
-    speaker_env.write_text('JASPER_SPEAKER_NAME="Unit Test"\n')
+    speaker_env.write_text(speaker_name_content)
 
     # Bonded-leader AirPlay offset delta. None = no file (solo/follower —
     # the common case), so the offset stays byte-identical to before.
@@ -123,6 +125,8 @@ def _render(
             "JASPER_RENDERER_LANES_ENV": str(tmp_path / "no-renderer-lanes.env"),
         }
     )
+    if extra_env:
+        env.update(extra_env)
 
     result = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -141,6 +145,57 @@ def _render(
         timeout=5,
     )
     return target.read_text(), result
+
+
+def test_env_file_values_are_data_never_shell(tmp_path: Path):
+    """This renderer runs as root from shairport-sync's `ExecStartPre=+`, and
+    every file it reads carries operator or wizard text. It must read those
+    files, never evaluate them: no command substitution in /etc/jasper's
+    jasper.env runs, and a speaker name carrying a space and a `#` reaches
+    the rendered conf whole instead of being split at the space and truncated
+    at the `#`."""
+    marker = tmp_path / "marker"
+    rendered, result = _render(
+        tmp_path,
+        """
+        devices:
+          samplerate: 48000
+          chunksize: 1024
+          target_level: 4096
+        """,
+        jasper_env_content=f"JASPER_SOMETHING=$(touch {marker})\n",
+        speaker_name_content="JASPER_SPEAKER_NAME=Kitchen #1 Speaker\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert 'name = "Kitchen #1 Speaker";' in rendered
+
+
+def test_render_falls_back_to_defaults_when_the_env_lib_is_absent(tmp_path: Path):
+    """install_renderers seeds /etc/shairport-sync.conf by running the
+    INSTALLED copy of this script, and it runs before install_systemd_units
+    publishes deploy/lib/jasper-env-file.sh — so on a fresh install the lib is
+    genuinely absent here. Aborting would abort install.sh; every read must
+    take its documented fallback instead, which is exactly the seed render.
+    shairport-sync's ExecStartPre re-renders with the real lib on next start."""
+    rendered, result = _render(
+        tmp_path,
+        """
+        devices:
+          samplerate: 48000
+          chunksize: 1024
+          target_level: 4096
+        """,
+        speaker_name_content="JASPER_SPEAKER_NAME=Configured Name\n",
+        extra_env={"JASPER_ENV_FILE_LIB": str(tmp_path / "absent-lib.sh")},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert 'name = "JTS";' in rendered
+    assert 'output_device = "shairport_substream";' in rendered
+    assert 'disable_synchronization = "no";' in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.157333;" in rendered
 
 
 def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: Path):

@@ -546,6 +546,29 @@ def test_candidate_default_is_the_mic_registry_card_list(tmp_path: Path) -> None
     assert candidates == list(xvf3800.ALSA_CARD_NAMES)
 
 
+def test_jasper_env_values_are_data_never_shell(tmp_path: Path) -> None:
+    """/etc/jasper/jasper.env is where an operator-pasted provider key lands
+    until the next deploy sweeps it into its compartment, and the installer
+    writes it unquoted. A pass must read it, never evaluate it: no command
+    substitution runs as root, and a value carrying a space and a `#` reaches
+    its use whole instead of being split and truncated."""
+    marker = tmp_path / "marker"
+    mic = "plughw:Odd Mic#1"
+    _stage(
+        tmp_path,
+        mic,
+        mode="auto",
+        profile="custom",
+        extra=f"JASPER_SOMETHING=$(touch {marker})\n",
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    assert _event_values(result.stderr, "aec_reconcile.pass", "current_mic") == [mic]
+
+
 def test_reconcile_clears_stale_udp_when_array_is_absent(tmp_path: Path) -> None:
     env_file = _stage(tmp_path, "udp:9876", mode="auto")
 

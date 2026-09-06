@@ -70,55 +70,89 @@ jasper_env_quote_value() {
     esac
 }
 
+# The line parser both readers below share: `key` non-empty prints that
+# key's LAST value (rc 1 when absent); `key` empty prints every key as
+# NAME then value on the next line, in first-appearance order with the
+# last assignment's value. One matched surrounding quote pair is
+# stripped and jasper_env_file_set's own '\'' splice undone, so set ->
+# get round trips an apostrophe-bearing value; nothing is evaluated.
+# Otherwise this parses byte-for-byte like read_stash in
+# jasper/wifi_guardian_persistence.py, which reads the same files.
+_JASPER_ENV_FILE_AWK='
+    BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
+    function unquote(v,   len, q, out, i) {
+        len = length(v)
+        q = substr(v, 1, 1)
+        if (len >= 2 && q == substr(v, len, 1) && (q == sq || q == dq)) {
+            v = substr(v, 2, len - 2)
+            if (q == sq) {
+                # index/substr, never a dynamic regex: mawk and gawk
+                # disagree on backslash escapes inside one.
+                out = ""
+                while ((i = index(v, splice)) > 0) {
+                    out = out substr(v, 1, i - 1) sq
+                    v = substr(v, i + 4)
+                }
+                v = out v
+            }
+        }
+        return v
+    }
+    {
+        line = $0
+        sub(/^[ \t\r\v\f]+/, "", line)
+        sub(/[ \t\r\v\f]+$/, "", line)
+        if (line == "" || substr(line, 1, 1) == "#") next
+        eq = index(line, "=")
+        if (eq == 0) next
+        k = substr(line, 1, eq - 1)
+        sub(/^[ \t\r\v\f]+/, "", k)
+        sub(/[ \t\r\v\f]+$/, "", k)
+        if (key != "") {
+            if (k != key) next
+            found = 1
+            val = substr(line, eq + 1)
+            next
+        }
+        if (k !~ /^[A-Za-z_][A-Za-z0-9_]*$/) next
+        if (!(k in all)) order[++cnt] = k
+        all[k] = substr(line, eq + 1)
+    }
+    END {
+        if (key != "") {
+            if (!found) exit 1
+            print unquote(val)
+            exit 0
+        }
+        for (i = 1; i <= cnt; i++) print order[i] "\n" unquote(all[order[i]])
+    }
+'
+
 # jasper_env_file_get FILE KEY
-# Print the LAST `KEY=` line's value verbatim (one matched surrounding
-# quote pair stripped, nothing evaluated); return 1 with no output when
-# FILE or the key is absent. A single-quoted value additionally has
-# jasper_env_file_set's own '\'' splice undone, so set -> get round trips
-# an apostrophe-bearing value; otherwise this parses byte-for-byte like
-# read_stash in jasper/wifi_guardian_persistence.py, which reads the
-# same files.
+# Print the LAST `KEY=` line's value; return 1 with no output when FILE
+# or the key is absent.
 jasper_env_file_get() {
     local file="$1" key="$2" value
 
     [[ -r "$file" ]] || return 1
-    value="$(awk -v key="$key" '
-        BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
-        {
-            line = $0
-            sub(/^[ \t\r\v\f]+/, "", line)
-            sub(/[ \t\r\v\f]+$/, "", line)
-            if (line == "" || substr(line, 1, 1) == "#") next
-            eq = index(line, "=")
-            if (eq == 0) next
-            k = substr(line, 1, eq - 1)
-            sub(/^[ \t\r\v\f]+/, "", k)
-            sub(/[ \t\r\v\f]+$/, "", k)
-            if (k != key) next
-            found = 1
-            val = substr(line, eq + 1)
-        }
-        END {
-            if (!found) exit 1
-            n = length(val)
-            q = substr(val, 1, 1)
-            if (n >= 2 && q == substr(val, n, 1) && (q == sq || q == dq)) {
-                val = substr(val, 2, n - 2)
-                if (q == sq) {
-                    # index/substr, never a dynamic regex: mawk and gawk
-                    # disagree on backslash escapes inside one.
-                    out = ""
-                    while ((i = index(val, splice)) > 0) {
-                        out = out substr(val, 1, i - 1) sq
-                        val = substr(val, i + 4)
-                    }
-                    val = out val
-                }
-            }
-            print val
-        }
-    ' "$file")" || return 1
+    value="$(awk -v key="$key" "$_JASPER_ENV_FILE_AWK" "$file")" || return 1
     printf '%s\n' "$value"
+}
+
+# jasper_env_file_export FILE
+# Export every `KEY=value` assignment in FILE into the environment, the
+# way `set -a; source FILE; set +a` did — but WITHOUT the shell ever
+# seeing the values: a `$(…)`, backtick, space or `#` in an operator-
+# pasted value is data, not code. No-op when FILE is absent. A line
+# whose key is not a plain identifier is skipped (`source` would have
+# run it as a command).
+jasper_env_file_export() {
+    local file="$1" key value
+
+    [[ -r "$file" ]] || return 0
+    while IFS= read -r key && IFS= read -r value; do
+        export "${key}=${value}"
+    done < <(awk -v key="" "$_JASPER_ENV_FILE_AWK" "$file")
 }
 
 # jasper_env_file_set FILE KEY VALUE [FILE_MODE] [DIR_MODE]
