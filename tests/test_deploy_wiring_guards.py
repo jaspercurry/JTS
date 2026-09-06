@@ -359,19 +359,6 @@ def test_socket_web_services_have_generous_start_limit():
         assert "StartLimitBurst=20" in text, path
 
 
-_SYSTEMD_UNITS_FRAGMENT = _DEPLOY / "lib" / "install" / "systemd-units.sh"
-
-
-def _install_function_body(source: str, name: str) -> str:
-    """Extract a bash function body from an install fragment. Functions
-    there open with `name() {` at column 0 and close with a `}` alone at
-    column 0."""
-    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
-    m = re.search(pattern, source, re.S | re.M)
-    assert m, f"function {name} not found in systemd-units.sh"
-    return m.group(1)
-
-
 # ----------------------------------------------------------------------
 # 6 — deploy-to-pi.sh post-install verification wiring (Workstream B)
 # ----------------------------------------------------------------------

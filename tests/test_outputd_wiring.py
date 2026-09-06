@@ -501,9 +501,9 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
 
 def test_install_alsa_refreshes_asound_renderer_before_rendering():
     """install_alsa renders /etc/asound.conf through the renderer lib install.sh
-    sources from the checkout. The on-box copy the runtime reconciler falls back
-    to has one owner, install_jasper_support_files, which both profiles run
-    before any /usr/local/sbin reconciler pass."""
+    sources from the checkout; the on-box copy the runtime reconciler falls back
+    to is the support-file install's, pinned by the destination-set harness in
+    tests/test_install_core_audio_graph_loop.py."""
     install_sh = installer_text()
     start = install_sh.index("install_alsa() {")
     end = install_sh.index("\nwrite_build_manifest() {", start)
@@ -512,10 +512,6 @@ def test_install_alsa_refreshes_asound_renderer_before_rendering():
     render_call = install_alsa.index("jasper_asound_render_template")
     assert 'source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"' in install_sh
     assert source_template_install < render_call
-    support_files = install_sh.split("install_jasper_support_files() {", 1)[1].split(
-        "\n}\n", 1
-    )[0]
-    assert "/usr/local/lib/jasper/jasper-asound-render.sh" in support_files
 
 
 def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatch):

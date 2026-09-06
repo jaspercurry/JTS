@@ -218,15 +218,16 @@ _rollback_unit_install_transaction() {
         fi
     done
     systemctl daemon-reload 2>/dev/null || true
+    udevadm control --reload-rules 2>/dev/null || true
     rm -rf -- "${install_transaction_dir:?}"
     echo "  ERROR: rolled back the incomplete unit generation" >&2
 }
 
 # Stage one profile's unit generation as a single rollback domain: a failed
-# copy or render restores every destination the stage function touched, reloads
-# systemd against the prior generation, and fails before the caller reaches its
-# first enable/start. The four transaction variables are locals here and reach
-# the mechanism helpers — and the stage function — by dynamic scoping.
+# copy or render restores every `install` destination, reloads systemd against
+# the prior generation, and fails before the caller reaches its first
+# enable/start. The four transaction variables are locals here and reach the
+# mechanism helpers — and the stage function — by dynamic scoping.
 _with_unit_install_transaction() {
     local install_transaction_dir
     install_transaction_dir="$(mktemp -d /tmp/jasper-unit-install.XXXXXX)"
@@ -243,7 +244,7 @@ _with_unit_install_transaction() {
     systemctl daemon-reload
     # The gated units' own executables land in the staging above, so the
     # install window ends here — after PID 1 has loaded their Condition lines,
-    # and before the caller's first installer-issued start (#4123, #4218).
+    # and before the caller's first installer-issued start.
     clear_install_in_progress
     # Commit only after systemd accepted the complete generation. The caller's
     # runtime mutations are deliberately outside the staging transaction.
@@ -443,9 +444,6 @@ validate_streambox_systemd_units() {
 }
 
 install_resilience_identity_unit_files() {
-    # Recreates a lost
-    # /etc/NetworkManager/system-connections/<SSID>.nmconnection from the
-    # wizard-owned stash at /var/lib/jasper/wifi_guardian.env.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
         "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
@@ -464,11 +462,8 @@ install_resilience_identity_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
         /usr/local/sbin/jasper-wifi-recover
-    # Snapshots the effective mDNS identity (OS hostname vs Avahi's
-    # post-collision name vs JASPER_HOSTNAME) into /var/lib/jasper/identity.env
-    # on a 5-min timer, because a collision rename lands when the OTHER device
-    # joins the LAN. jasper.http_security reads the file, so a renamed
-    # speaker's management UI stays reachable instead of 403ing.
+    # The 5-min timer cadence is deliberate: an mDNS collision rename lands
+    # when the OTHER device joins the LAN, not when this one boots.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-identity-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-identity-reconcile.service"
@@ -478,9 +473,6 @@ install_resilience_identity_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-identity-reconcile" \
         /usr/local/sbin/jasper-identity-reconcile
-    # Cross-boot circuit breaker for the StartLimitAction=reboot ladder: its
-    # runtime drop-ins live in /run and self-clear on the next healthy boot, so
-    # a permanently sick daemon parks failed instead of rebooting the Pi.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-bootloop-guard.service" \
         "${SYSTEMD_DIR}/jasper-bootloop-guard.service"
@@ -593,10 +585,8 @@ install_usb_network_files() {
     # plan owner replaces either one, so any later catchable staging failure
     # restores the complete prior generation rather than old ungated units with
     # a partially promoted address pair.
-    if declare -p install_transaction_paths >/dev/null 2>&1; then
-        _snapshot_unit_install_destination "${nm_path}"
-        _snapshot_unit_install_destination "${dnsmasq_path}"
-    fi
+    _snapshot_unit_install_destination "${nm_path}"
+    _snapshot_unit_install_destination "${dnsmasq_path}"
     local plan_output
     if ! plan_output="$(PYTHONPATH="${REPO_DIR}" "${plan_python}" \
             -m jasper.usb_network converge \
@@ -806,9 +796,8 @@ install_audio_output_recovery_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
         "${SYSTEMD_DIR}/jasper-dongle-recover.service"
-    # Pins every mixer control the classified DAC's profile declares at each
-    # boot: dynamic volume belongs to CamillaDSP (or the source's own slider)
-    # and no hardware stage should be limiting or boosting us.
+    # No hardware stage may limit or boost: dynamic volume belongs to
+    # CamillaDSP, or to the source's own slider.
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-dac-init" \
         /usr/local/bin/jasper-dac-init
@@ -831,14 +820,11 @@ install_audio_output_recovery_unit_files() {
         "${install_transaction_dir}/jasper-headphone-monitor.service" \
         "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
     install -d -m 0755 /etc/udev/rules.d
-    # Re-pins the dongle's Headphone control to 100% on every USB
-    # (re-)enumeration and disables its autosuspend. Two upstream defects make
-    # it necessary: Trixie's alsa-utils 1.2.14-1 ships a
-    # /usr/lib/udev/rules.d/90-alsa-restore.rules whose GOTO points at the
-    # wrong label, so `alsactl restore` never fires on hotplug (Debian
-    # #1093057); and the Apple dongle's UAC firmware reports a Headphone
-    # default of 80/120 (-20 dB) on every probe. jasper-headphone-monitor is
-    # the 1 Hz backstop for whatever the rule misses.
+    # Two upstream defects make this rule necessary: Trixie's alsa-utils
+    # 1.2.14-1 ships a /usr/lib/udev/rules.d/90-alsa-restore.rules whose GOTO
+    # points at the wrong label, so `alsactl restore` never fires on hotplug
+    # (Debian #1093057); and the Apple dongle's UAC firmware reports a
+    # Headphone default of 80/120 (-20 dB) on every probe.
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
         /etc/udev/rules.d/99-jasper-apple-dongle.rules
@@ -1412,8 +1398,6 @@ _stage_streambox_unit_files() {
     install_voice_unit_files
     install_audio_output_recovery_unit_files
     reload_audio_recovery_udev_rules_for_install
-    park_streambox_brain_units
-    mask_distro_background_units
     validate_streambox_systemd_units
 }
 
@@ -1421,6 +1405,8 @@ install_streambox_systemd_units() {
     install_jasper_support_files
     install_local_audio_graph_unit_files
     _with_unit_install_transaction _stage_streambox_unit_files
+    park_streambox_brain_units
+    mask_distro_background_units
     systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
     enable_streambox_web_sockets
     start_streambox_runtime_units

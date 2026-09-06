@@ -482,35 +482,51 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     )
 
 
+def _shim_preamble(tmp_path: Path, *, errexit: bool = True) -> str:
+    """The install.sh globals the fragment assumes, every mutable root pointed
+    at tmp_path, and the fragment itself. `errexit` is off for the runtime
+    harness alone: that path also calls install.sh helpers and on-box binaries
+    under /usr/local/sbin, neither of which exists here and both non-fatal on
+    the box too."""
+    return f"""
+set -{"euo" if errexit else "uo"} pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}/systemd"
+STATE_DIR="{tmp_path}/state"
+APPLE_DONGLE_SERVICE_CARD="auto"
+mkdir -p "$SYSTEMD_DIR" "$STATE_DIR"
+source "{FRAGMENT}"
+"""
+
+
+def _transaction_recorder(tmp_path: Path) -> str:
+    """One ordered log of the systemctl argv a profile issues plus
+    clear_install_in_progress, which lives in install.sh and so is covered by
+    no fragment stub. Also pins the transaction directory under tmp_path. Emit
+    AFTER any `declare -F` stub loop, which would otherwise replace these."""
+    return f"""
+systemctl() {{ echo "systemctl $*" >> "{tmp_path}/calls.log"; return 0; }}
+clear_install_in_progress() {{ echo "fn clear_install_in_progress" >> "{tmp_path}/calls.log"; }}
+mktemp() {{ local d; d="{tmp_path}/txn"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
+"""
+
+
 def _profile_runtime_harness(
     tmp_path: Path, function: str, keep: tuple[str, ...] = ()
 ) -> str:
     """Run one profile's unit-install function with every fragment-defined
     helper stubbed into a recorder, so the systemctl argv it issues is
-    observable off-box. `keep` names further fragment functions to leave real.
-    clear_install_in_progress is defined in install.sh, so it gets its own
-    recorder. `set -e` is deliberately off: the function also calls helpers
-    defined in install.sh and on-box binaries under /usr/local/sbin, neither of
-    which exists here, and both are non-fatal on the box too."""
-    calls = tmp_path / "calls.log"
+    observable off-box. `keep` names further fragment functions to leave real."""
     real = " ".join(shlex.quote(name) for name in (function, *keep))
-    return f"""
-set -uo pipefail
-LOG='{calls}'
-REPO_DIR="{ROOT}"
-SYSTEMD_DIR="{tmp_path}/systemd"
-APPLE_DONGLE_SERVICE_CARD="jts-test-dongle"
-mkdir -p "$SYSTEMD_DIR"
-source "{FRAGMENT}"
+    return f"""{_shim_preamble(tmp_path, errexit=False)}
+LOG='{tmp_path}/calls.log'
 for _stub in $(declare -F | awk '{{print $3}}'); do
     for _real in {real}; do
         [[ "$_stub" == "$_real" ]] && continue 2
     done
     eval "${{_stub}}() {{ echo \\"fn ${{_stub}}\\" >> \\"$LOG\\"; return 0; }}"
 done
-systemctl() {{ echo "systemctl $*" >> "$LOG"; return 0; }}
-clear_install_in_progress() {{ echo "fn clear_install_in_progress" >> "$LOG"; }}
-mktemp() {{ local d; d="{tmp_path}/txn.$RANDOM"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
+{_transaction_recorder(tmp_path)}
 {function}
 """
 
@@ -587,22 +603,24 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
 
 
 @pytest.mark.parametrize(
-    ("entry", "stage", "first_runtime_call"),
+    ("entry", "stage", "first_runtime_call", "post_commit"),
     (
         (
             "install_systemd_units",
             "_stage_full_unit_files",
             "systemctl enable --now jts-audio.slice jts-mic.slice",
+            ("mask_distro_background_units",),
         ),
         (
             "install_streambox_systemd_units",
             "_stage_streambox_unit_files",
             "systemctl enable --now jts-audio.slice",
+            ("park_streambox_brain_units", "mask_distro_background_units"),
         ),
     ),
 )
 def test_both_profiles_close_the_install_window_between_staging_and_runtime(
-    tmp_path, entry, stage, first_runtime_call
+    tmp_path, entry, stage, first_runtime_call, post_commit
 ):
     """Both positions the shared transaction has to preserve, read off the
     recorded argv order rather than the source. #4218: the install window
@@ -638,15 +656,19 @@ def test_both_profiles_close_the_install_window_between_staging_and_runtime(
     ]
     assert mutations, calls
     assert calls[mutations[0]] == first_runtime_call
+    cleared = first("fn clear_install_in_progress")
     assert (
         first("fn install_jasper_support_files")
         < first("fn install_local_audio_graph_unit_files")
         < first(f"fn {stage}")
         < first("systemctl daemon-reload")
-        < first("fn clear_install_in_progress")
+        < cleared
         < mutations[0]
         <= first("systemctl restart jasper-control.service")
     )
+    # Parking and masking issue `disable --now`/`mask`, which no rollback can
+    # undo, so both profiles keep them outside the transaction.
+    assert all(cleared < first(f"fn {name}") for name in post_commit)
 
 
 def _stage_rollback_harness(tmp_path: Path, stage: str) -> str:
@@ -670,16 +692,8 @@ def _stage_rollback_harness(tmp_path: Path, stage: str) -> str:
         encoding="utf-8",
     )
     stub.chmod(0o755)
-    return f"""
-set -euo pipefail
-REPO_DIR="{ROOT}"
-SYSTEMD_DIR="{tmp_path}/systemd"
-STATE_DIR="{tmp_path}/state"
-APPLE_DONGLE_SERVICE_CARD="auto"
-source "{FRAGMENT}"
-systemctl() {{ echo "systemctl $*" >> "{tmp_path}/systemctl.log"; return 0; }}
-clear_install_in_progress() {{ echo "clear" >> "{tmp_path}/systemctl.log"; }}
-mktemp() {{ local d; d="{tmp_path}/txn"; mkdir -p "$d"; printf '%s\\n' "$d"; }}
+    return f"""{_shim_preamble(tmp_path)}
+{_transaction_recorder(tmp_path)}
 _with_unit_install_transaction {stage}
 """
 
@@ -745,12 +759,13 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
         if mode != "-d"
     }
     assert promoted and all(d.startswith(str(tmp_path)) for d in promoted)
-    systemctl_log = tmp_path / "systemctl.log"
-    issued = systemctl_log.read_text().splitlines() if systemctl_log.exists() else []
+    log = tmp_path / "calls.log"
+    issued = log.read_text().splitlines() if log.exists() else []
     assert not [
         call
         for call in issued
-        if call.startswith(("systemctl enable", "systemctl start", "clear"))
+        if call.startswith(("systemctl enable", "systemctl start"))
+        or call == "fn clear_install_in_progress"
     ], issued
 
 
@@ -758,27 +773,19 @@ def _destination_harness(tmp_path: Path, function: str) -> str:
     """Record every destination one install step promotes, with the copy itself
     suppressed — nothing here may write to the host's /etc or /usr/local. The
     helpers stubbed out mutate state through something other than `install`
-    (NetworkManager projection, unit parking/masking, systemd-analyze), so
-    none of them contributes a destination."""
+    (NetworkManager projection, udev reload, systemd-analyze), so none of them
+    contributes a destination."""
     calls = tmp_path / "destinations.log"
-    return f"""
-set -euo pipefail
-REPO_DIR="{ROOT}"
-SYSTEMD_DIR="{tmp_path}/systemd"
-APPLE_DONGLE_SERVICE_CARD="auto"
+    return f"""{_shim_preamble(tmp_path)}
 install_transaction_dir="{tmp_path}/txn"
-mkdir -p "$SYSTEMD_DIR" "$install_transaction_dir"
-source "{FRAGMENT}"
+mkdir -p "$install_transaction_dir"
 install() {{
   local dst="${{!#}}"
   [[ "$1" == "-d" ]] || printf '%s\\n' "$dst" >> "{calls}"
   return 0
 }}
 systemctl() {{ return 0; }}
-udevadm() {{ return 0; }}
 install_usb_network_files() {{ return 0; }}
-park_streambox_brain_units() {{ return 0; }}
-mask_distro_background_units() {{ return 0; }}
 validate_streambox_systemd_units() {{ return 0; }}
 reload_audio_recovery_udev_rules_for_install() {{ return 0; }}
 {function}
@@ -813,6 +820,11 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
     }
     assert landed == {"build-sandbox.sh"}
     assert landed < {path.name for path in installer_shell_paths()}
+    # The on-box renderer lib deploy/bin/jasper-audio-hardware-reconcile falls
+    # back to has this one owner, ahead of every /usr/local/sbin reconciler run.
+    assert "/usr/local/lib/jasper/jasper-asound-render.sh" in _destinations(
+        tmp_path / "support", "install_jasper_support_files"
+    )
 
 
 def test_a_streambox_stages_a_subset_of_the_full_unit_generation(tmp_path):
@@ -824,7 +836,11 @@ def test_a_streambox_stages_a_subset_of_the_full_unit_generation(tmp_path):
     streambox = _destinations(tmp_path / "streambox", "_stage_streambox_unit_files")
     assert streambox
     assert streambox <= full, streambox - full
-    # The drop-in that keeps an OOM-killed nginx coming back shipped on the
-    # streambox path alone once; the doctor's installed-settings drift check
-    # expects OOMScoreAdjust=-450 regardless of profile.
-    assert "/systemd/nginx.service.d/jts-recovery.conf" in streambox & full
+    # Two drop-ins that shipped on one profile only in the past: the nginx
+    # recovery drop-in (the doctor's installed-settings drift check expects
+    # OOMScoreAdjust=-450 regardless of profile) and bluetooth's discovery
+    # timeout.
+    assert {
+        "/systemd/nginx.service.d/jts-recovery.conf",
+        "/systemd/bluetooth.service.d/jts-timeout.conf",
+    } <= streambox & full
