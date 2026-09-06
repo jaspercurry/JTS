@@ -231,7 +231,7 @@ and prose; Opus where a seam, a name, an order, or a hot path is decided.
 
 **Wave 0 — the ruler (Opus, one PR).** L1. Gate: deploy, speak ten turns,
 read `event=turn.timeline`; write the typical `speech_end → first_response`
-and `first_response → cue` numbers into the ledger row. Nothing in Wave 3 or
+and `first_response → first_write` numbers into the ledger row. Nothing in Wave 3 or
 6 starts without these.
 
 **Wave 1 — deafness and boot (Opus, three PRs).** (a) Push-to-talk refusals
@@ -372,7 +372,7 @@ the per-finding detail and the exact lines at `8777cff19`.
 
 Wave 0 — the ruler
 - [x] 0.1 `event=turn.timeline` + `/state.voice` last-turn fields + re-anchored first-chunk log (latency §G, providers E1–E3) — Opus; merged #4198
-- [ ] 0.2 Owner gate: ten turns read, typical numbers recorded here: speech_end→first_response = __ ms, first_response→speaker = __ ms
+- [ ] 0.2 Owner gate: ten turns read with `journalctl -u jasper-voice -o cat | grep event=turn.timeline | tail -10` (each line carries `outcome=complete` or `outcome=aborted`; read the complete ones, which are also the only ones `/state.voice.last_turn_ms` keeps). Typical numbers recorded here: `first_response_ms − speech_end_ms` = __ ms, `first_write_ms − first_response_ms` = __ ms. `first_write` is the hand-off to fan-in — the last moment the daemon can time; the ring/CamillaDSP/outputd tail past it is not measurable from this process
 
 Wave 1 — deafness and boot
 - [x] 1.1 Push-to-talk `CAP` and acquire-error cues + pins (voice-daemon H1, H2) — merged #4191; review also made all four manual refusal cues fire-and-forget (an awaited cue blocked the control-socket START reply past its 5 s timeout)
