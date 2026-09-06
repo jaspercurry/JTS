@@ -107,6 +107,7 @@ def minimal_tool_deps(**overrides: Any) -> ToolDeps:
         "weather": None,
         "spotify_device_name": "JTS",
         "spotify_setup_url": "",
+        "google_setup_url": "http://sentinel.invalid/google",
         "transit_tools": [],
         "google_routes": None,
         "ha": None,

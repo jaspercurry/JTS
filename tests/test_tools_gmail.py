@@ -222,24 +222,24 @@ async def test_unread_summary_no_accounts_points_to_wizard(monkeypatch):
         client_id="x", client_secret="y",
         service_factory=lambda *a: pytest.fail("should not be called"),
     )
-    [unread, _read] = make_gmail_tools(clients)
+    setup_url = "http://jts3.local/google"
+    [unread, _read] = make_gmail_tools(clients, setup_url)
     out = await unread()
     assert out["ok"] is False
-    assert "jts.local/google" in out["error"]
+    assert out["setup_url"] == setup_url
 
 
-def test_no_account_error_uses_resolved_hostname_not_a_literal(monkeypatch):
-    """S1: the wizard URL must track THIS speaker's own hostname — a
-    speaker renamed to jts3.local must never tell the model to visit
-    jts.local (a different speaker)."""
+def test_no_account_error_returns_passed_setup_url():
+    """The wizard URL comes from the caller (ultimately Config,
+    resolved against this speaker's own hostname) rather than being
+    computed here — google_errors just carries it through."""
     from jasper.tools import google_errors
 
-    monkeypatch.setattr(google_errors, "resolve_hostname", lambda: "jts3.local")
     clients = types.SimpleNamespace(list_account_names=lambda: [])
-    out = google_errors.no_account_error(clients, "")
+    setup_url = "http://jts3.local/google"
+    out = google_errors.no_account_error(clients, "", setup_url)
     assert out["ok"] is False
-    assert "jts3.local/google" in out["error"]
-    assert "jts.local" not in out["error"]
+    assert out["setup_url"] == setup_url
 
 
 async def test_unread_summary_unknown_account_lists_available(monkeypatch):

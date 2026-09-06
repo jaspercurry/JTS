@@ -218,11 +218,15 @@ def _get_thread_sync(service, thread_id: str) -> dict:
 # ----------------------------------------------------------------------
 
 
-def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
-    """`monitor` (an `UntrustedContentMonitor`, optional) is stamped whenever
-    a call returns real message content — that's untrusted third-party text
-    entering the model's context, which arms the consequential-action
-    confirmation window in the home_assistant tool."""
+def make_gmail_tools(
+    clients: "GoogleClients | None", setup_url: str = "", *, monitor=None,
+):
+    """`setup_url` is surfaced (as the `setup_url` field, and named in the
+    `error` sentence) when no account is linked or credentials need a
+    re-link. `monitor` (an `UntrustedContentMonitor`, optional) is stamped
+    whenever a call returns real message content — that's untrusted
+    third-party text entering the model's context, which arms the
+    consequential-action confirmation window in the home_assistant tool."""
     if clients is None:
         return []
 
@@ -256,7 +260,7 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return no_account_error(clients, account)
+            return no_account_error(clients, account, setup_url)
         try:
             n = int(limit)
         except (TypeError, ValueError):
@@ -267,13 +271,13 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
             n = _MAX_UNREAD
         service = clients.build_gmail(canonical)
         if service is None:
-            return no_credentials_error(canonical)
+            return no_credentials_error(canonical, setup_url)
         try:
             stub_list = await asyncio.to_thread(
                 _list_unread_sync, service, max_results=n,
             )
         except Exception as e:  # noqa: BLE001
-            return api_error(logger, "gmail", "Gmail", canonical, e)
+            return api_error("gmail", canonical, e)
         if not stub_list:
             return {
                 "ok": True,
@@ -366,18 +370,18 @@ def make_gmail_tools(clients: "GoogleClients | None", *, monitor=None):
         """
         canonical = clients.resolve_account(account)
         if canonical is None:
-            return no_account_error(clients, account)
+            return no_account_error(clients, account, setup_url)
         if not thread_id or not isinstance(thread_id, str):
             return {"ok": False, "error": "thread_id is required."}
         service = clients.build_gmail(canonical)
         if service is None:
-            return no_credentials_error(canonical)
+            return no_credentials_error(canonical, setup_url)
         try:
             thread = await asyncio.to_thread(
                 _get_thread_sync, service, thread_id,
             )
         except Exception as e:  # noqa: BLE001
-            return api_error(logger, "gmail", "Gmail", canonical, e)
+            return api_error("gmail", canonical, e)
         messages = (thread.get("messages") or [])[:_MAX_THREAD_MESSAGES]
         out_messages: list[dict[str, Any]] = []
         thread_subject = ""

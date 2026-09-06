@@ -533,6 +533,7 @@ def _build_registry(
         weather=weather,
         spotify_device_name=cfg.spotify_device_name,
         spotify_setup_url=cfg.spotify_setup_url,
+        google_setup_url=cfg.google_setup_url,
         transit_tools=transit_tools,
         google_routes=google_routes,
         ha=ha,

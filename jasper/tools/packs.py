@@ -81,6 +81,7 @@ class ToolDeps:
     weather: WeatherClient
     spotify_device_name: str
     spotify_setup_url: str
+    google_setup_url: str
     # Pre-built by transit.active_transit in run() (it owns the aclose
     # lifecycle); here just the flat list of decorated tool callables.
     transit_tools: Iterable[Callable[..., Any]]
@@ -350,14 +351,18 @@ TOOL_PACKS: tuple[CapabilityPack, ...] = (
     # third-party text (arming home_assistant's confirmation window).
     CapabilityPack(
         "calendar",
-        lambda d: make_calendar_tools(d.google_clients, monitor=d.untrusted_monitor),
+        lambda d: make_calendar_tools(
+            d.google_clients, d.google_setup_url, monitor=d.untrusted_monitor,
+        ),
         gate=_google_ready,
         category="Productivity",
         catalog_pack=GOOGLE_PACK,
     ),
     CapabilityPack(
         "gmail",
-        lambda d: make_gmail_tools(d.google_clients, monitor=d.untrusted_monitor),
+        lambda d: make_gmail_tools(
+            d.google_clients, d.google_setup_url, monitor=d.untrusted_monitor,
+        ),
         gate=_google_ready,
         category="Productivity",
         catalog_pack=GOOGLE_PACK,

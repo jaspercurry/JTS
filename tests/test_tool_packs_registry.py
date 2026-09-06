@@ -97,9 +97,9 @@ def _reference_registry(deps: ToolDeps) -> ToolRegistry:
         ):
             _register_tool_or_callable(reg, fn)
     if deps.google_clients is not None and deps.google_clients.list_account_names():
-        for fn in make_calendar_tools(deps.google_clients):
+        for fn in make_calendar_tools(deps.google_clients, deps.google_setup_url):
             _register_tool_or_callable(reg, fn)
-        for fn in make_gmail_tools(deps.google_clients):
+        for fn in make_gmail_tools(deps.google_clients, deps.google_setup_url):
             _register_tool_or_callable(reg, fn)
     for fn in make_diagnostic_tools(deps.wake_event_store):
         _register_tool_or_callable(reg, fn)
@@ -393,11 +393,14 @@ def test_real_build_registry_wrapper_produces_full_set():
     `transit_tools` from the bundle) — the walk would still pass.
     Call the real wrapper with gate-satisfying sentinels and assert the
     full ordered shipped set. `spotify_router` is a truthy sentinel so
-    `_build_router(cfg)` is never reached; `cfg` only needs the two
-    spotify string fields the bundle reads."""
+    `_build_router(cfg)` is never reached; `cfg` only needs the string
+    fields the bundle reads."""
     from jasper.voice.daemon_main import _build_registry
 
-    cfg = types.SimpleNamespace(spotify_device_name="JTS", spotify_setup_url="")
+    cfg = types.SimpleNamespace(
+        spotify_device_name="JTS", spotify_setup_url="",
+        google_setup_url="http://sentinel.invalid/google",
+    )
     reg = _build_registry(
         cfg,
         None,                     # renderer

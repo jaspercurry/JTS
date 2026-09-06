@@ -111,6 +111,7 @@ def _sentinel_tool_deps() -> ToolDeps:
     return ToolDeps(
         volume_coordinator=None, renderer=None, router=None, weather=None,
         spotify_device_name="JTS", spotify_setup_url="",
+        google_setup_url="http://sentinel.invalid/google",
         transit_tools=_sentinel_transit_tools(), google_routes=object(),
         ha=object(), timer_scheduler=object(),
         research_scheduler=object(),
