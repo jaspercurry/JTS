@@ -60,6 +60,7 @@ from jasper.voice.measurement_hold import (
 from jasper.voice_daemon import State, WakeLoop
 
 from ._async_wait import wait_signalled
+from ._log_events import event_fields, event_records
 
 
 class _FakeMonotonic:
@@ -322,8 +323,9 @@ async def test_drained_path_logs_the_wait(caplog) -> None:
         await wl._output_gate.end(episode)
         assert (await asyncio.wait_for(pause, timeout=1.0))["result"] == "ok"
 
-    assert "event=measurement.inflight_drained" in caplog.text
-    assert "active_kind=admin" in caplog.text
+    assert event_fields(caplog, "measurement.inflight_drained")["active_kind"] == (
+        "admin"
+    )
     await _close_window(wl)
 
 
@@ -345,14 +347,11 @@ async def test_pause_reports_additive_timeout_and_retains_cleanup(
     assert wl._measurement_active.is_set()
     assert gate.admission_paused
     # Never fail the window open silently.
-    assert "event=measurement.inflight_drain_timeout" in caplog.text
-    assert "active_kind=proactive" in caplog.text
-    warnings = [
-        r for r in caplog.records
-        if r.levelno == logging.WARNING
-        and "measurement.inflight_drain_timeout" in r.getMessage()
-    ]
-    assert len(warnings) == 1
+    assert event_fields(caplog, "measurement.inflight_drain_timeout")[
+        "active_kind"
+    ] == "proactive"
+    (record,) = event_records(caplog, "measurement.inflight_drain_timeout")
+    assert record.levelno == logging.WARNING
     # Waited exactly the module bound, once.
     assert gate.waits == [MEASUREMENT_INFLIGHT_DRAIN_SEC]
 
@@ -597,7 +596,7 @@ async def test_resume_restores_after_safety_join_timeout(
     assert cancellation_seen.is_set()
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
-    assert "event=measurement.safety_join_timeout" in caplog.text
+    assert len(event_records(caplog, "measurement.safety_join_timeout")) == 1
 
     release_safety.set()
     await asyncio.wait_for(safety, timeout=1.0)
@@ -1753,11 +1752,14 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     assert gate.end_calls == 1
     assert not gate.is_active
     if failed_phase is None:
-        assert "event=turn.begin_cleanup_failed" in caplog.text
-        assert "exc_type=_CleanupAbort" in caplog.text
+        assert event_fields(caplog, "turn.begin_cleanup_failed")["exc_type"] == (
+            "_CleanupAbort"
+        )
     else:
-        assert "event=turn.begin_cleanup_phase_failed" in caplog.text
-        assert f"phase={failed_phase}" in caplog.text
+        assert (
+            event_fields(caplog, "turn.begin_cleanup_phase_failed")["phase"]
+            == failed_phase
+        )
 
 
 async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(

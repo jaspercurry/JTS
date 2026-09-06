@@ -24,6 +24,8 @@ from jasper.voice.earcons import (
     _synthetic_audio_profile,
 )
 
+from ._log_events import event_fields
+
 _SR = 24000
 
 
@@ -166,7 +168,7 @@ def test_synthetic_audio_profile_fallback_log_is_structured(
         )
 
     assert profile.confidence == 0.0
-    assert "event=audio.synthetic_profile" in caplog.text
-    assert "result=fallback" in caplog.text
-    assert "model=synthetic-mute-click" in caplog.text
-    assert "voice=mute" in caplog.text
+    fields = event_fields(caplog, "audio.synthetic_profile")
+    assert fields["result"] == "fallback"
+    assert fields["model"] == "synthetic-mute-click"
+    assert fields["voice"] == "mute"
