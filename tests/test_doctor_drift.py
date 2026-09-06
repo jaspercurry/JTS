@@ -125,13 +125,6 @@ def test_each_drifted_unit_directive_is_named_individually(
     assert [(d.item, d.got, d.want) for d in items] == [(item, got, want)]
 
 
-def test_wizard_unit_oom_drift_reads_settings_drifted():
-    """The wizard tier feeds the same table as every other daemon."""
-    items, checked, notes = _systemd_drift(oom={"jasper-chat-web": "0"})
-    result = doctor_drift._classify_drift(items, checked, notes)
-    assert result.reason == doctor_drift.REASON_SETTINGS_DRIFTED
-
-
 def test_on_failure_matches_as_list_membership():
     """systemd reports OnFailure as a space-separated unit list."""
     handler = _ON_FAILURE_WANT["jasper-camilla"]

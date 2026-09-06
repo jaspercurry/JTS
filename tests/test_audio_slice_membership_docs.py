@@ -62,12 +62,18 @@ def _explicit_oom_adjustments() -> dict[str, int]:
         name = (
             path.parent.name.removesuffix(".service.d")
             if path.suffix == ".conf"
-            else path.stem
+            # The streambox web unit installs AS jasper-web.service
+            # (systemd-units.sh), so it keys under that name too.
+            else path.stem.removesuffix("-streambox")
         )
         for line in path.read_text().splitlines():
             match = re.fullmatch(r"OOMScoreAdjust=([+-]?\d+)", line.strip())
             if match:
-                adjustments[name] = int(match.group(1))
+                value = int(match.group(1))
+                assert adjustments.get(name, value) == value, (
+                    f"{name} OOMScoreAdjust diverges between its unit files"
+                )
+                adjustments[name] = value
     return adjustments
 
 
