@@ -483,8 +483,8 @@ warn_if_pi_host_on_gadget_network() {
  ⚠ ${PI_HOST} resolves to ${matched}, inside the USB gadget
    management allocation (${matched_cidr}).
    If the gadget's composition changes mid-install, this deploy's own
-   link drops; the install keeps running as its own unit and this
-   reconnects (event=deploy.install_poll_reconnect). To avoid the gap,
+   link drops (#2340); the install keeps running as its own unit and
+   this reconnects (event=deploy.install_poll_reconnect). To avoid the gap,
    deploy over the Wi-Fi/LAN address instead:
      PI_HOST=<pi-lan-hostname-or-ip> bash scripts/deploy-to-pi.sh
 ─────────────────────────────────────────────────────────────
