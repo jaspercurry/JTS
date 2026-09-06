@@ -11,7 +11,7 @@ Usage:
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
     sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
     sudo /opt/jasper/.venv/bin/jasper-doctor --only network  # one module
-    sudo /opt/jasper/.venv/bin/jasper-doctor --failing   # red rows only
+    sudo /opt/jasper/.venv/bin/jasper-doctor --failing   # fail/warn rows only
 
 The doctor reads ``/etc/jasper/jasper.env`` and (if present)
 ``/var/lib/jasper/voice_provider.env`` itself. Exit 0 if all critical
@@ -45,7 +45,7 @@ from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 
 from ._harness import run_async
-from ._registry import MODULE_ROSTER
+from ._registry import CORE_MODULES, MODULE_ROSTER
 from ._shared import (
     BOLD,
     CheckResult,
@@ -61,13 +61,21 @@ from ._shared import (
     summarize,
 )
 
+# The harness produced no rows at all (e.g. `--only` and `--core` name
+# disjoint module sets) — a scope bug, not a clean run; never render as
+# `ok`/`all checks passed`.
+REASON_EMPTY_SELECTION = "empty_selection"
+
 
 def render(
     results: list[CheckResult], *, core: bool = False, failing: bool = False,
 ) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    rows = [r for r in results if r.status != "ok"] if failing else results
+    rows = (
+        [r for r in results if r.status in ("fail", "warn")]
+        if failing else results
+    )
     for r in rows:
         if r.status == "ok":
             color, mark = GREEN, "✓"
@@ -233,7 +241,7 @@ async def _watch_loop(
     interval: float,
     *,
     core_only: bool = False,
-    modules: frozenset[str] | None = None,
+    only: str | None = None,
 ) -> int:
     """Run checks every `interval` seconds, print one line per pass.
     Returns 0 on Ctrl-C."""
@@ -244,7 +252,7 @@ async def _watch_loop(
     )
     try:
         while True:
-            results = await run_async(cfg, core_only=core_only, modules=modules)
+            results = await run_async(cfg, core_only=core_only, only=only)
             print(_watch_line(results), flush=True)
             await asyncio.sleep(interval)
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -279,8 +287,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--failing", action="store_true",
-        help="Print only rows that are not ok. Counts and exit code are "
-             "unchanged.",
+        help="Text render: print only fail/warn rows (skipped stays hidden "
+             "too). Counts and exit code are unchanged. --json and --watch "
+             "already print one row/line per check and filter themselves.",
     )
     parser.add_argument(
         "--json", action="store_true",
@@ -295,11 +304,15 @@ def main() -> None:
              "root-fidelity report at /system/diagnostics (WS1 Phase 3b-2).",
     )
     args = parser.parse_args()
+    if args.only and args.core and args.only not in CORE_MODULES:
+        parser.error(
+            f"--only {args.only} is not in the --core subset "
+            f"({', '.join(sorted(CORE_MODULES))})"
+        )
     # --out implies --json so the capture oneshot can pass either
     # `--json --out PATH` or a bare `--out PATH`.
     if args.out:
         args.json = True
-    modules = frozenset({args.only}) if args.only else None
     _load_env_files()
     try:
         install_profile = read_install_profile()
@@ -323,11 +336,11 @@ def main() -> None:
         sys.exit(1)
     if args.watch:
         sys.exit(asyncio.run(
-            _watch_loop(cfg, args.interval, core_only=args.core, modules=modules)
+            _watch_loop(cfg, args.interval, core_only=args.core, only=args.only)
         ))
     started_at = time.monotonic()
     try:
-        results = asyncio.run(run_async(cfg, core_only=args.core, modules=modules))
+        results = asyncio.run(run_async(cfg, core_only=args.core, only=args.only))
     except Exception as e:  # noqa: BLE001
         if args.json:
             detail = _exception_detail(e)
@@ -341,6 +354,18 @@ def main() -> None:
             )
             sys.exit(0 if args.out else 1)
         raise
+    if not results:
+        # Backstop for a scope bug reaching here despite the --only/--core
+        # guard above: never render zero rows as a clean, passing run.
+        detail = "no checks matched the given scope"
+        if args.json:
+            _emit_json(
+                _error_payload(detail, detail=detail, reason=REASON_EMPTY_SELECTION),
+                args.out,
+            )
+            sys.exit(0 if args.out else 1)
+        print(f"{RED}{detail}.{RESET}", file=sys.stderr)
+        sys.exit(1)
     if args.json:
         sys.exit(render_json(
             results,

@@ -84,10 +84,10 @@ def _build_doctor_checks(
     install_profile: str,
     *,
     core_only: bool = False,
-    modules: frozenset[str] | None = None,
+    only: str | None = None,
 ) -> list[_RunnableDoctorCheck]:
     checks: list[_RunnableDoctorCheck] = []
-    for entry in registered_checks(core_only=core_only, modules=modules):
+    for entry in registered_checks(core_only=core_only, only=only):
         name = _registered_check_name(entry)
         skip_detail = _doctor_skip_detail(entry, install_profile)
         if skip_detail:
@@ -163,7 +163,7 @@ async def run_async(
     cfg: Config | SimpleNamespace,
     *,
     core_only: bool = False,
-    modules: frozenset[str] | None = None,
+    only: str | None = None,
     max_concurrency: int = DOCTOR_MAX_CONCURRENCY,
     check_timeout: float = DOCTOR_CHECK_TIMEOUT_SECONDS,
 ) -> list[CheckResult]:
@@ -172,14 +172,14 @@ async def run_async(
     Checks run concurrently (most are subprocess/socket/file probes) but
     results are gathered in registry order so CLI and dashboard output stay
     stable. ``exclusive_group=`` serializes hardware-sensitive probes within
-    that lane while unrelated checks continue. ``modules``, when given,
-    restricts the run to that module set (see ``registered_checks``).
+    that lane while unrelated checks continue. ``only``, when given,
+    restricts the run to that one module (see ``registered_checks``).
     """
     evidence.reset()
     evidence.set_check_timeout(check_timeout)
     install_profile = read_install_profile()
     checks = _build_doctor_checks(
-        cfg, install_profile, core_only=core_only, modules=modules,
+        cfg, install_profile, core_only=core_only, only=only,
     )
     semaphore = asyncio.Semaphore(max_concurrency)
     exclusive_locks = {

@@ -697,17 +697,15 @@ def test_core_scope_does_not_build_the_voice_config(monkeypatch, capsys):
     }
 
 
-def test_only_flag_reaches_the_harness_as_a_module_set(monkeypatch, capsys):
-    """`--only` threads a module set into the harness the same way `--core`
-    threads a bool, and the run it produces is exactly the registry's own
-    filtered slice — not a display-side narrowing."""
-    seen: dict[str, object] = {}
+def test_only_flag_reaches_the_harness(monkeypatch, capsys):
+    """`--only` threads the module name into the harness the same way
+    `--core` threads a bool, and the run it produces is exactly the
+    registry's own filtered slice — not a display-side narrowing."""
 
     async def fake_run_async(cfg, **scope):
-        seen.update(scope)
         return [
             CheckResult(_harness._registered_check_name(entry), "ok", "ran")
-            for entry in doctor.registered_checks(modules=scope.get("modules"))
+            for entry in doctor.registered_checks(only=scope.get("only"))
         ]
 
     code, payload = _main_json(
@@ -716,10 +714,9 @@ def test_only_flag_reaches_the_harness_as_a_module_set(monkeypatch, capsys):
     )
 
     assert code == 0
-    assert seen["modules"] == frozenset({"renderers"})
     expected = {
         _harness._registered_check_name(entry)
-        for entry in doctor.registered_checks(modules=frozenset({"renderers"}))
+        for entry in doctor.registered_checks(only="renderers")
     }
     assert expected and {row["name"] for row in payload["results"]} == expected
 
@@ -731,6 +728,36 @@ def test_only_rejects_a_module_the_roster_does_not_name(monkeypatch):
         doctor.main()
 
     assert exit_info.value.code != 0
+
+
+def test_only_outside_core_is_rejected_before_running(monkeypatch, capsys):
+    """`network` is a real module but not in CORE_MODULES: --only network
+    --core must not silently run zero checks and report success (#4253)."""
+    monkeypatch.setattr(
+        sys, "argv", ["jasper-doctor", "--only", "network", "--core"],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        doctor.main()
+
+    assert exit_info.value.code != 0
+    assert "event=deploy.health" not in capsys.readouterr().out
+
+
+def test_only_voice_on_streambox_yields_skipped_rows_not_an_empty_run(
+    monkeypatch,
+):
+    """voice is a real, valid module that the streambox profile omits
+    wholesale (ADR-0217): --only voice must still produce voice's rows,
+    each skipped with REASON_NOT_INSTALLED — not a silent zero-row run."""
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "streambox")
+    cfg = _cli._doctor_config_from_env("streambox")
+
+    results = asyncio.run(doctor.run_async(cfg, only="voice"))
+
+    assert results
+    assert all(r.status == "skipped" for r in results)
+    assert all(r.reason == _harness.REASON_NOT_INSTALLED for r in results)
 
 
 def test_failing_flag_keeps_the_full_run_summary(capsys):
@@ -753,6 +780,22 @@ def test_failing_flag_keeps_the_full_run_summary(capsys):
         "status": "fail", "fail": "1", "warn": "1", "rows": "3",
         "speaker_silent": "false",
     }
+
+
+def test_failing_flag_hides_skipped_rows(capsys):
+    """A streambox's skipped rows are dim, not red: --failing must not
+    resurrect them as if they were a problem (#4253)."""
+    results = [
+        CheckResult("alpha", "ok", "up"),
+        CheckResult("bravo", "skipped", "not installed", reason="not_installed"),
+        CheckResult("charlie", "fail", "down", reason="c_down"),
+    ]
+
+    doctor.render(list(results), failing=True)
+    out = capsys.readouterr().out
+
+    assert "bravo" not in out
+    assert "charlie" in out
 
 
 @pytest.mark.parametrize(
