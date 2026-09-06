@@ -383,6 +383,9 @@ Run for real from a Pi-local checkout:
      JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
    - A legacy persisted endpoint/satellite marker normalizes to
      streambox, so the box auto-migrates to the streambox install path.
+   - Mark the install in progress (/run/jasper-install/in_progress) so
+     udev- and timer-started reconcilers skip the half-synced tree; the
+     accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. The real install fails
@@ -541,6 +544,9 @@ Profile guard:
   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
   - Refuse later full/streambox tier changes unless
     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
+  - Mark the install in progress (/run/jasper-install/in_progress) so
+    udev- and timer-started reconcilers skip the half-synced tree; the
+    accessory-reconcile path watcher is stopped and re-armed with it.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
   - Informational; orthogonal to the profile. Build strategy keys off
