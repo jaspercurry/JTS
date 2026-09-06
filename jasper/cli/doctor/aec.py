@@ -40,8 +40,7 @@ from ...chip_aec.policy import (
     effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
-from ...env_load import env_file_path
-from ...env_load import parse_env_file as _shared_parse_env_file
+from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
 from ..aec_bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,

@@ -47,11 +47,7 @@ def check_env_file() -> CheckResult:
 
 @doctor_check()
 def check_env_file_secrets() -> CheckResult:
-    """`/etc/jasper/jasper.env` is `0640` group `jasper` — readable by every
-    daemon. `/var/lib/jasper-secrets/` and `/var/lib/jasper-intsecrets/` are
-    the only legal home for a secret value; a non-empty secret-shaped key
-    left here defeats that compartment split regardless of how it got
-    there (hand edit, restore, a pre-migration seed)."""
+    """`/etc/jasper/jasper.env` is `0640` group `jasper`, so a secret resting there is readable by every daemon."""
     path = env_file_path()
     state = read_env_file_state(path)
     if state.status == "missing":

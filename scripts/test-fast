@@ -183,15 +183,11 @@ while IFS= read -r changed; do
     tests/voice_eval/*)
       ;;
     .env.example)
-      # No jasper/*.py path component, so neither jasper/*/*.py) below nor
-      # any other arm sees it — without this arm nothing here ran the tests
-      # that parse this file's actual content on a template-only edit.
-      add_test_if_present "tests/test_config.py"
-      add_test_if_present "tests/test_env_example_matches_config_defaults.py"
-      add_test_if_present "tests/test_correction_crossover_v2_endpoints.py"
-      add_test_if_present "tests/test_fanin_host_clock_contract.py"
-      add_test_if_present "tests/test_install_helpers.py"
-      add_test_if_present "tests/test_wire_contracts.py"
+      # No jasper/*.py path component, so grep for the literal path across
+      # every test file that reads it (fixtures/deploy-bin arms' style).
+      while IFS= read -r env_example_test; do
+        add_test_if_present "${env_example_test}"
+      done < <(grep -l -- '.env.example' tests/test_*.py 2>/dev/null || true)
       ;;
     jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh)
       # The Python and bash redactors are pinned side by side against one

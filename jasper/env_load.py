@@ -48,8 +48,11 @@ BASE_ENV_PATH = "/etc/jasper/jasper.env"
 
 
 def env_file_path() -> str:
-    """``BASE_ENV_PATH``, overridable via ``JASPER_ENV_FILE`` (test/probe seam)."""
-    return os.environ.get("JASPER_ENV_FILE", BASE_ENV_PATH)
+    """``BASE_ENV_PATH``, overridable via ``JASPER_ENV_FILE`` (test/probe seam).
+
+    An exported-but-empty ``JASPER_ENV_FILE`` falls back to the default,
+    same as an unset one."""
+    return os.environ.get("JASPER_ENV_FILE") or BASE_ENV_PATH
 
 
 # UNION of every unit's persistent EnvironmentFile= (not one daemon's).
@@ -215,10 +218,17 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     ``EnvironmentFile=`` ordering. This is intentionally separate from
     :func:`load_env_files`: some callers need CLI-style "shell wins"
     semantics, while long-lived daemons launching subprocesses need a
-    freshly-read view of the wizard-owned SSOT files."""
+    freshly-read view of the wizard-owned SSOT files.
+
+    The base layer resolves through :func:`env_file_path`, so a
+    ``JASPER_ENV_FILE`` override reaches every caller of this function
+    (and of :func:`load_env_files`/:func:`outputd_reconciled_env`, both
+    built on it) the same way."""
     files = paths if paths is not None else ENV_FILES
     merged: dict[str, str] = {}
     for path in files:
+        if path == BASE_ENV_PATH:
+            path = env_file_path()
         merged.update(parse_env_file(path))
     return merged
 

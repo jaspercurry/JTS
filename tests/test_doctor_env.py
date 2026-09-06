@@ -13,7 +13,7 @@ from jasper.cli.doctor import _shared, env, grouping
 from jasper.cli.doctor.env import _classify_state_group_write
 
 from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
-from .test_secret_redaction import SECRET_ENV_NAMES
+from .secret_env_fixtures import SECRET_ENV_NAMES
 
 
 # ---------------------------------------------------------------- env loading
