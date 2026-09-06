@@ -32,7 +32,9 @@ from jasper.renderer import RendererClient
 from jasper.volume_observers import VolumeObserver
 from jasper.volume_coordinator import Source
 
+from tests._async_wait import wait_signalled
 from tests._librespot_state import write_librespot_state
+from tests._log_events import event_field_maps
 
 
 @pytest.fixture(autouse=True)
@@ -480,6 +482,45 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
     assert any(
         "reconciler raised" in r.message for r in caplog.records
     )
+
+
+async def test_tick_failure_speaks_on_its_edges_not_every_second(
+    tmp_path, caplog,
+):
+    """A daemon that stays down would otherwise be 3,600 WARN lines an hour at
+    POLL_INTERVAL_SEC. One line opens the fault, one closes it and says how
+    long it held. Delete with the events.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="jasper.volume_observers")
+    obs = VolumeObserver(
+        _FakeCoordinator(), librespot_state_path=str(tmp_path / "missing.env"),
+    )
+    obs.POLL_INTERVAL_SEC = 0.0
+    settled = asyncio.Event()
+    ticks = 0
+
+    async def flaky_tick() -> None:
+        nonlocal ticks
+        ticks += 1
+        if ticks <= 3:
+            raise RuntimeError("busctl vanished")
+        if ticks >= 5:
+            settled.set()
+
+    obs._tick = flaky_tick
+    task = asyncio.create_task(obs._run())
+    try:
+        await wait_signalled(settled, "observer recovered", producer=task)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    (failed,) = event_field_maps(caplog, "volume.observer_tick_failed")
+    assert failed["error"] == "RuntimeError: busctl vanished"
+    (recovered,) = event_field_maps(caplog, "volume.observer_tick_recovered")
+    assert recovered["consecutive_failures"] == "3"
 
 
 # ---------------------------------------------------------------------------

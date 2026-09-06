@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests._async_wait import wait_signalled
+from tests._log_events import event_field_maps
 
 from jasper import bluealsa_probe
 from jasper import spotify_router as spotify_router_mod
@@ -2651,6 +2652,32 @@ async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
     await coord.maybe_reconcile_camilla()
 
     assert client.db == pytest.approx(expected_db)
+
+
+async def test_deep_quiet_refusal_speaks_once_per_episode(tmp_path, caplog):
+    """The refusal is evaluated at the observer's 1 Hz for as long as the
+    unowned duck holds, so it is reported on the episode's edge — and a NEW
+    episode is a new line, not silence. Delete with the event.
+    """
+    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    expected_db = percent_to_db(70)
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=expected_db - 25.0, level=70,
+        mark_user_change=True,
+    )
+
+    for _ in range(3):
+        await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == []
+    cam._db = expected_db  # the unowned writer let go
+    await coord.maybe_reconcile_camilla()
+    cam._db = expected_db - 25.0  # and a second episode opens
+    await coord.maybe_reconcile_camilla()
+
+    skips = event_field_maps(
+        caplog, "volume.reconcile_skipped", reason="deep_quiet_unowned",
+    )
+    assert [fields["drift_db"] for fields in skips] == ["+25.00", "+25.00"]
 
 
 # ---------- graph-swap duck composed with CueDuck ---------------------------

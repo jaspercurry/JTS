@@ -27,7 +27,8 @@ import jasper.mux as mux_module
 from jasper.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 
-from ._async_wait import wait_signalled
+from ._async_wait import wait_signalled, wait_until
+from ._log_events import event_records
 from .fake_clock_fixtures import FakeClock
 
 REPO = Path(__file__).resolve().parents[1]
@@ -2425,6 +2426,44 @@ async def test_one_pause_failure_does_not_abort_pausing_the_rest(
     assert mux._winner is Source.AIRPLAY
     pause_targets = {c.args[0] for c in mux._pause.await_args_list}
     assert pause_targets == {Source.SPOTIFY, Source.BLUETOOTH}
+
+
+async def test_daemon_main_reports_its_own_life_once(
+    monkeypatch, tmp_path, caplog,
+):
+    """The daemon's entry point brackets its run with one ready line and one
+    shutdown line, the second reached by the same cancellation its SIGTERM
+    handler delivers — the default disposition would kill the interpreter
+    with `run()` still holding the fan-in gate. Delete with the events.
+    """
+    import jasper.source_events as source_events
+
+    caplog.set_level(logging.INFO, logger=mux_module.__name__)
+    monkeypatch.setattr(
+        mux_module, "MUX_CONTROL_SOCKET_PATH", str(tmp_path / "control.sock"),
+    )
+    monkeypatch.setattr(
+        source_events, "start_source_event_tasks", lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(Mux, "_fanin_none_best_effort", AsyncMock())
+    monkeypatch.setattr(Mux, "_reconcile", AsyncMock())
+    task = asyncio.create_task(
+        mux_module._amain(
+            SimpleNamespace(librespot_state=str(tmp_path / "librespot.env")),
+        ),
+    )
+    try:
+        # Hang backstop, never a timing assertion: the socket binds in the
+        # next loop iteration or not at all.
+        await wait_until(
+            lambda: bool(event_records(caplog, "mux.ready")), timeout=10.0,
+        )
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert len(event_records(caplog, "mux.ready")) == 1
+    assert len(event_records(caplog, "mux.shutdown")) == 1
 
 
 def test_debounce_ticks_constant_removed():

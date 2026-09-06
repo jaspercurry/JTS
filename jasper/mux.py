@@ -83,6 +83,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -334,10 +335,6 @@ class Mux:
         self._last_alert_reconcile_at = 0.0
 
     async def run(self) -> None:
-        logger.info(
-            "jasper-mux starting (alerts=native, patrol=%.1fs, librespot_state=%s)",
-            self.POLL_INTERVAL_SEC, self._librespot_state_path,
-        )
         await self._fanin_none_best_effort(reason="startup")
         control_task = asyncio.create_task(self._run_control_server())
         from .source_events import start_source_event_tasks
@@ -1467,7 +1464,9 @@ class Mux:
                 os.chmod(MUX_CONTROL_SOCKET_PATH, 0o660)
             except OSError as e:
                 logger.warning("mux control socket chmod failed: %s", e)
-            logger.info("mux control socket listening at %s", MUX_CONTROL_SOCKET_PATH)
+            log_event(logger, "mux.ready", socket=MUX_CONTROL_SOCKET_PATH,
+                      patrol_s=self.POLL_INTERVAL_SEC,
+                      librespot_state=self._librespot_state_path)
             async with server:
                 await server.serve_forever()
         except asyncio.CancelledError:
@@ -1942,7 +1941,21 @@ def _make_duck_active_probe() -> Any:
 
 async def _amain(args: argparse.Namespace) -> None:
     mux = Mux(librespot_state_path=args.librespot_state)
-    await mux.run()
+    # Cancel on the signal rather than letting the default disposition kill the
+    # interpreter: run()'s finally releases the fan-in gate and the renderer
+    # event tasks, and it only runs if asyncio unwinds first.
+    current = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    if current is not None:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(sig, current.cancel)
+    try:
+        await mux.run()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        log_event(logger, "mux.shutdown")
 
 
 def main() -> None:
