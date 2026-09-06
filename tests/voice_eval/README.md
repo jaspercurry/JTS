@@ -227,22 +227,17 @@ test_subway.py                  oracles.py
 VoiceEvalHarness                Subway Now (independent path)
   │
   ├─ tts.synth() ── audio_cache/ (SHA-256 cached)
-  ├─ traced_registry() wraps each tool fn → emits to a module-level global
+  ├─ traced_registry() wraps each tool fn → emits via jasper.voice.trace's sink
   ├─ LiveConnection (real Gemini / OpenAI / Grok session)
   │   ├─ acquire_turn() → send_audio() → end_input() → audio_out()
   │   └─ adapter emits text_out events on text deltas (native transcripts)
   └─ writes transcripts_out/*.md + traces_out/*.jsonl
 ```
 
-Production code paths are not touched by the harness itself. The
-`jasper.voice.trace` module's `emit()` is called from production code
-(`jasper/voice/openai_session.py`'s `_dispatch_event`, inherited by the
-Grok adapter) on every transcript-delta event, and no-ops when no trace
-is active — a trace is only set active during voice-eval harness runs,
-never in live sessions. Zero production overhead. `traced_registry()`
-lives alongside the harness in `tests/voice_eval/trace_registry.py`,
-not in `jasper.voice.trace` — it wraps tool executors to emit
-`tool_call` / `tool_return` events and is eval-harness-only.
+Production code paths are not touched by the harness itself — see
+`jasper/voice/trace.py` for the production `emit()` seam and
+`tests/voice_eval/turn_trace.py` / `trace_registry.py` for how the
+harness turns that into per-turn traces and tool-call wrapping.
 
 ---
 

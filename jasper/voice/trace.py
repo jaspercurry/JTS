@@ -2,205 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-turn structured tracing for the voice loop.
+"""Production seam for per-turn tracing: `emit()` plus an installable sink.
 
-The voice-eval harness records what happened during a turn — every tool
-call (with args and result), every audio chunk in/out, session
-open/close — by setting a `TurnTrace` on a module-level "active trace"
-global for the duration of the turn, and reading it back when the turn
-ends. (See the comment above `_active_trace` for why this is a module
-global rather than a `ContextVar`.)
+Zero overhead, zero behaviour change when no sink is installed —
+`emit()` no-ops. Called from `openai_session.py`'s `_dispatch_event`
+on every transcript-delta event (inherited by Grok); never test-only.
 
-The schema is intentionally simple and provider-agnostic so the same
-shape can be emitted by either the synthetic test path or the live
-daemon path. Production trace ingestion (taking real user sessions
-and converting them into regression scenarios) is V2; the schema is
-ready for it today.
-
-Importing this module adds zero overhead and zero behaviour change to
-the daemon when no trace is active — the module global defaults to
-`None` and the emit helpers no-op when nothing is listening. In
-production, `emit()` is called directly from
-`jasper/voice/openai_session.py`'s `_dispatch_event` on every
-`response.audio_transcript.delta` /
-`response.output_audio_transcript.delta` / `response.output_text.delta`
-event (inherited by the Grok adapter too) — it is not test-only, though
-it stays a no-op there unless a trace has been set active.
-
-The tool-registry tracing wrapper (`traced_registry`, eval-harness-only)
-lives in `tests/voice_eval/trace_registry.py`, not here — this module
-has no dependency on `jasper.tools`.
-"""
+`TurnTrace`, the active-trace bookkeeping, and the tool-registry
+wrapper that calls `emit` live with the eval harness instead, in
+`tests/voice_eval/turn_trace.py` and `tests/voice_eval/trace_registry.py`."""
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
+
+_sink: "Callable[[str, dict[str, Any]], None] | None" = None
 
 
-@dataclass
-class TraceEvent:
-    """One structured event in a turn.
-
-    `kind` is the event type — current vocabulary:
-
-      session_open   payload={provider, model, system_instruction_hash}
-      turn_start     payload={turn_id}
-      audio_in       payload={n_bytes, sample_rate}
-      tool_call      payload={name, args}
-      tool_return    payload={name, result, elapsed_ms, error?}
-      audio_out      payload={n_bytes}            (per chunk)
-      turn_complete  payload={tokens, usage_breakdown?}
-      turn_end       payload={reason}             (release/lost/error)
-      session_close  payload={reason}
-
-    Add new kinds as needed — consumers should ignore unknown kinds
-    so we can extend without coordinated changes."""
-    ts: float                # time.monotonic() at emission
-    kind: str
-    payload: dict[str, Any]
-
-
-@dataclass
-class TurnTrace:
-    """A complete record of one voice turn.
-
-    Mutable during the turn, snapshotted after. The harness creates a
-    fresh `TurnTrace` per scenario invocation, sets it as the active
-    trace via `set_active`, runs the turn, then reads `.events` for
-    assertions and writes the transcript."""
-    turn_id: str
-    session_id: str
-    provider: str
-    started_at: float = field(default_factory=time.monotonic)
-    events: list[TraceEvent] = field(default_factory=list)
-
-    def append(self, kind: str, payload: dict[str, Any]) -> None:
-        self.events.append(TraceEvent(time.monotonic(), kind, dict(payload)))
-
-    def tool_calls(self) -> list[TraceEvent]:
-        return [e for e in self.events if e.kind == "tool_call"]
-
-    def tool_returns(self) -> list[TraceEvent]:
-        return [e for e in self.events if e.kind == "tool_return"]
-
-    def spoken_text(self) -> str:
-        """Concatenated assistant-spoken text across the turn.
-
-        Built from `text_out` events that each provider's adapter
-        emits when the server sends transcript deltas alongside
-        audio. All three current providers (Gemini Live, OpenAI
-        Realtime, xAI Grok Voice Agent) stream these natively —
-        no STT pass needed, no Whisper dependency, 100% accurate
-        (this IS the text the model emitted, not a transcription).
-
-        Empty string when no text deltas arrived — meaningful in
-        its own right (model produced audio without transcripts,
-        or this provider's text channel isn't wired). The harness
-        falls back to "skip text assertion" when this happens."""
-        return "".join(
-            e.payload.get("delta") or ""
-            for e in self.events
-            if e.kind == "text_out"
-        )
-
-    def tool_pairs(self) -> list[tuple[TraceEvent, TraceEvent | None]]:
-        """Pair each tool_call with its matching tool_return (by name and
-        order). Returns are matched FIFO per name — handles the case
-        where the model calls the same tool twice in one turn."""
-        pending: dict[str, list[TraceEvent]] = {}
-        pairs: list[tuple[TraceEvent, TraceEvent | None]] = []
-        for ev in self.events:
-            if ev.kind == "tool_call":
-                pairs.append((ev, None))
-                pending.setdefault(ev.payload["name"], []).append(ev)
-            elif ev.kind == "tool_return":
-                callers = pending.get(ev.payload["name"]) or []
-                if not callers:
-                    continue
-                call = callers.pop(0)
-                for i, (c, r) in enumerate(pairs):
-                    if c is call:
-                        pairs[i] = (c, ev)
-                        break
-        return pairs
-
-
-# Module-level "active trace" — deliberately NOT a ContextVar.
-#
-# Originally this was `ContextVar`, intended to keep trace state
-# task-local. That choice silently broke in practice: when the
-# OpenAI adapter's `_receive_loop` task is spawned by
-# `connection.start()`, it captures a snapshot of the current
-# context at spawn time. The harness opens the connection BEFORE
-# setting an active trace per turn, so the receive-loop task sees
-# `None` forever — even when the harness later calls
-# `set_active(trace)` from its own task. The wrapper functions in
-# `tests/voice_eval/trace_registry.py`'s `traced_registry` run inside
-# the receive-loop's task (the adapter dispatches tool calls there), so
-# their `emit` calls would no-op, and tool calls never reached the trace.
-#
-# Confirmed 2026-05-21 by logging server events: OpenAI emitted
-# `response.output_item.added` with `type: function_call,
-# name: get_subway_arrivals` — i.e. the model called the tool —
-# yet `_active.get()` returned `None` inside the wrapper, so the
-# trace had `tool_call_records == []`.
-#
-# Switching to a module-level global trades ContextVar's task-isolation
-# guarantee for cross-task visibility. The harness is single-process,
-# single-event-loop, single-turn-at-a-time, so the isolation was
-# never needed; the visibility absolutely was.
-_active_trace: "TurnTrace | None" = None
-
-
-def active() -> "TurnTrace | None":
-    """Return the currently-active trace, or None if no tracing is on."""
-    return _active_trace
-
-
-def set_active(trace: "TurnTrace | None"):
-    """Set the active trace. Returns the previous value so the caller
-    can `reset_active(token)` to restore — same set/reset shape as the
-    old ContextVar API.
-
-    Asserts no two non-None traces are active at once. Today's voice-eval
-    harness runs scenarios serially against one connection (the
-    ``_connection_lock`` enforces single-flight), so this assertion is
-    defensive only — but if a future maintainer adds concurrent
-    `ask()` calls, the existing module-global pattern would silently
-    interleave events into whichever trace happened to be set last.
-    The assertion turns that subtle data-corruption bug into a loud
-    AssertionError at the source."""
-    global _active_trace
-    assert not (trace is not None and _active_trace is not None), (
-        "trace.set_active: another trace is already active "
-        f"({_active_trace!r}); concurrent turns are not supported"
-    )
-    prev = _active_trace
-    _active_trace = trace
-    return prev
-
-
-def reset_active(token) -> None:
-    """Restore the trace to a previous value returned by `set_active`."""
-    global _active_trace
-    _active_trace = token
+def set_sink(sink: "Callable[[str, dict[str, Any]], None] | None") -> None:
+    """Install (or, with `None`, clear) the module-level trace sink."""
+    global _sink
+    _sink = sink
 
 
 def emit(kind: str, payload: dict[str, Any] | None = None) -> None:
-    """Append an event to the active trace. No-op when nothing is
+    """Forward one event to the installed sink. No-op when nothing is
     listening (the common production case)."""
-    trace = _active_trace
-    if trace is None:
-        return
-    trace.append(kind, payload or {})
+    if _sink is not None:
+        _sink(kind, payload or {})
 
 
-__all__ = [
-    "TraceEvent",
-    "TurnTrace",
-    "active",
-    "set_active",
-    "reset_active",
-    "emit",
-]
+__all__ = ["emit", "set_sink"]
