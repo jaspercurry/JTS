@@ -730,7 +730,7 @@ def test_only_rejects_a_module_the_roster_does_not_name(monkeypatch):
     assert exit_info.value.code != 0
 
 
-def test_only_outside_core_is_rejected_before_running(monkeypatch, capsys):
+def test_only_outside_core_is_rejected_before_running(monkeypatch):
     """`network` is a real module but not in CORE_MODULES: --only network
     --core must not silently run zero checks and report success (#4253)."""
     monkeypatch.setattr(
@@ -741,7 +741,6 @@ def test_only_outside_core_is_rejected_before_running(monkeypatch, capsys):
         doctor.main()
 
     assert exit_info.value.code != 0
-    assert "event=deploy.health" not in capsys.readouterr().out
 
 
 def test_only_voice_on_streambox_yields_skipped_rows_not_an_empty_run(

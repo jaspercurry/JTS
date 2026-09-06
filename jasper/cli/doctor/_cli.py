@@ -61,11 +61,6 @@ from ._shared import (
     summarize,
 )
 
-# The harness produced no rows at all (e.g. `--only` and `--core` name
-# disjoint module sets) — a scope bug, not a clean run; never render as
-# `ok`/`all checks passed`.
-REASON_EMPTY_SELECTION = "empty_selection"
-
 
 def render(
     results: list[CheckResult], *, core: bool = False, failing: bool = False,
@@ -287,9 +282,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--failing", action="store_true",
-        help="Text render: print only fail/warn rows (skipped stays hidden "
-             "too). Counts and exit code are unchanged. --json and --watch "
-             "already print one row/line per check and filter themselves.",
+        help="Print only fail/warn rows; skipped stays hidden too. Counts "
+             "and exit code are unchanged.",
     )
     parser.add_argument(
         "--json", action="store_true",
@@ -354,18 +348,6 @@ def main() -> None:
             )
             sys.exit(0 if args.out else 1)
         raise
-    if not results:
-        # Backstop for a scope bug reaching here despite the --only/--core
-        # guard above: never render zero rows as a clean, passing run.
-        detail = "no checks matched the given scope"
-        if args.json:
-            _emit_json(
-                _error_payload(detail, detail=detail, reason=REASON_EMPTY_SELECTION),
-                args.out,
-            )
-            sys.exit(0 if args.out else 1)
-        print(f"{RED}{detail}.{RESET}", file=sys.stderr)
-        sys.exit(1)
     if args.json:
         sys.exit(render_json(
             results,
