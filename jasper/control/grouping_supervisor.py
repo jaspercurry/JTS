@@ -67,9 +67,10 @@ from typing import Any
 from jasper import identity
 from jasper.log_event import log_event
 from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from jasper.secret_redaction import redact_secrets
 
 from . import household_credential
-from .client import CONTROL_PORT, AsyncControlClient
+from .client import CONTROL_PORT, PEER_RESPONSE_MAX_BYTES, AsyncControlClient
 from .uds import read_status_body
 from .supervisor_runtime import (
     build_asyncio_thread,
@@ -534,17 +535,28 @@ class GroupingSupervisor:
         self, peer_addr: str, body: dict[str, Any],
     ) -> tuple[bool, str]:
         """POST /grouping/set to the roster peer with the household header."""
+        headers = self.household_headers()
         try:
             resp = await self.peer_client(peer_addr).post(
                 "/grouping/set",
                 body,
-                headers=self.household_headers(),
+                headers=headers,
             )
         except Exception as exc:  # noqa: BLE001 — peer offline is expected IO
             return False, repr(exc)
         detail = f"HTTP {resp.status}"
         if not resp.ok and resp.body:
-            detail = f"{detail}: {resp.body.decode(errors='replace')[:160]}"
+            household_credential_value = (headers or {}).get("X-JTS-Household", "")
+            # Cap before decode so an oversized peer body can't make the
+            # redaction passes below do unbounded work; redact before the
+            # 160-char cap so a value straddling that boundary can't leak
+            # a partial credential ahead of the marker (rooms_setup.py's
+            # post_grouping_to_member does the same peer-POST redaction).
+            peer_text = resp.body[:PEER_RESPONSE_MAX_BYTES].decode(errors="replace")
+            peer_text = redact_secrets(
+                peer_text, literals=(household_credential_value,),
+            )[:160]
+            detail = f"{detail}: {peer_text}"
         return resp.ok, detail
 
     def peer_client(self, peer_addr: str) -> AsyncControlClient:

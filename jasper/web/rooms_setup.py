@@ -67,7 +67,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import identity
 from ..control import household_credential
-from ..control.client import CONTROL_PORT
+from ..control.client import CONTROL_PORT, PEER_RESPONSE_MAX_BYTES
 from ..mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import is_private_or_loopback_ipv4
@@ -104,7 +104,6 @@ ROOMS_PAGE_CSS_HREF = "/assets/rooms/rooms.css"
 CONTROL_MDNS_TYPE = "_jasper-control._tcp.local."
 
 CONTROL_HTTP_TIMEOUT_SEC = 5.0
-PEER_RESPONSE_MAX_BYTES = 64 * 1024
 
 # Short so a powered-off paired speaker cannot stall the 7 s /rooms.json poll.
 # Mutations keep the full control timeout; the snapshot only needs

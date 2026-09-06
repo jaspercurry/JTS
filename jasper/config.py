@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from . import home_assistant as _ha_env
@@ -238,17 +238,17 @@ class Config:
     # credentials are required.
     voice_provider: str
 
-    gemini_api_key: str
+    gemini_api_key: str = field(repr=False)
     gemini_model: str
     gemini_voice: str
 
-    openai_api_key: str
+    openai_api_key: str = field(repr=False)
     openai_model: str
     openai_voice: str
     openai_reasoning_effort: str
     openai_noise_reduction: str
 
-    grok_api_key: str
+    grok_api_key: str = field(repr=False)
     grok_model: str
     grok_voice: str
 
@@ -354,7 +354,7 @@ class Config:
     # client (same shape as Spotify). Per-account refresh tokens live
     # under the registry path; the wizard at /google/ writes them.
     google_client_id: str
-    google_client_secret: str
+    google_client_secret: str = field(repr=False)
     google_redirect_uri: str
     google_accounts_path: str
     google_setup_url: str
@@ -391,7 +391,7 @@ class Config:
     # optional override to route JTS to a specific conversation agent
     # (empty = use HA's default).
     ha_url: str
-    ha_token: str
+    ha_token: str = field(repr=False)
     ha_agent_id: str
     # When False, HAClient skips TLS verification — needed for HA
     # installs running HTTPS with a self-signed cert (a common

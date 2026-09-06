@@ -71,6 +71,12 @@ DEFAULT_HOST = _connect_host(os.environ.get("JASPER_CONTROL_HOST", "127.0.0.1"))
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{CONTROL_PORT}"
 DEFAULT_TIMEOUT = 2.0
 
+# Cap on a peer's HTTP response body that a caller will read/decode, so a
+# peer that may not be a trusted JTS box can't make the reader do unbounded
+# work. Peer-to-peer only (grouping's household requests, the rooms wizard's
+# probes) — a peer, unlike jasper-control itself, is not this box.
+PEER_RESPONSE_MAX_BYTES = 64 * 1024
+
 
 class ControlError(RuntimeError):
     """jasper-control was unreachable or the request failed at the transport
