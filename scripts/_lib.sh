@@ -264,7 +264,8 @@ EOF
 #   verify_or_record_peer_id <remote_id> <env_file> [accept_new]
 #
 # Echoes one outcome token (consumed by deploy-to-pi.sh's messaging):
-#   unavailable    remote has no peer_id yet (pre-identity build) — skip
+#   unavailable    the remote read is not a peer_id — no file yet
+#                  (pre-identity build), or anything non-UUID — skip
 #   no_state_file  no .env.local to record into (env-var-driven deploy) — skip
 #   recorded       first contact: appended PI_PEER_ID=<id>
 #   match          recorded identity matches the remote
@@ -274,7 +275,11 @@ EOF
 verify_or_record_peer_id() {
     local remote_id="$1" env_file="$2" accept_new="${3:-}"
     remote_id="$(printf '%s' "$remote_id" | tr -d '[:space:]')"
-    if [[ -z "$remote_id" ]]; then
+    # install.sh writes peer_id as a bare lowercase UUID (uuid.uuid4()).
+    # Anything else is not an identity — an empty file, a sudo prompt line
+    # a capture picked up, an error string — and must never be recorded as
+    # one or compared against one.
+    if [[ ! "$remote_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
         echo "unavailable"
         return 0
     fi

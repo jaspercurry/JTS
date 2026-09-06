@@ -4,90 +4,30 @@
 
 from __future__ import annotations
 
-import shlex
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from jasper.audio_hardware.dac import all_profiles
-from jasper.audio_hardware.usb_port_role import (
+from jasper.audio_hardware.config_txt import MANAGED_BLOCK_BEGIN, render_boot_config
+from jasper.audio_hardware.i2s_hat import (
     I2S_HAT_BLOCK_BEGIN,
-    MANAGED_BLOCK_BEGIN,
     I2sHatCollision,
-    UsbPortRoleState,
-    configured_i2s_overlays,
-    main,
-    read_i2s_hat_intent,
-    reconcile_boot_config,
-    render_boot_config,
-    render_i2s_hat_boot_config,
-    resolve_usb_port_role,
-    selectable_i2s_hat_profiles,
     write_i2s_hat_intent,
 )
+from jasper.audio_hardware.usb_port_role import (
+    UsbPortRoleState,
+    reconcile_boot_config,
+    resolve_usb_port_role,
+)
+from jasper.cli.usb_port_role import main
 
+from ._boot_paths import HAND_WRITTEN_BASE, PERIPHERAL, PI5, boot_paths
 from ._hat_eeprom import write_hat_eeprom
-from ._log_events import parse_event
-
-
-# The `--env` contract (ADR-0235 R2) -- the CLI's whole record, which
-# `deploy/bin/jasper-audio-hardware-reconcile` evals. A rename that lands on
-# only one side has to fail here rather than read as an empty string in the
-# shell.
-_ENV_CONTRACT_KEYS = {
-    "JASPER_BOOT_BOARD_TOPOLOGY",
-    "JASPER_BOOT_USB_DESIRED_ROLE",
-    "JASPER_BOOT_USB_ACTIVE_ROLE",
-    "JASPER_BOOT_REBOOT_REQUIRED",
-    "JASPER_BOOT_CONFIG_CHANGED",
-    "JASPER_BOOT_I2S_HAT_PROFILE",
-    "JASPER_BOOT_I2S_HAT_CHANGED",
-    "JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE",
-    "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY",
-    "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS",
-}
-
-
-def _stderr_events(stderr: str, name: str) -> list[dict[str, str]]:
-    """Field maps of every ``event=<name>`` line in a captured stderr stream."""
-    return [
-        parsed[1]
-        for parsed in (parse_event(line) for line in stderr.splitlines())
-        if parsed is not None and parsed[0] == name
-    ]
-
-
-def _stderr_event(stderr: str, name: str) -> dict[str, str]:
-    """The ONE ``event=<name>`` line's fields."""
-    matched = _stderr_events(stderr, name)
-    assert len(matched) == 1, matched
-    return matched[0]
-
+from ._log_events import stderr_event, stderr_events
 
 ZERO = "Raspberry Pi Zero 2 W Rev 1.0"
-PI5 = "Raspberry Pi 5 Model B Rev 1.0"
 I2S = "[all]\ndtoverlay=hifiberry-dac8x\n"
-PERIPHERAL = "[all]\ndtoverlay=dwc2,dr_mode=peripheral\n"
-HAND_WRITTEN_BASE = "[all]\ndtoverlay=hifiberry-dac8x\ndtparam=audio=on\n"
 HOST = "[all]\ndtoverlay=dwc2,dr_mode=host\n"
-
-I2S_PROFILES = tuple(p for p in all_profiles() if p.connection == "i2s")
-I2S_PROFILE_IDS = tuple(p.id for p in I2S_PROFILES)
-SELECTABLE_PROFILES = selectable_i2s_hat_profiles()
-
-
-def _boot_paths(
-    tmp_path: Path, *, model_text: str = PI5, boot_config: str = PERIPHERAL
-):
-    model, config, intent, hat, udc = (
-        tmp_path / name
-        for name in ("model", "config.txt", "i2s_hat.env", "hat", "udc")
-    )
-    model.write_text(model_text, encoding="utf-8")
-    config.write_text(boot_config, encoding="utf-8")
-    udc.mkdir()
-    return model, config, intent, hat, udc
 
 
 def _serialized_role(**overrides) -> dict[str, object]:
@@ -190,166 +130,10 @@ def test_unknown_board_is_fail_closed_and_never_requests_mutation() -> None:
     assert render_boot_config(PERIPHERAL, state.desired_role) == PERIPHERAL
 
 
-def test_i2s_overlay_parser_ignores_comments_and_non_applicable_sections() -> None:
-    content = """\
-# dtoverlay=hifiberry-dac8x
-[cm5]
-dtoverlay=hifiberry-dac8x
-[all]
-   dtoverlay = hifiberry-dac8x   # configured output
-"""
-
-    assert configured_i2s_overlays(content) == ("hifiberry-dac8x",)
-
-
-def test_studio_dac8x_overlay_is_recognized_as_a_registered_i2s_hat() -> None:
-    """A Studio-configured box must not read as "no I2S HAT present" (#2250).
-
-    This parser intersects config.txt against the `dtoverlay` each registered
-    profile declares, and USB port-role resolution consumes the result. While
-    the Studio profile declared the BASE board's `hifiberry-dac8x`, a box
-    correctly running the Studio's own overlay matched nothing here and looked
-    like a speaker with no audio HAT at all.
-    """
-    content = "[all]\ndtoverlay=hifiberry-studio-dac8x\n"
-
-    assert configured_i2s_overlays(content) == ("hifiberry-studio-dac8x",)
-    # The two boards' overlays are distinct entries, not one shared string.
-    assert configured_i2s_overlays(
-        "[all]\ndtoverlay=hifiberry-dac8x\ndtoverlay=hifiberry-studio-dac8x\n"
-    ) == ("hifiberry-dac8x", "hifiberry-studio-dac8x")
-    # The PRO's overlay is deliberately NOT registered: no Pro profile exists,
-    # and inventing one for hardware nobody owns is what #2250 warns against.
-    assert configured_i2s_overlays(
-        "[all]\ndtoverlay=hifiberry-studio-dac8x-pro\n"
-    ) == ()
-
-
-@pytest.mark.parametrize(
-    "profile", SELECTABLE_PROFILES, ids=[p.id for p in SELECTABLE_PROFILES]
-)
-def test_i2s_hat_intent_round_trip(tmp_path: Path, profile) -> None:
-    intent = tmp_path / "i2s_hat.env"
-
-    assert read_i2s_hat_intent(intent) is None
-    write_i2s_hat_intent(profile.id, intent)
-    assert intent.read_text(encoding="utf-8") == f"JASPER_I2S_HAT_PROFILE={profile.id}\n"
-    assert read_i2s_hat_intent(intent) == profile.id
-
-    # Explicit "none" is a persisted, distinct state from the file never
-    # having existed: it writes a marker, not an unlink (#i2s-hat-intent).
-    write_i2s_hat_intent(None, intent)
-    assert intent.is_file()
-    assert intent.read_text(encoding="utf-8") == "JASPER_I2S_HAT_PROFILE=\n"
-    assert read_i2s_hat_intent(intent) is None
-
-
-def test_i2s_hat_intent_rejects_unsupported_profiles(tmp_path: Path) -> None:
-    intent = tmp_path / "i2s_hat.env"
-    non_i2s_id = next(p.id for p in all_profiles() if p.connection != "i2s")
-    detectable_id = next(p.id for p in I2S_PROFILES if p.hat_products)
-
-    intent.write_text("JASPER_I2S_HAT_PROFILE=other_hat\n", encoding="utf-8")
-    with pytest.raises(ValueError):
-        read_i2s_hat_intent(intent)
-
-    for refused in (non_i2s_id, "not_a_real_profile", detectable_id):
-        with pytest.raises(ValueError):
-            write_i2s_hat_intent(refused, intent)
-
-    # A detectable profile saved by an older build is void, not an error:
-    # detection is its only source now (ADR-0234).
-    intent.write_text(
-        f"JASPER_I2S_HAT_PROFILE={detectable_id}\n", encoding="utf-8"
-    )
-    assert read_i2s_hat_intent(intent) is None
-
-
-@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
-def test_i2s_hat_renderer_manages_only_global_overlay(profile) -> None:
-    original = (
-        "arm_64bit=1\n"
-        "[cm5]\n"
-        f"dtoverlay={profile.dtoverlay}\n"
-        "[all]\n"
-        "dtparam=audio=on\n"
-    )
-
-    enabled, enabled_changed, enabled_collision = render_i2s_hat_boot_config(
-        original, profile.id
-    )
-    disabled, disabled_changed, disabled_collision = render_i2s_hat_boot_config(
-        enabled, None
-    )
-
-    assert enabled.count(I2S_HAT_BLOCK_BEGIN) == 1
-    assert enabled.count(f"dtoverlay={profile.dtoverlay}") == 2
-    # Section-scoped ([cm5]) lines are out of the global/all overlay scan,
-    # so they never collide with the managed block.
-    assert enabled_changed is True
-    assert enabled_collision is None
-    assert "arm_64bit=1" in enabled and "dtparam=audio=on" in enabled
-    assert f"[cm5]\ndtoverlay={profile.dtoverlay}" in disabled
-    assert disabled.count(f"dtoverlay={profile.dtoverlay}") == 1
-    assert I2S_HAT_BLOCK_BEGIN not in disabled
-    assert disabled_changed is True
-    assert disabled_collision is None
-
-
-@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
-def test_i2s_hat_renderer_refuses_a_same_overlay_collision(profile) -> None:
-    original = f"[all]\ndtoverlay={profile.dtoverlay}\ndtparam=audio=on\n"
-
-    rendered, changed, collision = render_i2s_hat_boot_config(original, profile.id)
-
-    # Two declarations of the same overlay is still two I2S machine drivers
-    # as far as this renderer is concerned: refuse rather than compound the
-    # hand-written line with a managed one.
-    assert rendered == original
-    assert changed is False
-    assert collision == I2sHatCollision(
-        managed_overlay=profile.dtoverlay,
-        colliding_overlays=(profile.dtoverlay,),
-    )
-
-    # Clearing never refuses -- there is nothing to collide with when
-    # removing JTS's own (nonexistent) block.
-    cleared, cleared_changed, cleared_collision = render_i2s_hat_boot_config(
-        original, None
-    )
-    assert I2S_HAT_BLOCK_BEGIN not in cleared
-    assert f"dtoverlay={profile.dtoverlay}" in cleared
-    assert cleared_changed is False
-    assert cleared_collision is None
-
-
-def test_i2s_hat_renderer_refuses_a_different_overlay_collision() -> None:
-    mismatched, matching = I2S_PROFILES[0], I2S_PROFILES[1]
-    original = f"[all]\ndtoverlay={mismatched.dtoverlay}\n"
-
-    rendered, changed, collision = render_i2s_hat_boot_config(original, matching.id)
-
-    assert rendered == original
-    assert changed is False
-    assert collision == I2sHatCollision(
-        managed_overlay=matching.dtoverlay,
-        colliding_overlays=(mismatched.dtoverlay,),
-    )
-
-
-def test_i2s_hat_renderer_rejects_non_i2s_and_unregistered_profiles() -> None:
-    non_i2s_id = next(p.id for p in all_profiles() if p.connection != "i2s")
-
-    with pytest.raises(ValueError):
-        render_i2s_hat_boot_config("[all]\n", non_i2s_id)
-    with pytest.raises(ValueError):
-        render_i2s_hat_boot_config("[all]\n", "not_a_real_profile")
-
-
 def test_reconcile_refuses_a_hand_written_overlay_collision(
     tmp_path: Path, capsys
 ) -> None:
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(
         "[all]\ndtoverlay=merus-amp\ndtoverlay=dwc2,dr_mode=peripheral\n",
         encoding="utf-8",
@@ -395,19 +179,19 @@ def test_reconcile_refuses_a_hand_written_overlay_collision(
     )
     captured = capsys.readouterr()
     assert result == 0
-    assert _stderr_event(captured.err, "hardware.i2s_hat_boot_config_conflict") == {
+    assert stderr_event(captured.err, "hardware.i2s_hat_boot_config_conflict") == {
         "managed_overlay": "merus-amp",
         "colliding_overlays": "merus-amp",
     }
     # A refusal wrote nothing, so the conflict stands alone: no change event.
-    assert _stderr_events(captured.err, "hardware.i2s_hat_boot_config_changed") == []
+    assert stderr_events(captured.err, "hardware.i2s_hat_boot_config_changed") == []
     assert "event=" not in captured.out
 
 
 def test_hat_changed_and_durability_are_reported(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -484,7 +268,7 @@ def test_hat_changed_and_durability_are_reported(
 
 def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> None:
     original = "[all]\ndtparam=audio=on\n"
-    model, config, intent, hat, udc = _boot_paths(
+    model, config, intent, hat, udc = boot_paths(
         tmp_path, model_text="Acme SBC", boot_config=original
     )
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
@@ -564,7 +348,7 @@ def test_i2s_hat_desired_profile_resolution_order(
 ) -> None:
     """EEPROM first, then the saved intent, then nothing at all (ADR-0234)."""
 
-    model, config, intent, hat, udc = _boot_paths(tmp_path, boot_config=boot_config)
+    model, config, intent, hat, udc = boot_paths(tmp_path, boot_config=boot_config)
     if hat_product is not None:
         write_hat_eeprom(hat, product=hat_product)
     if intent_profile is not None:
@@ -600,7 +384,7 @@ def test_absent_intent_file_leaves_an_existing_managed_block_alone(
     config.txt -- only a present-and-empty intent file
     (write_i2s_hat_intent(None)) removes it (#i2s-hat-intent).
     """
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
+    model, config, intent, hat, udc = boot_paths(tmp_path)
     config.write_text(PERIPHERAL, encoding="utf-8")
     write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     (udc / "3f980000.usb").mkdir(parents=True)
@@ -691,68 +475,6 @@ def test_serialized_shared_host_rejects_i2s_evidence() -> None:
     assert UsbPortRoleState.from_mapping(raw) is None
 
 
-def test_render_boot_config_migrates_legacy_role_and_is_idempotent() -> None:
-    legacy = """\
-arm_64bit=1
-
-# JTS install — required for the composite USB gadget (management network +
-# optional audio). Old installer prose.
-[all]
-dtoverlay=dwc2,dr_mode=peripheral
-"""
-
-    rendered = render_boot_config(legacy, "host")
-
-    assert "arm_64bit=1" in rendered
-    assert rendered.count("dtoverlay=dwc2,dr_mode=host") == 1
-    assert "dtoverlay=dwc2,dr_mode=peripheral" not in rendered
-    assert rendered.count(MANAGED_BLOCK_BEGIN) == 1
-    assert render_boot_config(rendered, "host") == rendered
-
-
-def _has_adjacent_empty_all_sections(text: str) -> bool:
-    """True if two ``[all]`` headers appear with only blank lines between."""
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if line.strip().lower() != "[all]":
-            continue
-        cursor = index + 1
-        while cursor < len(lines) and not lines[cursor].strip():
-            cursor += 1
-        if cursor < len(lines) and lines[cursor].strip().lower() == "[all]":
-            return True
-    return False
-
-
-@pytest.mark.parametrize(
-    "boot_config",
-    [
-        pytest.param("[cm4]\notg_mode=1\n\n[all]\nfoo=1\n", id="clean"),
-        pytest.param(
-            "[cm4]\notg_mode=1\n\n" + ("[all]\n\n" * 7) + "[all]\nfoo=1\n",
-            id="stray_all_sections",
-        ),
-    ],
-)
-def test_render_boot_config_heals_stray_all_sections_and_is_idempotent(
-    boot_config: str,
-) -> None:
-    once = render_boot_config(boot_config, "host")
-    twice = render_boot_config(once, "host")
-
-    assert twice == once
-    assert once.count(MANAGED_BLOCK_BEGIN) == 1
-    assert not _has_adjacent_empty_all_sections(once)
-
-
-def test_render_boot_config_never_drops_a_commented_all_header() -> None:
-    boot_config = "[cm4]\notg_mode=1\n\n[all]  # keep me\n\n[all]\nfoo=1\n"
-
-    rendered = render_boot_config(boot_config, "host")
-
-    assert "[all]  # keep me" in rendered
-
-
 def test_reconcile_boot_config_preserves_unrelated_conditional_role(
     tmp_path: Path,
 ) -> None:
@@ -788,23 +510,6 @@ def test_reconcile_boot_config_preserves_unrelated_conditional_role(
     assert config.read_text(encoding="utf-8") == first
 
 
-def test_legacy_migration_never_consumes_intervening_hardware_directives() -> None:
-    legacy = """\
-# JTS install — required for the composite USB gadget (management network +
-# optional audio). Old installer prose.
-[all]
-dtparam=i2c_arm=on
-dtoverlay=hifiberry-dac8x
-dtoverlay=dwc2,dr_mode=peripheral
-"""
-
-    rendered = render_boot_config(legacy, "host")
-
-    assert "dtparam=i2c_arm=on" in rendered
-    assert "dtoverlay=hifiberry-dac8x" in rendered
-    assert rendered.count("dtoverlay=dwc2,dr_mode=host") == 1
-
-
 def test_unbalanced_managed_block_fails_without_mutating_boot_config(
     tmp_path: Path,
 ) -> None:
@@ -831,198 +536,3 @@ def test_unbalanced_managed_block_fails_without_mutating_boot_config(
         )
     assert config.read_text(encoding="utf-8") == original
 
-
-def test_bare_dwc2_is_migrated_but_unknown_parameters_fail_loudly() -> None:
-    import pytest
-
-    rendered = render_boot_config("[all]\ndtoverlay=dwc2\nfoo=1\n", "host")
-    assert rendered.count("dtoverlay=dwc2,dr_mode=host") == 1
-    assert "\ndtoverlay=dwc2\n" not in rendered
-    assert "foo=1" in rendered
-
-    with pytest.raises(ValueError, match="ambiguous.*dwc2"):
-        render_boot_config(
-            "[all]\ndtoverlay=dwc2,dr_mode=peripheral,g-rx-fifo-size=512\n",
-            "host",
-        )
-
-
-def test_cli_config_normalization_does_not_claim_same_role_needs_reboot(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    model = tmp_path / "model"
-    config = tmp_path / "config.txt"
-    udc = tmp_path / "udc"
-    model.write_text(PI5, encoding="utf-8")
-    config.write_text(PERIPHERAL, encoding="utf-8")
-    (udc / "3f980000.usb").mkdir(parents=True)
-
-    assert main(
-        [
-            "--reconcile-boot",
-            "--model-file",
-            str(model),
-            "--boot-config",
-            str(config),
-            "--udc-class-dir",
-            str(udc),
-            "--hat-dir",
-            str(tmp_path / "hat"),
-        ]
-    ) == 0
-
-    captured = capsys.readouterr()
-    assert _stderr_event(captured.err, "hardware.boot_config_changed") == {
-        "reboot_required": "0",
-    }
-    assert "event=" not in captured.out
-
-
-@pytest.mark.parametrize(
-    ("hat_product", "boot_config", "expected"),
-    [
-        pytest.param(
-            None,
-            PERIPHERAL,
-            {
-                "JASPER_BOOT_I2S_HAT_PROFILE": "",
-                "JASPER_BOOT_I2S_HAT_CHANGED": "false",
-                "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY": "",
-                "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS": "",
-            },
-            id="no_hat",
-        ),
-        pytest.param(
-            "StudioDAC8x",
-            PERIPHERAL,
-            {
-                "JASPER_BOOT_I2S_HAT_PROFILE": "hifiberry_dac8x_studio",
-                "JASPER_BOOT_I2S_HAT_CHANGED": "true",
-                "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY": "",
-                "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS": "",
-            },
-            id="detected_hat_applied",
-        ),
-        pytest.param(
-            "StudioDAC8x",
-            HAND_WRITTEN_BASE,
-            {
-                "JASPER_BOOT_I2S_HAT_PROFILE": "hifiberry_dac8x_studio",
-                "JASPER_BOOT_I2S_HAT_CHANGED": "false",
-                "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY": (
-                    "hifiberry-studio-dac8x"
-                ),
-                "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS": (
-                    "hifiberry-dac8x"
-                ),
-            },
-            id="detected_hat_collision",
-        ),
-    ],
-)
-def test_env_emitter_hands_bash_the_whole_contract_and_nothing_it_must_parse(
-    hat_product: str | None,
-    boot_config: str,
-    expected: dict[str, str],
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """What Python quotes, bash evals -- the full key set, every scenario.
-
-    A missing key reads as a `bash -u` unbound-variable failure rather than
-    an empty string, so completeness is asserted through a real eval
-    (ADR-0235 R2) rather than by re-reading the quoting rule.
-    """
-    model, config, intent, hat, udc = _boot_paths(tmp_path, boot_config=boot_config)
-    if hat_product is not None:
-        write_hat_eeprom(hat, product=hat_product)
-    (udc / "3f980000.usb").mkdir(parents=True)
-
-    assert main(
-        [
-            "--reconcile-boot",
-            "--env",
-            "--model-file",
-            str(model),
-            "--boot-config",
-            str(config),
-            "--udc-class-dir",
-            str(udc),
-            "--i2s-hat-intent-file",
-            str(intent),
-            "--hat-dir",
-            str(hat),
-        ]
-    ) == 0
-    payload = capsys.readouterr().out
-
-    emitted: dict[str, str] = {}
-    for line in payload.splitlines():
-        key, _, quoted = line.partition("=")
-        parts = shlex.split(quoted)
-        emitted[key] = parts[0] if parts else ""
-    assert set(emitted) == _ENV_CONTRACT_KEYS
-    for key, value in expected.items():
-        assert emitted[key] == value, key
-
-    keys = sorted(_ENV_CONTRACT_KEYS)
-    reader = "; ".join(f'printf "%s\\n" "${{{key}}}"' for key in keys)
-    seen = subprocess.run(
-        ["bash", "-uc", f'eval "$1"; {reader}', "bash", payload],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert seen.returncode == 0, seen.stderr
-    assert seen.stdout.splitlines() == [emitted[key] for key in keys]
-
-
-def test_i2s_hat_self_heal_after_hand_deleted_managed_block_logs_changed_event(
-    tmp_path: Path, capsys
-) -> None:
-    """A managed block removed by hand (not via intent) is rewritten today
-    (G6, ADR-0235 R3): the rewrite itself must not be silent (G4)."""
-
-    model, config, intent, hat, udc = _boot_paths(tmp_path)
-    config.write_text(PERIPHERAL, encoding="utf-8")
-    write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
-    (udc / "3f980000.usb").mkdir(parents=True)
-    cli_args = [
-        "--reconcile-boot",
-        "--i2s-hat-intent-file",
-        str(intent),
-        "--model-file",
-        str(model),
-        "--boot-config",
-        str(config),
-        "--udc-class-dir",
-        str(udc),
-        "--hat-dir",
-        str(hat),
-    ]
-
-    assert main(cli_args) == 0
-    assert I2S_HAT_BLOCK_BEGIN in config.read_text(encoding="utf-8")
-
-    # An operator (or another tool) edits config.txt directly and drops the
-    # managed block; the intent file still names the HAT.
-    config.write_text(PERIPHERAL, encoding="utf-8")
-    capsys.readouterr()
-
-    assert main(cli_args) == 0
-    captured = capsys.readouterr()
-    assert _stderr_event(captured.err, "hardware.i2s_hat_boot_config_changed") == {
-        "profile": "innomaker_hifi_amp_pro",
-    }
-    assert I2S_HAT_BLOCK_BEGIN in config.read_text(encoding="utf-8")
-
-    # A pass that changes nothing is silent: the event marks the transition,
-    # not the desired state.
-    assert main(cli_args) == 0
-    assert (
-        _stderr_events(
-            capsys.readouterr().err, "hardware.i2s_hat_boot_config_changed"
-        )
-        == []
-    )

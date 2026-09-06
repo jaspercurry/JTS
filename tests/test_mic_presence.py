@@ -16,7 +16,16 @@ from pathlib import Path
 
 import pytest
 
-from jasper.mic_presence import read_mic_presence
+from jasper.mic_presence import (
+    MIC_ABSENT_ACCESSORY_UNKNOWN,
+    MIC_ABSENT_CHIP_AEC_VALIDATING,
+    MIC_ABSENT_GENERIC_DETAIL,
+    MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
+    MIC_ABSENT_UNKNOWN,
+    MicPresence,
+    read_mic_presence,
+    voice_park_is_transient,
+)
 
 
 @pytest.fixture
@@ -103,14 +112,79 @@ def test_no_marker_no_json_failopen_present(paths: tuple[Path, Path]) -> None:
 
 def test_marker_present_is_absent(paths: tuple[Path, Path]) -> None:
     _, marker = paths
-    marker.write_text("reason=no candidate microphone present\n")
+    marker.write_text(
+        f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n"
+        "detail=no candidate microphone present\n"
+    )
     mp = read_mic_presence()
     assert mp.present is False
     assert mp.parked is True
     assert mp.absent_confirmed is True
-    assert mp.reason == "no candidate microphone present"
-    assert "input unavailable" in mp.summary
+    assert mp.reason == MIC_ABSENT_NO_LOCAL_OR_ACCESSORY
+    assert mp.detail == "no candidate microphone present"
+    assert mp.as_dict()["detail"] == "no candidate microphone present"
+    # The code is the machine axis; the prose beside it is what the headline
+    # and /state.microphone.summary render.
+    assert "input unavailable — no candidate microphone present" in mp.summary
     assert "reconciles automatically" in mp.summary
+
+
+def test_summary_falls_back_to_generic_prose_never_the_code() -> None:
+    """An absent detail must not leak the machine `reason` code into the
+    human-facing summary — it falls back to generic prose instead."""
+    mp = MicPresence(present=False, reason=MIC_ABSENT_UNKNOWN, detail="")
+    assert mp.summary == (
+        f"input unavailable — {MIC_ABSENT_GENERIC_DETAIL}; jasper-voice is "
+        "parked and reconciles automatically when the condition is resolved"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "reason", "detail"),
+    [
+        (f"reason={MIC_ABSENT_ACCESSORY_UNKNOWN}\n", MIC_ABSENT_ACCESSORY_UNKNOWN, ""),
+        # An older build's free prose, and a marker with no reason line at all:
+        # neither may pass through as a code a consumer could switch on. The
+        # prose case's raw token becomes `detail` instead, since the marker
+        # carries no `detail=` of its own — the pre-upgrade prose still shows.
+        (
+            "reason=no candidate microphone present\n",
+            MIC_ABSENT_UNKNOWN,
+            "no candidate microphone present",
+        ),
+        ("", MIC_ABSENT_UNKNOWN, ""),
+    ],
+    ids=("known", "prose", "no-reason-line"),
+)
+def test_only_a_vocabulary_code_reads_back_as_one(
+    paths: tuple[Path, Path], body: str, reason: str, detail: str
+) -> None:
+    _, marker = paths
+    marker.write_text(body)
+    mp = read_mic_presence()
+    assert mp.present is False
+    assert mp.reason == reason
+    assert mp.detail == detail
+
+
+@pytest.mark.parametrize(
+    ("body", "transient"),
+    [
+        (f"reason={MIC_ABSENT_CHIP_AEC_VALIDATING}\n", True),
+        (f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n", False),
+        # Fail-safe: an unreadable code is a real absence, so the shutdown cue
+        # (ADR-0239) still fires.
+        ("reason=nonsense\n", False),
+        ("", False),
+    ],
+    ids=("validating", "real-absence", "unknown-code", "no-marker-body"),
+)
+def test_transient_is_a_property_of_the_code(
+    paths: tuple[Path, Path], body: str, transient: bool
+) -> None:
+    _, marker = paths
+    marker.write_text(body)
+    assert voice_park_is_transient() is transient
 
 
 def test_marker_wins_over_stale_xvf_json(paths: tuple[Path, Path]) -> None:
@@ -118,7 +192,7 @@ def test_marker_wins_over_stale_xvf_json(paths: tuple[Path, Path]) -> None:
     if a stale XVF JSON still claims present."""
     state, marker = paths
     _xvf_json(state, present=True)
-    marker.write_text("reason=no usable microphone present\n")
+    marker.write_text(f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n")
     mp = read_mic_presence()
     assert mp.present is False
     assert mp.absent_confirmed is True
@@ -127,7 +201,7 @@ def test_marker_wins_over_stale_xvf_json(paths: tuple[Path, Path]) -> None:
 def test_marker_present_corrupt_json_never_raises(paths: tuple[Path, Path]) -> None:
     state, marker = paths
     state.write_text("{ not json")
-    marker.write_text("reason=broken\n")
+    marker.write_text(f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n")
     mp = read_mic_presence()
     assert mp.present is False  # marker authoritative; corrupt JSON is ignored
 

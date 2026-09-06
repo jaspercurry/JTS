@@ -23,7 +23,7 @@ from jasper.cli import doctor
 from jasper.cli.doctor import _cli, _harness, _shared
 from jasper.cli.doctor import CheckResult, render_json, renderers
 from jasper.cli.doctor._registry import RegisteredCheck
-from jasper.config import Config
+from jasper.config import Config, VoiceProviderNotConfigured
 from jasper.control.restart_broker import MANAGED_UNITS
 
 
@@ -634,6 +634,24 @@ def _cfg_attrs_read_by(func) -> set[str]:
     }
 
 
+def _main_json(monkeypatch, capsys, argv, *, from_env, run_async):
+    """Drive `main()` down the full-profile JSON path; `(exit code, payload)`."""
+    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
+    monkeypatch.setattr(_cli, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(Config, "from_env", staticmethod(from_env))
+    monkeypatch.setattr(_cli, "run_async", run_async)
+    monkeypatch.setattr(sys, "argv", ["jasper-doctor", *argv, "--json"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        doctor.main()
+
+    return exit_info.value.code, json.loads(capsys.readouterr().out)
+
+
+async def _one_core_row(_cfg, **_scope):
+    return [doctor.CheckResult("required units active", "ok", "ran")]
+
+
 @pytest.mark.parametrize("argv, core_only", [([], False), (["--core"], True)])
 def test_core_flag_reaches_the_harness_and_keeps_json(
     monkeypatch, capsys, argv, core_only,
@@ -644,22 +662,86 @@ def test_core_flag_reaches_the_harness_and_keeps_json(
 
     async def fake_run_async(cfg, **scope):
         seen.update(scope)
-        return [doctor.CheckResult("required units active", "ok", "ran")]
+        return await _one_core_row(cfg, **scope)
 
-    monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
-    monkeypatch.setattr(_cli, "read_install_profile", lambda: "full")
-    monkeypatch.setattr(Config, "from_env", staticmethod(lambda: SimpleNamespace()))
-    monkeypatch.setattr(_cli, "run_async", fake_run_async)
-    monkeypatch.setattr(sys, "argv", ["jasper-doctor", *argv, "--json"])
+    code, payload = _main_json(
+        monkeypatch, capsys, argv,
+        from_env=lambda: SimpleNamespace(), run_async=fake_run_async,
+    )
 
-    with pytest.raises(SystemExit) as exit_info:
-        doctor.main()
-
-    assert exit_info.value.code == 0
+    assert code == 0
     assert seen["core_only"] is core_only
-    payload = json.loads(capsys.readouterr().out)
     assert payload["fails"] == 0
     assert [row["name"] for row in payload["results"]] == ["required units active"]
+
+
+def test_core_scope_does_not_build_the_voice_config(monkeypatch, capsys):
+    """A full box that has not been through /voice/ has no provider, so
+    `Config.from_env()` raises — and every --core check is `needs_cfg=False`,
+    so the deploy subset must never build it (ADR-0233 rule 5)."""
+
+    def unconfigured():
+        raise VoiceProviderNotConfigured("no provider")
+
+    code, payload = _main_json(
+        monkeypatch, capsys, ["--core"],
+        from_env=unconfigured, run_async=_one_core_row,
+    )
+
+    assert code == 0
+    assert [row["name"] for row in payload["results"]] == [
+        "required units active"
+    ]
+    assert _shared.REASON_CONFIG_ERROR not in {
+        row["reason"] for row in payload["results"]
+    }
+
+
+@pytest.mark.parametrize(
+    "results, core, fields",
+    [
+        (
+            [CheckResult("a", "ok", "up")],
+            True,
+            {
+                "status": "ok", "fail": "0", "warn": "0", "rows": "1",
+                "speaker_silent": "false",
+            },
+        ),
+        (
+            [
+                CheckResult("a", "fail", "down", reason="a_down"),
+                CheckResult(
+                    "b", "warn", "parked",
+                    speaker_silent=True, reason="b_parked",
+                ),
+            ],
+            True,
+            {
+                "status": "fail", "fail": "1", "warn": "1", "rows": "2",
+                "speaker_silent": "true",
+            },
+        ),
+        ([CheckResult("a", "ok", "up")], False, None),
+    ],
+    ids=["core-green", "core-one-fail", "full-doctor-stays-quiet"],
+)
+def test_core_text_mode_emits_one_deploy_health_event(
+    capsys, results, core, fields,
+):
+    """The deploy gates on the exit code; the journal gets this line. Only
+    --core emits it, so the dashboard's full report is unchanged."""
+    doctor.render(results, core=core)
+
+    lines = [
+        line for line in capsys.readouterr().out.splitlines()
+        if line.startswith("event=deploy.health ")
+    ]
+    if fields is None:
+        assert lines == []
+        return
+    assert len(lines) == 1
+    assert dict(kv.split("=", 1) for kv in lines[0].split()[1:]) == fields
 
 
 @pytest.mark.parametrize(

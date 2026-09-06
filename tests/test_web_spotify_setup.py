@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import http
+import logging
 import time
 import types
+import urllib.parse
 from email.message import Message
 from io import BytesIO
 
@@ -462,6 +464,38 @@ def test_oauth_callback_exchange_failure_redirects_error(monkeypatch):
     assert all("Linked" not in cookie for cookie in cookies)
     assert calls == {"invalidate": 0, "restart": 0}
     assert state not in spotify_setup._PENDING_FLOWS
+
+
+def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
+    """The provider's rejection text reaches the user scrubbed and bounded;
+    the flash-cookie shim already kept it out of the URL. The journal line
+    beside the flash gets the same scrubbing."""
+    state = "state-red"
+    handler_cls = _handler_cls(client_id="0123456789abcdef0123456789abcdef")
+    spotify_setup._PENDING_FLOWS.clear()
+    spotify_setup._PENDING_FLOWS[state] = (
+        "jasper", "verifier", "challenge", time.monotonic(),
+    )
+    leaked = "GOCSPX-fakefake1234"
+
+    def boom(self, account_name, code, verifier, challenge):
+        raise RuntimeError(f"400 invalid_client: client_secret={leaked}")
+
+    monkeypatch.setattr(handler_cls, "_exchange_code", boom)
+
+    h = _Request(handler_cls, f"/oauth-callback?code=abc&state={state}")
+    with caplog.at_level(logging.WARNING, logger="jasper.web.spotify_setup"):
+        h.do_GET()
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert h.header_values("Location") == ["./"]
+    flashes = [
+        urllib.parse.unquote(c.split("jts_flash=", 1)[1].split(";", 1)[0])
+        for c in h.header_values("Set-Cookie") if "jts_flash=" in c
+    ]
+    assert len(flashes) == 1
+    assert leaked not in flashes[0]
+    assert leaked not in caplog.text
 
 
 def test_playlist_preview_is_json_and_needs_no_csrf(monkeypatch):

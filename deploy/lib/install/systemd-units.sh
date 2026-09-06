@@ -851,6 +851,21 @@ reset_failed_core_graph_restart_targets() {
     done
 }
 
+# The local music sources a deploy refreshes in place, plus the two support
+# daemons that are not sources (nqptp clocks AirPlay 2, bt-agent answers
+# pairing). The source half must stay a superset of
+# jasper.local_sources.registry.local_source_audio_refresh_units(), whose
+# docstring owns the try-restart-only rule.
+JASPER_LOCAL_SOURCE_REFRESH_UNITS=(
+    bluealsa-aplay.service
+    nqptp.service
+    shairport-sync.service
+    librespot.service
+    bt-agent.service
+    jasper-usbsink.service
+    jasper-usbsink-volume.service
+)
+
 # Second phase of the low-memory build park: the core graph itself plus the
 # control plane. Deliberately disjoint from JASPER_CORE_GRAPH_PARK_UNITS (phase
 # one, the graph's CLIENTS) — an ordinary deploy restarts these in place rather
@@ -1163,6 +1178,7 @@ reapply_source_intent() {
     # name lives inside an older release's strict owned namespace, so leaving it
     # behind would make a rollback reject the whole intent file. Migrate it to
     # the deliberately rollback-ignorable key before either reconciler reads.
+    # Delete once grep JASPER_SOURCE_INTENT_BLUETOOTH /var/lib/jasper/source_intent.env is empty on every box, spares included.
     if [[ -e "${STATE_DIR}/source_intent.env" || -L "${STATE_DIR}/source_intent.env" ]]; then
         /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
 import sys
@@ -1230,9 +1246,7 @@ start_streambox_runtime_units() {
     # is cheaper and safer than coupling output policy to aggregate source state.
     systemctl enable --now jasper-mux.service
     systemctl enable jasper-fanin-coupling-auto.service
-    systemctl try-restart bluealsa-aplay.service nqptp.service \
-        shairport-sync.service librespot.service bt-agent.service \
-        jasper-usbsink-volume.service \
+    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
         2>/dev/null || true
     reapply_source_intent
     for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
@@ -1251,7 +1265,10 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl restart jasper-control.service
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
+    systemctl restart jasper-control.service || \
+        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # Enabling only arms these for the NEXT boot; deploy health checks this
     # boot. Mirrors the full path: restart the bridge so an already-paired
     # remote picks up new code, then let the reconciler publish the mic source
@@ -1314,6 +1331,10 @@ install_streambox_systemd_units() {
 
     validate_streambox_systemd_units
     systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition
+    # lines, and before the first installer-issued start below (#4123).
+    clear_install_in_progress
     systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
     enable_streambox_web_sockets
     start_streambox_runtime_units
@@ -1697,6 +1718,10 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
 
     systemctl daemon-reload
+    # The gated units' own executables land in the staging above, so the
+    # install window ends here — after PID 1 has loaded their Condition
+    # lines, and before the first installer-issued start below (#4123).
+    clear_install_in_progress
     # Commit only after systemd accepted the complete generation. Runtime
     # mutations below are deliberately outside the staging transaction.
     trap - ERR
@@ -1808,9 +1833,7 @@ install_systemd_units() {
     # on a fresh install as well as enabling boot; its role ExecCondition skips
     # a bonded follower safely.
     systemctl enable --now jasper-mux.service
-    systemctl try-restart bluealsa-aplay.service nqptp.service \
-        shairport-sync.service librespot.service bt-agent.service \
-        jasper-usbsink-volume.service \
+    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
         2>/dev/null || true
     reapply_source_intent
     # The wizard services are socket-activated now. Any currently-
@@ -1821,6 +1844,10 @@ install_systemd_units() {
     for unit in "${WIZARD_UNITS[@]}"; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
+    systemctl restart jasper-control.service || \
+        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # jasper-input is always-on (HID accessory bridge) — restart so any
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true

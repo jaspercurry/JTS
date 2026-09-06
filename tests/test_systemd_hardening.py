@@ -505,8 +505,10 @@ def test_install_creates_every_dropped_user():
 def test_secrets_compartment_phase4a():
     """The high-value secrets (LLM API keys, Google client secret/token tree, Google Routes API key)
     live in the group-`jasper-secrets` compartment, readable only by jasper-voice + jasper-web. Pin:
-    (1) the group is created; (2) voice + web source voice_keys.env + the RELOCATED
-    google_credentials.env; (3) only jasper-web (which WRITES the compartment via the /voice + /google
+    (1) the group is created; (2) voice + web source voice_keys.env, and the RELOCATED
+    google_credentials.env is sourced by voice only — jasper-web's /google wizard reads that
+    file per request through the group, so an EnvironmentFile= copy would outlive a reset;
+    (3) only jasper-web (which WRITES the compartment via the /voice + /google
     wizards) gets it in ReadWritePaths — jasper-voice only READS (keys via EnvironmentFile, Google
     tree via the group), so under ProtectSystem=strict it needs NO write grant; (4) the daemons that
     must NOT see the keys (mux/control/input) don't source voice_keys.env."""
@@ -520,14 +522,17 @@ def test_secrets_compartment_phase4a():
         "service-users.sh must create the jasper-secrets group"
     )
 
-    # (2) both voice + web source the secret files (and are in the group, asserted
-    #     by test_user_drop's exact-set check).
-    for unit in ("jasper-voice", "jasper-web"):
-        pairs = list(_directives(TIER_A[unit]))
-        envfiles = " ".join(v for k, v in pairs if k == "EnvironmentFile")
-        assert secret_keys in envfiles, f"{unit} must source {secret_keys}"
-        assert secret_google in envfiles, f"{unit} must source {secret_google}"
-        assert secret_routes in envfiles, f"{unit} must source {secret_routes}"
+    # (2) each unit sources the secret files it consumes from the environment
+    #     (and is in the group, asserted by test_user_drop's exact-set check).
+    for unit, required in (
+        ("jasper-voice", (secret_keys, secret_google, secret_routes)),
+        ("jasper-web", (secret_keys, secret_routes)),
+    ):
+        envfiles = " ".join(
+            v for k, v in _directives(TIER_A[unit]) if k == "EnvironmentFile"
+        )
+        for path in required:
+            assert path in envfiles, f"{unit} must source {path}"
         # The OLD broad path must be gone (no dual-source re-exposure).
         assert "/var/lib/jasper/google_credentials.env" not in envfiles, (
             f"{unit} still sources the pre-4a broad google_credentials.env path"

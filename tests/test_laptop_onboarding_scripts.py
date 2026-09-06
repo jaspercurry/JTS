@@ -24,6 +24,14 @@ ENV_LOCAL = ROOT / ".env.local"
 ISOLATED_SCRIPTS = (DEPLOY, ONBOARD, LIB, USE)
 
 
+def fake_peer_id(host: str) -> str:
+    """The identity FAKE_SSH reports for a given fake speaker."""
+    hexed = (host.encode().hex() + "0" * 32)[:32]
+    return "-".join(
+        (hexed[:8], hexed[8:12], hexed[12:16], hexed[16:20], hexed[20:32])
+    )
+
+
 def git_head(*args: str) -> str:
     return subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", *args],
@@ -36,6 +44,17 @@ set -euo pipefail
 printf 'SSH' >> "$FAKE_LOG"
 for arg in "$@"; do printf ' %q' "$arg" >> "$FAKE_LOG"; done
 printf '\n' >> "$FAKE_LOG"
+
+# Each fake speaker owns a stable, distinct UUID (install.sh writes a
+# uuid4), so a deploy redirected to another host reads another identity.
+# FAKE_PEER_ID overrides it; set-but-empty models a pre-identity Pi.
+fake_peer_id() {
+  local host="" hex
+  if [[ -n "${FAKE_PEER_ID+x}" ]]; then printf '%s' "$FAKE_PEER_ID"; return 0; fi
+  for a in "$@"; do case "$a" in *@*) host="${a#*@}"; break ;; esac; done
+  hex="$(printf '%s' "$host" | od -An -tx1 | tr -d ' \n')00000000000000000000000000000000"
+  printf '%s-%s-%s-%s-%s' "${hex:0:8}" "${hex:8:4}" "${hex:12:4}" "${hex:16:4}" "${hex:20:12}"
+}
 
 # A re-imaged Pi answers on the same hostname with a new host key;
 # StrictHostKeyChecking=accept-new refuses it before authentication.
@@ -51,7 +70,31 @@ BANNER
 fi
 
 cmd="${*: -1}"
+case " $* " in *" -tt "*) tty=1 ;; *) tty=0 ;; esac
+if [[ "$tty" == "1" && "$cmd" == sudo* ]]; then
+  printf '[sudo] password for pi: \n'
+fi
+
 case "$cmd" in
+  mktemp*jts-deploy-facts*)
+    rm -rf "$FAKE_FACTS_DIR"
+    mkdir -m 0700 -p "$FAKE_FACTS_DIR"
+    printf '%s\n' "$FAKE_FACTS_DIR"
+    ;;
+  sudo*jts-deploy-facts*)
+    # publish_root_facts: root stages what this run will read back.
+    if [[ "${FAKE_PUBLISH_RC:-0}" != "0" ]]; then exit "$FAKE_PUBLISH_RC"; fi
+    mkdir -p "$FAKE_FACTS_DIR"
+    id="$(fake_peer_id "$@")"
+    if [[ -n "$id" ]]; then printf '%s\n' "$id" > "$FAKE_FACTS_DIR/peer_id"; fi
+    if [[ -f "${FAKE_MANIFEST:-}" ]]; then cp "$FAKE_MANIFEST" "$FAKE_FACTS_DIR/build.txt"; fi
+    printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}" > "$FAKE_FACTS_DIR/install_profile"
+    : > "$FAKE_FACTS_DIR/journal"
+    ;;
+  *jts-deploy-facts*)
+    # The reads and the cleanup are plain, unprivileged file access.
+    eval "$cmd"
+    ;;
   'printf "%s\n" "$HOME"')
     printf '%s\n' "${FAKE_HOME:-/home/pi}"
     ;;
@@ -68,17 +111,11 @@ case "$cmd" in
     exit 0
     ;;
   sudo*cat\ /var/lib/jasper/peer_id*)
-    # Each fake speaker owns a stable, distinct identity, so a deploy
-    # redirected to another host reads another host's peer_id.
-    for a in "$@"; do
-      case "$a" in *@*) printf 'peer-%s\n' "${a#*@}"; break ;; esac
-    done
+    id="$(fake_peer_id "$@")"
+    if [[ -n "$id" ]]; then printf '%s\n' "$id"; fi
     ;;
-  sudo\ -n\ cat\ /var/lib/jasper/build.txt*)
-    printf 'fake-build\n'
-    ;;
-  sudo\ cat\ /var/lib/jasper/build.txt*)
-    printf 'fake-build\n'
+  sudo*cat\ /var/lib/jasper/build.txt*)
+    cat "${FAKE_MANIFEST:-}" 2>/dev/null || true
     ;;
   sudo\ -n\ cat\ /var/lib/jasper/install_profile*)
     printf '%s\n' "${FAKE_INSTALL_PROFILE:-full}"
@@ -104,7 +141,14 @@ case "$cmd" in
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
   *\/deploy\/install.sh*)
-    exit "${FAKE_INSTALL_SSH_RC:-0}"
+    rc="${FAKE_INSTALL_SSH_RC:-0}"
+    if [[ "$rc" == "0" && -n "${FAKE_MANIFEST:-}" ]]; then
+      # install.sh writes the build manifest ONLY as its final step.
+      sha="${cmd#*JASPER_DEPLOY_SHA_FULL=}"
+      printf 'JASPER_GIT_SHA_FULL=%s\nJASPER_INSTALL_STATUS=ok\n' \
+        "${sha%% *}" > "$FAKE_MANIFEST"
+    fi
+    exit "$rc"
     ;;
   sudo\ -n*)
     exit 0
@@ -212,7 +256,9 @@ class FakeRemote:
             {
                 "PATH": f"{self.bin}{os.pathsep}{env['PATH']}",
                 "FAKE_LOG": str(self.log),
-                "SKIP_RESTART": "1",
+                "FAKE_MANIFEST": str(self.tmp / "build.txt"),
+                # Named like the real one: the fake's arms key off it.
+                "FAKE_FACTS_DIR": str(self.tmp / ".jts-deploy-facts.fake"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
         )
@@ -482,6 +528,147 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("RSYNC", calls)
         self.assertNotIn("deploy/install.sh", calls)
 
+    def test_identity_mismatch_aborts_before_rsync_on_every_sudo_and_flag_path(self):
+        """No path reaches `rsync --delete` with the identity guard unrun.
+
+        .env.local records another speaker's peer_id, so every combination
+        of sudo channel and SKIP_INSTALL must abort before rsync and leave
+        the recorded identity alone.
+
+        Removal condition: delete when the identity and direction guards
+        move out of scripts/deploy-to-pi.sh.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            PI_PEER_ID=00000000-0000-0000-0000-00000000beef
+            """
+        )
+        for use_pty in (False, True):
+            for skip_install in ({}, {"SKIP_INSTALL": "1"}):
+                with self.subTest(use_pty=use_pty, **skip_install):
+                    fake = FakeRemote(self)
+                    # Attended sudo is reachable only from a tty: sudo -n
+                    # fails and stdin is the pty.
+                    env = fake.env(
+                        FAKE_SUDO_N_RC="1" if use_pty else "0", **skip_install
+                    )
+                    with isolated_checkout(env_local) as checkout:
+                        cmd = ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")]
+                        if use_pty:
+                            result = run_with_pty(cmd, cwd=checkout, env=env)
+                        else:
+                            result = subprocess.run(
+                                cmd,
+                                cwd=checkout,
+                                env=env,
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                        recorded = (checkout / ".env.local").read_text(
+                            encoding="utf-8"
+                        )
+
+                    self.assertNotEqual(
+                        result.returncode, 0, result.stdout + result.stderr
+                    )
+                    self.assertNotIn("RSYNC", fake.calls())
+                    self.assertIn(
+                        "PI_PEER_ID=00000000-0000-0000-0000-00000000beef", recorded
+                    )
+
+    def test_a_non_uuid_read_is_reported_unavailable_and_never_recorded(self):
+        """Attended sudo prompts inside every new ssh session, so a captured
+        read can pick up prompt text where a peer_id should be. Only a
+        UUID is an identity: anything else is `unavailable` — nothing is
+        recorded, and the deploy is not blocked by it.
+
+        Removal condition: delete with the peer_id TOFU guard.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            """
+        )
+        for peer_id in ("", "[sudo] password for pi:"):
+            with self.subTest(peer_id=peer_id):
+                fake = FakeRemote(self)
+                env = fake.env(FAKE_SUDO_N_RC="1", FAKE_PEER_ID=peer_id)
+                with isolated_checkout(env_local) as checkout:
+                    result = run_with_pty(
+                        ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")],
+                        cwd=checkout,
+                        env=env,
+                    )
+                    recorded = (checkout / ".env.local").read_text(
+                        encoding="utf-8"
+                    )
+
+                combined = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, combined)
+                self.assertIn("DEPLOY_IDENTITY=unavailable", result.stdout)
+                self.assertNotIn("PI_PEER_ID", recorded)
+                self.assertIn("RSYNC", fake.calls())
+
+    def test_a_fact_that_cannot_be_staged_stops_the_deploy_before_rsync(self):
+        """A root fact the Pi has but will not hand over must abort the
+        deploy, not read back as absent — an unstaged peer_id that reported
+        `unavailable` would skip the identity guard silently.
+
+        Removal condition: delete when the guards stop reading staged facts.
+        """
+        fake = FakeRemote(self)
+        env = fake.env(
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_SUDO_N_RC="1",
+            FAKE_PUBLISH_RC="1",
+        )
+        with isolated_checkout(None) as checkout:
+            result = run_with_pty(
+                ["bash", str(checkout / "scripts" / "deploy-to-pi.sh")],
+                cwd=checkout,
+                env=env,
+            )
+
+        self.assertNotEqual(
+            result.returncode, 0, result.stdout + result.stderr
+        )
+        self.assertNotIn("RSYNC", fake.calls())
+
+    def test_skip_restart_skips_the_restarts_and_still_runs_the_gates(self):
+        """SKIP_RESTART=1 leaves the daemons on prior code — it is not a
+        verification switch, so the post-deploy probes still run.
+
+        Removal condition: delete with the SKIP_RESTART flag.
+        """
+        fake = FakeRemote(self)
+        result = self.run_deploy(
+            fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            SKIP_RESTART="1",
+        )
+
+        calls = fake.calls()
+        sha_full = git_head("HEAD")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("systemctl\\ restart", calls)
+        self.assertIn("/system/data.json", calls)
+        # The asset probe carries the cache key of the build just deployed;
+        # the character class absorbs the log's shell quoting of `?`.
+        self.assertRegex(
+            calls, rf"/assets/app\.css[\\?]+v={sha_full[:7]}[0-9a-f]*"
+        )
+
     def test_changed_host_key_names_the_manual_remedy_and_removes_nothing(self):
         # A re-imaged Pi answers on the same hostname with a new host key,
         # which accept-new refuses (issue #2114). Both operator scripts
@@ -663,6 +850,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         calls = fake.calls()
         combined = result.stdout + result.stderr + calls
         self.assertEqual(result.returncode, 0, combined)
+        # The attended channel still runs the identity guard, and reports
+        # its outcome on the branch that has nothing to compare against.
+        self.assertIn("DEPLOY_IDENTITY=no_state_file", result.stdout)
         self.assertIn("SSH -tt", calls)
         self.assertIn("sudo\\ -v", calls)
         self.assertIn("sudo\\ JASPER_DEPLOY_SHA=", calls)
@@ -796,7 +986,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     plain.returncode, 0, plain.stdout + plain.stderr
                 )
             recorded = state.read_bytes()
-            self.assertIn("PI_PEER_ID=peer-jts.local", recorded.decode())
+            self.assertIn(
+                f"PI_PEER_ID={fake_peer_id('jts.local')}", recorded.decode()
+            )
             self.assertNotEqual(recorded, before)
 
             # ...and with that record standing, a redirect neither reads
@@ -852,7 +1044,9 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     0,
                     onboard_shape.stdout + onboard_shape.stderr,
                 )
-            self.assertIn("PI_PEER_ID=peer-jts.local", state.read_text())
+            self.assertIn(
+                f"PI_PEER_ID={fake_peer_id('jts.local')}", state.read_text()
+            )
 
     def test_lib_keeps_jasper_hostname_as_legacy_pi_host_fallback(self):
         env = os.environ.copy()

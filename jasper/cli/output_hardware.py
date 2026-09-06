@@ -18,6 +18,7 @@ import os
 import shlex
 from dataclasses import replace
 
+from jasper.audio_hardware.dac import kind_for, percent_pinned_control_for
 from jasper.audio_hardware.hat_eeprom import read_hat_eeprom
 from jasper.audio_hardware.usb_port_role import resolve_system_usb_port_role
 from jasper.output_hardware import (
@@ -55,6 +56,17 @@ def env_lines(
     values = {
         "OBSERVED_OUTPUT_PROFILE_ID": state.profile_id,
         "OBSERVED_OUTPUT_PROFILE_STATUS": state.status,
+        # The registry's shape for the observed profile. The shell routes a
+        # composite onto the paired sink through this, so no profile id is
+        # ever spelled there.
+        "OBSERVED_OUTPUT_PROFILE_KIND": kind_for(state.profile_id) or "",
+        # The mixer control `jasper-headphone-monitor` re-pins, taken off the
+        # profile the box DRIVES. Empty means that profile pins none, which is
+        # also how the reconciler decides not to run the monitor at all.
+        "OBSERVED_OUTPUT_HEADPHONE_CONTROL": percent_pinned_control_for(
+            state.active_profile_id or ""
+        )
+        or "",
         "OBSERVED_OUTPUT_SELECTED_CARD_ID": state.selected_card_id or "",
         "OBSERVED_OUTPUT_CHILD_DEVICE_IDS": " ".join(
             child.device_id for child in state.child_devices

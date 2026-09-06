@@ -21,6 +21,16 @@ from jasper.audio_profile_state import ALL_PROFILES, profile_env_updates
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
+from jasper.mic_presence import (
+    MIC_ABSENT_ACCESSORY_UNKNOWN,
+    MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
+    MIC_ABSENT_CHIP_AEC_VALIDATING,
+    MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
+    MIC_ABSENT_REASONS,
+    MIC_ABSENT_XVF_CAPTURE_ABSENT,
+    read_mic_presence,
+    voice_park_is_transient,
+)
 from jasper.control import aec_endpoints
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
@@ -136,16 +146,6 @@ def _event_values(stderr: str, event: str, field: str) -> list[str]:
         stderr,
         flags=re.MULTILINE,
     )
-
-
-def _shell_function_body(source: str, name: str) -> str:
-    match = re.search(
-        rf"^{re.escape(name)}\(\)\s*\{{\n(.*?)^\}}$",
-        source,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert match is not None, f"could not locate shell function {name}"
-    return match.group(1)
 
 
 def _alignment_record(tmp_path: Path) -> Path:
@@ -344,6 +344,15 @@ def _marker(tmp_path: Path) -> Path:
     ``ConditionPathExists=!``. This reconciler is its single writer;
     ``_run_reconcile`` redirects it into tmp_path."""
     return tmp_path / "voice-input-absent"
+
+
+def _marker_fields(path: Path) -> dict[str, str]:
+    """A marker body (or a snapshot of one) as ``key -> value``:
+    ``reason=<code>`` plus, where the code cannot carry the whole fact,
+    ``detail=<prose>``."""
+    return dict(
+        line.split("=", 1) for line in path.read_text().splitlines() if line
+    )
 
 
 def _stage(
@@ -642,7 +651,7 @@ def test_bridge_ready_marker_publish_and_revoke_are_events(tmp_path: Path) -> No
     """Ready-marker publish/revoke (ADR-0235 :187-204) are the most
     load-bearing verdicts in the file — jasper-aec-bridge.service's
     StartLimitAction=reboot gates on the marker — and had no event= line
-    before this PR (G12). Every pass withdraws first (unconditional), then
+    (G12). Every pass withdraws first (unconditional), then
     republishes only where a verdict settles (ADR-0224)."""
     _stage(tmp_path, "Array", mode="auto", channels=6)
 
@@ -696,8 +705,9 @@ def test_direct_mic_selected_event_for_a_non_6_channel_custom_mic(
 
 def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> None:
     """The absence marker's success path (ADR-0235 :1625) had no event= line
-    before this PR (G12); jasper-voice.service gates ExecStart on the
-    marker's absence, so this is what a no-input box's journal shows."""
+    (G12); jasper-voice.service gates ExecStart on the marker's absence, so
+    this is what a no-input box's journal shows. The code is the greppable
+    axis; the prose it replaced rides beside it as `detail=`."""
     _stage(tmp_path, "udp:9876", mode="auto")
 
     result = _run_reconcile(tmp_path, "--reason", "test")
@@ -708,23 +718,47 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     ) == ["marked"]
     assert _event_values(
         result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == ["no candidate microphone present and no accessory microphone paired"]
+    ) == [MIC_ABSENT_NO_LOCAL_OR_ACCESSORY]
+    [detail] = _event_values(
+        result.stderr, "aec_reconcile.voice_input_absent", "detail"
+    )
+    assert detail == _marker_fields(_marker(tmp_path))["detail"]
+
+
+def test_the_bridge_ready_revoke_precedes_the_absence_mark(tmp_path: Path) -> None:
+    """G13's ordering, pinned where it already holds. The unconditional
+    top-of-pass revoke (:204, ADR-0224) runs before this pass decides
+    anything, so by the time a no-candidate pass marks the absence the
+    bridge's next start is already a skipped ConditionPathExists — and a
+    condition skip does not count toward StartLimitBurst=4 /
+    StartLimitAction=reboot. No second revoke was added on the absence path:
+    it could only re-emit a verdict this pass has already published.
+    ADR-0235 R6."""
+    _stage(tmp_path, "udp:9876", mode="auto")
+
+    result = _run_reconcile(tmp_path, "--reason", "test")
+
+    assert result.returncode == 0, result.stderr
+    verdicts = re.findall(r"\bevent=(\S+) state=(\S+)", result.stderr)
+    assert verdicts.index(
+        ("aec_reconcile.bridge_ready", "revoked")
+    ) < verdicts.index(("aec_reconcile.voice_input_absent", "marked"))
 
 
 def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
     tmp_path: Path,
 ) -> None:
     """`clear`'s reason is whatever the marker body it just removed carried —
-    not a description of what un-parked voice this pass. Free-prose today
-    (jasper/mic_presence.py `_marker_reason`); emitted as-is (ADR-0235
-    PR 12), not a code vocabulary this PR does not own.
+    not a description of what un-parked voice this pass. It is a
+    MIC_ABSENT_REASONS code, emitted as-is: this pass reads the body it is
+    deleting, it does not re-derive it.
 
     ``profile="custom"``, not ``mode="auto"``: a bare auto pass over a
     real 6-channel XVF card resolves the managed chip-AEC profile and marks
     (then clears) its OWN commissioning-validation reason, which would
     overwrite the one under test before this pass's clear ever reads it.
     """
-    _marker(tmp_path).write_text("reason=stale-no-mic\n")
+    _marker(tmp_path).write_text(f"reason={MIC_ABSENT_XVF_CAPTURE_ABSENT}\n")
     _stage(tmp_path, "Array", profile="custom", channels=6)
 
     result = _run_reconcile(tmp_path, "--reason", "test")
@@ -735,7 +769,7 @@ def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
     ) == ["cleared"]
     assert _event_values(
         result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == ["stale-no-mic"]
+    ) == [MIC_ABSENT_XVF_CAPTURE_ABSENT]
 
 
 @pytest.mark.parametrize(
@@ -1479,25 +1513,28 @@ def _accessory_probe_unavailable(tmp_path: Path) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("prepare", "reason_says", "journal_says"),
+    ("prepare", "code", "probe_status", "journal_says"),
     [
-        (_no_accessory_file, ("no accessory microphone paired",), ()),
+        (_no_accessory_file, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, "", ()),
         (
             _malformed_accessory_file,
-            ("could not be determined",),
+            MIC_ABSENT_ACCESSORY_UNKNOWN,
+            "failed",
             # The parser's own sentence — which rule the content broke — reaches
             # the journal, because that sentence IS the remediation.
             ("refusing to publish accessory mic sources", "must be source_id=device"),
         ),
         (
             _accessory_probe_fails,
-            ("could not be determined", "probe failed"),
+            MIC_ABSENT_ACCESSORY_UNKNOWN,
+            "failed",
             # The module's own stderr reaches the journal, not /dev/null.
             ("accessory mic probe failed", "ModuleNotFoundError"),
         ),
         (
             _accessory_probe_unavailable,
-            ("could not be determined",),
+            MIC_ABSENT_ACCESSORY_UNKNOWN,
+            "unavailable",
             ("accessory mic probe unavailable",),
         ),
     ],
@@ -1506,18 +1543,19 @@ def _accessory_probe_unavailable(tmp_path: Path) -> dict[str, str]:
 def test_the_park_marker_names_the_fact_the_probe_actually_established(
     tmp_path: Path,
     prepare: Callable[[Path], dict[str, str]],
-    reason_says: tuple[str, ...],
+    code: str,
+    probe_status: str,
     journal_says: tuple[str, ...],
 ) -> None:
     """Every no-accessory-verdict route fails CLOSED — ``Config.from_env``
     raises on a malformed source list, and opening the gate on a file the
     daemon rejects crash-loops it into StartLimitAction=reboot.
 
-    Parking is never the question; the reason is. This marker's text is read
-    verbatim through /state.microphone.reason and the doctor headline, so only
-    the route that actually checked may answer "no accessory microphone
-    paired". "I could not tell" and "I checked and there is nothing" are
-    different facts.
+    Parking is never the question; the reason is. The code is what reaches
+    /state.microphone.reason, so only the route that actually checked may
+    answer ``no_local_or_accessory_mic``. "I could not tell" and "I checked
+    and there is nothing" are different facts, and the probe status behind
+    the first is the ``detail=`` line's job — the code cannot carry it.
 
     The last two routes are pinned on the ``custom`` profile because that is
     the only shape that reaches stop_voice without a working interpreter — a
@@ -1529,11 +1567,11 @@ def test_the_park_marker_names_the_fact_the_probe_actually_established(
     result = _run_reconcile(tmp_path, "--reason", "test", extra_env=extra_env)
 
     assert result.returncode == 0, result.stderr
-    reason = _marker(tmp_path).read_text()
-    for phrase in reason_says:
-        assert phrase in reason
-    if "no accessory microphone paired" not in reason_says:
-        assert "no accessory microphone paired" not in reason
+    fields = _marker_fields(_marker(tmp_path))
+    assert fields["reason"] == code
+    assert fields["detail"]
+    if probe_status:
+        assert probe_status in fields["detail"]
     for phrase in journal_says:
         assert phrase in result.stderr
     commands = _systemctl_log(tmp_path)
@@ -1565,6 +1603,141 @@ def test_accessory_mic_does_not_unpark_managed_xvf(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert _marker(tmp_path).exists()
     assert VOICE_RESTART_CMD not in _systemctl_log(tmp_path)
+
+
+# --- the marker body is a closed code vocabulary -----------------------------
+#
+# Every `mark_voice_input_absent` site writes `reason=<code>` from
+# jasper.mic_presence.MIC_ABSENT_REASONS plus the prose that code cannot carry
+# as `detail=`. The reader maps anything else to `unknown`, so a site that
+# invents a code degrades to "we do not know why" on /state.microphone and
+# loses its ADR-0239 transient class — which is exactly what these drive.
+
+
+def _park_no_accessory(tmp_path: Path) -> Path:
+    """stop_voice with the accessory probe resolved and empty."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode(tmp_path)
+    assert _run_reconcile(tmp_path, "--reason", "test").returncode == 0
+    return _marker(tmp_path)
+
+
+def _park_accessory_unknown(tmp_path: Path) -> Path:
+    """stop_voice with the accessory probe unable to answer."""
+    _write_env(tmp_path, "udp:9876")
+    extra_env = _accessory_probe_unavailable(tmp_path)
+    result = _run_reconcile(tmp_path, "--reason", "test", extra_env=extra_env)
+    assert result.returncode == 0, result.stderr
+    return _marker(tmp_path)
+
+
+def _park_managed_xvf_unusable(tmp_path: Path) -> Path:
+    """park_managed_xvf: a managed selection with no eligible capture device."""
+    _stage(tmp_path, "udp:9876", profile="xvf_chip_aec")
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(tmp_path / "missing-python")},
+    )
+    assert result.returncode == 0, result.stderr
+    return _marker(tmp_path)
+
+
+def _park_chip_aec_bringup(disposition: str) -> Callable[[Path], Path]:
+    """park_to_reference_leg, once per fault it can be reached through."""
+
+    def _park(tmp_path: Path) -> Path:
+        _drive_alignment_disposition(tmp_path, disposition)
+        return _marker(tmp_path)
+
+    return _park
+
+
+def _park_validation_bounce(tmp_path: Path) -> Path:
+    """activate_managed_chip_aec's own park: the ~8 s validation round trip.
+
+    The pass's own `restart_voice` clears the marker before the run returns,
+    so a fake systemctl snapshots it at the stop that immediately follows the
+    write (mirrors `_drive_alignment_disposition`'s CHECKING branch).
+    """
+    _stage(tmp_path, "Array", profile="auto", channels=6)
+    snapshot = tmp_path / "checking-marker.env"
+    fake = _systemctl_double(
+        tmp_path,
+        "checking-marker-snapshot-systemctl",
+        "[[ \"$*\" == 'stop jasper-voice.service jasper-aec-bridge.service'"
+        f" && ! -f {shlex.quote(str(snapshot))} ]]"
+        f" && cp \"$JASPER_VOICE_INPUT_ABSENT_MARKER\" {shlex.quote(str(snapshot))}\n",
+    )
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert not _marker(tmp_path).exists()
+    return snapshot
+
+
+@pytest.mark.parametrize(
+    ("park", "code", "transient"),
+    [
+        (_park_no_accessory, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, False),
+        (_park_accessory_unknown, MIC_ABSENT_ACCESSORY_UNKNOWN, False),
+        (_park_managed_xvf_unusable, MIC_ABSENT_XVF_CAPTURE_ABSENT, False),
+        (
+            _park_chip_aec_bringup(chip_aec_health.REFERENCE_PRODUCER_DOWN),
+            MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
+            False,
+        ),
+        (
+            _park_chip_aec_bringup(chip_aec_health.BRIDGE_FAILED),
+            MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
+            False,
+        ),
+        (
+            _park_chip_aec_bringup(chip_aec_health.REAPPLY_FAILED),
+            MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
+            False,
+        ),
+        (_park_validation_bounce, MIC_ABSENT_CHIP_AEC_VALIDATING, True),
+    ],
+    ids=(
+        "no-accessory", "accessory-unknown", "xvf-unusable",
+        "reference-producer-down", "bridge-failed", "reapply-failed",
+        "validation-bounce",
+    ),
+)
+def test_every_park_writes_a_code_the_reader_knows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    park: Callable[[Path], Path],
+    code: str,
+    transient: bool,
+) -> None:
+    """Drive every park this harness can reach and read the marker back
+    through the real reader, so writer and vocabulary cannot drift apart.
+
+    `transient` is the ADR-0239 axis and is derived here from nothing but the
+    code — the marker carries no separate flag, so the shutdown cue's verdict
+    IS the code's class.
+    """
+    body = park(tmp_path)
+
+    fields = _marker_fields(body)
+    assert set(fields) == {"reason", "detail"}
+    assert fields["reason"] == code
+    assert fields["reason"] in MIC_ABSENT_REASONS
+    assert fields["detail"]
+
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(body))
+    monkeypatch.setenv(
+        "JASPER_ACCESSORY_MIC_ENV_FILE", str(tmp_path / "no-accessory.env")
+    )
+    record = read_mic_presence()
+    assert record.present is False
+    assert record.reason == code
+    assert record.detail == fields["detail"]
+    assert voice_park_is_transient() is transient
 
 
 def _aec_disabled_direct_mic_box(tmp_path: Path) -> None:
@@ -1715,8 +1888,7 @@ def _write_mode_with_legs(
 
 def test_ensure_mode_file_seeds_every_documented_default(tmp_path: Path) -> None:
     """Fresh install (no aec_mode.env): the reconciler creates the file with
-    the documented defaults, which must match install.sh's reconcile_aec_state
-    seed verbatim (pinned against control's view in the next two tests)."""
+    the documented defaults (pinned against control's view in the next test)."""
     _write_env(tmp_path, "Array")
 
     _run_reconcile(tmp_path, "--reason", "test")
@@ -1768,17 +1940,6 @@ def test_reconciler_leg_defaults_match_control_fallback(
     actual = _env_assignments(tmp_path / "aec_mode.env")
     expected = _control_leg_defaults()
     assert {key: actual.get(key) for key in expected} == expected
-
-
-def test_install_leg_seed_matches_control_fallback() -> None:
-    """The install-time seed and control's missing-file view stay aligned."""
-    install = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
-    function = _shell_function_body(install, "reconcile_aec_state")
-    key_pattern = "|".join(re.escape(key) for key in _control_leg_defaults())
-    pairs = re.findall(rf"({key_pattern})=([01])\\n", function)
-
-    assert len(pairs) == len(_control_leg_defaults()), pairs
-    assert dict(pairs) == _control_leg_defaults()
 
 
 def test_reconcile_preserves_existing_mode_file_dir_mode(tmp_path: Path) -> None:

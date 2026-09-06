@@ -65,8 +65,9 @@ from pathlib import Path
 
 from jasper.accessories.mic_env import read_accessory_mic_sources
 from jasper.atomic_io import read_json_mapping
+from jasper.env_load import parse_env_text
 from jasper.voice.input_presence import (
-    voice_input_absent_marker_path,
+    voice_input_absent_marker_lines,
     voice_parked_no_mic,
 )
 
@@ -83,6 +84,41 @@ def mic_profile_state_path() -> str:
     )
 
 
+# The gate marker's ``reason=`` vocabulary. ``jasper-aec-reconcile``'s
+# ``mark_voice_input_absent`` is its only writer and may write nothing outside
+# this set; anything else read back (an older build, a hand-edited marker) is
+# ``MIC_ABSENT_UNKNOWN``. The operator prose these codes replaced is the
+# marker's ``detail=`` line — display text, matched on by nobody.
+MIC_ABSENT_NO_LOCAL_OR_ACCESSORY = "no_local_or_accessory_mic"
+MIC_ABSENT_ACCESSORY_UNKNOWN = "accessory_mic_unknown"
+MIC_ABSENT_XVF_CAPTURE_ABSENT = "xvf_capture_absent"
+MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED = "chip_aec_bringup_failed"
+MIC_ABSENT_CHIP_AEC_VALIDATING = "chip_aec_validating"
+MIC_ABSENT_UNKNOWN = "unknown"
+
+MIC_ABSENT_REASONS: frozenset[str] = frozenset(
+    {
+        MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
+        MIC_ABSENT_ACCESSORY_UNKNOWN,
+        MIC_ABSENT_XVF_CAPTURE_ABSENT,
+        MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
+        MIC_ABSENT_CHIP_AEC_VALIDATING,
+        MIC_ABSENT_UNKNOWN,
+    }
+)
+
+#: Whether a park is a round trip the reconciler itself ends is a property of
+#: the code, not a second field on the wire: these parks are the ones the
+#: daemon's mic-loss cue (ADR-0239) must stay silent for.
+TRANSIENT_MIC_ABSENT_REASONS: frozenset[str] = frozenset(
+    {MIC_ABSENT_CHIP_AEC_VALIDATING}
+)
+
+#: ``summary``'s fallback when a park carries no ``detail=`` prose. Never the
+#: ``reason`` code itself — that is a machine token, not a headline.
+MIC_ABSENT_GENERIC_DETAIL = "no usable microphone detected"
+
+
 @dataclass(frozen=True)
 class MicPresence:
     """Unified, display-ready voice-input status.
@@ -94,7 +130,11 @@ class MicPresence:
     """
 
     present: bool
-    reason: str = ""  # why absent (generic); "" when present
+    #: Why absent, as a MIC_ABSENT_REASONS code; "" when present.
+    reason: str = ""
+    #: Operator prose for that code (a card name, a probe status, the unit to
+    #: inspect). Display only — switch on ``reason``, never on this.
+    detail: str = ""
     # Push-to-talk source ids from jasper-accessory-reconcile. Non-empty means
     # a paired accessory mic satisfies the gate on its own — it does NOT imply
     # anything about the local mic (see the module docstring).
@@ -148,9 +188,9 @@ class MicPresence:
     def summary(self) -> str:
         """One-line, human-facing status for headlines / dashboards."""
         if not self.present:
-            detail = self.reason or "no usable microphone detected"
+            why = self.detail or MIC_ABSENT_GENERIC_DETAIL
             return (
-                f"input unavailable — {detail}; jasper-voice is parked and "
+                f"input unavailable — {why}; jasper-voice is parked and "
                 "reconciles automatically when the condition is resolved"
             )
         if self.is_xvf:
@@ -193,6 +233,7 @@ class MicPresence:
             "present": self.present,
             "parked": self.parked,
             "reason": self.reason,
+            "detail": self.detail,
             "accessory_sources": list(self.accessory_sources),
             "accessory_present": self.accessory_present,
             "is_xvf": self.is_xvf,
@@ -206,16 +247,36 @@ class MicPresence:
         }
 
 
-def _marker_reason() -> str:
-    """Best-effort reason text from the marker body (``reason=<text>``)."""
-    try:
-        body = Path(voice_input_absent_marker_path()).read_text()
-    except OSError:
-        return ""
-    for line in body.splitlines():
-        if line.startswith("reason="):
-            return line[len("reason="):].strip()
-    return ""
+def _marker_fields() -> tuple[str, str]:
+    """``(reason code, detail prose)`` from the marker body.
+
+    An unrecognised or missing ``reason=`` is ``MIC_ABSENT_UNKNOWN``, never the
+    raw token: the code is a closed wire vocabulary, so prose from an older
+    build must not pass through as one. When that happens and the marker
+    carries no ``detail=`` of its own, the unrecognised token becomes the
+    detail instead, so an older build's free-form reason still displays.
+    """
+    fields = parse_env_text("\n".join(voice_input_absent_marker_lines()))
+    code = fields.get("reason", "")
+    detail = fields.get("detail", "")
+    if code and code not in MIC_ABSENT_REASONS and not detail:
+        detail = code
+    return (
+        code if code in MIC_ABSENT_REASONS else MIC_ABSENT_UNKNOWN,
+        detail,
+    )
+
+
+def voice_park_is_transient() -> bool:
+    """True when the current park is a round trip the reconciler itself ends
+    — the chip-AEC validation bounce (ADR-0239) — rather than a real absence
+    of voice input.
+
+    Meaningless unless ``voice_parked_no_mic()`` is also true, and fail-safe to
+    False (an unknown code is not transient) so a real absence can never be
+    misread as transient and lose its shutdown cue.
+    """
+    return _marker_fields()[0] in TRANSIENT_MIC_ABSENT_REASONS
 
 
 def read_mic_presence(state_path: str | None = None) -> MicPresence:
@@ -242,9 +303,11 @@ def read_mic_presence(state_path: str | None = None) -> MicPresence:
         # (a marker written before the accessory half was published, then a
         # reconcile that has not run yet), the record shows both facts instead
         # of hiding one.
+        reason, detail = _marker_fields()
         return MicPresence(
             present=False,
-            reason=_marker_reason() or "no usable microphone present",
+            reason=reason,
+            detail=detail,
             accessory_sources=accessory_sources,
         )
     # Usable voice input is present. Enrich with XVF detail iff a detected XVF

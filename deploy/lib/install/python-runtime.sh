@@ -383,9 +383,8 @@ PY
         -e '/^JASPER_CONTROL_PORT=/d'
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
-        sed_inplace "${ENV_DIR}/jasper.env" '/^JASPER_AUDIO_DAC_ID=/d'
-        printf 'JASPER_AUDIO_DAC_ID=%s\n' "${OUTPUT_DAC_ID}" >> "${ENV_DIR}/jasper.env"
-        chmod 0640 "${ENV_DIR}/jasper.env"
+        jasper_env_file_set "${ENV_DIR}/jasper.env" \
+            JASPER_AUDIO_DAC_ID "${OUTPUT_DAC_ID}" 0640 0750
         echo "  audio DAC id: ${OUTPUT_DAC_ID}"
     fi
     # Re-narrow the jasper-secrets compartment's ownership and
@@ -487,8 +486,8 @@ EOF
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  streambox env: created ${ENV_DIR}/jasper.env"
     else
-        set_jasper_env_value JASPER_INSTALL_PROFILE "streambox"
-        chmod 0640 "${ENV_DIR}/jasper.env"
+        jasper_env_file_set "${ENV_DIR}/jasper.env" \
+            JASPER_INSTALL_PROFILE streambox 0640 0750
         echo "  streambox env: refreshed streambox defaults"
     fi
     # Streambox writes its own env rather than seeding from .env.example, so
