@@ -353,6 +353,9 @@ def test_guardian_fails_loudly_when_env_file_lib_is_unusable(tmp_path):
     )
     assert proc.returncode == 66
     assert "event=wifi_guardian.lib_missing" in proc.stderr
+    # Structured field, not prose: distinguishes this present-but-unusable
+    # case from the lib-file-absent case, which shares the same event name.
+    assert "reason=unusable" in proc.stderr
     assert "event=wifi_guardian.absent" not in proc.stderr
     assert _nmcli_log(log) == ""
 

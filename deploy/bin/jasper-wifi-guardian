@@ -111,7 +111,7 @@ load_env_file_lib() {
         fi
     fi
     if [[ ! -r "$ENV_FILE_LIB" ]]; then
-        emit lib_missing "path=$ENV_FILE_LIB"
+        emit lib_missing "path=$ENV_FILE_LIB reason=absent"
         exit 66
     fi
     # shellcheck disable=SC1090
@@ -122,7 +122,7 @@ load_env_file_lib() {
     # guardian would report `absent reason=stash_empty` with rc 0 while
     # the Pi sits off the LAN.
     declare -F jasper_env_file_get >/dev/null || {
-        emit lib_missing "path=$ENV_FILE_LIB"
+        emit lib_missing "path=$ENV_FILE_LIB reason=unusable"
         exit 66
     }
 }

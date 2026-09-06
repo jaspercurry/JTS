@@ -304,9 +304,10 @@ def test_env_file_get_round_trips_env_file_set(tmp_path: Path) -> None:
 
 
 def test_reconcilers_source_shared_lib_and_never_printf_q() -> None:
-    """Drift guard: both reconcilers must load jasper-env-file.sh and
-    must not regrow a local `printf %q` (the bash-5.2 comma bug) or a
-    forked local quoting loop."""
+    """Drift guard: every script in RECONCILERS (the two reconcilers and
+    the wifi guardian) must load jasper-env-file.sh and must not regrow a
+    local `printf %q` (the bash-5.2 comma bug) or a forked local quoting
+    loop."""
     for script in RECONCILERS:
         text = script.read_text()
         assert "jasper-env-file.sh" in text, script.name
