@@ -182,11 +182,12 @@ while IFS= read -r changed; do
       ;;
     tests/voice_eval/*)
       ;;
-    jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh)
+    jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh|scripts/tail-pi-logs.sh|scripts/fetch-pi-logs.sh|scripts/pi-bundle.sh|scripts/pi-run-diagnostic.sh)
       # The Python and bash redactors are pinned side by side against one
       # case table, so an edit to either has to run both files' tests.
-      # Without this arm scripts/_diagnostic_redaction.sh matches no arm at
-      # all and jasper/secret_redaction.py routes only to its own test.
+      # Without this arm scripts/_diagnostic_redaction.sh and its four
+      # consumers match no arm at all and jasper/secret_redaction.py routes
+      # only to its own test.
       add_test_if_present "tests/test_secret_redaction.py"
       add_test_if_present "tests/test_diagnostic_redaction_scripts.py"
       # These run redact_secrets on the surfaces the non-negotiable
