@@ -159,8 +159,8 @@ def _coerce_main_volume_db(db: float) -> float:
             logger,
             "camilla.main_volume_clamped",
             level=logging.WARNING,
-            requested_db=f"{value:.1f}",
-            clamped_db=f"{clamped:.1f}",
+            requested_db=value,
+            clamped_db=clamped,
         )
     return clamped
 

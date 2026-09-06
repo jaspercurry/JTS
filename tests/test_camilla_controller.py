@@ -35,7 +35,7 @@ from jasper.dsp_apply import (
 )
 
 from ._async_wait import wait_signalled, wait_writer_lock_waiting
-from ._log_events import event_fields
+from ._log_events import event_fields, event_records
 
 
 class _FakeVolume:
@@ -169,9 +169,11 @@ async def test_set_volume_db_clamps_positive_gain_to_zero(caplog):
     assert await cam.set_volume_db(6.0)
 
     assert fake.volume.values == [0.0]
+    (record,) = event_records(caplog, "camilla.main_volume_clamped")
+    assert record.levelno == logging.WARNING
     fields = event_fields(caplog, "camilla.main_volume_clamped")
-    assert fields["requested_db"] == "6.0"
-    assert fields["clamped_db"] == "0.0"
+    assert float(fields["requested_db"]) == 6.0
+    assert float(fields["clamped_db"]) == 0.0
 
 
 async def test_set_volume_db_rejects_non_finite_best_effort():
