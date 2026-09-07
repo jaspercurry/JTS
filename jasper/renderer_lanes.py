@@ -605,7 +605,7 @@ def arm_refusal_reason(
         unit = (lane.unit or lane.renderer) if lane else "the renderer"
         return (
             f"{unit}'s runtime user is not in group {RING_GROUP!r} — its ioplug "
-            f"could not create the ring under {RING_SHM_DIR} (mode 2775). "
+            f"could not create the ring under {RING_SHM_DIR}. "
             "Redeploy (the installer adds it) and restart the unit"
         )
     if input_buffer_frames is not None and period_frames is not None:

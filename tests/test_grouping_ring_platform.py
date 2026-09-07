@@ -605,7 +605,7 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
         # fan-in and fails the renderer's own open, which is silent and
         # permanent rather than bounded and visible. Membership pin in
         # tests/test_install_ring_platform_sequencing.py.
-        f"{renderer_lanes.RING_SHM_DIR}/{renderer_lanes.RENDERER_RING_PREFIX}*.ring",
+        f"{ring_assets.RING_SHM_DIR}/{renderer_lanes.RENDERER_RING_PREFIX}*.ring",
     }, f"the deploy-time ring rm -f set changed: {sorted(removed)}"
     assert GROUPING_RING_FILE not in removed
     # The asymmetry is stated where the lines are, not only here.
