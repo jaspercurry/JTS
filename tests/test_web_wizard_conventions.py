@@ -175,11 +175,11 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
             "self._handle_sensitivity()",
         ),
         "rooms_setup.py": (
-            "_save_bond(self)",
-            "_unbond(self)",
-            "_swap_channels(self)",
-            "_set_member_trim(self)",
-            "_save_peering(self)",
+            # do_POST dispatches through the module-level _POST_ROUTES
+            # table (path -> the same _save_bond/_unbond/etc. functions
+            # this used to call inline); the invariant this pins is that
+            # no dispatch happens before the CSRF guard.
+            "handler_fn(self)",
         ),
     }
     for filename, dispatches in delegated_readers.items():
