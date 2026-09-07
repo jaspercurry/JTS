@@ -66,6 +66,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.lane_fixtures import lane_env, write_recording_pytest
+
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
 
@@ -364,28 +366,12 @@ def _fast_lane_selected_tests(
     )
 
     calls = repo / "pytest-calls.jsonl"
-    recorder = repo / "recording-pytest"
-    recorder.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
-        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-        "raise SystemExit(5 if '--last-failed' in sys.argv else 0)\n",
-        encoding="utf-8",
-    )
-    recorder.chmod(0o755)
-    stand_in = _TRUE_BIN
+    recorder = write_recording_pytest(repo / "recording-pytest")
 
     subprocess.run(
         [_BASH, "scripts/test-fast"],
         cwd=repo,
-        env={
-            **os.environ,
-            "PYTEST": str(recorder),
-            "PYTEST_CALLS": str(calls),
-            "RUFF": stand_in,
-            "TEST_BASE": "missing-base",
-        },
+        env=lane_env(recorder, calls),
         check=True,
         capture_output=True,
         text=True,

@@ -154,21 +154,61 @@ add_globbed_tests() {
   [[ "${matched}" == true ]]
 }
 
-# add_tests_naming <literal>
+# add_tests_naming_from_matches <literal> <direct-matches>
 #
-# Selects every tests/test_*.py file whose content contains <literal>
-# verbatim (grep -F, so <literal> is never a pattern). Returns whether
-# anything matched.
-add_tests_naming() {
+# Selects <direct-matches> (newline-separated tests/test_*.py paths a caller
+# already grepped for <literal>, so this never re-runs that grep) plus,
+# transitively, every tests/test_*.py that imports a non-test helper under
+# tests/ (tests/*.py that isn't tests/test_*.py, e.g. tests/install_surface.py)
+# which itself names <literal>: pytest only collects tests/test_*.py
+# (python_files = ["test_*.py"] in pyproject.toml), so a helper naming the
+# literal matters only through whichever test files import it (issue #4368
+# round 2 -- tests/install_surface.py's INSTALL_SH names deploy/install.sh,
+# but 8 of its 11 importers name neither the path nor a quoted "install.sh"
+# themselves). tests/conftest.py is excluded: it is broad test
+# infrastructure pytest auto-loads for every test in scope, not a
+# narrow subject-helper, so an incidental mention in ITS prose (unlike
+# install_surface.py's, which is entirely about the file it names) would
+# otherwise sweep in every one of its several explicit importers. Returns
+# whether anything matched.
+add_tests_naming_from_matches() {
   local literal="$1"
+  local direct_matches="$2"
   local test_file
   local matched=false
   while IFS= read -r test_file; do
     [[ -n "${test_file}" ]] || continue
     add_test_if_present "${test_file}"
     matched=true
-  done < <(grep -l -F -- "${literal}" tests/test_*.py 2>/dev/null || true)
+  done <<< "${direct_matches}"
+
+  local helper
+  while IFS= read -r helper; do
+    [[ -n "${helper}" ]] || continue
+    grep -q -F -- "${literal}" "${helper}" 2>/dev/null || continue
+    local helper_module="${helper##*/}"
+    helper_module="${helper_module%.py}"
+    local importer
+    while IFS= read -r importer; do
+      [[ -n "${importer}" ]] || continue
+      add_test_if_present "${importer}"
+      matched=true
+    done < <(grep -lE "(from tests\.${helper_module} import|import tests\.${helper_module}([^A-Za-z0-9_]|\$))" tests/test_*.py 2>/dev/null || true)
+  done < <(find tests -maxdepth 1 -type f -name '*.py' ! -name 'test_*.py' ! -name 'conftest.py')
+
   [[ "${matched}" == true ]]
+}
+
+# add_tests_naming <literal>
+#
+# add_tests_naming_from_matches, grepping tests/test_*.py for <literal>
+# itself. Use add_tests_naming_from_matches directly when a caller already
+# has that grep's output, to avoid running it twice.
+add_tests_naming() {
+  local literal="$1"
+  local direct_matches
+  direct_matches="$(grep -l -F -- "${literal}" tests/test_*.py 2>/dev/null || true)"
+  add_tests_naming_from_matches "${literal}" "${direct_matches}"
 }
 
 # A bare basename shared with enough unrelated prose that the COUNT itself is
@@ -193,8 +233,10 @@ shell_generic_basename_threshold=40
 add_shell_reference_tests() {
   local changed="$1"
   local base="${changed##*/}"
+  local base_matches
+  base_matches="$(grep -l -F -- "${base}" tests/test_*.py 2>/dev/null || true)"
   local base_count
-  base_count="$(grep -l -F -- "${base}" tests/test_*.py 2>/dev/null | wc -l | tr -d ' ')"
+  base_count="$(printf '%s\n' "${base_matches}" | grep -c . || true)"
   if (( base_count > shell_generic_basename_threshold )); then
     echo "==> ${changed}: basename names ${base_count} test files, matching path and quoted literal"
     local found=false
@@ -204,7 +246,7 @@ add_shell_reference_tests() {
     [[ "${found}" == true ]]
     return
   fi
-  add_tests_naming "${base}"
+  add_tests_naming_from_matches "${base}" "${base_matches}"
 }
 
 while IFS= read -r changed; do
@@ -296,13 +338,19 @@ while IFS= read -r changed; do
       # nothing else routes the lanes' own guards — so editing the lanes ran
       # everything except the tests written for them (issue #1836).
       add_test_if_present "tests/test_test_lane_tool_resolution.py"
-      # On top of the above: whatever else names this file by path/basename
-      # (issue #4194, #4248), e.g. scripts/test-fast's own routing guards in
-      # tests/test_build_and_ci_contracts.py. Unconditional, not gated on a
-      # `.sh` suffix: scripts/test-fast, scripts/test-merge and
-      # scripts/rust-ci-needed are all extensionless launchers this arm
-      # matches too.
-      add_shell_reference_tests "${changed}" || true
+      # On top of the above: whatever else names the changed file by
+      # path/basename (issue #4194, #4248), e.g. scripts/test-fast's own
+      # routing guards in tests/test_build_and_ci_contracts.py. Gated on
+      # scripts/*, not this whole arm: scripts/test-fast, scripts/test-merge
+      # and scripts/rust-ci-needed are extensionless launchers this arm
+      # exists to route (so no `.sh`-suffix gate either), but AGENTS.md,
+      # CONTRIBUTING.md, pyproject.toml and uv.lock are docs/config this
+      # same arm also matches, and any one of them is cited in dozens of
+      # test docstrings -- derivation there swept in every citing test on a
+      # docs-only edit (issue #4368 round 2).
+      case "${changed}" in
+        scripts/*) add_shell_reference_tests "${changed}" || true ;;
+      esac
       ;;
     deploy/assets/*/js/*.js|tests/js/*.mjs)
       add_test_if_present "tests/test_dialog_helper.py"
@@ -322,27 +370,32 @@ while IFS= read -r changed; do
       # About half are pinned by a test named for the script minus its
       # `jasper-` prefix; the rest are pinned by contract tests named for the
       # SUBJECT instead (e.g. jasper-apply-airplay-mode is covered by
-      # tests/test_airplay_render.py). The glob catches a pattern-named test
-      # whose content never repeats the script's own basename, like
-      # tests/test_wifi_guardian_persistence.py for jasper-wifi-guardian
-      # (issue #3846). Content derivation runs only once neither convention
-      # nor glob found anything: these reconcile scripts are named in ~30
-      # test files each, several of them slow, so grep is the fallback here,
-      # not the rule.
+      # tests/test_airplay_render.py) -- caught by content derivation, not
+      # the glob below, which can hit an UNRELATED sibling: a glob match is
+      # not evidence the script itself is tested, so it must never suppress
+      # derivation (issue #4368 round 2 -- jasper-outputd-failure-reconcile
+      # has no convention-named test, and its glob hit,
+      # tests/test_outputd_failure_reconcile_state.py, is a Python-reader
+      # test that never runs the script; derivation used to be skipped
+      # anyway, dropping the real pin, tests/test_output_recovery_scripts.py).
+      # Derivation runs whenever the convention pin missed, regardless of
+      # the glob; these reconcile scripts are named in ~30 test files each,
+      # several of them slow, so grep is still the fallback here, not the
+      # rule for a convention hit.
       script="${changed##*/}"
       script_module="${script#jasper-}"
       script_module="${script_module//-/_}"
-      bin_matched=false
+      convention_matched=false
       for candidate in \
         "tests/test_${script_module}.py" \
         "tests/test_${script_module}_script.py"; do
         if [[ -f "${candidate}" ]]; then
           add_test_if_present "${candidate}"
-          bin_matched=true
+          convention_matched=true
         fi
       done
-      add_globbed_tests "test_${script_module}_*.py" && bin_matched=true
-      if [[ "${bin_matched}" != true ]] && ! add_shell_reference_tests "${changed}"; then
+      add_globbed_tests "test_${script_module}_*.py" || true
+      if [[ "${convention_matched}" != true ]] && ! add_shell_reference_tests "${changed}"; then
         echo "==> no test names ${changed}"
       fi
       ;;
