@@ -17,10 +17,12 @@ SHIPPED_RING_CONF_D = (
     Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 )
 
+from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
     _outputd_actions,
+    _write_env_actions,
     default_ring_gates,
     reconcile_coupling,
 )
@@ -38,6 +40,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
 )
+from tests._lock_holder import spawn_lock_holder
 
 
 @pytest.fixture(autouse=True)
@@ -255,6 +258,52 @@ def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
     )
 
     assert res.ok is False and res.changed is False and calls == []
+
+
+def test_outputd_env_write_waits_out_a_concurrent_bash_holder(tmp_path):
+    """ADR-0235 G8: the per-file lock closes the cross-language race.
+
+    Before this fix, ``_write_env_actions``'s predecessor published through
+    ``atomic_write_text`` serialized only by the process-local
+    ``ENTRY_LOCK_PATH`` — not the per-file ``<dir>/.<basename>.lock`` both the
+    bash writer (``deploy/lib/jasper-env-file.sh``'s ``jasper_env_lock_path``)
+    and ``atomic_io._env_lock_path`` compute. A bash holder publishing between
+    this reconciler's read and its write would have been silently discarded
+    by the blind overwrite. Mirrors test_env_file_lib.py's
+    ``test_env_file_set_waits_out_a_concurrent_holder`` for the bash side.
+    """
+    outputd_env = _write(tmp_path / "outputd.env", "SEED=1\n")
+
+    with spawn_lock_holder(outputd_env, hold_seconds=0.5, write_back="HOLDER=1\n"):
+        new_text, changed = _write_env_actions(
+            outputd_env,
+            lambda _text: (RuntimeEnvAction("set", "WRITER", "2"),),
+        )
+
+    expected = "SEED=1\nHOLDER=1\nWRITER=2\n"
+    assert changed is True
+    assert new_text == expected
+    assert outputd_env.read_text(encoding="utf-8") == expected
+
+
+def test_outputd_env_write_gives_up_after_the_bound_wait(tmp_path, monkeypatch):
+    """A lock held past the bound raises rather than blocking forever.
+
+    ``advisory_file_lock``'s own default (``LOCK_EX``, no ``LOCK_NB``) blocks
+    forever; ``_write_env_actions`` passes an explicit bound for exactly this
+    reason.
+    """
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(cr, "ENV_FILE_LOCK_TIMEOUT_SECONDS", 0.2)
+    outputd_env = _write(tmp_path / "outputd.env", "SEED=1\n")
+
+    with spawn_lock_holder(outputd_env, hold_seconds=2.0):
+        with pytest.raises(TimeoutError):
+            cr._write_env_actions(
+                outputd_env,
+                lambda _text: (RuntimeEnvAction("set", "WRITER", "2"),),
+            )
 
 
 def test_default_env_paths_are_reconciler_owned_envs():
