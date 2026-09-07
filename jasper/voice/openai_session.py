@@ -826,13 +826,12 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             try:
                 if turn._debug_wav is None:
                     import wave as _wave
-                    import time as _time_mod
                     debug_dir = os.environ.get(
                         "JASPER_DEBUG_OPENAI_AUDIO_DIR",
                         "/tmp/jasper-openai-debug",
                     )
                     os.makedirs(debug_dir, exist_ok=True)
-                    ts = _time_mod.strftime("%Y%m%dT%H%M%SZ", _time_mod.gmtime())
+                    ts = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
                     path = f"{debug_dir}/{ts}-{id(turn):x}.wav"
                     w = _wave.open(path, "wb")
                     w.setnchannels(1)

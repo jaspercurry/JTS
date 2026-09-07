@@ -44,10 +44,7 @@ import time as _time
 import types
 import typing
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Protocol
-
-if TYPE_CHECKING:
-    from .packs import PackOutcome
+from typing import Any, Awaitable, Callable, Iterable, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -410,6 +407,35 @@ class Tool:
         return self.definition.to_manifest_entry()
 
 
+@dataclass(frozen=True)
+class PackOutcome:
+    """The observability record for one pack's registration — what makes
+    a silently-missing tool family visible WITHOUT grepping the journal.
+
+    `status` is one of:
+      - "registered": the pack's gate passed and `build` returned without
+        raising. `tool_count` is how many tools it contributed (0 is
+        legitimate — a factory that self-gates on a None dep, e.g.
+        home_assistant unconfigured, builds successfully but empty).
+      - "skipped": the pack's `gate` predicate returned False (timer with
+        no scheduler, calendar/gmail with no linked account). Expected,
+        not a fault.
+      - "failed": `gate`, `build`, or registration RAISED (ImportError in a
+        tool module, a bad explicit ToolDefinition/ToolExecutor object, a
+        predicate/factory that throws). The tool family is missing from voice;
+        this is the alarm condition `check_tool_packs` fails on. `error`
+        carries the exception repr.
+
+    Surfaced via jasper-voice STATUS -> /state.voice.tool_packs and
+    cross-checked by jasper-doctor's check_tool_packs. Mirrors and
+    slightly improves on transit.active_transit, which today logs a
+    failed provider only to the journal."""
+    name: str
+    status: str  # "registered" | "skipped" | "failed"
+    tool_count: int = 0
+    error: str | None = None
+
+
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
@@ -423,7 +449,7 @@ class ToolRegistry:
     # silently-missing tool families via /state.voice.tool_packs and
     # jasper-doctor. Empty for registries built tool-by-tool (tests, the
     # voice-eval harness) that never run the pack walk.
-    pack_outcomes: list["PackOutcome"] = field(default_factory=list)
+    pack_outcomes: list[PackOutcome] = field(default_factory=list)
     # Optional host-injected lifecycle observer. This is deliberately a
     # narrow callback rather than a reference to WakeLoop / telemetry
     # storage: tool extensions still cross only the provider-neutral

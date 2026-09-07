@@ -30,6 +30,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from . import PackOutcome
 from ..log_event import log_event
 from .audio import make_audio_tools
 from .calendar import make_calendar_tools
@@ -148,35 +149,6 @@ class CapabilityPack:
     gate: Callable[[Any], bool] = lambda _d: True
     category: str = "Utilities"
     catalog_pack: CatalogPack | None = None
-
-
-@dataclass(frozen=True)
-class PackOutcome:
-    """The observability record for one pack's registration — what makes
-    a silently-missing tool family visible WITHOUT grepping the journal.
-
-    `status` is one of:
-      - "registered": the pack's gate passed and `build` returned without
-        raising. `tool_count` is how many tools it contributed (0 is
-        legitimate — a factory that self-gates on a None dep, e.g.
-        home_assistant unconfigured, builds successfully but empty).
-      - "skipped": the pack's `gate` predicate returned False (timer with
-        no scheduler, calendar/gmail with no linked account). Expected,
-        not a fault.
-      - "failed": `gate`, `build`, or registration RAISED (ImportError in a
-        tool module, a bad explicit ToolDefinition/ToolExecutor object, a
-        predicate/factory that throws). The tool family is missing from voice;
-        this is the alarm condition `check_tool_packs` fails on. `error`
-        carries the exception repr.
-
-    Surfaced via jasper-voice STATUS -> /state.voice.tool_packs and
-    cross-checked by jasper-doctor's check_tool_packs. Mirrors and
-    slightly improves on transit.active_transit, which today logs a
-    failed provider only to the journal."""
-    name: str
-    status: str  # "registered" | "skipped" | "failed"
-    tool_count: int = 0
-    error: str | None = None
 
 
 def outcomes_to_state(outcomes: Iterable[PackOutcome]) -> list[dict[str, Any]]:
