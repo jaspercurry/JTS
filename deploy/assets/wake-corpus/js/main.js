@@ -337,8 +337,7 @@ async function refreshStatus() {
     for (const input of sessionInputs) input.disabled = sessionLoaded;
     syncCorpusProfileControls(sessionLoaded);
     const beginEl = $('session-begin');
-    unloadEl.style.display = sessionLoaded && !inCorpusMode
-      ? 'inline-block' : 'none';
+    unloadEl.hidden = !(sessionLoaded && !inCorpusMode);
     unloadEl.disabled = s.is_recording;
     if (sessionLoaded) {
       if (voiceActive && bridgeActive && sessionBridgeReady) {
@@ -374,26 +373,26 @@ async function refreshStatus() {
       : '(no session)';
     $('session-id').textContent = sessionLabel;
     if (sessionLoaded) {
-      $('record-card').style.display = 'block';
-      $('counts-card').style.display = 'block';
-      $('clips-card').style.display = 'block';
+      $('record-card').hidden = false;
+      $('counts-card').hidden = false;
+      $('clips-card').hidden = false;
       renderCapturePlan({
         ...(s.capture_plan || {}),
         conformance: s.capture_plan_conformance,
       });
     } else {
-      $('record-card').style.display = 'none';
-      $('counts-card').style.display = 'none';
-      $('clips-card').style.display = 'none';
+      $('record-card').hidden = true;
+      $('counts-card').hidden = true;
+      $('clips-card').hidden = true;
     }
     if (s.is_recording) {
-      $('recording-info').style.display = 'block';
+      $('recording-info').hidden = false;
       $('record-btn').textContent = '■ STOP';
       $('record-btn').classList.add('recording');
       $('record-btn').classList.remove('primary');
       $('record-btn').disabled = false;
     } else {
-      $('recording-info').style.display = 'none';
+      $('recording-info').hidden = true;
       $('record-btn').textContent = '● RECORD';
       $('record-btn').classList.remove('recording');
       $('record-btn').classList.add('primary');

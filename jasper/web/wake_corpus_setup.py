@@ -1111,7 +1111,7 @@ _INDEX_BODY_TEMPLATE = """{header}
     <div class="row">
       <label>Mode:</label>
       <span id="corpus-mode-status" class="pill gray">checking…</span>
-      <button id="corpus-mode-exit" style="margin-left:auto">Exit corpus test mode</button>
+      <button id="corpus-mode-exit">Exit corpus test mode</button>
     </div>
     <div class="row">
       <label>jasper-voice:</label>
@@ -1128,7 +1128,7 @@ _INDEX_BODY_TEMPLATE = """{header}
   </div>
 
   <div class="card" id="session-card">
-    <h2 id="session-card-title" style="margin-top:0">Begin a new session</h2>
+    <h2 id="session-card-title">Begin a new session</h2>
     <div class="row">
       <label for="member">Name:</label>
       <input type="text" id="member" value="jasper" maxlength="20">
@@ -1147,26 +1147,26 @@ _INDEX_BODY_TEMPLATE = """{header}
       <button id="session-begin" class="primary">
         Enter corpus test mode &amp; begin session
       </button>
-      <button id="session-unload" style="display:none">Unload session</button>
+      <button id="session-unload" hidden>Unload session</button>
     </div>
   </div>
 
   <details class="card" id="sessions-card">
-    <summary style="cursor:pointer">
+    <summary>
       <strong>Sessions</strong>
-      <span style="color:#888; font-size:0.86em; margin-left:0.4em">
+      <span class="summary-note">
         load or delete previous recordings
       </span>
     </summary>
-    <div id="sessions-list" style="margin-top:0.8em">(loading…)</div>
-    <p style="margin:0.6em 0 0; color:#888; font-size:0.86em">
+    <div id="sessions-list">(loading…)</div>
+    <p class="card-note">
       Tap <strong>Load</strong> to resume an existing session, or
       <strong>Delete</strong> to remove its WAVs + metadata permanently.
     </p>
   </details>
 
-  <div class="card" id="record-card" style="display:none">
-    <h2 style="margin-top:0">Record a clip</h2>
+  <div class="card" id="record-card" hidden>
+    <h2>Record a clip</h2>
     <div class="row">
       <label>Condition:</label>
       <div class="conditions">
@@ -1183,7 +1183,7 @@ _INDEX_BODY_TEMPLATE = """{header}
         <label><input type="radio" name="distance" value="far"><span>far ~3-4m</span></label>
       </div>
     </div>
-    <p style="margin:0.8em 0; color:#666; font-size:0.92em">
+    <p class="record-instructions">
       Click the button (or press <kbd>Space</kbd>) to start. Say
       <strong>"Jarvis"</strong>. Click again to stop.
     </p>
@@ -1193,24 +1193,24 @@ _INDEX_BODY_TEMPLATE = """{header}
       <span id="mic-level-readout" class="mic-level-readout">—</span>
     </div>
     <button id="record-btn" class="primary recordBtn" disabled>● RECORD</button>
-    <div id="recording-info" style="display:none; margin-top:0.6em">
+    <div id="recording-info" hidden>
       <span class="pill red">RECORDING</span>
-      <span id="elapsed" style="margin-left:0.6em">0.0s</span>
+      <span id="elapsed">0.0s</span>
     </div>
     <div id="err" class="err"></div>
   </div>
 
-  <div class="card" id="counts-card" style="display:none">
-    <h2 style="margin-top:0">Per-cell counts</h2>
+  <div class="card" id="counts-card" hidden>
+    <h2>Per-cell counts</h2>
     <div id="counts-matrix" class="matrix"></div>
-    <p style="margin:0.6em 0 0; color:#888; font-size:0.86em">
+    <p class="card-note">
       Session A: ~7-9 per cell. Session B: ~2-3 per cell.
     </p>
   </div>
 
-  <div class="card" id="clips-card" style="display:none">
-    <h2 style="margin-top:0">Recorded clips (this session)</h2>
-    <div class="clip" style="font-weight:600; border-bottom:2px solid #333">
+  <div class="card" id="clips-card" hidden>
+    <h2>Recorded clips (this session)</h2>
+    <div class="clip clip--head">
       <span>#</span><span>condition</span><span>distance</span>
       <span>duration</span><span>audio</span><span></span>
     </div>
@@ -1241,14 +1241,14 @@ def _render_index_html(csrf_token: str = "") -> str:
         "aec3_sweep_order": list(AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS),
         "usb_aec3_sweep_baseline_label": USB_AEC3_SWEEP_BASELINE_LABEL,
     }
-    header = canonical_header("Wake-word corpus")
+    header = canonical_header("Wake corpus")
     body = _INDEX_BODY_TEMPLATE.replace("{header}", header).replace(
         "{config_island}", json_island("wake-corpus-config", config),
     ).replace(
         "{capture_options}", _capture_options_html(),
     )
     return canonical_page(
-        "Wake-word corpus",
+        "Wake corpus",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/wake-corpus/wake-corpus.css",

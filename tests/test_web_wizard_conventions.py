@@ -1043,11 +1043,6 @@ _INLINE_STYLE_ALLOWLIST = {
     "sources_setup.py": 6,
     # /assistant/wake/ pass (C.A3).
     "wake_setup.py": 1,
-    # Not yet in the condensed Phase C ledger (UX-AUDIT-2026-09-03.md §7) —
-    # tracked only as PR #10 in the wake-corpus cluster report
-    # (docs/ux-audit-2026-09-03/report-voice.md). Do not raise this count
-    # without also giving it a ledger row.
-    "wake_corpus_setup.py": 18,
 }
 
 _INLINE_STYLE_RE = re.compile(r"""style=["']""")
@@ -1115,7 +1110,6 @@ _TITLE_ALLOWLIST = {
     ("/transit/", "Transit"): {"back"},                             # C.A5
     ("/google/", "Google"): {"back", "title", "header"},            # C.A5
     ("/ha/", "Home Assistant"): {"back"},                           # C.A5
-    ("/wake-corpus/", "Wake corpus"): {"title", "header"},          # C.Y1
 }
 
 _SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}
