@@ -387,6 +387,7 @@ title = "AEC bridge, mic profiles, and XVF3800 control"
 safety = "audio-input-risk"
 code = [
   "jasper/cli/aec_*.py",
+  "jasper/aec/**",
   "jasper/cli/enhanced_aec_install.py",
   "jasper/enhanced_aec.py",
   "jasper_aec3/**",

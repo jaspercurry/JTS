@@ -44,7 +44,7 @@ docstring in [`__init__.py`](__init__.py) for the longer rationale.
   `check_xvf_firmware_6ch`, `check_xvf_mixer_state`, and
   `check_aec_bridge_running` functions read constants and call
   helpers from `jasper.mics.xvf3800` (no inline literals).
-- [`jasper.cli.aec_bridge_capture`](../cli/aec_bridge_capture.py) — reads
+- [`jasper.aec.bridge_capture`](../aec/bridge_capture.py) — reads
   `MIC_CHANNEL_INDEX` and the recommended channel count from the XVF
   profile; [`jasper.cli.aec_bridge`](../cli/aec_bridge.py) consumes those
   plus the chip beam-plan helpers.

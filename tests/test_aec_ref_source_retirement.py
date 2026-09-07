@@ -23,13 +23,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import (
-    aec_bridge,
-    aec_bridge_capture,
-    aec_bridge_config,
-    aec_bridge_reference,
-)
-from jasper.cli.aec_bridge_reference import REF_CHANNELS, REF_RATE
+from jasper.cli import aec_bridge
+from jasper.aec import bridge_capture, bridge_config, bridge_reference
+from jasper.aec.bridge_reference import REF_CHANNELS, REF_RATE
 from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
 
@@ -40,12 +36,12 @@ BRIDGE_SOURCE = REPO / "jasper" / "cli" / "aec_bridge.py"
 # all four are in scope for the guards.
 BRIDGE_SOURCES = (
     BRIDGE_SOURCE,
-    REPO / "jasper" / "cli" / "aec_bridge_capture.py",
-    REPO / "jasper" / "cli" / "aec_bridge_config.py",
-    REPO / "jasper" / "cli" / "aec_bridge_reference.py",
+    REPO / "jasper" / "aec" / "bridge_capture.py",
+    REPO / "jasper" / "aec" / "bridge_config.py",
+    REPO / "jasper" / "aec" / "bridge_reference.py",
 )
 BRIDGE_MODULES = (
-    aec_bridge, aec_bridge_capture, aec_bridge_config, aec_bridge_reference,
+    aec_bridge, bridge_capture, bridge_config, bridge_reference,
 )
 RECONCILE = REPO / "deploy" / "bin" / "jasper-aec-reconcile"
 

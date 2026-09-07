@@ -44,7 +44,7 @@ from .audio_profile_state import (
     probe_xvf_mic as _probe_xvf_mic,
     runtime_env_from_mapping,
 )
-from .cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from .aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from .chip_aec.policy import (
     APPROVED_DAC_IDS,
     HIFIBERRY_DAC8X_DAC_ID,

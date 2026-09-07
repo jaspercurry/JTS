@@ -43,13 +43,13 @@ from ...chip_aec.policy import (
     resolve_chip_aec_dac_gate,
 )
 from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
-from ..aec_bridge_config import (
+from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     REF_SOURCE_ENV,
 )
-from ..aec_bridge_engines import DTLN_ENABLED_ENV
-from ..aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from ...aec.bridge_engines import DTLN_ENABLED_ENV
+from ...aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (

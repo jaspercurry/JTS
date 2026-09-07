@@ -27,8 +27,8 @@ import numpy as np
 
 from jasper.dsp_numpy import resample_poly
 from jasper.log_event import log_event
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_telemetry import (
+from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
     _BridgeStats,
     logger,

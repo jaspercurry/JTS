@@ -27,7 +27,7 @@ from jasper.audio_profile_state import (
     parse_env_bool,
     runtime_env_from_mapping,
 )
-from jasper.cli.aec_bridge_config import (
+from jasper.aec.bridge_config import (
     DAC_FINGERPRINT_ENV,
     EXPECTED_LEGS_ENV,
     MIC_FINGERPRINT_ENV,
@@ -36,7 +36,7 @@ from jasper.cli.aec_bridge_config import (
     PLAN_ID_ENV,
     REF_SOURCE_ENV,
 )
-from jasper.cli.aec_bridge_engines import (
+from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )

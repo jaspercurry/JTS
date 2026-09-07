@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pins for `jasper.cli.aec_bridge_capture`.
+"""Pins for `jasper.aec.bridge_capture`.
 
 The near-end capture threads own what the AEC loop can never recover: the
 stream geometry PortAudio actually negotiated, and — for the corpus USB mic —
@@ -24,10 +24,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import aec_bridge_capture
-from jasper.cli.aec_bridge_capture import usb_resampler
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_telemetry import _BridgeStats
+from jasper.aec import bridge_capture
+from jasper.aec.bridge_capture import usb_resampler
+from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.aec.bridge_telemetry import _BridgeStats
 from tests._aec_bridge_helpers import IDENTITY
 from tests._sounddevice_stub import stub_sounddevice
 
@@ -63,10 +63,10 @@ def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
     input_stream = _input_stream(stream)
     stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=input_stream))
     event = MagicMock()
-    monkeypatch.setattr(aec_bridge_capture, "log_event", event)
+    monkeypatch.setattr(bridge_capture, "log_event", event)
     stats = _BridgeStats(IDENTITY)
 
-    aec_bridge_capture.mic_thread(
+    bridge_capture.mic_thread(
         MagicMock(),
         mic_device="test-mic",
         capture_latency="",
@@ -78,13 +78,13 @@ def test_mic_thread_logs_negotiated_input_latency(monkeypatch):
     assert input_stream.call_args.kwargs == {
         "device": "test-mic",
         "samplerate": SAMPLE_RATE,
-        "channels": aec_bridge_capture.MIC_CHANNELS,
+        "channels": bridge_capture.MIC_CHANNELS,
         "dtype": "int16",
         "blocksize": FRAME_SAMPLES,
         "callback": input_stream.call_args.kwargs["callback"],
     }
     event.assert_called_once_with(
-        aec_bridge_capture.logger,
+        bridge_capture.logger,
         "aec.mic_stream_latency",
         latency_s=0.025,
         requested_latency="default",
@@ -116,7 +116,7 @@ def test_mic_thread_passes_configured_capture_latency(
     input_stream = _input_stream(stream)
     stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=input_stream))
 
-    aec_bridge_capture.mic_thread(
+    bridge_capture.mic_thread(
         MagicMock(),
         mic_device="test-mic",
         capture_latency=configured,

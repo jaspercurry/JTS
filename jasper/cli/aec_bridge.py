@@ -82,23 +82,23 @@ from jasper.aec_sweep import (
 )
 from jasper.watchdog import Heartbeat
 from jasper.log_event import log_event
-from jasper.cli.aec_bridge_engines import (
+from jasper.aec.bridge_engines import (
     Aec3Engine,
     CORPUS_USB_DTLN_ENABLED_ENV,
     FRAME_SAMPLES,
     SAMPLE_RATE,
     # `_aec_loop` and `main` resolve the engine selector through this alias,
-    # so it — not `aec_bridge_engines.select_engine` — is what a test patches
+    # so it — not `bridge_engines.select_engine` — is what a test patches
     # to reach the loop.
     select_engine as _select_engine,
 )
-from jasper.cli.aec_bridge_capture import (
+from jasper.aec.bridge_capture import (
     MIC_CHANNEL_INDEX,
     MIC_CHANNELS,
     mic_thread,
     usb_mic_thread,
 )
-from jasper.cli.aec_bridge_config import (
+from jasper.aec.bridge_config import (
     BridgeConfig,
     MicDeviceUnavailable,
     OUTPUTD_REF_UDP_HOST,
@@ -115,13 +115,13 @@ from jasper.cli.aec_bridge_config import (
     validate_mic_device,
     validate_usb_mic_device,
 )
-from jasper.cli.aec_bridge_reference import (
+from jasper.aec.bridge_reference import (
     REF_RATE,
     outputd_ref_udp_thread,
     ref_clip_percent,
     reset_ref_clip_counters,
 )
-from jasper.cli.aec_bridge_telemetry import (
+from jasper.aec.bridge_telemetry import (
     BRIDGE_STATS_PATH,
     DropLogDebouncer,
     LegEmitter,
@@ -221,7 +221,7 @@ class BridgeStalled(RuntimeError):
 # Clipping counters for the post-AEC mic stage (after JASPER_AEC_MIC_GAIN_DB),
 # module-level for cheap cross-thread access: a race between increment and
 # reset costs at most one frame in one log window's percentage. The reference
-# pre-clip stage keeps its own pair in `aec_bridge_reference`.
+# pre-clip stage keeps its own pair in `bridge_reference`.
 _out_clipped_samples = 0
 _out_total_samples = 0
 
@@ -473,8 +473,8 @@ def _aec_loop(  # noqa: PLR0915
             port = chip_aec_ports.get(beam.token, leg_default_port(beam.token))
             chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
 
-    # Deferred: aec_bridge_corpus_lanes reads this module at import time.
-    from jasper.cli.aec_bridge_corpus_lanes import build_corpus_lanes
+    # Deferred: bridge_corpus_lanes reads this module at import time.
+    from jasper.aec.bridge_corpus_lanes import build_corpus_lanes
     lanes = build_corpus_lanes(
         emitters,
         config,

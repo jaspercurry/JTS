@@ -90,7 +90,7 @@ class Aec3SweepConfigError(ValueError):
 
 
 # Top-level Aec3V2Engine processing-toggle keys, also read directly by
-# jasper.cli.aec_bridge_engines (the engines that apply them) and
+# jasper.aec.bridge_engines (the engines that apply them) and
 # jasper.voice_daemon (status reporting).
 NS_ENABLED_ENV = "JASPER_AEC_NS_ENABLED"
 NS_LEVEL_ENV = "JASPER_AEC_NS_LEVEL"

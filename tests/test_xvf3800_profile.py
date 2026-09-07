@@ -21,16 +21,16 @@ from jasper.aec_sweep import (
     NS_LEVEL_ENV,
 )
 from jasper.audio_profile_state import AEC_MODE_ENV, AEC_MODE_FILE_ENV
-from jasper.cli.aec_bridge_config import (
+from jasper.aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     REF_SOURCE_ENV,
 )
-from jasper.cli.aec_bridge_engines import (
+from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )
-from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.mics import xvf3800
 
 RECONCILER = Path(__file__).resolve().parents[1] / "deploy" / "bin" / "jasper-aec-reconcile"
