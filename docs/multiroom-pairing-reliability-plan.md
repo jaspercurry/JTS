@@ -165,10 +165,10 @@ than collapsed into one `enabled` boolean.
    `snapcast_rpc.set_client_latency` helper. The pre-existing
    `JASPER_GROUPING_CLIENT_LATENCY_MS` is demoted to an operator override
    (override beats receipt; `0` means no override) resolved in exactly one
-   place. Companion rule: the `/sync/` acoustic seat calibration must never
-   silently absorb endpoint latency — its CamillaDSP channel delay is a
-   different truth with a 100 ms ceiling that could only ever partially
-   absorb the endpoint offset.
+   place. Companion rule: the `/sound/pair/sync/` acoustic seat calibration
+   must never silently absorb endpoint latency — its CamillaDSP channel
+   delay is a different truth with a 100 ms ceiling that could only ever
+   partially absorb the endpoint offset.
 6. The backend owns domain health. Browser JavaScript presents the verdict; it
    does not infer success from client counts.
 7. Structural reconcile and scalar live control are different paths.
@@ -1090,7 +1090,7 @@ owner:
 | Codec + chunk framing | Snapcast codec/`chunk_ms` | Sets the floor on how low the buffer can go (FLAC ≈ +26 ms; PCM none) | Per-codec explicit `chunk_ms`; prefer the measured lower-latency stable choice |
 | Client endpoint latency | Endpoint calibration receipt → `snapclient --latency` (member-local) | Equalize stable local paths at a common reference | Persistent fingerprinted receipt (WO-8); one input, never two |
 | CamillaDSP chunk/queue | Local DSP owner | Safe deterministic processing | Tune only within xrun/safety limits |
-| Acoustic seat delay | Room calibration (`/sync/`, 0–100 ms channel delay) | Align physical arrival | Explicit calibration, run after endpoint compensation; never absorbs endpoint offset |
+| Acoustic seat delay | Room calibration (`/sound/pair/sync/`, 0–100 ms channel delay) | Align physical arrival | Explicit calibration, run after endpoint compensation; never absorbs endpoint offset |
 | TTS local path | Leader summer/crossover (WO-10) | Safety and AEC reference | Exclude network buffer |
 
 The design should optimize total experience without deleting a buffer that

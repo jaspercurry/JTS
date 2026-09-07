@@ -1118,6 +1118,7 @@ _PAGE_MODULE = {
     "/ha/": "home_assistant_setup",
     "/wifi/": "wifi_setup",
     "/sound/pair/": "rooms_setup",
+    "/sound/pair/sync/": "sync_flow",
     "/system/": "system_setup",
     "/speaker/": "speaker_setup",
     "/wake-corpus/": "wake_corpus_setup",
@@ -1133,7 +1134,6 @@ _TITLE_ALLOWLIST = {
     ("/spotify/", "Spotify accounts"): {"title", "header"},         # C.R1
     ("/bluetooth/", "Bluetooth devices"): {"title", "header"},      # C.R1
     ("/airplay/", "AirPlay sync"): {"title", "header"},             # C.R1
-    ("/sound/pair/", "Stereo pair"): {"title", "header"},           # C.S4
     ("/sound/speaker/crossover/", "Active speaker"): {"title", "header"},  # C.S5
     ("/sound/room/", "Room correction"): {"title"},                 # C.S5
     ("/sound/bass/", "Bass"): {"back", "title", "header"},          # C.S5
