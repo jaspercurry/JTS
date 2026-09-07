@@ -96,8 +96,8 @@ def _make_wakeloop():
     async def _noop_chirp(*, going_on):
         return None
 
-    wl._telemetry_stage = _noop_stage
-    wl._telemetry_outcome = _noop_outcome
+    wl._wake_telemetry.stage = _noop_stage
+    wl._wake_telemetry.outcome = _noop_outcome
     wl._peering.session_ended = _noop_peering
     wl._play_listening_chirp = _noop_chirp
     return wl

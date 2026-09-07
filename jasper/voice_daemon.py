@@ -16,13 +16,6 @@ from enum import Enum
 from inspect import isawaitable
 from types import SimpleNamespace
 
-from jasper.aec_sweep import (
-    AGC1_ENABLED_ENV,
-    AGC1_MAX_GAIN_DB_ENV,
-    AGC1_TARGET_DBFS_ENV,
-    NS_ENABLED_ENV,
-    NS_LEVEL_ENV,
-)
 from jasper.log_event import log_event
 
 from .audio_buffer import (
@@ -46,7 +39,6 @@ from .tts_routing import (
 )
 from .wake_events import (
     WakeEventStore,
-    make_event_id,
     CAPTURE_PRE_SEC,
     CAPTURE_POST_SEC,
 )
@@ -77,6 +69,7 @@ from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
+from .voice.wake_telemetry import LEG_DB, LegFireScore, WakeTelemetry
 from .voice.output_gate import (
     AssistantOutputEpisode,
     AssistantOutputGate,
@@ -676,37 +669,6 @@ class _ManualMicRuntime:
         self.device = device
 
 
-# Per-leg wake_events column mapping. The peak_score column is irregular for
-# back-compat with the existing corpus (aec_on/aec_off vs dtln_aec), so the
-# columns are listed explicitly rather than derived from the token. A new leg
-# adds an entry here plus the matching additive columns in jasper.wake_events.
-_LEG_DB: dict[str, dict[str, str]] = {
-    "on": {
-        "trigger_kind": "fire_aec_on", "peak_score": "peak_score_aec_on",
-        "peak_offset": "peak_offset_ms_on", "mic_rms": "mic_rms_dbfs_on",
-    },
-    "off": {
-        "trigger_kind": "fire_aec_off", "peak_score": "peak_score_aec_off",
-        "peak_offset": "peak_offset_ms_off", "mic_rms": "mic_rms_dbfs_off",
-    },
-    "dtln": {
-        "trigger_kind": "fire_dtln", "peak_score": "peak_score_dtln_aec",
-        "peak_offset": "peak_offset_ms_dtln", "mic_rms": "mic_rms_dbfs_dtln",
-    },
-    "chip_aec_150": {
-        "trigger_kind": "fire_chip_aec_150",
-        "peak_score": "peak_score_chip_aec_150",
-        "peak_offset": "peak_offset_ms_chip_aec_150",
-        "mic_rms": "mic_rms_dbfs_chip_aec_150",
-    },
-    "chip_aec_210": {
-        "trigger_kind": "fire_chip_aec_210",
-        "peak_score": "peak_score_chip_aec_210",
-        "peak_offset": "peak_offset_ms_chip_aec_210",
-        "mic_rms": "mic_rms_dbfs_chip_aec_210",
-    },
-}
-
 # Which Config field carries each wake leg's mic device string. Kept here, a
 # voice-daemon construction concern, rather than on the jasper.wake_legs
 # registry, which stays a pure cross-process identity table. The token and
@@ -852,15 +814,15 @@ class WakeLoop:
         self._push_to_talk_only: bool = (
             not self._legs and bool(self._manual_mics)
         )
-        # A configured leg without a _LEG_DB telemetry mapping would raise an
+        # A configured leg without a LEG_DB telemetry mapping would raise an
         # uncaught KeyError in the wake hot path, where telemetry must be
         # fail-soft; fail at startup instead of at fire time.
-        _unmapped = [tok for tok in self._legs if tok not in _LEG_DB]
+        _unmapped = [tok for tok in self._legs if tok not in LEG_DB]
         if _unmapped:
             raise RuntimeError(
-                f"wake legs missing a _LEG_DB telemetry mapping: "
-                f"{sorted(_unmapped)} (add them to _LEG_DB in "
-                "voice_daemon.py)"
+                f"wake legs missing a LEG_DB telemetry mapping: "
+                f"{sorted(_unmapped)} (add them to LEG_DB in "
+                "voice/wake_telemetry.py)"
             )
         # `_on` is absent on a push-to-talk-only speaker: no
         # always-listening microphone, so `_configured_wake_legs` planned no
@@ -1152,18 +1114,17 @@ class WakeLoop:
         # _begin_turn so the first phoneme of the command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
 
-        # Wake-event telemetry. The store owns the SQLite writes, per-leg
-        # audio capture and retention; the WakeLoop contributes the
-        # per-leg capture rings and the in-flight event id. Those rings
-        # stay separate from `_pre_roll`: they are sized for offline
-        # review (~6 s windows around each wake event) while the pre-roll
-        # is sized for first-phoneme preservation at turn-open (~560 ms).
-        self._wake_event_store: WakeEventStore | None = wake_event_store
-        # The wake event currently in flight, or None when in WAKE state
-        # with no pending event. Set in `_handle_wake_frame` on fire;
-        # cleared in `_end_turn` after the final outcome write. The
-        # funnel-stage hooks consult this to know which row to UPDATE.
-        self._current_event_id: str | None = None
+        # Wake-event telemetry. It owns every store write and the
+        # in-flight event id; the WakeLoop contributes the per-leg
+        # capture rings. Those rings stay separate from `_pre_roll`:
+        # they are sized for offline review (~6 s windows around each
+        # wake event) while the pre-roll is sized for first-phoneme
+        # preservation at turn-open (~560 ms).
+        self._wake_telemetry = WakeTelemetry(
+            store=wake_event_store,
+            wake_model=cfg.wake_model,
+            voice_provider=cfg.voice_provider,
+        )
         # Frames captured during the wake → turn-acquired window. While
         # `_acquiring` is set the mic loops route frames here instead of
         # through the wake or session handlers, and the background
@@ -1187,6 +1148,8 @@ class WakeLoop:
         tts=None,
         vad=_UNSET,
         conversation_store: ConversationStore | None = None,
+        wake_event_store: WakeEventStore | None = None,
+        current_event_id: str | None = None,
         **overrides,
     ):
         """Build a fully-shaped WakeLoop without opening hardware.
@@ -1197,14 +1160,18 @@ class WakeLoop:
 
         ``**overrides`` are applied by ``setattr`` AFTER construction, so
         they cannot reach a decision ``__init__`` makes from its
-        arguments. ``legs``, ``manual_mics``, ``tts``, ``vad`` and
-        ``conversation_store`` are constructor-time knobs, so a test can
+        arguments. ``legs``, ``manual_mics``, ``tts``, ``vad``,
+        ``conversation_store`` and ``wake_event_store`` are
+        constructor-time knobs, so a test can
         build the shape a push-to-talk-only speaker actually has — no
         wake legs plus a manual mic source — and exercise the real
         derivation rather than a value poked in afterwards. Pass
         ``legs=[]`` to mean "none"; omitting it keeps the default primary
         leg. Pass ``vad=None`` to let ``__init__`` make its own VAD
-        decision.
+        decision. ``current_event_id`` seeds the wake-telemetry object's
+        in-flight event id right after construction, for tests that
+        exercise a funnel-stage or teardown write without going through
+        ``on_fire`` first.
         """
 
         class _TestMic:
@@ -1361,9 +1328,11 @@ class WakeLoop:
             manual_mics=manual_mics,
             vad=_TestVad() if vad is _UNSET else vad,
             conversation_store=conversation_store,
+            wake_event_store=wake_event_store,
             initial_mic_muted=False,
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
+        self._wake_telemetry._current_event_id = current_event_id
         for key, value in overrides.items():
             setattr(self, key if key.startswith("_") else f"_{key}", value)
         return self
@@ -2939,106 +2908,52 @@ class WakeLoop:
         rms_dbfs = _frame_rms_dbfs(frame)
 
         # Open a wake-event row for the funnel hooks to update as the event
-        # progresses. One SQLite INSERT in WAL mode; failure is logged but
-        # never blocks wake response.
-        store = self._wake_event_store
-        if store is not None:
-            event_id = make_event_id()
-            self._current_event_id = event_id
-            trigger_kind = _LEG_DB[leg]["trigger_kind"]
-            # Offset uses the SAME top-of-method `now_loop` (the canonical
-            # fire-time), NOT a fresh clock read — recomputing here would
-            # fold in the detector.reset() latency and skew the firing
-            # leg's offset. Semantics: 0 = leg's last score == fire frame
-            # (the firing leg); negative N = that leg last scored N ms
-            # before fire.
-            wake_fire_time = now_loop
-            # Pre-seed every per-leg column to None, derived from _LEG_DB
-            # so a new leg's columns are included automatically.
-            # begin_event requires peak_score_aec_on/off; configured legs
-            # overwrite their own columns below.
-            tel: dict[str, object] = {
-                col: None
-                for _db in _LEG_DB.values()
-                for col in (_db["peak_score"], _db["peak_offset"], _db["mic_rms"])
-            }
-            for _name, _rt in self._legs.items():
-                _cols = _LEG_DB[_name]
-                tel[_cols["peak_score"]] = (
-                    score if _name == leg else _rt.recent_score
-                )
-                tel[_cols["peak_offset"]] = (
-                    int((_rt.recent_score_at - wake_fire_time) * 1000)
-                    if _rt.recent_score_at else None
-                )
-                # Instantaneous mic RMS at fire-time from the last frame
-                # in this leg's capture ring — separates low-energy FPs
-                # from real attempts in offline review.
-                tel[_cols["mic_rms"]] = self._tail_frame_rms_dbfs(_rt.capture_ring)
-            # Bridge config snapshot — env-var-driven knobs as seen by the
-            # bridge at startup, so post-hoc analysis can ask "what NS
-            # level was this event captured under?". Read here rather than
-            # from the bridge (a separate process): /etc/jasper/jasper.env
-            # is the source of truth, and the bridge is restarted after
-            # any change to it.
-            bridge_config = {
-                "ns_enabled": os.environ.get(NS_ENABLED_ENV, "1"),
-                "ns_level": os.environ.get(NS_LEVEL_ENV, "low"),
-                "agc1_enabled": os.environ.get(AGC1_ENABLED_ENV, "0"),
-                "agc1_target_dbfs": os.environ.get(AGC1_TARGET_DBFS_ENV, "9"),
-                "agc1_max_gain_db": os.environ.get(AGC1_MAX_GAIN_DB_ENV, "18"),
-                "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"),
-                "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"),
-                "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),
-                "chip_hpf_hz": os.environ.get("JASPER_AEC_CHIP_HPF_HZ", "125"),
-            }
-            # Music context — best-effort from ContentActivityTracker's
-            # cached playback RMS, which is maintained without async I/O
-            # so reading it on the wake hot path is free (a renderer probe
-            # would add ~50 ms) and is accurate to within ~1 s. Proxy:
-            # louder than -60 dBFS = "music probably playing" — imperfect
-            # (TTS uses the same playback chain) but useful for FP
-            # correlation.
-            music_volume_db = self._read_music_dbfs()
-            music_active_proxy = (
-                music_volume_db is not None and music_volume_db > -60.0
-            )
-            # Acoustic condition: music from the playback anchor above;
-            # quiet-vs-ambient from the pre-fire mic noise floor over the
-            # capture ring. Recorded so production fires carry the same
-            # taxonomy the corpus labels use. Best-effort — both
-            # _ring_noise_floor_dbfs and classify_condition never raise.
+        # progresses. Guarded so a speaker without a store pays none of the
+        # fire-time record assembly below.
+        if self._wake_telemetry.store is not None:
+            # Acoustic condition at RECORD time, not the ~1 Hz
+            # `_current_condition` the fire gate keys on: the awaits above
+            # (fire lock, research-window cancel) can put real wall-clock
+            # time between the two. Same formula, later sampling instant —
+            # and deliberately not written back to `_current_condition`,
+            # which `_maybe_refresh_condition` alone owns. Music comes from
+            # ContentActivityTracker's cached playback RMS, free to read on
+            # the hot path (a renderer probe would add ~50 ms). Best-effort:
+            # neither _ring_noise_floor_dbfs nor classify_condition raises.
             condition_ctx = classify_condition(
-                music_dbfs=music_volume_db,
+                music_dbfs=self._read_music_dbfs(),
                 noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
             )
-            self._current_condition = condition_ctx.condition
-            try:
-                await store.begin_event(
-                    event_id=event_id,
-                    trigger_kind=trigger_kind,
-                    threshold=firing_threshold,
-                    wake_model=self._cfg.wake_model,
-                    voice_provider=self._cfg.voice_provider,
-                    bridge_config=bridge_config,
-                    music_active=music_active_proxy,
-                    music_volume_db=music_volume_db,
-                    condition_class=condition_ctx.condition,
-                    mic_muted=self._mic_muted,
-                    fired_legs=fired_legs,
-                    **tel,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "wake_events: begin_event failed (will skip telemetry "
-                    "for this event): %s", e,
-                )
-                self._current_event_id = None
+            event_id = await self._wake_telemetry.on_fire(
+                leg=leg,
+                score=score,
+                now_loop=now_loop,
+                legs={
+                    _name: LegFireScore(
+                        score=_rt.recent_score,
+                        score_at=_rt.recent_score_at,
+                        # Instantaneous mic RMS at fire-time from the last
+                        # frame in this leg's capture ring — separates
+                        # low-energy FPs from real attempts in offline
+                        # review.
+                        mic_rms_dbfs=self._tail_frame_rms_dbfs(
+                            _rt.capture_ring,
+                        ),
+                    )
+                    for _name, _rt in self._legs.items()
+                },
+                firing_threshold=firing_threshold,
+                fired_legs=fired_legs,
+                condition=condition_ctx,
+                mic_muted=self._mic_muted,
+            )
             # Deliberately not in `_bg_tasks`: those tasks drive turn
             # completion.
-            if self._current_event_id is not None:
+            if event_id is not None:
                 self._create_fire_and_forget_task(
-                    self._finalize_event_audio(self._current_event_id),
+                    self._wake_telemetry.finalize_event_audio(
+                        event_id, snapshot=self._snapshot_leg_audio,
+                    ),
                     name="wake-event-audio-finalize",
                 )
 
@@ -3055,42 +2970,6 @@ class WakeLoop:
             ),
             name="wake-arbitrate-acquire-drain",
         )
-
-    async def _finalize_event_audio(self, event_id: str) -> None:
-        """Wait the post-fire collection window, then snapshot each configured
-        capture ring and persist WAV files via the store.
-
-        Fire-and-forget: failure logs WARN and does not propagate. Truncation
-        on daemon shutdown is acceptable — the row keeps its NULL
-        audio_*_path, which queries can filter out."""
-        if self._wake_event_store is None:
-            return
-        try:
-            await asyncio.sleep(CAPTURE_POST_SEC)
-            # Snapshot count = pre + post window in frames. Rings may hold
-            # slightly more than this thanks to the slack in the maxlen
-            # sizing.
-            from .audio_io import MicCapture as _MC
-            n_frames = int(
-                (CAPTURE_PRE_SEC + CAPTURE_POST_SEC)
-                * _MC.OUTPUT_RATE / _MC.OUTPUT_FRAME_SAMPLES
-            )
-            await self._wake_event_store.attach_audio(
-                event_id=event_id,
-                audio_on=self._snapshot_leg_audio("on", n_frames),
-                audio_off=self._snapshot_leg_audio("off", n_frames),
-                audio_dtln=self._snapshot_leg_audio("dtln", n_frames),
-                audio_chip_aec_150=self._snapshot_leg_audio(
-                    "chip_aec_150", n_frames,
-                ),
-                audio_chip_aec_210=self._snapshot_leg_audio(
-                    "chip_aec_210", n_frames,
-                ),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "wake_events: attach_audio failed for %s: %s", event_id, e,
-            )
 
     def _snapshot_leg_audio(self, leg: str, n_frames: int) -> bytes | None:
         """Snapshot the trailing wake-event window for one configured leg."""
@@ -3119,83 +2998,19 @@ class WakeLoop:
             return None
         return _frame_rms_dbfs(ring[-1])
 
-    async def _telemetry_stage(
-        self,
-        stage: str,
-        *,
-        tool_name: str | None = None,
-    ) -> None:
-        """Best-effort funnel-stage update for the in-flight wake event.
-
-        No-op when telemetry is disabled, no event is in flight, or the store
-        write fails: the wake and session paths are never blocked by
-        telemetry trouble."""
-        store = self._wake_event_store
-        event_id = self._current_event_id
-        if store is None or event_id is None:
-            return
-        try:
-            await store.update_stage(
-                event_id,
-                stage,
-                tool_name=tool_name,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "wake_events: update_stage(%s) failed: %s", stage, e,
-            )
-
     async def record_tool_dispatch_stage(self, stage: str, name: str) -> None:
-        """Translate the shared dispatch observer into wake-funnel stages.
-
-        ``dispatch_tool`` is the only producer, so this observes Gemini,
-        OpenAI, and Grok without provider branches. Manual / research turns
-        naturally no-op because they have no in-flight wake event id.
-        """
-        funnel_stage = {
-            "called": "tool_called",
-            "completed": "tool_completed",
-        }.get(stage)
-        if funnel_stage is None:
-            raise ValueError(f"unknown tool dispatch stage {stage!r}")
-        await self._telemetry_stage(
-            funnel_stage,
-            tool_name=name,
-        )
+        """Shared-dispatch-observer seam: `daemon_main` binds this method
+        into the tool registry, so it stays on the loop."""
+        await self._wake_telemetry.record_tool_dispatch_stage(stage, name)
 
     async def _record_response_started(self) -> None:
         """Record the first provider-neutral assistant-audio boundary."""
         self._stamp_turn_stage("first_response")
-        await self._telemetry_stage("response_started")
+        await self._wake_telemetry.stage("response_started")
 
     async def _record_first_write(self) -> None:
         """Record the first assistant PCM the playout socket accepted."""
         self._stamp_turn_stage("first_write")
-
-    async def _telemetry_outcome(
-        self, outcome: str, detail: str | None = None,
-    ) -> None:
-        """Best-effort terminal-outcome UPDATE for the in-flight wake
-        event. Same fail-soft pattern as `_telemetry_stage`. Clears
-        `_current_event_id` after the write so subsequent funnel hooks
-        for the next wake start clean."""
-        store = self._wake_event_store
-        event_id = self._current_event_id
-        if store is None or event_id is None:
-            # Still clear the id (if it exists) so the next wake
-            # starts from a clean state.
-            self._current_event_id = None
-            return
-        # Clear early so subsequent stray funnel-hook calls don't keep
-        # writing against a finalised row.
-        self._current_event_id = None
-        try:
-            await store.set_outcome(event_id, outcome, detail)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "wake_events: set_outcome(%s) failed for %s: %s",
-                outcome, event_id, e,
-            )
 
     async def _arbitrate_acquire_drain(
         self,
@@ -3228,8 +3043,8 @@ class WakeLoop:
             # an LLM session after them is wrong. Checked twice — now, and
             # again after the arbitration await, which can take up to 500 ms.
             if self._wake_late_cancelled("pre_arb"):
-                await self._telemetry_stage("late_cancel")
-                await self._telemetry_outcome("late_cancel", "pre_arb")
+                await self._wake_telemetry.stage("late_cancel")
+                await self._wake_telemetry.outcome("late_cancel", "pre_arb")
                 return  # finally clears _acquiring + buffer
 
             decision = await self._peering.arbitrate(
@@ -3239,20 +3054,20 @@ class WakeLoop:
             if decision == "LOSE":
                 # Another peer is handling it: losers play no chirp or cue.
                 log_event(logger, "peering.wake.lost", score=f"{score:.2f}")
-                await self._telemetry_stage("peer_lost")
-                await self._telemetry_outcome("peer_lost")
+                await self._wake_telemetry.stage("peer_lost")
+                await self._wake_telemetry.outcome("peer_lost")
                 return  # finally clears _acquiring + buffer
 
             if self._wake_late_cancelled("post_arb"):
-                await self._telemetry_stage("late_cancel")
-                await self._telemetry_outcome("late_cancel", "post_arb")
+                await self._wake_telemetry.stage("late_cancel")
+                await self._wake_telemetry.outcome("late_cancel", "post_arb")
                 return
 
             # Gate cues: only the arbitration winner pays this cost.
             if not spend_allowed:
                 log_event(logger, "wake.refused", reason="spend_cap_reached")
-                await self._telemetry_stage("gate_blocked")
-                await self._telemetry_outcome("gate_blocked", "spend_cap_reached")
+                await self._wake_telemetry.stage("gate_blocked")
+                await self._wake_telemetry.outcome("gate_blocked", "spend_cap_reached")
                 await self._play_cue("spend_cap_reached")
                 return
             # `conn_paused` was snapshotted before arbitration. Re-check
@@ -3263,8 +3078,8 @@ class WakeLoop:
                 PAUSED_CONNECTION_WAIT_SEC,
             ):
                 log_event(logger, "wake.refused", reason="connection_paused")
-                await self._telemetry_stage("gate_blocked")
-                await self._telemetry_outcome("gate_blocked", "connection_paused")
+                await self._wake_telemetry.stage("gate_blocked")
+                await self._wake_telemetry.outcome("gate_blocked", "connection_paused")
                 # The cue comes first: it is the household's answer, and
                 # nothing after it may be allowed to swallow it. The
                 # early-retry nudge already went out with the wait.
@@ -3275,7 +3090,7 @@ class WakeLoop:
                 listening_feedback=True,
                 anchor_at=self._wake_event_at_monotonic,
             )  # ends with state = SESSION
-            await self._telemetry_stage("turn_opened")
+            await self._wake_telemetry.stage("turn_opened")
             # Starts the winner-only heartbeat. Fire-and-forget: voice's own
             # session lifecycle is the source of truth.
             await self._peering.session_started(has_turn=self._turn is not None)
@@ -3296,7 +3111,7 @@ class WakeLoop:
             # Fast-talker compensation; see `_drain_acquire_audio`.
             if speech_in_acquire and not self._user_speech_seen:
                 self._user_speech_seen = True
-                await self._telemetry_stage("speech_detected")
+                await self._wake_telemetry.stage("speech_detected")
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             log_event(
@@ -3305,7 +3120,7 @@ class WakeLoop:
                 reason="acquire_error",
                 exc_type=type(e).__name__,
             )
-            await self._telemetry_outcome("session_failed", str(e)[:200])
+            await self._wake_telemetry.outcome("session_failed", str(e)[:200])
             # A connection cue here is a false alarm unless the connection
             # actually dropped mid-acquire; see the internal_error CueDef.
             try:
@@ -3774,7 +3589,7 @@ class WakeLoop:
                     self._silero_aec_armed_at_ms = int(
                         (now - self._turn_started_at_loop) * 1000
                     )
-                await self._telemetry_stage("speech_detected")
+                await self._wake_telemetry.stage("speech_detected")
             self._silence_started_at = 0.0
         else:
             # Sub-threshold frame breaks the run. Both the duration
@@ -4543,36 +4358,27 @@ class WakeLoop:
         # a likely false positive (music transient, TTS bleed) or a changed
         # mind. Either way the outcome is 'no_speech', which dual-stream
         # false-positive analysis keys off.
-        await self._telemetry_stage("turn_complete")
-        # Capture event_id BEFORE _telemetry_outcome clears it.
-        session_vad_store = self._wake_event_store
-        session_vad_eid = self._current_event_id
+        await self._wake_telemetry.stage("turn_complete")
+        # Capture event_id BEFORE the outcome write clears it.
+        session_vad_eid = self._wake_telemetry.current_event_id
         terminal_outcome = (
             "completed" if self._user_speech_seen else "no_speech"
         )
-        await self._telemetry_outcome(terminal_outcome, reason)
+        await self._wake_telemetry.outcome(terminal_outcome, reason)
 
-        # Shadow telemetry: what each stream's Silero saw, so the weekly
-        # review can cross-tab scores.
-        store = session_vad_store
-        eid = session_vad_eid
-        if store is not None and eid is not None:
-            endpointer_label = self._corpus_endpointer_label(
-                user_speech_seen=self._user_speech_seen,
+        if session_vad_eid is not None:
+            await self._wake_telemetry.record_session_vad(
+                session_vad_eid,
+                max_silero_aec=self._max_silero_score_in_turn or None,
+                max_silero_raw=self._max_silero_raw_in_turn or None,
+                silero_aec_armed_at_ms=self._silero_aec_armed_at_ms,
+                silero_raw_armed_at_ms=self._silero_raw_armed_at_ms,
+                endpointer=self._corpus_endpointer_label(
+                    user_speech_seen=self._user_speech_seen,
+                ),
+                music_playing_at_turn=self._content_activity.music_is_playing(),
+                music_db_at_turn=self._content_activity.music_dbfs,
             )
-            try:
-                await store.update_session_vad(
-                    eid,
-                    max_silero_aec=self._max_silero_score_in_turn or None,
-                    max_silero_raw=self._max_silero_raw_in_turn or None,
-                    silero_aec_armed_at_ms=self._silero_aec_armed_at_ms,
-                    silero_raw_armed_at_ms=self._silero_raw_armed_at_ms,
-                    endpointer=endpointer_label,
-                    music_playing_at_turn=self._content_activity.music_is_playing(),
-                    music_db_at_turn=self._content_activity.music_dbfs,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("wake_events: session VAD telemetry failed: %s", e)
 
         # Notify the peering daemon before the slow cleanup so peers
         # un-suppress promptly: waiting for our chirp and duck restore would

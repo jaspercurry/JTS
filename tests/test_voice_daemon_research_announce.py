@@ -96,8 +96,8 @@ def _put_in_session(
     async def _noop_chirp(*, going_on):
         return None
 
-    wl._telemetry_stage = _noop
-    wl._telemetry_outcome = _noop
+    wl._wake_telemetry.stage = _noop
+    wl._wake_telemetry.outcome = _noop
     wl._peering.session_ended = _noop
     wl._play_listening_chirp = _noop_chirp
     return turn
