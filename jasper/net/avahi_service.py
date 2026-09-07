@@ -11,7 +11,7 @@ kept outside ``/etc/avahi/services`` so Avahi doesn't try to parse the
 placeholder as XML) into ``/etc/avahi/services/<name>.service`` and
 nudging Avahi to reload:
 
-  - ``jasper/control_advert.py`` renders ``_jasper-control._tcp`` with
+  - ``jasper/net/control_advert.py`` renders ``_jasper-control._tcp`` with
     the speaker's user-facing display name (a free-form, XML-escaped
     value).
   - ``jasper/peering/avahi.py`` renders ``_jasper-peer._udp`` with the

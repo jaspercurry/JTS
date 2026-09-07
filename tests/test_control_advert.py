@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.control_advert.
+"""Unit tests for jasper.net.control_advert.
 
 This module renders the always-on ``_jasper-control._tcp`` mDNS advert
 from ``deploy/avahi/jasper-control.service.template``, substituting the
@@ -45,8 +45,8 @@ from xml.dom import minidom
 
 import pytest
 
-from jasper import avahi_service
-from jasper import control_advert as ca
+from jasper.net import avahi_service
+from jasper.net import control_advert as ca
 
 _REPO = Path(__file__).resolve().parent.parent
 _TEMPLATE_SRC = _REPO / "deploy" / "avahi" / "jasper-control.service.template"
@@ -70,9 +70,9 @@ def _mock_avahi_reload(monkeypatch):
     Returns the recorder so a test can assert it was (or wasn't) called.
 
     ``render_control_advert`` no longer drives its own reload — it delegates
-    to ``jasper.avahi_service.render_service``, which OWNS the reload and
+    to ``jasper.net.avahi_service.render_service``, which OWNS the reload and
     fires it (only on ``RenderResult.WROTE``) through the shared
-    ``jasper.avahi_service.reload_avahi``. So we patch *that* boundary, not
+    ``jasper.net.avahi_service.reload_avahi``. So we patch *that* boundary, not
     ``subprocess.run`` (control_advert doesn't import subprocess anymore).
     Mirrors tests/test_peering_avahi.py's render-path reload patch.
     """

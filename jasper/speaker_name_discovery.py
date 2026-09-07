@@ -4,7 +4,7 @@
 
 """Best-effort duplicate checks for speaker display names.
 
-Deliberately NOT routed through ``jasper.mdns.browse_once``. The one-shot
+Deliberately NOT routed through ``jasper.net.mdns.browse_once``. The one-shot
 primitive is the right tool for "resolve a single service type into live,
 addressable instances" (e.g. ``/sound/pair/``, the HA wizard). This module needs
 the opposite shape on two axes:

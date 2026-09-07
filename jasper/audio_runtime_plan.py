@@ -15,7 +15,6 @@ explain the current intent.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -52,6 +51,7 @@ from jasper.fanin_coupling import (
     outputd_content_is_central_ring,
     resolve_coupling,
 )
+from jasper.json_fields import json_fingerprint, sha256_file
 from jasper.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
@@ -799,12 +799,11 @@ def camilla_config_hash_for_path(path: str | None) -> str:
     if not path:
         return ""
     try:
-        body = Path(path).read_bytes()
+        return sha256_file(path)[:16]
     except FileNotFoundError:
         return "missing"
     except OSError:
         return "unreadable"
-    return hashlib.sha256(body).hexdigest()[:16]
 
 
 def _route_action_values(route: AudioRouteProfile) -> dict[str, str]:
@@ -950,8 +949,7 @@ def route_config_hash_for_plan(
             else {}
         ),
     }
-    body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    return json_fingerprint(payload)[:16]
 
 
 #: Stable reason tokens for the route-policy refusals, published beside their

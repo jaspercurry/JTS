@@ -61,7 +61,7 @@
 //   * the `bluetooth` group (BlueZ adapter Alias/Powered for the /speaker
 //     rename) is a D-Bus policy grant, not polkit — it rides the unit's
 //     SupplementaryGroups=, not this file.
-//   * CAP_NET_ADMIN for jasper/wifi_scan_repair.py's NL80211
+//   * CAP_NET_ADMIN for jasper/net/wifi_scan_repair.py's NL80211
 //     CRIT_PROTOCOL_STOP is NOT granted — the most network-exposed daemon
 //     stays cap-less. /wifi/scan asks jasper-control's scoped restart broker
 //     to start the root-only jasper-wifi-scan-repair.service helper instead;

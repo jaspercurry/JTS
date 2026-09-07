@@ -7,7 +7,7 @@ Wants=NetworkManager.service
 [Service]
 Type=oneshot
 Environment=JASPER_WIFI_SCAN_REPAIR_IFACE=wlan0
-ExecStart=/opt/jasper/.venv/bin/python -m jasper.wifi_scan_repair --iface ${JASPER_WIFI_SCAN_REPAIR_IFACE} --json
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.net.wifi_scan_repair --iface ${JASPER_WIFI_SCAN_REPAIR_IFACE} --json
 # Bounded: one rate-limited NL80211_CMD_CRIT_PROTOCOL_STOP attempt.
 TimeoutStartSec=20
 StandardOutput=journal

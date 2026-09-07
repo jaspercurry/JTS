@@ -60,7 +60,7 @@ jasper_env_quote_value() {
 # stripped and jasper_env_file_set's own '\'' splice undone, so set ->
 # get round trips an apostrophe-bearing value; nothing is evaluated.
 # Otherwise this parses byte-for-byte like read_stash in
-# jasper/wifi_guardian_persistence.py, which reads the same files.
+# jasper/net/wifi_guardian_persistence.py, which reads the same files.
 # readonly: jasper_env_file_export already skips every `_JASPER_`-prefixed
 # key it finds (below), so this is the backstop — nothing may reassign this
 # shell global if that skip is ever weakened.

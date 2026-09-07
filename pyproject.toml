@@ -117,7 +117,7 @@ full = [
     # than shelling to `bluetoothctl` (parsing its output is flaky
     # across versions). Pure-Python, no C extension.
     "dbus-next>=0.2.3",
-    # mDNS-SD browsing: jasper.mdns (the one-shot browse primitive behind
+    # mDNS-SD browsing: jasper.net.mdns (the one-shot browse primitive behind
     # jasper.web.rooms_setup and jasper.web.home_assistant_setup) and
     # jasper.speaker_name_discovery. Browse-only — the host's Avahi daemon
     # remains the only mDNS responder, which avoids the dual-stack conflict
@@ -393,6 +393,7 @@ module = [
     "jasper.multiroom.leader_config",
     "jasper.multiroom.member_config",
     "jasper.mux",
+    "jasper.net.wifi_scan_repair",
     "jasper.output_hardware",
     "jasper.output_topology",
     "jasper.peering.daemon",
@@ -424,7 +425,6 @@ module = [
     "jasper.web.tools_setup",
     "jasper.web.voice_setup",
     "jasper.web.wake_setup",
-    "jasper.wifi_scan_repair",
     "jasper.xvf.xvf_host",
 ]
 ignore_errors = true
@@ -447,7 +447,7 @@ layers = [
   "cli : web",
   "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_fusion : wake_models : weather",
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : enhanced_aec : route_latency : volume_diagnostics",
-  "aec_engines : avahi_service : bluealsa_probe : mdns : mics : speaker_name : speaker_name_discovery : usb_network : usbgadget : wifi_guardian_persistence : wifi_scan_repair : xvf",
+  "aec_engines : bluealsa_probe : mics : speaker_name : speaker_name_discovery : usb_network : usbgadget : xvf",
   "airplay_mode : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
   "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : json_fields : log_event : memory_policy : os_fault : percentiles : secret_redaction : service_units : transition_log : watchdog",
 ]
@@ -476,7 +476,6 @@ exhaustive_ignores = [
   "chip_aec",
   "config",
   "control",
-  "control_advert",
   "conversation_history",
   "correction",
   "cues",
@@ -490,7 +489,6 @@ exhaustive_ignores = [
   "google_oauth",
   "google_routes",
   "home_assistant",
-  "http_security",
   "identity",
   "identity_state",
   "local_sources",
@@ -500,6 +498,9 @@ exhaustive_ignores = [
   "model_downloads",
   "multiroom",
   "mux",
+  # Holdout for jasper/net/control_advert.py -> jasper.identity, whose own
+  # upward imports row 6 of #4199 cuts; net ranks once identity does.
+  "net",
   "oauth_redirect",
   "output_hardware",
   "output_topology",

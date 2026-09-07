@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import inspect
 import json
 import logging
@@ -40,6 +39,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jasper.atomic_io import advisory_file_lock_async, atomic_write_text
+from jasper.json_fields import sha256_file, utc_now_iso
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -161,10 +161,6 @@ class DspApplyError(RuntimeError):
     def __init__(self, message: str, state: DspApplyState) -> None:
         super().__init__(message)
         self.state = state
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _tail(text: str | bytes, limit: int = 1000) -> str:
@@ -400,11 +396,7 @@ DSP_PROOF_INACTIVE_RESULTS = frozenset({
 
 def _sha256(path: Path) -> str | None:
     try:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
+        return sha256_file(path)
     except OSError:
         return None
 
@@ -828,7 +820,7 @@ async def apply_dsp_config(
         source=source,
         phase="start",
         result="in_progress",
-        started_at=_utc_now(),
+        started_at=utc_now_iso(),
         finished_at=None,
         prior_config_path=str(prior_config_path) if prior_config_path else None,
         candidate_config_path=str(candidate),
@@ -880,7 +872,7 @@ async def apply_dsp_config(
                     # Half a graph is not evidence the way a rejected one is,
                     # so this restores in place or not.
                     _abandon_candidate(state, candidate_restore)
-                    state.finished_at = _utc_now()
+                    state.finished_at = utc_now_iso()
                     record_dsp_apply_state(state, state_path=state_path)
                     raise DspApplyError(f"DSP config preparation failed: {e}", state) from e
 
@@ -909,7 +901,7 @@ async def apply_dsp_config(
             if not validation.ok_to_apply:
                 state.result = validation.status.value
                 _abandon_candidate(state, candidate_restore)
-                state.finished_at = _utc_now()
+                state.finished_at = utc_now_iso()
                 record_dsp_apply_state(state, state_path=state_path)
                 raise DspApplyError(
                     _validation_failure_message(validation),
@@ -925,7 +917,7 @@ async def apply_dsp_config(
                 if proof_failure is not None:
                     state.result, proof_message = proof_failure
                     _abandon_candidate(state, candidate_restore)
-                    state.finished_at = _utc_now()
+                    state.finished_at = utc_now_iso()
                     record_dsp_apply_state(state, state_path=state_path)
                     raise DspApplyError(proof_message, state)
 
@@ -944,7 +936,7 @@ async def apply_dsp_config(
                     candidate_restore=candidate_restore,
                 )
                 state.result = _rollback_result("load_failed", state)
-                state.finished_at = _utc_now()
+                state.finished_at = utc_now_iso()
                 record_dsp_apply_state(state, state_path=state_path)
                 raise DspApplyError(f"CamillaDSP reload failed: {e}", state) from e
 
@@ -966,7 +958,7 @@ async def apply_dsp_config(
                         candidate_restore=candidate_restore,
                     )
                     state.result = _rollback_result("confirm_failed", state)
-                    state.finished_at = _utc_now()
+                    state.finished_at = utc_now_iso()
                     record_dsp_apply_state(state, state_path=state_path)
                     raise DspApplyError(
                         f"CamillaDSP reload confirmation failed: {e}", state
@@ -984,7 +976,7 @@ async def apply_dsp_config(
                     candidate_restore=candidate_restore,
                 )
                 state.result = _rollback_result("persist_failed", state)
-                state.finished_at = _utc_now()
+                state.finished_at = utc_now_iso()
                 record_dsp_apply_state(state, state_path=state_path)
                 raise DspApplyError(
                     f"DSP config applied but state persistence failed: {e}", state
@@ -994,7 +986,7 @@ async def apply_dsp_config(
                 state.active_config_path = str(candidate)
             state.phase = "done"
             state.result = "success"
-            state.finished_at = _utc_now()
+            state.finished_at = utc_now_iso()
             record_dsp_apply_state(state, state_path=state_path)
             log_event(
                 logger,

@@ -16,43 +16,6 @@
 # reboots with persisted state; this guard is the same idea for the
 # unit-level ladder.
 #
-# What it does, once per boot (Type=oneshot, before the jasper daemons):
-#
-#   1. Append this boot's timestamp to /var/lib/jasper/bootloop_guard_boots
-#      and prune entries older than the window.
-#   2. If this is the THRESHOLD'th (or later) boot inside the window,
-#      assume a reboot loop: write RUNTIME drop-ins
-#      (/run/systemd/system/<unit>.d/90-jts-bootloop-guard.conf) that set
-#      StartLimitAction=none for every installed unit that declares
-#      StartLimitAction=reboot, then daemon-reload. StartLimitAction=none
-#      changes only the escalation, not the rate limit: once the sick
-#      unit exhausts its StartLimitBurst, systemd parks it failed (no
-#      reboot, no further restarts — visible to systemctl and
-#      jasper-doctor) and the Pi stays up and reachable. Operator
-#      recovery: fix the cause, then
-#      `systemctl reset-failed <unit> && systemctl start <unit>`
-#      (or reboot).
-#   3. Write a marker JSON for /state either way.
-#
-# Self-clearing by construction: the drop-ins live in /run, which the
-# kernel wipes at boot. A healthy boot (fewer than THRESHOLD boots in
-# the window) writes no drop-ins, so the very next clean boot restores
-# the full T5.1 escalation with no operator action.
-#
-# Single-incident behaviour is unchanged: the first reboots inside the
-# window do not trip the guard, so a transient wedge still gets its
-# clean recovery reboot(s).
-#
-# Fail-open everywhere: this runs at boot on the recovery path, so any
-# internal error logs `event=bootloop_guard.error` and exits 0 — the
-# guard must never block or fail the boot. Worst case on guard failure
-# is exactly today's behaviour (escalation stays armed).
-#
-# Camilla now owns a narrower OnFailure= recovery/forensics contract for
-# ALSA-busy graph ownership failures, so it is intentionally outside this
-# raw reboot ladder. Mirrors deploy/bin/jasper-wifi-guardian's shape and
-# test seams; tested hardware-free in tests/test_bootloop_guard_script.py.
-#
 # JASPER_BOOTLOOP_WINDOW_SEC / JASPER_BOOTLOOP_THRESHOLD are TEST SEAMS
 # only, not production knobs: jasper-bootloop-guard.service sets no
 # EnvironmentFile=, so in production the defaults below always apply.
@@ -114,8 +77,6 @@ log() {
 }
 
 emit() {
-    # Single-line structured event for journal grep — same shape as
-    # event=wifi_guardian.* / event=system_supervisor.*.
     if [[ -n "${2:-}" ]]; then
         printf 'event=bootloop_guard.%s %s\n' "$1" "$2" >&2
     else
@@ -138,8 +99,6 @@ fi
 # Tuning knobs must be sane integers, or bash arithmetic on them
 # silently misbehaves (an unset-variable name compares as 0, which
 # would bias toward TRIPPING). Fail open to the defaults instead.
-# These are test seams, not production knobs — the unit sets no
-# EnvironmentFile=, so production always runs the defaults (see header).
 if ! [[ "$WINDOW_SEC" =~ ^[0-9]+$ ]]; then
     emit error "reason=bad_window value=$(quote_token "$WINDOW_SEC") using=3600"
     WINDOW_SEC=3600
@@ -211,9 +170,6 @@ count="${#recent[@]}"
 
 # ---- 2. Discover the reboot-escalating units ------------------------------
 
-# Self-maintaining: any installed unit that declares
-# StartLimitAction=reboot is guarded — a future unit added to the T5.1
-# ladder is covered with no edit here.
 units=()
 for f in "$UNITS_DIR"/*.service; do
     [[ -f "$f" ]] || continue
