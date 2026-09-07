@@ -56,7 +56,7 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | **P6 done** (handoff #4387: 14 PRs, net −4,246). Nothing queued; the account's weekly budget is nearly spent | P2 round 2 (#4194: wave A on `main` bar row 8; wave B running; first the ADR-0248 renumber; row 12 = the Cargo workspace, offered) **and** P5 structure #4199 (executing; five PRs open; finishes #4354 as the resolver reshape; confirmed on Dip, the same environment as the coordinator) | **Two sessions.** P11 web UI #4212 (plan triaged 05:20 UTC; **silent since 04:14, check the session**) **and** P3 resilience #4195 (the P9 session rolled on at 12:30 UTC; **P9 done**, handoff #4385; first act: deploy `main` to jts3 and jts4) |
+| 1 | **P6 done** (handoff #4387: 14 PRs, net −4,246). Nothing queued; the account's weekly budget is nearly spent | P2 round 2 (#4194: wave A on `main` bar row 8; wave B running; first the ADR-0248 renumber; row 12 = the Cargo workspace, offered) **and** P5 structure #4199 (executing; five PRs open; finishes #4354 as the resolver reshape; confirmed on Dip, the same environment as the coordinator) | **Two sessions.** P11 web UI #4212 (W1 in flight: #4351, #4328, D.8, tests) **and** P3 resilience #4195 (P9 done, handoff #4385; jts3/jts4 deployed and read clean; 28-row plan triaged 14:30 UTC; waves 1–4) |
 | 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | — |
 | 3 | — | P8 docs #4202 (stale-path pass last) | — |
 
@@ -75,17 +75,19 @@ cue (H2), then replug. jts4: nothing. Read ADR-0244 (the
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-07 12:30 UTC.** Done: P1 (#4279), P4 (#4327), P12 (#4324), P9 (#4385:
-`voice_daemon.py` 5,093 → 3,288, refusal observables, ADR-0244), P6 (#4387: 14 PRs, net −4,246;
-residuals: row 6 offered to P2 as its row 12, 7b dropped, 4/4b/5 not executed, #4354 to P5).
-Running: P2 round two on Dip (wave A merged bar row 8, wave B started), P5 (five PRs open), P11 on
-Space Hater (triaged 05:20, silent since 04:14), P3 on Space Hater (named 12:30 for the P9 session).
-**`main` carries two ADR-0247 files** (#4383 first, #4356 second): P2 renumbers its own to 0248 as a
-fix-forward first. The pin (`tests/test_docs_linkcheck.py`) only sees the merge result, so a lane
-takes its number from `origin/main` at merge time and rebases before merging. Nothing merged after
-`f0abad7f6` has run on hardware; the P3 session deploys `main` to jts3 and jts4 first. Deployed:
-jts3 `f0abad7f6`, jts.local and jts4 `162ab4088`. The coordinator was offline 05:45–12:00 UTC: its
-session-only check died with the idle container, which only a Routine survives.
+**State on 2026-09-07 14:30 UTC.** Done: P1 (#4279), P4 (#4327), P12 (#4324), P9 (#4385), P6 (#4387;
+#4354 finished by P5 as the resolver reshape). Running: P2 round two (wave A on `main`; wave B held
+behind the ADR fix), P5 (nine PRs open, rebased), P11 (W1 in flight), P3 (plan triaged; P0 #4391 open).
+Since the review's baseline `2bc95106d` (2026-09-05 10:57 UTC): 220 PRs merged; code lines
+`jasper/` +1.9k, `rust/` −0.4k, `deploy/` +0.4k, `scripts/` −1.0k, `tests/` +10.4k — the tree is not
+smaller yet; deletions (P6 −4.2k, P9's daemon split, P2's install table) are offset by what P4, P12
+and P1 added and by tests. **ADR numbers:** two lanes collided at 0247, then both hopped to 0248;
+P6's #4402 moves its file to 0250 and P2's 0248 stays. From now a lane reserves its number on the ADR
+ledger issue before opening the PR (highest reserved + 1; on a tie the later comment yields), never
+from the directory listing. Hardware: jts3 and jts4 on `d4cb8b49d`, clean (health gate proven,
+`host_clock` 15 keys); jts.local on `162ab4088` for the owner's word. The coordinator's hourly check
+is a Routine (`send_later`, re-armed each tick); GitHub's authenticated API quota is shared by every
+session and ran out once at 14:00 UTC, so the check reads with the unauthenticated REST API.
 
 **Duplicates (owner's rule, 2026-09-07).** No duplicate code stays because it is untested; untested is
 the reason to converge, not to keep. A duplicate found in scope is converged this round by the lane
