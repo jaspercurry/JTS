@@ -91,6 +91,7 @@ from dataclasses import dataclass
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.log_event import log_event
+from jasper.ring_assets import RING_SHM_DIR
 
 _LOG = logging.getLogger(__name__)
 
@@ -104,12 +105,11 @@ RENDERER_LANES_ENV_MODE = 0o644
 # ``Config::renderer_ring_lanes``.
 FANIN_RING_LANES_KEY = "JASPER_FANIN_RENDERER_RING_LANES"
 
-# The SHM ring directory and the renderer-ring filename prefix. Mirrored by
-# value in ``rust/jasper-fanin/src/config.rs`` (``RING_SHM_DIR`` /
-# ``RENDERER_RING_PREFIX``); ``tests/test_renderer_ring_lanes.py`` pins the two
-# spellings against each other, because a silent divergence here would leave
-# fan-in reading a ring nothing writes.
-RING_SHM_DIR = "/dev/shm/jts-ring"
+# The renderer-ring filename prefix. Mirrored by value in
+# ``rust/jasper-fanin/src/config.rs`` (``RENDERER_RING_PREFIX``);
+# ``tests/test_renderer_ring_lanes.py`` pins the two spellings against each
+# other, because a silent divergence would leave fan-in reading a ring nothing
+# writes.
 RENDERER_RING_PREFIX = "lane-"
 
 # The conf.d drop-in that declares every renderer-lane ring PCM and its `plug:`

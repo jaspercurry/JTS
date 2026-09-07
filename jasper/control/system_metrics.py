@@ -34,8 +34,10 @@ import subprocess
 import threading
 import time
 from array import array
+from pathlib import Path
 from typing import Any
 
+from ..install_profile import BUILD_MANIFEST_FILE
 from ..memory_policy import disk_usage, memory_pressure, meminfo_fields
 from ..service_units import (
     EXTRA_SERVICE_GROUPS,
@@ -965,7 +967,7 @@ class SystemSampler:
         return full & 0xF, (full >> 16) & 0xF
 
 
-def read_build_info(build_file: str = "/var/lib/jasper/build.txt") -> dict[str, str]:
+def read_build_info(build_file: str | Path = BUILD_MANIFEST_FILE) -> dict[str, str]:
     """Read the build manifest install.sh writes on every install.
 
     Returns {} if the file isn't there (e.g. dev environment). Keys

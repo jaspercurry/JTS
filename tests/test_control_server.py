@@ -464,7 +464,7 @@ def test_split_control_helpers_keep_state_at_owner_modules():
     import jasper.control.server as srv_mod
 
     mirrored_names = {
-        "OUTPUTD_BASE_CAMILLA_CONFIG",
+        "BASE_CONFIG_PATH",
         "SOURCE_AVAILABILITY_TTL_SEC",
         "_source_availability_cache",
         "_source_availability_lock",

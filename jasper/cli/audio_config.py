@@ -51,9 +51,9 @@ from jasper.fanin_coupling import (
     RING_SLOT_FRAMES,
     resolve_ring_wire,
 )
+from jasper.output_hardware import DEFAULT_TOPOLOGY_PATH
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
 
-DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 # Both transports of the ONE active lane: the snd-aloop active PCM and the
 # ACTIVE RING. A graph naming either is an active-lane graph and must pass the
 # same hardware/topology proof before its pairing is enforced.
@@ -622,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render_ring_conf.add_argument(
         "--output-topology",
-        default=DEFAULT_OUTPUT_TOPOLOGY_PATH,
+        default=DEFAULT_TOPOLOGY_PATH,
         help="saved output topology the Ring B channel count is resolved from",
     )
     render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
@@ -690,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--camilla2-statefile", default=DEFAULT_CAMILLA2_STATEFILE_PATH
     )
     validate_outputd.add_argument(
-        "--output-topology", default=DEFAULT_OUTPUT_TOPOLOGY_PATH
+        "--output-topology", default=DEFAULT_TOPOLOGY_PATH
     )
     validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
 

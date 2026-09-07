@@ -37,6 +37,7 @@ from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.control.system_metrics import read_thermal_zone_temp_c
+from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
@@ -325,7 +326,6 @@ STORM_TRAJECTORY_KEEP_FILES = 20
 CPU_GOVERNOR_PATH = "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"
 CPU_FREQ_PATH = "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq"
 CAMILLA_UNIT_FULL = "jasper-camilla.service"
-BUILD_MARKER_PATH = "/var/lib/jasper/build.txt"
 
 
 def _read_int_file(path: str) -> int | None:
@@ -386,7 +386,7 @@ def _seconds_since_camilla_restart() -> float | None:
 def _seconds_since_deploy(now_wall: float) -> float | None:
     """Seconds since the last install wrote the build marker — the deploy age."""
     try:
-        mtime = os.stat(BUILD_MARKER_PATH).st_mtime
+        mtime = os.stat(BUILD_MANIFEST_FILE).st_mtime
     except OSError:
         return None
     return round(max(0.0, now_wall - mtime), 1)

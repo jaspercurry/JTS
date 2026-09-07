@@ -48,6 +48,7 @@ from ..multiroom import cascade_timeline
 from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
+from ..sound.camilla_yaml import BASE_CONFIG_PATH
 from ..speaker_name import read_state as _read_speaker_name_state
 from ..route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
@@ -74,8 +75,6 @@ from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
-
-OUTPUTD_BASE_CAMILLA_CONFIG = "/etc/camilladsp/outputd-cutover.yml"
 
 # Per-probe ceiling for the CamillaDSP /state probe: a wedged-but-listening
 # DSP (TCP accepted, websocket read stalled) would otherwise hang the whole
@@ -468,7 +467,7 @@ def _sound_runtime_status(
             last_apply_path,
         )
 
-    if _same_config_path(active_config_path, OUTPUTD_BASE_CAMILLA_CONFIG):
+    if _same_config_path(active_config_path, BASE_CONFIG_PATH):
         runtime["state"] = "base"
         runtime["active"] = not desired_has_filters
     elif runtime["matches_last_apply"] is True:
