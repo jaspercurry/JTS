@@ -28,6 +28,7 @@ updates:
         patterns:
           - "ruff"
           - "mypy"
+          - "import-linter"
           - "pytest*"
       python-runtime:
         patterns:

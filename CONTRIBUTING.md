@@ -66,9 +66,9 @@ That runs the fast local lane without a Pi, mic, or speaker. The audio
 I/O, network calls, and systemd surfaces are mocked in the default suite.
 Before publishing substantial work, run `scripts/test-merge`; that mirrors
 the full hardware-free pytest lane (four pytest-xdist workers) and also
-runs the lenient, baselined `mypy` gate as a step before pytest. The full
-CI lane additionally runs `ruff check .`, which stays covered locally by
-`scripts/test-fast`.
+runs the `lint-imports` layers contract and the lenient, baselined `mypy`
+gate as steps before pytest. The full CI lane additionally runs
+`ruff check .`, which stays covered locally by `scripts/test-fast`.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then replays the
 committed lock with
@@ -175,11 +175,12 @@ Two operational notes:
   pytest selection, and always-on guard tests.
 - **Python merge lane** (`scripts/test-merge`) — required green before
   merge through the full `ci` lane. No SDK auth or network. Runs the
-  lenient, baselined `mypy` gate (pyproject.toml config) as a step
-  before pytest, then the hardware-free suite in parallel, excluding
-  paid `tests/voice_eval`. Full CI runs this lane on Python 3.13 only —
-  the deployed interpreter (PiOS Trixie ships python3.13); the internal
-  `pytest` aggregate fails unless every versioned matrix leg passes.
+  `lint-imports` layers contract and then the lenient, baselined `mypy`
+  gate (pyproject.toml config) as steps before pytest, then the
+  hardware-free suite in parallel, excluding paid `tests/voice_eval`.
+  Full CI runs this lane on Python 3.13 only — the deployed interpreter
+  (PiOS Trixie ships python3.13); the internal `pytest` aggregate fails
+  unless every versioned matrix leg passes.
 - **Python static checks** (`ruff check .` and `mypy`) — run once in the
   Python 3.13 matrix leg before the test suite. mypy starts permissive
   and baselined so existing type debt does not block day-one adoption,

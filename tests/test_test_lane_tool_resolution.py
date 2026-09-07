@@ -5,14 +5,14 @@
 """Guards the executable test lanes' interpreter resolution (issue #1836).
 
 ``scripts/test-fast`` and ``scripts/test-merge`` resolve pytest (test-fast
-also ruff; test-merge also mypy) from ``$PYTEST``/``$RUFF``/``$MYPY``, then
-``./.venv/bin/``, then ``$PATH``. Both lanes ``cd`` to ``git rev-parse
---show-toplevel``, which in an agent worktree is the *worktree* root -- a
-directory with no ``.venv`` of its own. The ``$PATH`` fallback is therefore
-the common case in exactly the environment the orchestration pattern runs
-implementers in, and before this guard neither lane said which interpreter it
-had picked. A transcript in which nothing ran was indistinguishable from a
-passing one.
+also ruff; test-merge also mypy and lint-imports) from the matching
+``$PYTEST``/``$RUFF``/``$MYPY``/``$LINT_IMPORTS``, then ``./.venv/bin/``, then
+``$PATH``. Both lanes ``cd`` to ``git rev-parse --show-toplevel``, which in an
+agent worktree is the *worktree* root -- a directory with no ``.venv`` of its
+own. The ``$PATH`` fallback is therefore the common case in exactly the
+environment the orchestration pattern runs implementers in, and before this
+guard neither lane said which interpreter it had picked. A transcript in which
+nothing ran was indistinguishable from a passing one.
 
 These tests reproduce that environment rather than simulating it: a scratch git
 repo (so the lanes' ``cd`` lands somewhere with no ``.venv``) plus a sandboxed
@@ -85,6 +85,17 @@ _LANES = ("test-fast", "test-merge")
 
 # Invoked by absolute path: the sandbox PATH deliberately excludes bash itself.
 _BASH = shutil.which("bash") or "/bin/bash"
+
+# `true` accepts and ignores whatever flags a gate is handed and exits 0, so
+# every gate a test is not about clears without doing anything.
+_TRUE_BIN = shutil.which("true") or "/usr/bin/true"
+
+
+def _other_gate_stand_ins(lane: str, stand_in: str = _TRUE_BIN) -> dict[str, str]:
+    """Overrides that clear the gates ``lane`` runs ahead of its pytest phase."""
+    if lane == "test-fast":
+        return {"RUFF": stand_in}
+    return {"MYPY": stand_in, "LINT_IMPORTS": stand_in}
 
 
 @pytest.fixture
@@ -169,9 +180,7 @@ def test_test_fast_also_refuses_on_a_missing_ruff(
     failure attributable to ``ruff`` is the one observed.
     """
     repo, env = lane_sandbox
-    result = _run(
-        repo, {**env, "PYTEST": shutil.which("true") or "/usr/bin/true"}, "test-fast"
-    )
+    result = _run(repo, {**env, "PYTEST": _TRUE_BIN}, "test-fast")
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -185,15 +194,14 @@ def test_lane_announces_the_resolved_interpreter_on_stderr(
 ) -> None:
     """Provenance is announced, and stdout stays pure test output.
 
-    ``true`` stands in for ruff/mypy: it accepts and ignores the lanes' flags
-    and exits 0, so those gates clear without doing anything. ``pytest`` is a
-    RECORDING stand-in rather than ``true`` and its call log is asserted on
-    below -- issue #1910's gate review caught that, with only a `true`
-    stand-in and no ``$MYPY`` override, this test (and its sibling below) had
-    silently degraded into a resolution-only check for ``test-merge``: the
-    lane died at the mypy FATAL immediately after announcing pytest, pytest
-    itself never ran, and neither original assertion here noticed because
-    neither checked that it had. Recording the call closes that gap.
+    ``pytest`` is a RECORDING stand-in rather than ``true`` and its call log
+    is asserted on below -- issue #1910's gate review caught that, with only
+    a `true` stand-in and no ``$MYPY`` override, this test (and its sibling
+    below) had silently degraded into a resolution-only check for
+    ``test-merge``: the lane died at the mypy FATAL immediately after
+    announcing pytest, pytest itself never ran, and neither original
+    assertion here noticed because neither checked that it had. Recording the
+    call closes that gap.
 
     The stderr assertion is on POSITION, not membership. A membership check
     is vacuous for ``test-merge``: were the announcement misdirected to
@@ -204,17 +212,11 @@ def test_lane_announces_the_resolved_interpreter_on_stderr(
     line kills that.
     """
     repo, env = lane_sandbox
-    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
     calls = repo / "calls.jsonl"
     pytest_stub = _recording_stub(repo, "pytest", calls)
     result = _run(
         repo,
-        {
-            **env,
-            "PYTEST": str(pytest_stub),
-            "RUFF": other_tool_stand_in,
-            "MYPY": other_tool_stand_in,
-        },
+        {**env, **_other_gate_stand_ins(lane), "PYTEST": str(pytest_stub)},
         lane,
     )
 
@@ -242,24 +244,18 @@ def test_lane_works_when_invoked_by_a_relative_path_from_a_subdirectory(
     non-run unmissable. The lane dir is therefore captured before the ``cd``.
 
     ``pytest`` is a RECORDING stand-in for the same #1910 gate-review reason
-    as its sibling test above: without a working ``$MYPY``, ``test-merge``
-    was silently dying at the mypy FATAL right after the stderr
-    announcement, and neither original assertion here noticed that pytest
-    never actually ran.
+    as its sibling test above: with no gate overrides, ``test-merge`` was
+    silently dying at a gate's FATAL right after the stderr announcement,
+    and neither original assertion here noticed that pytest never actually
+    ran.
     """
     repo, env = lane_sandbox
     (repo / "tests").mkdir()
-    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
     calls = repo / "calls.jsonl"
     pytest_stub = _recording_stub(repo, "pytest", calls)
     result = _run(
         repo,
-        {
-            **env,
-            "PYTEST": str(pytest_stub),
-            "RUFF": other_tool_stand_in,
-            "MYPY": other_tool_stand_in,
-        },
+        {**env, **_other_gate_stand_ins(lane), "PYTEST": str(pytest_stub)},
         lane,
         cwd=repo / "tests",
         argv0=f"../scripts/{lane}",
@@ -378,7 +374,7 @@ def _fast_lane_selected_tests(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = shutil.which("true") or "/usr/bin/true"
+    stand_in = _TRUE_BIN
 
     subprocess.run(
         [_BASH, "scripts/test-fast"],
@@ -610,6 +606,7 @@ def test_lane_sources_the_shared_resolver_rather_than_reimplementing_it(
     assert 'pytest_bin="pytest"' not in body
     assert 'ruff_bin="ruff"' not in body
     assert 'mypy_bin="mypy"' not in body
+    assert 'lint_imports_bin="lint-imports"' not in body
 
 
 # --------------------------------------------------------------------------- #
@@ -653,18 +650,9 @@ def test_lane_prints_passed_sentinel_as_the_last_stdout_line_on_success(
     repo, env = lane_sandbox
     stand_in = repo / "fake-pytest"
     _fake_pytest_script(stand_in)
-    # `true` stands in for both ruff (test-fast) and mypy (test-merge): both
-    # just need to resolve and exit 0 so the lane reaches its pytest phase(s)
-    # -- irrelevant but harmless for whichever lane doesn't read that var.
-    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
     result = _run(
         repo,
-        {
-            **env,
-            "PYTEST": str(stand_in),
-            "RUFF": other_tool_stand_in,
-            "MYPY": other_tool_stand_in,
-        },
+        {**env, **_other_gate_stand_ins(lane), "PYTEST": str(stand_in)},
         lane,
     )
 
@@ -703,20 +691,13 @@ def test_lane_prints_failed_sentinel_as_the_last_stdout_line_on_a_real_failure(
         else "--ignore=tests/voice_eval"
     )
     _fake_pytest_script(stand_in, fail_argv_substring=fail_marker)
-    # `true` stands in for ruff (test-fast) and mypy (test-merge) and must
-    # succeed here: the failure under test is specifically the fake pytest's
-    # own nonzero exit, not a resolution-path FATAL (those are covered
-    # separately below) and not the mypy gate rejecting the run before
+    # The other gates must CLEAR here: the failure under test is specifically
+    # the fake pytest's own nonzero exit, not a resolution-path FATAL (those
+    # are covered separately below) and not a gate rejecting the run before
     # pytest is ever reached.
-    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
     result = _run(
         repo,
-        {
-            **env,
-            "PYTEST": str(stand_in),
-            "RUFF": other_tool_stand_in,
-            "MYPY": other_tool_stand_in,
-        },
+        {**env, **_other_gate_stand_ins(lane), "PYTEST": str(stand_in)},
         lane,
     )
 
@@ -859,14 +840,13 @@ def test_lane_killed_by_a_signal_does_not_print_a_passed_shaped_verdict(
     """
     repo, env = lane_sandbox
     marker = repo / "pytest-started"
-    stand_in = shutil.which("true") or "/usr/bin/true"
     proc = subprocess.Popen(
         [_BASH, "scripts/test-merge"],
         cwd=repo,
         env={
             **env,
+            **_other_gate_stand_ins("test-merge"),
             "PYTEST": str(_blocking_pytest_stub(repo, marker)),
-            "MYPY": stand_in,
         },
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -1004,15 +984,9 @@ def test_lane_that_parsed_no_pytest_summary_says_so_instead_of_zero_passed(
         "#!/usr/bin/env python3\nraise SystemExit(0)\n", encoding="utf-8"
     )
     stand_in.chmod(0o755)
-    other_tool_stand_in = shutil.which("true") or "/usr/bin/true"
     result = _run(
         repo,
-        {
-            **env,
-            "PYTEST": str(stand_in),
-            "RUFF": other_tool_stand_in,
-            "MYPY": other_tool_stand_in,
-        },
+        {**env, **_other_gate_stand_ins(lane), "PYTEST": str(stand_in)},
         lane,
     )
 
@@ -1089,7 +1063,7 @@ def test_fast_lane_prunes_a_stale_last_failed_id_without_a_full_suite_fallback(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = shutil.which("true") or "/usr/bin/true"
+    stand_in = _TRUE_BIN
 
     result = subprocess.run(
         [_BASH, "scripts/test-fast"],
@@ -1175,7 +1149,7 @@ def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = shutil.which("true") or "/usr/bin/true"
+    stand_in = _TRUE_BIN
 
     result = subprocess.run(
         [_BASH, "scripts/test-fast"],
@@ -1206,14 +1180,14 @@ def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
 
 
 # --------------------------------------------------------------------------- #
-# issue #1910 -- test-merge carries a local mypy gate ahead of pytest
+# issue #1910 -- test-merge carries its static gates ahead of pytest
 # --------------------------------------------------------------------------- #
 
 
 def test_test_merge_also_refuses_on_a_missing_mypy(
     lane_sandbox: tuple[Path, dict[str, str]],
 ) -> None:
-    """test-merge resolves two tools; mypy must be guarded like pytest.
+    """test-merge resolves three tools; mypy must be guarded like pytest.
 
     Mirrors ``test_test_fast_also_refuses_on_a_missing_ruff`` for the tool
     this PR adds. Pointing ``$PYTEST`` at a real executable clears the first
@@ -1225,9 +1199,7 @@ def test_test_merge_also_refuses_on_a_missing_mypy(
     by this addition.
     """
     repo, env = lane_sandbox
-    result = _run(
-        repo, {**env, "PYTEST": shutil.which("true") or "/usr/bin/true"}, "test-merge"
-    )
+    result = _run(repo, {**env, "PYTEST": _TRUE_BIN}, "test-merge")
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -1262,61 +1234,75 @@ def _recording_stub(repo: Path, name: str, calls_path: Path, *, exit_code: int =
     return path
 
 
-def test_test_merge_runs_mypy_before_pytest(
+def test_test_merge_runs_its_gates_before_pytest(
     lane_sandbox: tuple[Path, dict[str, str]],
 ) -> None:
-    """The mypy gate runs, and it runs strictly before the pytest phase.
+    """Both gates run, and they run strictly before the pytest phase.
 
     Issue #1910: no local lane ran mypy at all. This is the positive-path
-    ordering proof -- both tools are recording stand-ins, and the call order
+    ordering proof -- every tool is a recording stand-in, and the call order
     written to the log is the real ordering claim, not a string search over
-    the script's source (which would still pass if the call were dead code).
+    the script's source (which would still pass if a call were dead code).
     """
     repo, env = lane_sandbox
     calls = repo / "calls.jsonl"
     mypy_stub = _recording_stub(repo, "mypy", calls)
+    lint_imports_stub = _recording_stub(repo, "lint-imports", calls)
     pytest_stub = _recording_stub(repo, "pytest", calls)
 
     result = _run(
         repo,
-        {**env, "MYPY": str(mypy_stub), "PYTEST": str(pytest_stub)},
+        {
+            **env,
+            "MYPY": str(mypy_stub),
+            "LINT_IMPORTS": str(lint_imports_stub),
+            "PYTEST": str(pytest_stub),
+        },
         "test-merge",
     )
 
     assert result.returncode == 0, result
-    assert calls.read_text(encoding="utf-8").splitlines() == ["mypy", "pytest"], (
-        result.stdout + result.stderr
-    )
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "lint-imports",
+        "mypy",
+        "pytest",
+    ], result.stdout + result.stderr
 
 
-def test_test_merge_mypy_failure_stops_before_pytest_and_fails_the_lane(
-    lane_sandbox: tuple[Path, dict[str, str]],
+@pytest.mark.parametrize("failing_gate", ("lint-imports", "mypy"))
+def test_test_merge_gate_failure_stops_before_pytest_and_fails_the_lane(
+    failing_gate: str, lane_sandbox: tuple[Path, dict[str, str]]
 ) -> None:
-    """A mypy failure must fail the #1850 sentinel AND never reach pytest.
+    """A failed gate must fail the #1850 sentinel AND never reach pytest.
 
-    The merge lane runs the mypy invocation unguarded under `set -e`, so a
-    nonzero mypy exit aborts the script immediately -- pytest must never even
+    The merge lane runs each gate invocation unguarded under `set -e`, so a
+    nonzero exit aborts the script immediately -- pytest must never even
     start, and the EXIT trap must still print the lane's FAILED sentinel as
     the true last stdout line, exactly composing with #1850's machinery
-    rather than needing its own verdict path.
+    rather than needing its own verdict path. Parametrized over the gates
+    because an `|| true` on either invocation is invisible from the other's
+    case.
     """
     repo, env = lane_sandbox
     calls = repo / "calls.jsonl"
-    mypy_stub = _recording_stub(repo, "mypy", calls, exit_code=1)
     pytest_stub = _recording_stub(repo, "pytest", calls)
+    overrides = {
+        var: str(
+            _recording_stub(
+                repo, gate, calls, exit_code=1 if gate == failing_gate else 0
+            )
+        )
+        for gate, var in (("lint-imports", "LINT_IMPORTS"), ("mypy", "MYPY"))
+    }
 
-    result = _run(
-        repo,
-        {**env, "MYPY": str(mypy_stub), "PYTEST": str(pytest_stub)},
-        "test-merge",
-    )
+    result = _run(repo, {**env, **overrides, "PYTEST": str(pytest_stub)}, "test-merge")
 
     assert result.returncode != 0, result
     last_line = result.stdout.rstrip("\n").splitlines()[-1]
     assert last_line == "==> test-merge: FAILED", result.stdout
-    assert calls.read_text(encoding="utf-8").splitlines() == ["mypy"], (
-        "pytest must never run once the mypy gate fails"
-    )
+    ran = calls.read_text(encoding="utf-8").splitlines()
+    assert ran[-1] == failing_gate, ran
+    assert "pytest" not in ran, "pytest must never run once a gate fails"
 
 
 @pytest.mark.parametrize(

@@ -132,6 +132,7 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.8",
     "ruff>=0.16.1",
+    "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
     "mypy>=2.3.0,<2.4",
@@ -147,6 +148,7 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.8",
     "ruff>=0.16.1",
+    "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
     "mypy>=2.3.0,<2.4",
@@ -426,3 +428,105 @@ module = [
     "jasper.xvf.xvf_host",
 ]
 ignore_errors = true
+
+# Exhaustive: every top-level child of `jasper` is either on a layer line or an
+# explicit holdout below, so a new module has to be classified rather than
+# drift in unranked. A holdout moves to its layer line in the PR that removes
+# its last upward import; a deleted or renamed module loses its line in that
+# same PR -- a stale layer line hard-fails with `Missing layer`, a stale
+# holdout only rots. Never ignore_imports.
+[tool.importlinter]
+root_packages = ["jasper"]
+
+[[tool.importlinter.contracts]]
+name = "JTS layers"
+type = "layers"
+containers = ["jasper"]
+broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
+layers = [
+  "cli : web",
+  "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_fusion : wake_models : weather",
+  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : enhanced_aec : route_latency : volume_diagnostics",
+  "aec_engines : avahi_service : bluealsa_probe : mdns : mics : speaker_name : speaker_name_discovery : usb_network : usbgadget : wifi_guardian_persistence : wifi_scan_repair : xvf",
+  "airplay_mode : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
+  "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : json_fields : log_event : memory_policy : os_fault : percentiles : secret_redaction : service_units : transition_log : watchdog",
+]
+exhaustive = true
+exhaustive_ignores = [
+  "accessories",
+  "active_speaker",
+  "assistant_loudness",
+  "assistant_volume",
+  "attribution",
+  "audio_buffer",
+  "audio_hardware",
+  "audio_input_view",
+  "audio_io",
+  "audio_lab",
+  "audio_measurement",
+  "audio_profile_state",
+  "audio_runtime_plan",
+  "audio_validation",
+  "bass_extension",
+  "bluetooth",
+  "calibration_agent",
+  "camilla",
+  "camilla_config_contract",
+  "camilla_stereo_prefix",
+  "chip_aec",
+  "config",
+  "control",
+  "control_advert",
+  "conversation_history",
+  "correction",
+  "cues",
+  "data",
+  "debug_mode",
+  "dsp_apply",
+  "env_load",
+  "fanin",
+  "fanin_coupling",
+  "flight_recorder",
+  "google_oauth",
+  "google_routes",
+  "home_assistant",
+  "http_security",
+  "identity",
+  "identity_state",
+  "local_sources",
+  "logging_setup",
+  "measurement_window",
+  "mic_presence",
+  "model_downloads",
+  "multiroom",
+  "mux",
+  "oauth_redirect",
+  "output_hardware",
+  "output_topology",
+  "output_topology_runtime",
+  "outputd_failure_reconcile_state",
+  "peering",
+  "renderer",
+  "renderer_lanes",
+  "research",
+  "ring_assets",
+  "sound",
+  "source_intent",
+  "source_state",
+  "spotify_oauth",
+  "tools",
+  "transit",
+  "transport_coherence",
+  "tts_routing",
+  "usb_mic",
+  "usbsink",
+  "voice",
+  "voice_daemon",
+  "volume_coordinator",
+  "volume_curve",
+  "volume_observers",
+  "volume_owner",
+  "volume_persistence",
+  "wake_corpus",
+  "wake_ports",
+]
