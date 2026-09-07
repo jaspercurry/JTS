@@ -54,6 +54,7 @@ from jasper.active_speaker.safe_playback import (
     record_safe_playback_result,
 )
 from jasper.active_speaker.staging import (
+    DEFAULT_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR,
     load_staged_startup_config,
     stage_protected_startup_config,
 )
