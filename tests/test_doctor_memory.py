@@ -198,6 +198,35 @@ def test_check_zram_size_ratio_skips_without_a_zram_device():
         assert r.reason == doctor_memory.REASON_ZRAM_ABSENT
 
 
+def test_memory_module_run_reads_meminfo_fields_twice(monkeypatch):
+    """ADR-0233 rule 1/4: MemTotal is a boot constant, so evidence.mem_total_kb()
+    memoizes ONE read for check_ram, check_memory_headroom, and
+    check_zram_size_ratio. MemAvailable moves second to second, so
+    check_memory_headroom samples it LIVE, inside its own "memory-sample"
+    exclusive lane, never through the memo — a memoized value read by the
+    unlaned check_ram could already be stale (e.g. depressed by
+    voice.check_provider_importable's import child, sharing that lane) by
+    the time check_memory_headroom's turn comes. A full run of the memory
+    module's checks must therefore call memory_policy.meminfo_fields
+    exactly twice."""
+    real_meminfo_fields = memory_policy.meminfo_fields
+    calls: list[tuple[str, ...]] = []
+
+    def counting_meminfo_fields(*names, **kwargs):
+        calls.append(names)
+        return real_meminfo_fields(*names, **kwargs)
+
+    monkeypatch.setattr(memory_policy, "meminfo_fields", counting_meminfo_fields)
+
+    for check in doctor.registered_checks(only="memory"):
+        try:
+            check.func()
+        except Exception:  # noqa: BLE001 — only the meminfo_fields calls are pinned
+            pass
+
+    assert calls == [("MemTotal",), ("MemAvailable",)]  # memo, then the lane's live sample
+
+
 # ------------------------------------------------------ audio-slice protection
 
 

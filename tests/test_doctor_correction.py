@@ -83,9 +83,11 @@ _LEAKED_HOLD_LINE = (
 
 
 def _idle_exit_journal(monkeypatch, *, journal, active="active"):
+    _stub_unit_active_states(
+        monkeypatch, {correction._CORRECTION_WEB_UNIT: active},
+    )
+
     def fake_run(cmd, timeout=5.0):
-        if cmd[0] == "systemctl":
-            return subprocess.CompletedProcess(cmd, 0, stdout=f"{active}\n", stderr="")
         assert cmd[0] == "journalctl"
         assert "warning" in cmd  # -p warning: only escalated lines are fetched
         if isinstance(journal, Exception):
@@ -134,6 +136,17 @@ def test_check_correction_idle_exit_holds_verdicts(
     r = correction.check_correction_idle_exit_holds()
     assert r.status == status
     assert r.reason == reason
+
+
+def test_check_correction_idle_exit_holds_skips_without_systemctl(monkeypatch):
+    """systemctl answered nothing at all — a probe failure, not the unit
+    genuinely being inactive (that is REASON_IDLE_HOLDS_SERVICE_INACTIVE)."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    r = correction.check_correction_idle_exit_holds()
+    assert r.status == "skipped"
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_latest_deferred_hold_keeps_the_newest_line():

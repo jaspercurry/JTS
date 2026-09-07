@@ -36,7 +36,7 @@ import time
 from array import array
 from typing import Any
 
-from ..memory_policy import disk_usage, memory_pressure
+from ..memory_policy import disk_usage, memory_pressure, meminfo_fields
 from ..service_units import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
@@ -429,16 +429,7 @@ class SystemSampler:
 
     @staticmethod
     def _read_meminfo() -> dict[str, int]:
-        out: dict[str, int] = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 2:
-                    key = parts[0].rstrip(":")
-                    try:
-                        out[key] = int(parts[1])
-                    except ValueError:
-                        pass
+        out = meminfo_fields("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
         total_kb = out.get("MemTotal", 0)
         avail_kb = out.get("MemAvailable", 0)
         swap_total_kb = out.get("SwapTotal", 0)
