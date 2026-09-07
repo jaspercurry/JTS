@@ -18,8 +18,7 @@
 //!    `present`), cloned once in `main` before the mixer starts. This is the ONLY
 //!    coupling to the mixer; the ladder never touches a `LaneResampler` or a
 //!    `PCM`.
-//! 2. [`build_obs`] — maps those atomics onto the shared [`Obs`], including the
-//!    resampler-derived setpoint (see below).
+//! 2. [`build_obs`] — maps those atomics onto the shared [`Obs`].
 //! 3. [`HostClockActuator`] — the fan-in pitch-ctl actuator: capture-generation
 //!    binding, forced-neutral readiness, fail-soft open/write recovery, and
 //!    rate-limited lifecycle logs.
@@ -57,23 +56,6 @@
 //! drove the probe `response_ratio` from ~0.85 to ~43 and railed the
 //! feed-forward at +1000 ppm in the wrong direction. So the mapping is a plain
 //! load of `input_frames`, no trim term.
-//!
-//! ## Setpoint (C4) — one setpoint shared with the inner loop
-//!
-//! `target_fill_frames := input_resampler_target_frames +
-//! warmup_cushion_frames` — the resampler's HELD target
-//! (`LaneResampler::hold_fill_frames`, surfaced as
-//! `LaneResamplerObservability::target_fill_frames`). This is a deliberate
-//! deviation from a bare "configured target": while locked, the inner
-//! `RateController` disciplines this SAME fill toward the held target
-//! (`error = fill − hold_fill_frames()`), so an outer loop pinned to the bare
-//! base target would fight the inner integrator until one rails — the
-//! documented JTS two-controller oscillation class. Sharing the setpoint keeps
-//! the cascade legitimate with the ≥10× bandwidth separation the shared crate's
-//! docstring derives (inner 0.016–0.128 Hz vs outer 0.0016 Hz). The ~5 ms win
-//! lands later via the measured cushion-shrink follow-up
-//! (`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` descent), exactly the
-//! sequencing the shared module doc prescribes.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -136,12 +118,11 @@ pub struct HostClockSignals {
     /// life. Anchor for [`build_obs`]'s descent compensation of `fill_frames`
     /// (#3466): equal to `held_target_frames` whenever the decay is idle.
     pub ceiling_fill_frames: u64,
-    /// The resampler's LIVE HELD target fill — the ONE setpoint the outer loop
-    /// shares with the inner `RateController` (single source of truth). Equal to
-    /// `target + warmup cushion` unless the DEFAULT-OFF post-lock cushion decay
-    /// has lowered it; the servo thread reads it fresh every tick and re-pins the
-    /// ladder's setpoint to it, so the two controllers can never disagree about
-    /// where the fill should sit.
+    /// The resampler's LIVE HELD target fill (single source of truth — the
+    /// resampler owns it). Equal to `target + warmup cushion` unless the
+    /// DEFAULT-OFF post-lock cushion decay has lowered it. [`build_obs`] reads
+    /// it fresh each tick as the anchor for its descent compensation of
+    /// `fill_frames`.
     pub held_target_frames: Arc<AtomicU64>,
     /// REVERSE signal (servo thread → mixer): 1 iff the DLL ladder is
     /// `l0_locked`. The mixer's per-period decay tick reads this — decay only
@@ -156,14 +137,12 @@ pub struct HostClockSignals {
 }
 
 /// Build the validated shared [`HostClockConfig`] for the fan-in ladder from the
-/// parsed config knobs plus the resampler-derived setpoint. `enabled` here is
-/// the ALREADY-RESOLVED effective flag (the direct-off gate is applied by the
-/// caller in `main`, so a `enabled` + direct-off box passes `false` here and the
-/// ladder is inert). `target_fill_frames` is the resampler's held target.
-pub fn build_config(enabled: bool, probe_ppm: u32, target_fill_frames: u64) -> HostClockConfig {
+/// parsed config knobs. `enabled` here is the ALREADY-RESOLVED effective flag
+/// (the direct-off gate is applied by the caller in `main`, so an `enabled` +
+/// direct-off box passes `false` here and the ladder is inert).
+pub fn build_config(enabled: bool, probe_ppm: u32) -> HostClockConfig {
     HostClockConfig {
         enabled,
-        target_fill_frames: target_fill_frames as f64,
         probe_ppm: probe_ppm as f64,
         // Combo mode runs the CORRECTION-ppm observable: a lane resampler sits
         // between the gadget ring and the mix and absorbs the host clock, so the
@@ -545,17 +524,6 @@ pub fn run_host_clock_thread(
                 actuator.ensure_ready(capture_generation, tick_ms);
                 let control = actuator.status(capture_generation);
 
-                // Single-source-of-truth setpoint: re-pin the ladder's target to
-                // the resampler's LIVE held target every tick (the DEFAULT-OFF
-                // cushion decay lowers it over time). The resampler OWNS the value
-                // via its `held_target_frames` gauge; the ladder only reads it.
-                // NOTE the frames mismatch: `build_obs` feeds a
-                // CEILING-compensated fill (#3466) while this setpoint is
-                // held-relative — inert because Correction mode never computes a
-                // `fill − target` error. A no-op when decay is off (gauge at the
-                // ceiling, compensation zero).
-                hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed) as f64);
-
                 let mut write_failed = false;
                 for action in hc.tick_with_control(obs, tick_ms, control) {
                     if control.ready() && !actuator.apply(action, tick_ms) {
@@ -657,15 +625,11 @@ mod tests {
         }
     }
 
-    // ---- build_config setpoint --------------------------------------------
+    // ---- build_config ------------------------------------------------------
 
     #[test]
-    fn build_config_uses_resampler_held_target_as_setpoint() {
-        // The setpoint is the resampler's held target (target + cushion), NOT a
-        // second env knob — the whole point of C4 (no outer loop fighting the
-        // inner integrator).
-        let cfg = build_config(true, 300, 2048);
-        assert_eq!(cfg.target_fill_frames, 2048.0);
+    fn build_config_threads_the_probe_ppm_and_log_prefix() {
+        let cfg = build_config(true, 300);
         assert_eq!(cfg.probe_ppm, 300.0);
         assert_eq!(cfg.log_prefix, "fanin");
         assert!(cfg.enabled);
@@ -675,7 +639,7 @@ mod tests {
     fn build_config_threads_the_resolved_enabled_flag() {
         // The direct-off gate is resolved by the caller; a false here yields an
         // inert config.
-        let cfg = build_config(false, 300, 2048);
+        let cfg = build_config(false, 300);
         assert!(!cfg.enabled);
     }
 
@@ -835,7 +799,7 @@ mod tests {
     fn build_config_selects_correction_obs_mode() {
         // Combo mode ALWAYS runs the CORRECTION observable — the fill slope is
         // dead when a lane resampler sits between the gadget ring and the mix.
-        let cfg = build_config(true, 300, 2048);
+        let cfg = build_config(true, 300);
         assert_eq!(cfg.obs_mode, ObsMode::Correction);
     }
 

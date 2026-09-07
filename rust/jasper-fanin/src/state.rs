@@ -1447,7 +1447,7 @@ mod tests {
             // STATUS always carries. `crate::host_clock::initial_fragment` on a
             // disabled config renders exactly this.
             host_clock_fragment: Arc::new(Mutex::new(crate::host_clock::initial_fragment(
-                crate::host_clock::build_config(false, 300, 2048),
+                crate::host_clock::build_config(false, 300),
             ))),
         }
     }
@@ -1507,7 +1507,7 @@ mod tests {
         // by swapping the fragment for an armed-config render.
         let mut server = make_test_server();
         server.host_clock_fragment = Arc::new(Mutex::new(crate::host_clock::initial_fragment(
-            crate::host_clock::build_config(true, 300, 2048),
+            crate::host_clock::build_config(true, 300),
         )));
         let j = server.snapshot_json();
         let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
