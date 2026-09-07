@@ -1754,13 +1754,16 @@ class VolumeCoordinator:
         # own slider carries listening_level.
         return 0.0
 
-    async def maybe_reconcile_camilla(self) -> None:
+    async def maybe_reconcile_camilla(self, source: Source | None = None) -> None:
         """Self-healing convergence: write `percent_to_db(listening_level)`
         back to camilla when `main_volume_db` has drifted from it.
 
         Pure resilience backstop: the normal write paths keep the two in
         sync, and this catches the divergence some other writer or transient
-        left behind. Called from `VolumeObserver._tick` at 1 Hz.
+        left behind. Called from `VolumeObserver._tick` at 1 Hz, which passes
+        its own already-resolved ``source`` so the preflight below does not
+        re-probe `active_renderers()`; a candidate write still re-resolves
+        fresh once it holds the mutation lock (see below).
 
         Gates (all must pass for a write to land):
 
@@ -1790,7 +1793,7 @@ class VolumeCoordinator:
         if self._voice_session_active or self._measurement_active:
             return
         try:
-            source = await self._active_source()
+            source = source if source is not None else await self._active_source()
         except Exception:  # noqa: BLE001
             return
         if not await self._camilla_carries_level(source):

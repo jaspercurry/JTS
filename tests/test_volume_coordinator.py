@@ -44,6 +44,7 @@ from jasper.volume_diagnostics import (
     PUSH_WRITE_FAILED,
     read_diagnostics,
 )
+from jasper.volume_observers import VolumeObserver
 from jasper.volume_owner import ClaimKind
 from jasper.volume_persistence import VolumePersistence, percent_to_db
 
@@ -149,8 +150,10 @@ class _FakeBackend:
     ) -> None:
         self._active = active or {}
         self._selected = selected
+        self.active_renderers_calls = 0
 
     async def active_renderers(self) -> dict[str, bool]:
+        self.active_renderers_calls += 1
         return dict(self._active)
 
     async def selected_source(self) -> str | None:
@@ -1919,6 +1922,29 @@ async def test_which_drift_the_reconciler_corrects(
     else:
         assert cam.set_calls == []
         assert cam.mute_calls == []
+
+
+async def test_observer_tick_resolves_active_source_once(tmp_path):
+    """VolumeObserver._tick forwards its own resolved source into
+    maybe_reconcile_camilla instead of letting the reconciler re-resolve
+    it — one `active_renderers()` fork per tick at idle, not two.
+
+    Uses the dead-band case (no drift to correct) so the reconciler never
+    reaches its in-lock re-read, which deliberately re-resolves fresh for
+    correctness and is unrelated to this idle-tick fork count.
+    """
+    coord, _, _ = _real_coord(
+        tmp_path, active={}, db=percent_to_db(70) - 0.3, level=70,
+        mark_user_change=True,
+    )
+    backend = coord._backend
+    obs = VolumeObserver(
+        coord, librespot_state_path=str(tmp_path / "missing.env"),
+    )
+
+    await obs._tick()
+
+    assert backend.active_renderers_calls == 1
 
 
 async def test_reconcile_revalidates_after_cross_daemon_volume_change(tmp_path):
