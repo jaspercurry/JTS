@@ -1066,7 +1066,7 @@ def _aec_loop(  # noqa: PLR0915
 
 
 def main() -> int:
-    configure_logging(fmt="%(asctime)s aec-bridge %(levelname)s %(message)s")
+    configure_logging(tag="aec-bridge")
     # Log flight recorder + runtime debug toggle. See
     # jasper/flight_recorder.py.
     from .. import flight_recorder
