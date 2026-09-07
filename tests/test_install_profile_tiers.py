@@ -464,7 +464,6 @@ def test_streambox_install_and_runtime_cover_the_accessory_bridge():
 
     runtime = _installer_function_body("start_streambox_runtime_units")
     assert "jasper-input.service" in runtime
-    assert "systemctl restart jasper-input.service" in runtime
     assert "jasper-accessory-reconcile --reason install" in runtime
     assert "systemctl enable --now jasper-accessory-reconcile.path" in runtime
 

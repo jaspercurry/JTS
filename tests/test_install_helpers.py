@@ -2432,7 +2432,7 @@ def test_renderer_make_is_ram_bounded_not_hardcoded_j4():
 
 def test_build_sandbox_budget_constants_are_named_once():
     """The per-toolchain RAM/job budgets are the policy — named once in the
-    lib (cf. RUST_LOW_MEMORY_BUILD_THRESHOLD_KB), not bare literals scattered
+    lib, like RUST_LOW_MEMORY_BUILD_THRESHOLD_KB, not bare literals scattered
     across call sites."""
     lib = _BUILD_SANDBOX_LIB.read_text(encoding="utf-8")
     assert "BUILD_SANDBOX_KB_PER_JOB_CPP=1500000" in lib
