@@ -18,15 +18,11 @@ from ..peering.config import ARBITRATE_RPC_TIMEOUT_SEC
 
 logger = logging.getLogger("jasper.voice_daemon")
 
-# The client's read must outlast the daemon's own fail-open RPC timeout
-# (ARBITRATE_RPC_TIMEOUT_SEC): otherwise this readline can expire while
-# the daemon is still arbitrating, and the except-clause below logs
-# "treating as solo" and returns WIN — mistaking the daemon's own
-# eventual reply (including its fail-open StartSession/StandDown) for
-# silence. CLIENT_RPC_MARGIN_SEC is the smallest honest buffer above
-# that budget.
-CLIENT_RPC_MARGIN_SEC = 0.1
-DEFAULT_RPC_TIMEOUT_SEC = ARBITRATE_RPC_TIMEOUT_SEC + CLIENT_RPC_MARGIN_SEC
+# Past the daemon's fail-open timeout, its only remaining work is one
+# JSON write + drain(), no further await (uds.py:87-101, daemon.py:
+# 276-282) — 0.1s covers scheduling jitter, not real work, but still
+# outlasts the fail-open so a reply is never mistaken for silence.
+DEFAULT_RPC_TIMEOUT_SEC = ARBITRATE_RPC_TIMEOUT_SEC + 0.1
 
 
 class PeeringClient:

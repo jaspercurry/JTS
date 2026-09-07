@@ -70,12 +70,11 @@ MAX_ARB_WINDOW_MS = 500
 
 # Hard timeout for an ARBITRATE RPC. Single owner for both sides of the
 # voice<->peering UDS: jasper.peering.daemon uses it to fail open (WIN)
-# when the state machine hasn't decided in time, and
-# jasper.voice.peering_client.PeeringClient derives its own read budget
-# from it (must outlast this so a daemon reply — including the daemon's
-# own fail-open — is never mistaken for silence). On timeout, voice was
+# when the state machine hasn't decided in time. On timeout, voice was
 # going to proceed anyway in single-device mode, so a wedged peering
-# daemon shouldn't silence the speaker (ADR-0128).
+# daemon shouldn't silence the speaker (ADR-0128). See
+# jasper.voice.peering_client.DEFAULT_RPC_TIMEOUT_SEC for the client's
+# read budget, derived from this value.
 #
 # ARBITRATE_RPC_TIMEOUT_SEC must sit strictly ABOVE MAX_ARB_WINDOW_MS,
 # not merely equal it: the state machine only emits StartSession/

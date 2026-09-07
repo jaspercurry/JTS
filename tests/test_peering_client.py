@@ -150,8 +150,7 @@ def test_default_rpc_timeout_outlasts_daemon_fail_open():
 @pytest_asyncio.fixture
 async def delayed_lose_server():
     """A real peering UDS server whose ARBITRATE handler doesn't reply
-    until ARBITRATE_RPC_TIMEOUT_SEC has elapsed — just past the old
-    hardcoded 0.5 s client budget — then returns LOSE."""
+    until ARBITRATE_RPC_TIMEOUT_SEC has elapsed, then returns LOSE."""
     sock_path = _short_socket_path()
 
     async def arbitrate(_req: dict) -> dict:
