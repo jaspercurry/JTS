@@ -587,15 +587,10 @@ def test_add_tests_naming_selects_direct_path_and_helper_importer_matches(
     tmp_path: Path,
 ) -> None:
     """scripts/test-fast's add_tests_naming, pinned by one lane run against a
-    synthetic tests/ tree (issue #4194, #4248): a test naming the changed
-    file's bare basename, one naming its full path, and one that imports a
-    non-test helper (tests/_h.py -- pytest never collects it,
-    python_files = ["test_*.py"]) which itself names the basename are all
-    selected; a test naming an unrelated file is not.
-
-    tests/_h.py mirrors the real tests/install_surface.py situation for
-    deploy/install.sh: naming a file in a helper only matters through
-    whichever tests import it.
+    synthetic tests/ tree (issue #4194, #4248): a basename match, a path
+    match, and a match via a non-test helper's importer (tests/_h.py --
+    pytest never collects it, mirroring tests/install_surface.py for
+    deploy/install.sh) are all selected; an unrelated file is not.
     """
 
     repo = tmp_path / "repo"
@@ -623,12 +618,9 @@ def test_add_tests_naming_selects_direct_path_and_helper_importer_matches(
     calls = repo / "pytest-calls.jsonl"
     _run(["bash", "scripts/test-fast"], cwd=repo, env=lane_env(recorder, calls))
 
-    # Filtered to arguments that are real files IN THIS SYNTHETIC repo:
-    # the routing-policy and always-on-guards phases pass their own fixed
-    # tests/test_*.py paths to every lane run regardless of what changed,
-    # but none of those files exist here, so this isolates the
-    # changed-file case arm's own contribution without needing to know
-    # what that fixed list is.
+    # Filtered to files that exist in THIS synthetic repo: the
+    # routing-policy/always-on-guards phases pass their own fixed tests
+    # regardless of what changed, but none of those exist here.
     selected = {
         arg
         for line in calls.read_text(encoding="utf-8").splitlines()
