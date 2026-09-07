@@ -208,6 +208,14 @@ def test_static_guard_keeps_unsafe_xvf_commands_out_of_command_table() -> None:
 
 
 def test_production_xvf_callers_use_only_registered_commands() -> None:
+    unscannable = {
+        name for name in xvf_host.COMMANDS if not _COMMAND_NAME_RE.fullmatch(name)
+    }
+    assert not unscannable, (
+        f"_COMMAND_NAME_RE does not match registered command(s) "
+        f"{sorted(unscannable)}, so this scan cannot see production uses of them"
+    )
+
     observed = {
         relpath: _caller_command_literals(relpath)
         for relpath in _EXPECTED_XVF_COMMANDS_BY_CALLER
