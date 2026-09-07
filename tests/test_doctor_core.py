@@ -873,7 +873,7 @@ def test_failing_flag_hides_skipped_rows(capsys):
 def test_core_text_mode_emits_one_deploy_health_event(
     capsys, results, core, fields,
 ):
-    """The deploy reads this line as its verdict (ADR-0247). Only --core
+    """The deploy reads this line as its verdict (ADR-0248). Only --core
     emits it, so the dashboard's full report is unchanged."""
     doctor.render(results, core=core)
 
