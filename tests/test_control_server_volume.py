@@ -752,13 +752,13 @@ def test_duck_active_probe(monkeypatch, response, expected):
 
 
 def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypatch):
-    """Pin the BuildResult shape consumption for control/server.py's
+    """Pin the BuildResult shape consumption for control/volume_ops.py's
     _build_spotify_router_or_none. Same regression as in mux:
     previously `clients = build_clients(...)` was treated as a dict;
     the change to BuildResult silently broke the volume-coordinator
     wiring."""
     from unittest.mock import patch, MagicMock
-    from jasper.control.server import _build_spotify_router_or_none
+    from jasper.control.volume_ops import _build_spotify_router_or_none
     from jasper.spotify_router import (
         ACCOUNT_OK, AccountClient, AccountStatus, BuildResult, Router,
     )
@@ -803,7 +803,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
     expires or the wizard rewrites an account cache."""
     from unittest.mock import patch
     from jasper.control import volume_ops
-    from jasper.control.server import _build_spotify_router_or_none
+    from jasper.control.volume_ops import _build_spotify_router_or_none
     from jasper.spotify_router import (
         ACCOUNT_REVOKED, AccountStatus, BuildResult,
     )
@@ -842,6 +842,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
 
 async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
     import jasper.control.server as srv_mod
+    import jasper.control.volume_ops as volume_ops_mod
     import jasper.renderer as renderer_mod
     import jasper.tools.transport as transport_mod
 
@@ -861,7 +862,9 @@ async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
 
         return dispatch
 
-    monkeypatch.setattr(srv_mod, "_build_spotify_router_or_none", lambda: router)
+    monkeypatch.setattr(
+        volume_ops_mod, "_build_spotify_router_or_none", lambda: router,
+    )
     monkeypatch.setattr(renderer_mod, "RendererClient", FakeRendererClient)
     monkeypatch.setattr(
         transport_mod,

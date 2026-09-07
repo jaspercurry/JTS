@@ -628,10 +628,10 @@ def test_oneshot_unit_runs_doctor_with_out():
     assert settings["Group"] == "jasper"
     # The writer's --out and the reader's default are one path: rename one
     # only and /system/diagnostics stats a file nothing writes.
-    from jasper.control.server import _DIAGNOSTICS_RESULT_PATH
+    from jasper.doctor_contract import DOCTOR_RESULT_PATH
 
     assert settings["ExecStart"].endswith(
-        f"jasper-doctor --json --out {_DIAGNOSTICS_RESULT_PATH}"
+        f"jasper-doctor --json --out {DOCTOR_RESULT_PATH}"
     )
     # Bounded so a wedged probe cannot leave the oneshot activating forever,
     # and capped so a runaway one cannot join a global OOM cascade.

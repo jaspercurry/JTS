@@ -36,6 +36,9 @@ REASON_SNAPSHOT_UNAVAILABLE = "snapshot_unavailable"
 
 REASON_REFRESH_FAILED = "refresh_failed"
 
+# Must match the `--out` literal in deploy/systemd/jasper-doctor-json.service:30.
+DOCTOR_RESULT_PATH = "/run/jasper-control/doctor-result.json"
+
 
 @dataclass
 class CheckResult:
