@@ -4,7 +4,7 @@
 
 """Multicast UDP transport for peering messages.
 
-Five message types, one JSON object per UDP datagram, max ~300 bytes.
+One JSON object per UDP datagram, max ~300 bytes.
 Wire schema is documented inline. Malformed packets are silently
 dropped (a buggy neighbor on the same multicast group shouldn't take
 down the fleet).
@@ -13,9 +13,8 @@ Socket setup follows RFC 6762 (mDNS) / RFC 2365 (admin-local scope)
 plus the standard Linux IP_MULTICAST_* knobs:
 
   - TTL = 1 (single subnet — packet dies at first router hop)
-  - LOOP = 1 (we receive our own multicast — useful for self-test
-    of the local multicast path, and natural for the gossip protocol
-    where the sender is also a participant)
+  - LOOP = 1 (we receive our own multicast; the daemon drops its own
+    datagrams by sender peer id)
   - REUSEPORT (allow multiple processes on the host to join the same
     group; matches python-zeroconf's pattern)
 """
@@ -64,14 +63,6 @@ class IncomingMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class IncomingHello(IncomingMessage):
-    peer_id: str
-    room: str
-    primary: bool
-    ts_ns: int
-
-
-@dataclass(frozen=True, slots=True)
 class IncomingWake(IncomingMessage):
     epoch: str
     report: WakeReport
@@ -116,13 +107,6 @@ def _envelope(t: str, peer_id: str, ts_ns: int, **extra) -> bytes:
         "ts": ts_ns,
         **extra,
     })
-
-
-def encode_hello(peer_id: str, room: str, primary: bool, ts_ns: int) -> bytes:
-    return _envelope(
-        "HELLO", peer_id, ts_ns,
-        room=room, primary=int(bool(primary)),
-    )
 
 
 def encode_wake(epoch: str, report: WakeReport, ts_ns: int) -> bytes:
@@ -183,13 +167,6 @@ def decode(raw: bytes) -> Optional[IncomingMessage]:
         return None
     t = msg.get("t")
     try:
-        if t == "HELLO":
-            return IncomingHello(
-                peer_id=str(msg["peer"]),
-                room=str(msg.get("room", "")),
-                primary=bool(msg.get("primary", 0)),
-                ts_ns=int(msg.get("ts", 0)),
-            )
         if t == "WAKE":
             return IncomingWake(
                 epoch=str(msg["epoch"]),
@@ -275,9 +252,8 @@ def open_multicast_socket(
     # Outbound TTL: 1 = single subnet, dies at first router hop.
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
 
-    # We receive our own multicast (LOOP=1). The state machine ignores
-    # our own messages by peer_id, but LOOP=1 is useful for a
-    # multicast-health self-test ("did my HELLO come back to me?").
+    # We receive our own multicast (LOOP=1); the daemon ignores its own
+    # messages by sender peer id.
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
 
     # Join the multicast group on the default outbound interface.
@@ -297,7 +273,7 @@ class MulticastTransport:
     Lifecycle:
       t = MulticastTransport()
       await t.start(loop, on_message=callback)  # spawns recv task
-      await t.send(encode_hello(...))
+      await t.send(encode_wake(...))
       await t.stop()
     """
 
@@ -313,13 +289,13 @@ class MulticastTransport:
         self._ttl = ttl
         self._sock: Optional[socket.socket] = None
         self._recv_task: Optional[asyncio.Task] = None
-        self._on_message: Optional[Callable[[IncomingMessage, str], Awaitable[None] | None]] = None
+        self._on_message: Optional[Callable[[IncomingMessage], Awaitable[None] | None]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stopped = asyncio.Event()
 
     async def start(
         self,
-        on_message: Callable[[IncomingMessage, str], Awaitable[None] | None],
+        on_message: Callable[[IncomingMessage], Awaitable[None] | None],
     ) -> None:
         if self._sock is not None:
             raise RuntimeError("MulticastTransport.start() called twice")
@@ -375,7 +351,7 @@ class MulticastTransport:
         assert self._sock is not None and self._loop is not None
         while not self._stopped.is_set():
             try:
-                data, addr = await self._loop.sock_recvfrom(
+                data, _ = await self._loop.sock_recvfrom(
                     self._sock, MAX_DATAGRAM_BYTES,
                 )
             except asyncio.CancelledError:
@@ -390,7 +366,7 @@ class MulticastTransport:
             if msg is None:
                 continue
             try:
-                result = self._on_message(msg, addr[0]) if self._on_message else None
+                result = self._on_message(msg) if self._on_message else None
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:  # noqa: BLE001

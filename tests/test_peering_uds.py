@@ -38,16 +38,12 @@ async def server_setup():
     async def notify_ended(epoch: str, reason: str) -> None:
         ended_calls.append((epoch, reason))
 
-    async def status() -> dict:
-        return {"state": "idle", "peers": [], "mode": "on"}
-
     sock_path = _short_socket_path()
     server = await uds_mod.serve(
         path=sock_path,
         arbitrate=arbitrate,
         notify_session_started=notify_started,
         notify_session_ended=notify_ended,
-        status=status,
     )
     try:
         yield {
@@ -110,18 +106,6 @@ async def test_session_ended_no_reason(server_setup):
     assert server_setup["ended_calls"] == [("ep-42", "")]
 
 
-async def test_status_round_trip(server_setup):
-    resp = await uds_mod.send_request(server_setup["path"], "STATUS")
-    assert resp["result"] == "ok"
-    assert resp["state"] == "idle"
-    assert resp["mode"] == "on"
-
-
-async def test_ping_round_trip(server_setup):
-    resp = await uds_mod.send_request(server_setup["path"], "PING")
-    assert resp["result"] == "pong"
-
-
 # ---------- Error handling ----------
 
 
@@ -166,4 +150,4 @@ async def test_send_request_no_daemon():
     running — caller (voice) catches this and falls through to
     WIN (peering not available = act as if alone)."""
     with pytest.raises(FileNotFoundError):
-        await uds_mod.send_request("/nonexistent/path.sock", "PING")
+        await uds_mod.send_request("/nonexistent/path.sock", "ARBITRATE {}")

@@ -7,16 +7,15 @@
 When a household runs multiple JTS speakers on the same LAN, all of
 them hear the same "Hey Jarvis" — without coordination, all of them
 would answer at once. This package adds the coordination: peers
-discover each other via mDNS-SD (`_jasper-peer._udp`), exchange a
-small per-wake JSON message over multicast UDP, deterministically
-pick one winner, and suppress the rest for the duration of that
-turn.
+advertise over mDNS-SD (`_jasper-peer._udp`), exchange a small
+per-wake JSON message over multicast UDP, deterministically pick one
+winner, and suppress the rest for the duration of that turn.
 
 **Off by default.** A single-Pi household pays nothing: with mode
-`off`, no Avahi service is advertised, no zeroconf import happens,
-no multicast socket is opened, no thread is spawned. The user
-explicitly turns peering on via the `/sound/pair/` Speakers page, which
-writes `/var/lib/jasper/peering.env` and restarts `jasper-control`.
+`off`, no Avahi service is advertised and no multicast socket is
+opened. The user explicitly turns peering on via the
+`/sound/pair/` Speakers page, which writes
+`/var/lib/jasper/peering.env` and restarts `jasper-control`.
 
 Architecture:
 
@@ -49,7 +48,6 @@ independently testable:
   rank.py       pure  — deterministic per-utterance winner pick
   state.py      pure  — state machine driven by timestamped events
   transport.py  I/O   — multicast UDP socket + JSON encode/decode
-  discovery.py  I/O   — AsyncZeroconf browse wrapper
   uds.py        I/O   — Unix-socket RPC server (voice→peering)
   avahi.py      I/O   — render template into /etc/avahi/services/jasper-peer.service
   daemon.py     I/O   — asyncio orchestrator (no logic, just plumbing)

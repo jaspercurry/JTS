@@ -845,7 +845,7 @@ def start_peering_daemon_if_enabled() -> None:
     in /var/lib/jasper/peering.env. Idempotent.
 
     The enabled check runs in the worker thread, not here, so an OFF
-    household never pays the zeroconf import.
+    household never pays the peering import.
     """
     global _peering_thread
     if _peering_thread is not None:
@@ -2197,8 +2197,9 @@ def main(argv: list[str] | None = None) -> int:
     # non-fatal (logged): callers fall back to their fail-soft "restart didn't
     # happen, logged" behaviour.
     restart_broker_server = restart_broker.start_broker()
-    # Multi-device peering daemon. No-op (no thread, no asyncio loop, no
-    # zeroconf import) when /var/lib/jasper/peering.env has JASPER_PEERING=off
+    # Multi-device peering daemon. The worker thread always starts; it
+    # reads /var/lib/jasper/peering.env and returns immediately (no
+    # asyncio loop, no multicast socket) when JASPER_PEERING=off
     # — the default. The /sound/pair/ Speakers page writes that env file and
     # restarts jasper-control to pick up the new mode.
     start_peering_daemon_if_enabled()

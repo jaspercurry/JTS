@@ -117,14 +117,12 @@ full = [
     # than shelling to `bluetoothctl` (parsing its output is flaky
     # across versions). Pure-Python, no C extension.
     "dbus-next>=0.2.3",
-    # jasper.peering: mDNS-SD discovery of sibling JTS speakers for
-    # multi-device wake arbitration. Used in browse-only mode — the
-    # host's Avahi daemon remains the only mDNS responder (peering
-    # advertises via /etc/avahi/services/jasper-peer.service, a
-    # static XML installed by deploy/install.sh). Browse-only avoids
-    # the dual-stack conflict (pyvisa-py#378). Imported lazily inside
-    # jasper.peering.discovery so the package is import-cheap when
-    # peering is OFF (the default). ~5-8 MB Pss when active.
+    # mDNS-SD browsing: jasper.mdns (the one-shot browse primitive behind
+    # jasper.web.rooms_setup and jasper.web.home_assistant_setup) and
+    # jasper.speaker_name_discovery. Browse-only — the host's Avahi daemon
+    # remains the only mDNS responder, which avoids the dual-stack conflict
+    # (pyvisa-py#378). Every importer loads it lazily, so a speaker that
+    # never browses never pays it. ~5-8 MB Pss when active.
     "zeroconf>=0.151.3,<1.0",
 ]
 
@@ -396,7 +394,6 @@ module = [
     "jasper.output_hardware",
     "jasper.output_topology",
     "jasper.peering.daemon",
-    "jasper.peering.discovery",
     "jasper.spotify_router",
     "jasper.spotify_routing",
     "jasper.subway",
