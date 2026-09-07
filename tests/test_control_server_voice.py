@@ -283,9 +283,6 @@ def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
 def test_voice_starting_mic_payload_tracks_transient_systemd_state(
     monkeypatch, active_state, sub_state, starting,
 ):
-    """Only a unit systemd reports as mid-transition earns the `starting`
-    payload; a settled unit (running or failed) leaves /mic to its own
-    verdict."""
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(
@@ -314,8 +311,6 @@ def test_voice_starting_mic_payload_tracks_transient_systemd_state(
 
 
 def test_voice_starting_mic_payload_is_none_without_systemctl(monkeypatch):
-    """systemctl unavailable is UNKNOWN, not "starting" — /mic must not park
-    on a made-up in-flight state."""
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(

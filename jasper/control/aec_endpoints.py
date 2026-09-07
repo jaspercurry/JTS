@@ -37,7 +37,7 @@ from ..audio_profile_state import (
 )
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
-from ..audio_validation import read_bridge_stats
+from ..cli.aec_bridge_telemetry import read_bridge_stats
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
 from ..usb_mic import (

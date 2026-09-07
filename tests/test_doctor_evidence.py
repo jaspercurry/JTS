@@ -382,10 +382,12 @@ def test_parse_systemctl_show_units_shapes_one_record_per_unit():
     text = (
         "Id=a.service\nLoadState=loaded\nActiveState=active\nSubState=running\n"
         "UnitFileState=enabled\nResult=success\nNRestarts=2\nMainPID=41\n"
-        "MemoryCurrent=[not set]\nCPUUsageNSec=18446744073709551615\n"
+        "TasksCurrent=4\nMemoryCurrent=[not set]\n"
+        "CPUUsageNSec=18446744073709551615\n"
+        "ControlGroup=/jts.slice/jts-audio.slice/jasper-outputd.service\n"
         "\n"
         "Id=b.service\nLoadState=not-found\nActiveState=inactive\n"
-        "Result=exit-code\nNRestarts=\n"
+        "Result=exit-code\nNRestarts=\nMemoryCurrent=10485760\n"
     )
     parsed = service_units.parse_systemctl_show_units(text)
     assert parsed["a.service"]["unit_file_state"] == "enabled"
@@ -394,9 +396,14 @@ def test_parse_systemctl_show_units_shapes_one_record_per_unit():
     assert parsed["b.service"]["result"] == "exit-code"
     assert parsed["a.service"]["n_restarts"] == 2
     assert parsed["a.service"]["main_pid"] == 41
+    assert parsed["a.service"]["tasks_current"] == 4
     assert parsed["a.service"]["memory_current_bytes"] is None
+    assert parsed["a.service"]["control_group"] == (
+        "/jts.slice/jts-audio.slice/jasper-outputd.service"
+    )
     assert parsed["b.service"]["load_state"] == "not-found"
     assert parsed["b.service"]["n_restarts"] == 0
+    assert parsed["b.service"]["memory_current_bytes"] == 10485760
 
 
 @pytest.mark.parametrize(

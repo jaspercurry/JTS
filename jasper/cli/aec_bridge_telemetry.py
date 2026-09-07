@@ -20,9 +20,11 @@ import socket
 import struct
 import threading
 import time
+from typing import Any
 
 from jasper.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
 from jasper.atomic_io import atomic_write_text
+from jasper.log_event import log_event
 from jasper import wake_legs
 from jasper.usb_mic import (
     USB_MIC_HEADER_STRUCT,
@@ -43,6 +45,25 @@ OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 BRIDGE_STATS_PATH_ENV = "JASPER_AEC_BRIDGE_STATS_PATH"
 BRIDGE_STATS_SCHEMA_VERSION = 4
+
+
+def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
+    """Read the snapshot `_BridgeStats.write_snapshot` last wrote."""
+    stats_path = path
+    if stats_path is None:
+        raw = os.environ.get(BRIDGE_STATS_PATH_ENV, "").strip()
+        stats_path = Path(raw) if raw else BRIDGE_STATS_PATH
+    try:
+        data = json.loads(stats_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        log_event(
+            logger,
+            "aec_bridge.stats_unavailable",
+            error=str(e),
+            level=logging.DEBUG,
+        )
+        return None
+    return data if isinstance(data, dict) else None
 
 
 @dataclass(frozen=True)
