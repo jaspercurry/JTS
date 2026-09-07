@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # =============================================================================
-# multiroom-spike-measure.py — analyzer for the P0 multi-room SPIKE (THROWAWAY)
+# multiroom-spike-measure.py — analyzer for the P0 multi-room SPIKE
 # =============================================================================
 #
 # Pure-stdlib. The measurement half of scripts/multiroom-spike.sh. Answers the

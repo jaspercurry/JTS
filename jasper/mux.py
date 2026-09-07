@@ -1392,9 +1392,6 @@ class Mux:
             f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET,
         )
 
-    async def _fanin_auto(self) -> dict[str, Any]:
-        return await fanin_command("AUTO", socket_path=FANIN_CONTROL_SOCKET)
-
     async def _fanin_none(self) -> dict[str, Any]:
         return await fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)
 
@@ -1404,7 +1401,7 @@ class Mux:
         """MUTE/UNMUTE one fan-in input lane at its mix stage.
 
         A per-lane silence on the same mux→fan-in control channel as the
-        selected-input gate (SELECT/AUTO/NONE), orthogonal to selection and to
+        selected-input gate (SELECT/NONE), orthogonal to selection and to
         volume. Lane-general, like SELECT."""
         verb = "MUTE" if muted else "UNMUTE"
         return await fanin_command(
@@ -1432,12 +1429,6 @@ class Mux:
                 "fanin test gate reassert failed label=%s reason=%s: %s",
                 label, reason, e,
             )
-
-    async def _fanin_auto_best_effort(self, *, reason: str) -> None:
-        try:
-            await self._fanin_auto()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("fanin AUTO reset failed reason=%s: %s", reason, e)
 
     async def _fanin_none_best_effort(self, *, reason: str) -> None:
         try:

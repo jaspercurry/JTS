@@ -1037,7 +1037,7 @@ class _ToolCall:
 
 async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     """The daemon's pre-response idle watchdog
-    (`jasper/voice_daemon.py:_idle_watchdog`) reads
+    (`jasper/voice_daemon.py:idle_watchdog`) reads
     ``turn.last_activity_at()`` and abandons the turn when no audio
     has arrived for ``JASPER_IDLE_TIMEOUT_SEC``. During a tool round
     (model emits a ``tool_call``, client dispatches, calls
