@@ -5,10 +5,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # =============================================================================
-# multiroom-spike.sh — P0 multi-room feasibility SPIKE harness (THROWAWAY)
+# multiroom-spike.sh — P0 multi-room feasibility SPIKE harness
 # =============================================================================
 #
-# This is a *throwaway measurement deliverable*, not product. It exists to
+# This is a measurement harness, not product. It exists to
 # answer ONE question:
 #
 #     "What Snapcast buffer depth + codec holds L/R sync on THIS household's
@@ -243,8 +243,8 @@ sox \$(cat /tmp/_concat.txt) "\$out"
 rm -f /tmp/_click.wav /tmp/_gap.wav /tmp/_concat.txt
 REMOTE
     else
-        # Pure-stdlib fallback shared with s0-sync-bench.sh. Stream the helper
-        # over stdin so the Pi does not need a checkout or staged script file.
+        # Pure-stdlib fallback. Stream the helper over stdin so the Pi does
+        # not need a checkout or staged script file.
         leader_ssh \
             "sudo install -d -m 0777 ${SPIKE_TMP_DIR}; python3 - --format wav --output ${CHIRP_WAV}" \
             < "${SCRIPT_DIR}/_make_click_track.py"

@@ -592,26 +592,19 @@ audio stack are separate terms.
 
 ## Multi-room sync spike (P0)
 
-Throwaway feasibility harnesses, off the live JTS audio path, that clean up
+Feasibility harnesses, off the live JTS audio path, that clean up
 after themselves.
 
 | Tool | Methodology | When |
 |---|---|---|
 | [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh) | Laptop-side SSH harness (`--setup`/`--sweep`/`--record-chirp`/`--teardown`). Throwaway `snapserver` + `snapclient`s reading a hand-fed FIFO; sweeps buffer `{150,300,500,800,1200}` ms × codec `{pcm,flac,opus}`, optional `--netem` WiFi stress (`wlan0` only). Results in `multiroom-spike/` | Pick the buffer/codec that holds the p99 < 5 ms L/R bound on WiFi |
 | [`scripts/multiroom-spike-measure.py`](../scripts/multiroom-spike-measure.py) | Pure-stdlib analyzer: `software` (snapserver JSON-RPC latency spread), `acoustic` (single-mic cross-correlation of a click track — the authoritative comb-filtering check), `summarize` (PASS/FAIL + RAM/CPU + recommended cell) | Analyze a spike run |
-| [`scripts/s0-sync-bench.sh`](../scripts/s0-sync-bench.sh) | S0-sync de-risk gate: two throwaway **active** followers whose seam is `snapclient` → snd-aloop → crossover-only CamillaDSP → real DAC, 1 Hz broadband click, soaked for xrun/CPU/temp | The loopback re-entry and its `rate_adjust`-no-resampler clock seam |
-| [`scripts/s0-sync-measure.py`](../scripts/s0-sync-measure.py) | `acoustic --wav` (autocorrelation → inter-speaker offset) and `soak --dir` (xrun totals, CPU/temp/throttle/Pss, p50/p95/p99/max raw and placement-detrended, resync jumps, combined PASS/FAIL) | Analyze an `s0-sync-bench.sh` run |
 
 - **Safety — the P0 spike rows only:** `multiroom-spike.sh` plays through a
   throwaway `snapclient`, **bypassing** CamillaDSP's `volume_limit: 0.0`
   ceiling, and can contend with `jasper-outputd` for the DAC. Run it with the
   JTS audio daemons stopped (or on bring-up hardware) and set a conservative
   volume before the first sweep.
-- **The S0 rows are not evidence about a ring-backed seam.** The bench
-  characterises CamillaDSP nudging `PCM Rate Shift` on an snd-aloop capture
-  device; a ring PCM is an ioplug and exposes no such control (#2768). It needs
-  exclusive DAC ownership — `--up` stops the live stack on both Pis and
-  `--teardown` restores it.
 
 ---
 

@@ -23,8 +23,8 @@ follower path uses `--player file` → raw FIFO precisely to dodge snd-aloop;
 the multiroom spike already validated *its* p99 budget. S0 isolated the
 **new** risk: the snd-aloop re-entry + the `rate_adjust`/no-resampler
 capture-from-loopback clock seam against the DAC.) Harness (throwaway, no
-product code): [`scripts/s0-sync-bench.sh`](../../scripts/s0-sync-bench.sh) +
-[`scripts/s0-sync-measure.py`](../../scripts/s0-sync-measure.py). Topology:
+product code): `scripts/s0-sync-bench.sh` +
+`scripts/s0-sync-measure.py`. Topology:
 snapserver + follower#1 on `jts3` (HifiBerry DAC8x), follower#2 on `jts4`
 (Pi Zero 2 W, USB dongle — the cheap-follower tier, so a stricter soak); each
 `snapclient → hw:Loopback → camilla [crossover-only, volume_limit 0,

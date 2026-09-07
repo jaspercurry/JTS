@@ -43,26 +43,6 @@ _CASES = [
         ("ad-hoc Pi diagnostic", "JTS_DIAG_WORKDIR=/home/pi/jts"),
     ),
     (
-        "s0-sync-bench.sh",
-        ["--help"],
-        0,
-        (
-            "HEARING-SAFETY / CONTENTION",
-            "--teardown",
-            "--resampler none|synchronous|async",
-        ),
-    ),
-    (
-        "s0-sync-bench.sh",
-        [],
-        2,
-        (
-            "HEARING-SAFETY / CONTENTION",
-            "--teardown",
-            "--resampler none|synchronous|async",
-        ),
-    ),
-    (
         "xvf-interrogate.sh",
         ["--help"],
         0,
