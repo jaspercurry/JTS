@@ -10,12 +10,12 @@
 // declares all its state with var/function.
 //
 // This entry module owns the page's reassigned state, the render and IO paths
-// that write it, and the event wiring. Every helper that reads no reassigned
-// state lives in a sibling concern module imported below — a module cannot
-// assign to an imported binding, so moving a state WRITER out is a rewrite of
-// the state, not a move. The editor's live-draft path (band-drag + live-draft
-// → CamillaDSP) still has to be exercised on a Pi before that rewrite; do not
-// blind-refactor it.
+// that write it, and the event wiring. Helpers that read no reassigned state
+// moved to sibling concern modules where they formed a coherent seam; the
+// rest stay here. A module cannot assign to an imported binding, so moving a
+// state WRITER out is a rewrite of the state, not a move. The editor's
+// live-draft path (band-drag + live-draft → CamillaDSP) still has to be
+// exercised on a Pi before that rewrite; do not blind-refactor it.
 //
 // jsonHeaders is imported from /assets/shared/js/http.js — the one
 // cross-page owner of the CSRF/JSON plumbing. A conventions guard in

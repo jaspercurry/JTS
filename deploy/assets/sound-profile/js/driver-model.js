@@ -684,7 +684,8 @@ var SAFETY_RELATIONSHIP_TEXT = {
   // implausible SAVED low limit is not a refusal at all — it is a warning
   // the server renders itself, because its copy names numbers (the value,
   // the band it missed, the class anchor) that a code-to-phrase map here
-  // cannot carry. renderDriverSafetyWarnings below shows that server text.
+  // cannot carry. renderDriverSafetyWarnings in driver-fields.js shows that
+  // server text.
   //
   // `max_effective_peak_above_code_policy` used to sit here too. The
   // 2026-08-23 ruling struck that refusal: a declared level limit is a
@@ -986,7 +987,7 @@ function driverSafetyReviewHint(state) {
 // numbers, so the server sends the sentence and this renders it. Shown
 // whatever the profile status is: the whole point of a warning is that the
 // declaration SAVED and is in use, which is exactly when the review callout
-// above stays quiet.
+// (renderDriverSafetyReviewCallout in main.js) stays quiet.
 function driverSafetyWarnings() {
   var profile = (driverResearch.designDraft || {}).driver_safety_profile || {};
   var issues = Array.isArray(profile.issues) ? profile.issues : [];

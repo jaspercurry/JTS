@@ -210,6 +210,7 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     local_setup = (
         '<div id="view-body"></div>'
         '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
+        '<link rel="modulepreload" href="/assets/sound-profile/js/topology.js">'
         '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
         if page_mode == "setup"
         else ""
@@ -292,6 +293,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
     )
     page_island = _sound_page_island(page_mode=page_mode, follower=False)
     body = editor_chrome + page_island + (
+        '<link rel="modulepreload" href="/assets/sound-profile/js/topology.js">'
         '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
     )
     return canonical_page(
