@@ -13,7 +13,7 @@ import weakref
 import pytest
 
 from jasper.audio_io import InputDeviceUnavailable
-from jasper.voice_daemon import State, WakeLoop, _idle_watchdog
+from jasper.voice_daemon import State, WakeLoop, idle_watchdog
 
 from ._log_events import event_fields
 
@@ -171,7 +171,7 @@ async def test_idle_watchdog_caps_mid_response_stall(caplog):
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await asyncio.wait_for(
-            _idle_watchdog(
+            idle_watchdog(
                 turn,
                 _DrainedTts(),
                 timeout=999.0,
@@ -213,7 +213,7 @@ async def test_idle_watchdog_returns_on_server_turn_complete():
     the watchdog. Complement to ``test_idle_watchdog_caps_mid_response_stall``
     (the no-signal fallback)."""
     await asyncio.wait_for(
-        _idle_watchdog(
+        idle_watchdog(
             _CompletedTurn(),
             _DrainedTts(),
             timeout=999.0,

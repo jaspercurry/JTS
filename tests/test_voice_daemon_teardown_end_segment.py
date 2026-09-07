@@ -6,7 +6,7 @@
 
 The passive assistant-loudness profile (the per-provider source-LUFS
 measurement fanin uses to normalize reply volume) is saved by
-`TtsPlayout.end_segment()`. `_play_responses` calls it when the
+`TtsPlayout.end_segment()`. `play_responses` calls it when the
 provider's audio iterator closes at turn end — which OpenAI's adapter
 does at response.done, but Gemini's only does on release(). Teardown
 (`_end_turn_inner`) cancels the playback task BEFORE release(), so on
@@ -121,7 +121,7 @@ def test_teardown_calls_end_segment_once():
     """Teardown finalizes the TTS segment after cancelling playback.
 
     This is what saves the passive loudness measurement for providers
-    whose audio iterator (and so _play_responses' own end_segment call)
+    whose audio iterator (and so play_responses' own end_segment call)
     is still open when the turn is torn down — the Gemini shape.
     """
     tts = _RecordingTts()

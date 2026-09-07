@@ -24,7 +24,7 @@ from tests._log_events import event_records
 
 
 async def _play_responses(*args, **kwargs):
-    from jasper.voice.turn_playback import _play_responses as impl
+    from jasper.voice.turn_playback import play_responses as impl
 
     return await impl(*args, **kwargs)
 
