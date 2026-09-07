@@ -36,8 +36,9 @@ from ..conversation_history import (
 from ..cues import (
     AudioCueManager,
     build_cue_tts_backend,
-    build_env_cue_manager,
 )
+from ..cues.park import play_park_cue
+from ..cues.registry import NO_ROOM_MIC_CUE_SLUG, VOICE_NOT_SET_UP_CUE_SLUG
 from ..google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
@@ -50,7 +51,6 @@ from ..renderer import RendererClient
 from ..research import ResearchScheduler, active_research_provider
 from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
-from ..tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..usage import (
@@ -81,9 +81,7 @@ from ..watchdog import Heartbeat
 from ..weather import WeatherClient
 from ..voice_daemon import (
     CAPTURE_RING_FRAMES,
-    NO_ROOM_MIC_CUE_SLUG,
     VOICE_MIC_UNAVAILABLE_EXIT,
-    VOICE_NOT_SET_UP_CUE_SLUG,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     ContentActivityTracker,
@@ -253,61 +251,17 @@ async def _announce_mic_loss_at_shutdown(wake_loop: WakeLoop) -> str:
     return result
 
 
-# Bound on the boot-park cue: the same cue + drain the floor above budgets,
-# plus TtsPlayout's own 1.0 s connect timeout. Past this the daemon is holding
-# systemd's start timeout (READY=1 was never sent) for a cue nobody will hear.
-PARK_CUE_TIMEOUT_SEC = 12.0
-
-
 def _announce_park_at_boot(slug: str) -> str:
     """Say out loud why this daemon is parking, then let the caller exit.
 
     The boot checks that raise 66/78 all run before the daemon's own cue
     manager and TtsPlayout exist, so the largest deaf window on the box is a
-    park nobody hears (AGENTS.md non-negotiable 6). This rebuilds the minimum
-    to speak: a Config-less manager from the environment — `Config.from_env()`
-    is exactly what raised on the 78 path — over a TtsPlayout on the same
-    socket `main()`'s Config would have resolved.
-
-    Called from `main()` after `asyncio.run(run())` has returned, so no loop
-    is running and this owns its own. Returns the result code it logged:
-    ``ok``, ``play_failed``, ``play_error``, ``timeout`` or ``interrupted``.
-
-    Never raises — not even a ``BaseException`` — and never changes the exit
-    code. It is called from inside `main()`'s ``except`` handlers, so anything
-    escaping here skips the caller's ``sys.exit()`` and the process exits 1,
-    which is neither a park nor a success code for systemd.
+    park nobody hears (AGENTS.md non-negotiable 6). Called from `main()` after
+    `asyncio.run(run())` has returned, so no loop is running and
+    `play_park_cue` can own one. Never raises, and never changes the exit code
+    the caller is about to hand systemd.
     """
-    # The cap is held out here so the classifier below can ask which bound
-    # fired: TtsPlayout's own 1.0 s connect timeout raises TimeoutError too,
-    # and `asyncio.TimeoutError is TimeoutError` on 3.11+, so the exception
-    # type alone cannot tell the two apart. `asyncio.timeout()` reads the
-    # running loop's clock, so it can only be built inside the coroutine.
-    cap: asyncio.Timeout | None = None
-
-    async def _play() -> str:
-        nonlocal cap
-        socket_path = os.environ.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET)
-        async with (
-            asyncio.timeout(PARK_CUE_TIMEOUT_SEC) as cap,
-            TtsPlayout(socket_path=socket_path) as tts,
-        ):
-            manager = build_env_cue_manager(tts_playout=tts)
-            return "ok" if await manager.play(slug) else "play_failed"
-
-    try:
-        result = asyncio.run(_play())
-    except TimeoutError:
-        if cap is not None and cap.expired():
-            result = "timeout"
-        else:
-            logger.exception("park cue play failed")
-            result = "play_error"
-    except Exception:  # noqa: BLE001
-        logger.exception("park cue play failed")
-        result = "play_error"
-    except BaseException:  # noqa: BLE001
-        result = "interrupted"
+    result = play_park_cue(slug, logger=logger)
     log_event(
         logger,
         "voice.park_cue",

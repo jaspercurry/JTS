@@ -105,3 +105,22 @@ def test_bridge_gates_on_the_reconciler_published_ready_marker() -> None:
     # it disables the reconciler, so a leftover verdict would have nothing to
     # withdraw it before the next boot.
     assert f"rm -f {marker}" in INSTALL_UNITS_PATH.read_text()
+
+
+def test_bridge_parks_on_the_permanent_fault_exit_codes() -> None:
+    """A permanent fault must not spend the StartLimitAction=reboot budget.
+
+    `RestartSec=2` x `StartLimitBurst=4` means a fault the bridge cannot grow
+    out of reboots the box in ~8 s and comes back to the same fault.
+    `jasper/cli/aec_bridge.py` exits 78 (os.EX_CONFIG) on the three config
+    faults and the opt-in corpus-USB leg, and 66 (os.EX_NOINPUT) when the wake
+    mic itself will not open; both must read as success here so the unit parks.
+    A stalled loop stays exit 1 and keeps restarting.
+    """
+    unit = UNIT_PATH.read_text()
+    success = _values_for(unit, "SuccessExitStatus")
+    prevent = _values_for(unit, "RestartPreventExitStatus")
+    for code in ("66", "78"):
+        assert code in success, success
+        assert code in prevent, prevent
+    assert "1" not in success, success

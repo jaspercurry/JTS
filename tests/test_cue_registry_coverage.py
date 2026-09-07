@@ -21,12 +21,15 @@ observable in production failure modes (rarely-executed code):
     on exactly the failure the cue existed to announce.
 
 This is a static cross-check: the set of slugs registered in CUES must
-equal the set of slug literals at play sites in jasper/ (outside
+equal the set of slugs reaching play sites in jasper/ (outside
 jasper/cues/ itself). Play sites are `*.play("slug")` /
 `_play_cue("slug")` calls and `..._CUE_SLUG = "slug"` constants (the
-indirection jasper/voice/_supervisor.py uses). A play call routed
-through a *new* kind of indirection won't be seen — extend
-_PLAY_SITE if you add one.
+indirection jasper/voice/_supervisor.py uses). A `..._CUE_SLUG`
+constant defined in the registry itself counts once a consumer names
+it: the consumer's reference is the play evidence, so a shared slug
+vocabulary can live beside its CueDef without needing the literal
+repeated outside jasper/cues/. A play call routed through a *new* kind
+of indirection won't be seen — extend _PLAY_SITE if you add one.
 
 Set equality makes the guard two-sided with no allowlist to go stale.
 """
@@ -46,16 +49,32 @@ _PLAY_SITE = re.compile(
     r"(?:\bplay\(|_play_cue\(|[A-Z0-9_]*_CUE_SLUG\s*=)\s*['\"]([a-z0-9_]+)['\"]"
 )
 
+# `<NAME>_CUE_SLUG = "slug"` at registry top level: the shared vocabulary a
+# consumer imports by name rather than repeating the literal.
+_REGISTRY_CONST = re.compile(
+    r"^([A-Z0-9_]+_CUE_SLUG)\s*=\s*['\"]([a-z0-9_]+)['\"]", re.MULTILINE
+)
+
 
 def _played_slugs() -> dict[str, list[str]]:
     """slug -> repo-relative files that play it (jasper/cues/ excluded —
     the registry/manager package defines cues, it doesn't consume them)."""
+    registry_consts = [
+        (re.compile(rf"\b{name}\b"), slug)
+        for name, slug in _REGISTRY_CONST.findall(
+            (PKG / "cues" / "registry.py").read_text(encoding="utf-8")
+        )
+    ]
     found: dict[str, list[str]] = {}
     for py in sorted(PKG.rglob("*.py")):
         if PKG / "cues" in py.parents:
             continue
-        for slug in _PLAY_SITE.findall(py.read_text(encoding="utf-8")):
-            found.setdefault(slug, []).append(str(py.relative_to(ROOT)))
+        text = py.read_text(encoding="utf-8")
+        rel = str(py.relative_to(ROOT))
+        slugs = set(_PLAY_SITE.findall(text))
+        slugs.update(slug for name, slug in registry_consts if name.search(text))
+        for slug in sorted(slugs):
+            found.setdefault(slug, []).append(rel)
     return found
 
 
