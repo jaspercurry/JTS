@@ -5,10 +5,9 @@
 """jasper-voice's wake-event telemetry: every `WakeEventStore` write the
 daemon makes, and sole ownership of the in-flight event id.
 
-The fire-time row, the funnel-stage updates, the terminal outcome, the
-session-VAD shadow columns and the post-fire audio snapshot. Fail-soft
-throughout: the wake and session paths are never blocked by telemetry
-trouble. The loop hands in what it observed; nothing here reads loop state.
+Fail-soft throughout: the wake and session paths are never blocked by
+telemetry trouble. The loop hands in what it observed; nothing here reads
+loop state.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ logger = logging.getLogger("jasper.voice_daemon")
 # back-compat with the existing corpus (aec_on/aec_off vs dtln_aec), so the
 # columns are listed explicitly rather than derived from the token. A new leg
 # adds an entry here plus the matching additive columns in jasper.wake_events.
-_LEG_DB: dict[str, dict[str, str]] = {
+LEG_DB: dict[str, dict[str, str]] = {
     "on": {
         "trigger_kind": "fire_aec_on", "peak_score": "peak_score_aec_on",
         "peak_offset": "peak_offset_ms_on", "mic_rms": "mic_rms_dbfs_on",
@@ -129,8 +128,8 @@ class WakeTelemetry:
             return None
         event_id = make_event_id()
         self._current_event_id = event_id
-        trigger_kind = _LEG_DB[leg]["trigger_kind"]
-        # Pre-seed every per-leg column to None, derived from _LEG_DB
+        trigger_kind = LEG_DB[leg]["trigger_kind"]
+        # Pre-seed every per-leg column to None, derived from LEG_DB
         # so a new leg's columns are included automatically.
         # begin_event requires peak_score_aec_on/off; configured legs
         # overwrite their own columns below.
@@ -138,11 +137,11 @@ class WakeTelemetry:
         # float/int/str keyword parameters.
         tel: dict[str, Any] = {
             col: None
-            for _db in _LEG_DB.values()
+            for _db in LEG_DB.values()
             for col in (_db["peak_score"], _db["peak_offset"], _db["mic_rms"])
         }
         for _name, _fire in legs.items():
-            _cols = _LEG_DB[_name]
+            _cols = LEG_DB[_name]
             tel[_cols["peak_score"]] = (
                 score if _name == leg else _fire.score
             )

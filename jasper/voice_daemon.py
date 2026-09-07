@@ -69,7 +69,7 @@ from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
-from .voice.wake_telemetry import _LEG_DB, LegFireScore, WakeTelemetry
+from .voice.wake_telemetry import LEG_DB, LegFireScore, WakeTelemetry
 from .voice.output_gate import (
     AssistantOutputEpisode,
     AssistantOutputGate,
@@ -814,14 +814,14 @@ class WakeLoop:
         self._push_to_talk_only: bool = (
             not self._legs and bool(self._manual_mics)
         )
-        # A configured leg without a _LEG_DB telemetry mapping would raise an
+        # A configured leg without a LEG_DB telemetry mapping would raise an
         # uncaught KeyError in the wake hot path, where telemetry must be
         # fail-soft; fail at startup instead of at fire time.
-        _unmapped = [tok for tok in self._legs if tok not in _LEG_DB]
+        _unmapped = [tok for tok in self._legs if tok not in LEG_DB]
         if _unmapped:
             raise RuntimeError(
-                f"wake legs missing a _LEG_DB telemetry mapping: "
-                f"{sorted(_unmapped)} (add them to _LEG_DB in "
+                f"wake legs missing a LEG_DB telemetry mapping: "
+                f"{sorted(_unmapped)} (add them to LEG_DB in "
                 "voice/wake_telemetry.py)"
             )
         # `_on` is absent on a push-to-talk-only speaker: no
@@ -1149,6 +1149,7 @@ class WakeLoop:
         vad=_UNSET,
         conversation_store: ConversationStore | None = None,
         wake_event_store: WakeEventStore | None = None,
+        current_event_id: str | None = None,
         **overrides,
     ):
         """Build a fully-shaped WakeLoop without opening hardware.
@@ -1167,7 +1168,10 @@ class WakeLoop:
         derivation rather than a value poked in afterwards. Pass
         ``legs=[]`` to mean "none"; omitting it keeps the default primary
         leg. Pass ``vad=None`` to let ``__init__`` make its own VAD
-        decision.
+        decision. ``current_event_id`` seeds the wake-telemetry object's
+        in-flight event id right after construction, for tests that
+        exercise a funnel-stage or teardown write without going through
+        ``on_fire`` first.
         """
 
         class _TestMic:
@@ -1328,6 +1332,7 @@ class WakeLoop:
             initial_mic_muted=False,
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
+        self._wake_telemetry._current_event_id = current_event_id
         for key, value in overrides.items():
             setattr(self, key if key.startswith("_") else f"_{key}", value)
         return self
@@ -2998,12 +3003,12 @@ class WakeLoop:
         into the tool registry, so it stays on the loop."""
         await self._wake_telemetry.record_tool_dispatch_stage(stage, name)
 
-    async def _on_response_started(self) -> None:
+    async def _record_response_started(self) -> None:
         """Record the first provider-neutral assistant-audio boundary."""
         self._stamp_turn_stage("first_response")
         await self._wake_telemetry.stage("response_started")
 
-    async def _on_first_write(self) -> None:
+    async def _record_first_write(self) -> None:
         """Record the first assistant PCM the playout socket accepted."""
         self._stamp_turn_stage("first_write")
 
@@ -4191,8 +4196,8 @@ class WakeLoop:
         playback = asyncio.create_task(
             _play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
-                on_response_started=self._on_response_started,
-                on_first_write=self._on_first_write,
+                on_response_started=self._record_response_started,
+                on_first_write=self._record_first_write,
             )
         )
         idle = asyncio.create_task(

@@ -258,7 +258,7 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
 
 
 async def test_chip_aec_150_fire_records_trigger_and_score():
-    """A chip-AEC beam fire routes through its own _LEG_DB entry:
+    """A chip-AEC beam fire routes through its own LEG_DB entry:
     trigger_kind="fire_chip_aec_150" and the score lands in
     peak_score_chip_aec_150 (not a software-leg column). Pins the
     chip-AEC promotion's telemetry wiring the way the DTLN test pins

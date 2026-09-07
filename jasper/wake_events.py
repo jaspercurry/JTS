@@ -398,7 +398,7 @@ class WakeEventStore:
         fired_legs: str | None = None,
         # Chip-AEC beam legs (XVF3800 150°/210° ASR beams). Optional —
         # null on every install until the chip leg is enabled via /wake/,
-        # at which point voice.wake_telemetry._LEG_DB routes the per-beam
+        # at which point voice.wake_telemetry.LEG_DB routes the per-beam
         # score/offset/RMS into these columns.
         peak_score_chip_aec_150: float | None = None,
         peak_score_chip_aec_210: float | None = None,

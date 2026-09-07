@@ -27,8 +27,10 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
             threshold=0.5,
             wake_model="jarvis_v2.onnx",
         )
-        wake_loop = WakeLoop.for_tests(wake_event_store=store)
-        wake_loop._wake_telemetry._current_event_id = "evt-funnel"
+        wake_loop = WakeLoop.for_tests(
+            wake_event_store=store,
+            current_event_id="evt-funnel",
+        )
 
         async def get_weather() -> dict:
             """Return a test forecast."""
@@ -40,7 +42,7 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
             wake_loop.record_tool_dispatch_stage,
         )
 
-        await wake_loop._on_response_started()
+        await wake_loop._record_response_started()
         assert await dispatch_tool(registry, "get_weather", {}) == {
             "temperature": 72,
         }
@@ -71,8 +73,10 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
             threshold=0.5,
             wake_model="jarvis_v2.onnx",
         )
-        wake_loop = WakeLoop.for_tests(wake_event_store=store)
-        wake_loop._wake_telemetry._current_event_id = "evt-concurrent"
+        wake_loop = WakeLoop.for_tests(
+            wake_event_store=store,
+            current_event_id="evt-concurrent",
+        )
 
         async def slow_first() -> dict:
             """Wait until the later tool has completed."""

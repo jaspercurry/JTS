@@ -629,7 +629,7 @@ async def test_begin_event_null_debug_columns_when_omitted(store: WakeEventStore
 async def test_begin_event_persists_chip_aec_score_columns(store: WakeEventStore):
     """Chip-AEC promotion: the per-beam score/offset/RMS values round-trip
     through begin_event into their own columns — the path voice_daemon's
-    _LEG_DB drives when a chip beam fires or corroborates."""
+    LEG_DB drives when a chip beam fires or corroborates."""
     await store.begin_event(
         event_id="evt-chip", trigger_kind="fire_chip_aec_150",
         peak_score_aec_on=0.2, peak_score_aec_off=None,
