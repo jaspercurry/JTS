@@ -99,9 +99,8 @@ def _make_handler(
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> type[BaseHTTPRequestHandler]:
     # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable), the shape wake_corpus_setup.py /
-    # correction_setup.py use. The tables stay local to this closure
-    # (rather than module-level) so the handlers can close over
+    # (exact path -> handler callable). The tables stay local to this
+    # closure (rather than module-level) so the handlers can close over
     # `control_base`, same as this function has always done.
     def _get_index(handler: BaseHTTPRequestHandler, path: str) -> None:
         ctx = begin_request(handler)
@@ -113,17 +112,17 @@ def _make_handler(
             ),
         )
 
-    def _get_data(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _get_data(handler: BaseHTTPRequestHandler) -> None:
         status, body = proxy_get("/system/snapshot", control_base=control_base)
         send_proxy_json(handler, body, status=status)
 
-    def _get_diagnostics(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _get_diagnostics(handler: BaseHTTPRequestHandler) -> None:
         status, body = proxy_get(
             "/system/diagnostics", control_base=control_base, timeout=30.0,
         )
         send_proxy_json(handler, body, status=status)
 
-    def _get_enhanced_aec(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _get_enhanced_aec(handler: BaseHTTPRequestHandler) -> None:
         status, body = proxy_get(
             "/aec/enhanced-aec", control_base=control_base, timeout=5.0,
         )
@@ -166,9 +165,9 @@ def _make_handler(
     _GET_ROUTES = {
         "/": _get_index,
         "/audio": _get_index,
-        "/data.json": _get_data,
-        "/diagnostics.json": _get_diagnostics,
-        "/optional-features/enhanced-aec": _get_enhanced_aec,
+        "/data.json": lambda h, p: _get_data(h),
+        "/diagnostics.json": lambda h, p: _get_diagnostics(h),
+        "/optional-features/enhanced-aec": lambda h, p: _get_enhanced_aec(h),
     }
     _POST_ROUTES = {
         "/restart/voice": _post_proxy,

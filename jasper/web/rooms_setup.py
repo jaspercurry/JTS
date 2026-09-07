@@ -1702,13 +1702,12 @@ def _get_rooms_json(handler: BaseHTTPRequestHandler) -> None:
 
 
 # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-# (exact path -> handler callable), the shape wake_corpus_setup.py /
-# correction_setup.py use — module-level (not class attributes) so the
-# tables resolve the same way whether `self` is a real _Handler instance
-# or the tests' socketless FakeHandler stand-in. "/" is special-cased
-# ahead of the GET table (it also matches "/?<query>"). ORDERING IS
-# LOAD-BEARING: each method recognizes its route first, so an unknown
-# path 404s before the read/CSRF guard runs.
+# (exact path -> handler callable) — module-level (not class attributes)
+# so the tables resolve the same way whether `self` is a real _Handler
+# instance or the tests' socketless FakeHandler stand-in. "/" is
+# special-cased ahead of the GET table (it also matches "/?<query>").
+# ORDERING IS LOAD-BEARING: each method recognizes its route first, so
+# an unknown path 404s before the read/CSRF guard runs.
 _GET_ROUTES = {
     "/rooms.json": _get_rooms_json,
 }

@@ -176,8 +176,7 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
         ),
         "rooms_setup.py": (
             # do_POST dispatches through the module-level _POST_ROUTES
-            # table (path -> the same _save_bond/_unbond/etc. functions
-            # this used to call inline); the invariant this pins is that
+            # table (path -> handler); the invariant this pins is that
             # no dispatch happens before the CSRF guard.
             "handler_fn(self)",
         ),
@@ -582,8 +581,9 @@ def test_mutating_handlers_route_check_before_csrf_guard():
     the CSRF guard: 'Route-check unknown POST paths before
     guard_mutating_request() so bogus paths return 404 without revealing
     CSRF state' (AGENTS.md / jasper/web/_common.py). In every compliant
-    handler the first `if` tests the request path; a handler whose first
-    branch is the guard 403s on bogus paths instead."""
+    handler the first `if` tests the request path or a route-table lookup
+    of it; a handler whose first branch is the guard 403s on bogus paths
+    instead."""
     branch_re = re.compile(r"^\s*(?:if|elif)\b")
     offenders = []
     for path, name, seg in _mutating_handlers():
