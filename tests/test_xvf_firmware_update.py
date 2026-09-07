@@ -71,9 +71,9 @@ def test_write_state_uses_canonical_atomic_writer(
         fake_atomic_write_text,
     )
     monkeypatch.setattr(
-        xvf_firmware_update.time,
-        "strftime",
-        lambda *_args: "2026-07-12T12:34:56Z",
+        xvf_firmware_update,
+        "utc_now_iso",
+        lambda: "2026-07-12T12:34:56Z",
     )
 
     xvf_firmware_update._write_state(
