@@ -37,7 +37,7 @@ import logging
 import signal
 from typing import Any, Awaitable, Callable, Optional
 
-from jasper.control.client import (
+from jasper.platform.control_client import (
     CONTROL_PORT, AsyncControlClient, ControlError, ControlResponse,
 )
 from jasper.log_event import log_event
@@ -248,7 +248,7 @@ def _is_retryable_hold_start(action: KeyAction, resp: ControlResponse | None) ->
         return True
     if resp.status == 503:
         # A press landing in the ~2s window after a jasper-voice restart,
-        # before its control socket exists yet (jasper/control/uds.py's own
+        # before its control socket exists yet (jasper/platform/uds.py's own
         # bounded connect retry already absorbs the common case within one
         # request; this is the fallback for a restart that outlasts it,
         # retried for as long as the key stays held. Each retry POST already

@@ -40,7 +40,7 @@ from pathlib import Path
 import pytest
 
 from jasper.control import household_credential
-from jasper.control.client import PEER_DETAIL_MAX_CHARS
+from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS
 from jasper.web import rooms_setup
 
 from ._web_test_helpers import FakeHandler, assert_canonical_page

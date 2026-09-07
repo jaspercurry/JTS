@@ -80,7 +80,7 @@ from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
 )
-from . import _systemd
+from ..platform import systemd as _systemd
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.

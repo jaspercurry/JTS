@@ -50,7 +50,7 @@ from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
 from ..identity.speaker_name import read_state as _read_speaker_name_state
-from ..route_latency.status_socket import (
+from ..platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
 )
@@ -71,7 +71,11 @@ from . import (
     usb_gadget_forensics,
 )
 from .aec_endpoints import _aec_full_status
-from .uds import _local_status_json, _mux_socket_command, _voice_socket_command
+from ..platform.uds import (
+    local_status_json as _local_status_json,
+    mux_socket_command as _mux_socket_command,
+    voice_socket_command as _voice_socket_command,
+)
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")

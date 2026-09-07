@@ -544,7 +544,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(target, *, state_path: str = SPEAKER_NAME_ENV_PATH) -> ThreadingHTTPServer:
-    from . import _systemd
+    from ..platform import systemd as _systemd
 
     cfg = {"state_path": state_path}
     return _systemd.make_http_server(target, _make_handler(cfg))

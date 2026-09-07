@@ -251,7 +251,7 @@ def make_server(target) -> ThreadingHTTPServer:
     ``target`` is a socket / ``(host, port)`` tuple / int port per
     ``_systemd.make_http_server``'s contract.
     """
-    from . import _systemd
+    from ..platform import systemd as _systemd
 
     return _systemd.make_http_server(target, _make_handler())
 

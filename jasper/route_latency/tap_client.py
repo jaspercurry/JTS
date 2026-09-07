@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from jasper.route_latency.pairing import TapEvent
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
+from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 
 
 # The fan-in DIRECT-capture tap (the only USB ingress tap). fan-in exposes it over
@@ -162,7 +162,7 @@ class FaninTapClient:
       reply is a plaintext line ``OK armed path=<path>`` or ``ERR <reason>``.
     * ``TAP_DISARM\\n`` — reply ``OK disarmed events_written=N events_dropped=M``.
 
-    Speaks the same ``AF_UNIX`` mechanic :mod:`jasper.route_latency.status_socket`
+    Speaks the same ``AF_UNIX`` mechanic :mod:`jasper.platform.status_socket`
     uses for ``STATUS`` — connect, send one line, read the reply to EOF (fan-in
     writes the reply then drops the stream) — with the tap verbs and a plaintext
     reply it parses via :func:`parse_tap_socket_reply`. Satisfies :class:`TapArmer`.

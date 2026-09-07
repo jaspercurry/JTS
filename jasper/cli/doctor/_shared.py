@@ -12,7 +12,7 @@ helpers and ``REASON_*`` codes more than one domain uses — each declared
 beside the helper it belongs to.
 
 Not here: the daemon ``STATUS`` control-socket reader, which is
-:mod:`jasper.route_latency.status_socket` reached through
+:mod:`jasper.platform.status_socket` reached through
 :mod:`jasper.cli.doctor._evidence`, and the per-run evidence cache itself.
 
 ``_run`` is re-imported into the domain modules that call it, so a check

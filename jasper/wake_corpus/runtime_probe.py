@@ -56,8 +56,8 @@ from jasper.mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
-from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.env_file import read_env_file
+from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 

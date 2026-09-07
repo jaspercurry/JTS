@@ -987,7 +987,7 @@ def check_grouping_pair_channels() -> CheckResult:
             label, "skipped", f"channel={cfg.channel or '?'} (not an L/R pair, n/a)",
             reason=REASON_NOT_APPLICABLE,
         )
-    from ...control import client as control_client
+    from ...platform import control_client
     from ...multiroom.state import parse_grouping_response
 
     try:

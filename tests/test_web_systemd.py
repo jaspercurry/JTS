@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.web._systemd socket-activation helper.
+"""Unit tests for jasper.platform.systemd socket-activation helper.
 
 Stdlib-only — runs in any Python 3.10+ environment, no Pi needed.
 """
@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler
 
 import pytest
 
-from jasper.web import _systemd
+from jasper.platform import systemd as _systemd
 
 
 def test_adopt_returns_empty_when_no_env() -> None:
@@ -426,7 +426,7 @@ def test_two_holds_under_one_label_survive_until_the_last_release(
     would report `holds: none` while a hold was demonstrably outstanding.
     """
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
-    log = logging.getLogger("jasper.web._systemd")
+    log = logging.getLogger("jasper.platform.systemd")
 
     with tracker.hold("capture:crossover_v2:session"):
         with tracker.hold("capture:crossover_v2:session"):
@@ -440,7 +440,7 @@ def test_two_holds_under_one_label_survive_until_the_last_release(
         assert active == 1
         assert expired is False
         # ...and the deferred line still names it rather than "none".
-        with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+        with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
             tracker._log_deferred_exit(log, 600.0, 1)
         assert "capture:crossover_v2:session" in _deferred_records(caplog)[-1].getMessage()
 
@@ -461,11 +461,11 @@ def test_a_long_busy_stretch_escalates_the_deferred_line_to_warning(
     journal. The bound is sized so no legitimate session reaches it — a line
     that cried wolf on every Full-tier commission would be worse than none.
     """
-    log = logging.getLogger("jasper.web._systemd")
+    log = logging.getLogger("jasper.platform.systemd")
     tracker = _systemd.IdleShutdownTracker(idle_threshold_sec=1.0)
     monkeypatch.setattr(_systemd, "HOLD_LEAK_WARN_AFTER_SEC", 30.0)
 
-    with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+    with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
         with tracker.hold("crossover-v2-auto-apply"):
             # Young stretch: routine, INFO.
             tracker._log_deferred_exit(log, 601.0, 1)
@@ -556,7 +556,7 @@ def test_deferred_idle_exit_is_logged_and_rate_limited(
     )
 
     with tracker.hold("measurement-session"):
-        with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+        with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
             tracker._run()
 
     assert len(polls) == 3
@@ -574,7 +574,7 @@ def test_deferred_idle_exit_is_logged_and_rate_limited(
     polls.clear()
     caplog.clear()
     with tracker.hold("measurement-session"):
-        with caplog.at_level(logging.INFO, logger="jasper.web._systemd"):
+        with caplog.at_level(logging.INFO, logger="jasper.platform.systemd"):
             tracker._run()
     deferred = [
         r.getMessage() for r in caplog.records

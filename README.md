@@ -162,6 +162,7 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   web/               Setup wizards (shared primitives in web/_common.py)
   control/           jasper-control: /state, management + automation HTTP API
   cli/               jasper-doctor, jasper-aec-*, measurement CLIs
+  platform/          Control client, UDS + status-socket clients, systemd activation
   fanin/ multiroom/ transit/ cues/ peering/ usbsink/ accessories/
   sound/             CamillaDSP config emission and the graph carrier
   active_speaker/ audio_measurement/ correction/ attribution/

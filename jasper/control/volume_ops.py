@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
-from .uds import _voice_socket_command
+from ..platform.uds import voice_socket_command as _voice_socket_command
 from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
     resolved_spotify_redirect_uri,

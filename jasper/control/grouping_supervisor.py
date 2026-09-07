@@ -66,15 +66,15 @@ from typing import Any
 
 from jasper.identity import reader as identity
 from jasper.log_event import log_event
-from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 
 from . import household_credential
-from .client import (
+from ..platform.control_client import (
     CONTROL_PORT,
     AsyncControlClient,
     peer_detail,
 )
-from .uds import read_status_body
+from ..platform.uds import read_status_body
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,

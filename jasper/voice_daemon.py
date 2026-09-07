@@ -156,7 +156,7 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
 # ~350 ms, p99 5.3 s); refusing instantly turns the common ones into
 # a dead press and a false 'can't connect' cue. The bound keeps the
 # SUCCESS path — which returns as soon as the turn opens — inside
-# jasper.control.client.DEFAULT_TIMEOUT (2.0 s) with room for the
+# jasper.platform.control_client.DEFAULT_TIMEOUT (2.0 s) with room for the
 # round trip. A refusal outlives that either way: it cues first.
 PAUSED_CONNECTION_WAIT_SEC = 1.2
 

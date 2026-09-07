@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 
-from jasper.control.client import PEER_DETAIL_MAX_CHARS, ControlResponse
+from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS, ControlResponse
 from jasper.control.grouping_supervisor import (
     GroupingSupervisor,
     snapshot,

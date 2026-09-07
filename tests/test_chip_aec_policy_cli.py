@@ -5,7 +5,7 @@
 """Direct contracts for the shell-facing chip-AEC policy shim.
 
 The socket wire protocol itself (missing socket, timeout, malformed JSON,
-non-object reply) is `jasper.route_latency.status_socket.read_status_socket`'s
+non-object reply) is `jasper.platform.status_socket.read_status_socket`'s
 contract, pinned in `tests/test_route_latency_status_socket.py`; this shim
 only wraps that reader, so its own test covers the empty-path short-circuit
 and that a read failure is turned into a `(None, str)` pair rather than

@@ -80,7 +80,7 @@ def _play_cue(slug: str) -> None:
     caller swallows whatever this raises.
     """
 
-    from jasper.control import client as control
+    from jasper.platform import control_client as control
 
     control.post("/cue/play", {"slug": slug}, timeout=35)
 

@@ -85,7 +85,7 @@ from typing import Any
 from jasper.log_event import log_event
 
 from ..atomic_io import atomic_write_text
-from .client import CONTROL_PORT
+from ..platform.control_client import CONTROL_PORT
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,

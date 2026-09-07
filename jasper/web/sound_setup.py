@@ -1118,7 +1118,7 @@ def make_server(
     library_path: str | Path | None = None,
     config_dir: str | Path | None = None,
 ) -> ThreadingHTTPServer:
-    from . import _systemd
+    from ..platform import systemd as _systemd
 
     return _systemd.make_http_server(
         target,

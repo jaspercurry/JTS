@@ -292,7 +292,7 @@ resolve_jasper_python() {
 
 # One-fetch contract: a daemon's STATUS reply already carries every field
 # this script wants from it in one JSON blob, so this connects and reads
-# ONCE per call (via jasper.route_latency.status_socket.
+# ONCE per call (via jasper.platform.status_socket.
 # read_status_socket_or_none, the module that already owns this connect+
 # `STATUS\n`+recv-to-EOF+parse mechanic for doctor/AEC/route-latency
 # callers) and pulls out however many dotted paths are asked for — never
@@ -324,7 +324,7 @@ status_json_values() {
 import sys
 
 try:
-    from jasper.route_latency.status_socket import read_status_socket_or_none
+    from jasper.platform.status_socket import read_status_socket_or_none
 except ImportError:
     sys.exit(0)
 

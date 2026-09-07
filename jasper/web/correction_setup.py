@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..log_event import log_event
 from . import correction_room_flow, correction_tuning
-from ._systemd import no_hold
+from ..platform.systemd import no_hold
 
 from ._common import (
     begin_request,
@@ -1204,7 +1204,7 @@ def make_server(
     it starts but does not await. Defaulting to ``_systemd.no_hold`` keeps a
     server built without an idle tracker (tests, direct invocation) behaving
     exactly as before."""
-    from . import _systemd
+    from ..platform import systemd as _systemd
     return _systemd.make_http_server(
         target, _make_handler_class(hostname=hostname, idle_hold=idle_hold),
     )

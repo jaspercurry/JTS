@@ -39,7 +39,7 @@ from typing import Any
 from jasper.log_event import log_event
 
 
-logger = logging.getLogger("jasper.route_latency.status_socket")
+logger = logging.getLogger("jasper.platform.status_socket")
 
 # Seconds, TOTAL deadline for connect + send + every recv. 3.0 because the
 # reader used to arm 1.0 s per operation, so a boot-time caller on the

@@ -65,7 +65,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from ..identity import reader as identity
 from ..control import household_credential
-from ..control.client import (
+from ..platform.control_client import (
     CONTROL_PORT,
     PEER_RESPONSE_MAX_BYTES,
     peer_detail,
@@ -1774,5 +1774,5 @@ def make_server(target) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer. `target` is either an (host, port)
     tuple (direct bind) or an already-bound socket (from systemd socket
     activation — see jasper/web/__main__.py)."""
-    from ._systemd import make_http_server
+    from ..platform.systemd import make_http_server
     return make_http_server(target, _make_handler())

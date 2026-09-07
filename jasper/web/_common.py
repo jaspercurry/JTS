@@ -78,7 +78,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ..atomic_io import atomic_write_text
-from ..control import client as control
+from ..platform import control_client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
 # Re-exported: google_setup.py still imports both from this module. Drop
@@ -1444,7 +1444,7 @@ def api_key_token_is_valid(value: str) -> bool:
 #
 # Several wizards (today: /system, /wake) forward a handful of read +
 # write endpoints to the jasper-control daemon on 127.0.0.1:8780. These
-# are thin wrappers over jasper.control.client (the one owner of the base
+# are thin wrappers over jasper.platform.control_client (the one owner of the base
 # URL / transport / error model); they keep the `(status, body)` tuple +
 # unreachable-to-502 contract the wizard callers depend on.
 

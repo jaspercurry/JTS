@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
-from ...route_latency.status_socket import (
+from ...platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
     read_status_socket,
@@ -336,7 +336,7 @@ class Evidence:
         """jasper-control's /state, fetched once per run."""
 
         def read() -> StatusRead:
-            from ...control.client import get_state
+            from ...platform.control_client import get_state
 
             try:
                 return StatusRead(get_state())
@@ -349,7 +349,7 @@ class Evidence:
         """jasper-control's /system/snapshot, fetched once per run."""
 
         def read() -> StatusRead:
-            from ...control.client import get_system_snapshot
+            from ...platform.control_client import get_system_snapshot
 
             try:
                 return StatusRead(get_system_snapshot())

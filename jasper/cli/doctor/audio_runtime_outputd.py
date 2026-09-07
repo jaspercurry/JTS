@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 
 from ...audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
-from ...route_latency.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
+from ...platform.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (

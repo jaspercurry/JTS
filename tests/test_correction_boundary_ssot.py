@@ -175,11 +175,8 @@ BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
         # `crossover_v2_status_block` is the web ADAPTER over the engine's
         # status projection — the loaded state, volume plan, review decision
         # and republish admission it supplies are the host's. The `GRADE_*`
-        # vocabulary is declared beside the producer that selects it, and
-        # `DEFERRED_EXIT_LOG_PERIOD_SEC` belongs to the very service these
-        # checks read the journal of.
+        # vocabulary is declared beside the producer that selects it.
         "jasper/cli/doctor/correction.py": frozenset({
-            "jasper.web._systemd",
             "jasper.web.correction_crossover_v2",
             "jasper.web.correction_crossover_v2_status",
         }),

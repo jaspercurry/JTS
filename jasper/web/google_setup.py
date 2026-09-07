@@ -1068,7 +1068,7 @@ def make_server(
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is socket/tuple/int per
     _systemd.make_http_server's contract."""
-    from . import _systemd
+    from ..platform import systemd as _systemd
     cfg = {
         "creds_path": creds_path,
         "redirect_uri": redirect_uri or resolved_google_redirect_uri(),

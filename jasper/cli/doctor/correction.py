@@ -39,7 +39,7 @@ from ...active_speaker.session_volume_plan import (
     SessionVolumePlan,
 )
 from ...control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
-from ...web._systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
+from ...platform.systemd import DEFERRED_EXIT_LOG_PERIOD_SEC
 
 # Closed vocabulary for this module's `CheckResult.reason`: one snake_case
 # constant per distinct outcome branch below. Every `warn`/`fail` carries one;
@@ -151,7 +151,7 @@ def check_correction_web_service() -> CheckResult:
         reason=REASON_WEB_INACTIVE,
     )
 
-# One rendered line from _systemd.py's _log_deferred_exit: "systemd idle-exit
+# One rendered line from platform/systemd.py's _log_deferred_exit: "systemd idle-exit
 # deferred: 2 active requests/holds after 7530s idle, busy for 7530s
 # (threshold 600s, holds: capture:crossover_v2:session)" — optionally followed
 # by the " — busy past ...LEAKED hold..." note, which pushes it to WARNING.
@@ -184,7 +184,7 @@ def _latest_deferred_hold(journal_text: str) -> tuple[str, str] | None:
 def check_correction_idle_exit_holds() -> CheckResult:
     """A leaked idle-exit hold must be visible here, not only in the journal.
 
-    ``_systemd.py`` escalates its "idle-exit deferred" line to WARNING past
+    ``platform/systemd.py`` escalates its "idle-exit deferred" line to WARNING past
     ``HOLD_LEAK_WARN_AFTER_SEC``; this reads that escalation back. Read-only:
     nothing may release a hold out from under a possibly-still-mutating
     measurement (``correction_capture._run_async``'s fail-closed invariant).
@@ -936,7 +936,7 @@ def check_measurement_hold() -> CheckResult:
     ``held_for_s``, NOT ``expires_in_s``: the latter resets on every renewal.
     """
     label = "measurement hold"
-    from ...control import client as control
+    from ...platform import control_client as control
 
     try:
         hold = control.get_measurement()

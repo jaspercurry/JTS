@@ -883,7 +883,7 @@ def test_read_measurement_hold_distinguishes_unreachable_from_idle(monkeypatch):
 
     The door's conservative fallback only works because the two are distinct.
     """
-    from jasper.control import client as control_client
+    from jasper.platform import control_client
 
     def boom(**_kwargs):
         raise control_client.ControlError("refused")

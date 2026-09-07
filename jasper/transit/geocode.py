@@ -27,7 +27,7 @@ inline next to the address field.
 
 Threading: the rate limiter is process-wide via a lock. The result
 cache is in-memory only, lifecycle-bound to the wizard process which
-idle-exits after 10 min (see jasper/web/_systemd.py) — so memory
+idle-exits after 10 min (see jasper/platform/systemd.py) — so memory
 pressure is naturally capped.
 """
 from __future__ import annotations

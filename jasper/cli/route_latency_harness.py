@@ -74,7 +74,7 @@ from jasper.route_latency.pairing import (
     TapEvent,
     pair_events,
 )
-from jasper.route_latency.status_socket import (
+from jasper.platform.status_socket import (
     DEFAULT_STATUS_TIMEOUT_SECONDS,
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
@@ -185,7 +185,7 @@ def snapshot_route_health() -> dict[str, Any]:
     key rather than raising, so a snapshot taken before a daemon is up (or
     after it's gone) still captures whatever IS available. The fan-in/outputd
     `STATUS\n` sockets are read through the shared
-    `jasper.route_latency.status_socket` helper (one owner of that protocol).
+    `jasper.platform.status_socket` helper (one owner of that protocol).
     """
 
     return {

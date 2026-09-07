@@ -467,7 +467,7 @@ def test_assess_tool_packs_verdicts(runtime, status, reason):
     ids=["control-unreachable", "field-absent"],
 )
 def test_tool_packs_runtime_reader_is_fail_soft(monkeypatch, state):
-    import jasper.control.client as control
+    import jasper.platform.control_client as control
 
     if state == "raise":
 
@@ -485,7 +485,7 @@ def test_tool_packs_runtime_reader_is_fail_soft(monkeypatch, state):
 
 
 def test_tool_packs_runtime_reader_parses_the_state_field(monkeypatch):
-    import jasper.control.client as control
+    import jasper.platform.control_client as control
 
     payload = {"voice": {"tool_packs": _runtime(["audio", "timer"])}}
     monkeypatch.setattr(control, "get_state", lambda *a, **k: payload)

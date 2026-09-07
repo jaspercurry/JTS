@@ -1446,7 +1446,7 @@ _stage_full_unit_files() {
     # with a .socket unit that holds the port and re-spawns the daemon
     # on demand). systemd binds the listener; the daemon adopts the fd
     # via LISTEN_FDS and exits after 10 min idle, saving ~60-90 MB Pss
-    # while no one is using a setup page. See jasper/web/_systemd.py.
+    # while no one is using a setup page. See jasper/platform/systemd.py.
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.service" \
         "${SYSTEMD_DIR}/jasper-web.service"

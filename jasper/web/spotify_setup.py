@@ -1401,7 +1401,7 @@ def make_server(
     socket.socket (systemd handoff), an (host, port) tuple, or an
     int port (legacy 127.0.0.1 bind). Mirrors voice_setup.make_server
     so jasper.web.__main__ can drive both uniformly."""
-    from . import _systemd
+    from ..platform import systemd as _systemd
     cfg = _build_cfg(
         registry_path=registry_path,
         bounce_redirect_uri=(

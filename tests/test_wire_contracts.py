@@ -534,11 +534,12 @@ def test_control_socket_paths_agree_across_processes(monkeypatch):
     from jasper import audio_validation, mux, renderer
     from jasper.cli import system_soak
     from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
-    from jasper.control import audio_health, grouping_supervisor, uds
+    from jasper.control import audio_health, grouping_supervisor
     from jasper.correction import runtime_integrity
     from jasper.fanin import status as fanin_status
     from jasper.peering.config import PEERING_UDS_PATH
-    from jasper.route_latency import status_socket, tap_client
+    from jasper.platform import status_socket, uds
+    from jasper.route_latency import tap_client
 
     from .doctor_test_support import _fresh_cfg
 

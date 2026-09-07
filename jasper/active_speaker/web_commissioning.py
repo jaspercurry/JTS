@@ -84,7 +84,7 @@ from jasper.audio_measurement.correction_lane import (
 )
 from jasper.camilla import CamillaUnavailable
 from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
-from jasper.control.uds import MUX_CONTROL_SOCKET_PATH
+from jasper.platform.uds import MUX_CONTROL_SOCKET_PATH
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event

@@ -694,6 +694,7 @@ code = [
   "jasper/active_speaker/camilla_yaml.py",
   "jasper/cli/route_latency_harness.py",
   "jasper/route_latency/**",
+  "jasper/platform/status_socket.py",
   "rust/jasper-host-clock/**",
 ]
 docs = [
@@ -1024,6 +1025,7 @@ code = [
   "jasper/control/park_record.py",
   "jasper/web/system_setup.py",
   "jasper/web/airplay_setup.py",
+  "jasper/platform/systemd.py",
   "deploy/journald/**",
   "deploy/rpi-swap/**",
   "deploy/sysctl/**",

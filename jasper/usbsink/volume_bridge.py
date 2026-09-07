@@ -36,7 +36,7 @@ import time
 from types import ModuleType
 from typing import Any, Optional
 
-from jasper.control.client import CONTROL_PORT, AsyncControlClient, ControlError
+from jasper.platform.control_client import CONTROL_PORT, AsyncControlClient, ControlError
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)

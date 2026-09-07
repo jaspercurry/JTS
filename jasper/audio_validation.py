@@ -51,12 +51,12 @@ from .chip_aec.policy import (
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
-from .control import client as control
+from .platform import control_client as control
 from .env_load import env_file_path, parse_env_file
 from .install_profile import BUILD_MANIFEST_FILE
 from .log_event import log_event
 from .output_hardware import published_dac_id
-from .route_latency.status_socket import (
+from .platform.status_socket import (
     OUTPUTD_STATUS_SOCKET,
     read_status_socket_or_none,
 )

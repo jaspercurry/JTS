@@ -1641,7 +1641,7 @@ def make_server(
     routes_secret_path: str = GOOGLE_ROUTES_SECRET_FILE,
     weather_path: str = location_state.WEATHER_FILE,
 ) -> ThreadingHTTPServer:
-    from . import _systemd
+    from ..platform import systemd as _systemd
     cfg = {
         "state_path": state_path,
         "routes_secret_path": routes_secret_path,

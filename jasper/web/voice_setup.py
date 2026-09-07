@@ -1733,7 +1733,7 @@ def make_server(
     Mirrors the other wizard `make_server` signatures so jasper.web.__main__
     can drive all four uniformly. `pricing_path` defaults to the same
     JASPER_PRICING_FILE the daemon reads, so edits land where it looks."""
-    from . import _systemd
+    from ..platform import systemd as _systemd
     cfg = {
         "state_path": state_path,
         "keys_path": keys_path,

@@ -1064,12 +1064,12 @@ def make_server(
         path via `jasper.web.__main__`)
       - an `int` port (legacy direct-bind shortcut)
 
-    Pairs with `jasper.web._systemd.make_http_server` to handle the
+    Pairs with `jasper.platform.systemd.make_http_server` to handle the
     socket-vs-bind branching. The backend must already be `start()`ed
     by the caller (the asyncio loop thread + crash-recovery state both
     depend on it).
     """
-    from . import _systemd
+    from ..platform import systemd as _systemd
     handler_cls = _make_handler_class(backend, csrf_token)
     return _systemd.make_http_server(target, handler_cls)
 

@@ -31,7 +31,7 @@ from typing import Any
 from . import librespot_state
 from .busctl import system_busctl
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
-from .route_latency.status_socket import MUX_CONTROL_SOCKET_PATH
+from .platform.status_socket import MUX_CONTROL_SOCKET_PATH
 from .source_state import (
     airplay_playing,
     bluetooth_playing,

@@ -41,7 +41,7 @@ from jasper.accessories.registry import (
 )
 from jasper.accessories.status import snapshot
 from jasper.accessories.supervisor import supervise
-from jasper.control.client import ControlError, ControlResponse
+from jasper.platform.control_client import ControlError, ControlResponse
 
 
 # Window short enough that tests finish quickly but long enough that
@@ -764,7 +764,7 @@ async def test_read_device_hold_action_retries_voice_unreachable_start_until_rea
     """A press landing in the ~2s gap after a jasper-voice restart -- before
     its control socket exists -- gets 503 {"reason":
     "voice_daemon_unreachable"} back from jasper-control (its own bounded
-    connect retry, jasper.control.uds._connect_voice_socket, not having
+    connect retry, jasper.platform.uds._connect_voice_socket, not having
     closed the gap yet). The bridge keeps retrying at HOLD_START_RETRY_SEC
     cadence for as long as the key stays held, same as the existing
     BUSY/409 retry, instead of dropping the press."""

@@ -865,7 +865,7 @@ def make_server(
 ) -> ThreadingHTTPServer:
     """Build the tools wizard server. `target` is a socket / (host, port)
     tuple / int port per _systemd.make_http_server's contract."""
-    from . import _systemd
+    from ..platform import systemd as _systemd
     if apply_ts_path is None:
         apply_ts_path = os.path.join(os.path.dirname(state_path), "tools_apply.ts")
     return _systemd.make_http_server(

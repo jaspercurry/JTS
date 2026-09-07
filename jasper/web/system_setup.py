@@ -215,7 +215,7 @@ def _make_handler(
 def make_server(target, *, control_base: str = DEFAULT_CONTROL_BASE) -> ThreadingHTTPServer:
     """Build the dashboard server. `target` is a socket / (host, port)
     tuple / int port per _systemd.make_http_server's contract."""
-    from . import _systemd
+    from ..platform import systemd as _systemd
     return _systemd.make_http_server(target, _make_handler(control_base))
 
 
