@@ -11,10 +11,11 @@ only happen when a user presses "Refresh available models".
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 import json
 import os
 from typing import TYPE_CHECKING, Any
+
+from jasper.json_fields import utc_now_iso
 
 # httpx is imported lazily inside the fetch helpers — this module is
 # imported at the top of the /voice wizard (for its cache readers),
@@ -50,10 +51,6 @@ class DiscoverySnapshot:
     models: tuple[str, ...] = ()
     last_error: str = ""
     last_error_at: str = ""
-
-
-def _utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _dedupe_preserving_order(values: list[str]) -> tuple[str, ...]:
@@ -303,7 +300,7 @@ def refresh_provider_cache(
     now: str | None = None,
 ) -> DiscoverySnapshot:
     snapshots = load_cache(path)
-    timestamp = now or _utc_now()
+    timestamp = now or utc_now_iso()
     try:
         models = fetch_provider_model_ids(provider_id, api_key, http=http)
         if not models:
