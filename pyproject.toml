@@ -28,7 +28,7 @@ streambox = [
     "spotipy==2.26.0",
     "httpx==0.28.1",
     "gtfs-realtime-bindings==2.2.0",
-    "protobuf==7.36.0",
+    "protobuf==7.36.1",
     "rapidfuzz>=3.6,<4",
     "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.2",
@@ -87,7 +87,7 @@ full = [
     # runtime explicit because ONNX Runtime and the Google client stack
     # consume it too.
     "gtfs-realtime-bindings==2.2.0",
-    "protobuf==7.36.0",
+    "protobuf==7.36.1",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.
