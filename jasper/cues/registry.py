@@ -43,6 +43,12 @@ class CueDef:
     fallback: str | None = None
 
 
+# Slug vocabulary shared by every player. Named here, beside the CueDef each
+# one keys, so a failure path and its registry entry cannot drift.
+NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
+VOICE_NOT_SET_UP_CUE_SLUG = "voice_not_set_up"
+
+
 CUES: tuple[CueDef, ...] = (
     CueDef(
         slug="spend_cap_reached",
@@ -147,7 +153,7 @@ CUES: tuple[CueDef, ...] = (
         ),
     ),
     CueDef(
-        slug="no_room_microphone",
+        slug=NO_ROOM_MIC_CUE_SLUG,
         template=(
             "I don't have a microphone of my own. Hold the button on your "
             "remote to talk to me."
@@ -158,23 +164,25 @@ CUES: tuple[CueDef, ...] = (
             "only voice input is a paired push-to-talk remote (issue #2205). "
             "Without it that request ducks the music, chirps, forwards no "
             "audio at all, and dies to the idle watchdog in silence. Wired "
-            "from WakeLoop.manual_session_start via NO_ROOM_MIC_CUE_SLUG. "
+            "from WakeLoop.manual_session_start, and from every 66 park that "
+            "means the same thing to the household — jasper-voice's and "
+            "jasper-aec-bridge's, whose mic would not open. "
             "Names the remedy, not the cause: the household can act on "
             "'hold the button', not on 'no primary leg was planned'."
         ),
     ),
     CueDef(
-        slug="voice_not_set_up",
+        slug=VOICE_NOT_SET_UP_CUE_SLUG,
         template=(
             "I'm not set up to listen yet. Visit {hostname} to pick a "
             "voice service."
         ),
         description=(
-            "Played once by jasper/voice/daemon_main.py:main() just before the "
-            "daemon parks on VOICE_PROVIDER_NOT_CONFIGURED_EXIT: no voice "
-            "provider is configured, so a wake would never be answered, and "
-            "RestartPreventExitStatus keeps the unit down until someone acts. "
-            "Wired via VOICE_NOT_SET_UP_CUE_SLUG. Names the remedy, not the "
+            "Played once before a 78 park: jasper/voice/daemon_main.py:main() "
+            "on VOICE_PROVIDER_NOT_CONFIGURED_EXIT, and jasper-aec-bridge on "
+            "each of its config faults. Either way no wake would be answered "
+            "and RestartPreventExitStatus keeps the unit down until someone "
+            "acts. Names the remedy, not the "
             "cause: the household can act on 'pick a voice service', not on "
             "'JASPER_VOICE_PROVIDER unset'. A box that was NEVER configured "
             "has no baked WAV for this cue — nothing has run `jasper-cues "

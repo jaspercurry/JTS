@@ -1066,7 +1066,8 @@ def _aec_loop(  # noqa: PLR0915
 
 
 def _park(code: int, reason: str, detail: str) -> int:
-    """Log one park event and return the exit code systemd holds the unit on.
+    """Announce the park out loud, log it, and return the exit code systemd
+    holds the unit on.
 
     ``os.EX_CONFIG`` (78) and ``os.EX_NOINPUT`` (66) are both listed in
     jasper-aec-bridge.service's ``SuccessExitStatus`` +
@@ -1074,7 +1075,17 @@ def _park(code: int, reason: str, detail: str) -> int:
     of spending the StartLimitAction=reboot budget ADR-0146 sized for
     transients. Same split as jasper-voice.service: 78 is "the configuration
     asks for something this box cannot do", 66 is "the primary microphone
-    would not open".
+    would not open", and each speaks the cue that code already means.
+
+    Every park here stops the UDP mic feed jasper-voice's wake legs read, so
+    the box goes deaf until someone acts — non-negotiable 6 owes a cue. The
+    jasper-aec-reconcile hand-off (ADR-0239) covers only the card-removal
+    shape: a stale JASPER_MIC_DEVICE, a PortAudio enumeration failure or any
+    config fault raises with no udev event, nothing writes the
+    voice-input-absent marker, and nothing else would make a sound. A cue that
+    cannot play is logged and never changes the exit code — the fan-in socket
+    the cue writes to is only an ``After=``/``Wants=`` of this unit, so it can
+    legitimately be missing at start.
     """
     log_event(
         logger,
@@ -1083,6 +1094,25 @@ def _park(code: int, reason: str, detail: str) -> int:
         exit_code=code,
         detail=detail,
         level=logging.ERROR,
+    )
+    # Imported here, not at module scope: the cue stack costs RAM and import
+    # time the steady-state bridge never needs (ADR-0226).
+    from ..cues.park import play_park_cue
+    from ..cues.registry import (
+        NO_ROOM_MIC_CUE_SLUG,
+        VOICE_NOT_SET_UP_CUE_SLUG,
+    )
+    slug = (
+        NO_ROOM_MIC_CUE_SLUG if code == os.EX_NOINPUT
+        else VOICE_NOT_SET_UP_CUE_SLUG
+    )
+    result = play_park_cue(slug, logger=logger)
+    log_event(
+        logger,
+        "aec_bridge.park_cue",
+        slug=slug,
+        result=result,
+        level=logging.INFO if result == "ok" else logging.WARNING,
     )
     return code
 
@@ -1192,13 +1222,11 @@ def main() -> int:
     try:
         validate_mic_device(config)
     except MicDeviceUnavailable as e:
-        # The only EX_NOINPUT site: the wake mic itself. The same
-        # `SUBSYSTEM=="sound" KERNEL=="controlC*"` add|remove that took the
-        # card away starts jasper-aec-reconcile
-        # (deploy/udev/99-jasper-aec-reconcile.rules), which marks
-        # voice-input-absent and stops jasper-voice, and voice's clean-stop
-        # path plays the no_room_microphone cue (ADR-0239). NN-6 is met by
-        # that hand-off, not by this process.
+        # The only EX_NOINPUT site: the wake mic itself. `_park` speaks for it
+        # — validate_mic_device raises on ANY sd.query_devices failure, and a
+        # card that never moved (a stale device name, a PortAudio hiccup)
+        # fires no udev event, so the jasper-aec-reconcile hand-off ADR-0239
+        # describes covers only part of this fault.
         return _park(os.EX_NOINPUT, "mic_device_unavailable", str(e))
     if corpus_usb_enabled:
         try:

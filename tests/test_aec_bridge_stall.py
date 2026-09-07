@@ -53,8 +53,15 @@ from jasper.cli.aec_bridge import (
 from jasper.cli.aec_bridge_config import OUT_HOST
 from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
 from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
+from jasper.cues.registry import (
+    NO_ROOM_MIC_CUE_SLUG,
+    VOICE_NOT_SET_UP_CUE_SLUG,
+)
 from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
+# The voice daemon's boot-park pins own these fakes; both parks now play
+# through the same jasper.cues.park seam, so they are shared, not re-rolled.
+from tests.test_voice_input_gate import _ParkCues, _ParkPlayout
 
 
 class _AlwaysEmptyQ:
@@ -268,6 +275,21 @@ def _arm_main(monkeypatch, tmp_path, *, mic_ok=True, usb_ok=True):
     stub_sounddevice(monkeypatch, sd_mod)
 
 
+def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
+    """Spy on the park cue through the seam both parks speak from.
+
+    `jasper.cues.park` is the shared player: the same fake TtsPlayout and cue
+    manager the voice daemon's boot-park pins use, so a bridge park that
+    stopped playing cannot pass here on a stub of its own.
+    """
+    from jasper.cues import park as cue_park
+
+    spy = _ParkCues(cue_result)
+    monkeypatch.setattr(cue_park, "TtsPlayout", _ParkPlayout())
+    monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
+    return spy
+
+
 def _shape_bad_ref_source(monkeypatch, tmp_path):
     _arm_main(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "chip_ref_tee")
@@ -300,44 +322,83 @@ def _shape_corpus_usb_absent(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "shape,expected_code,expected_reason",
+    "shape,expected_code,expected_reason,expected_slug",
     [
-        (_shape_bad_ref_source, os.EX_CONFIG, "unsupported_reference_source"),
-        (_shape_no_beam_plan, os.EX_CONFIG, "no_validated_chip_beam_plan"),
+        (
+            _shape_bad_ref_source,
+            os.EX_CONFIG,
+            "unsupported_reference_source",
+            VOICE_NOT_SET_UP_CUE_SLUG,
+        ),
+        (
+            _shape_no_beam_plan,
+            os.EX_CONFIG,
+            "no_validated_chip_beam_plan",
+            VOICE_NOT_SET_UP_CUE_SLUG,
+        ),
         (
             _shape_chip_aec_without_reference,
             os.EX_CONFIG,
             "chip_aec_without_chip_reference",
+            VOICE_NOT_SET_UP_CUE_SLUG,
         ),
-        (_shape_mic_absent, os.EX_NOINPUT, "mic_device_unavailable"),
+        (
+            _shape_mic_absent,
+            os.EX_NOINPUT,
+            "mic_device_unavailable",
+            NO_ROOM_MIC_CUE_SLUG,
+        ),
         (
             _shape_corpus_usb_absent,
             os.EX_CONFIG,
             "corpus_usb_mic_unavailable",
+            VOICE_NOT_SET_UP_CUE_SLUG,
         ),
     ],
     ids=lambda value: getattr(value, "__name__", value),
 )
 def test_permanent_faults_park_on_a_code_the_unit_holds(
-    shape, expected_code, expected_reason, monkeypatch, tmp_path, caplog
+    shape, expected_code, expected_reason, expected_slug,
+    monkeypatch, tmp_path, caplog,
 ):
-    """Each permanent fault exits 78 (config) or 66 (the wake mic won't open).
+    """Each permanent fault exits 78 (config) or 66 (the wake mic won't open),
+    and says so out loud first.
 
-    66 is reserved for the primary mic because that is the one fault
-    jasper-aec-reconcile hands off: the udev rule that saw the sound card go
-    starts it, it marks voice-input-absent, and jasper-voice plays the
-    mic-loss cue on the stop that follows (ADR-0239, non-negotiable 6). The
-    corpus USB leg is an opt-in capture flag, not the wake mic, so its absence
-    is a configuration fault.
+    A park holds the unit down, so every one of these leaves jasper-voice's
+    wake legs with no mic feed until someone acts — non-negotiable 6 owes a
+    cue, and this process is the only thing that knows. The
+    jasper-aec-reconcile hand-off (ADR-0239) answers the narrower case where a
+    card was physically removed: a stale device name or a config fault fires
+    no udev event at all. 66 speaks the mic-loss cue it shares with
+    jasper-voice's own 66 park; the config faults — the corpus USB leg is an
+    opt-in capture flag, not the wake mic — speak the 78 one.
     """
+    spy = _arm_park_cue(monkeypatch)
     shape(monkeypatch, tmp_path)
 
-    with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
+    with caplog.at_level(logging.INFO, logger="jasper.aec_bridge"):
         assert aec_bridge.main() == expected_code
 
     fields = event_fields(caplog, "aec_bridge.park")
     assert fields["reason"] == expected_reason
     assert fields["exit_code"] == str(expected_code)
+    assert spy.played == [expected_slug]
+    assert event_fields(caplog, "aec_bridge.park_cue")["result"] == "ok"
+
+
+def test_a_park_cue_that_cannot_play_still_parks_on_the_same_code(
+    monkeypatch, tmp_path, caplog
+):
+    """A dead output path must not take the park with it. The bridge starts
+    with only `After=`/`Wants=` on fan-in, so the socket the cue writes to can
+    legitimately be missing; the failure is named on the wire instead."""
+    _arm_park_cue(monkeypatch, cue_result=OSError("no output path"))
+    _shape_mic_absent(monkeypatch, tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="jasper.aec_bridge"):
+        assert aec_bridge.main() == os.EX_NOINPUT
+
+    assert event_fields(caplog, "aec_bridge.park_cue")["result"] == "play_error"
 
 
 def test_a_stalled_loop_still_exits_1_so_systemd_restarts_the_bridge(

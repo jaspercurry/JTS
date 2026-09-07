@@ -49,10 +49,12 @@ from jasper.voice.input_presence import (
     voice_input_absent_marker_path,
     voice_parked_no_mic,
 )
-from jasper.voice_daemon import (
+from jasper.cues.registry import (
     NO_ROOM_MIC_CUE_SLUG,
-    VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_NOT_SET_UP_CUE_SLUG,
+)
+from jasper.voice_daemon import (
+    VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
 )
 from tests._log_events import event_fields, event_records
@@ -350,12 +352,14 @@ def _parking_daemon(
     async def _boom() -> None:
         raise exc
 
+    from jasper.cues import park as cue_park
+
     spy = _ParkCues(cue_result)
     monkeypatch.setattr(daemon_main, "run", _boom)
     monkeypatch.setattr(
-        daemon_main, "TtsPlayout", _ParkPlayout(connect_error=connect_error),
+        cue_park, "TtsPlayout", _ParkPlayout(connect_error=connect_error),
     )
-    monkeypatch.setattr(daemon_main, "build_env_cue_manager", lambda **_kw: spy)
+    monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
     return daemon_main, spy
 
 
