@@ -26,7 +26,7 @@ from that tier's ``Capability`` grants, never from its name — see
   /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
   /sound/    →  127.0.0.1:8784  (jasper.web.sound_setup)
   /sound/pair/ →  127.0.0.1:8785  (jasper.web.rooms_setup)
-  /tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
+  /assistant/tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets

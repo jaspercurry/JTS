@@ -926,7 +926,7 @@ def test_modules_do_not_redefine_the_shared_html_escaper():
 # The text-node DOM builder (h() / svg()) is the entire basis of the
 # "untrusted strings never reach innerHTML" safety argument: string children
 # become text nodes, so transcripts, provider names, device labels, etc. are
-# escaped by the DOM. It was copy-pasted across the /chat/ and /system/ module
+# escaped by the DOM. It was copy-pasted across the /assistant/chat/ and /system/ module
 # graphs (and had already drifted — `catch (_)` vs `catch`, divergent comments)
 # before it was promoted to the shared module at /assets/shared/js/dom.js (same
 # shared-by-promotion path as dialog.js / escape.js / http.js). Pages now import
@@ -1077,8 +1077,8 @@ _PAGE_MODULE = {
     "/sound/measurements/": "correction_measurements",
     "/assistant/voice/": "voice_setup",
     "/assistant/wake/": "wake_setup",
-    "/chat/": "chat_setup",
-    "/tools/": "tools_setup",
+    "/assistant/chat/": "chat_setup",
+    "/assistant/tools/": "tools_setup",
     "/weather/": "weather_setup",
     "/transit/": "transit_setup",
     "/google/": "google_setup",
@@ -1099,7 +1099,7 @@ _PAGE_MODULE = {
 _TITLE_ALLOWLIST = {
     ("/assistant/voice/", "Voice"): {"back", "title", "header"},    # C.A2
     ("/assistant/wake/", "Wake word"): {"back"},                    # C.A3
-    ("/tools/", "Tools"): {"back"},                                 # C.A4
+    ("/assistant/tools/", "Tools"): {"back"},                                 # C.A4
     ("/weather/", "Weather"): {"back"},                             # C.A5
     ("/transit/", "Transit"): {"back"},                             # C.A5
     ("/google/", "Google"): {"back", "title", "header"},            # C.A5

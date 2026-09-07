@@ -678,8 +678,8 @@ def test_canonical_header_places_right_html_in_right_slot():
 
 
 def test_safe_back_href_accepts_local_paths_with_query():
-    assert _common.safe_back_href("/tools/pack/spotify/?q=1") == (
-        "/tools/pack/spotify/?q=1"
+    assert _common.safe_back_href("/assistant/tools/pack/spotify/?q=1") == (
+        "/assistant/tools/pack/spotify/?q=1"
     )
 
 
@@ -691,7 +691,7 @@ def test_safe_back_href_accepts_local_paths_with_query():
         "//evil.test/path",
         "https://evil.test/path",
         "/\\evil.test/path",
-        "/tools/\npack",
+        "/assistant/tools/\npack",
     ],
 )
 def test_safe_back_href_rejects_non_local_or_obfuscated_values(raw):

@@ -212,7 +212,7 @@ def check_control_token() -> CheckResult:
 
 @doctor_check()
 def check_tool_catalog() -> CheckResult:
-    """Report the /tools/ catalog the wizard serves: present, tool count,
+    """Report the /assistant/tools/ catalog the wizard serves: present, tool count,
     how many the household disabled, and whether a voice restart is pending.
 
     With no voice provider jasper-voice never writes the catalog, so that is
@@ -236,7 +236,7 @@ def check_tool_catalog() -> CheckResult:
         return CheckResult(
             label, "warn",
             "not written at /run/jasper/tools.json — jasper-voice may not be "
-            "running; the /tools/ page shows 'not ready'. Check the System "
+            "running; the /assistant/tools/ page shows 'not ready'. Check the System "
             "page / `journalctl -u jasper-voice`.",
             reason=REASON_TOOL_CATALOG_ABSENT,
         )
@@ -254,7 +254,7 @@ def check_conversation_history() -> CheckResult:
 
     Capture is default-off, so an absent DB is normal until the household
     enables history. Once configured on, the read-side store must open cleanly
-    or `/chat/` and `/state.chat` cannot show the log jasper-voice writes.
+    or `/assistant/chat/` and `/state.chat` cannot show the log jasper-voice writes.
     """
     from ...conversation_history import health
 

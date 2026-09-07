@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Renders a deliberately malicious tool object through the /tools/ catalog's
+// Renders a deliberately malicious tool object through the /assistant/tools/ catalog's
 // render.js and reports whether every untrusted field was HTML-escaped before
-// landing in the card markup. The /tools/ catalog is the marketplace's future
+// landing in the card markup. The /assistant/tools/ catalog is the marketplace's future
 // home for third-party tool name/description/labels/setup_url, so the escaping
 // is a security boundary — this turns the runtime-verified claim into a
 // regression-guarded one. Driven by tests/test_tools_render_xss.py.
@@ -32,7 +32,7 @@ const { toolRow, toolDetail, toolList } = buildFunction(
   ],
   { returns: ["toolRow", "toolDetail", "toolList"] },
 )();
-globalThis.location = new URL("http://jts.local/tools/pack/spotify/");
+globalThis.location = new URL("http://jts.local/assistant/tools/pack/spotify/");
 
 // Every field a malicious/compromised tool could control, with a distinct
 // payload per HTML context (element content + the attribute / data-tool path).
@@ -132,7 +132,7 @@ const html =
 // tab/newline before parsing), so an obfuscated off-origin href surfaces
 // exactly as it would in a real <a> — a raw-string regex on the href text
 // would miss the "/<TAB>/host" forms entirely.
-const BASE = "http://jts.local/tools/";
+const BASE = "http://jts.local/assistant/tools/";
 const baseOrigin = new URL(BASE).origin;
 const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
 const offOrigin = hrefs.some((h) => {
@@ -162,9 +162,9 @@ console.log(JSON.stringify({
   noOffOriginHref: !offOrigin,
   // A real same-origin path still renders as a clickable detail-page Set up link,
   // carrying the current detail page as return context for the setup wizard.
-  safeHrefRendered: html.includes('href="/transit/?return_to=%2Ftools%2Fpack%2Fspotify%2F"'),
+  safeHrefRendered: html.includes('href="/transit/?return_to=%2Fassistant%2Ftools%2Fpack%2Fspotify%2F"'),
   configuredSetupLinkRendered:
-    html.includes('href="/spotify/?return_to=%2Ftools%2Fpack%2Fspotify%2F"') &&
+    html.includes('href="/spotify/?return_to=%2Fassistant%2Ftools%2Fpack%2Fspotify%2F"') &&
     html.includes(">Configure</a>"),
   // needs_setup with no setup_url -> honest "Unavailable", never a checkbox.
   unavailableRendered: html.includes("tool-unavailable"),
@@ -178,7 +178,7 @@ console.log(JSON.stringify({
   // Pack detail already has canonical header back navigation; don't duplicate it.
   noDuplicateDetailBack: !html.includes('class="tool-back"'),
   guideLinkRendered:
-    html.includes('href="/tools/guide/" target="_blank" rel="noopener"') &&
+    html.includes('href="/assistant/tools/guide/" target="_blank" rel="noopener"') &&
     html.includes(">Tool authoring guide</a>"),
   // Non-actionable metadata stays in the catalog/code, not the operator UI.
   noCustomPromptCount: !html.includes("Custom prompts") && !html.includes(" customized"),

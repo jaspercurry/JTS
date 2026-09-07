@@ -455,7 +455,7 @@ def safe_back_href(raw: str | None, *, default: str = "/") -> str:
     """Return a local absolute path suitable for a header back link.
 
     `return_to` query params are user-controlled, so keep only same-site
-    absolute paths like `/tools/pack/spotify/`. Reject protocol-relative
+    absolute paths like `/assistant/tools/pack/spotify/`. Reject protocol-relative
     URLs, schemes, backslashes, and control-character tricks before the value
     reaches `canonical_header()`.
     """

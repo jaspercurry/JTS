@@ -171,7 +171,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=(),
         paths=(
-            # /chat/ re-reads these fresh so the browser toggle takes effect
+            # /assistant/chat/ re-reads these fresh so the browser toggle takes effect
             # without restarting jasper-voice or jasper-chat-web.
             "/var/lib/jasper/conversation_history.env",
             "/var/lib/jasper/conversation_history.db",

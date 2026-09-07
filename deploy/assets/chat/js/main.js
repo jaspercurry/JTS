@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /chat/ dashboard entry point.
+// main.js — /assistant/chat/ dashboard entry point.
 //
 // Reads the CSRF meta tag like the other migrated pages and fetches data.json
 // via the shared HTTP helper, on the shared poller. Rendering lives in views.js

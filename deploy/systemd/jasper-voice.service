@@ -141,14 +141,14 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 # the home_assistant tool is gated on both URL and token being set,
 # so a missing file just leaves smart-home control disabled.
 EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env
-# Tools the household DISABLED via the /tools/ wizard
+# Tools the household DISABLED via the /assistant/tools/ wizard
 # (JASPER_DISABLED_TOOLS). Wizard-owned SSOT at
 # /var/lib/jasper/tool_state.env. The daemon reads this set fail-safe
 # (jasper.tool_state) to filter the registry — a missing file means
 # nothing disabled (every tool on). Sourced here so jasper-doctor and
 # env_load see it; optional via the leading `-`.
 EnvironmentFile=-/var/lib/jasper/tool_state.env
-# Conversation-history capture toggle and retention written by /chat/.
+# Conversation-history capture toggle and retention written by /assistant/chat/.
 # The daemon also reads this file fresh before each capture write so a
 # household toggle takes effect without a restart; sourcing it here keeps
 # systemd/env-load parity and exposes non-default DB paths at startup.

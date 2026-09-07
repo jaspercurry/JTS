@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// detail.js — generated /tools/pack/<id>/ detail page.
+// detail.js — generated /assistant/tools/pack/<id>/ detail page.
 //
 // The server only passes the requested pack id through a JSON data island.
 // This module fetches the same catalog JSON as the list page and renders the
@@ -43,7 +43,7 @@ function packsOf(c) {
 function unavailable(message) {
   return (
     '<div class="info-card tool-empty">' +
-    "<p>" + escapeHtml(message) + ' <a href="/tools/">Back to tools</a>.</p>' +
+    "<p>" + escapeHtml(message) + ' <a href="/assistant/tools/">Back to tools</a>.</p>' +
     "</div>"
   );
 }
@@ -75,7 +75,7 @@ function render() {
 async function load({ keepStale = false } = {}) {
   if (!mount) return null;
   try {
-    const next = await getJSON("/tools/catalog.json");
+    const next = await getJSON("/assistant/tools/catalog.json");
     if (next && next.unavailable && keepStale && toolsOf(catalog).length) {
       catalog = { ...catalog, pending: !!next.pending };
     } else {
@@ -157,7 +157,7 @@ async function onPromptClick(e) {
     if (prompt === (editor.dataset.originalPrompt || "")) return;
     btn.disabled = true;
     try {
-      await postJSON("/tools/prompt", { name: tool, prompt });
+      await postJSON("/assistant/tools/prompt", { name: tool, prompt });
       statusEl.textContent = "Saved prompt override - Apply to restart the assistant.";
       await load();
     } catch (err) {
@@ -168,7 +168,7 @@ async function onPromptClick(e) {
   }
   if (action === "reset-prompt") {
     try {
-      await postJSON("/tools/prompt-reset", { name: tool });
+      await postJSON("/assistant/tools/prompt-reset", { name: tool });
       statusEl.textContent = "Reset prompt override - Apply to restart the assistant.";
       await load();
     } catch (err) {
@@ -183,7 +183,7 @@ function onPromptInput(e) {
 }
 
 const { onToggle, onApply } = createToolActions({
-  basePath: "/tools/",
+  basePath: "/assistant/tools/",
   statusEl,
   applyBtn,
   reload: load,

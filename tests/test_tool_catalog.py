@@ -7,7 +7,7 @@
 The catalog lists EVERY first-party tool (needs_setup ones via
 gate-satisfying sentinel deps) and computes each tool's status from set
 membership: live registry (configured + enabled), disabled-set, or
-neither (needs_setup). Pins the /run JSON shape the /tools/ wizard reads.
+neither (needs_setup). Pins the /run JSON shape the /assistant/tools/ wizard reads.
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def test_catalog_includes_display_metadata_for_pack_first_ui():
     assert by_name["calendar_today_summary"]["pack"]["id"] == "google"
     assert by_name["gmail_unread_summary"]["pack"]["id"] == "google"
 
-    # Single-tool capabilities still get a display pack so /tools/ can render
+    # Single-tool capabilities still get a display pack so /assistant/tools/ can render
     # one stable top-level card per user-facing capability.
     assert by_name["get_weather"]["category"] == "Utilities"
     assert by_name["get_weather"]["pack"]["id"] == "weather"

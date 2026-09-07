@@ -332,10 +332,10 @@ grows.
    `consequential` are declarative metadata that catalog/store/policy
    layers can consume without sending extra text to the model.
 5. **Built-in catalog UI.** The
-   `/tools/` wizard ([`jasper/web/tools_setup.py`](../jasper/web/tools_setup.py)).
+   `/assistant/tools/` wizard ([`jasper/web/tools_setup.py`](../jasper/web/tools_setup.py)).
    The shipped surface is a browse + on/off manager over the *first-party*
    tools — explicitly **not** the install-from-store marketplace (no install
-   path; that stays Phase-2/3). It is now **pack-first**: `/tools/` renders
+   path; that stays Phase-2/3). It is now **pack-first**: `/assistant/tools/` renders
    one top-level card per user-facing capability pack, grouped by category,
    with singleton packs for standalone tools. A household enables "Spotify"
    or "Weather" first, then optionally opens the generated pack detail page
@@ -351,9 +351,9 @@ grows.
    affordance, not a runtime container: multiple internal registration
    packs can share one display pack (`calendar` + `gmail` → Google), and
    standalone tools receive generated singleton packs in the catalog view.
-   The `/tools/` page groups by category and pack, and each visible pack gets
-   a generated `/tools/pack/<id>/` detail page from the same catalog JSON
-   (`/tools/tool/<name>/` remains a compatibility route for older links).
+   The `/assistant/tools/` page groups by category and pack, and each visible pack gets
+   a generated `/assistant/tools/pack/<id>/` detail page from the same catalog JSON
+   (`/assistant/tools/tool/<name>/` remains a compatibility route for older links).
    **Toggle stages, Apply commits — two steps on purpose.**
    A toggle only writes staged state to the wizard-owned SSOTs:
    `/var/lib/jasper/tool_state.env`
@@ -419,7 +419,7 @@ rule). Nothing here adds a daemon, a dependency, or RAM.
 **Explicitly NOT in the first version:** sandbox, safe-boot-for-tools,
 capability enforcement, secret broker, encryption, the curated index,
 CI trust-gating, the install-from-store `/tool-store/` marketplace
-(distinct from the read-only built-in `/tools/` on/off catalog, which
+(distinct from the read-only built-in `/assistant/tools/` on/off catalog, which
 *did* ship — item 5 above), grants, anti-rug-pull, kill-lists, MCP, the
 embedding pre-filter, and even static `_visible_to` scoping (the
 description split buys enough headroom that scoping waits until install
@@ -508,10 +508,10 @@ singleton packs only for the UI so standalone tools remain natural in code.
 
 ### Pack-first catalog UI — shipped product shape
 
-The `/tools/` catalog now treats the **pack/capability** as the top-level
+The `/assistant/tools/` catalog now treats the **pack/capability** as the top-level
 object:
 
-- `/tools/` renders one card per user-facing capability pack, not one card
+- `/assistant/tools/` renders one card per user-facing capability pack, not one card
   per tool. Spotify, Music Playback, NYC Transit, Home Assistant, Google,
   Timers, Weather, and Time are the right mental model. A capability with
   exactly one tool still gets one top-level card; its detail page simply
@@ -588,8 +588,8 @@ a Phase-3/untrusted-code problem unless it emits a declarative
 
 ### Tool-authoring guide for jts.local
 
-**Shipped 2026-06-18.** The `/tools/guide/` page is a lightweight
-user/developer-facing guide linked from `/tools/` and every generated pack
+**Shipped 2026-06-18.** The `/assistant/tools/guide/` page is a lightweight
+user/developer-facing guide linked from `/assistant/tools/` and every generated pack
 detail page, opened in a new tab (`target="_blank" rel="noopener"`). This is
 not the marketplace, an install flow, or an in-browser executable tool
 builder. It is the house style for first-party and trusted-PR tools:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tool catalog wizard at /tools/.
+"""Tool catalog wizard at /assistant/tools/.
 
 Browse + search the first-party voice tool packs and turn packs/tools on/off.
 "Add" = enable, "remove" = disable. No install-from-store (that is the
@@ -31,7 +31,7 @@ Toggle stages, Apply commits — two-step on purpose:
 Persistence: tool_state.env at mode 0644 (a list of names, not a secret).
 Fail-safe: a missing/malformed file = nothing disabled (every tool ON).
 
-URL surface (after nginx strips /tools/):
+URL surface (after nginx strips /assistant/tools/):
   GET  /             page render
   GET  /catalog.json catalog metadata + the fresh disabled-set overlaid
                      ({..., tools:[...], pending: bool})
@@ -84,7 +84,7 @@ CATALOG_FILE = "/run/jasper/tools.json"
 TOOLS_PAGE_CSS_HREF = "/assets/tools/tools.css"
 _JSON_BODY_LIMIT = 65536
 
-# Minimum seconds between /tools/-driven voice restarts. jasper-voice has
+# Minimum seconds between /assistant/tools/-driven voice restarts. jasper-voice has
 # StartLimitBurst=20 / StartLimitIntervalSec=300 / StartLimitAction=reboot
 # (crash-loop guard); 20s caps Apply-driven restarts at ~15 per 300s, safely
 # under that ladder, so neither a key-mashing household member nor a scripted
@@ -161,13 +161,13 @@ def _write_apply_ts(path: str, ts: float) -> None:
 
 
 def _index_html(csrf_token: str = "") -> bytes:
-    # The page renders client-side from /tools/catalog.json, so the body is
+    # The page renders client-side from /assistant/tools/catalog.json, so the body is
     # just a mount point plus the ES module entry. canonical_page emits the
     # shared app.css link, the CSRF meta tag (read by main.js for the POST),
     # and the icon sprite. The module graph is served static + revalidated
     # from /assets/tools/js/ (the `location ~ \\.js$` block in nginx).
     guide_link = (
-        '<a class="btn btn--ghost tools-guide-link" href="/tools/guide/" '
+        '<a class="btn btn--ghost tools-guide-link" href="/assistant/tools/guide/" '
         'target="_blank" rel="noopener">Guide</a>'
     )
     body = f"""
@@ -217,7 +217,7 @@ def _pack_id_from_path(path: str) -> str | None:
 
 def _detail_html(pack_id: str, csrf_token: str = "") -> bytes:
     body = f"""
-{canonical_header("Tool pack", back_href="/tools/", back_label="Tools")}
+{canonical_header("Tool pack", back_href="/assistant/tools/", back_label="Tools")}
 <main class="page">
   <div id="tool-detail" aria-busy="true">
     <div class="info-card tool-empty"><p>Loading the tool pack&hellip;</p></div>
@@ -238,7 +238,7 @@ def _detail_html(pack_id: str, csrf_token: str = "") -> bytes:
 
 def _guide_html(csrf_token: str = "") -> bytes:
     body = f"""
-{canonical_header("Tool authoring guide", back_href="/tools/", back_label="Tools")}
+{canonical_header("Tool authoring guide", back_href="/assistant/tools/", back_label="Tools")}
 <main class="page">
   <article class="info-card tool-guide">
     <p class="tool-guide__lede">This is the house style for first-party and
@@ -393,7 +393,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            # nginx strips the /tools/ prefix so we see paths like "/" and
+            # nginx strips the /assistant/tools/ prefix so we see paths like "/" and
             # "/catalog.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"

@@ -61,7 +61,7 @@ feature metadata such as a research job id. It never stores speech audio in this
 database, and capture is skipped while the voice assistant is paused. Capture is
 default-off; retained rows stay on the speaker, are pruned by the configured
 conversation-history retention window and row cap, and can be cleared from
-`/chat/`.
+`/assistant/chat/`.
 
 System logs stay in journald on the speaker unless an operator exports them,
 for example with `scripts/fetch-pi-logs.sh`. OpenAI transcript events log

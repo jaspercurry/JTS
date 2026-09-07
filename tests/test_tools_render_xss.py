@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-r"""XSS regression guard for the /tools/ catalog renderer.
+r"""XSS regression guard for the /assistant/tools/ catalog renderer.
 
 render.js builds card/detail markup from catalog fields (name, summary,
 description, details, labels, category, pack, setup_url) and assigns it via
-innerHTML. The /tools/ catalog is the marketplace's future home for
+innerHTML. The /assistant/tools/ catalog is the marketplace's future home for
 THIRD-PARTY tool text, so the rendering is a security boundary. Two distinct
 defenses, both exercised here:
 

@@ -417,7 +417,7 @@ def write_settings(
 
     The capture gate intentionally lives in
     ``/var/lib/jasper/conversation_history.env`` instead of a daemon process
-    environment: `/chat/`, `/state`, doctor, and jasper-voice all read this
+    environment: `/assistant/chat/`, `/state`, doctor, and jasper-voice all read this
     file fresh so a browser toggle takes effect without a restart.
     """
     from . import env_file

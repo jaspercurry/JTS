@@ -41,10 +41,10 @@ def test_chat_web_is_socket_nginx_and_entrypoint_wired():
         "SystemCallFilter=@system-service",
     ):
         assert hardening in service_unit
-    assert "location /chat/" in nginx
-    assert "location = /chat { return 308 /chat/; }" in nginx
+    assert "location /assistant/chat/" in nginx
+    assert "location = /assistant/chat { return 308 /assistant/chat/; }" in nginx
     assert "proxy_pass http://127.0.0.1:8787/;" in nginx
     assert 'jasper-chat-web = "jasper.web.chat_setup:main"' in pyproject
     assert "jasper-chat-web" in install_units
     assert 'systemctl restart "${unit}.socket"' in install_units
-    assert entry("/chat/").label == "Chat history"
+    assert entry("/assistant/chat/").label == "Chat history"

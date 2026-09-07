@@ -26,7 +26,7 @@ function harness(overrides = {}) {
   const statusEl = { textContent: "" };
   const applyBtn = { disabled: false };
   const config = {
-    basePath: "/tools",
+    basePath: "/assistant/tools",
     statusEl,
     applyBtn,
     postJSON: async (path, body) => {
@@ -56,7 +56,7 @@ function harness(overrides = {}) {
   const target = input({ tool: "weather" }, true);
   await h.onToggle({ target });
   assert(h.requests.length === 1, "tool toggle should send one request");
-  assert(h.requests[0].path === "/tools/toggle", "tool toggle path drifted");
+  assert(h.requests[0].path === "/assistant/tools/toggle", "tool toggle path drifted");
   assert(JSON.stringify(h.requests[0].body) ===
     JSON.stringify({ name: "weather", enabled: true }), "tool body drifted");
   assert(h.statusEl.textContent ===
@@ -64,10 +64,10 @@ function harness(overrides = {}) {
 }
 
 {
-  const h = harness({ basePath: "/tools/" });
+  const h = harness({ basePath: "/assistant/tools/" });
   const target = input({ pack: "music" }, false);
   await h.onToggle({ target });
-  assert(h.requests[0].path === "/tools/toggle-pack", "pack path drifted");
+  assert(h.requests[0].path === "/assistant/tools/toggle-pack", "pack path drifted");
   assert(JSON.stringify(h.requests[0].body) ===
     JSON.stringify({ id: "music", enabled: false }), "pack body drifted");
 }
@@ -100,7 +100,7 @@ function harness(overrides = {}) {
   let reloadCount = 0;
   const h = harness({
     postJSON: async (path, body) => {
-      assert(path === "/tools/apply", "Apply path drifted");
+      assert(path === "/assistant/tools/apply", "Apply path drifted");
       assert(JSON.stringify(body) === "{}", "Apply body drifted");
       return { restarted: true };
     },

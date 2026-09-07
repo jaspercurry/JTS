@@ -103,7 +103,7 @@ class ToolDeps:
 
 @dataclass(frozen=True)
 class CatalogPack:
-    """Optional user-facing grouping for the /tools/ catalog.
+    """Optional user-facing grouping for the /assistant/tools/ catalog.
 
     This is deliberately separate from CapabilityPack itself:
     CapabilityPack is the internal registration/fault-isolation unit,

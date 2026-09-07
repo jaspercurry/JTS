@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper conversation-history dashboard (web at /chat/)
+Description=Jasper conversation-history dashboard (web at /assistant/chat/)
 # Socket-activated — exits after 30 min idle. Mirrors /system/: users
 # may leave a read-only dashboard open in a tab.
 Requires=jasper-chat-web.socket

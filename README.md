@@ -140,12 +140,12 @@ forwards the selected hardware-AEC chip beam over that carrier.
 
 Management surfaces are stdlib HTTP wizards behind nginx, socket-activated
 so they cost nothing resident between admin sessions. `deploy/nginx-jasper.conf`
-is the authoritative route list; it covers setup (`/assistant/voice/`, `/tools/`,
+is the authoritative route list; it covers setup (`/assistant/voice/`, `/assistant/tools/`,
 `/sources/`, `/assistant/wake/`, `/wifi/`, `/transit/`, `/ha/`, `/weather/`,
 `/speaker/`, `/spotify/`, `/bluetooth/`), sound (`/sound/eq/`,
 `/sound/setup/`, `/sound/pair/`, `/sound/room/`,
 `/sound/speaker/crossover/`, `/sound/bass/`),
-and read-only dashboards (`/system/`, `/chat/`).
+and read-only dashboards (`/system/`, `/assistant/chat/`).
 
 ---
 

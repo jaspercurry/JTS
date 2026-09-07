@@ -6,7 +6,7 @@
 disabled-set onto the catalog JSON jasper-voice wrote.
 
 jasper-voice writes /run/jasper/tools.json at startup (jasper.tools.catalog),
-baking each tool's status from the LIVE registry. But the /tools/ wizard
+baking each tool's status from the LIVE registry. But the /assistant/tools/ wizard
 writes the disabled-set to tool_state.env WITHOUT restarting voice — an
 explicit Apply does that — so the baked `status` goes stale the instant a
 tool is toggled. This module re-derives each CONFIGURED tool's on/off status
@@ -235,7 +235,7 @@ def catalog_view(
     state_path: str = STATE_PATH,
     prompt_overrides_path: str = PROMPT_OVERRIDES_PATH,
 ) -> dict[str, Any]:
-    """The /tools/ wizard's /catalog.json payload: voice's catalog metadata
+    """The /assistant/tools/ wizard's /catalog.json payload: voice's catalog metadata
     with the fresh disabled-set overlaid + a `pending` flag. Convergent the
     instant a toggle writes tool_state.env, independent of the restart."""
     return overlay(

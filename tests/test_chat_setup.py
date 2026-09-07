@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /chat/ conversation-history dashboard server."""
+"""Tests for the /assistant/chat/ conversation-history dashboard server."""
 from __future__ import annotations
 
 import json

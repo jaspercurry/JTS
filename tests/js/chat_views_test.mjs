@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Source harness for /chat/'s date-filter helpers. Node cannot resolve the
+// Source harness for /assistant/chat/'s date-filter helpers. Node cannot resolve the
 // browser-absolute imports in views.js, so ratchet the exact import/export
 // surface, strip it, and evaluate only the three helpers under test plus their
 // two local formatting dependencies. Also pins shared/js/chrome.js's

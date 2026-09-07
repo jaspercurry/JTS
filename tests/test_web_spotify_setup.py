@@ -100,7 +100,7 @@ def test_management_page_links_to_spotify_tool_pack():
         "bounce",
         CSRF,
     ).decode()
-    assert 'href="/tools/pack/spotify/"' in out
+    assert 'href="/assistant/tools/pack/spotify/"' in out
     assert "Manage Spotify tool prompts" in out
 
 
@@ -326,12 +326,12 @@ def test_get_root_unconfigured_renders_setup_wizard():
 def test_get_root_with_tools_return_uses_tool_pack_back_link():
     h = _Request(
         _handler_cls(client_id=""),
-        "/?return_to=%2Ftools%2Fpack%2Fspotify%2F",
+        "/?return_to=%2Fassistant%2Ftools%2Fpack%2Fspotify%2F",
     )
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert 'href="/tools/pack/spotify/"' in out
+    assert 'href="/assistant/tools/pack/spotify/"' in out
 
 
 def test_get_root_rejects_off_origin_return_link():

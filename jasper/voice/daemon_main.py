@@ -972,7 +972,7 @@ async def run() -> None:
         )
 
         # Apply user-edited prompt overrides before any provider serializes the
-        # registry, then write the /run catalog the /tools/ wizard reads. Includes
+        # registry, then write the /run catalog the /assistant/tools/ wizard reads. Includes
         # EVERY tool (needs_setup ones via sentinel deps), with status from the
         # live registry + the user's disabled pack/tool sets. Fail-soft.
         from ..tool_prompt_overrides import read_prompt_overrides

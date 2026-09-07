@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Exercises the /tools/ detail prompt editor state machine without a browser.
+// Exercises the /assistant/tools/ detail prompt editor state machine without a browser.
 //
 //   node tools_detail_harness.mjs deploy/assets/tools/js/actions.js \
 //     deploy/assets/tools/js/detail.js
