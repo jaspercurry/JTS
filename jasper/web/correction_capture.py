@@ -528,10 +528,10 @@ def _run_capture(
     kind's runner needs the process kept alive is a decision each call site
     owns and states:
 
-    * pass the process's real hold (``_systemd.IdleShutdownTracker.hold``, from
+    * pass the process's real hold (``systemd.IdleShutdownTracker.hold``, from
       ``main`` through the handler cfg) when the runner must survive an idle
       window — long walks, anything whose only traffic is outbound;
-    * pass ``_systemd.no_hold`` when it must not, or need not.
+    * pass ``systemd.no_hold`` when it must not, or need not.
 
     A real hold is taken here, on the request thread BEFORE the runner is
     scheduled, and released in the runner's own ``finally``, so no window

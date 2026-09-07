@@ -1742,7 +1742,7 @@ def _make_handler(
         # method that re-discriminates self.path internally (transport
         # action, system action). The string keys keep the route literals
         # greppable for the client/server contract test
-        # (tests/test_control_client.py).
+        # (tests/test_platform_control_client.py).
         _GET_ROUTES = {
             "/healthz": "_get_healthz",
             "/volume": "_get_volume",

@@ -31,7 +31,7 @@ from jasper.audio_measurement import room_boundary
 
 from ..log_event import log_event
 from . import correction_tuning
-from ._systemd import no_hold
+from ..platform.systemd import no_hold
 
 from . import correction_capture
 from .correction_capture import (

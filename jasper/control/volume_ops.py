@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
-from ..platform.uds import voice_socket_command as _voice_socket_command
+from ..platform.uds import voice_socket_command
 from ..spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
     resolved_spotify_redirect_uri,
@@ -214,7 +214,7 @@ async def _with_coordinator(
 def _make_duck_active_probe(
     voice_socket_path: str,
     *,
-    voice_socket_command: Callable[..., Awaitable[dict]] = _voice_socket_command,
+    voice_socket_command: Callable[..., Awaitable[dict]] = voice_socket_command,
 ) -> Callable[[], Awaitable[Optional[bool]]]:
     """Build the cross-daemon Camilla-ownership probe consumed by
     VolumeCoordinator._set_camilla in the per-request coordinators here.

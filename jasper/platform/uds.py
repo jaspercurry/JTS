@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local UDS client helpers used by jasper-control endpoints."""
+"""Client side of the voice-daemon and jasper-mux control sockets, shared by
+control, measurement and doctor callers."""
 from __future__ import annotations
 
 import asyncio

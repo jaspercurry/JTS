@@ -438,8 +438,8 @@ ignore_errors = true
 # holdout only rots. Never ignore_imports.
 [tool.importlinter]
 root_packages = ["jasper"]
-# A `if TYPE_CHECKING:` import is not a runtime edge. import-linter 2.15 reads
-# this key only here, never per contract, so it applies to every contract below.
+# import-linter 2.15 reads this key only at session level, so it applies to
+# every contract; a per-contract key is the removal condition.
 exclude_type_checking_imports = true
 
 [[tool.importlinter.contracts]]
@@ -545,4 +545,3 @@ name = "bass_extension adapters: base is a leaf"
 type = "forbidden"
 source_modules = ["jasper.bass_extension.adapters.base"]
 forbidden_modules = ["jasper.bass_extension.adapters.sealed", "jasper.bass_extension.adapters.ported", "jasper.bass_extension.adapters.passive_radiator"]
-allow_indirect_imports = true

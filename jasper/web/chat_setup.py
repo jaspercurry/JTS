@@ -249,11 +249,11 @@ def make_server(target) -> ThreadingHTTPServer:
     """Build the /chat server.
 
     ``target`` is a socket / ``(host, port)`` tuple / int port per
-    ``_systemd.make_http_server``'s contract.
+    ``systemd.make_http_server``'s contract.
     """
-    from ..platform import systemd as _systemd
+    from ..platform import systemd
 
-    return _systemd.make_http_server(target, _make_handler())
+    return systemd.make_http_server(target, _make_handler())
 
 
 def main(argv: list[str] | None = None) -> int:

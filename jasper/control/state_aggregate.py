@@ -71,11 +71,7 @@ from . import (
     usb_gadget_forensics,
 )
 from .aec_endpoints import _aec_full_status
-from ..platform.uds import (
-    local_status_json as _local_status_json,
-    mux_socket_command as _mux_socket_command,
-    voice_socket_command as _voice_socket_command,
-)
+from ..platform.uds import local_status_json, mux_socket_command, voice_socket_command
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -508,7 +504,7 @@ def _outputd_section(status: dict | None) -> dict | None:
 
 async def _outputd_status(
     *,
-    local_status_json: Callable[..., Any] = _local_status_json,
+    local_status_json: Callable[..., Any] = local_status_json,
 ) -> dict | None:
     """Probe jasper-outputd's STATUS endpoint.
 
@@ -848,9 +844,9 @@ async def _get_state(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
-    voice_socket_command: Callable[..., Any] = _voice_socket_command,
-    mux_socket_command: Callable[..., Any] = _mux_socket_command,
-    local_status_json: Callable[..., Any] = _local_status_json,
+    voice_socket_command: Callable[..., Any] = voice_socket_command,
+    mux_socket_command: Callable[..., Any] = mux_socket_command,
+    local_status_json: Callable[..., Any] = local_status_json,
     aec_full_status: Callable[[], dict] = _aec_full_status,
     read_transit_state_func: Callable[[], dict] = read_transit_state,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,

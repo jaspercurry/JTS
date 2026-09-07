@@ -1069,9 +1069,9 @@ def make_server(
     by the caller (the asyncio loop thread + crash-recovery state both
     depend on it).
     """
-    from ..platform import systemd as _systemd
+    from ..platform import systemd
     handler_cls = _make_handler_class(backend, csrf_token)
-    return _systemd.make_http_server(target, handler_cls)
+    return systemd.make_http_server(target, handler_cls)
 
 
 # ---------------------------------------------------------------------------

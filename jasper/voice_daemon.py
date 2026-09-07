@@ -2250,7 +2250,7 @@ class WakeLoop:
         """Play a manual-start refusal cue without holding up the reply.
 
         `manual_session_start` answers a control-socket command whose
-        caller times out at 5 s (`control/uds.py`), while a cue runs ~6 s
+        caller times out at 5 s (`jasper/platform/uds.py`), while a cue runs ~6 s
         with duck and drain; awaiting one here answers the button with a
         503 and writes the real result to a closed socket.
         """

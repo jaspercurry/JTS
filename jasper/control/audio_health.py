@@ -51,7 +51,8 @@ from .transport_park import (
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
-from ..platform.uds import MAX_STATUS_BYTES, MUX_CONTROL_SOCKET_PATH, mux_socket_command
+from ..platform.status_socket import MUX_CONTROL_SOCKET_PATH
+from ..platform.uds import MAX_STATUS_BYTES, mux_socket_command
 
 logger = logging.getLogger(__name__)
 

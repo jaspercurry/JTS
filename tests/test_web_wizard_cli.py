@@ -15,14 +15,14 @@ from typing import Any
 
 import pytest
 
+from jasper.platform import systemd as _systemd
 from jasper.web import (
-    _systemd,
     bluetooth_setup,
     chat_setup,
     correction_setup,
     system_setup,
 )
-from tests.test_web_systemd import _FakeServer
+from tests.test_platform_systemd import _FakeServer
 
 # module, console-script prog, ExecStart default port, the idle threshold the
 # wizard asks the runner for, and its on-idle-exit hook.

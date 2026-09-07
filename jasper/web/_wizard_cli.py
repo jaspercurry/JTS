@@ -17,7 +17,7 @@ from http.server import ThreadingHTTPServer
 from typing import Any
 
 from ..logging_setup import configure_logging
-from . import _systemd
+from ..platform import systemd
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,11 @@ def run_wizard_cli(
     make_server: Callable[..., ThreadingHTTPServer],
     extra: Callable[[argparse.ArgumentParser], Any] | None = None,
     start: Callable[
-        [argparse.Namespace, _systemd.IdleShutdownTracker], Mapping[str, Any]
+        [argparse.Namespace, systemd.IdleShutdownTracker], Mapping[str, Any]
     ] | None = None,
     detail: Callable[[argparse.Namespace], str] | None = None,
     configure: Callable[[], None] = configure_logging,
-    idle_threshold_sec: float = _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
+    idle_threshold_sec: float = systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
     on_idle_exit: Callable[[], None] | None = None,
 ) -> int:
     """Run one wizard's whole service lifecycle; return its process exit code.
@@ -62,17 +62,17 @@ def run_wizard_cli(
     # Built before the server so ``start`` can hand ``tracker.hold`` to the
     # handler: background work a request never awaits has to take the busy
     # counter, or the process idle-exits out from under it (issue #1854).
-    tracker = _systemd.IdleShutdownTracker(
+    tracker = systemd.IdleShutdownTracker(
         idle_threshold_sec=idle_threshold_sec, on_idle_exit=on_idle_exit,
     )
     kwargs = start(args, tracker) if start is not None else {}
 
     # When socket-activated by systemd, adopt the inherited listener instead
     # of binding fresh. Direct CLI invocation falls through.
-    sockets = _systemd.adopt_systemd_sockets()
+    sockets = systemd.adopt_systemd_sockets()
     target = sockets[0] if sockets else (args.host, args.port)
     server = make_server(target, **kwargs)
-    _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
+    systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
     tracker.start()
 
     note = f" ({detail(args)})" if detail is not None else ""
@@ -83,10 +83,10 @@ def run_wizard_cli(
             "%s listening on http://%s:%d%s", prog, args.host, args.port, note,
         )
 
-    _systemd.notify_ready()
+    systemd.notify_ready()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
-    _systemd.notify_stopping()
+    systemd.notify_stopping()
     return 0
