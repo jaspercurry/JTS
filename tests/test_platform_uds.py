@@ -14,6 +14,7 @@ import pytest
 from jasper import mux
 from jasper.control import grouping_supervisor
 from jasper.platform import uds
+from tests._async_wait import wait_signalled
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 from tests.fake_clock_fixtures import FakeClock
 
@@ -439,7 +440,7 @@ async def test_status_cancellation_racing_reply_is_preserved(monkeypatch):
         uds.asyncio, "open_unix_connection", AsyncMock(return_value=(reader, writer)),
     )
     task = asyncio.create_task(uds.local_status_json("/tmp/status.sock"))
-    await started.wait()
+    await wait_signalled(started, "STATUS reply read started", producer=task)
     reply.set_result(b"{}")
     task.cancel()
 
