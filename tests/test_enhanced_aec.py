@@ -17,6 +17,7 @@ import pytest
 from jasper import enhanced_aec
 from jasper.cli import aec_bridge_engines
 from jasper.cli import enhanced_aec_install
+from jasper.json_fields import sha256_file
 
 
 def _write_source(root: Path, *, value: str = "one") -> None:
@@ -188,7 +189,7 @@ def _publish_marker(capability, extension: Path) -> str:
         json.dumps({
             "schema_version": 1,
             "fingerprint": fingerprint,
-            "extension_sha256": enhanced_aec.extension_sha256(extension),
+            "extension_sha256": sha256_file(extension),
             "extension_name": extension.name,
         })
     )
@@ -252,7 +253,7 @@ def test_unknown_or_missing_persisted_schema_fails_closed(capability):
         json.dumps({
             "schema_version": 2,
             "fingerprint": enhanced_aec.desired_fingerprint(capability.source),
-            "extension_sha256": enhanced_aec.extension_sha256(extension),
+            "extension_sha256": sha256_file(extension),
             "extension_name": extension.name,
         })
     )

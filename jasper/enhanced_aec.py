@@ -31,7 +31,6 @@ import logging
 import platform
 import sys
 import sysconfig
-import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -42,6 +41,7 @@ from .install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
+from .json_fields import sha256_file, utc_now_iso
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -80,10 +80,6 @@ _REQUIRED_TARGET_KEYS = frozenset({
 
 class EnhancedAecError(RuntimeError):
     """Expected capability-state or build-input failure."""
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _age_seconds(raw: Any) -> float | None:
@@ -175,7 +171,7 @@ def request_install(
     reconcile can retry it.
     """
 
-    now = _utc_now()
+    now = utc_now_iso()
     with advisory_file_lock(
         state_lock_path,
         timeout_sec=2.0,
@@ -219,7 +215,7 @@ def write_job_state(
         "detail": detail,
         "error": error,
         "desired_fingerprint": desired_fingerprint,
-        "updated_at": _utc_now(),
+        "updated_at": utc_now_iso(),
     }
     if extra:
         payload.update(extra)
@@ -257,7 +253,7 @@ def write_installed_marker(
                 "fingerprint": fingerprint,
                 "extension_sha256": extension_sha256,
                 "extension_name": extension_name,
-                "installed_at": _utc_now(),
+                "installed_at": utc_now_iso(),
             },
             indent=2,
             sort_keys=True,
@@ -342,14 +338,6 @@ def desired_fingerprint(source_root: Path = SOURCE_ROOT) -> str:
     return "enhanced-aec-v1:" + hasher.hexdigest()
 
 
-def extension_sha256(path: Path) -> str:
-    hasher = hashlib.sha256()
-    with path.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            hasher.update(chunk)
-    return hasher.hexdigest()
-
-
 @lru_cache(maxsize=8)
 def _cached_digest_matches(
     path_text: str,
@@ -364,7 +352,7 @@ def _cached_digest_matches(
     # native module on every /aec poll.
     del device, inode, size, mtime_ns
     try:
-        return extension_sha256(Path(path_text)) == expected
+        return sha256_file(Path(path_text)) == expected
     except OSError:
         return False
 
@@ -640,7 +628,6 @@ __all__ = [
     "TARGET_MANIFEST_NAME",
     "VENV_ROOT",
     "desired_fingerprint",
-    "extension_sha256",
     "install_profile_supports_enhanced_aec",
     "installed_v2_extensions",
     "parse_target_manifest",

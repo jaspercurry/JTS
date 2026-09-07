@@ -2,22 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Small shared field parser for versioned JSON artifacts.
+"""Small shared field helpers for versioned JSON artifacts.
 
 Artifact modules keep ownership of their schemas and error classes. This leaf
-only centralizes the repeated scalar/container rules used while turning an
-untyped JSON mapping into those domain models. It stays I/O-free — reading an
-artifact off disk is ``atomic_io.read_json_mapping``.
+centralizes the rules they all repeat: the scalar/container checks used while
+turning an untyped JSON mapping into a domain model, and the three stamps
+those artifacts carry — a UTC timestamp, a file digest, a canonical-JSON
+fingerprint. Loading and publishing an artifact stays ``atomic_io``'s job.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Collection, Mapping
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
+
+#: Read size for :func:`sha256_file` — bounded for the 415 MB Pi Zero 2 W.
+_HASH_CHUNK_BYTES = 1 << 16
 
 
 def finite_float(value: Any) -> float | None:
@@ -34,6 +42,36 @@ def finite_float(value: Any) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
+
+
+def utc_now_iso() -> str:
+    """The wall-clock stamp artifacts carry, e.g. ``2026-09-07T12:34:56Z``."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def sha256_file(path: str | os.PathLike[str]) -> str:
+    """SHA-256 hex of a file's bytes, read in bounded chunks.
+
+    Streamed rather than slurped: a downloaded model is tens of megabytes and
+    the Pi Zero 2 W has 415 MB of RAM. Raises ``OSError`` like any other read —
+    a caller that wants a sentinel instead catches it.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def json_fingerprint(mapping: Mapping[str, Any]) -> str:
+    """SHA-256 hex of one mapping's canonical JSON: sorted keys, no spaces."""
+    canonical = json.dumps(
+        mapping,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

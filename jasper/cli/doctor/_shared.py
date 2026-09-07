@@ -21,14 +21,12 @@ not this one."""
 from __future__ import annotations
 
 import grp
-import hashlib
 import os
 import re
 import shlex
 import stat as _stat
 import subprocess
 from collections.abc import Iterable
-from pathlib import Path
 from typing import Awaitable, Callable
 from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
     CHECK_STATUSES,
@@ -234,13 +232,6 @@ def _group_writable_dir(
     if require_setgid:
         writable = writable and bool(st.st_mode & _stat.S_ISGID)
     return writable, group_name
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 def install_profile_is_streambox() -> bool:
     """True on the streambox tier. Fails toward False so an unparseable

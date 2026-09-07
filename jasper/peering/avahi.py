@@ -27,8 +27,8 @@ import logging
 import os
 import subprocess
 
-from jasper import avahi_service
-from jasper.avahi_service import RenderResult
+from jasper.net import avahi_service
+from jasper.net.avahi_service import RenderResult
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def render_and_install(
     still browses + arbitrates, just won't be visible to others).
 
     The render/guard/atomic-write body is delegated to the shared
-    ``jasper.avahi_service.render_service``, which now OWNS the reload: we
+    ``jasper.net.avahi_service.render_service``, which now OWNS the reload: we
     pass ``reload=reload_avahi`` and it reloads avahi-daemon only when it
     actually wrote the file (``RenderResult.WROTE``). The peer metadata
     values (UUID peer_id, constrained room, ``0``|``1`` primary) are

@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wifi_guardian_persistence import write_stash
+from jasper.net.wifi_guardian_persistence import write_stash
 
 
 ROOT = Path(__file__).resolve().parents[1]
