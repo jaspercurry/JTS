@@ -543,9 +543,10 @@ class CamillaController:
     async def get_playback_rms_all(
         self, *, best_effort: bool = False,
     ) -> list[float] | None:
-        """Full per-channel playback RMS in dBFS — the list analog of
-        `get_playback_rms`, with the same no-truncation / no-mirroring
-        contract and the same `c.levels.playback_rms()` websocket call.
+        """Full per-channel playback RMS in dBFS. Unlike
+        `get_playback_rms`, which truncates and mirrors to a stereo pair
+        via `_level_pair`, this returns every channel CamillaDSP reports,
+        in order. Same `c.levels.playback_rms()` websocket call.
 
         `get_playback_rms` stays the stereo-master surface the TTS gain
         tracker reads; this is for readers that must see every driver on an
@@ -578,6 +579,9 @@ class CamillaController:
         restriction) and `/state`'s per-driver playback level readout on
         an active-crossover box. It returns every channel CamillaDSP
         reports, in channel order, with no truncation and no mirroring.
+
+        Reports the last processed chunk: it is the `c.levels.playback_peak()`
+        websocket call, unaggregated.
 
         Returns an empty list when Camilla reports no channel data at all;
         an individual channel Camilla reports as ``None`` normalizes to

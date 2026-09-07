@@ -281,9 +281,7 @@ class VolumePersistence:
         )
 
     def save_now(self, main_volume_db: float) -> None:
-        """Force-write main_volume to disk immediately. Used for
-        explicit user actions (set_volume voice tool, mute) where we
-        want the new level captured before any restart could lose it."""
+        """Write main_volume to disk, so the level survives a restart."""
         with self._state_update():
             self._current_main_volume_db = float(main_volume_db)
             self._write_full()
@@ -331,10 +329,8 @@ class VolumePersistence:
     def save_listening_level(
         self, percent: int, *, mark_user_change: bool = True,
     ) -> None:
-        """Force-write the canonical listening_level (0-100) to disk.
-        Not debounced: listening_level changes are infrequent compared
-        with poll-driven main-volume observations, and we want every
-        change durable so a crash doesn't lose the user's last command.
+        """Write the canonical listening_level (0-100) to disk, so a
+        crash doesn't lose the user's last command.
 
         `mark_user_change` controls whether last_used_at is bumped to
         now. Set False for boot-time restore writes — otherwise every

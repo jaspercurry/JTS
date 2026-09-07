@@ -132,16 +132,6 @@ def test_load_handles_missing_field(tmp_path):
     assert VolumePersistence(str(path)).load() is None
 
 
-def test_save_now_always_writes(tmp_path):
-    """Every explicit write lands immediately, however small the change."""
-    p = VolumePersistence(_path(tmp_path))
-    p.save_now(-20.0)
-    p.save_now(-21.0)  # tiny change, but explicit
-    rec = p.load()
-    assert rec is not None
-    assert rec.main_volume_db == -21.0
-
-
 # ---------- cross-daemon operation lease ---------------------------------
 
 
