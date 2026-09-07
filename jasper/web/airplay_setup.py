@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""AirPlay sync mode toggle at /airplay/.
+"""AirPlay sync toggle at /airplay/.
 
 Single setting: synced (default, glitch-free since the resync_threshold
 bump in shairport-sync.conf.template) vs free-running (fallback for

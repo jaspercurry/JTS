@@ -1482,8 +1482,8 @@ SOURCE_UNAVAILABLE_DETAIL = (
 # ...and for a source still running after the household turned it Off. Saving
 # the choice again is what re-runs the reconciler that stops it.
 SOURCE_OFF_DRIFT_DETAIL = (
-    "It is still running even though Music sources has it turned off. Set it "
-    "to Off again in Music sources to clear this."
+    "It is still running even though Playback sources has it turned off. Set it "
+    "to Off again in Playback sources to clear this."
 )
 
 
@@ -1505,7 +1505,7 @@ def _source_service_summary(
                 f"{_SOURCE_LABELS.get(source_id, source_id)} is running while Off",
                 SOURCE_OFF_DRIFT_DETAIL,
             )
-        return "off", "Off", "Turned off in Music sources."
+        return "off", "Off", "Turned off in Playback sources."
     if not states:
         return None
     for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
