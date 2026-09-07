@@ -811,11 +811,11 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import (
         WakeLoop,
-        _configured_wake_legs,
+        configured_wake_legs,
         _UNSET,
     )
 
-    plan = _configured_wake_legs(
+    plan = configured_wake_legs(
         _wake_leg_cfg(), wake_detection_supported=wake_detection_supported,
     )
     assert [spec.token for spec, _device in plan] == expected_tokens
@@ -839,7 +839,7 @@ def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
     always granted WAKE_DETECTION. See ADR-0217.
     """
     from jasper.voice import daemon_main
-    from jasper.voice_daemon import _configured_wake_legs
+    from jasper.voice_daemon import configured_wake_legs
 
     reason = "invalid install profile 'bogus'"
 
@@ -858,7 +858,7 @@ def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
         reason
     )
 
-    plan = _configured_wake_legs(_wake_leg_cfg(), wake_detection_supported=supported)
+    plan = configured_wake_legs(_wake_leg_cfg(), wake_detection_supported=supported)
     assert [spec.token for spec, _device in plan] == ["on"]
 
 

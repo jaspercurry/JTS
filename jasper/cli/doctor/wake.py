@@ -163,7 +163,7 @@ def _push_to_talk_only_speaker() -> bool:
     """This box has no microphone of its own but a push-to-talk accessory —
     the one shape where jasper-voice arms ZERO wake legs deliberately.
 
-    Reads the same two published facts ``_configured_wake_legs``
+    Reads the same two published facts ``configured_wake_legs``
     (jasper/voice_daemon.py) reads — the AEC reconciler's
     ``JASPER_LOCAL_MIC_PRESENT`` tri-state and the accessory owner's
     published source file — but fresh on every call rather than from the

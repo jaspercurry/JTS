@@ -478,7 +478,7 @@ def _ptt_only_wake_loop():
     """A speaker with NO microphone of its own and one push-to-talk source.
 
     The shape a full-profile box with no local mic (unplugged, or never
-    fitted) has once `_configured_wake_legs` reads the reconciler's
+    fitted) has once `configured_wake_legs` reads the reconciler's
     published "no local mic" verdict: zero wake legs, so `_mic` is None,
     `_push_to_talk.only` derives True, and the only audio path is the
     remote's loop.

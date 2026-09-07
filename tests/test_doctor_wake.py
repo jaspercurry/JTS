@@ -243,7 +243,7 @@ def test_push_to_talk_only_speaker_needs_both_published_facts(
     monkeypatch, local_mic, accessories, expected
 ):
     """The derivation ANDs the reconcilers' two published facts — the same
-    pairing `_configured_wake_legs` requires."""
+    pairing `configured_wake_legs` requires."""
     from jasper import mic_presence as mic_presence_mod
     from jasper.mic_presence import MicPresence
 

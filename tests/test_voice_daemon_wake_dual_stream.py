@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.voice_daemon import WakeLoop, _LegRuntime
+from jasper.voice_daemon import WakeLoop, LegRuntime
 from jasper.wake_legs import by_token
 from tests._log_events import event_fields, event_records
 
@@ -58,10 +58,10 @@ def _make_wake_loop(
     wl._detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     wl._legs = {
-        "on": _LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
+        "on": LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
     }
     if detector_off is not None:
-        wl._legs["off"] = _LegRuntime(
+        wl._legs["off"] = LegRuntime(
             by_token("off"), MagicMock(), detector_off, None,
         )
     wl._wake_fire_lock = asyncio.Lock()

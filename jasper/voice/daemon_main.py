@@ -89,10 +89,10 @@ from ..voice_daemon import (
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     ContentActivityTracker,
     WakeLoop,
-    _LegRuntime,
-    _cancel_tracked_tasks,
-    _configured_wake_legs,
-    _track_task,
+    LegRuntime,
+    cancel_tracked_tasks,
+    configured_wake_legs,
+    track_task,
 )
 from .push_to_talk import ManualMicRuntime
 from ..logging_setup import configure_logging
@@ -102,7 +102,7 @@ logger = logging.getLogger("jasper.voice_daemon")
 _T = TypeVar("_T")
 
 
-def _active_model(cfg: Config) -> str:
+def active_model(cfg: Config) -> str:
     """Return the model name for the currently selected provider — used
     by startup-readiness logging and the silent-failure heuristic in
     `_end_turn` so journalctl shows the actual model in flight. Resolution
@@ -195,7 +195,7 @@ def _active_voice(cfg: Config) -> str:
 
 
 def _require_usable_input(
-    legs: list[_LegRuntime],
+    legs: list[LegRuntime],
     manual_mics: list[ManualMicRuntime],
     declared_manual_devices: Iterable[str],
 ) -> None:
@@ -491,7 +491,7 @@ def _schedule_cue_regen(
         else:
             logger.info("cue regen: all cues already cached")
 
-    _track_task(
+    track_task(
         asyncio.create_task(_run(), name="jasper-cues-regen"),
         task_set,
         label="jasper-cues-regen",
@@ -530,7 +530,7 @@ def _schedule_assistant_loudness_seed(
                 profile.source_lufs, profile.confidence,
             )
 
-    _track_task(
+    track_task(
         asyncio.create_task(_run(), name="assistant-loudness-seed"),
         task_set,
         label="assistant-loudness-seed",
@@ -732,9 +732,9 @@ async def run() -> None:
     # jasper/flight_recorder.py.
     flight_recorder.install("voice")
 
-    active_model = _active_model(cfg)
+    model_name = active_model(cfg)
     pricing_overrides = load_pricing_overrides()
-    pricing = pricing_for_model(active_model, overrides=pricing_overrides)
+    pricing = pricing_for_model(model_name, overrides=pricing_overrides)
     speech_policy = build_effective_speech_input_policy(cfg)
     log_event(
         logger,
@@ -756,7 +756,7 @@ async def run() -> None:
         )
     logger.info(
         "spend cap: provider=%s model=%s pricing=%s cap=$%.2f/day (safety x%.2f)",
-        cfg.voice_provider, active_model, pricing.label,
+        cfg.voice_provider, model_name, pricing.label,
         cfg.daily_spend_cap_usd, cfg.daily_spend_cap_safety_multiplier,
     )
     if pricing.label.startswith("unpriced:"):
@@ -766,7 +766,7 @@ async def run() -> None:
         log_event(
             logger,
             "pricing.unpriced",
-            model=active_model,
+            model=model_name,
             surface="voice",
             note=(
                 "no rate available; cost estimates will be $0 and the "
@@ -1091,13 +1091,13 @@ async def run() -> None:
         #
         # The install marker is static for the process, so it is read once here
         # and passed down rather than re-read per decision. See ADR-0217.
-        planned_wake_legs = _configured_wake_legs(
+        planned_wake_legs = configured_wake_legs(
             cfg,
             wake_detection_supported=_wake_detection_supported(),
         )
         logger.info(
             "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
-            cfg.voice_provider, _active_model(cfg),
+            cfg.voice_provider, active_model(cfg),
             _wake_ready_detail(cfg, planned_wake_legs),
             cfg.mic_device or "(none)", _tts_ready_detail(cfg),
         )
@@ -1168,7 +1168,7 @@ async def run() -> None:
         # bridge's UDP transport) to UdpMicCapture and anything else
         # (`Array` chip-direct, a `hw:` USB mic) to the PortAudio
         # MicCapture. Which legs to build is data-driven from
-        # jasper.wake_legs + cfg.mic_device* via _configured_wake_legs().
+        # jasper.wake_legs + cfg.mic_device* via configured_wake_legs().
         #
         # Resilience asymmetry: the primary "on" (AEC3) leg is must-have
         # — it carries session audio + the Tier-1 heartbeat. A mic-open
@@ -1184,7 +1184,7 @@ async def run() -> None:
         # jasper-aec-reconcile → restart_voice. Optional "off"/"dtln" legs
         # are best-effort: a mic-open failure is logged and that leg is
         # skipped so the speaker keeps waking on the healthy legs.
-        legs: list[_LegRuntime] = []
+        legs: list[LegRuntime] = []
         for spec, device in planned_wake_legs:
             try:
                 leg_mic = await _aenter(
@@ -1214,7 +1214,7 @@ async def run() -> None:
             # file + threshold, only the input stream differs. The
             # "off" leg also gets a session shadow VAD (telemetry
             # only; see _shadow_vad_score_raw).
-            legs.append(_LegRuntime(
+            legs.append(LegRuntime(
                 spec,
                 leg_mic,
                 WakeWordDetector(
@@ -1269,7 +1269,7 @@ async def run() -> None:
             gain_db=0.0,
             drain_tail_sec=cfg.tts_drain_tail_sec,
             provider=cfg.voice_provider,
-            model=_active_model(cfg),
+            model=active_model(cfg),
             voice=_active_voice(cfg),
             profile_path=cfg.assistant_loudness_profile_path,
         ))
@@ -1291,7 +1291,7 @@ async def run() -> None:
         _schedule_cue_regen(cues_manager, startup_fire_and_forget)
         _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
         _arelease(
-            stack, "startup_tasks", _cancel_tracked_tasks,
+            stack, "startup_tasks", cancel_tracked_tasks,
             startup_fire_and_forget,
         )
 

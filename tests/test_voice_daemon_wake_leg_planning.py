@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `_configured_wake_legs`, the pure wake-leg selection
+"""Unit tests for `configured_wake_legs`, the pure wake-leg selection
 decision, and the `LEG_DB`/`_LEG_DEVICE_ATTR` completeness guards."""
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def test_leg_db_covers_all_wake_input_legs():
 
 
 # ---------------------------------------------------------------------------
-# _configured_wake_legs — the pure leg-selection decision (0.3)
+# configured_wake_legs — the pure leg-selection decision (0.3)
 #
 # run()'s AsyncExitStack wiring is not hardware-free-testable (it opens
 # real mics), so the *decision* of which legs to build is factored into
@@ -41,7 +41,7 @@ def _cfg(
     local_mic_present=None,
     manual_mic_sources=None,
 ):
-    """Minimal Config stand-in for _configured_wake_legs (which reads each
+    """Minimal Config stand-in for configured_wake_legs (which reads each
     wake-input leg's device attr by name). SimpleNamespace, not MagicMock —
     a MagicMock's auto-created attrs are truthy and would defeat the
     empty-string gating the function under test relies on."""
@@ -98,8 +98,8 @@ def test_configured_wake_legs(cfg_kwargs, expected):
     """Each leg is built, with its device, exactly when its device var
     is set: "on" alone for a bare primary device; software (off, dtln)
     or chip-beam legs join it as their vars are set."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(**cfg_kwargs))
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(**cfg_kwargs))
     assert [(s.token, dev) for s, dev in legs] == expected
 
 
@@ -132,8 +132,8 @@ def test_configured_wake_legs_tokens_only(cfg_kwargs, expected_tokens):
     listener for an unconfigured leg. "on" is always present, even with
     an empty device (the AEC reconciler owns making it real, or parking
     voice), so `self._legs["on"]` never KeyErrors."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(**cfg_kwargs))
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(**cfg_kwargs))
     assert [s.token for s, _ in legs] == expected_tokens
 
 
@@ -142,8 +142,8 @@ def test_configured_wake_legs_chip_legs_not_built_when_unset():
     chip device vars empty (the default), the chip legs are NOT built — so
     an install that hasn't opted in opens no chip UDP listener and the
     configured leg set is exactly the pre-promotion software legs."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(
         mic_device="udp:9876", mic_device_raw="udp:9877",
         mic_device_dtln="udp:9878",
     ))
@@ -155,7 +155,7 @@ def test_configured_wake_legs_chip_legs_not_built_when_unset():
 
 def test_leg_device_attr_covers_all_wake_input_legs():
     """Every wake-input leg must have a _LEG_DEVICE_ATTR entry, or
-    _configured_wake_legs would KeyError at daemon startup."""
+    configured_wake_legs would KeyError at daemon startup."""
     from jasper.voice_daemon import _LEG_DEVICE_ATTR
     from jasper.wake_legs import wake_input_legs
     missing = {leg.token for leg in wake_input_legs()} - set(_LEG_DEVICE_ATTR)
@@ -182,8 +182,8 @@ def test_no_local_mic_plus_accessory_plans_zero_wake_legs():
     ever reaches the manual-mic loop — the gate opens and the remote's button
     still does nothing.
     """
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(
         mic_device="Array",
         local_mic_present=False,
         manual_mic_sources={"wiim_remote_2": "udp:9892"},
@@ -200,8 +200,8 @@ def test_leg_planner_never_infers_push_to_talk_from_an_empty_mic_device():
     stale udp: device, so "empty primary device" is not evidence of anything
     on a real box. Only the reconciler's published verdict may drop the leg.
     """
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(
         mic_device="",
         manual_mic_sources={"wiim_remote_2": "udp:9892"},
     ))
@@ -216,8 +216,8 @@ def test_unresolved_local_mic_still_plans_the_primary_leg():
     mic silently downgrades to push-to-talk on a box with no remote — a
     speaker that looks healthy and cannot hear.
     """
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(
         mic_device="UMIK-2",
         local_mic_present=None,
         manual_mic_sources={"wiim_remote_2": "udp:9892"},
@@ -232,8 +232,8 @@ def test_no_local_mic_without_an_accessory_still_plans_the_primary_leg():
     starts, the planned leg fails to open and the daemon parks loudly on
     exit 66 rather than idling deaf with no wake detection.
     """
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(
         mic_device="Array", local_mic_present=False,
     ))
     assert [(s.token, dev) for s, dev in legs] == [("on", "Array")]
@@ -242,8 +242,8 @@ def test_no_local_mic_without_an_accessory_still_plans_the_primary_leg():
 def test_accessory_alongside_a_real_mic_keeps_wake_legs():
     """A push-to-talk remote on a speaker that DOES have a mic is additive:
     it adds a manual source without disabling wake detection."""
-    from jasper.voice_daemon import _configured_wake_legs
-    legs = _configured_wake_legs(_cfg(
+    from jasper.voice_daemon import configured_wake_legs
+    legs = configured_wake_legs(_cfg(
         mic_device="udp:9876",
         mic_device_raw="udp:9877",
         local_mic_present=True,
