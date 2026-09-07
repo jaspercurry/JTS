@@ -38,6 +38,7 @@ from ..audio_profile_state import (
 )
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
+from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
 from ..usb_mic import (
     build_usb_mic_status,
@@ -194,11 +195,7 @@ def _read_wake_threshold() -> float:
     """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
     (the /wake/ wizard's home) with the daemon's compiled-in default
     (0.3) as fallback. Same precedence the daemon uses on startup."""
-    try:
-        from ..web._common import read_env_file
-        val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
-    except OSError:
-        val = ""
+    val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
     if not val:
         val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
     try:
@@ -385,11 +382,7 @@ def _fresh_jasper_env() -> dict[str, str]:
 def _read_wake_word_status() -> dict[str, Any]:
     """Wake model label for the /wake/ status card."""
     from .. import wake_models
-    from ..web._common import read_env_file
-    try:
-        state = read_env_file(_WAKE_MODEL_FILE)
-    except OSError:
-        state = {}
+    state = read_env_file(_WAKE_MODEL_FILE)
     model = (state.get("JASPER_WAKE_MODEL") or "").strip()
     if not model:
         model = os.environ.get("JASPER_WAKE_MODEL", "").strip() or "hey_jarvis"

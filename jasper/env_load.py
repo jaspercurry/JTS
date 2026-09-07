@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from jasper.env_file import parse_env_mapping
+
 
 #: The operator-owned base layer every daemon unit loads first.
 BASE_ENV_PATH = "/etc/jasper/jasper.env"
@@ -174,21 +176,7 @@ def parse_env_text(text: str) -> dict[str, str]:
     Strips matching surrounding quotes; ignores blanks and ``#`` lines.
     Not ``atomic_io._parse_env_text``, which keeps quotes for round-trips.
     """
-    out: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if (len(value) >= 2 and value[0] == value[-1]
-                and value[0] in ('"', "'")):
-            value = value[1:-1]
-        out[key] = value
-    return out
+    return parse_env_mapping(text)
 
 
 def read_env_file_state(path: str) -> EnvFileState:

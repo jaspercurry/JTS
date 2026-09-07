@@ -35,13 +35,13 @@ from .. import location_state
 from ..atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
 from ..log_event import log_event
+from ..env_file import read_env_file
 from ._common import (
     begin_request,
     canonical_banner,
     canonical_header,
     canonical_page,
     csrf_field_html,
-    read_env_file,
     read_form,
     reject_csrf,
     restart_voice_daemon,

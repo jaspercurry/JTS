@@ -283,10 +283,7 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
     """Two HTTP workers can toggle different AEC legs at once. The env
     read-modify-write must be flocked so the later writer sees and preserves
     the earlier writer's keys."""
-    from jasper.web import _common as web_common
-
     real_atomic_write = atomic_io.atomic_write_text
-    real_web_write = web_common.write_env_file
     first_write_paused = threading.Event()
     release_first_write = threading.Event()
     errors: list[BaseException] = []
@@ -318,13 +315,6 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
             durable=durable,
         )
 
-    def pausing_web_write(path, values, *, mode=0o644):
-        text = "".join(f"{key}={value}\n" for key, value in values.items())
-        if should_pause(text):
-            first_write_paused.set()
-            assert release_first_write.wait(timeout=2)
-        return real_web_write(path, values, mode=mode)
-
     def write_raw_off():
         try:
             aec_endpoints._write_aec_leg("raw", False)
@@ -338,7 +328,6 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
             errors.append(e)
 
     monkeypatch.setattr(atomic_io, "atomic_write_text", pausing_atomic_write)
-    monkeypatch.setattr(web_common, "write_env_file", pausing_web_write)
     raw_thread = threading.Thread(target=write_raw_off)
     raw_thread.start()
     assert first_write_paused.wait(timeout=2)

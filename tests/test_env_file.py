@@ -2,9 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The shared order-preserving env-file upsert helper (jasper.env_file)."""
+"""The shared systemd EnvironmentFile helper (jasper.env_file)."""
 
 from __future__ import annotations
+
+import os
+import threading
+
+import pytest
 
 from jasper import env_file
 
@@ -96,3 +101,77 @@ def test_malformed_and_comment_lines_round_trip():
     # Upserting a new key leaves the verbatim lines untouched.
     new, _ = env_file.upsert(text, "A", "2")
     assert new == "not-an-assignment\n#comment\nA=2\n"
+
+
+def test_read_env_file_is_empty_for_a_missing_file(tmp_path):
+    assert env_file.read_env_file(str(tmp_path / "nope.env")) == {}
+
+
+def test_read_env_file_resolves_quotes_and_skips_malformed_lines(tmp_path):
+    path = tmp_path / "wizard.env"
+    path.write_text(
+        'JASPER_PROVIDER="acme"\n'
+        "JASPER_MODEL='small'\n"
+        "MALFORMED\n",
+    )
+
+    assert env_file.read_env_file(str(path)) == {
+        "JASPER_PROVIDER": "acme",
+        "JASPER_MODEL": "small",
+    }
+
+
+def test_write_env_file_round_trips_at_the_default_secret_mode(tmp_path):
+    # API keys live in these files; a wider default would leak them under a
+    # daemon-readable path.
+    path = tmp_path / "v.env"
+    env_file.write_env_file(str(path), {"A_KEY": "abc", "PROVIDER": "acme"})
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert env_file.read_env_file(str(path)) == {"A_KEY": "abc", "PROVIDER": "acme"}
+
+
+def test_write_env_file_rejects_a_newline_value_leaving_the_file_intact(tmp_path):
+    # systemd's parser neither quotes nor escapes, so a newline would land a
+    # bogus second assignment. Rejecting mid-write must publish nothing.
+    path = tmp_path / "v.env"
+    env_file.write_env_file(str(path), {"OK": "first"})
+    with pytest.raises(ValueError):
+        env_file.write_env_file(str(path), {"OK": "second", "BAD": "no\nline"})
+    assert env_file.read_env_file(str(path)) == {"OK": "first"}
+    assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []
+
+
+def test_write_env_file_never_publishes_a_mixed_file_under_concurrent_writers(
+    tmp_path,
+):
+    # The threaded wizard server runs several /save handlers against one file.
+    # Each publish must land whole -- never byte-mixed -- and leak no temp.
+    path = str(tmp_path / "race.env")
+    values = [f"value_{i}_" + "x" * 200 for i in range(8)]
+    errors: list[Exception] = []
+
+    def writer(v):
+        try:
+            for _ in range(50):
+                env_file.write_env_file(path, {"V": v})
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(v,)) for v in values]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, errors
+    assert (tmp_path / "race.env").read_text() in {f"V={v}\n" for v in values}
+    assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []
+
+
+def test_delete_env_file_is_idempotent(tmp_path):
+    path = tmp_path / "gone.env"
+    env_file.write_env_file(str(path), {"A": "1"})
+    env_file.delete_env_file(str(path))
+    assert not path.exists()
+    env_file.delete_env_file(str(path))
+    assert not path.exists()

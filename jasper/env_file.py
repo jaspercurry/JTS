@@ -2,30 +2,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Order-preserving systemd ``EnvironmentFile`` upsert helpers.
+"""The single home for systemd ``EnvironmentFile`` mechanics.
 
-The single home for "rewrite one ``KEY=value`` line in a wizard/reconciler-owned
-``/var/lib/jasper/*.env`` file without disturbing the operator's other lines."
-Several reconcilers own exactly one key in a shared multi-reader env file and
-must upsert it order-preservingly: a co-reader's **comments and blank lines
-survive verbatim** and assignment order is preserved. Assignment lines are
-canonicalized to ``KEY=value`` on any rewrite (key-side spacing in a
-hand-written ``KEY = value`` is normalized) — harmless because every writer here
-emits clean ``KEY=value`` and that is the systemd ``EnvironmentFile`` form. The
-consumer is :mod:`jasper.fanin.coupling_reconcile`, which predated this module
-and carried equivalent private ``_parse_env`` / ``_render_*`` copies until it
-was migrated onto this helper (behavior-preserving: for the single-assignment
-files that reconciler produces the rendering is identical).
+Two halves, one quoting rule (:func:`_unquoted`, systemd's own):
 
-Scope is deliberately small: parse, read one key, upsert one key, remove one
-key. It is NOT a general env-file framework (no interpolation, no multi-line
-values, no `export ` handling) because systemd ``EnvironmentFile`` lines are
-plain ``KEY=value`` — matching the format the daemons actually read. The callers
-own their key name, their value validation, their atomic write, and their
-restart/rollback; this module only owns the text transform.
+* **One key at a time**, order-preservingly, for the reconcilers that own a
+  single key in a file several units read: a co-reader's **comments and blank
+  lines survive verbatim** and assignment order is preserved. Assignment lines
+  are canonicalized to ``KEY=value`` on any rewrite (key-side spacing in a
+  hand-written ``KEY = value`` is normalized) — harmless because every writer
+  here emits clean ``KEY=value``, which is the ``EnvironmentFile`` form.
+* **The whole file**, for the wizards whose unit of work is the file: read it
+  into a mapping, publish a mapping as its complete contents, delete it.
+
+Scope is deliberately small: no interpolation, no multi-line values, no
+``export`` handling, because ``EnvironmentFile`` lines are plain ``KEY=value``
+— the format the daemons actually read. Callers own their key names, their
+value validation, and their restart/rollback; a caller whose writers race owns
+picking :func:`jasper.atomic_io.locked_update_env_file` over
+:func:`write_env_file`.
 """
 
 from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Mapping
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # A parsed line is either a real assignment ``(key, value)`` or a line we
 # preserve verbatim -- comment / blank / malformed -- carried as ``(raw, None)``.
@@ -50,6 +55,15 @@ def parse_env_lines(text: str) -> list[ParsedLine]:
     return out
 
 
+def _unquoted(value: str) -> str:
+    """Surrounding whitespace stripped, then ONE matching quote pair — the
+    resolution systemd itself applies to an ``EnvironmentFile`` value."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
 def _render(lines: list[ParsedLine]) -> str:
     return "\n".join(k if v is None else f"{k}={v}" for k, v in lines)
 
@@ -64,8 +78,14 @@ def read_value(text: str, key: str) -> str | None:
     found: str | None = None
     for k, v in parse_env_lines(text):
         if v is not None and k == key:
-            found = v.strip().strip("'\"")
+            found = _unquoted(v)
     return found
+
+
+def parse_env_mapping(text: str) -> dict[str, str]:
+    """Every assignment in ``text`` as ``{key: value}``, unquoted like
+    :func:`read_value` and resolved last-wins, as systemd does."""
+    return {k: _unquoted(v) for k, v in parse_env_lines(text) if v is not None}
 
 
 def upsert(text: str, key: str, value: str) -> tuple[str, bool]:
@@ -87,7 +107,7 @@ def upsert(text: str, key: str, value: str) -> tuple[str, bool]:
                 changed = True
                 continue
             found = True
-            if v.strip().strip("'\"") == value:
+            if _unquoted(v) == value:
                 # Already the desired value -> changed=False, so the caller skips
                 # the write/restart (and discards this text). We keep the parsed
                 # value side as-written (quotes preserved); key-side spacing is
@@ -124,3 +144,56 @@ def remove(text: str, key: str) -> tuple[str, bool]:
         new_lines.append((k, v))
     body = _render(new_lines)
     return (body + "\n" if body else ""), changed
+
+
+def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
+    """The assignments in the file at ``path``, or ``{}`` when it has none.
+
+    Fail-soft: a missing file resolves silently to ``{}``, so a reader outside
+    a secret compartment's group gets an empty mapping rather than a
+    traceback. An existing-but-unreadable file is a provisioning fault, so it
+    is logged before resolving the same way.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as e:
+        logger.warning("could not read %s: %s", path, e)
+        return {}
+    return parse_env_mapping(text)
+
+
+def write_env_file(
+    path: str | os.PathLike[str],
+    values: Mapping[str, str],
+    *,
+    mode: int = 0o600,
+) -> None:
+    """Atomically publish ``values`` as the file's COMPLETE contents.
+
+    A whole-file replace, so a reader never sees a torn file — but two writers
+    that each read, change one key, and publish do lose each other's key. Use
+    :func:`jasper.atomic_io.locked_update_env_file` where writers race (the
+    threaded wizard server's own ``/save`` handlers do).
+
+    ``mode`` defaults to 0600 because these files carry API keys and OAuth
+    secrets; pass a group-readable mode for the ones a non-root daemon has to
+    read off disk. Raises ``ValueError`` for a value carrying a newline, which
+    systemd would read as a second assignment.
+    """
+    # lazy: import cost — env_file is a leaf every parse-only reader imports,
+    # and this pulls in tempfile/fcntl for the writers alone (ADR-0226).
+    from jasper.atomic_io import atomic_write_text, format_env_text
+
+    atomic_write_text(path, format_env_text(values), mode=mode)
+
+
+def delete_env_file(path: str | os.PathLike[str]) -> None:
+    """Best-effort unlink; an already-absent file is success."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning("could not delete %s: %s", path, e)

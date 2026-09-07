@@ -15,7 +15,7 @@ import pytest
 
 from jasper import debug_mode
 from jasper.control import debug_control
-from jasper.web._common import read_env_file
+from jasper.env_file import read_env_file
 
 NOW = 1_000_000.0
 TTL = debug_mode.DEFAULT_TTL_SEC

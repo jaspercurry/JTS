@@ -40,53 +40,6 @@ from jasper.voice import model_discovery
 from jasper.web import _common, voice_setup
 
 
-# ---------- Pure helpers (no IO) -------------------------------------------
-
-
-def test_read_env_file_returns_empty_for_missing_file(tmp_path: Path):
-    assert _common.read_env_file(str(tmp_path / "nope.env")) == {}
-
-
-def test_read_env_file_round_trips_through_write_env_file(tmp_path: Path):
-    p = str(tmp_path / "v.env")
-    _common.write_env_file(p, {"OPENAI_API_KEY": "sk-abc", "JASPER_VOICE_PROVIDER": "openai"})
-    assert _common.read_env_file(p) == {
-        "OPENAI_API_KEY": "sk-abc",
-        "JASPER_VOICE_PROVIDER": "openai",
-    }
-
-
-def test_write_env_file_uses_mode_0600(tmp_path: Path):
-    p = tmp_path / "v.env"
-    _common.write_env_file(str(p), {"X": "y"})
-    # API keys live in here; a too-permissive file would leak under a
-    # daemon-readable path.
-    mode = os.stat(p).st_mode & 0o777
-    assert mode == 0o600
-
-
-def test_write_env_file_rejects_value_with_newline(tmp_path: Path):
-    """systemd's EnvironmentFile parser doesn't quote/escape, so a
-    newline in a value would silently truncate the variable. We catch
-    it client-side rather than land a broken file."""
-    p = str(tmp_path / "v.env")
-    with pytest.raises(ValueError, match="newline"):
-        _common.write_env_file(p, {"K": "abc\ndef"})
-
-
-def test_write_env_file_is_atomic_under_failure(tmp_path: Path):
-    """If a value is rejected mid-write, the previous file content
-    must remain intact. The temp-file + rename pattern is what
-    enforces this — verifying it explicitly so a future refactor
-    that 'simplifies' to direct-write gets caught."""
-    p = str(tmp_path / "v.env")
-    _common.write_env_file(p, {"OK": "first"})
-    with pytest.raises(ValueError):
-        _common.write_env_file(p, {"OK": "second", "BAD": "no\nline"})
-    # File still has the original good content.
-    assert _common.read_env_file(p) == {"OK": "first"}
-
-
 # ---------- Save logic -----------------------------------------------------
 
 

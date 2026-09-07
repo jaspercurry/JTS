@@ -75,6 +75,7 @@ __all__ = [
     "atomic_write_json",
     "atomic_write_text",
     "env_lock_path",
+    "format_env_text",
     "fsync_directory",
     "locked_transform_env_file",
     "locked_update_env_file",
@@ -460,7 +461,13 @@ def _parse_env_text(text: str) -> dict[str, str]:
     return out
 
 
-def _format_env_text(values: Mapping[str, str]) -> str:
+def format_env_text(values: Mapping[str, str]) -> str:
+    """Render ``values`` as systemd ``EnvironmentFile`` text, one line per key.
+
+    Unquoted ``KEY=value``, matching systemd's own parsing. Raises
+    ``ValueError`` for a value carrying a newline rather than emitting a line
+    that would split into a bogus second assignment.
+    """
     lines: list[str] = []
     for key, value in values.items():
         if "\n" in value or "\r" in value:
@@ -581,7 +588,7 @@ def locked_update_env_file(
         except FileNotFoundError:
             state = {}
         state.update(dict(updates))
-        text = _format_env_text(state)
+        text = format_env_text(state)
         atomic_write_text(
             fspath, text, mode=mode, group_from_parent=group_from_parent
         )
@@ -633,7 +640,7 @@ def locked_transform_env_file(
             except FileNotFoundError:
                 pass
             return None
-        text = _format_env_text(new_state)
+        text = format_env_text(new_state)
         atomic_write_text(
             fspath, text, mode=mode, group_from_parent=group_from_parent
         )
