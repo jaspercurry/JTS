@@ -57,9 +57,14 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
 | 1 | P6 right-sizing #4200 — plan posted 2026-09-06 05:43, still at its gate: paste its kickoff (P1 is done: eight PRs merged, handoff #4279) | P4 observability #4197 — second session driving on the owner's triage; finish rows 15/16, merge or close #4305, post the handoff | **Two sessions.** P12 #4213 (all Phase 3 rows merged; left: H1 and H2 on jts3 with the owner, the #4209 slider on jts.local, the jts4 deploy for HW-3/HW-5, R6, #4317, handoff) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
-| 2 | P3 resilience #4195 (P12, P4 and P6 have posted its rows) | P2 round 2 from the handoff #4248 | P11 web UI #4212, once P12 has handed off |
-| 3 | P7 tests #4201 (execution after P5's moves merge) | P5 structure #4199 (moves after P6's deletions merge) | — |
-| 4 | — | P8 docs #4202 (stale-path pass last) | — |
+| 2 | P7 tests #4201 (execution after P5's moves merge) | P2 round 2 from the handoff #4248 | P11 web UI #4212, once P12 has handed off |
+| 3 | P8 docs #4202 (stale-path pass last) | P5 structure #4199 (moves after P6's deletions merge) | P3 resilience #4195 (P12, P4 and P6 have posted its rows; its measurements need the boxes) |
+
+James Crane has no Fable credit left, so its lanes run with Opus as the coordinator: P6 (plan
+already written and triaged; mostly Sonnet deletions), then P7 and P8. P3, which touches the
+clamp paths and the daemons' restart policy and needs box measurements, moves to Space Hater after
+P11, where Fable and the hardware both are. An Opus coordinator gets one extra sentence in its
+kickoff: read every builder's diff before trusting its report, and one row at a time.
 
 **Owner at the box (next session at home).** Nothing needs a deploy first; every build is already
 on its box. jts.local (`162ab4088`): move the host volume slider 0 → 50 → 100 and hold (the #4209
