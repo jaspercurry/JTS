@@ -18,8 +18,7 @@ matching `csrf_token` form field or `X-CSRF-Token` header). These
 helpers handle the GET-then-POST handshake so each test can stay focused
 on what it's actually verifying.
 
-``FakeHandler`` provides the smaller in-process style used by wizard tests
-that call a handler class's ``do_GET`` / ``do_POST`` methods directly.
+``make_real_handler`` drives real wizard methods without opening a socket.
 """
 from __future__ import annotations
 
@@ -63,87 +62,32 @@ def patch_measurement_window(monkeypatch: Any, calls: dict) -> None:
     monkeypatch.setattr(coordinator, "measurement_window", window)
 
 
-class FakeHandler:
-    """Socketless ``BaseHTTPRequestHandler`` surface for wizard unit tests.
-
-    ``body=None`` deliberately omits Content-Length and Content-Type.  That
-    preserves the body-less request shape used by the rooms wizard; passing
-    bytes (including ``b""``) models a form request and installs both headers.
-    Response headers remain an ordered list so duplicate headers can be
-    asserted without collapsing them through ``Message``.
-    """
-
-    def __init__(
-        self,
-        path: str,
-        body: bytes | None = b"",
-        cookies: str = "",
-    ) -> None:
-        self.path = path
-        self.headers = Message()
-        payload = b"" if body is None else body
-        if body is not None:
-            self.headers["Content-Length"] = str(len(body))
-            self.headers["Content-Type"] = "application/x-www-form-urlencoded"
-        if cookies:
-            self.headers["Cookie"] = cookies
-        self.rfile = BytesIO(payload)
-        self.wfile = BytesIO()
-        self.status: int | None = None
-        self.sent_headers: list[tuple[str, str]] = []
-        self.client_address = ("127.0.0.1", 0)
-
-    def send_response(self, status: int) -> None:
-        self.status = int(status)
-
-    def send_response_only(self, status: int) -> None:
-        self.status = int(status)
-
-    def send_header(self, name: str, value: str) -> None:
-        self.sent_headers.append((name, value))
-
-    def end_headers(self) -> None:
-        pass
-
-    def send_error(self, status: int, *args: object, **kwargs: object) -> None:
-        self.status = int(status)
-
-    def address_string(self) -> str:
-        return "127.0.0.1"
-
-    def log_message(self, *args: object, **kwargs: object) -> None:
-        pass
-
-    def header_values(self, name: str) -> list[str]:
-        return [
-            value
-            for header, value in self.sent_headers
-            if header.lower() == name.lower()
-        ]
-
-
 def make_real_handler(
     handler_cls,
     path: str,
     *,
-    body: bytes = b"",
+    body: bytes | None = b"",
     headers: dict[str, str] | None = None,
     content_type: str | None = "application/x-www-form-urlencoded",
     content_length: str | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    """Instantiate a real wizard handler without its socket constructor."""
+    """Instantiate a real wizard handler without its socket constructor.
+
+    ``body=None`` omits Content-Length and Content-Type.
+    """
 
     handler = handler_cls.__new__(handler_cls)
     handler.path = path
     handler.headers = Message()
-    handler.headers["Content-Length"] = (
-        str(len(body)) if content_length is None else content_length
-    )
-    if content_type is not None:
-        handler.headers["Content-Type"] = content_type
+    if body is not None:
+        handler.headers["Content-Length"] = (
+            str(len(body)) if content_length is None else content_length
+        )
+        if content_type is not None:
+            handler.headers["Content-Type"] = content_type
     for name, value in (headers or {}).items():
         handler.headers[name] = value
-    handler.rfile = BytesIO(body)
+    handler.rfile = BytesIO(b"" if body is None else body)
     handler.wfile = BytesIO()
     handler.client_address = ("127.0.0.1", 0)
 

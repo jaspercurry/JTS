@@ -17,7 +17,7 @@ import http
 
 from jasper.web import airplay_setup
 
-from ._web_test_helpers import FakeHandler, assert_canonical_page
+from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 def _render(mode: str = "synced", flash: str = "") -> str:
@@ -103,9 +103,6 @@ def test_airplay_flash_is_escaped():
     assert "<x>" not in out
 
 
-# --- Behaviour: drive do_GET / do_POST through a fake handler, like the other
-#     web-wizard tests. Network / subprocess side effects are monkeypatched. ---
-
 def _handler_cls():
     return airplay_setup._make_handler({"state_path": "/tmp/does-not-matter.env"})
 
@@ -145,18 +142,16 @@ def test_mode_refresh_never_starts_disabled_airplay(monkeypatch):
 
 def test_get_root_renders_canonical_page(monkeypatch):
     monkeypatch.setattr(airplay_setup, "_current_mode", lambda path: "synced")
-    handler = _handler_cls()
-    h = FakeHandler("/")
-    handler.do_GET(h)
+    h, _ = make_real_handler(_handler_cls(), "/")
+    h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
     assert_canonical_page(out)
 
 
 def test_post_unknown_route_404s():
-    handler = _handler_cls()
-    h = FakeHandler("/nope", body=b"")
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/nope", body=b"")
+    h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
@@ -173,11 +168,10 @@ def test_post_save_writes_mode_and_restarts(monkeypatch):
         lambda: calls.__setitem__("restart", calls["restart"] + 1),
     )
 
-    handler = _handler_cls()
     # csrf_token = form field (CSRF_FORM_FIELD); jts_csrf = double-submit cookie.
     body = ("csrf_token=" + token + "&mode=free-running").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert h.header_values("Location") == ["./"]
@@ -197,10 +191,9 @@ def test_post_save_synced_writes_no(monkeypatch):
     )
     monkeypatch.setattr(airplay_setup, "_restart_shairport", lambda: None)
 
-    handler = _handler_cls()
     body = ("csrf_token=" + token + "&mode=synced").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert calls["write"] == [{airplay_setup.ENV_VAR: "no"}]
@@ -215,10 +208,9 @@ def test_post_save_invalid_mode_redirects_without_write(monkeypatch):
     )
     monkeypatch.setattr(airplay_setup, "_restart_shairport", lambda: wrote.append("restart"))
 
-    handler = _handler_cls()
     body = ("csrf_token=" + token + "&mode=bogus").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert h.header_values("Location") == ["./"]
@@ -230,10 +222,9 @@ def test_post_save_rejects_bad_csrf(monkeypatch):
     monkeypatch.setattr(
         airplay_setup, "write_env_file", lambda *a, **k: wrote.append(True),
     )
-    handler = _handler_cls()
     # Form-field token deliberately differs from the cookie -> 403, no write.
     body = b"csrf_token=" + b"a" * 64 + b"&mode=synced"
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + "b" * 64)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + "b" * 64})
+    h.do_POST()
     assert h.status == int(http.HTTPStatus.FORBIDDEN)
     assert wrote == []

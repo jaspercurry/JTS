@@ -29,7 +29,7 @@ import urllib.request
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import _common, voice_setup
 
-from ._web_test_helpers import FakeHandler, assert_canonical_page
+from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 def _render(state: dict | None = None, flash: str = "") -> str:
@@ -143,15 +143,6 @@ def test_voice_flash_is_routed_through_canonical_banner():
         assert _common.canonical_banner(flash) in _render(flash=flash)
 
 
-# --- handler wiring smoke checks (presentation-preserving behaviour) -------
-#
-# GET render + the early-return POST branches (unknown route 404, bad-CSRF
-# 403) are driven through a minimal fake handler. The full save/clear/refresh
-# flows reach `self._handle_*` instance methods on the real Handler, so those
-# are exercised end-to-end through an actual ThreadingHTTPServer below
-# (mirroring tests/test_voice_setup.py).
-
-
 def _handler_cls(tmp_path):
     return voice_setup._make_handler({
         "state_path": str(tmp_path / "voice.env"),
@@ -167,9 +158,8 @@ def _handler_cls(tmp_path):
 
 
 def test_get_root_renders_canonical_page(tmp_path):
-    handler = _handler_cls(tmp_path)
-    h = FakeHandler("/")
-    handler.do_GET(h)
+    h, _ = make_real_handler(_handler_cls(tmp_path), "/")
+    h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
     assert_canonical_page(out)
@@ -178,9 +168,8 @@ def test_get_root_renders_canonical_page(tmp_path):
 
 
 def test_post_unknown_route_404s(tmp_path):
-    handler = _handler_cls(tmp_path)
-    h = FakeHandler("/nope", body=b"")
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(tmp_path), "/nope", body=b"")
+    h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
