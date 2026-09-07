@@ -18,9 +18,6 @@ Module layout:
                     systemd entrypoint for the always-on default agent
   - engine.py       long-lived discovery owner, pair state machine, status events
   - scan.py         live ObjectManager observer + event stream
-  - roles.py        /var/lib/jasper/bt_roles.json — minimal persistence
-                    of {mac: handler_id} so a re-connecting device gets
-                    routed back to the right place
   - avrcp.py        AVRCP transport controls (play/pause/next/etc.) for
                     connected A2DP-sink devices
   - handlers/       per-class behaviour (HID / A2DP-sink / default —

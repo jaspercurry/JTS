@@ -134,7 +134,6 @@ def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
     state their root incarnation created must move with them: readable for the
     files a writer atomically replaces, and OWNED for the SQLite ledger it
     modifies in place ("attempt to write a readonly database" otherwise)."""
-    roles = _mk(tmp_path / "bt_roles.json", 0o600)
     measurements = _mk(tmp_path / "active_speaker_measurements.json", 0o600)
     tuning_db = _mk(tmp_path / "usage-tuning.db", 0o600)
     # A capture tree the root /sound/room/ arms made with a bare mkdir under
@@ -144,9 +143,6 @@ def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
 
     _run_heal(tmp_path, stubs=_STUBS_WITH_WEB_USER)
 
-    # RoleStore.set() loads before it writes: an unreadable map republishes an
-    # empty one and forgets every paired device's handler.
-    assert _mode(roles) == 0o640
     assert _mode(measurements) == 0o640
     assert _mode(tuning_db) == 0o644
     assert tuning_db.stat().st_uid == os.getuid()  # the stubbed jasper-web uid

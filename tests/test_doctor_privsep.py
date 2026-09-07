@@ -98,8 +98,8 @@ def test_input_at_0600_root_fails_naming_file_and_mode(tmp_path: Path):
 
 def test_wrong_group_0640_fails(tmp_path: Path):
     """0640 but the daemon shares neither uid nor the file's group -> unreadable
-    (the bt_roles.json 0640-but-wrong-group shape)."""
-    f = tmp_path / "bt_roles.json"
+    (the sound_settings.json 0640-but-wrong-group shape)."""
+    f = tmp_path / "sound_settings.json"
     _make(f, 0o640)
     result = privsep._classify_readable_inputs(
         "daemon reads: jasper-web",

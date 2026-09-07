@@ -119,13 +119,9 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/source_intent.env.request.lock"
         "f:0660:${STATE_DIR}/source_intent.env.reconcile.lock"
         "d:0770:${STATE_DIR}/wake-events"
-        # The three wizard units that used to run as root now run as
-        # jasper-web, so state they created root-owned has to move with them.
-        # bt_roles.json is the dangerous one: RoleStore.set() LOADS before it
-        # writes, so an unreadable map would republish an EMPTY one and forget
-        # every device's handler. The measurement state is the same shape one
-        # step milder (an unreadable file reads as "no measurements").
-        "f:0640:${STATE_DIR}/bt_roles.json"
+        # The wizard units that used to run as root now run as jasper-web,
+        # so state they created root-owned has to move with them. An
+        # unreadable measurement file reads as "no measurements".
         "f:0640:${STATE_DIR}/active_speaker_measurements.json"
         # The Layer-A SSOT older root atomic writers published root:root 0640;
         # jasper-control reads it group `jasper` for the aggregate /state.

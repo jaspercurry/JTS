@@ -38,7 +38,6 @@ from .models import (
     BluetoothDevice,
     adapter_not_ready_result,
 )
-from .roles import RoleStore
 from .scan import DeviceObserver
 
 logger = logging.getLogger(__name__)
@@ -167,7 +166,6 @@ class BluetoothEngine:
         self._adapter = adapter
         self._bus: MessageBus | None = None
         self._observer = DeviceObserver()
-        self._roles = RoleStore()
         self._accessory_reconcile = accessory_reconcile or _default_accessory_reconcile
         self._closing = False
         # Set only when this engine deliberately disconnects its discovery
@@ -192,10 +190,6 @@ class BluetoothEngine:
     @property
     def observer(self) -> DeviceObserver:
         return self._observer
-
-    @property
-    def roles(self) -> RoleStore:
-        return self._roles
 
     async def start(self) -> None:
         self._closing = False
@@ -579,7 +573,6 @@ class BluetoothEngine:
         # Per-class post-pair routing.
         dev = await self._refresh_device(dev.path) or dev
         handler = pick(dev)
-        self._roles.set(dev.address, handler.id)
         reconciled = False
         async for evt in handler.post_pair(dev):
             if "error" in evt:
@@ -687,7 +680,6 @@ class BluetoothEngine:
             level=logging.INFO if result.ok else logging.WARNING,
         )
         if result.ok:
-            self._roles.remove(mac)
             if not await self._reconcile_accessories("bluetooth-forget"):
                 return BluetoothActionResult(
                     True,
