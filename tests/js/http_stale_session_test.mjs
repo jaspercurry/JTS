@@ -38,7 +38,8 @@ globalThis.document = {
 globalThis.location = { reload() { reloadCalled = true; } };
 
 let nextResponse = null;
-globalThis.fetch = async () => nextResponse;
+let lastInit = null;
+globalThis.fetch = async (_path, init) => { lastInit = init; return nextResponse; };
 
 function jsonResponse(status, jsonBody) {
   return { ok: status >= 200 && status < 300, status, async json() { return jsonBody; } };
@@ -144,6 +145,23 @@ check(
     `a route's own JSON 403 copy survives untouched (got: ${JSON.stringify(thrown && thrown.message)})`,
   );
   check(reloadCalled === false, "a route's own JSON 403 never triggers the stale-session reload");
+}
+
+// --- keepalive: a teardown POST must be able to outlive the page -----------
+// A pagehide handler's stop/restore is only worth sending if the browser is
+// allowed to finish it after the page is gone. Without this on postJSON, every
+// such caller drops back to a hand-rolled fetch and loses the shared plumbing.
+{
+  nextResponse = jsonResponse(200, { ok: true });
+  await postJSON("/sound/settings", { match_loudness: true });
+  check(lastInit.keepalive === false, "postJSON does not set keepalive by default");
+
+  await postJSON("/sound/apply", { curve_id: "harman" }, { keepalive: true });
+  check(lastInit.keepalive === true, "postJSON({keepalive:true}) rides it onto the fetch");
+  check(
+    lastInit.method === "POST" && lastInit.body === JSON.stringify({ curve_id: "harman" }),
+    "the options bag leaves the method and JSON body alone",
+  );
 }
 
 console.log(JSON.stringify({ ok: true, passed }));

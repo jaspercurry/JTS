@@ -1080,6 +1080,7 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
       status: "blocked",
       reason_code: "active_baseline_recompose_unavailable",
       message: "This speaker runs an active crossover.",
+      volume_warning: "Saved, but the volume floor lands on the next change.",
     })),
   }));
   await harness.flush(); await harness.flush(); await harness.flush();
@@ -1088,11 +1089,17 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
   await harness.flush(); await harness.flush(); await harness.flush();
 
   const html = harness.elements.get("view-body").innerHTML;
-  if (!/<div class="info-card"[^>]*>\s*<p>This speaker runs an active crossover\.<\/p>/.test(html)) {
-    fail("a blocked settings save should render the refusal on the card", { html });
+  for (const expected of ["info-card", "not audible until this speaker"]) {
+    if (!html.includes(expected)) {
+      fail("a blocked settings save should render the refusal on the card", {
+        expected, html,
+      });
+    }
   }
-  if (!harness.elements.get("status").textContent.includes("active crossover")) {
-    fail("a blocked settings save should also say so on the status line", {
+  // The card carries the refusal, so the status line is free for the warning
+  // the card does NOT carry instead of repeating it.
+  if (!harness.elements.get("status").textContent.includes("volume floor")) {
+    fail("a blocked save should leave the status line to its other warning", {
       status: harness.elements.get("status").textContent,
     });
   }
@@ -1138,6 +1145,19 @@ async function testLeavingAnUnsavedDraftRestoresThePersistedProfile() {
     fail("the restore should post the persisted profile, not the draft", {
       body: applyPosts[0].body,
     });
+  }
+
+  // The negative half: nothing is live-but-unpersisted from Saved or Off, so
+  // leaving from either must not re-post anything at all.
+  for (const tab of ["tab-saved", "tab-off"]) {
+    harness.elements.get(tab).click();
+    await harness.flush(); await harness.flush(); await harness.flush();
+    applyPosts.length = 0;
+    for (const listener of globalThis.window._listeners.pagehide || []) listener();
+    await harness.flush(); await harness.flush();
+    if (applyPosts.length !== 0) {
+      fail("leaving a persisted view should post nothing", { tab, applyPosts });
+    }
   }
   return { leavingAnUnsavedDraftRestoresThePersistedProfile: true };
 }
