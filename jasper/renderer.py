@@ -244,9 +244,6 @@ async def _busctl_call_method(
     return True
 
 
-_MPRIS_KV_RE = re.compile(r'"([^"]+)"\s+(\w[\w\d]*)\s+([^"]*?(?:"[^"]*"\s*)*)')
-
-
 def _parse_mpris_metadata(busctl_out: str) -> dict[str, Any]:
     """Best-effort parser for busctl's MPRIS Metadata output.
 

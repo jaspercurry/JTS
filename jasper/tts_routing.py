@@ -32,24 +32,6 @@ TTS_MIX_STAGE_POST_DSP = "post_dsp"
 GROUPING_VOICE_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 
 
-def resolved_tts_routing_env(
-    env: Mapping[str, str],
-    *,
-    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
-) -> dict[str, str]:
-    """Overlay reconciler-owned topology facts onto process environment.
-
-    Voice receives this file through systemd. Control and mux are not
-    restarted for every bond transition, so publisher construction reads the
-    same small, non-secret file instead of retaining stale process state.
-    """
-    resolved, _grouping_socket_override = resolve_tts_routing_snapshot(
-        env,
-        grouping_env_path=grouping_env_path,
-    )
-    return resolved
-
-
 def resolve_tts_routing_snapshot(
     env: Mapping[str, str],
     *,
