@@ -274,8 +274,7 @@ def emit_mixer(
 
 # The split mixer's name. Distinct from ``master_gain`` on purpose: a whole-box
 # channel pick is a separate concern from the program's own routing, so it is a
-# SEPARATE mixer inserted after it. (Ducking is unrelated to either — it is a
-# transient-duck claim on the volume owner, ``jasper.camilla.Ducker``.)
+# SEPARATE mixer inserted after it. (Ducking is unrelated to either.)
 CHANNEL_SELECT_MIXER = "channel_select"
 
 # Per-source gain for a 2-channel L+R mono sum. 20*log10(0.5) = -6.0206 dB:
@@ -374,9 +373,8 @@ def emit_master_gain_pipeline(
     multi-room channel-split weave once spliced ``channel_select``
     immediately after it this way, before it was removed as dead code
     (Wave 1 cleanup, 2026-08-25) — and the reserved hook for future mixer
-    ops. Ducking rides none of this: it is a transient-duck claim on the
-    volume owner (``jasper.camilla.Ducker``). See the sound-emitter tests
-    for the byte-level contract.
+    ops. Ducking rides none of this. See the sound-emitter tests for the
+    byte-level contract.
 
     ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
     reproduces the sound emitter's solo pipeline byte-for-byte (the

@@ -33,7 +33,7 @@ from ..audio_io import (
     tts_wire_is_wide as _tts_wire_is_wide,
     wait_tts_drained_owned,
 )
-from ..camilla import CueDuck, Ducker
+from ..camilla import CueDuck
 from ..config import Config
 from ..cues import AudioCueManager
 from ..tts_routing import (
@@ -211,7 +211,7 @@ class AssistantOutput:
         self,
         cfg: Config,
         tts: TtsPlayout,
-        ducker: Ducker | FanInDucker,
+        ducker: FanInDucker,
         cues: AudioCueManager | None,
         volume_coordinator: VolumeCoordinator,
         *,
@@ -382,14 +382,8 @@ class AssistantOutput:
         return "ok" if played else "play_failed"
 
     async def play_dynamic_text(self, text: str) -> bool:
-        """Speak arbitrary `text` through the cue manager, with
-        snapshot-based duck/restore around the playback.
-
-        Uses `CueDuck` rather than the daemon's `Ducker` because a cue is
-        a brief, passive interruption: the user isn't adjusting volume
-        mid-cue, so "music returns to exactly where it was" matters more
-        than the remote-twist-wins behaviour `Ducker` is designed for.
-        See `jasper/camilla.py:CueDuck`."""
+        """Speak arbitrary `text` through the cue manager, ducking around
+        the playback."""
         if self._cues is None:
             logger.warning("dynamic text play skipped: cues unavailable")
             return False
@@ -489,11 +483,10 @@ class AssistantOutput:
         multi-second voice sessions where the user may adjust volume mid-turn,
         and a ~6 s cue is short enough for plain duck/restore.
 
-        The cue plays even if ducking fails — the usual cause is camilla
-        restarting, in which case music is not playing through camilla either,
-        so the cue is unducked but audible, and silence on a wake-blocking
-        condition is the worse outcome. Ducker.restore short-circuits when the
-        duck did not latch, so the finally is unconditional.
+        The cue plays even if ducking fails: unducked but audible beats
+        silence on a wake-blocking condition. The finally restores
+        unconditionally — a duck that reported failure may still have
+        delivered the attenuation, so the release has to run anyway.
 
         ``episode`` is for the one caller that cannot let this method take
         its own admission: the research cancel timeout has to end the turn
@@ -752,9 +745,7 @@ class AssistantOutput:
         # post-DSP outputd mix (a reconciled passive member). The same wire
         # message is sent either way — the post-DSP consumer owns the
         # structural downstream-is-zero fact. Ambiguous/legacy routes stay off.
-        route_consumes_context = getattr(
-            self._cfg, "duck_transport", ""
-        ) == "fanin" and (
+        route_consumes_context = (
             tts_socket_feeds_pre_dsp_fanin(os.environ)
             or tts_socket_feeds_post_dsp_outputd(os.environ)
         )

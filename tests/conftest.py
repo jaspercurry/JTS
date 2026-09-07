@@ -289,9 +289,6 @@ def _isolate_canonical_target_provider():
 
     Both sides matter, as with the width cache above: clearing BEFORE stops a
     test inheriting a provider, restoring AFTER stops it handing one forward.
-
-    ``Ducker`` needs no equivalent — it takes ``target_db_provider`` as a
-    constructor argument, so its provider is instance state, not a global.
     """
     from jasper import camilla
 

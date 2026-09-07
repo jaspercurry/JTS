@@ -171,7 +171,6 @@ EnvironmentFile=-/var/lib/jasper/accessory-mics.env
 # correction, and protection path as renderer audio. The socket endpoint
 # is the runtime owner.
 Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-fanin/tts.sock"
-Environment="JASPER_DUCK_TRANSPORT=fanin"
 # Grouping-derived TTS playout route (Increment 5 PR-2): the reconciler's
 # route matrix either points JASPER_TTS_OUTPUTD_SOCKET at outputd's socket
 # for passive non-sub members, omits it so the inline fanin default above

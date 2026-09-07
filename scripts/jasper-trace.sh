@@ -13,7 +13,7 @@
 #   PI_HOST=192.168.1.42 bash scripts/jasper-trace.sh
 #
 # Pattern is wide enough to catch both the structured `event=` prefix
-# (camilla.Ducker, control /volume handlers) and the pre-existing
+# (duck holders, control /volume handlers) and the pre-existing
 # high-signal log strings ("wake detected", "turn ended",
 # "source transition", "preempting", "active source"). Add more
 # patterns as new event log lines land.

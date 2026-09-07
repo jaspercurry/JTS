@@ -12,11 +12,8 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 from jasper.audio_hardware import dac
 from jasper.tts_routing import (
-    DUCK_TRANSPORT_ENV,
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET_ENV,
@@ -579,7 +576,6 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
     solo = _resolve_systemd_unit_env(unit, {})
     solo_cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **solo)
     assert solo_cfg.tts_outputd_socket == FANIN_TTS_SOCKET
-    assert solo_cfg.duck_transport == "fanin"
 
     bonded = _resolve_systemd_unit_env(
         unit,
@@ -592,52 +588,12 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
     )
     bonded_cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **bonded)
     assert bonded_cfg.tts_outputd_socket == OUTPUTD_TTS_SOCKET
-    assert bonded_cfg.duck_transport == "fanin"
     assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
 
     # The unit owns these names; the reconciler must not become a second writer.
     reconcile = (REPO / "deploy" / "bin" / "jasper-audio-hardware-reconcile").read_text()
     assert "TTS_ENV_FILE" not in reconcile
     assert VOICE_TTS_SOCKET_ENV not in reconcile
-    assert DUCK_TRANSPORT_ENV not in reconcile
-
-
-def test_the_duck_rides_the_same_lane_the_assistant_mixes_into(monkeypatch):
-    """Ducking in CamillaDSP while TTS enters ahead of it attenuates the
-    assistant's own audio along with the program. Two halves: the loader
-    refuses the fan-in socket paired with a Camilla duck, and the daemon's
-    selection actually reads `duck_transport` — a selection that ignored it
-    would keep every config test green while the box double-ducks.
-    """
-    from jasper.camilla import Ducker
-    from jasper.voice.daemon_main import build_ducker
-    from jasper.voice.assistant_output import FanInDucker
-
-    from .doctor_test_support import _fresh_cfg
-
-    async def target_db() -> float:
-        return -20.0
-
-    def ducker(socket: str, transport: str):
-        cfg = _fresh_cfg(
-            monkeypatch,
-            GEMINI_API_KEY="AIzaSyTest",
-            **{VOICE_TTS_SOCKET_ENV: socket, DUCK_TRANSPORT_ENV: transport},
-        )
-        return build_ducker(
-            cfg, volume_owner=object(), target_db_provider=target_db,
-        )
-
-    with pytest.raises(RuntimeError):
-        ducker(FANIN_TTS_SOCKET, "camilla")
-
-    fanin_ducker = ducker(FANIN_TTS_SOCKET, "fanin")
-    camilla_ducker = ducker(OUTPUTD_TTS_SOCKET, "camilla")
-    assert isinstance(fanin_ducker, FanInDucker)
-    assert isinstance(camilla_ducker, Ducker)
-    # The fan-in duck must leave Camilla free to act as the master volume.
-    assert fanin_ducker.locks_camilla_volume is False
-    assert camilla_ducker.locks_camilla_volume is True
 
 
 def test_fanin_exposes_outputd_compatible_tts_socket():

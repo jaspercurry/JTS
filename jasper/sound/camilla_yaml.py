@@ -261,9 +261,8 @@ def _master_gain_mixer_yaml(
     child (0 and 2 on a dual-Apple stereo box), so the dead dests are 1 and 3
     rather than everything past the program's own width.
 
-    ``master_gain`` stops being identity here. That is safe for the Ducker,
-    which claims the volume owner (``jasper.camilla.Ducker``) and never touches
-    this mixer.
+    ``master_gain`` stops being identity here. That is safe for ducking,
+    which never touches this mixer.
 
     The unity route is spelled ``gain: 0``, not ``fmt(0.0)``: that literal is
     the byte contract of every config already in the field (the golden fixtures
@@ -651,13 +650,13 @@ def emit_sound_config(
     # when nothing folds; a folded graph must not carry the identity claim.
     mixer_note = (
         "# preference-EQ filters. The `master_gain` mixer remains identity so\n"
-        "# the Ducker contract holds."
+        "# volume stays on CamillaDSP's main_volume fader."
         if mono_fold_output is None
         else (
             "# preference-EQ filters. The `master_gain` mixer folds both program\n"
             f"# channels onto output {mono_fold_output} at "
             f"{fmt(MONO_SUM_GAIN_DB)} dB each (clip-safe mono sum);\n"
-            "# the Ducker drives CamillaDSP's main_volume fader, not this mixer."
+            "# volume rides CamillaDSP's main_volume fader, not this mixer."
         )
     )
     yaml = f"""---

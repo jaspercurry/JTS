@@ -7,7 +7,7 @@
 # Structure mirrors deploy/camilladsp/outputd-cutover.yml.
 # Room-correction PEQs, when present, run before sound-curve /
 # preference-EQ filters. The `master_gain` mixer remains identity so
-# the Ducker contract holds.
+# volume stays on CamillaDSP's main_volume fader.
 # output_trim_db=0.000
 
 devices:

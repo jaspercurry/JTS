@@ -26,7 +26,6 @@ from ..audio_io import (
 from ..assistant_loudness import active_voice_identity, ensure_seed_profile
 from ..camilla import (
     CamillaController,
-    Ducker,
     set_canonical_target_db_provider,
 )
 from ..config import Config, VoiceProviderNotConfigured
@@ -366,25 +365,6 @@ def _tts_ready_detail(cfg: Config) -> str:
     """The startup line's ``tts_socket=`` field: where assistant audio
     enters (fan-in solo, outputd when a bonded member overrides it)."""
     return f"tts_socket={cfg.tts_outputd_socket}"
-
-
-def build_ducker(
-    cfg: Config,
-    *,
-    volume_owner: Any,
-    target_db_provider: Callable[[], Awaitable[float]],
-) -> Ducker | FanInDucker:
-    """Pick the duck transport that matches where TTS enters the mix.
-
-    Production routes TTS/cues into fan-in ahead of CamillaDSP, so the duck
-    has to happen in fan-in too; Camilla main_volume would otherwise attenuate
-    the assistant along with the renderer program.
-    """
-    if cfg.duck_transport == "fanin":
-        return FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
-    return Ducker(
-        volume_owner, cfg.duck_db, target_db_provider=target_db_provider,
-    )
 
 
 def _make_connection(
@@ -903,24 +883,17 @@ async def run() -> None:
             volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
         )
         _arelease(stack, "volume_coordinator", volume_coordinator.aclose)
-        # Every duck holder in this process — Ducker, CueDuck, and the graph-swap
-        # bracket — releases against the coordinator's canonical target so their
-        # interleavings cannot strand the fader at a value one of them had ducked.
+        # Every duck holder in this process — CueDuck and the graph-swap bracket —
+        # releases against the coordinator's canonical target so their interleavings
+        # cannot strand the fader at a value one of them had ducked.
         set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
-        # This daemon INJECTS its owner (Ducker and CueDuck take it as a
-        # constructor argument), so it needs no registration to work. It registers
+        # This daemon INJECTS its owner (CueDuck takes it as a constructor
+        # argument), so it needs no registration to work. It registers
         # anyway, and registers the SAME instance: leaving `volume_owner()`
         # answering None in a process that has an owner is precisely how a later
         # caller ends up minting the second one.
         install_volume_owner(volume_coordinator.volume_owner)
-        # Built after the coordinator so restore follows the active output topology,
-        # and so the Camilla duck shares the coordinator's fader owner rather than
-        # writing beside it.
-        ducker = build_ducker(
-            cfg,
-            volume_owner=volume_coordinator.volume_owner,
-            target_db_provider=volume_coordinator.get_camilla_target_db,
-        )
+        ducker = FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
         try:
             target_level, restore_reason = await volume_coordinator.initialize(
                 stale_after_sec=cfg.volume_regress_after_sec,

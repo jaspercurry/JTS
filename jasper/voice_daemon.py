@@ -34,7 +34,7 @@ from .wake_legs import LegSpec, wake_input_legs
 from .wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
-from .camilla import CamillaController, Ducker
+from .camilla import CamillaController
 from .config import Config
 from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
@@ -651,7 +651,7 @@ class WakeLoop:
         cfg: Config,
         tts: TtsPlayout,
         connection: LiveConnection,
-        ducker: Ducker | FanInDucker,
+        ducker: FanInDucker,
         content_activity: ContentActivityTracker,
         usage_store: UsageStore,
         spend_cap: SpendCap,
@@ -974,11 +974,11 @@ class WakeLoop:
         self._assistant_output._cues = value
 
     @property
-    def _ducker(self) -> Ducker | FanInDucker:
+    def _ducker(self) -> FanInDucker:
         return self._assistant_output._ducker
 
     @_ducker.setter
-    def _ducker(self, value: Ducker | FanInDucker) -> None:
+    def _ducker(self, value: FanInDucker) -> None:
         self._assistant_output._ducker = value
 
     @property
@@ -2737,9 +2737,6 @@ class WakeLoop:
         await self._prepare_assistant_loudness_context()
         await self._tts.pause_content_meter()
         self._content_activity.pause()
-        # Tell the volume coordinator a session is active so its
-        # source-transition handler doesn't fight the ducker's
-        # additive math on camilla.
         self._volume_coordinator.note_voice_session(
             True,
             camilla_volume_locked=getattr(
