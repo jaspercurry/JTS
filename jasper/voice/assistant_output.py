@@ -20,6 +20,7 @@ import socket
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from inspect import isawaitable
+from typing import Any
 
 from jasper.log_event import log_event
 
@@ -206,14 +207,6 @@ async def _await_output_cleanup_owned(
 
 
 class AssistantOutput:
-    """Every path that puts assistant audio on the wire.
-
-    Owns the output gate, the duck transport, the cue manager and the
-    pre-baked earcons. ``stamp_stage`` is the wake loop's turn-timeline
-    stamp; the listening chirp calls it so the stamp keeps its order
-    against the write beneath it.
-    """
-
     def __init__(
         self,
         cfg: Config,
@@ -224,6 +217,8 @@ class AssistantOutput:
         *,
         stamp_stage: Callable[[str], None],
     ) -> None:
+        # Captured at construction (Config is frozen); a test that rebinds
+        # wl._cfg does not reach the duck depth here.
         self._cfg = cfg
         self._tts = tts
         self._ducker = ducker
@@ -400,6 +395,7 @@ class AssistantOutput:
         if self._cues is None:
             logger.warning("dynamic text play skipped: cues unavailable")
             return False
+        cues = self._cues
         # Ahead of prerender, which is a paid synthesis plus a disk write:
         # a closed window cannot admit the episode that would speak it.
         refusal = self.admission_refusal()
@@ -427,7 +423,7 @@ class AssistantOutput:
             return self._output_gate.is_current(episode)
 
         async def _speak() -> bool:
-            return bool(await self._cues.speak_text_guarded(text, _episode_current))
+            return bool(await cues.speak_text_guarded(text, _episode_current))
 
         restore: Callable[[], Awaitable[None]] | None = None
         try:
@@ -549,6 +545,11 @@ class AssistantOutput:
         slug: str,
         episode: AssistantOutputEpisode,
     ) -> bool:
+        # Callers (play_cue, play_cue_admitted) already refuse a None cue
+        # manager before reaching here; this guard mirrors theirs for mypy.
+        cues = self._cues
+        if cues is None:
+            return False
         ducker = self._ducker
         played = False
         try:
@@ -561,7 +562,7 @@ class AssistantOutput:
                     slug, e,
                 )
             try:
-                played = await self._cues.play(slug)
+                played = await cues.play(slug)
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue %s play failed: %s", slug, e)
         finally:
@@ -702,7 +703,7 @@ class AssistantOutput:
         try:
             await self.prepare_loudness()
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
-            fields: dict[str, object] = {
+            fields: dict[str, Any] = {
                 "kind": kind,
                 "exc_type": type(e).__name__,
                 "err": str(e),
@@ -716,7 +717,10 @@ class AssistantOutput:
     async def listening_chirp(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't ready, the wake or
         end-of-turn happens anyway — never raise. PCM is pre-rendered
-        in __init__ to keep this off the wake hot path."""
+        in __init__ to keep this off the wake hot path.
+
+        ``_stamp_stage`` is the wake loop's turn-timeline stamp; calling
+        it here keeps the stamp's order against the write beneath it."""
         try:
             pcm = self._chirp_on_pcm if going_on else self._chirp_off_pcm
             profile = (
@@ -739,7 +743,7 @@ class AssistantOutput:
         tts_envelope = tts_envelope_lufs_for_level(
             self._volume_coordinator.get_listening_level(),
         )
-        prepare_kwargs = {
+        prepare_kwargs: dict[str, Any] = {
             "provider": provider,
             "model": model,
             "voice": voice,
@@ -796,44 +800,3 @@ class AssistantOutput:
         if current is not None and self._output_gate.is_current(current):
             return current
         return await self._output_gate.begin_turn()
-
-    async def cancel_timeout_cue(
-        self,
-        surrendered: AssistantOutputEpisode | None,
-    ) -> None:
-        """Answer a wake the confirmation window's opener never released.
-
-        The opener holds the turn episode, which `play_cue`'s own "admin"
-        admission cannot preempt — it would skip the cue and leave this
-        wake silent. Take that ownership away rather than lend the cue the
-        opener's episode: nothing cancels the opener here, so it resumes
-        into its own teardown, whose duck restore and gate release would
-        cut a cue playing on a turn-kind episode. Both teardown paths
-        re-ask `is_current` at each of their output actions, so a
-        surrendered opener writes nothing and releases nothing. The
-        succession is one lock hold, not an end followed by a begin: a
-        `begin_turn` waiter queued on the idle signal would otherwise take
-        the gate in between and the wake would go unanswered (NN-6).
-
-        The handover refuses in two cases, and then nothing was ended: the
-        opener's episode is still current — it still owns output, and its
-        duck and its gate release are still its own to do — or it was
-        already gone, and whoever holds the gate now owns them instead.
-        Both leave `play_cue` to ask for its own admission.
-        """
-        cue_episode = (
-            await self._output_gate.hand_over_if_current(
-                surrendered, "admin",
-            )
-            if surrendered is not None else None
-        )
-        played = await self.play_cue(
-            INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
-        )
-        if cue_episode is not None and not played:
-            # Only on the handover, and only when no cue took the gate to
-            # duck and restore: this arm ended the episode whose teardown
-            # would have handed the opener's duck back, so it hands it
-            # back itself. On a refusal the duck is not this arm's to
-            # touch.
-            await self._ducker.restore()

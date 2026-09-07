@@ -408,7 +408,6 @@ module = [
     "jasper.transit.providers.nyc_subway",
     "jasper.usage",
     "jasper.usbsink.volume_bridge",
-    "jasper.voice.assistant_output",
     "jasper.voice.daemon_main",
     "jasper.voice_daemon",
     "jasper.volume_diagnostics",

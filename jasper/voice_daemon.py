@@ -594,10 +594,44 @@ class _ResearchTurnHost:
         await self._loop._cleanup_after_failed_begin()
 
     async def play_cancel_timeout_cue(self) -> None:
+        """Answer a wake the confirmation window's opener never released.
+
+        The opener holds the turn episode, which `_play_cue`'s own "admin"
+        admission cannot preempt — it would skip the cue and leave this
+        wake silent. Take that ownership away rather than lend the cue the
+        opener's episode: nothing cancels the opener here, so it resumes
+        into its own teardown, whose duck restore and gate release would
+        cut a cue playing on a turn-kind episode. Both teardown paths
+        re-ask `is_current` at each of their output actions, so a
+        surrendered opener writes nothing and releases nothing. The
+        succession is one lock hold, not an end followed by a begin: a
+        `begin_turn` waiter queued on the idle signal would otherwise take
+        the gate in between and the wake would go unanswered (NN-6).
+
+        The handover refuses in two cases, and then nothing was ended: the
+        opener's episode is still current — it still owns output, and its
+        duck and its gate release are still its own to do — or it was
+        already gone, and whoever holds the gate now owns them instead.
+        Both leave `_play_cue` to ask for its own admission.
+        """
         loop = self._loop
-        await loop._assistant_output.cancel_timeout_cue(
-            loop._turn_output_episode,
+        surrendered = loop._turn_output_episode
+        cue_episode = (
+            await loop._output_gate.hand_over_if_current(
+                surrendered, "admin",
+            )
+            if surrendered is not None else None
         )
+        played = await loop._play_cue(
+            INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
+        )
+        if cue_episode is not None and not played:
+            # Only on the handover, and only when no cue took the gate to
+            # duck and restore: this arm ended the episode whose teardown
+            # would have handed the opener's duck back, so it hands it
+            # back itself. On a refusal the duck is not this arm's to
+            # touch.
+            await loop._ducker.restore()
 
 
 class WakeLoop:
@@ -919,8 +953,9 @@ class WakeLoop:
         self._assistant_output._output_gate = value
 
     # `_tts`, `_cues`, `_ducker` and `_volume_coordinator` live on
-    # `AssistantOutput`; these keep one object per collaborator while the
-    # loop (and `MeasurementHold`) reach them by their old names.
+    # `AssistantOutput`; these keep one object per collaborator. The
+    # getters serve the loop and `MeasurementHold`; the setters serve
+    # `for_tests` overrides and the suite's rebinds.
     @property
     def _tts(self) -> TtsPlayout:
         return self._assistant_output._tts
@@ -1230,7 +1265,7 @@ class WakeLoop:
         if self._state is State.SESSION:
             return "skipped_session_active"
         if self._output_gate.is_active:
-            return self._output_admission_refusal() or "skipped_output_active"
+            return self._assistant_output.admission_refusal() or "skipped_output_active"
         return await self.play_cue(slug)
 
     def set_research_scheduler(
@@ -1561,9 +1596,6 @@ class WakeLoop:
                 await self._handle_wake_frame(frame, leg=leg_name)
             elif self._state is State.SESSION and rt.shadow_vad is not None:
                 await self._shadow_vad_score_raw(frame)
-
-    def _output_admission_refusal(self) -> str | None:
-        return self._assistant_output.admission_refusal()
 
     async def _drain_inflight_output(self, *, timeout_sec: float) -> bool:
         return await self._assistant_output.drain_inflight(
