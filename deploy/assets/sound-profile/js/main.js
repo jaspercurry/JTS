@@ -918,7 +918,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   function outputHardwareMismatch(topology) {
     // The declared-vs-detected comparison is computed once, server-side, in
     // jasper.output_topology.declared_hardware_mismatch and published as
-    // payload.hardware_mismatch (jasper/web/sound_setup.py's
+    // payload.hardware_mismatch (jasper/web/sound_active_speaker.py's
     // _output_topology_payload) -- the same rule jasper.control.audio_health's
     // #2812 setup hint reads, since that detector runs in a different daemon
     // and cannot see this page's HTTP response. `topology` is accepted but

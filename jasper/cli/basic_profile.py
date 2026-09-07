@@ -78,7 +78,7 @@ CSRF_PAGE_PATH = "/sound/setup/"
 
 #: The door's own word for "the candidate moved under you", reused verbatim for
 #: the pre-flight refusal below so one condition has one name whichever side
-#: catches it (jasper/web/sound_setup.py's finish-commissioning payload).
+#: catches it (jasper/web/sound_active_speaker.py's finish-commissioning payload).
 FINGERPRINT_MISMATCH_CODE = "baseline_candidate_fingerprint_mismatch"
 
 #: The door refused and named neither a blocker nor a status of its own.
