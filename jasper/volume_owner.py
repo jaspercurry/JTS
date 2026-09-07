@@ -424,9 +424,8 @@ class VolumeOwner:
 
         Fail-closed like :meth:`acquire_level`: an attenuation that could not
         be established raises and leaves no claim held, so a holder never
-        believes it is ducking a speaker it did not move. ``Ducker`` depends on
-        exactly that — it must not latch when the write was skipped, or its
-        restore writes a level nothing ducked.
+        believes it is ducking a speaker it did not move — a holder that
+        latched on a skipped write would restore a level nothing ducked.
         """
         depth = abs(_finite(depth_db, "depth_db"))
         async with self._lock:
@@ -585,8 +584,8 @@ class VolumeOwner:
                 )
             # This read and :meth:`_settle`'s are NOT one question asked
             # twice. They are separated by a round-trip, and the fader is
-            # shared across daemons: ``Ducker.restore`` clears the duck-active
-            # flag BEFORE awaiting this release, so jasper-control's probe
+            # shared across daemons: a duck holder clears the duck-active flag
+            # BEFORE awaiting this release, so jasper-control's probe
             # (``control.volume_ops._make_duck_active_probe``) stops deferring
             # and may write CamillaDSP while the first read is in flight.
             # Settling on the earlier sample would skip the repair and leave
@@ -785,8 +784,8 @@ def install_volume_owner(owner: VolumeOwner | None) -> None:
 
     **Two ways a holder reaches the owner, and the split is not new.** A
     process that already builds a long-lived ``VolumeCoordinator`` hands that
-    coordinator's ``volume_owner`` straight to its holders — ``Ducker`` and
-    ``CueDuck`` take it as a constructor argument. A process that builds no
+    coordinator's ``volume_owner`` straight to its holders — ``CueDuck``
+    takes it as a constructor argument. A process that builds no
     such coordinator has nothing to inject from: the ``/sound/`` floor-tone
     audition, the crossover level lease and the measurement volume guard all
     run inside socket-activated wizards whose request handlers are reached

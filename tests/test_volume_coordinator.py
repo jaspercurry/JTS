@@ -1376,7 +1376,7 @@ async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
 async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
     """During a voice duck, a camilla-master target is only safe if the
     current ducked Camilla level is already below the target guard.
-    The target is still persisted so Ducker.restore lands safe."""
+    The target is still persisted so the duck release lands safe."""
     coord, cam, persistence = _coord(
         tmp_path,
         active={"spotactive": True},
@@ -1404,7 +1404,7 @@ async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
 
 async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
     """If the duck has already made Camilla quiet enough, prepare may
-    succeed and Ducker.restore still targets the selected source level."""
+    succeed and the duck release still targets the selected source level."""
     coord, _, _ = _coord(
         tmp_path,
         active={"spotactive": True},
@@ -1446,9 +1446,9 @@ async def test_ducker_restore_preserves_degraded_push_guard(tmp_path):
 
 
 async def test_set_camilla_deferred_during_voice_session(tmp_path):
-    """During a voice session the Ducker owns camilla; coordinator
+    """During a voice session the duck holder owns camilla; coordinator
     writes are deferred, but listening_level still updates so
-    Ducker.restore lands at the user's intended level."""
+    the duck release lands at the user's intended level."""
     # Idle backend (camilla carries the level) and an already-ducked fader.
     coord, cam, persistence = _real_coord(tmp_path, active={}, db=-25.0)
     coord.note_voice_session(True)
@@ -1775,8 +1775,9 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
 # jasper-control builds a fresh VolumeCoordinator per HTTP request, so the
 # in-process `_voice_session_active` flag is always False there even when
 # jasper-voice has a session in flight. Those coordinators get a
-# `duck_active_probe` callable that asks jasper-voice over UDS whether the
-# Ducker is engaged. The probe is the authoritative signal — no inference.
+# `duck_active_probe` callable that asks jasper-voice over UDS whether a
+# camilla-owning duck is engaged. The probe is the authoritative signal —
+# no inference.
 
 
 @pytest.mark.parametrize(
@@ -1821,7 +1822,7 @@ async def test_the_duck_probe_answer_decides_whether_the_camilla_write_defers(
         assert cam.set_calls == []
     else:
         assert cam.set_calls[-1] == pytest.approx(percent_to_db(70))
-    # Either way the level persists, so Ducker.restore lands at user intent.
+    # Either way the level persists, so the duck release lands at user intent.
     assert coord.get_listening_level() == 70
     _assert_persisted(persistence, level=70)
     # A misbehaving probe has no structured counterpart; the warning is it.
@@ -2064,7 +2065,7 @@ async def _gate_none(coord, cam):
     ],
 )
 async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gate):
-    """Voice session → the Ducker owns camilla. Measurement → correction's
+    """Voice session → the duck holder owns camilla. Measurement → correction's
     ramp lease owns it. Push-mode source → camilla is pinned at 0 dB by
     design and the level lives on the source's own slider. Camilla
     unreachable → skip silently and retry on the next tick.
@@ -2223,7 +2224,7 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
 
     The control daemon writes listening_level to disk on every twist;
     voice-daemon's in-memory `_level` only auto-refreshes on its own
-    set/adjust/mute/transition calls. Without the refresh, Ducker.restore()
+    set/adjust/mute/transition calls. Without the refresh, the duck release
     at the end of a wake writes camilla to the stale dB — observed as a 56 dB
     jump at duck-off after a remote spin landed between voice operations.
     """

@@ -32,21 +32,17 @@ def test_volume_context_publisher_sends_one_absolute_idempotent_message(monkeypa
 
 
 def test_runtime_publisher_is_scoped_to_context_consuming_routes():
-    assert volume_context_publisher_for_runtime({"JASPER_DUCK_TRANSPORT": "camilla"}) is None
-    assert volume_context_publisher_for_runtime({"JASPER_DUCK_TRANSPORT": "fanin"}) is not None
+    assert volume_context_publisher_for_runtime({}) is not None
     # Since #1547 outputd interprets VolumeContext: a CONFIRMED post-DSP route
     # builds a publisher (the same wire message goes to outputd's socket).
     assert volume_context_publisher_for_runtime({
-        "JASPER_DUCK_TRANSPORT": "fanin",
         "JASPER_TTS_MIX_STAGE": "post_dsp",
     }) is not None
     # A custom socket with NO stage is ambiguous → fail closed either way.
     assert volume_context_publisher_for_runtime({
-        "JASPER_DUCK_TRANSPORT": "fanin",
         "JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock",
     }) is None
     assert volume_context_publisher_for_runtime({
-        "JASPER_DUCK_TRANSPORT": "fanin",
         "JASPER_TTS_OUTPUTD_SOCKET": "/tmp/custom-tts.sock",
         "JASPER_TTS_MIX_STAGE": "pre_dsp",
     }) is not None
@@ -67,7 +63,7 @@ def test_runtime_publisher_targets_outputd_on_confirmed_post_dsp(monkeypatch, tm
         "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
     )
     publisher = volume_context_publisher_for_runtime(
-        {"JASPER_DUCK_TRANSPORT": "fanin"},
+        {},
         grouping_env_path=str(grouping_env),
     )
     assert publisher is not None
@@ -97,7 +93,7 @@ def test_runtime_publisher_fails_closed_for_legacy_socket_only_grouping(
     )
 
     assert volume_context_publisher_for_runtime(
-        {"JASPER_DUCK_TRANSPORT": "fanin"},
+        {},
         grouping_env_path=str(grouping_env),
     ) is None
 
@@ -130,7 +126,7 @@ def test_dynamic_runtime_publisher_tracks_grouping_file(
         "JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock\n"
     )
     publisher = volume_context_publisher_for_runtime(
-        {"JASPER_DUCK_TRANSPORT": "fanin"},
+        {},
         grouping_env_path=str(grouping_env),
         dynamic_topology=True,
     )

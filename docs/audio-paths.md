@@ -287,7 +287,7 @@ pre-outputd topology is git history plus a redeploy of an older build.
 
 Two notes:
 - `master_gain` is a CamillaDSP mixer named in the base Camilla configs
-  but currently configured as identity. The Ducker operates on
+  but currently configured as identity. Camilla-side ducking operates on
   `main_volume`, not `master_gain`. Old comments/docs that called
   master_gain "the ducking knob" are wrong.
 - `listening_level` is the canonical user-facing volume in the

@@ -192,13 +192,6 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
     if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
         raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
-    if cfg.duck_transport not in {"camilla", "fanin"}:
-        raise RuntimeError("JASPER_DUCK_TRANSPORT must be camilla or fanin")
-    if cfg.tts_outputd_socket == FANIN_TTS_SOCKET and cfg.duck_transport != "fanin":
-        raise RuntimeError(
-            "JASPER_DUCK_TRANSPORT=fanin is required when "
-            f"{VOICE_TTS_SOCKET_ENV} points at jasper-fanin"
-        )
     if cfg.volume_regress_after_sec <= 0:
         raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
     for name, value in [
@@ -278,7 +271,6 @@ class Config:
     camilla_host: str
     camilla_port: int
     duck_db: float
-    duck_transport: str
     idle_timeout_sec: int
     response_stall_timeout_sec: int
     # Per-provider idle context reset thresholds (seconds). 0 = disabled
@@ -678,7 +670,6 @@ class Config:
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
-            duck_transport=_env("JASPER_DUCK_TRANSPORT", "fanin").strip().lower(),
             # Pre-response idle watchdog: closes the turn after this
             # many seconds of pure model silence (no audio chunk
             # received, server hasn't sent turn_complete, no

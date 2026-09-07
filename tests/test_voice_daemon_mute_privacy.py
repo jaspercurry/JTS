@@ -339,7 +339,6 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
             return EffectiveVolumeContext(-25.0, -25.0, -41.0, False, 123)
 
     wl = WakeLoop.for_tests()
-    wl._cfg.duck_transport = "fanin"
     wl._tts = _Tts()
     wl._volume_coordinator = _Volume()
 
@@ -375,7 +374,6 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
 
     monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
     wl = WakeLoop.for_tests()
-    wl._cfg.duck_transport = "fanin"
     wl._tts = _Tts()
     wl._volume_coordinator = _Volume()
 
@@ -409,7 +407,6 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
         "/run/jasper-outputd/tts.sock",
     )
     wl = WakeLoop.for_tests()
-    wl._cfg.duck_transport = "fanin"
     wl._tts = _Tts()
     wl._volume_coordinator = _Volume()
 
