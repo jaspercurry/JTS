@@ -37,17 +37,6 @@ class _FakeCamilla:
         self.set_calls.append(db)
         return True
 
-    async def adjust_volume_db(
-        self, delta_db: float, *, best_effort: bool = False,
-    ) -> float | None:
-        current = await self.get_volume_db(best_effort=best_effort)
-        if current is None:
-            return None
-        target = current + delta_db
-        if not await self.set_volume_db(target, best_effort=best_effort):
-            return None
-        return target
-
 
 async def _owner(camilla: _FakeCamilla, household_db: float) -> VolumeOwner:
     """The one fader owner, standing at the household level.
