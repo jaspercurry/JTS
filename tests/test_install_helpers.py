@@ -26,11 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.install_surface import (
-    JASPER_GROUP_STUBS,
-    installer_shell_paths,
-    installer_text,
-)
+from tests.install_surface import JASPER_GROUP_STUBS, installer_text
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
@@ -188,25 +184,25 @@ def _run_speaker_name_seed(
             "&& return 1; command chmod \"$@\"; }"
         )
     if publish_behavior != "normal":
-        # `ln -T -- <tmp> <state_file>`: the race is set up on the destination
-        # ($4) before the real link(2) runs.
+        # `link <tmp> <state_file>`: the race is set up on the destination
+        # ($2) before the real link(2) runs.
         publish_actions = {
             "wizard_file": (
-                "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' > \"$4\""
+                "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' > \"$2\""
             ),
-            "directory": 'mkdir "$4"',
+            "directory": 'mkdir "$2"',
             "directory_symlink": (
-                'mkdir "${4}.target"; command ln -s "${4}.target" "$4"'
+                'mkdir "${2}.target"; ln -s "${2}.target" "$2"'
             ),
             "fail": "return 23",
         }
         action = publish_actions[publish_behavior]
         commands.append(
-            "ln() { "
-            "if [[ \"$3\" == *'.speaker_name.env.seed.'* ]]; then "
+            "link() { "
+            "if [[ \"$1\" == *'.speaker_name.env.seed.'* ]]; then "
             f"{action}; "
             "fi; "
-            "command ln \"$@\"; }"
+            "command link \"$@\"; }"
         )
     commands.append("seed_speaker_name_env")
     result = subprocess.run(
@@ -532,21 +528,16 @@ function /usr/bin/python3 {
 """
 
 
-def test_state_dir_pass_costs_two_interpreters_however_many_call_sites(tmp_path):
+def test_the_shared_state_pass_starts_two_interpreters(tmp_path):
     """ADR-0226 interpreter budget for the shared-state pass.
 
     Every `ensure_state_dir` call used to end in a `/usr/bin/python3` heal, so
     an install paid one interpreter per call site plus two in the speaker-name
     seed (the value, then an `os.link` publish). The heal is the single
-    `state_modes` row now and the publish is `ln`, so the pass costs two starts
-    however many call sites there are: the heal, and the one interpreter that
-    reads the `jasper.speaker_name` fact.
+    `state_modes` row now and the publish is `link`, leaving two starts for the
+    whole pass: the heal, and the one interpreter that reads the
+    `jasper.speaker_name` fact.
     """
-    sites = sum(
-        len(re.findall(r"(?m)^\s*ensure_state_dir$", path.read_text(encoding="utf-8")))
-        for path in installer_shell_paths()
-    )
-
     state_dir = tmp_path / "state"
     env_dir = tmp_path / "etc"
     env_dir.mkdir()
@@ -564,10 +555,7 @@ def test_state_dir_pass_costs_two_interpreters_however_many_call_sites(tmp_path)
             + f"STATE_DIR={shlex.quote(str(state_dir))}\n"
             + f"ENV_DIR={shlex.quote(str(env_dir))}\n"
             + _SPAWN_COUNTING_STUBS
-            # The one install-wide heal, then every call site: the one inside
-            # seed_speaker_name_env is the last of them.
             + "heal_shared_state_modes\n"
-            + f"for _ in $(seq 1 {sites - 1}); do ensure_state_dir; done\n"
             + "seed_speaker_name_env\n",
         ],
         capture_output=True,

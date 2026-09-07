@@ -68,9 +68,7 @@ heal_shared_state_modes() {
         echo "  ERROR: could not resolve numeric jasper group id for shared-state heal" >&2
         return 1
     fi
-    # Owner for the `w:` specs below (-1 = leave the uid alone). Absent only on
-    # a fresh install before create_jasper_service_users, where those files do
-    # not exist yet either, so the pass is a no-op.
+    # Owner for the `w:` specs below (-1 = leave the uid alone).
     web_uid="$(getent passwd jasper-web 2>/dev/null \
         | awk -F: '$1 == "jasper-web" { print $3; exit }')"
     [[ "${web_uid}" =~ ^[0-9]+$ ]] || web_uid="-1"

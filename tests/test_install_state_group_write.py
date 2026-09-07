@@ -37,11 +37,6 @@ getent() { printf 'jasper:x:%s:\n' "$(id -g)"; }
 chgrp() { :; }
 """
 
-# Same stubs plus a `getent passwd jasper-web` that resolves to the test user,
-# so the owner-moving `w:` specs actually chown (a non-root process may chown a
-# file it already owns to itself, which is enough to exercise the path).
-_STUBS_WITH_WEB_USER = JASPER_GROUP_STUBS
-
 
 def _extract(name: str, lib: Path = LIB) -> str:
     out = subprocess.run(
@@ -135,7 +130,7 @@ def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
     captures = tmp_path / "active_speaker_captures"
     captures.mkdir(mode=0o700)
 
-    _run_heal(tmp_path, stubs=_STUBS_WITH_WEB_USER)
+    _run_heal(tmp_path, stubs=JASPER_GROUP_STUBS)
 
     assert _mode(measurements) == 0o640
     assert _mode(tuning_db) == 0o644
@@ -145,8 +140,8 @@ def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
 
 
 def test_heal_leaves_owner_alone_when_the_web_user_does_not_exist(tmp_path):
-    """Fresh install, before create_jasper_service_users: no uid to move to, so
-    the pass must degrade to a group/mode heal instead of failing the install."""
+    """No jasper-web uid to move to: the pass must degrade to a group/mode
+    heal instead of failing the install."""
     tuning_db = _mk(tmp_path / "usage-tuning.db", 0o600)
 
     _run_heal(tmp_path)  # stubs resolve no `jasper-web` passwd entry
@@ -189,7 +184,7 @@ def test_a_later_creator_does_not_re_mode_what_the_heal_repaired(tmp_path):
 
     script = (
         "set -euo pipefail\n"
-        + _STUBS_WITH_WEB_USER
+        + JASPER_GROUP_STUBS
         + _INSTALL_REDIRECT_STUB
         + _extract("heal_shared_state_modes")
         + _extract("stage_wake_models", MODEL_STAGING)

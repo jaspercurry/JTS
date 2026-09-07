@@ -46,9 +46,11 @@ PY
 
     # Publish only after the complete line and final mode are ready.  A failed
     # direct redirection would leave a partial canonical file that every later
-    # deploy correctly preserves.  `ln -T` is link(2): an atomic
-    # create-if-absent that never descends into an existing name, so a wizard
-    # save landing after our first check remains authoritative.
+    # deploy correctly preserves.  `link` is link(2) with no options to get
+    # wrong: an atomic create-if-absent that refuses an existing name rather
+    # than descending into it, so a wizard save landing after our first check
+    # remains authoritative.  Not `ln -T` — `-T` is a GNU extension the
+    # laptop-side test lane's macOS `ln` rejects.
     local tmp
     tmp="$(mktemp "${STATE_DIR}/.speaker_name.env.seed.XXXXXX")"
     if ! printf '%s\n' "${env_line}" > "${tmp}"; then
@@ -61,7 +63,7 @@ PY
         echo "  ERROR: could not set fresh speaker-name permissions" >&2
         return 1
     fi
-    if ln -T -- "${tmp}" "${state_file}" 2>/dev/null; then
+    if link "${tmp}" "${state_file}" 2>/dev/null; then
         rm -f -- "${tmp}"
         echo "  speaker name: ${env_line#JASPER_SPEAKER_NAME=}"
         return 0
