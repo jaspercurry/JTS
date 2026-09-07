@@ -250,7 +250,10 @@ def test_wifi_ui_copy_matches_three_minute_proxy_contract() -> None:
         / "deploy/assets/wifi/js/main.js"
     ).read_text()
     assert "90s" not in source
-    assert source.count("up to 3 minutes including rollback") == 2
+    # Both the per-network and manual-join connect flows render this via
+    # the shared connectingSpinner(ssid) helper, so the copy is declared
+    # once in source and reused, not duplicated per call site.
+    assert source.count("up to 3 minutes including rollback") == 1
     assert "full switch and recovery attempt can take " in source
     assert "up to 3 minutes" in source
 
