@@ -319,7 +319,7 @@ def _read_output_topology() -> Any:
     so an ``OutputTopology`` alone cannot distinguish "never declared" from
     "declared and already matches". ``snapshot.revision == "missing"`` survives
     that auto-seed and says nothing was ever persisted. Same reader
-    ``/sound/setup/`` uses (``jasper.web.sound_setup._output_topology_payload``).
+    ``/sound/setup/`` uses (``jasper.web.sound_active_speaker._output_topology_payload``).
     """
     try:
         from ..output_topology import load_output_topology_snapshot

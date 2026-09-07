@@ -23,6 +23,7 @@ import pytest
 import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
+import jasper.web.sound_active_speaker as sound_active_speaker
 import jasper.web.sound_setup as sound_setup
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
@@ -141,7 +142,7 @@ def _web_commission_env(monkeypatch, tmp_path, controller: _FakeController) -> d
         }
 
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_play_commission_tone",
         _fake_commission_tone,
     )
@@ -277,17 +278,17 @@ def _tone_preset(
 
 
 def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path):
-    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    monkeypatch.setattr(sound_active_speaker, "_COMMISSION_TONE_SESSION", None)
     wav_path = tmp_path / "tone.wav"
     wav_path.write_bytes(b"not a real wav; Popen is faked")
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_wav_path",
         lambda *, frequency_hz: wav_path,
     )
     mux_actions: list[str] = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_select_fanin_lane",
         lambda: mux_actions.append("select") or {
             "active_source": "correction",
@@ -295,7 +296,7 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
         },
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_release_fanin_lane",
         lambda *, reason: mux_actions.append(f"release:{reason}") or {
             "active_source": "airplay",
@@ -309,10 +310,10 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
         processes.append(proc)
         return proc
 
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sound_active_speaker.subprocess, "Popen", _fake_popen)
     try:
         first = asyncio.run(
-            sound_setup._active_speaker_play_commission_tone(
+            sound_active_speaker._active_speaker_play_commission_tone(
                 group_id="mono",
                 role="woofer",
                 level_dbfs=-80.0,
@@ -321,7 +322,7 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
             )
         )
         second = asyncio.run(
-            sound_setup._active_speaker_play_commission_tone(
+            sound_active_speaker._active_speaker_play_commission_tone(
                 group_id="mono",
                 role="woofer",
                 level_dbfs=-74.0,
@@ -330,7 +331,7 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
             )
         )
     finally:
-        stop = sound_setup._active_speaker_stop_commission_tone(reason="test_cleanup")
+        stop = sound_active_speaker._active_speaker_stop_commission_tone(reason="test_cleanup")
 
     assert first["status"] == "completed"
     assert first["continuous"] is True
@@ -348,33 +349,33 @@ def test_commission_continuous_tone_reuses_running_process(monkeypatch, tmp_path
 def test_commission_continuous_tone_uses_planner_frequency_for_tweeter(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    monkeypatch.setattr(sound_active_speaker, "_COMMISSION_TONE_SESSION", None)
     wav_path = tmp_path / "tone.wav"
     wav_path.write_bytes(b"not a real wav; Popen is faked")
     requested_frequencies: list[float] = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_wav_path",
         lambda *, frequency_hz: requested_frequencies.append(frequency_hz) or wav_path,
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_select_fanin_lane",
         lambda: {"active_source": "correction", "test_source": "correction"},
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_release_fanin_lane",
         lambda *, reason: {"active_source": "airplay", "test_source": None},
     )
     monkeypatch.setattr(
-        sound_setup.subprocess,
+        sound_active_speaker.subprocess,
         "Popen",
         lambda args, **_kwargs: _FakeToneProcess(list(args)),
     )
     try:
         result = asyncio.run(
-            sound_setup._active_speaker_play_commission_tone(
+            sound_active_speaker._active_speaker_play_commission_tone(
                 group_id="mono",
                 role="tweeter",
                 level_dbfs=-80.0,
@@ -384,7 +385,7 @@ def test_commission_continuous_tone_uses_planner_frequency_for_tweeter(
             )
         )
     finally:
-        sound_setup._active_speaker_stop_commission_tone(reason="test_cleanup")
+        sound_active_speaker._active_speaker_stop_commission_tone(reason="test_cleanup")
 
     assert result["status"] == "completed"
     assert requested_frequencies == [6250.0]
@@ -423,21 +424,21 @@ def test_commission_tone_payload_reports_the_device_the_spawn_used(
         map_path.write_text(rl.render_env_text((lane.label,)))
     expected_device = lane.ring_device if lane_armed else lane.aloop_device
 
-    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    monkeypatch.setattr(sound_active_speaker, "_COMMISSION_TONE_SESSION", None)
     wav_path = tmp_path / "tone.wav"
     wav_path.write_bytes(b"not a real wav; Popen is faked")
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_wav_path",
         lambda *, frequency_hz: wav_path,
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_select_fanin_lane",
         lambda: {"active_source": "correction", "test_source": "correction"},
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_release_fanin_lane",
         lambda *, reason: {"active_source": "airplay", "test_source": None},
     )
@@ -448,10 +449,10 @@ def test_commission_tone_payload_reports_the_device_the_spawn_used(
         processes.append(proc)
         return proc
 
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sound_active_speaker.subprocess, "Popen", _fake_popen)
     try:
         result = asyncio.run(
-            sound_setup._active_speaker_play_commission_tone(
+            sound_active_speaker._active_speaker_play_commission_tone(
                 group_id="mono",
                 role="woofer",
                 level_dbfs=-80.0,
@@ -461,7 +462,7 @@ def test_commission_tone_payload_reports_the_device_the_spawn_used(
             )
         )
     finally:
-        sound_setup._active_speaker_stop_commission_tone(reason="test_cleanup")
+        sound_active_speaker._active_speaker_stop_commission_tone(reason="test_cleanup")
 
     assert result["status"] == "completed"
     assert processes, "the tone flow must have spawned aplay"
@@ -472,16 +473,16 @@ def test_commission_tone_payload_reports_the_device_the_spawn_used(
 def test_commission_continuous_tone_blocks_when_planner_has_no_safe_band(
     monkeypatch,
 ):
-    monkeypatch.setattr(sound_setup, "_COMMISSION_TONE_SESSION", None)
+    monkeypatch.setattr(sound_active_speaker, "_COMMISSION_TONE_SESSION", None)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_wav_path",
         lambda *, frequency_hz: (_ for _ in ()).throw(
             AssertionError("wav generation should not run")
         ),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_select_fanin_lane",
         lambda: (_ for _ in ()).throw(
             AssertionError("fanin should not be selected")
@@ -489,7 +490,7 @@ def test_commission_continuous_tone_blocks_when_planner_has_no_safe_band(
     )
 
     result = asyncio.run(
-        sound_setup._active_speaker_play_commission_tone(
+        sound_active_speaker._active_speaker_play_commission_tone(
             group_id="mono",
             role="mid",
             level_dbfs=-80.0,
@@ -571,12 +572,12 @@ def test_commission_load_payload_loads_silent_startup_anchor(
 
     setup_order: list[str] = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stage_config_payload",
         lambda raw: setup_order.append("stage") or env["staged"],
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_crossover_preview_save_payload",
         lambda: setup_order.append("preview") or {
             "status": "ready_for_protected_staging",
@@ -623,7 +624,7 @@ def test_commission_load_refreshes_stale_anchor_after_identity_confirmation(
 
     setup_order: list[str] = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_crossover_preview_save_payload",
         lambda: setup_order.append("preview") or {
             "status": "ready_for_protected_staging",
@@ -636,7 +637,9 @@ def test_commission_load_refreshes_stale_anchor_after_identity_confirmation(
         staged_holder["payload"] = fresh_staged
         return fresh_staged
 
-    monkeypatch.setattr(sound_setup, "_active_speaker_stage_config_payload", fake_stage)
+    monkeypatch.setattr(
+        sound_active_speaker, "_active_speaker_stage_config_payload", fake_stage
+    )
 
     payload = asyncio.run(
         sound_setup._active_speaker_commission_load_payload(
@@ -778,7 +781,7 @@ def test_commission_ramp_step_and_ack_payloads(monkeypatch, tmp_path):
     env = _web_commission_env(monkeypatch, tmp_path, controller)
     tone_stops: list[str] = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: tone_stops.append(reason)
         or {"status": "stopped", "reason": reason},
@@ -845,7 +848,7 @@ def test_commission_rollback_payload_clears_pending_ramp_step(monkeypatch, tmp_p
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "stopped", "reason": reason},
     )
@@ -884,7 +887,7 @@ def test_commission_rollback_payload_keeps_pending_when_rollback_fails(
     controller = _FakeController("placeholder")
     env = _web_commission_env(monkeypatch, tmp_path, controller)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "stopped", "reason": reason},
     )
@@ -1022,7 +1025,7 @@ def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "stopped", "reason": reason},
     )
@@ -1078,7 +1081,7 @@ def test_commission_ack_records_backend_acknowledged_step_when_ramp_races(
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "stopped", "reason": reason},
     )
@@ -1163,7 +1166,7 @@ def test_commission_wrong_driver_ack_records_negative_driver_evidence(
     controller = _FakeController("placeholder")
     _web_commission_env(monkeypatch, tmp_path, controller)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "stopped", "reason": reason},
     )
@@ -1262,11 +1265,11 @@ def _record_driver_checks_for_summed_test() -> None:
 def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
     """Install the common summed-test audio boundary and return its probes."""
 
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", None)
     controller = _FakeController("placeholder")
     env = _web_commission_env(monkeypatch, tmp_path, controller)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "resolve_commission_inputs",
         lambda preset=None: (_tone_preset(), None),
     )
@@ -1279,7 +1282,7 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
     wav_path = tmp_path / "summed.wav"
     wav_path.write_bytes(b"fake wav; subprocess.Popen is faked")
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_combined_speech_stimulus_wav_path",
         lambda: (
             wav_path,
@@ -1294,7 +1297,7 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
     )
     fanin_actions: list[str] = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_select_fanin_lane",
         lambda: fanin_actions.append("select") or {
             "active_source": "correction",
@@ -1302,7 +1305,7 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
         },
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_commission_tone_release_fanin_lane",
         lambda *, reason: fanin_actions.append(f"release:{reason}") or {
             "active_source": "airplay",
@@ -1310,7 +1313,7 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
         },
     )
     processes: list[_FakeToneProcess] = []
-    real_popen = sound_setup.subprocess.Popen
+    real_popen = sound_active_speaker.subprocess.Popen
 
     def _fake_popen(args, *popen_args, **kwargs):
         if args and Path(str(args[0])).name == "aplay":
@@ -1319,7 +1322,7 @@ def _summed_test_stubs(monkeypatch, tmp_path) -> dict:
             return proc
         return real_popen(args, *popen_args, **kwargs)
 
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sound_active_speaker.subprocess, "Popen", _fake_popen)
     return {
         "controller": controller,
         "env": env,
@@ -1384,7 +1387,7 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
         sort_keys=True,
         default=str,
     )
-    assert playback["backend"] == sound_setup.SUMMED_COMMISSION_SPEECH_BACKEND
+    assert playback["backend"] == sound_active_speaker.SUMMED_COMMISSION_SPEECH_BACKEND
     assert playback["audio_emitted"] is True
     assert playback["confirmable"] is True
     assert playback["stop_reason"] == "operator_confirmed"
@@ -1400,7 +1403,7 @@ def test_summed_test_audio_path_loads_plays_rolls_back_and_records(
     assert playback["rollback"]["rollback"]["status"] == "rolled_back"
     assert latest["captured"] is True
     assert latest["audio_emitted"] is True
-    assert latest["backend"] == sound_setup.SUMMED_COMMISSION_SPEECH_BACKEND
+    assert latest["backend"] == sound_active_speaker.SUMMED_COMMISSION_SPEECH_BACKEND
     assert latest["stimulus"]["text"] == "Like and subscribe to Jasper tech."
     assert latest["target_output_indices"] == [0, 1]
     assert len(controller.applied_texts) == 2
@@ -1447,7 +1450,7 @@ def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_pat
             }
 
         monkeypatch.setattr(
-            sound_setup,
+            sound_active_speaker,
             "_active_speaker_load_summed_commissioning_config",
             _fake_load,
         )
@@ -1482,7 +1485,7 @@ def test_summed_test_confirm_before_audio_does_not_validate(monkeypatch, tmp_pat
 def _exit_cleanly_after_two_polls(monkeypatch, processes):
     """Make the faked aplay finish a stimulus repeat instead of running forever."""
 
-    previous_popen = sound_setup.subprocess.Popen
+    previous_popen = sound_active_speaker.subprocess.Popen
 
     def _fake_popen(args, *popen_args, **kwargs):
         if args and Path(str(args[0])).name == "aplay":
@@ -1491,7 +1494,7 @@ def _exit_cleanly_after_two_polls(monkeypatch, processes):
             return proc
         return previous_popen(args, *popen_args, **kwargs)
 
-    monkeypatch.setattr(sound_setup.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sound_active_speaker.subprocess, "Popen", _fake_popen)
 
 
 def test_summed_test_duration_ms_completes_without_a_second_connection(
@@ -1563,7 +1566,7 @@ def test_summed_test_budget_already_spent_still_plays_one_whole_repeat(
 
     # Burn more than the 10 ms budget on every stop-reason look, so the loop's
     # first look already finds the budget spent.
-    real_stop_reason = sound_setup._summed_test_session_stop_reason
+    real_stop_reason = sound_active_speaker._summed_test_session_stop_reason
     looks: list[bool] = []
 
     def _spend_the_budget_before_each_look(session):
@@ -1572,7 +1575,7 @@ def test_summed_test_budget_already_spent_still_plays_one_whole_repeat(
         return real_stop_reason(session)
 
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_summed_test_session_stop_reason",
         _spend_the_budget_before_each_look,
     )
@@ -1791,7 +1794,7 @@ def test_summed_test_stop_cannot_borrow_the_duration_elapsed_reason(
             await asyncio.sleep(0.01)
         assert processes, "summed test should start aplay before stop"
         sound_setup._active_speaker_stop_summed_test_tone(
-            reason=sound_setup.SUMMED_TEST_DURATION_ELAPSED_REASON
+            reason=sound_active_speaker.SUMMED_TEST_DURATION_ELAPSED_REASON
         )
         return await task
 
@@ -1854,7 +1857,7 @@ def test_summed_test_stop_terminates_aplay_and_rolls_back(monkeypatch, tmp_path)
 
 def test_summed_test_watchdog_stops_abandoned_loop(monkeypatch, tmp_path):
     summed = _summed_test_stubs(monkeypatch, tmp_path)
-    monkeypatch.setattr(sound_setup, "SUMMED_TEST_MAX_LOOP_SECONDS", 0.04)
+    monkeypatch.setattr(sound_active_speaker, "SUMMED_TEST_MAX_LOOP_SECONDS", 0.04)
     controller = summed["controller"]
     env = summed["env"]
     processes = summed["processes"]
@@ -1953,10 +1956,12 @@ def test_summed_test_failed_level_update_keeps_active_session_metadata(
         "level_dbfs": -40.0,
         "load_payload": initial_load,
     }
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", session)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda path=None: _topology())
+    monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", session)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker, "load_output_topology", lambda path=None: _topology()
+    )
+    monkeypatch.setattr(
+        sound_active_speaker,
         "resolve_commission_inputs",
         lambda preset=None: (_tone_preset(), None),
     )
@@ -1976,7 +1981,7 @@ def test_summed_test_failed_level_update_keeps_active_session_metadata(
         }
 
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_load_summed_commissioning_config",
         _fake_failed_load,
     )
@@ -1988,7 +1993,7 @@ def test_summed_test_failed_level_update_keeps_active_session_metadata(
             )
         )
     finally:
-        monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+        monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", None)
 
     assert payload["status"] == "failed"
     assert payload["calibration_level"]["test_signal"][
@@ -2005,13 +2010,13 @@ def test_summed_test_stop_marks_preparing_session(monkeypatch):
         "process": None,
         "stop_reason": None,
     }
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", session)
+    monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", session)
     try:
         payload = sound_setup._active_speaker_stop_summed_test_tone(
             reason="test_stop"
         )
     finally:
-        monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+        monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", None)
 
     assert payload == {
         "status": "stopping",

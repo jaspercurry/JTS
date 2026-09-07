@@ -2243,13 +2243,13 @@ def test_regenerate_crossover_preview_matches_sound_setups_preview_button(
     of reimplementing ``/sound/``'s Preview-button generation. Pin that it
     really is the SAME machinery: seeded against the same design
     draft/topology, its output matches
-    ``jasper.web.sound_setup``'s own
+    ``jasper.web.sound_active_speaker``'s own
     ``_active_speaker_crossover_preview_save_payload()`` byte-for-byte except
     for the wall-clock ``created_at``/``updated_at`` timestamps."""
     import json
 
     from jasper.output_topology import save_output_topology
-    from jasper.web import sound_setup
+    from jasper.web import sound_active_speaker
 
     from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
 
@@ -2273,7 +2273,7 @@ def test_regenerate_crossover_preview_matches_sound_setups_preview_button(
         "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
         str(tmp_path / "via_sound_setup.json"),
     )
-    via_sound = sound_setup._active_speaker_crossover_preview_save_payload()
+    via_sound = sound_active_speaker._active_speaker_crossover_preview_save_payload()
 
     assert via_new["status"] == "ready_for_protected_staging"
     ignored = {"path", "created_at", "updated_at"}

@@ -249,7 +249,7 @@ def _endpoint_report(
     """Drive the real ``check-path-safety`` coroutine over persisted state."""
 
     from jasper.output_topology import save_output_topology
-    from jasper.web.sound_setup import _active_speaker_check_path_safety_payload
+    from jasper.web.sound_active_speaker import _active_speaker_check_path_safety_payload
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(topology, topology_path)
@@ -395,7 +395,7 @@ def test_check_path_safety_endpoint_payload_refuses_a_below_floor_candidate(
     """
 
     from jasper.output_topology import save_output_topology
-    from jasper.web.sound_setup import _active_speaker_check_path_safety_payload
+    from jasper.web.sound_active_speaker import _active_speaker_check_path_safety_payload
 
     topology = mono_output_topology()
     topology_path = tmp_path / "output_topology.json"

@@ -238,7 +238,7 @@ def regenerate_crossover_preview_from_current_draft(
     """Rebuild and persist a fresh crossover preview from the saved design draft.
 
     This is the exact machinery ``/sound/``'s Preview button drives
-    (``jasper.web.sound_setup._active_speaker_crossover_preview_save_payload``):
+    (``jasper.web.sound_active_speaker._active_speaker_crossover_preview_save_payload``):
     request any missing software guards on the current topology, rebuild the
     design draft against it (preserving the saved draft's own inputs and
     revision), then persist through :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`
@@ -327,7 +327,7 @@ def _path_safety_evidence_path() -> str | None:
 # here and /sound/ through `jasper.web.sound_setup`. This module is their ONE
 # owner and /sound/ imports these factories, the same way it already imports the
 # commission-tone helpers rather than keeping a hand-copied fork (see the import
-# block's comment in sound_setup.py). The two surfaces' surrounding
+# block's comment in sound_active_speaker.py). The two surfaces' surrounding
 # orchestrations genuinely differ — /sound/ re-saves a crossover preview and
 # runs a stoppable playback loop, the crossover page takes resolved inputs
 # and plays
@@ -875,8 +875,8 @@ def commission_status_payload() -> dict[str, Any]:
 # deleted here with the module-local session state they owned
 # (``_stop_commission_tone_locked`` and its ``_COMMISSION_TONE_SESSION`` /
 # ``_COMMISSION_TONE_LOCK`` pair). /sound/ keeps its own same-named locals --
-# see the note at ``jasper/web/sound_setup.py``'s commission-tone import block,
-# which is why the shared-owner contract in
+# see the note at ``jasper/web/sound_active_speaker.py``'s commission-tone import
+# block, which is why the shared-owner contract in
 # tests/test_commission_tone_single_owner.py deliberately excludes them.
 
 
