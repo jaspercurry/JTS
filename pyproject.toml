@@ -132,8 +132,6 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.8",
     "ruff>=0.16.1",
-    # A grimp bump can change which chains the layer contract reports, which
-    # moves its baseline of conformant members. Pin to a minor.
     "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
@@ -150,8 +148,6 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.8",
     "ruff>=0.16.1",
-    # A grimp bump can change which chains the layer contract reports, which
-    # moves its baseline of conformant members. Pin to a minor.
     "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
@@ -433,9 +429,12 @@ module = [
 ]
 ignore_errors = true
 
-# A layer line lists only modules whose whole subtree reaches no higher layer;
-# grimp counts function-local imports, so a deferred import cannot evade this.
-# Ratchet: add a name to its layer line once it conforms. Never ignore_imports.
+# Exhaustive: every top-level child of `jasper` is either on a layer line or an
+# explicit holdout below, so a new module has to be classified rather than
+# drift in unranked. A holdout moves to its layer line in the PR that removes
+# its last upward import; a deleted or renamed module loses its line in that
+# same PR -- a stale layer line hard-fails with `Missing layer`, a stale
+# holdout only rots. Never ignore_imports.
 [tool.importlinter]
 root_packages = ["jasper"]
 
@@ -451,4 +450,83 @@ layers = [
   "aec_engines : avahi_service : bluealsa_probe : mdns : mics : speaker_name : speaker_name_discovery : usb_network : usbgadget : wifi_guardian_persistence : wifi_scan_repair : xvf",
   "airplay_mode : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
   "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : json_fields : log_event : memory_policy : os_fault : percentiles : secret_redaction : service_units : transition_log : watchdog",
+]
+exhaustive = true
+exhaustive_ignores = [
+  "accessories",
+  "active_speaker",
+  "assistant_loudness",
+  "assistant_volume",
+  "attribution",
+  "audio_buffer",
+  "audio_hardware",
+  "audio_input_view",
+  "audio_io",
+  "audio_lab",
+  "audio_measurement",
+  "audio_profile_state",
+  "audio_runtime_plan",
+  "audio_validation",
+  "bass_extension",
+  "bluetooth",
+  "calibration_agent",
+  "camilla",
+  "camilla_config_contract",
+  "camilla_stereo_prefix",
+  "chip_aec",
+  "config",
+  "control",
+  "control_advert",
+  "conversation_history",
+  "correction",
+  "cues",
+  "data",
+  "debug_mode",
+  "dsp_apply",
+  "env_load",
+  "fanin",
+  "fanin_coupling",
+  "flight_recorder",
+  "google_oauth",
+  "google_routes",
+  "home_assistant",
+  "http_security",
+  "identity",
+  "identity_state",
+  "local_sources",
+  "logging_setup",
+  "measurement_window",
+  "mic_presence",
+  "model_downloads",
+  "multiroom",
+  "mux",
+  "oauth_redirect",
+  "output_hardware",
+  "output_topology",
+  "output_topology_runtime",
+  "outputd_failure_reconcile_state",
+  "peering",
+  "renderer",
+  "renderer_lanes",
+  "research",
+  "ring_assets",
+  "sound",
+  "source_intent",
+  "source_state",
+  "spotify_oauth",
+  "tools",
+  "transit",
+  "transport_coherence",
+  "tts_routing",
+  "usb_mic",
+  "usbsink",
+  "voice",
+  "voice_daemon",
+  "volume_coordinator",
+  "volume_curve",
+  "volume_observers",
+  "volume_owner",
+  "volume_persistence",
+  "wake_corpus",
+  "wake_ports",
 ]

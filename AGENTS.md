@@ -125,8 +125,9 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 ## Build, test, deploy
 
 - Iterating: `scripts/test-fast`. Before merge: `scripts/test-merge`
-  (runs mypy + full hardware-free pytest). Trust only the final
-  `==> <lane>: N passed` sentinel line — a piped/truncated run lies.
+  (runs the lint-imports layers contract + mypy + full hardware-free
+  pytest). Trust only the final `==> <lane>: N passed` sentinel line —
+  a piped/truncated run lies.
 - Deploy: `bash scripts/deploy-to-pi.sh` (flags: `SKIP_INSTALL=1` rsync-only,
   `SKIP_RESTART=1`). Verify: `http://jts.local/system/` shows the new SHA;
   `sudo /opt/jasper/.venv/bin/jasper-doctor` on the Pi. Runtime Python lives

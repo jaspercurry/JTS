@@ -43,6 +43,14 @@ trap cleanup EXIT
 
 pytest_bin="$(resolve_lane_tool test-merge pytest PYTEST)" || exit 1
 mypy_bin="$(resolve_lane_tool test-merge mypy MYPY)" || exit 1
+lint_imports_bin="$(resolve_lane_tool test-merge lint-imports LINT_IMPORTS)" || exit 1
+
+# Every tool is resolved above before any of them runs: the resolver refuses
+# before work happens (issue #1836). The gates then run cheapest-first --
+# lint-imports takes ~0.2s and mypy minutes, and neither reads the other's
+# result.
+echo "==> lint-imports (layers contract from pyproject.toml)"
+"${lint_imports_bin}"
 
 # issue #1910: no local lane ran mypy at all, so a new unbaselined package
 # could get full strictness while the rest of the tree rode the lenient
@@ -50,21 +58,11 @@ mypy_bin="$(resolve_lane_tool test-merge mypy MYPY)" || exit 1
 # invocation, deliberately no flags: config (python_version, the
 # `files = ["jasper"]` scope, and per-module baseline overrides) comes
 # entirely from pyproject.toml's [tool.mypy] table, mirroring CI's own mypy
-# step. `set -e` with no `if`/`&&` guard means a nonzero exit here aborts the
-# script immediately -- pytest never starts, and the EXIT trap above still
-# prints the lane's `==> test-merge: FAILED` sentinel as the true last line.
+# step. `set -e` with no `if`/`&&` guard means a nonzero exit at either gate
+# aborts the script immediately -- pytest never starts, and the EXIT trap
+# above still prints `==> test-merge: FAILED` as the true last line.
 echo "==> mypy (lenient baseline; config from pyproject.toml)"
 "${mypy_bin}"
-
-lint_imports_bin="$(resolve_lane_tool test-merge lint-imports LINT_IMPORTS)" || exit 1
-
-# Resolved here rather than beside pytest/mypy above so a mypy failure still
-# ends the lane at mypy. Bare invocation like mypy: the layers and their
-# members come from pyproject.toml's [tool.importlinter]. grimp counts
-# function-local imports, so a deferred import cannot evade the contract --
-# which is why no source-scanning pytest is added alongside it.
-echo "==> lint-imports (layers contract from pyproject.toml)"
-"${lint_imports_bin}"
 
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
 
