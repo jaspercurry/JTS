@@ -1154,12 +1154,12 @@ _INDEX_BODY_TEMPLATE = """{header}
   <details class="card" id="sessions-card">
     <summary>
       <strong>Sessions</strong>
-      <span class="summary-note">
+      <span class="form-hint summary-note">
         load or delete previous recordings
       </span>
     </summary>
     <div id="sessions-list">(loading…)</div>
-    <p class="card-note">
+    <p class="form-hint">
       Tap <strong>Load</strong> to resume an existing session, or
       <strong>Delete</strong> to remove its WAVs + metadata permanently.
     </p>
@@ -1183,7 +1183,7 @@ _INDEX_BODY_TEMPLATE = """{header}
         <label><input type="radio" name="distance" value="far"><span>far ~3-4m</span></label>
       </div>
     </div>
-    <p class="record-instructions">
+    <p class="form-hint">
       Click the button (or press <kbd>Space</kbd>) to start. Say
       <strong>"Jarvis"</strong>. Click again to stop.
     </p>
@@ -1203,7 +1203,7 @@ _INDEX_BODY_TEMPLATE = """{header}
   <div class="card" id="counts-card" hidden>
     <h2>Per-cell counts</h2>
     <div id="counts-matrix" class="matrix"></div>
-    <p class="card-note">
+    <p class="form-hint">
       Session A: ~7-9 per cell. Session B: ~2-3 per cell.
     </p>
   </div>
