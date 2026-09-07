@@ -56,9 +56,9 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | P6 right-sizing #4200 — running on Opus (#4326, #4329 merged; 3A #4333 and 3B1 #4338 open). **Last lane on this account:** about a sixth of the weekly budget was left at 04:00 UTC, so P6 keeps a resume ledger on #4200 and a Dip session finishes it if the budget runs out | P2 round 2 (#4194; the 11-row plan triaged at comment 5564510021, the merge word; executing waves A → B → C) **and** P5 structure #4199 (executing; #4335 and #4337 merged; account unconfirmed, assumed Dip) | **Two sessions.** P11 web UI #4212 (plan triaged at 05:20 UTC, executing W1; the P12 session rolled on, P12 done, handoff #4324) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
-| 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | P3 resilience #4195 (P12, P4 and P6 have posted its rows; P4's row 16 waits on its bridge `rms` emitter; its measurements need the boxes) |
-| 3 | — | P8 docs #4202 (stale-path pass last; whichever of Dip or Space Hater frees first) | — |
+| 1 | **P6 done** (handoff #4387: 14 PRs, net −4,246). Nothing queued; the account's weekly budget is nearly spent | P2 round 2 (#4194: wave A on `main` bar row 8; wave B running; first the ADR-0248 renumber; row 12 = the Cargo workspace, offered) **and** P5 structure #4199 (executing; five PRs open; finishes #4354 as the resolver reshape) | **Two sessions.** P11 web UI #4212 (plan triaged 05:20 UTC; **silent since 04:14, check the session**) **and** P3 resilience #4195 (the P9 session rolled on at 12:30 UTC; **P9 done**, handoff #4385; first act: deploy `main` to jts3 and jts4) |
+| 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | — |
+| 3 | — | P8 docs #4202 (stale-path pass last) | — |
 
 James Crane has no Fable credit and about a sixth of its weekly budget, so it runs P6 on Opus to
 completion and nothing after; P7 and P8 move to Dip. P3, which touches the clamp paths and the
@@ -67,29 +67,25 @@ the hardware both are. An account may run two lanes at once when each has its ow
 coordinator gets one extra sentence in its kickoff: read every builder's diff before trusting its
 report, and one row at a time.
 
-**Owner at the box (next session at home).** Nothing needs a deploy first; every build is already
-on its box. jts.local (`e39461ebb`, as are jts3 and jts4): move the host volume slider to ~50 % then ~25 % (the
+**Owner at the box.** jts.local is a night of merges behind `main`; say "deploy jts.local" to the P3
+session once jts3 and jts4 read clean. Then, on jts.local: move the host volume slider to ~50 % then ~25 % (the
 #4209 check, recipe on #4324; a Space Hater session reads `event=usbsink.volume_observed`), then speak ten turns
 (P9's gate 0.2; the session reads `event=turn.timeline`). jts3: with a Space Hater session watching the journal (recipe on #4324), unplug the XVF3800 (H1: the reboot-window number) and listen for the mic-loss
 cue (H2), then replug. jts4: nothing. Read ADR-0244 (the
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-07 05:20 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
-#4304). P2 round two executing on Dip (11 rows; HW-6 dropped; row 11 — the `first-party-runtime.sh`
-seam and the airplay-mode push design — approved to land last; its box rows go to #4027 for the
-Space Hater sessions, none needs the owner). P4 done (handoff #4327: 12 PRs, `audio_graph` deleted, ADR-0245,
-the class-A rule stated in `doctor_contract.py`; rows 15b/16 wait on P9's `wake_legs_dead` and
-P3's bridge `rms` emitter). P6 running on James Crane as Opus (two PRs merged, two open). P5 executing (plan on #4199 triaged; #4335 and #4337 merged; #4343 open). P11
-planned and triaged (#4212 comment 5564925492; W1 first; the landing/hub eyeball is the owner's in
-the morning). P9: 24 PRs merged (ADR-0244), the daemon split in
-progress; P4's `wake_legs_dead` ask answered (#4331). P12 done (handoff #4324: 21 PRs; H3 and the
-P1/P2 hardware rows PASS; HW-5 re-takes once P2's row 4 lands; H1, H2 and the #4209 slider still
-owner-owed, recipes on #4324). Deployed: all three boxes `e39461ebb`. Overnight mode in effect since 03:39 UTC. Three
-ADR-number collisions in one night (0238, and 0240 twice): a lane takes the next free number in its
-merge commit, never at draft time. A filename-uniqueness pin already exists
-(`tests/test_docs_linkcheck.py`, since #3897); what it cannot catch is a stale citation of a
-reassigned number, which #4302 fixed by hand — no new machinery for that.
+**State on 2026-09-07 12:30 UTC.** Done: P1 (#4279), P4 (#4327), P12 (#4324), P9 (#4385:
+`voice_daemon.py` 5,093 → 3,288, refusal observables, ADR-0244), P6 (#4387: 14 PRs, net −4,246;
+residuals: row 6 offered to P2 as its row 12, 7b dropped, 4/4b/5 not executed, #4354 to P5).
+Running: P2 round two on Dip (wave A merged bar row 8, wave B started), P5 (five PRs open), P11 on
+Space Hater (triaged 05:20, silent since 04:14), P3 on Space Hater (named 12:30 for the P9 session).
+**`main` carries two ADR-0247 files** (#4383 first, #4356 second): P2 renumbers its own to 0248 as a
+fix-forward first. The pin (`tests/test_docs_linkcheck.py`) only sees the merge result, so a lane
+takes its number from `origin/main` at merge time and rebases before merging. Nothing merged after
+`f0abad7f6` has run on hardware; the P3 session deploys `main` to jts3 and jts4 first. Deployed:
+jts3 `f0abad7f6`, jts.local and jts4 `162ab4088`. The coordinator was offline 05:45–12:00 UTC: its
+session-only check died with the idle container, which only a Routine survives.
 
 **Duplicates (owner's rule, 2026-09-07).** No duplicate code stays because it is untested; untested is
 the reason to converge, not to keep. A duplicate found in scope is converged this round by the lane
@@ -106,7 +102,8 @@ half-hourly check. The channel is each lane's own issue, nothing else. On each c
 `main`, the open PRs, #4027 and the newest comments on every active lane issue; the coordinator then
 posts only where a lane waits. A comment starting **Coordinator (overnight)** is the owner's word for
 the night: plan-gate triage, the merge word, the answer to every open call and, after a handoff, the
-number of the session's next lane. Quiet hours post nothing. Held for the owner: tuning-zone rows
+number of the session's next lane. Quiet hours post nothing. The check must be a Routine: a session-only cron dies with the idle
+container (it did, 05:45–12:00 UTC on 2026-09-07). Held for the owner: tuning-zone rows
 (parked), any row that needs the owner at a box, deploys to jts.local (spares jts3 and jts4 only),
 and any change to a non-negotiable. The lane side is one paste into every running session:
 
