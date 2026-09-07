@@ -31,8 +31,7 @@ from jasper.airplay_mode import (
     MODE_ENV_FILE,
     mode_from_env,
 )
-from jasper.atomic_io import atomic_write_text
-from jasper.env_file import parse_env_mapping
+from jasper.env_file import parse_env_mapping, write_env_file
 
 SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # 30s start + 5s stop + client margin
 
@@ -57,7 +56,7 @@ def _write_mode(mode: str) -> None:
         value = "no"
     else:
         raise ValueError(f"unknown mode {mode!r}")
-    atomic_write_text(MODE_ENV_FILE, f"{ENV_VAR}={value}\n")
+    write_env_file(MODE_ENV_FILE, {ENV_VAR: value}, mode=0o644)
 
 
 def _apply_and_restart() -> int:
