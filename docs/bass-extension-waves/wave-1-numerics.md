@@ -503,7 +503,7 @@ hand-rolling an optimizer.
   tests/test_bass_extension_targets.py \
   tests/test_audio_measurement_harmonics.py -q
 scripts/test-fast
-.venv/bin/python -c "from jasper.bass_extension.adapters.base import ADAPTERS; print(sorted(ADAPTERS))"
+.venv/bin/python -c "from jasper.bass_extension.adapters import ADAPTERS; print(sorted(ADAPTERS))"
 ```
 
 Also include in the PR description the family/anchor table your code

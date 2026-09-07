@@ -8,13 +8,13 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement.analysis import resample_log
+from jasper.bass_extension.adapters import adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
     COMMISSION_FLOOR_HZ,
     CabinetInfo,
     CaptureRole,
     FitRefusal,
     MagnitudeCurve,
-    adapter_for_enclosure,
 )
 from jasper.bass_extension.adapters.passive_radiator import (
     PASSIVE_RADIATOR_ADAPTER,

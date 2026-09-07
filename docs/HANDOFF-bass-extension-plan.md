@@ -327,7 +327,8 @@ jasper/bass_extension/
   __init__.py          # public seam + local durable graph/profile apply intent
   alignment.py         # LT math, biquad response eval, boost calc — pure
   adapters/
-    base.py            # EnclosureAdapter Protocol + ADAPTERS registry
+    __init__.py        # ADAPTERS registry + adapter_for_enclosure
+    base.py            # EnclosureAdapter Protocol + shared contracts
     sealed.py          # 2nd-order fit → LT family
     ported.py          # fb locate + knee fit → HP+shelf family
     passive_radiator.py# ported + PR-notch guard

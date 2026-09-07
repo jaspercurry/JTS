@@ -7,12 +7,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, cast, Mapping, Protocol, TYPE_CHECKING
+from typing import Any, Mapping, Protocol, TypeAlias, TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
     from jasper.bass_extension.targets import MarginPolicy
+    from .passive_radiator import PassiveRadiatorPlantFit
+    from .ported import PortedPlantFit
+    from .sealed import SealedPlantFit
+
+    PlantFit: TypeAlias = SealedPlantFit | PortedPlantFit | PassiveRadiatorPlantFit
 
 
 class CaptureRole(StrEnum):
@@ -104,27 +109,3 @@ class EnclosureAdapter(Protocol):
         target: TargetSpec,
         freqs_hz: np.ndarray,
     ) -> np.ndarray: ...
-
-
-from .passive_radiator import PASSIVE_RADIATOR_ADAPTER, PassiveRadiatorPlantFit
-from .ported import PORTED_ADAPTER, PortedPlantFit
-from .sealed import SEALED_ADAPTER, SealedPlantFit
-
-
-PlantFit = SealedPlantFit | PortedPlantFit | PassiveRadiatorPlantFit
-
-
-ADAPTERS: dict[str, EnclosureAdapter] = {
-    "sealed_v1": cast(EnclosureAdapter, SEALED_ADAPTER),
-    "ported_v1": cast(EnclosureAdapter, PORTED_ADAPTER),
-    "passive_radiator_v1": cast(EnclosureAdapter, PASSIVE_RADIATOR_ADAPTER),
-}
-
-
-def adapter_for_enclosure(enclosure_kind: str) -> EnclosureAdapter | None:
-    adapter_id = {
-        "sealed": "sealed_v1",
-        "vented": "ported_v1",
-        "passive_radiator": "passive_radiator_v1",
-    }.get(enclosure_kind)
-    return ADAPTERS.get(adapter_id) if adapter_id is not None else None

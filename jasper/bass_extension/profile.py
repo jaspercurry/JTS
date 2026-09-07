@@ -174,12 +174,10 @@ def _anchor_from_dict(value: Any, index: int) -> AnchorPoint:
 
 
 def _normalise_natural(adapter_id: str, value: Any) -> dict[str, Any]:
-    from jasper.bass_extension.adapters.base import (
-        ADAPTERS,
-        PassiveRadiatorPlantFit,
-        PortedPlantFit,
-        SealedPlantFit,
-    )
+    from jasper.bass_extension.adapters import ADAPTERS
+    from jasper.bass_extension.adapters.passive_radiator import PassiveRadiatorPlantFit
+    from jasper.bass_extension.adapters.ported import PortedPlantFit
+    from jasper.bass_extension.adapters.sealed import SealedPlantFit
 
     if adapter_id not in ADAPTERS:
         raise ValueError("enclosure.adapter_id is unsupported")
@@ -488,7 +486,7 @@ def evaluate_loaded_bass_extension_profile(
         baseline_candidate_fingerprint,
         topology_config_fingerprint,
     )
-    from jasper.bass_extension.adapters.base import ADAPTERS
+    from jasper.bass_extension.adapters import ADAPTERS
 
     refusals: list[BassExtensionRefusal] = []
     mismatches: list[str] = []

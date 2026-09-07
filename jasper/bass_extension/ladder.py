@@ -38,6 +38,7 @@ from jasper.audio_measurement.analysis import (
     tracking_error_db,
 )
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+from jasper.bass_extension.adapters import adapter_for_enclosure
 from jasper.bass_extension.adapters.base import (
     CabinetInfo,
     CaptureRole,
@@ -45,7 +46,6 @@ from jasper.bass_extension.adapters.base import (
     FitRefusal,
     MagnitudeCurve,
     TargetSpec,
-    adapter_for_enclosure,
 )
 from jasper.bass_extension.profile import BassExtensionRefusal
 from jasper.bass_extension.targets import (
