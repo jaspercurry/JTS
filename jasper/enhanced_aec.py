@@ -338,10 +338,6 @@ def desired_fingerprint(source_root: Path = SOURCE_ROOT) -> str:
     return "enhanced-aec-v1:" + hasher.hexdigest()
 
 
-def extension_sha256(path: Path) -> str:
-    return sha256_file(path)
-
-
 @lru_cache(maxsize=8)
 def _cached_digest_matches(
     path_text: str,
@@ -356,7 +352,7 @@ def _cached_digest_matches(
     # native module on every /aec poll.
     del device, inode, size, mtime_ns
     try:
-        return extension_sha256(Path(path_text)) == expected
+        return sha256_file(Path(path_text)) == expected
     except OSError:
         return False
 
@@ -632,7 +628,6 @@ __all__ = [
     "TARGET_MANIFEST_NAME",
     "VENV_ROOT",
     "desired_fingerprint",
-    "extension_sha256",
     "install_profile_supports_enhanced_aec",
     "installed_v2_extensions",
     "parse_target_manifest",

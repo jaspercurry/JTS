@@ -1349,7 +1349,7 @@ def test_base_source_builds_use_hash_checked_archives():
     assert "WEBRTC_AEC3_ARCHIVE_URL=https://" in enhanced_target
     assert "WEBRTC_AEC3_SHA256=" in enhanced_target
     assert "_download_archive(" in enhanced_installer
-    assert "extension_sha256(destination)" in enhanced_installer
+    assert "sha256_file(destination)" in enhanced_installer
 
     for path, source_text in _installer_shell_texts().items():
         for forbidden in [

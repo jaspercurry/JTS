@@ -11,6 +11,7 @@ import re
 import pytest
 
 from jasper.json_fields import (
+    _HASH_CHUNK_BYTES,
     finite_float,
     json_fingerprint,
     sha256_file,
@@ -43,7 +44,8 @@ def test_utc_now_iso_is_a_second_resolution_zulu_stamp():
 
 
 def test_sha256_file_digests_the_whole_file_across_chunk_boundaries(tmp_path):
-    payload = bytes(range(256)) * 1024
+    size = _HASH_CHUNK_BYTES * 2 + 7  # exercise a trailing partial chunk
+    payload = (bytes(range(256)) * (size // 256 + 1))[:size]
     target = tmp_path / "blob.bin"
     target.write_bytes(payload)
     assert sha256_file(target) == hashlib.sha256(payload).hexdigest()
