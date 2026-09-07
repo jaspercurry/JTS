@@ -95,6 +95,11 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "deploy/index.html",
     "jasper/web/correction_crossover_flow.py",
     "deploy/assets/correction/js/main.js",
+    # Sibling modules main.js was cut into (pure move, #4422): same page,
+    # same household copy, now split by concern.
+    "deploy/assets/correction/js/api.js",
+    "deploy/assets/correction/js/format.js",
+    "deploy/assets/correction/js/quality.js",
     "deploy/assets/correction/js/crossover/main.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",

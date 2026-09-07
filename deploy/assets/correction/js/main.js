@@ -19,6 +19,16 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // its own `|| 'fallback'`, so no falsy non-string reaches it — output is
 // unchanged.
 import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
+import {
+  GENERIC_STEP_FAILURE, endpoint, homeownerError, rootCaUrl, safeErrorMessage,
+  secureCorrectionUrl,
+} from "./api.js";
+import { float32ToWav } from "./capture.js";
+import {
+  describeFilters, formatAppliedAt, formatBytes, formatMaybeDb,
+  orientationLabel, reportIssueList,
+} from "./format.js";
+import { qualityBanner, renderQuality } from "./quality.js";
 (function () {
   'use strict';
 
@@ -87,7 +97,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   var envelopeSections = document.getElementById('envelope-sections');
   var measurementReview = document.getElementById('measurement-review');
   var resultProof = document.getElementById('result-proof');
-  var qualityBanner = document.getElementById('quality-banner');
   var autolevelLockBtn = document.getElementById('autolevel-lock');
   var autolevelCancelBtn = document.getElementById('autolevel-cancel');
   var autolevelStatus = document.getElementById('autolevel-status');
@@ -289,27 +298,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     workletNode = null;
   }
 
-  // nginx mounts /sound/room/ on the measurement backend's ROOT, so a page
-  // route and its API routes share this one public prefix.
-  function endpoint(path) {
-    return '/sound/room/' + String(path || '').replace(/^\/+/, '');
-  }
-
-  // The same page over HTTPS, where the browser will hand over the
-  // microphone: install.sh provisions the speaker's own certificate for this
-  // host (provision_correction_tls) and nginx serves /sound/room/ on 443.
-  // `hostname`, not `host`: nginx listens on the default port for each
-  // scheme, so carrying this page's port across would name a closed one.
-  function secureCorrectionUrl() {
-    return 'https://' + window.location.hostname + '/sound/room/';
-  }
-
-  // The speaker's private CA, served over plain HTTP because a browser that
-  // will not accept the certificate cannot fetch it over HTTPS either.
-  function rootCaUrl() {
-    return 'http://' + window.location.hostname + '/jts-root-ca.crt';
-  }
-
   function hideEl(el, hidden) {
     if (!el) return;
     el.hidden = !!hidden;
@@ -483,16 +471,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       calibrationStatus.textContent =
         'Calibration settings changed. Fetch or upload again before measuring.';
     }
-  }
-
-  // Gauge fix (2026-07-24): "0deg"/"90deg" -> a household-legible degree
-  // symbol; "unknown" (or anything else unrecognized) renders nothing
-  // rather than a confusing "unknown orientation" — the honest common case
-  // for a manual upload with no declared orientation.
-  function orientationLabel(orientation) {
-    if (orientation === '0deg') return '0°';
-    if (orientation === '90deg') return '90°';
-    return null;
   }
 
   function showCalibrationLoaded(payload) {
@@ -1133,59 +1111,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
           'The speaker could not continue this step. Try again.';
       }
     }
-  }
-
-  function qualityReports(payload) {
-    var reports = [];
-    if (payload && Array.isArray(payload.capture_quality)) {
-      reports = reports.concat(payload.capture_quality);
-    }
-    if (payload && payload.verify_quality) {
-      reports.push(payload.verify_quality);
-    }
-    return reports;
-  }
-
-  function renderQuality(payload) {
-    var seen = {};
-    var issues = [];
-    qualityReports(payload).forEach(function (report) {
-      (report && report.issues || []).forEach(function (issue) {
-        var key = [issue.severity, issue.code].join('|');
-        if (!seen[key]) {
-          seen[key] = true;
-          issues.push(issue);
-        }
-      });
-    });
-    if (!issues.length) {
-      qualityBanner.className = 'quality-banner';
-      qualityBanner.hidden = true;
-      qualityBanner.innerHTML = '';
-      return;
-    }
-    var hasFail = issues.some(function (issue) {
-      return issue.severity === 'fail';
-    });
-    qualityBanner.className = 'quality-banner ' + (hasFail ? 'fail' : 'warn');
-    qualityBanner.hidden = false;
-    qualityBanner.innerHTML =
-      '<strong>' + (hasFail ? 'Measurement blocked:' : 'Measurement quality warnings:') +
-      '</strong><p>' + (hasFail
-        ? 'This capture could not be used safely. Try this position again.'
-        : 'A quieter re-measure may improve confidence, but you can continue.') +
-      '</p>';
-  }
-
-  function formatAppliedAt(epoch) {
-    if (!epoch) return '';
-    var d = new Date(epoch * 1000);
-    if (isNaN(d.getTime())) return '';
-    var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-    var pad = function (n) { return n < 10 ? '0' + n : String(n); };
-    return days[d.getDay()] + ' ' + d.getFullYear() + '-' +
-      pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
-      pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
   function setCurrentCorrectionTone(tone) {
@@ -1912,15 +1837,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     return card;
   }
 
-  function describeFilters(peqs) {
-    return peqs.map(function (f) {
-      var g = Number(f.gain_db);
-      var sign = g >= 0 ? '+' : '';
-      return Math.round(Number(f.freq_hz)) + ' Hz, Q ' + Number(f.q).toFixed(1)
-        + ', ' + sign + g.toFixed(1) + ' dB';
-    }).join('  •  ');
-  }
-
   async function applyCorrectionProposal(p, btn) {
     var ok = await jtsConfirm(
       'Apply this correction to your speaker? You can undo it with Reset.',
@@ -2131,38 +2047,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       envelopeRetryArmed = true;   // a fresh trigger grants one retry credit
       refreshEnvelope();
     }
-  }
-
-  function numberOrNull(value) {
-    var n = Number(value);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  function formatMaybeDb(value) {
-    var n = numberOrNull(value);
-    return n === null ? '—' : n.toFixed(1) + ' dB';
-  }
-
-  function formatBytes(bytes) {
-    var n = Number(bytes || 0);
-    if (!isFinite(n) || n <= 0) return '0 B';
-    var units = ['B', 'KB', 'MB', 'GB'];
-    var idx = 0;
-    while (n >= 1024 && idx < units.length - 1) {
-      n = n / 1024;
-      idx += 1;
-    }
-    return (idx === 0 ? String(Math.round(n)) : n.toFixed(1)) + ' ' + units[idx];
-  }
-
-  function reportIssueList(items, fallback) {
-    items = (items || []).filter(function (item) { return !!item; }).slice(0, 8);
-    if (!items.length) return '<p class="hint">' + escapeText(fallback) + '</p>';
-    return '<ul>' + items.map(function (item) {
-      return '<li>' + escapeText(
-        item.message || item.reason || item.code || item.kind || String(item)
-      ) + '</li>';
-    }).join('') + '</ul>';
   }
 
   async function loadSessionReports() {
@@ -2542,26 +2426,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   // -- Network --
 
-  var GENERIC_STEP_FAILURE =
-    'The speaker could not continue this step. Try again.';
-
-  function homeownerError(failure, fallback) {
-    var err = new Error(
-      failure && failure.text
-        ? String(failure.text)
-        : String(fallback || GENERIC_STEP_FAILURE)
-    );
-    err.homeownerSafe = true;
-    err.failure = failure || null;
-    return err;
-  }
-
-  function safeErrorMessage(error, fallback) {
-    return error && error.homeownerSafe
-      ? String(error.message)
-      : String(fallback || GENERIC_STEP_FAILURE);
-  }
-
   function showHomeownerFailure(error) {
     var failure = error && error.failure;
     pendingHomeownerFailure = failure || {
@@ -2619,37 +2483,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
     return await resp.json();
-  }
-
-  // -- WAV encoding --
-
-  function float32ToWav(samples, sampleRate) {
-    var len = samples.length;
-    var buf = new ArrayBuffer(44 + len * 2);
-    var view = new DataView(buf);
-    function w8s(off, str) {
-      for (var i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
-    }
-    w8s(0, 'RIFF');
-    view.setUint32(4, 36 + len * 2, true);
-    w8s(8, 'WAVE');
-    w8s(12, 'fmt ');
-    view.setUint32(16, 16, true);          // fmt chunk size
-    view.setUint16(20, 1, true);           // PCM
-    view.setUint16(22, 1, true);           // mono
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);  // byte rate (mono * 2 bytes)
-    view.setUint16(32, 2, true);           // block align
-    view.setUint16(34, 16, true);          // 16-bit
-    w8s(36, 'data');
-    view.setUint32(40, len * 2, true);
-    var off = 44;
-    for (var i = 0; i < len; i++) {
-      var s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(off, s * 0x7FFF, true);
-      off += 2;
-    }
-    return new Blob([buf], {type: 'audio/wav'});
   }
 
   // -- Workflow --
