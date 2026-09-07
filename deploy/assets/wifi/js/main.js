@@ -10,8 +10,6 @@
 // shell (current-network slot, scan list, join-by-name fields, saved-networks
 // collapse); everything that changes at runtime is rendered here.
 //
-// Relocated verbatim from the page's old inline <script> when /wifi/ moved onto
-// the canonical design system. Two seams changed, nothing else:
 //   * jsonHeaders() comes from the shared http.js module; it reads the CSRF
 //     token from the <meta name="jts-csrf"> tag and attaches X-CSRF-Token to
 //     every mutating POST.
@@ -296,6 +294,14 @@ function errorPanel(message, action, dataAttr, dataValue) {
         "Dismiss")));
 }
 
+// Shared "connecting…" status row, used by both the per-network panel and
+// the manual-join result slot.
+function connectingSpinner(ssid) {
+  return h("div", null,
+    h("span.spinner"), ` Connecting to ${ssid}… `,
+    h("span.hint", null, "(up to 3 minutes including rollback)"));
+}
+
 async function confirmManualLockoutRisk(ssid) {
   if (!(state.lockoutRisk === 'high' && state.current)) return true;
   return await jtsConfirm(
@@ -373,9 +379,7 @@ async function submitConnect(ssid, secured) {
     }
   }
   slot.dataset.locked = '1';
-  slot.replaceChildren(h("div.panel", null, h("div", null,
-    h("span.spinner"), ` Connecting to ${ssid}… `,
-    h("span.hint", null, "(up to 3 minutes including rollback)"))));
+  slot.replaceChildren(h("div.panel", null, connectingSpinner(ssid)));
   try {
     const r = await fetch('./connect', {
       method: 'POST',
@@ -445,9 +449,7 @@ async function submitManualConnect() {
   const payload = {ssid: ssid, hidden: hidden};
   if (password) payload.password = password;
   if (btn) btn.disabled = true;
-  result.replaceChildren(h("div", null,
-    h("span.spinner"), ` Connecting to ${ssid}… `,
-    h("span.hint", null, "(up to 3 minutes including rollback)")));
+  result.replaceChildren(connectingSpinner(ssid));
   try {
     const r = await fetch('./connect', {
       method: 'POST',
@@ -614,9 +616,10 @@ async function toggleRadio() {
 
 // Bootstrap ----------------------------------------------------------
 // One delegated click handler for every data-action control. Per-row
-// Connect/Forget targets ride in escaped data-ssid / data-name attributes,
-// so an SSID never lands inside an inline onclick. The page-level controls
-// (Scan, manual Connect, Show password) use the same mechanism.
+// Connect/Forget targets ride in data-ssid / data-name attributes set
+// through h() props, so an SSID never lands inside an inline onclick. The
+// page-level controls (Scan, manual Connect, Show password) use the same
+// mechanism.
 document.addEventListener('click', function(e) {
   const el = e.target.closest('[data-action]');
   if (!el) return;
