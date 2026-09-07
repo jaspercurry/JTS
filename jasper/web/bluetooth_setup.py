@@ -450,10 +450,11 @@ def _landing_html(csrf_token: str = "") -> bytes:
     # /assets/bluetooth/js/main.js, which hydrates these scaffolds. The toggles
     # use the shared toggle_html() helper + the canonical .toggle CSS; the
     # device-list/pair-card visuals come from bluetooth.css. Untrusted device
-    # names never touch this server template — the module escapes them on the
-    # client (see main.js escapeHtml / data-* delegated handler).
+    # names never touch this server template — the module builds device rows
+    # with dom.js h() (text nodes, never innerHTML) and a data-* delegated
+    # handler.
     body = f"""
-{canonical_header("Bluetooth")}
+{canonical_header("Bluetooth devices")}
 <main class="page">
   <p class="bt-intro">Pair phones for Bluetooth speaker playback, plus volume
   knobs and other no-code Bluetooth accessories.</p>
@@ -505,7 +506,7 @@ def _landing_html(csrf_token: str = "") -> bytes:
 <script type="module" src="/assets/bluetooth/js/main.js"></script>
 """
     return canonical_page(
-        "Bluetooth", body, csrf_token=csrf_token, page_css_href=PAGE_CSS_HREF,
+        "Bluetooth devices", body, csrf_token=csrf_token, page_css_href=PAGE_CSS_HREF,
     )
 
 

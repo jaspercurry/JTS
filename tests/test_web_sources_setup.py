@@ -46,7 +46,7 @@ def test_renders_through_canonical_page():
     html = mod._index_html(csrf_token=CSRF, status_msg="Saved.").decode("utf-8")
     assert_canonical_page(html)
     assert '<meta name="jts-csrf"' in html
-    assert "Music sources" in html
+    assert "Playback sources" in html
 
 
 def test_no_legacy_switch_markup():
@@ -95,7 +95,7 @@ def test_usb_unavailable_note_present_but_hidden_at_render():
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
     assert 'id="usbsink-unavailable-note"' in html
     assert "current hardware configuration" in html
-    assert 'id="usbsink-unavailable-note" style="display:none"' in html
+    assert 'id="usbsink-unavailable-note" hidden' in html
 
 
 def test_profile_unavailable_notes_present_but_hidden_at_render():

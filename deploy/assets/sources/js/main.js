@@ -42,12 +42,12 @@ function applyState(state) {
   stateKnown = true;
   latestState = state;
   if (el("sources-state-error")) {
-    el("sources-state-error").style.display = "none";
+    el("sources-state-error").hidden = true;
   }
   // A bonded follower parks every local source — toggles read disabled and the pair note
   // explains (POST /set 409s server-side regardless).
   const parked = !!(state.pair && state.pair.parked);
-  if (el("pair-note")) el("pair-note").style.display = parked ? "" : "none";
+  if (el("pair-note")) el("pair-note").hidden = !parked;
   for (const name of SOURCES) {
     const s = state[name] || {};
     const input = el("t-" + name);
@@ -62,7 +62,7 @@ function applyState(state) {
       const unavailable = s.available === false;
       const degraded =
         typeof s.degradedReason === "string" && !!s.degradedReason;
-      note.style.display = unavailable || degraded ? "" : "none";
+      note.hidden = !(unavailable || degraded);
       if (degraded) {
         note.textContent = s.degradedReason;
       } else if (
@@ -79,7 +79,7 @@ function applyState(state) {
   const btDegraded =
     typeof bt.degradedReason === "string" && !!bt.degradedReason;
   if (el("bt-note")) {
-    el("bt-note").style.display = btUnavailable || btDegraded ? "" : "none";
+    el("bt-note").hidden = !(btUnavailable || btDegraded);
     if (btDegraded) {
       el("bt-note").textContent = bt.degradedReason;
     } else if (
@@ -101,7 +101,7 @@ function applyState(state) {
   const usbWarning = usbUnavailable || usbDegraded;
   const usbUnavailableNote = el("usbsink-unavailable-note");
   if (usbUnavailableNote) {
-    usbUnavailableNote.style.display = usbWarning ? "" : "none";
+    usbUnavailableNote.hidden = !usbWarning;
     if (usbDegraded) {
       usbUnavailableNote.textContent = usb.degradedReason;
     } else if (
@@ -113,7 +113,7 @@ function applyState(state) {
     }
   }
   if (el("usbsink-note")) {
-    el("usbsink-note").style.display = usbWarning ? "none" : "";
+    el("usbsink-note").hidden = usbWarning;
   }
 }
 
@@ -121,7 +121,7 @@ function showStateError(message) {
   const error = el("sources-state-error");
   if (error) {
     error.textContent = message;
-    error.style.display = "";
+    error.hidden = false;
   }
   for (const name of SOURCES) {
     const input = el("t-" + name);

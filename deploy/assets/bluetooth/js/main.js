@@ -16,13 +16,16 @@
 //     which the browser can suppress) from the shared dialog.js.
 //
 // Device names, MACs, and the bluez `icon` slug are UNTRUSTED — every value
-// that lands in innerHTML goes through escapeHtml()/cssIdSafe()/iconSlug(), and
-// per-row action targets ride in escaped data-* attributes consumed by a single
-// delegated click handler (never inline onclick), exactly as before.
+// reaches the DOM only as an h() text child or a DOM property (never
+// innerHTML), so the browser's own escaping applies; cssIdSafe()/iconSlug()
+// keep MAC/icon-derived id and class fragments syntactically safe. Per-row
+// action targets ride in data-* attributes set through h() props, consumed
+// by a single delegated click handler (never inline onclick).
 
 import { jsonHeaders, postJSON, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
-import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
+import { cssIdSafe } from "/assets/shared/js/escape.js";
+import { h, appendChildren } from "/assets/shared/js/dom.js";
 import { toggleScanRequest } from "./scan.js";
 
 let state = {
@@ -142,9 +145,10 @@ function renderToggles() {
   btn.disabled = busy || parked || (!scanning
     && (unavailable || !state.desired || !state.powered));
   btn.classList.toggle("scanning", scanning);
-  btn.innerHTML = scanning
-    ? '<span class="spinner spinner--button"></span>Scanning'
-    : "Scan";
+  btn.replaceChildren();
+  appendChildren(btn, scanning
+    ? [h("span.spinner.spinner--button"), "Scanning"]
+    : ["Scan"]);
   renderDevices();
 
   // While scanning, poll faster so the button reverts promptly when
@@ -390,19 +394,19 @@ function renderDevices() {
     return (a.d.name || a.d.address).localeCompare(b.d.name || b.d.address);
   });
 
-  document.getElementById('paired-list').innerHTML = paired.length
-    ? paired.map(({d, pending}) => deviceRow(d, pending)).join('')
-    : '<div class="empty">No paired devices yet.</div>';
-  document.getElementById('other-list').innerHTML = other.length
-    ? other.map(({d, pending}) => deviceRow(d, pending)).join('')
-    : '<div class="empty">Nothing nearby. Try scanning.</div>';
+  document.getElementById('paired-list').replaceChildren(...(paired.length
+    ? paired.map(({d, pending}) => deviceRow(d, pending))
+    : [h("div.empty", null, "No paired devices yet.")]));
+  document.getElementById('other-list').replaceChildren(...(other.length
+    ? other.map(({d, pending}) => deviceRow(d, pending))
+    : [h("div.empty", null, "Nothing nearby. Try scanning.")]));
 }
 
 function deviceRow(d, pending) {
   const isPaired = !!d.paired;
   const disabled = action => deviceActionDisabled(
     action, state, mutationInFlight || deviceMutations.size > 0,
-  ) ? ' disabled' : '';
+  );
   const canRemoveUnpaired = !isPaired && (
     !!d.connected || !!d.trusted || !!d.servicesResolved
   );
@@ -416,75 +420,80 @@ function deviceRow(d, pending) {
   // don't care about MACs and showing them on every named device
   // is visual noise. Unknown devices show MAC so they can still
   // be told apart.
-  const metaLine = hasName ? '' :
-    `<div class="meta">${escapeHtml(d.address)}</div>`;
-  let badges = '';
+  const metaLine = hasName ? null : h("div.meta", null, d.address);
+  let badge = null;
   // BLE HID devices can open a GATT link before pairing. JTS accessory
   // features are not usable until BlueZ has a paired record.
   if (pending) {
-    badges += `<span class="badge badge--warn">${deviceMutationLabel(pending.action, true)}</span>`;
+    badge = h("span.badge.badge--warn", null, deviceMutationLabel(pending.action, true));
   } else if ((d.connected || d.trusted) && !d.paired) {
-    badges += '<span class="badge badge--warn">Pair required</span>';
+    badge = h("span.badge.badge--warn", null, "Pair required");
   } else if (d.connected && d.servicesResolved === false) {
-    badges += '<span class="badge badge--warn">Connecting</span>';
+    badge = h("span.badge.badge--warn", null, "Connecting");
   } else if (d.connected) {
-    badges += '<span class="badge badge--ok">Connected</span>';
+    badge = h("span.badge.badge--ok", null, "Connected");
+  } else if (d.paired) {
+    badge = h("span.badge.badge--idle", null, "Not connected");
   }
-  else if (d.paired) badges += '<span class="badge badge--idle">Not connected</span>';
-  let actions = '';
+  let actions;
   if (pending) {
-    actions = `<button class="btn btn--default" disabled>${deviceMutationLabel(pending.action, true)}</button>`;
+    actions = [h("button.btn.btn--default", { disabled: true },
+      deviceMutationLabel(pending.action, true))];
   } else if (isPaired) {
-    actions = d.connected
-      ? `<button class="btn btn--default" data-action="disconnect" data-mac="${escapeHtml(d.address)}"${disabled('disconnect')}>Disconnect</button>`
-      : `<button class="btn btn--primary" data-action="connect" data-mac="${escapeHtml(d.address)}"${disabled('connect')}>Connect</button>`;
-    actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Forget</button>`;
+    actions = [
+      d.connected
+        ? h("button.btn.btn--default", {
+            "data-action": "disconnect", "data-mac": d.address,
+            disabled: disabled('disconnect'),
+          }, "Disconnect")
+        : h("button.btn.btn--primary", {
+            "data-action": "connect", "data-mac": d.address,
+            disabled: disabled('connect'),
+          }, "Connect"),
+      h("button.btn.btn--danger", {
+        "data-action": "forget", "data-mac": d.address, "data-label": label,
+        disabled: disabled('forget'),
+      }, "Forget"),
+    ];
   } else {
-    actions = `<button class="btn btn--primary" data-action="pair" data-mac="${escapeHtml(d.address)}"${disabled('pair')}>Pair</button>`;
+    actions = [h("button.btn.btn--primary", {
+      "data-action": "pair", "data-mac": d.address, disabled: disabled('pair'),
+    }, "Pair")];
     if (canRemoveUnpaired) {
-      actions += ` <button class="btn btn--danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}"${disabled('forget')}>Remove</button>`;
+      actions.push(h("button.btn.btn--danger", {
+        "data-action": "forget", "data-mac": d.address, "data-label": label,
+        disabled: disabled('forget'),
+      }, "Remove"));
     }
   }
-  return `
-    <div class="device" id="d-${cssIdSafe(d.address)}">
-      <div class="icon icon-${iconSlug(d.icon)}"></div>
-      <div class="info">
-        <div class="name">${escapeHtml(label)} ${badges}</div>
-        ${metaLine}
-        <div id="pair-${cssIdSafe(d.address)}"></div>
-      </div>
-      ${metricsHtml(d)}
-      <div class="actions">${actions}</div>
-    </div>
-  `;
+  return h(`div.device#d-${cssIdSafe(d.address)}`, null,
+    h(`div.icon.icon-${iconSlug(d.icon)}`),
+    h("div.info", null,
+      h("div.name", null, label, " ", badge),
+      metaLine,
+      h(`div#pair-${cssIdSafe(d.address)}`)),
+    metricsEl(d),
+    h("div.actions", null, ...actions));
 }
 
 // bluez doesn't expose RSSI for connected BLE devices (they stop
 // advertising once linked, and HCI Read-RSSI is BT-Classic-only) — a
 // missing metric is omitted rather than shown as a placeholder dash.
-function metricsHtml(d) {
+function metricsEl(d) {
   const parts = [];
   if (d.battery !== null && d.battery !== undefined) {
-    parts.push(`
-      <div class="metric">
-        <div class="label">Battery</div>
-        <div class="value">${d.battery}%</div>
-      </div>`);
+    parts.push(h("div.metric", null,
+      h("div.label", null, "Battery"), h("div.value", null, `${d.battery}%`)));
   } else if (d.connected && d.batteryCapable) {
-    parts.push(`
-      <div class="metric">
-        <div class="label">Battery</div>
-        <div class="value">No reading</div>
-      </div>`);
+    parts.push(h("div.metric", null,
+      h("div.label", null, "Battery"), h("div.value", null, "No reading")));
   }
   if (d.rssi !== null && d.rssi !== undefined) {
-    parts.push(`
-      <div class="metric">
-        <div class="label">Signal</div>
-        <div class="value"><span class="bars">${rssiBars(d.rssi)}</span></div>
-      </div>`);
+    parts.push(h("div.metric", null,
+      h("div.label", null, "Signal"),
+      h("div.value", null, h("span.bars", null, rssiBars(d.rssi)))));
   }
-  return `<div class="metrics">${parts.join('')}</div>`;
+  return h("div.metrics", null, ...parts);
 }
 
 function deviceActionDisabled(action, currentState, mutationPending) {
@@ -622,11 +631,9 @@ async function startPair(mac) {
   const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
   if (!slot) return;
   if (!beginMutation()) return;
-  slot.innerHTML = `<div class="pair-card" id="pc-${cssIdSafe(mac)}">
-    <div class="stage active" id="ps-${cssIdSafe(mac)}-init">
-      <span class="spinner"></span> Starting pair…
-    </div>
-  </div>`;
+  slot.replaceChildren(h(`div.pair-card#pc-${cssIdSafe(mac)}`, null,
+    h(`div.stage.active#ps-${cssIdSafe(mac)}-init`, null,
+      h("span.spinner"), " Starting pair…")));
 
   try {
     const response = await fetch('pair', {
@@ -638,7 +645,7 @@ async function startPair(mac) {
       throw new Error(data.error || data.message || `Pair request failed (${response.status})`);
     }
   } catch (error) {
-    slot.innerHTML = '';
+    slot.replaceChildren();
     await jtsAlert(error.message || 'Pair request failed.');
     await finishMutation();
     return;
@@ -648,7 +655,7 @@ async function startPair(mac) {
   try {
     es = new EventSource(`pair/${encodeURIComponent(mac)}/stream`);
   } catch (error) {
-    slot.innerHTML = '';
+    slot.replaceChildren();
     await finishMutation();
     await jtsAlert('Could not open the pairing progress stream.');
     return;
@@ -667,7 +674,7 @@ async function startPair(mac) {
       // Hide card after a short delay so user can read the final state.
       setTimeout(() => {
         const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
-        if (slot) slot.innerHTML = '';
+        if (slot) slot.replaceChildren();
       }, data.stage === 'error' ? 8000 : 4000);
     }
   };
@@ -699,21 +706,21 @@ function renderPairStage(mac, data, card) {
   });
 
   if (data.stage === 'starting') {
-    stageEl.innerHTML = `<span class="spinner"></span> Starting pair…`;
+    stageEl.replaceChildren(h("span.spinner"), " Starting pair…");
   } else if (data.stage === 'trusting') {
-    stageEl.innerHTML = `<span class="spinner"></span> Trusting…`;
+    stageEl.replaceChildren(h("span.spinner"), " Trusting…");
   } else if (data.stage === 'pairing') {
-    stageEl.innerHTML = `<span class="spinner"></span> Pairing…`;
+    stageEl.replaceChildren(h("span.spinner"), " Pairing…");
   } else if (data.stage === 'paired') {
-    stageEl.innerHTML = '✓ Paired';
+    stageEl.textContent = '✓ Paired';
     stageEl.classList.remove('active');
     stageEl.classList.add('done');
   } else if (data.stage === 'connecting') {
-    stageEl.innerHTML = `<span class="spinner"></span> Connecting…`;
+    stageEl.replaceChildren(h("span.spinner"), " Connecting…");
   } else if (data.stage === 'wiring') {
-    stageEl.innerHTML = `<span class="spinner"></span> ${escapeHtml(data.detail || 'Configuring…')}`;
+    stageEl.replaceChildren(h("span.spinner"), " " + (data.detail || 'Configuring…'));
   } else if (data.stage === 'ready') {
-    stageEl.innerHTML = '✓ Ready';
+    stageEl.textContent = '✓ Ready';
     stageEl.classList.remove('active');
     stageEl.classList.add('done');
     card.classList.add('pair-card--ok');
@@ -724,12 +731,10 @@ function renderPairStage(mac, data, card) {
       card.appendChild(det);
     }
   } else if (data.stage === 'error') {
-    card.innerHTML = `
-      <div class="pair-error-head">
-        Pairing failed.
-      </div>
-      <div>${escapeHtml(data.message || 'Unknown error')}</div>
-    `;
+    card.replaceChildren(
+      h("div.pair-error-head", null, "Pairing failed."),
+      h("div", null, data.message || 'Unknown error'),
+    );
     card.classList.add('pair-card--error');
   }
 }

@@ -1039,8 +1039,6 @@ _INLINE_STYLE_ALLOWLIST = {
     "home_assistant_setup.py": 1,
     "transit_setup.py": 3,
     "weather_setup.py": 2,
-    # /sources/ per-source row pass (C.R1).
-    "sources_setup.py": 6,
     # /assistant/wake/ pass (C.A3).
     "wake_setup.py": 1,
     # Not yet in the condensed Phase C ledger (UX-AUDIT-2026-09-03.md §7) —
@@ -1104,10 +1102,6 @@ _PAGE_MODULE = {
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
 _TITLE_ALLOWLIST = {
-    ("/sources/", "Playback sources"): {"title", "header"},         # C.R1
-    ("/spotify/", "Spotify accounts"): {"title", "header"},         # C.R1
-    ("/bluetooth/", "Bluetooth devices"): {"title", "header"},      # C.R1
-    ("/airplay/", "AirPlay sync"): {"title", "header"},             # C.R1
     ("/voice/", "Voice"): {"back", "title", "header"},              # C.A2
     ("/wake/", "Wake word"): {"back"},                              # C.A3
     ("/tools/", "Tools"): {"back"},                                 # C.A4

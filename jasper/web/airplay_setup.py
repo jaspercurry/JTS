@@ -114,7 +114,7 @@ def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
     fr_checked = "checked" if mode == "free-running" else ""
     sy_checked = "checked" if mode == "synced" else ""
     body = f"""
-{canonical_header("AirPlay sync mode")}
+{canonical_header("AirPlay sync")}
 <main class="page">
   {canonical_banner(status_msg)}
   <p class="form-hint">Controls how the AirPlay receiver handles clock drift
@@ -177,7 +177,7 @@ def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
 </main>
 """
     return canonical_page(
-        "AirPlay sync mode",
+        "AirPlay sync",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/airplay/airplay.css",

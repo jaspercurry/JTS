@@ -168,9 +168,9 @@ def test_device_actions_use_data_attributes_not_inline_js():
     device metadata rides in escaped data-* attributes consumed by a single
     delegated click handler, never generated inline onclick."""
     js = _MODULE_JS.read_text()
-    assert 'data-action="connect"' in js
-    assert 'data-action="forget"' in js
-    assert 'data-action="pair"' in js
+    assert '"data-action": "connect"' in js
+    assert '"data-action": "forget"' in js
+    assert '"data-action": "pair"' in js
     assert 'onclick="connectDevice' not in js
     assert 'onclick="startPair' not in js
     # The server HTML carries no inline onclick either.
@@ -197,9 +197,9 @@ def test_connected_unpaired_ble_devices_do_not_render_as_ready():
     assert "deviceRow(d, true)" not in js
     assert "deviceRow(d, false)" not in js
     assert "(d.connected || d.trusted) && !d.paired" in js
-    assert '<span class="badge badge--warn">Pair required</span>' in js
-    assert ">Remove</button>" in js
-    assert 'data-action="forget"' in js
+    assert 'h("span.badge.badge--warn", null, "Pair required")' in js
+    assert '"Remove"' in js
+    assert '"data-action": "forget"' in js
 
 
 def test_bluetooth_module_has_no_code_entry_flow():
