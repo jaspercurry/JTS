@@ -31,11 +31,11 @@ def test_session_status_surfaces_the_ptt_keys_from_a_real_loop(
     push-to-talk-only; a wake leg plus the same manual mic source is not,
     even though both resolve the same source.
     """
-    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import WakeLoop
+    from tests._manual_mics import remote_mic
 
     wl = WakeLoop.for_tests(
-        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[remote_mic()],
         **for_tests_kwargs,
     )
 
@@ -53,12 +53,12 @@ def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():
     its readers need no special case."""
     from collections import deque
 
-    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import WakeLoop
+    from tests._manual_mics import remote_mic
 
     wl = WakeLoop.for_tests(
         legs=[],
-        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[remote_mic()],
     )
     assert wl._mic is None
     assert wl._detector is None
@@ -73,8 +73,8 @@ def _zero_leg_loop_with_fast_keepalive(monkeypatch):
     quickly."""
     import asyncio
 
-    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import WakeLoop
+    from tests._manual_mics import remote_mic
 
     class _IdleMic:
         """A paired remote with its button not pressed — the steady state.
@@ -88,9 +88,7 @@ def _zero_leg_loop_with_fast_keepalive(monkeypatch):
 
     wl = WakeLoop.for_tests(
         legs=[],
-        manual_mics=[
-            ManualMicRuntime("wiim_remote_2", _IdleMic(), "udp:9892"),
-        ],
+        manual_mics=[remote_mic(_IdleMic())],
     )
     ticked = asyncio.Event()
     bumps = []

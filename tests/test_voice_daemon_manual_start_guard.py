@@ -483,12 +483,12 @@ def _ptt_only_wake_loop():
     `_push_to_talk.only` derives True, and the only audio path is the
     remote's loop.
     """
-    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import State, WakeLoop
+    from tests._manual_mics import remote_mic
 
     wl = WakeLoop.for_tests(
         legs=[],
-        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[remote_mic()],
     )
     wl._state = State.WAKE
     wl._mic_muted = False
