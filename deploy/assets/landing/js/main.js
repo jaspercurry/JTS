@@ -7,7 +7,7 @@
 // gating and the status-* sublabels are the settings-surface behaviour it
 // shares with the area hubs, and live in shared/js/settings-status.js.
 
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, startPolling } from "/assets/shared/js/http.js";
 import { localWebHost } from "/assets/shared/js/local-web-host.js";
 import {
   bakedCaps,
@@ -261,10 +261,8 @@ function initVolume() {
       }
     } catch (_) {}
   }
-  setInterval(poll, POLL_MS);
-  setInterval(pollSafetyMuted, SAFETY_POLL_MS);
-  poll();
-  pollSafetyMuted();
+  startPolling(poll, { intervalMs: POLL_MS });
+  startPolling(pollSafetyMuted, { intervalMs: SAFETY_POLL_MS });
 }
 
 // Stereo-pair banner. While this speaker is an active bond member
@@ -340,8 +338,7 @@ function initPairBanner() {
       apply(data && data.grouping);
     } catch (_) {}
   }
-  setInterval(poll, POLL_MS);
-  poll();
+  startPolling(poll, { intervalMs: POLL_MS });
 }
 
 // Source selector. /source/state and /source/select are thin
@@ -462,8 +459,7 @@ function initSources() {
       selectSource(btn.dataset.source);
     });
   });
-  setInterval(fetchState, POLL_MS);
-  fetchState();
+  startPolling(fetchState, { intervalMs: POLL_MS });
 }
 
 // Voice-assistant pause toggle. The legacy /mic endpoints remain the
@@ -601,8 +597,7 @@ function initMic() {
     postMute(!muted);
   });
 
-  setInterval(fetchState, POLL_MS);
-  fetchState();
+  startPolling(fetchState, { intervalMs: POLL_MS });
 }
 
 // Gating first: the mic card short-circuits on its section being hidden.
