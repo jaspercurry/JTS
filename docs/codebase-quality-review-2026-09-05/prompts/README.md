@@ -56,34 +56,35 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | P6 right-sizing #4200 — running on Opus since 2026-09-07 00:45 (#4326, #4329 merged); P1 is done (handoff #4279) | P2 round 2 from the handoff #4248 — #4305 disposed (`c5a2f07bb`); the 11-row plan on #4194 (comment 5563789051) is triaged (comment 5564510021, the merge word); executing waves A → B → C; P4 is done (handoff #4327) | **Two sessions.** P12 #4213 (all Phase 3 rows merged; left: H1 and H2 on jts3 with the owner, the #4209 slider on jts.local, the jts4 deploy for HW-3/HW-5, R6, #4317, handoff) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
-| 2 | P7 tests #4201 (execution after P5's moves merge) | P5 structure #4199 (moves after P6's deletions merge) | P11 web UI #4212, once P12 has handed off |
-| 3 | P8 docs #4202 (stale-path pass last) | — | P3 resilience #4195 (P12, P4 and P6 have posted its rows; P4's row 16 waits on its bridge `rms` emitter; its measurements need the boxes) |
+| 1 | P6 right-sizing #4200 — running on Opus (#4326, #4329 merged; 3A #4333 and 3B1 #4338 open). **Last lane on this account:** about a sixth of the weekly budget was left at 04:00 UTC, so P6 keeps a resume ledger on #4200 and a Dip session finishes it if the budget runs out | P2 round 2 (#4194; the 11-row plan triaged at comment 5564510021, the merge word; executing waves A → B → C) **and** P5 structure #4199 (plan triaged at comment 5564738513; #4335 and #4337 open; account unconfirmed, assumed Dip) | **Two sessions.** P11 web UI #4212 (the P12 session rolled on at 03:39 UTC; P12 is done, handoff #4324) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
+| 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | P3 resilience #4195 (P12, P4 and P6 have posted its rows; P4's row 16 waits on its bridge `rms` emitter; its measurements need the boxes) |
+| 3 | — | P8 docs #4202 (stale-path pass last; whichever of Dip or Space Hater frees first) | — |
 
-James Crane has no Fable credit left, so its lanes run with Opus as the coordinator: P6 (plan
-already written and triaged; mostly Sonnet deletions), then P7 and P8. P3, which touches the
-clamp paths and the daemons' restart policy and needs box measurements, moves to Space Hater after
-P11, where Fable and the hardware both are. An Opus coordinator gets one extra sentence in its
-kickoff: read every builder's diff before trusting its report, and one row at a time.
+James Crane has no Fable credit and about a sixth of its weekly budget, so it runs P6 on Opus to
+completion and nothing after; P7 and P8 move to Dip. P3, which touches the clamp paths and the
+daemons' restart policy and needs box measurements, runs on Space Hater after P11, where Fable and
+the hardware both are. An account may run two lanes at once when each has its own session. An Opus
+coordinator gets one extra sentence in its kickoff: read every builder's diff before trusting its
+report, and one row at a time.
 
 **Owner at the box (next session at home).** Nothing needs a deploy first; every build is already
-on its box. jts.local (`162ab4088`): move the host volume slider 0 → 50 → 100 and hold (the #4209
-check; the P12 session reads `event=usbsink.volume_observed raw= muted=`), then speak ten turns
-(P9's gate 0.2; the session reads `event=turn.timeline`). jts3 (`60c38f5ab`): with the P12 session
-watching the journal, unplug the XVF3800 (H1: the reboot-window number) and listen for the mic-loss
-cue (H2), then replug. jts4: nothing; the P12 session deploys it for HW-3/HW-5. Read ADR-0244 (the
+on its box. jts.local (`e39461ebb`, as are jts3 and jts4): move the host volume slider to ~50 % then ~25 % (the
+#4209 check, recipe on #4324; a Space Hater session reads `event=usbsink.volume_observed`), then speak ten turns
+(P9's gate 0.2; the session reads `event=turn.timeline`). jts3: with a Space Hater session watching the journal (recipe on #4324), unplug the XVF3800 (H1: the reboot-window number) and listen for the mic-loss
+cue (H2), then replug. jts4: nothing. Read ADR-0244 (the
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-07 03:15 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
+**State on 2026-09-07 04:00 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
 #4304). P2 round two executing on Dip (11 rows; HW-6 dropped; row 11 — the `first-party-runtime.sh`
 seam and the airplay-mode push design — approved to land last; its box rows go to #4027 for the
 Space Hater sessions, none needs the owner). P4 done (handoff #4327: 12 PRs, `audio_graph` deleted, ADR-0245,
 the class-A rule stated in `doctor_contract.py`; rows 15b/16 wait on P9's `wake_legs_dead` and
-P3's bridge `rms` emitter). P6 running on James Crane as Opus (two PRs merged). P9: 24 PRs merged (ADR-0244), the daemon split in
-progress; P4's `wake_legs_dead` ask answered (#4331). P12: every Phase 3 row
-merged (#4242 reopened and merged), H3 and the P1/P2 hardware rows PASS on jts3, HW-6's premise
-does not hold on ring boxes. Deployed: jts3 `60c38f5ab`, jts.local and jts4 `162ab4088`. Three
+P3's bridge `rms` emitter). P6 running on James Crane as Opus (two PRs merged, two open). P5 running (plan on #4199, triaged;
+#4335 and #4337 open). P9: 24 PRs merged (ADR-0244), the daemon split in
+progress; P4's `wake_legs_dead` ask answered (#4331). P12 done (handoff #4324: 21 PRs; H3 and the
+P1/P2 hardware rows PASS; HW-5 re-takes once P2's row 4 lands; H1, H2 and the #4209 slider still
+owner-owed, recipes on #4324). Deployed: all three boxes `e39461ebb`. Overnight mode in effect since 03:39 UTC. Three
 ADR-number collisions in one night (0238, and 0240 twice): a lane takes the next free number in its
 merge commit, never at draft time. A filename-uniqueness pin already exists
 (`tests/test_docs_linkcheck.py`, since #3897); what it cannot catch is a stale citation of a
