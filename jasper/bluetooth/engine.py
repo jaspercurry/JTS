@@ -576,13 +576,12 @@ class BluetoothEngine:
         reconciled = False
         async for evt in handler.post_pair(dev):
             if "error" in evt:
-                yield {**evt, "handler": handler.id}
+                yield dict(evt)
                 return
             if evt.get("stage") == "ready" and not reconciled:
                 yield {
                     "stage": "wiring",
                     "detail": "Requested an accessory profile refresh.",
-                    "handler": handler.id,
                 }
                 reconciled = True
                 if not await self._reconcile_accessories("bluetooth-pair"):
@@ -592,9 +591,8 @@ class BluetoothEngine:
                             "Paired. Optional accessory features will retry "
                             "at boot if they are not active yet."
                         ),
-                        "handler": handler.id,
                     }
-            yield {**evt, "handler": handler.id}
+            yield dict(evt)
         if not reconciled:
             await self._reconcile_accessories("bluetooth-pair")
 

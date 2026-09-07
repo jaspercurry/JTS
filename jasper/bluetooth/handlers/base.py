@@ -28,8 +28,6 @@ class BluetoothHandler(Protocol):
     """One device-class handler. Add a new class by implementing
     this and registering in handlers/__init__.py."""
 
-    id: str
-
     def applies_to(self, device: BluetoothDevice) -> bool:
         """Does this device match this handler? Inspect `device.uuids`,
         `device.class_of_device`, or `device.icon`. The DefaultHandler

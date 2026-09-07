@@ -20,7 +20,6 @@ from .base import StatusEvent
 
 
 class HIDHandler:
-    id = "hid"
 
     def applies_to(self, device: BluetoothDevice) -> bool:
         return is_hid_uuids(device.uuids)
