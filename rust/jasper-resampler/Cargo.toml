@@ -7,9 +7,8 @@
 # precomputed Blackman-Harris windowed-sinc interpolator, the streaming
 # block resampler that keeps a fractional read cursor across calls, and the
 # rate controller that drives the ratio from a buffer-fill error (composing
-# the shared jasper-clock spa_dll loop). jasper-outputd's content_bridge
-# consumes it; the usbsink-side C++ binding mirrors the same math, pinned by a
-# cross-language contract test. See docs/RESEARCH-pipewire-low-latency.md.
+# the shared jasper-clock spa_dll loop).
+# See docs/RESEARCH-pipewire-low-latency.md.
 #
 # No I/O, no ALSA, no libasound, no threads — exactly like jasper-clock, so it
 # compiles and unit-tests on any host (CI + dev laptop; the daemons that
