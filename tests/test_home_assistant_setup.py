@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /ha/ wizard.
+"""Tests for the /assistant/ha/ wizard.
 
 What's exercised:
   - URL normalization (scheme/port defaulting, trailing-slash/api-suffix

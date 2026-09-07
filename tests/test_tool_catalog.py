@@ -69,7 +69,7 @@ def test_catalog_includes_display_metadata_for_pack_first_ui():
     # one stable top-level card per user-facing capability.
     assert by_name["get_weather"]["category"] == "Utilities"
     assert by_name["get_weather"]["pack"]["id"] == "weather"
-    assert by_name["get_weather"]["pack"]["setup_url"] == "/weather/"
+    assert by_name["get_weather"]["pack"]["setup_url"] == "/assistant/weather/"
     assert by_name["get_current_time"]["category"] == "Utilities"
     assert by_name["get_current_time"]["pack"]["id"] == "time"
 
@@ -253,15 +253,15 @@ def test_needs_setup_setup_urls_map_to_right_wizard():
     cat = build_catalog(minimal_registry(), frozenset())
     by_name = {t["name"]: t for t in cat["tools"]}
     by_pack = {p["id"]: p for p in cat["packs"]}
-    assert by_name["gmail_unread_summary"]["setup_url"] == "/google/"
-    assert by_name["calendar_today_summary"]["setup_url"] == "/google/"
-    assert by_name["home_assistant"]["setup_url"] == "/ha/"
-    assert by_name["get_subway_arrivals"]["setup_url"] == "/transit/"
-    assert by_name["get_bus_arrivals"]["setup_url"] == "/transit/"
-    assert by_name["get_citibike_status"]["setup_url"] == "/transit/"
+    assert by_name["gmail_unread_summary"]["setup_url"] == "/assistant/google/"
+    assert by_name["calendar_today_summary"]["setup_url"] == "/assistant/google/"
+    assert by_name["home_assistant"]["setup_url"] == "/assistant/ha/"
+    assert by_name["get_subway_arrivals"]["setup_url"] == "/assistant/transit/"
+    assert by_name["get_bus_arrivals"]["setup_url"] == "/assistant/transit/"
+    assert by_name["get_citibike_status"]["setup_url"] == "/assistant/transit/"
     # Weather is active even without a default (explicit place names still work);
     # its Configure page is pack-level metadata for bare-location defaults.
-    assert by_pack["weather"]["setup_url"] == "/weather/"
+    assert by_pack["weather"]["setup_url"] == "/assistant/weather/"
     # Other core tools carry no setup wizard.
     assert by_name["get_current_time"]["setup_url"] is None
     assert by_name["set_timer"]["setup_url"] is None

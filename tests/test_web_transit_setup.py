@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /transit/ wizard after its migration to the canonical look.
+"""Tests for the /assistant/transit/ wizard after its migration to the canonical look.
 
 Companion to tests/test_transit_setup.py (which covers the full state /
 save / clear behaviour). This file is the migration guard: it asserts the

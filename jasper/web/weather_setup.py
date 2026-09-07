@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Weather default-location wizard at /weather/.
+"""Weather default-location wizard at /assistant/weather/.
 
 The weather tool has two location paths:
 
@@ -12,7 +12,7 @@ The weather tool has two location paths:
   jasper.weather through Open-Meteo geocoding.
 
 This page owns only the bare-question default and units. It stores
-rounded coordinates (same privacy posture as /transit/) plus a display
+rounded coordinates (same privacy posture as /assistant/transit/) plus a display
 label; the raw address typed into the form is never persisted.
 
 Migrated to the canonical design system: renders through

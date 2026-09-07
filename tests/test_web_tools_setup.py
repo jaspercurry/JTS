@@ -525,13 +525,13 @@ def test_post_toggle_pack_needs_setup_records_setup_intent(tmp_path, monkeypatch
         "tools": [_tool(
             "home_assistant",
             status="needs_setup",
-            setup_url="/ha/",
+            setup_url="/assistant/ha/",
             requires_setup=True,
             pack={
                 "id": "home-assistant",
                 "title": "Home Assistant",
                 "summary": "",
-                "setup_url": "/ha/",
+                "setup_url": "/assistant/ha/",
             },
         )],
     })
@@ -561,13 +561,13 @@ def test_post_toggle_pack_needs_setup_off_clears_setup_intent(tmp_path, monkeypa
         "tools": [_tool(
             "home_assistant",
             status="needs_setup",
-            setup_url="/ha/",
+            setup_url="/assistant/ha/",
             requires_setup=True,
             pack={
                 "id": "home-assistant",
                 "title": "Home Assistant",
                 "summary": "",
-                "setup_url": "/ha/",
+                "setup_url": "/assistant/ha/",
             },
         )],
     })

@@ -4,7 +4,7 @@
 
 """Shared types for the transit-provider registry.
 
-The wizard at `/transit/` and the provider modules under
+The wizard at `/assistant/transit/` and the provider modules under
 `jasper.transit.providers.` all agree on these shapes. New providers
 implement the `TransitProvider` Protocol (structural — no inheritance
 required) and are grouped into a `CityPack` in `jasper.transit.CITY_PACKS`
@@ -192,7 +192,7 @@ class TransitProvider(Protocol):
 
         Implementations LAZY-import the client inside the method (e.g.
         `from ...subway import SubwayClient`) so importing the discovery layer
-        — which the socket-activated /transit/ wizard does — never drags in the
+        — which the socket-activated /assistant/transit/ wizard does — never drags in the
         voice-runtime stack."""
         ...
 

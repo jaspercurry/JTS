@@ -23,7 +23,7 @@ city (`JASPER_TRANSIT_CITIES`, wizard-owned). The flat `REGISTRY` is
 DERIVED from `CITY_PACKS`, so the two never drift. The voice daemon calls
 `active_transit(env)` once: it walks the household's ENABLED packs, builds
 each provider's client, and collects tools — the daemon has ZERO
-per-provider knowledge. The wizard at `/transit/` iterates `REGISTRY` (or a
+per-provider knowledge. The wizard at `/assistant/transit/` iterates `REGISTRY` (or a
 pack) to discover which providers cover a user's geocoded coords.
 
 **Adding transit — concretely.** Two shapes:
@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 
 # The household's enabled city packs, comma-separated pack ids. Wizard-owned
-# (written by /transit/); the daemon reads it via enabled_pack_ids. Lives in
+# (written by /assistant/transit/); the daemon reads it via enabled_pack_ids. Lives in
 # exactly one place so the wizard, the daemon, and install.sh agree on the key.
 TRANSIT_CITIES_ENV = "JASPER_TRANSIT_CITIES"
 
@@ -163,7 +163,7 @@ REGISTRY: tuple[TransitProvider, ...] = _derive_registry(CITY_PACKS)
 def pack_for_provider(provider_id: str) -> CityPack | None:
     """The city pack a provider belongs to ("nyc_subway" -> NYC_PACK).
 
-    Reverse of the pack→providers containment. The /transit/ wizard uses it
+    Reverse of the pack→providers containment. The /assistant/transit/ wizard uses it
     to gate a provider's card on its pack being enabled — a configured
     provider in a disabled city shouldn't render an active card, since its
     tools won't register at runtime."""
@@ -175,7 +175,7 @@ def pack_for_provider(provider_id: str) -> CityPack | None:
 
 def enabled_pack_ids(env: Mapping[str, str]) -> tuple[str, ...]:
     """City packs the household has turned on, from JASPER_TRANSIT_CITIES
-    (comma-separated pack ids, written by the /transit/ wizard).
+    (comma-separated pack ids, written by the /assistant/transit/ wizard).
 
     Absent vs present is the load-bearing distinction:
 

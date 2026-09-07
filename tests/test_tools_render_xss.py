@@ -20,7 +20,7 @@ defenses, both exercised here:
     includes protocol-relative `//host`, the backslash form `/\host`, and the
     whitespace-obfuscated `/<TAB>/host` / `/<LF>/host` (the URL parser folds
     "\" -> "/" and strips tab/newline before parsing, so a second-character
-    regex misses these). We assert all are dropped while a real "/transit/"
+    regex misses these). We assert all are dropped while a real "/assistant/transit/"
     link still renders.
 
 The conventions test only asserts the escaper is imported and not re-declared;
@@ -73,7 +73,7 @@ def test_render_escapes_every_untrusted_tool_field():
     # forms a raw-string regex would miss.
     assert out["noJavascriptScheme"] is True, "a javascript: setup_url survived"
     assert out["noOffOriginHref"] is True, "an off-origin setup_url href survived"
-    assert out["safeHrefRendered"] is True, "a safe /transit/ setup link was dropped"
+    assert out["safeHrefRendered"] is True, "a safe /assistant/transit/ setup link was dropped"
     assert out["configuredSetupLinkRendered"] is True, "configured setup pages should render as Configure links"
     # needs_setup with no setup_url renders an honest Unavailable badge, never
     # a dead disabled checkbox (the flag_recent_issue degraded case).

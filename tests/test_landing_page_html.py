@@ -705,7 +705,11 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
 # never gets WAKE_DETECTION.
 _ASSISTANT_MOVES = {
     "/voice/": "127.0.0.1:8767",
+    "/google/": "127.0.0.1:8768",
     "/wake/": "127.0.0.1:8774",
+    "/transit/": "127.0.0.1:8777",
+    "/ha/": "127.0.0.1:8778",
+    "/weather/": "127.0.0.1:8779",
     "/tools/": "127.0.0.1:8786",
     "/chat/": "127.0.0.1:8787",
 }

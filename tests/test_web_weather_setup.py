@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Canonical-design-system tests for the migrated /weather/ wizard.
+"""Canonical-design-system tests for the migrated /assistant/weather/ wizard.
 
 Two concerns:
 
@@ -192,7 +192,7 @@ def test_render_banner_mirrors_flash_severity():
 
 @pytest.fixture
 def live_server(tmp_path, monkeypatch):
-    """Run /weather/ on a random port against tmp state; suppress
+    """Run /assistant/weather/ on a random port against tmp state; suppress
     systemctl. Mirrors the other web fixture shapes."""
     monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: None)
     state_path = str(tmp_path / "weather.env")

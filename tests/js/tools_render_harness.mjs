@@ -80,7 +80,7 @@ const evilTabBackslash = {
 };
 // A legitimately safe setup link, to prove the detail-page href path still renders.
 const safeUrl = {
-  name: "good_url", status: "needs_setup", setup_url: "/transit/",
+  name: "good_url", status: "needs_setup", setup_url: "/assistant/transit/",
 };
 const configuredWithSetup = {
   name: "spotify_play",
@@ -162,7 +162,7 @@ console.log(JSON.stringify({
   noOffOriginHref: !offOrigin,
   // A real same-origin path still renders as a clickable detail-page Set up link,
   // carrying the current detail page as return context for the setup wizard.
-  safeHrefRendered: html.includes('href="/transit/?return_to=%2Fassistant%2Ftools%2Fpack%2Fspotify%2F"'),
+  safeHrefRendered: html.includes('href="/assistant/transit/?return_to=%2Fassistant%2Ftools%2Fpack%2Fspotify%2F"'),
   configuredSetupLinkRendered:
     html.includes('href="/spotify/?return_to=%2Fassistant%2Ftools%2Fpack%2Fspotify%2F"') &&
     html.includes(">Configure</a>"),

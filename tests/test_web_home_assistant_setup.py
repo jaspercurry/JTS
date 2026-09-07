@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /ha/ wizard after its migration to the canonical look.
+"""Tests for the /assistant/ha/ wizard after its migration to the canonical look.
 
 Two things this guards:
 
@@ -213,7 +213,7 @@ def _handler_cls():
 
 
 def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
-    """Build a *real* /ha/ Handler instance wired to a synthetic request.
+    """Build a *real* /assistant/ha/ Handler instance wired to a synthetic request.
 
     Mirrors tests/test_web_wifi_setup.py's `_make_request`. The Handler
     defines its response helpers (_send_html / _send_json) as instance

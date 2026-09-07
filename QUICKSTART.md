@@ -204,7 +204,7 @@ Wi-Fi. Replace `jts.local` with your chosen hostname if needed.
 - **`http://jts.local/assistant/voice/`** — required. Pick a voice provider
   (Gemini / OpenAI / Grok) and paste an API key. The speaker will
   not respond to "Hey Jarvis" until this is done.
-- **`http://jts.local/transit/`** — optional. NYC subway / bus /
+- **`http://jts.local/assistant/transit/`** — optional. NYC subway / bus /
   Citi Bike. Geocode your address; pick stops.
 - **`http://jts.local/spotify/`** — optional. Connect a Spotify
   account so "play Taylor Swift" works without your phone.
@@ -223,10 +223,10 @@ For a **streambox** profile, use only the locally installed surfaces:
 - **`http://jts.local/sound/pair/`** — group speakers.
 - **`http://jts.local/system/`** — dashboard and status.
 
-Streambox intentionally has no `/assistant/voice/` or `/transit/` setup. If the
-banner says audio is safely parked because no output DAC was detected,
-connect a supported DAC (the standard build uses the Apple USB-C → 3.5mm
-dongle with its analog plug attached), then open `/sound/`. That hardware
+Streambox intentionally has no `/assistant/voice/` or `/assistant/transit/`
+setup. If the banner says audio is safely parked because no output DAC was
+detected, connect a supported DAC (the standard build uses the Apple USB-C →
+3.5mm dongle with its analog plug attached), then open `/sound/`. That hardware
 next step does not mean installation failed.
 
 ---

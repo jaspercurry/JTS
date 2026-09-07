@@ -289,7 +289,7 @@ Optional but recommended:
   "Hey Jasper, what's the weather?"
 
 NYC subway, bus, and Citi Bike are wizard-managed at
-`http://jts.local/transit/` — **do not set the `JASPER_SUBWAY_*` /
+`http://jts.local/assistant/transit/` — **do not set the `JASPER_SUBWAY_*` /
 `JASPER_BUS_*` / `JASPER_MTA_BUSTIME_KEY` / `JASPER_CITIBIKE_*`
 variables in `jasper.env`**. Type your home address; the wizard
 geocodes via OSM Nominatim and shows nearby stops + stations.
@@ -361,7 +361,7 @@ configuration get a polite "transit isn't set up — visit
 From any browser on the LAN:
 
 ```
-http://jts.local/transit/
+http://jts.local/assistant/transit/
 ```
 
 The wizard:
@@ -404,7 +404,7 @@ configuration get a polite "smart-home isn't set up yet — visit
 From any browser on the LAN:
 
 ```
-http://jts.local/ha/
+http://jts.local/assistant/ha/
 ```
 
 The wizard walks three states:

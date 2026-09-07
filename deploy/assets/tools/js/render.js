@@ -25,9 +25,10 @@ const STATUS_BADGE = {
   needs_setup: { label: "Needs setup", tone: "warn" },
 };
 
-// A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
-// "/google/"). Require an absolute path ("/..."), then RESOLVE it against the
-// page origin and demand the result stay on that origin over http(s). A
+// A setup_url is only ever a same-origin wizard path
+// ("/assistant/transit/", "/assistant/ha/", "/assistant/google/"). Require an
+// absolute path ("/..."), then RESOLVE it against the page origin and demand
+// the result stay on that origin over http(s). A
 // character-level guard is not enough: the WHATWG URL parser folds "\" -> "/"
 // AND strips ASCII tab/newline from the whole input BEFORE parsing, so "//host",
 // "/\\host", and even "/<TAB>/host" / "/<LF>/host" all normalize to a

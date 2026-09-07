@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free tests for the migrated /google/ wizard.
+"""Hardware-free tests for the migrated /assistant/google/ wizard.
 
 Covers two things:
 

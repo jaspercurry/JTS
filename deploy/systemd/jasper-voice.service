@@ -112,7 +112,7 @@ EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # Lives in the group-`jasper-secrets` dir alongside
 # the OAuth token tree (/var/lib/jasper-secrets/google/).
 EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
-# Google Routes API key written by /transit/ for destination ETA /
+# Google Routes API key written by /assistant/transit/ for destination ETA /
 # directions. Kept separate from OAuth credentials: this is a billable
 # Maps API key, not a Google account token.
 EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
@@ -124,12 +124,12 @@ EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
 # the file is missing. See jasper/wake_models.py for the registry.
 EnvironmentFile=-/var/lib/jasper/wake_model.env
 # Weather default location + units written by the wizard at
-# http://jts.local/weather/. Sourced AFTER /etc/jasper/jasper.env so
+# http://jts.local/assistant/weather/. Sourced AFTER /etc/jasper/jasper.env so
 # wizard-written values win. Optional via leading `-`; with no default,
 # explicit-location weather questions still work.
 EnvironmentFile=-/var/lib/jasper/weather.env
 # Transit settings (subway station, bus stop, MTA BusTime key, etc.)
-# written by the wizard at http://jts.local/transit/. Subway and bus
+# written by the wizard at http://jts.local/assistant/transit/. Subway and bus
 # tools register only when the relevant env vars are populated, so a
 # fresh install with no transit configured leaves the model with no
 # transit tool surface — by design. Same override pattern as the
@@ -137,7 +137,7 @@ EnvironmentFile=-/var/lib/jasper/weather.env
 EnvironmentFile=-/var/lib/jasper/transit.env
 # Home Assistant URL + token (JASPER_HA_URL, JASPER_HA_TOKEN,
 # JASPER_HA_AGENT_ID) written by the wizard at
-# http://jts.local/ha (PR 2). Optional via leading `-`;
+# http://jts.local/assistant/ha/. Optional via leading `-`;
 # the home_assistant tool is gated on both URL and token being set,
 # so a missing file just leaves smart-home control disabled.
 EnvironmentFile=-/var/lib/jasper-intsecrets/home_assistant.env

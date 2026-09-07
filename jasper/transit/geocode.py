@@ -41,8 +41,8 @@ from typing import TYPE_CHECKING
 from ..log_event import log_event
 
 # httpx is imported lazily inside `geocode()` and the per-service
-# request helpers — this module is imported at the top of the /transit/
-# and /weather/ wizards, which are socket-activated and must stay light
+# request helpers — this module is imported at the top of the /assistant/transit/
+# and /assistant/weather/ wizards, which are socket-activated and must stay light
 # (same documented convention as jasper/transit/providers/nyc_bus.py).
 if TYPE_CHECKING:
     import httpx

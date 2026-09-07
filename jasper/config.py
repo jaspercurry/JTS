@@ -334,7 +334,7 @@ class Config:
     # Google integration: per-household-member Calendar + Gmail OAuth.
     # CLIENT_ID/SECRET come from a single Google Cloud Console OAuth
     # client (same shape as Spotify). Per-account refresh tokens live
-    # under the registry path; the wizard at /google/ writes them.
+    # under the registry path; the wizard at /assistant/google/ writes them.
     google_client_id: str
     google_client_secret: str = field(repr=False)
     google_redirect_uri: str

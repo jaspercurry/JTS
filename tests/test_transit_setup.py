@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the transit setup wizard at /transit/.
+"""Tests for the transit setup wizard at /assistant/transit/.
 
 Risky bits exercised here:
   1. State file lifecycle — geocode writes coords; save merges picks
@@ -854,7 +854,7 @@ def test_transit_env_file_mode_is_0640(tmp_path: Path):
 #
 # When the daemon boots with neither subway nor bus configured, the voice
 # model gets a conditional instruction redirecting transit questions to
-# /transit/. When either tool IS registered, the nudge is omitted so the
+# /assistant/transit/. When either tool IS registered, the nudge is omitted so the
 # model just calls the live tool.
 
 

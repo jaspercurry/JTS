@@ -130,7 +130,7 @@ def make_weather_tools(weather):
     """Build the keyless, API-backed weather capability.
 
     Weather intentionally registers even when the household has not saved a
-    default location: explicit user-named places still work. The /weather/
+    default location: explicit user-named places still work. The /assistant/weather/
     wizard only configures the bare-location default; failures for missing
     default state come back from WeatherClient as a normal tool payload.
     """

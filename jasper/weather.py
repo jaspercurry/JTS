@@ -853,7 +853,7 @@ class WeatherClient:
             if explicit_place:
                 place = explicit_place
             if not place:
-                setup_hint = self._setup_url or "/weather/"
+                setup_hint = self._setup_url or "/assistant/weather/"
                 return {
                     "error": "no location specified and no weather default "
                     f"configured (visit {setup_hint} to set one)",

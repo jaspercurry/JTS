@@ -681,7 +681,7 @@ async def test_get_weather_no_default_no_arg_returns_error():
     try:
         result = await weather.get_weather()
         assert "error" in result
-        assert "/weather/" in result["error"]
+        assert "/assistant/weather/" in result["error"]
     finally:
         await weather.aclose()
 

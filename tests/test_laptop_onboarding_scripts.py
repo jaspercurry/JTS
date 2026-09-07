@@ -465,7 +465,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         for page in ("sources", "spotify", "sound", "sound/pair", "system"):
             self.assertIn(f"http://jts4.local/{page}/", result.stdout)
         self.assertNotIn("http://jts4.local/assistant/voice/", result.stdout)
-        self.assertNotIn("http://jts4.local/transit/", result.stdout)
+        self.assertNotIn("http://jts4.local/assistant/transit/", result.stdout)
         self.assertIn("Audio output is safely parked", result.stdout)
         self.assertIn("Apple\nUSB-C to 3.5 mm dongle", result.stdout)
 
@@ -485,7 +485,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("choose mono/stereo + passive/active", result.stdout)
         self.assertIn("audio stays off until saved", result.stdout)
         self.assertIn("http://jts4.local/assistant/voice/", result.stdout)
-        self.assertIn("http://jts4.local/transit/", result.stdout)
+        self.assertIn("http://jts4.local/assistant/transit/", result.stdout)
         self.assertNotIn("This Streambox provides", result.stdout)
         self.assertNotIn("Audio output is safely parked", result.stdout)
 

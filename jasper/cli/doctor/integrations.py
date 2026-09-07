@@ -213,7 +213,7 @@ def check_citibike(cfg: Config) -> CheckResult:
         set).
       - Saved stations, GBFS responsive, one or more saved IDs
         missing → ok with the affected labels. Lyft periodically
-        retires stations; the user has to re-pick at /transit/.
+        retires stations; the user has to re-pick at /assistant/transit/.
     """
     label = "Citi Bike"
     setup_url = f"http://{cfg.hostname}/transit"
