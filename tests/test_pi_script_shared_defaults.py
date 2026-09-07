@@ -31,15 +31,26 @@ SCRIPT_NAMES = (
 )
 ROBUST_SCRIPT_DIR = 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
 LIB_SOURCE = '. "${SCRIPT_DIR}/_lib.sh"'
+# Default argv per script; _run_script's only consumer. Also carries
+# rename-speaker.sh, which is not a SCRIPT_NAMES member (see script_repo).
 INVOCATIONS = {
-    "switch-gemini-model.sh": (["3.1"], 0),
-    "switch-voice-provider.sh": (["gemini"], 0),
-    "switch-wake-word.sh": (["jarvis_v2"], 0),
-    "tail-pi-logs.sh": (["jasper-voice"], 0),
-    "verify-ref-no-silence-bug.sh": ([], 1),
-    "wake-rate-test.sh": (["1"], 23),
-    # Not a SCRIPT_NAMES member (see script_repo); only _run_script needs this.
-    "rename-speaker.sh": (["jts4", "--no-deploy"], 0),
+    "switch-gemini-model.sh": ["3.1"],
+    "switch-voice-provider.sh": ["gemini"],
+    "switch-wake-word.sh": ["jarvis_v2"],
+    "tail-pi-logs.sh": ["jasper-voice"],
+    "verify-ref-no-silence-bug.sh": [],
+    "wake-rate-test.sh": ["1"],
+    "rename-speaker.sh": ["jts4", "--no-deploy"],
+}
+# Expected exit status for a default invocation — only meaningful for
+# SCRIPT_NAMES members, which the blanket targeting tests below check.
+EXPECTED_STATUS = {
+    "switch-gemini-model.sh": 0,
+    "switch-voice-provider.sh": 0,
+    "switch-wake-word.sh": 0,
+    "tail-pi-logs.sh": 0,
+    "verify-ref-no-silence-bug.sh": 1,
+    "wake-rate-test.sh": 23,
 }
 
 
@@ -172,12 +183,11 @@ def _run_script(
     if name == "verify-ref-no-silence-bug.sh":
         env["FAKE_SSH_FAIL"] = "1"
 
-    default_args, _expected_status = INVOCATIONS[name]
     result = subprocess.run(
         [
             "bash",
             str(repo / "scripts" / name),
-            *(default_args if args is None else args),
+            *(INVOCATIONS[name] if args is None else args),
         ],
         cwd=repo.parent / "foreign-cwd",
         env=env,
@@ -241,7 +251,7 @@ def test_explicit_environment_target_works_from_any_cwd(
         inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
+    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
     assert "operator@explicit.invalid" in calls
 
 
@@ -258,7 +268,7 @@ def test_explicit_environment_target_outranks_checkout_env_local(
         inherited={"PI_HOST": "inherited.invalid", "PI_USER": "inherited-user"},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
+    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
     assert "inherited-user@inherited.invalid" in calls
     assert "checkout-user@checkout.invalid" not in calls
 
@@ -275,7 +285,7 @@ def test_checkout_env_local_target_is_the_shared_default(
         inherited={},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
+    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
     assert "checkout-user@checkout.invalid" in calls
 
 
@@ -291,7 +301,7 @@ def test_jasper_hostname_compatibility_fallback_comes_from_shared_owner(
         inherited={"JASPER_HOSTNAME": "legacy.invalid"},
     )
 
-    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
+    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
     assert "pi@legacy.invalid" in calls
 
 
@@ -408,31 +418,6 @@ def test_wake_word_current_and_usage_path_is_safe_with_stubbed_ssh(
 
 
 @pytest.mark.parametrize(
-    ("name", "switch_marker"),
-    (
-        ("switch-wake-word.sh", "wake_model.env"),
-        ("switch-voice-provider.sh", "sh -s --"),
-    ),
-)
-def test_switch_runs_the_shared_restart_and_verify_chain_in_one_session(
-    script_repo: tuple[Path, Path, Path],
-    name: str,
-    switch_marker: str,
-) -> None:
-    result, calls = _run_script(
-        script_repo,
-        name,
-        env_local=None,
-        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    switch_calls = [line for line in calls.splitlines() if switch_marker in line]
-    assert len(switch_calls) == 1, calls
-    assert "systemctl is-active jasper-voice" in switch_calls[0]
-
-
-@pytest.mark.parametrize(
     "value",
     ["plain", "with space", "a $value with a \\backslash"],
     ids=["plain", "space", "dollar-and-backslash"],
@@ -443,8 +428,10 @@ def test_remote_env_file_set_cmd_executes_the_upsert_it_prints(
     """Real-execute remote_env_file_set_cmd's own printed command (installed-
     lib path swapped for the repo copy): the value round-trips through
     jasper_env_file_get and the file lands at the requested mode. Apostrophe
-    coverage is the lib's own concern, pinned in tests/test_env_file_lib.py."""
-    target = tmp_path / "target.env"
+    coverage is the lib's own concern, pinned in tests/test_env_file_lib.py.
+    The target dir itself carries a space, pinning that FILE is quoted too
+    (the dir does not exist yet, so the lib's own -d create also runs it)."""
+    target = tmp_path / "a dir" / "target.env"
     real_lib = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
 
     remote_cmd = _remote_env_file_set_cmd(str(target), "KEY", value, "0640", "0750")
@@ -470,8 +457,12 @@ def test_remote_env_file_set_cmd_executes_the_upsert_it_prints(
          "/tmp/jarvis-v2.onnx", ("0644", "0770"), "sudo", True),
         ("rename-speaker.sh", "/etc/jasper/jasper.env", "JASPER_HOSTNAME",
          "jts4.local", ("0640", "0755"), "sudo -n", False),
+        ("switch-voice-provider.sh", "/var/lib/jasper/voice_provider.env",
+         "JASPER_VOICE_PROVIDER", "gemini", ("0640", "0770"), "sudo", True),
+        ("switch-gemini-model.sh", "/var/lib/jasper/voice_provider.env",
+         "JASPER_GEMINI_MODEL", "catalog-default.test", ("0640", "0770"), "sudo", False),
     ],
-    ids=["switch-wake-word", "rename-speaker"],
+    ids=["switch-wake-word", "rename-speaker", "switch-voice-provider", "switch-gemini-model"],
 )
 def test_env_file_write_matches_the_shared_helper(
     script_repo: tuple[Path, Path, Path],
