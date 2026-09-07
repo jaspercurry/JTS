@@ -28,7 +28,6 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 import urllib.error
@@ -501,7 +500,7 @@ def test_every_park_signal_is_installed_and_named_by_its_own_exit_code():
     assert signal.SIGHUP in aw.PARK_ON_SIGNALS
 
 
-def test_a_real_sighup_runs_the_park_rather_than_killing_the_process():
+def test_a_real_sighup_runs_the_park_rather_than_killing_the_process(tmp_path):
     """A DELIVERED SIGHUP, in a real process — not a hand-called handler.
 
     The bug this pins is Python's default disposition, so calling the handler
@@ -509,37 +508,37 @@ def test_a_real_sighup_runs_the_park_rather_than_killing_the_process():
     kill(SIGHUP) against a process that installed the handlers proves the
     ``finally`` still runs, which on a speaker is the park.
     """
+    # File finalizers swallow signal exceptions; close markers explicitly.
     child = textwrap.dedent(f"""
         import sys, time
         sys.path.insert(0, {str(ROOT)!r})
         from jasper.active_speaker.arm_walk import install_park_on_signals
         install_park_on_signals()
         try:
-            open(sys.argv[1], "w").write("ready")
+            with open(sys.argv[1], "w") as ready:
+                ready.write("ready")
             while True:
                 time.sleep(0.02)
         finally:
-            open(sys.argv[2], "w").write("parked")
+            with open(sys.argv[2], "w") as parked:
+                parked.write("parked")
     """)
-    with tempfile.TemporaryDirectory() as tmp:
-        ready, parked = Path(tmp) / "ready", Path(tmp) / "parked"
-        proc = subprocess.Popen([sys.executable, "-c", child, str(ready), str(parked)])
-        try:
-            deadline = time.monotonic() + 60
-            while not ready.exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            assert ready.exists(), "the child never installed its handlers"
-            proc.send_signal(signal.SIGHUP)
-            rc = proc.wait(timeout=30)
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+    ready, parked = tmp_path / "ready", tmp_path / "parked"
+    proc = subprocess.Popen([sys.executable, "-c", child, str(ready), str(parked)])
+    try:
+        deadline = time.monotonic() + 60
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "the child never installed its handlers"
+        proc.send_signal(signal.SIGHUP)
+        rc = proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
-        # Inside the temporary directory's lifetime, or the marker is gone
-        # before it is read and the assertion below fails for the wrong reason.
-        assert parked.exists(), "SIGHUP killed the process without running the park"
-        assert rc == aw.SIGNAL_EXIT_BASE + int(signal.SIGHUP) == 129
+    assert parked.exists(), "SIGHUP killed the process without running the park"
+    assert rc == aw.SIGNAL_EXIT_BASE + int(signal.SIGHUP) == 129
 
 
 def test_a_second_signal_during_the_park_cannot_abandon_the_arm():
