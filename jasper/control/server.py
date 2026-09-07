@@ -406,6 +406,11 @@ def _env_int(name: str, default: int) -> int:
 
 
 CONTROL_MAX_POST_BYTES = _env_int("JASPER_CONTROL_MAX_POST_BYTES", 4096)
+# Listen socket refused (address in use, unreachable bind host, privileged
+# port). Listed in jasper-control.service's SuccessExitStatus +
+# RestartPreventExitStatus so the daemon parks instead of climbing
+# StartLimitBurst into StartLimitAction=reboot. See ADR-0251.
+CONTROL_BIND_FAILED_EXIT = os.EX_CONFIG
 CONTROL_MAX_WORKERS = 8
 CONTROL_REQUEST_QUEUE_SIZE = 16
 CONTROL_REQUEST_TIMEOUT_SEC = 5.0
@@ -2047,13 +2052,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     audio_health_sampler.start()
 
-    server = build_server(
-        args.host, args.port,
-        args.camilla_host, args.camilla_port,
-        args.voice_socket,
-        sampler=sampler,
-        audio_health_sampler=audio_health_sampler,
-    )
+    try:
+        server = build_server(
+            args.host, args.port,
+            args.camilla_host, args.camilla_port,
+            args.voice_socket,
+            sampler=sampler,
+            audio_health_sampler=audio_health_sampler,
+        )
+    except OSError as exc:
+        # A refused listen socket does not heal on a restart, so park rather
+        # than spend the burst that ends in StartLimitAction=reboot.
+        log_event(
+            logger, "control.bind_failed",
+            level=logging.ERROR,
+            host=args.host, port=args.port,
+            errno=exc.errno, error=exc.strerror or str(exc),
+        )
+        return CONTROL_BIND_FAILED_EXIT
     # Arm the control-token gate before serving. ensure_token()
     # auto-generates the token (0640 group jasper) if absent, so the
     # destructive routes are always gated with no operator action;

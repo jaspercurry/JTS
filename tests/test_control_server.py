@@ -742,6 +742,49 @@ def test_sigterm_handler_requests_shutdown_from_helper_thread():
     assert thread_names == ["control-sigterm-shutdown"]
 
 
+def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
+    monkeypatch, caplog,
+):
+    """A refused listen socket is permanent config, so main() returns the
+    park code the unit holds in RestartPreventExitStatus rather than exiting
+    1 into StartLimitBurst x RestartSec -> StartLimitAction=reboot.
+    See ADR-0251."""
+    import errno
+
+    import jasper.control.server as srv_mod
+    from jasper import flight_recorder
+    from jasper.control import audio_health, system_metrics
+    from tests._log_events import event_fields
+
+    class _NoopSampler:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def service_states_snapshot(self):
+            return {}
+
+    monkeypatch.setattr(flight_recorder, "install", lambda *a, **k: False)
+    monkeypatch.setattr(system_metrics, "SystemSampler", _NoopSampler)
+    monkeypatch.setattr(audio_health, "AudioHealthSampler", _NoopSampler)
+
+    def _refuse(*args, **kwargs):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(srv_mod, "build_server", _refuse)
+
+    with caplog.at_level(logging.ERROR, logger="jasper.control.server"):
+        code = srv_mod.main(["--host", "127.0.0.1", "--port", "8781"])
+
+    assert code == srv_mod.CONTROL_BIND_FAILED_EXIT == 78
+    fields = event_fields(caplog, "control.bind_failed")
+    assert fields["host"] == "127.0.0.1"
+    assert fields["port"] == "8781"
+    assert fields["errno"] == str(errno.EADDRINUSE)
+
+
 def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
     import jasper.control.server as srv_mod
     import jasper.peering as peering_pkg

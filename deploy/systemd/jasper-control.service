@@ -55,7 +55,17 @@ EnvironmentFile=-/var/lib/jasper/voice_provider.env
 EnvironmentFile=-/var/lib/jasper/peering.env
 ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
-RestartSec=2
+# Park, don't reboot, on a permanent startup fault. See ADR-0251.
+#   78 (EX_CONFIG) — the HTTP listen socket was refused (address in use,
+#                    unreachable bind host, privileged port). Nothing about
+#                    a restart frees it, so climbing StartLimitBurst into
+#                    StartLimitAction=reboot above just reboots the box on a
+#                    config error. jasper.control.server.CONTROL_BIND_FAILED_EXIT.
+SuccessExitStatus=78
+RestartPreventExitStatus=78
+# 5 s backoff (was 2 s), matching jasper-voice: control was the tightest
+# restart ladder on the box at 2 s x 4 bursts = ~8 s to reboot.
+RestartSec=5
 
 # jasper-control runs as a dedicated non-root
 # service user in the shared `jasper` group. The group is the cross-daemon
