@@ -94,6 +94,27 @@ PR in that plan, sensitive tier included, once `/code-review`, `/simplify` and (
 demands it) `/adversarial-review` have no open blockers. No lane waits for a per-PR word; four
 lanes stalled on that on the first night.
 
+**Overnight mode.** When the owner is away, the coordinator session runs the lanes on an hourly
+Routine. The channel is each lane's own issue, nothing else. Once an hour an Opus subagent reads
+`main`, the open PRs, #4027 and the newest comments on every active lane issue; the coordinator then
+posts only where a lane waits. A comment starting **Coordinator (overnight)** is the owner's word for
+the night: plan-gate triage, the merge word, the answer to every open call and, after a handoff, the
+number of the session's next lane. Quiet hours post nothing. Held for the owner: tuning-zone rows
+(parked), any row that needs the owner at a box, deploys to jts.local (spares jts3 and jts4 only),
+and any change to a non-negotiable. The lane side is one paste into every running session:
+
+> Overnight mode until the owner says otherwise. The coordinator session manages the lanes; your
+> channel is your lane's issue, the one your kickoff named. Once an hour, read its newest comments.
+> A comment that starts "Coordinator (overnight)" is the owner's word for the night: plan-gate
+> triage, the merge word, the answer to every open call, and the number of your next lane. Between
+> comments, work: execute the triaged plan and merge on green once /code-review, /simplify and,
+> where the tier demands it, /adversarial-review have no open blockers; at a new plan gate, post the
+> plan and keep the hourly check going until the coordinator's comment lands. Tuning-zone rows stay
+> parked; anything that needs the owner at a box waits; if you can reach the Pis, deploy only to
+> jts3 and jts4 tonight. When your lane is done, post "<lane> done" with the handoff issue number on
+> your lane issue; when the coordinator names your next lane, read that issue's body and start it in
+> this session. Do not wait for a human paste tonight.
+
 Kickoff message for a lane — paste it into a fresh session on the named account, changing only the
 issue number and the lane name in the last sentences:
 
