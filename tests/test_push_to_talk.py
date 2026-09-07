@@ -11,12 +11,17 @@ import logging
 
 import pytest
 
+from jasper.voice.push_to_talk import (
+    HARD_RECORDING_CAP_SEC,
+    PTT_MIN_INPUT_CAP_SEC,
+    PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
+)
 from tests._log_events import event_fields, event_records
+from tests._manual_mics import remote_mic
 
 
 def _remote_runtime():
-    from jasper.voice.push_to_talk import ManualMicRuntime
-    return [ManualMicRuntime("wiim_remote_2", object(), "udp:9892")]
+    return [remote_mic()]
 
 
 def test_push_to_talk_only_is_derived_from_resolved_runtime():
@@ -173,143 +178,129 @@ def test_hard_recording_cap_alone_would_lose_the_race():
     assert HARD_RECORDING_CAP_SEC > _shipped_idle_timeout_default()
 
 
-def test_hold_cap_is_derived_from_the_operators_idle_timeout():
-    """Retuning JASPER_IDLE_TIMEOUT_SEC moves the cap with it, so the two
-    cannot drift apart."""
-    from jasper.voice.push_to_talk import (
-        HARD_RECORDING_CAP_SEC,
-        PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
-        PushToTalk,
-    )
-
-    ptt = PushToTalk([], have_wake_legs=True)
-
-    assert ptt.input_cap_sec(20) == 20 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-    assert ptt.input_cap_sec(30) == 30 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-
-    # ...but never past the absolute stuck-button ceiling.
-    assert ptt.input_cap_sec(600) == HARD_RECORDING_CAP_SEC
-
-
-def test_hold_cap_warns_when_a_low_idle_timeout_squeezes_the_model(caplog):
-    """`PTT_MIN_INPUT_CAP_SEC` keeps the button usable under a very low
-    idle timeout, at the cost of the model's response allowance. That is a
-    degraded configuration and must say so.
-
-    The interesting case is NOT only "the cap can no longer win the race".
-    At `idle_timeout_sec = 10` the cap still fires first (5 s < 10 s) but
-    leaves the model 5 s where the allowance asks for 6 — a slow first
-    chunk still loses the answer, silently, unless this warns.
-    """
-    from jasper.voice.push_to_talk import (
-        PTT_MIN_INPUT_CAP_SEC,
-        PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
-        PushToTalk,
-    )
-
-    ptt = PushToTalk([], have_wake_legs=True)
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        cap = ptt.input_cap_sec(10)
-        ptt.input_cap_sec(10)  # one-shot latch: no second WARN
-
-    # The floor won, and it still beats the watchdog...
-    assert cap == PTT_MIN_INPUT_CAP_SEC
-    assert cap < 10
-    # ...but the model is left less than its allowance, which is the point.
-    assert 10 - cap < PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-    # Exactly one record is the one-shot latch; the fields are the verdict.
-    fields = event_fields(caplog, "manual_mic.idle_timeout_too_low")
-    assert float(fields["needs_sec"]) == 11.0
-    assert float(fields["cap_sec"]) == float(PTT_MIN_INPUT_CAP_SEC)
-    assert float(fields["idle_timeout_sec"]) == 10.0
-    # ...and NOT the louder band's event: here the cap does still fire.
-    assert event_records(caplog, "manual_mic.hold_cap_unreachable") == []
+_BOTH_CAP_EVENTS = {
+    "manual_mic.hold_cap_unreachable", "manual_mic.idle_timeout_too_low",
+}
 
 
 @pytest.mark.parametrize(
-    "idle_timeout, expected_event",
+    "idle_timeout_sec, expected_cap, expected_event, expected_fields",
     [
-        (3, "manual_mic.hold_cap_unreachable"),
-        # 5 is the crossing: the watchdog has walked down TO the floor, so
-        # this is the last timeout at which the cap cannot fire.
-        (5, "manual_mic.hold_cap_unreachable"),
-        # 6 is the first at which it can — one second either side of the
-        # boundary must not be reported as the same verdict.
-        (6, "manual_mic.idle_timeout_too_low"),
-        (10, "manual_mic.idle_timeout_too_low"),
-        # 11 = floor + allowance: the full allowance is restored, silence.
-        (11, None),
-        (20, None),  # the shipped default
+        pytest.param(
+            3, PTT_MIN_INPUT_CAP_SEC, "manual_mic.hold_cap_unreachable",
+            {
+                "cap_sec": PTT_MIN_INPUT_CAP_SEC,
+                "idle_timeout_sec": 3.0,
+                "needs_sec": (
+                    PTT_MIN_INPUT_CAP_SEC + PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
+                ),
+            },
+            id="unreachable_floor",
+        ),
+        pytest.param(
+            # 5 is the crossing: the watchdog has walked down TO the floor,
+            # so this is the last timeout at which the cap cannot fire.
+            5, PTT_MIN_INPUT_CAP_SEC, "manual_mic.hold_cap_unreachable", None,
+            id="unreachable_crossing",
+        ),
+        pytest.param(
+            # 6 is the first at which it can — one second either side of the
+            # boundary must not be reported as the same verdict.
+            6, PTT_MIN_INPUT_CAP_SEC, "manual_mic.idle_timeout_too_low", None,
+            id="too_low_just_past_crossing",
+        ),
+        pytest.param(
+            # The floor still wins (5 s < 10 s) but leaves the model 5 s
+            # where the allowance asks for 6 — a slow first chunk still
+            # loses the answer, silently, unless this warns.
+            10, PTT_MIN_INPUT_CAP_SEC, "manual_mic.idle_timeout_too_low",
+            {
+                "cap_sec": PTT_MIN_INPUT_CAP_SEC,
+                "idle_timeout_sec": 10.0,
+                "needs_sec": (
+                    PTT_MIN_INPUT_CAP_SEC + PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
+                ),
+            },
+            id="too_low_squeezed",
+        ),
+        pytest.param(
+            # 11 = floor + allowance: the full allowance is restored, silence.
+            11, PTT_MIN_INPUT_CAP_SEC, None, None,
+            id="silent_allowance_restored",
+        ),
+        pytest.param(
+            20, 20 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC, None, None,
+            id="silent_shipped_default",
+        ),
+        pytest.param(
+            30, 30 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC, None, None,
+            id="silent_above_default",
+        ),
+        pytest.param(
+            # Retuning the idle timeout moves the cap with it, but never
+            # past the absolute stuck-button ceiling.
+            600, HARD_RECORDING_CAP_SEC, None, None,
+            id="silent_hard_ceiling",
+        ),
     ],
 )
-def test_hold_cap_degraded_bands_are_reported_distinctly(
-    caplog, idle_timeout, expected_event,
+def test_hold_cap_bands_and_values(
+    caplog, idle_timeout_sec, expected_cap, expected_event, expected_fields,
 ):
-    """The band boundaries themselves, walked one second at a time.
+    """`input_cap_sec`'s full derivation, one `idle_timeout_sec` at a time:
+    the cap value, which of the two degraded-band events (if any) it
+    reports, and — at the two values the per-band cases originally checked
+    exactly — the WARN's fields.
 
-    "The cap fires but the model is squeezed" and "the cap can never fire"
-    are different verdicts with different remedies, and an off-by-one in
-    the comparison that separates them silently reports one as the other.
-    The spot-check tests below cover the middle of each band; this covers
-    the edges, which is where a boundary bug actually lives.
+    "The cap still fires but leaves the model squeezed"
+    (`idle_timeout_too_low`) and "the watchdog reaps the turn before the
+    cap can even fire" (`hold_cap_unreachable`) are different verdicts
+    with different remedies, and an off-by-one in the comparison that
+    separates them would silently report one as the other — hence the
+    boundary rows (5/6) and the point the softer band clears (11).
     """
     from jasper.voice.push_to_talk import PushToTalk
-
-    both = {"manual_mic.hold_cap_unreachable", "manual_mic.idle_timeout_too_low"}
 
     ptt = PushToTalk([], have_wake_legs=True)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        ptt.input_cap_sec(idle_timeout)
+        cap = ptt.input_cap_sec(idle_timeout_sec)
 
-    fired = {name for name in both if event_records(caplog, name)}
+    assert cap == expected_cap
+
+    fired = {name for name in _BOTH_CAP_EVENTS if event_records(caplog, name)}
     assert fired == ({expected_event} if expected_event else set()), (
-        f"idle_timeout_sec={idle_timeout} should report "
+        f"idle_timeout_sec={idle_timeout_sec} should report "
         f"{expected_event or 'nothing'}, got {fired or 'nothing'}"
     )
+    if expected_fields is not None:
+        fields = event_fields(caplog, expected_event)
+        assert float(fields["cap_sec"]) == expected_fields["cap_sec"]
+        assert (
+            float(fields["idle_timeout_sec"]) == expected_fields["idle_timeout_sec"]
+        )
+        assert float(fields["needs_sec"]) == expected_fields["needs_sec"]
 
 
-def test_a_very_low_idle_timeout_makes_the_cap_unreachable_and_says_so(caplog):
-    """The band the first version of this docstring got wrong.
-
-    `PTT_MIN_INPUT_CAP_SEC` is a constant floor; the watchdog is not. So a
-    low enough `idle_timeout_sec` walks the watchdog down *through* the
-    floor, and below the crossing the cap can never fire at all — the
-    original blocker's exact failure mode, surviving in a narrow band.
-    That is worse than a squeezed allowance (there, only a slow first
-    chunk loses the answer; here every hold does) and gets its own,
-    louder event.
-    """
-    from jasper.voice.push_to_talk import PTT_MIN_INPUT_CAP_SEC, PushToTalk
-
-    ptt = PushToTalk([], have_wake_legs=True)
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        cap = ptt.input_cap_sec(3)
-        ptt.input_cap_sec(3)  # one shared latch: no second WARN
-
-    assert cap == PTT_MIN_INPUT_CAP_SEC
-    assert cap >= 3  # the watchdog gets there first
-    # Exactly one record is the shared one-shot latch holding.
-    fields = event_fields(caplog, "manual_mic.hold_cap_unreachable")
-    assert float(fields["cap_sec"]) == float(PTT_MIN_INPUT_CAP_SEC)
-    assert float(fields["idle_timeout_sec"]) == 3.0
-    # The two bands are distinct verdicts and must not be conflated: the
-    # softer one would understate a cap that cannot fire at all.
-    assert event_records(caplog, "manual_mic.idle_timeout_too_low") == []
-
-
-def test_hold_cap_is_silent_when_the_allowance_is_actually_preserved(caplog):
-    """Mutation of the warning above: at the shipped default the
-    derivation does leave the full allowance, so the WARN must not fire —
-    otherwise every household journal carries a permanent false alarm."""
+@pytest.mark.parametrize(
+    "idle_timeout_sec, event",
+    [
+        pytest.param(3, "manual_mic.hold_cap_unreachable", id="unreachable"),
+        pytest.param(10, "manual_mic.idle_timeout_too_low", id="too_low"),
+    ],
+)
+def test_hold_cap_warn_is_a_one_shot_latch(caplog, idle_timeout_sec, event):
+    """`_cap_warned` is shared across both degraded bands and set on the
+    first fire, so a button held — released, then held again — all night
+    logs its verdict once per daemon lifetime, never once per turn."""
     from jasper.voice.push_to_talk import PushToTalk
 
+    other = (_BOTH_CAP_EVENTS - {event}).pop()
     ptt = PushToTalk([], have_wake_legs=True)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        ptt.input_cap_sec(_shipped_idle_timeout_default())
+        ptt.input_cap_sec(idle_timeout_sec)
+        ptt.input_cap_sec(idle_timeout_sec)  # one-shot latch: no second WARN
 
-    assert event_records(caplog, "manual_mic.idle_timeout_too_low") == []
-    assert event_records(caplog, "manual_mic.hold_cap_unreachable") == []
+    event_fields(caplog, event)  # asserts exactly one record fired
+    assert event_records(caplog, other) == []
