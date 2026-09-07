@@ -33,13 +33,6 @@ ACTIVE_DRIVER_CAPTURE_SOURCE_DBFS = -12.0
 class ActiveCommissioningAdmissionError(RuntimeError):
     """A capture or running graph cannot provide a usable identity."""
 
-    def __init__(
-        self, *args: Any, refusal_codes: tuple[str, ...] = (),
-    ) -> None:
-        super().__init__(*args)
-        self.refusal_codes = refusal_codes
-
-
 @dataclass(frozen=True, slots=True)
 class ActiveCaptureAdmissionHandoff:
     """Strict server-owned join from admitted playback to captured evidence."""
