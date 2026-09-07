@@ -30,7 +30,6 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 INSTALL_DIR="/opt/jasper"
-# Where a deploy builds the new source tree before publishing it into INSTALL_DIR.
 INSTALL_STAGING_DIR="${INSTALL_DIR}/.staging"
 CAMILLA_DIR="/opt/camilladsp"
 CAMILLA_CONF="/etc/camilladsp"

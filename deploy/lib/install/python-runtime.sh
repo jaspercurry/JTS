@@ -135,6 +135,8 @@ migrate_mic_device_candidates_seed() {
 # moves the source INSIDE it instead of replacing it, so the live entry moves
 # aside first and dies with the staging tree.
 publish_staged_install_tree() {
+    # The glob never matches a dotfile, so .deps.txt — and any dot-name the
+    # checkout ships at its top level — stays behind in the staging tree.
     local staged name
     for staged in "${INSTALL_STAGING_DIR}"/*; do
         [[ -e "${staged}" ]] || continue
@@ -144,18 +146,30 @@ publish_staged_install_tree() {
         fi
         mv "${staged}" "${INSTALL_DIR}/${name}"
     done
-    remove_staged_install_tree
+    rm -rf -- "${INSTALL_STAGING_DIR}"
 }
 
-# An abort between a publish's two renames leaves the live entry parked in the
-# staging tree, so restore before removing.
+stage_install_tree() {
+    remove_staged_install_tree
+    install -d -m 0755 "${INSTALL_STAGING_DIR}"
+}
+
+# Roll an unfinished publish back, then drop the staging tree. A moved-aside
+# entry is either still parked (the run died between its two renames) or already
+# published (its staged name is gone), so the new tree goes back before the old
+# one is restored. The EXIT trap calls this through _call_if_defined, which
+# disarms errexit: the explicit return is what stops a failed restore from
+# reaching the rm below and deleting a live entry's only copy.
 remove_staged_install_tree() {
     local prev name
     for prev in "${INSTALL_STAGING_DIR}"/*.prev; do
         [[ -e "${prev}" ]] || continue
         name="${prev##*/}"
         name="${name%.prev}"
-        [[ -e "${INSTALL_DIR}/${name}" ]] || mv "${prev}" "${INSTALL_DIR}/${name}"
+        if [[ -e "${INSTALL_DIR}/${name}" ]]; then
+            mv "${INSTALL_DIR}/${name}" "${INSTALL_STAGING_DIR}/${name}" || return 1
+        fi
+        mv "${prev}" "${INSTALL_DIR}/${name}" || return 1
     done
     rm -rf -- "${INSTALL_STAGING_DIR}"
 }
@@ -163,8 +177,9 @@ remove_staged_install_tree() {
 # Install what the STAGED manifest declares, before anything in the live tree
 # moves: a dependency that will not resolve or build fails the deploy with the
 # box still on its old source and its old venv. This IS the dependency install —
-# the editable install after the publish takes --no-deps — so an unreadable
-# manifest or an empty list fails here rather than publishing an unchecked tree.
+# the editable install after the publish takes --no-deps — so a manifest that is
+# unreadable, or that does not declare the extra this profile installs, fails
+# here rather than publishing a tree whose dependencies nothing resolved.
 install_staged_dependencies() {
     local extra="$1"
     shift
@@ -175,11 +190,10 @@ import tomllib
 
 with open(sys.argv[1], "rb") as handle:
     project = tomllib.load(handle)["project"]
-extra = project.get("optional-dependencies", {}).get(sys.argv[2], [])
-specs = project.get("dependencies", []) + extra
-if not specs:
-    raise SystemExit(f"no dependencies declared for extra {sys.argv[2]}")
-print("\n".join(specs))
+optional = project.get("optional-dependencies", {})
+if not optional.get(sys.argv[2]):
+    raise SystemExit(f"manifest declares no {sys.argv[2]} extra")
+print("\n".join(project.get("dependencies", []) + optional[sys.argv[2]]))
 PY
     "${INSTALL_DIR}/.venv/bin/pip" install "$@" -r "${INSTALL_STAGING_DIR}/.deps.txt"
 }
@@ -256,8 +270,7 @@ install_jasper() {
         return 1
     fi
 
-    remove_staged_install_tree
-    install -d -m 0755 "${INSTALL_STAGING_DIR}"
+    stage_install_tree
     rsync -a --delete --link-dest="${INSTALL_DIR}" \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \
@@ -513,8 +526,7 @@ install_streambox_jasper() {
     # Build manifest is written as the FINAL mutation in main(), not here —
     # see install_jasper's note and write_build_manifest for why (ADR-0172).
 
-    remove_staged_install_tree
-    install -d -m 0755 "${INSTALL_STAGING_DIR}"
+    stage_install_tree
     rsync -a --delete --link-dest="${INSTALL_DIR}" \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \
