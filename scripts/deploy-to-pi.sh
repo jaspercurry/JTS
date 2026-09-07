@@ -603,43 +603,41 @@ EOF
     exit 1
 }
 
-# The mic/AEC reconciler queues its voice restart with --no-block and
-# nothing else waits for it, so the doctor can reach a unit still in
-# `activating` and fail the row for a start that was going to finish.
-# Remove this wait when that restart stops being --no-block, or when the
-# doctor waits for activating units itself.
+# The mic/AEC reconciler's voice restart is --no-block and nothing waits
+# for it; the doctor fails a unit still `activating`. Remove this wait
+# when that restart stops being --no-block, or when the doctor waits.
 SETTLE_POLL_INTERVAL_SEC=3
 SETTLE_POLL_CEILING_SEC=60
 wait_for_units_settled() {
-    local waited=0 settled=no activating
-    while :; do
-        activating="$(ssh_remote "systemctl list-units --state=activating \
---plain --no-legend 'jasper-*'" 2>/dev/null || true)"
-        if [[ -z "${activating//[[:space:]]/}" ]]; then
-            settled=yes
-            break
-        fi
-        if (( waited >= SETTLE_POLL_CEILING_SEC )); then
-            break
-        fi
+    local waited=0 settled=yes
+    while [[ -n "$(ssh_remote "systemctl list-units --state=activating \
+--plain --no-legend 'jasper-*'" 2>/dev/null | tr -d '[:space:]')" ]]; do
+        (( waited < SETTLE_POLL_CEILING_SEC )) || { settled=no; break; }
         sleep "$SETTLE_POLL_INTERVAL_SEC"
         waited=$(( waited + SETTLE_POLL_INTERVAL_SEC ))
     done
-    if (( waited > 0 )); then
+    [[ "$waited" == "0" ]] || \
         echo "  event=deploy.settle_wait seconds=${waited} settled=${settled}"
-    fi
 }
 
-# Same bound as install.sh's run_doctor_summary, whose own run stays
-# advisory. See ADR-0242.
+# Same bound as install.sh's run_doctor_summary. See ADR-0242.
 gate_core_health() {
     echo "==> Post-deploy core health (jasper-doctor --core)"
-    local rc=0
+    local rc=0 reason=
     wait_for_units_settled
     run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
 -p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" || rc=$?
-    [[ "${rc}" == "0" ]] || echo "  event=deploy.core_health rc=${rc}"
-    return "${rc}"
+    # Only 0 and 1 are the doctor's own verdict. See ADR-0242 decision 3.
+    case "${rc}" in
+        0) return 0 ;;
+        1) echo "  event=deploy.core_health rc=1"; return 1 ;;
+        143) reason="timeout" ;;
+        137) reason="oom_kill" ;;
+        203) reason="exec" ;;
+        *) reason="other" ;;
+    esac
+    echo "  event=deploy.core_health rc=${rc} reason=${reason}"
+    return 0
 }
 
 # The install must outlive this ssh session (#4190): it runs as a

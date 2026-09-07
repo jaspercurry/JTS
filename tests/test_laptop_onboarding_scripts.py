@@ -988,10 +988,15 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("==> Done.", combined)
 
     def test_the_deploy_exit_code_carries_the_core_health_verdict(self):
-        """The post-deploy `jasper-doctor --core` run gates the deploy:
-        its exit code is the deploy's, and only a green one reaches the
-        closing line."""
-        for doctor_rc in ("0", "1"):
+        """Only the doctor's own verdict gates the deploy (ADR-0242
+        decision 3): rc 1 is a red speaker and fails it, and a code
+        systemd-run put on the same channel — the bound firing, the OOM
+        killer, an unrunnable venv — is named and stays green."""
+        for doctor_rc, expect_rc, events in (
+            ("0", 0, []),
+            ("1", 1, ["event=deploy.core_health rc=1"]),
+            ("143", 0, ["event=deploy.core_health rc=143 reason=timeout"]),
+        ):
             with self.subTest(doctor_rc=doctor_rc):
                 fake = FakeRemote(self)
                 result = self.run_deploy(
@@ -1005,8 +1010,17 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
 
                 calls = fake.calls()
                 combined = result.stdout + result.stderr
-                self.assertEqual(result.returncode, int(doctor_rc), combined)
-                self.assertEqual("==> Done." in combined, doctor_rc == "0")
+                self.assertEqual(result.returncode, expect_rc, combined)
+                self.assertEqual("==> Done." in combined, expect_rc == 0)
+                # One line per result, never two.
+                self.assertEqual(
+                    [
+                        line.strip()
+                        for line in result.stdout.splitlines()
+                        if "event=deploy.core_health" in line
+                    ],
+                    events,
+                )
                 self.assertIn("jasper-doctor\\ --core", calls)
                 # The remote run carries install.sh's bound. See ADR-0242.
                 self.assertIn("systemd-run", calls)
