@@ -251,13 +251,13 @@ def test_env_file_hold_excludes_another_writer_until_dropped(
 
 def test_env_lock_path_matches_atomic_io(tmp_path: Path) -> None:
     """Bash and jasper.atomic_io must name the same lock file for FILE."""
-    from jasper.atomic_io import _env_lock_path
+    from jasper.atomic_io import env_lock_path
 
     target = tmp_path / "outputd.env"
     result = _bash(f'jasper_env_lock_path "{target}"')
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == _env_lock_path(str(target))
+    assert result.stdout == env_lock_path(str(target))
 
 
 @pytest.mark.parametrize(
