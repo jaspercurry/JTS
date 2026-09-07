@@ -449,15 +449,14 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     so the pin neither leaks from nor needs the developer host's real
     ``/var/lib/jasper/fanin.env``.
     """
+    # Imported BEFORE the patch below: it copies env_load's constants at import
+    # time, so importing it inside the patched window would bake in the tmp path.
+    import jasper.fanin.coupling_reconcile  # noqa: F401
     import jasper.fanin.ring_health as ring_health
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
 
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
-    # BOTH modules imported before either is patched: coupling_reconcile
-    # re-exports ring_health's constant, so patching ring_health first and
-    # letting monkeypatch import coupling_reconcile afterwards would record the
-    # PATCHED value as its original and leak the tmp path into later tests.
     monkeypatch.setattr(ring_health, "FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 

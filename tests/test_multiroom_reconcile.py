@@ -3431,8 +3431,7 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
     grouping = tmp_path / "grouping-outputd.env"
     grouping.write_text("", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(base))
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd)
-    )
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd))
     monkeypatch.setattr(
         "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
     )

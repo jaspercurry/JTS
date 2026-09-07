@@ -43,9 +43,10 @@ from __future__ import annotations
 import subprocess
 from typing import Any, Callable
 
+from ..env_load import GROUPING_ENV_FILE
 from ..ring_assets import RingFlowState, ring_flow_state
 from . import config
-from .config import GROUPING_ENV_FILE, SNAP_STREAM_ID, GroupingConfig
+from .config import SNAP_STREAM_ID, GroupingConfig
 from .effective_role import read_effective_role_status
 from .grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
 

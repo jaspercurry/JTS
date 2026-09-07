@@ -809,8 +809,7 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling, marker: str):
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
     monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
-    )
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
     return fanin_env, outputd_env
 
 
@@ -902,8 +901,8 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(tmp_path / "gone" / "fanin.env")
     )
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH",
-        str(tmp_path / "gone" / "outputd.env"),
+    monkeypatch.setattr(
+        "jasper.env_load.OUTPUTD_ENV_PATH", str(tmp_path / "gone" / "outputd.env")
     )
 
     preflight = _ring_load_preflight(

@@ -32,8 +32,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..env_load import GROUPING_ENV_FILE
 from . import config
-from .config import GROUPING_ENV_FILE, GroupingConfig
+from .config import GroupingConfig
 
 # `load_config` / `is_active_leader` are resolved through the `config` module
 # at call time (``config.load_config`` / ``config.is_active_leader``), NOT

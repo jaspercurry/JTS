@@ -363,8 +363,8 @@ def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
     indeterminate marker must never assert an active-ring endpoint.
     """
     if env is None:
-        from jasper.env_load import OUTPUTD_ENV_PATH
-        from jasper.fanin.coupling_reconcile import read_value
+        from jasper.env_file import read_value
+        from jasper.env_load import OUTPUTD_ENV_PATH  # lazy: read at call time
 
         try:
             with open(OUTPUTD_ENV_PATH, encoding="utf-8") as fh:
@@ -486,7 +486,7 @@ def read_declared_ring_wire_format() -> str:
     from pathlib import Path
 
     from jasper.env_file import read_value
-    from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH
+    from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH  # lazy: read at call time
 
     for path in (FANIN_ENV_PATH, BASE_ENV_PATH):
         try:

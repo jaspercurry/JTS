@@ -93,8 +93,8 @@ from jasper.fanin.ring_health import (
     ring_wire_caps_ready,
 )
 
-# Nothing below reads this; jasper/fanin/converge and jasper/control/transport_park
-# BIND it on this module, so moving it is a behaviour change, not a rename.
+# Nothing below reads this; jasper/fanin/converge BINDs it on this module, so
+# moving it is a behaviour change, not a rename.
 from jasper.fanin.ring_health import (
     graph_at_active_ring_endpoint as graph_at_active_ring_endpoint,
 )

@@ -50,12 +50,16 @@ BASE_ENV_PATH = "/etc/jasper/jasper.env"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
+#: PERSISTENT (never /run) so a bonded speaker boots with the content lane
+#: already configured, without a second jasper-outputd restart.
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 SOURCE_INTENT_ENV = "/var/lib/jasper/source_intent.env"
 SPEAKER_NAME_ENV_PATH = "/var/lib/jasper/speaker_name.env"
 #: CLIENT_ID + OAUTH_MODE. Separate from ``jasper.env`` so jasper-web can
 #: write it without /etc being RW (systemd ``ProtectSystem=full``).
 SPOTIFY_CREDENTIALS_ENV_PATH = "/var/lib/jasper-intsecrets/spotify_credentials.env"
+#: The TTS socket key is OMITTED, never written empty: an empty value is
+#: read as a real, invalid path.
 VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 
 
@@ -229,11 +233,11 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     semantics, while long-lived daemons launching subprocesses need a
     freshly-read view of the wizard-owned SSOT files.
 
-    The base layer resolves through :func:`env_file_path`, reaching every
-    reader that goes through ``env_load`` — not the readers that open
-    ``BASE_ENV_PATH`` directly (``fanin/ring_health.py``,
-    ``renderer_lanes.py``, ``model_downloads.py``), nor the separate
-    ``JASPER_SYSTEM_ENV_FILE`` seam in ``wake_corpus/runtime_probe.py``."""
+    The base layer resolves through :func:`env_file_path`, so the
+    ``JASPER_ENV_FILE`` seam reaches every reader that goes through this
+    function — not readers that open :data:`BASE_ENV_PATH` themselves, nor the
+    separate ``JASPER_SYSTEM_ENV_FILE`` seam in
+    ``wake_corpus/runtime_probe.py``."""
     files = paths if paths is not None else ENV_FILES
     merged: dict[str, str] = {}
     for path in files:

@@ -1118,7 +1118,7 @@ def build_audio_runtime_plan_from_system(
     *,
     base_env_path: str | None = None,
     outputd_env_path: str = OUTPUTD_ENV_PATH,
-    outputd_grouping_env_path: str | None = None,
+    outputd_grouping_env_path: str = OUTPUTD_GROUPING_ENV_FILE,
     fanin_env_path: str = FANIN_ENV_PATH,
     grouping_env_path: str = GROUPING_ENV_FILE,
     overrides_path: str | None = None,
@@ -1133,8 +1133,6 @@ def build_audio_runtime_plan_from_system(
 
     if base_env_path is None:
         base_env_path = env_file_path()
-    if outputd_grouping_env_path is None:
-        outputd_grouping_env_path = OUTPUTD_GROUPING_ENV_FILE
 
     base = read_env_file_state(base_env_path)
     outputd = read_env_file_state(outputd_env_path)
