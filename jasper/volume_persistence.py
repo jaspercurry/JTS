@@ -298,33 +298,25 @@ class VolumePersistence:
         mistake the renderer's stale pre-push value for a post-mute user edit.
         """
         with self._state_update():
-            self._save_mute_state_locked(level, mute_token)
-
-    def _save_mute_state_locked(
-        self,
-        level: int | None,
-        mute_token: str | None,
-    ) -> None:
-        """Apply a mute-state partial update while ``_state_update`` is held."""
-        if level is not None:
-            level = max(0, min(100, int(level)))
-            if mute_token is not None:
-                mute_token = str(mute_token)
-                if not mute_token or len(mute_token) > 128:
-                    raise ValueError("mute_token must contain 1..128 characters")
-        else:
-            mute_token = None
-        self._current_pre_mute_level = level
-        self._current_mute_token = mute_token
-        if self._current_main_volume_db is None:
-            # No disk record and no main-volume context. A mute latch by itself
-            # is not enough to invent a synthetic listening level.
-            logger.debug(
-                "volume persistence: skipping pre_mute write "
-                "(no main_volume context yet)",
-            )
-            return
-        self._write_full()
+            if level is not None:
+                level = max(0, min(100, int(level)))
+                if mute_token is not None:
+                    mute_token = str(mute_token)
+                    if not mute_token or len(mute_token) > 128:
+                        raise ValueError("mute_token must contain 1..128 characters")
+            else:
+                mute_token = None
+            self._current_pre_mute_level = level
+            self._current_mute_token = mute_token
+            if self._current_main_volume_db is None:
+                # No disk record and no main-volume context. A mute latch by itself
+                # is not enough to invent a synthetic listening level.
+                logger.debug(
+                    "volume persistence: skipping pre_mute write "
+                    "(no main_volume context yet)",
+                )
+                return
+            self._write_full()
 
     def save_listening_level(
         self, percent: int, *, mark_user_change: bool = True,
