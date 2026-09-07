@@ -1884,7 +1884,8 @@ def _fmt_db(value: float | None) -> str:
 async def _voice_socket_command(
     socket_path: str, cmd: str, *, timeout: float = 1.0,
 ) -> dict[str, Any]:
-    reader, writer = await asyncio.open_unix_connection(socket_path)
+    async with asyncio.timeout(1.0):
+        reader, writer = await asyncio.open_unix_connection(socket_path)
     try:
         writer.write((cmd + "\n").encode("ascii"))
         await writer.drain()

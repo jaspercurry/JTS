@@ -380,7 +380,8 @@ async def _voice_uds_command(
     Same wire format as jasper.control.server._voice_socket_command, not
     imported here to avoid a circular dependency.
     """
-    reader, writer = await asyncio.open_unix_connection(socket_path)
+    async with asyncio.timeout(1.0):
+        reader, writer = await asyncio.open_unix_connection(socket_path)
     try:
         writer.write((cmd + "\n").encode("ascii"))
         await writer.drain()
