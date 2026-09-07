@@ -1391,7 +1391,7 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         assert wl._turn is None
         assert wl._session_id is None
         assert wl._bg_tasks == set()
-        assert wl._active_manual_source is None
+        assert wl._push_to_talk.active_source is None
         assert wl._acquiring is False
         assert wl._state is State.WAKE
         assert wl._turn_output_episode is None
@@ -1717,7 +1717,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     wl._session_id = 42
     wl._bg_tasks = {object()}  # type: ignore[assignment]
     wl._bg_end_scheduled = True
-    wl._active_manual_source = "test_remote"
+    wl._push_to_talk.active_source = "test_remote"
     wl._acquiring = True
     wl._state = State.SESSION
     wl._refractory_until = -1.0
@@ -1744,7 +1744,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     assert wl._session_id is None
     assert wl._bg_tasks == set()
     assert wl._bg_end_scheduled is False
-    assert wl._active_manual_source is None
+    assert wl._push_to_talk.active_source is None
     assert wl._acquiring is False
     assert wl._state is State.WAKE
     assert wl._refractory_until > 0.0

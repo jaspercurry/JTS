@@ -58,28 +58,6 @@ class _SilentVad:
         return None
 
 
-def _shipped_idle_timeout_default() -> int:
-    """The `JASPER_IDLE_TIMEOUT_SEC` default, taken from a real
-    `Config.from_env` with the knob unset rather than restated here — a
-    duplicated literal is exactly how the ordering these tests pin would
-    silently stop holding.
-    """
-    import os
-    from unittest import mock
-
-    from jasper.config import Config
-
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in {"JASPER_IDLE_TIMEOUT_SEC", "JASPER_VOICE_PROVIDER"}
-    }
-    env["JASPER_VOICE_PROVIDER"] = "gemini"
-    env.setdefault("GEMINI_API_KEY", "test-key")
-    with mock.patch.dict(os.environ, env, clear=True):
-        return Config.from_env().idle_timeout_sec
-
-
 def _session_loop(*, manual: bool, elapsed: float = 1.0, idle_timeout: int = 20):
     """A WakeLoop parked mid-turn with input still open.
 
@@ -98,7 +76,7 @@ def _session_loop(*, manual: bool, elapsed: float = 1.0, idle_timeout: int = 20)
     wl._input_ended = False
     wl._barge_in_active = False
     wl._manual_endpoint_this_turn = manual
-    wl._active_manual_source = "wiim_remote_2" if manual else None
+    wl._push_to_talk.active_source = "wiim_remote_2" if manual else None
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - elapsed
     return wl
 
@@ -194,207 +172,11 @@ async def test_no_speech_abort_DOES_fire_without_the_bypass():
 # ---------------------------------------------------------------------------
 
 
-def test_at_the_shipped_default_the_hold_cap_beats_the_idle_watchdog():
-    """The load-bearing ordering *at the shipped default*, read from the
-    config rather than hardcoded. Deliberately not a general property —
-    it does not hold at every `idle_timeout_sec`, and the two degraded
-    bands below are where it stops holding.
-
-    `_idle_watchdog`'s pre-response timer is anchored at turn OPEN and
-    fires at `JASPER_IDLE_TIMEOUT_SEC` when no model chunk has arrived —
-    and none can while input is open, because `last_activity_at()` tracks
-    *model* activity. `_end_turn` then cancels `_play_responses` BEFORE
-    calling `end_input`, so losing this race means the user gets no answer
-    at all. The hold cap must close input early enough that the model can
-    still start speaking inside the same window.
-    """
-    from jasper.voice_daemon import (
-        PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
-        WakeLoop,
-    )
-
-    shipped_idle_timeout = _shipped_idle_timeout_default()
-
-    wl = WakeLoop.for_tests()
-    wl._cfg.idle_timeout_sec = shipped_idle_timeout
-    cap = wl._ptt_input_cap_sec()
-
-    assert cap < shipped_idle_timeout, (
-        f"push-to-talk hold cap {cap}s does not fire before the idle "
-        f"watchdog at {shipped_idle_timeout}s; a long hold loses its answer"
-    )
-    assert shipped_idle_timeout - cap >= PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-
-
-def test_hard_recording_cap_alone_would_lose_the_race():
-    """Why the cap is derived rather than just HARD_RECORDING_CAP_SEC.
-
-    Pins the arithmetic that made the first version of this change wrong:
-    at the shipped defaults the 30 s constant sits ABOVE the 20 s idle
-    timeout, so on its own it can never fire.
-    """
-    from jasper.voice_daemon import HARD_RECORDING_CAP_SEC
-
-    assert HARD_RECORDING_CAP_SEC > _shipped_idle_timeout_default()
-
-
-def test_hold_cap_is_derived_from_the_operators_idle_timeout():
-    """Retuning JASPER_IDLE_TIMEOUT_SEC moves the cap with it, so the two
-    cannot drift apart."""
-    from jasper.voice_daemon import (
-        HARD_RECORDING_CAP_SEC,
-        PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
-        WakeLoop,
-    )
-
-    wl = WakeLoop.for_tests()
-
-    wl._cfg.idle_timeout_sec = 20
-    assert wl._ptt_input_cap_sec() == 20 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-
-    wl._cfg.idle_timeout_sec = 30
-    assert wl._ptt_input_cap_sec() == 30 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-
-    # ...but never past the absolute stuck-button ceiling.
-    wl._cfg.idle_timeout_sec = 600
-    assert wl._ptt_input_cap_sec() == HARD_RECORDING_CAP_SEC
-
-
-def test_hold_cap_warns_when_a_low_idle_timeout_squeezes_the_model(caplog):
-    """`PTT_MIN_INPUT_CAP_SEC` keeps the button usable under a very low
-    idle timeout, at the cost of the model's response allowance. That is a
-    degraded configuration and must say so.
-
-    The interesting case is NOT only "the cap can no longer win the race".
-    At `idle_timeout_sec = 10` the cap still fires first (5 s < 10 s) but
-    leaves the model 5 s where the allowance asks for 6 — a slow first
-    chunk still loses the answer, silently, unless this warns.
-    """
-    from jasper.voice_daemon import (
-        PTT_MIN_INPUT_CAP_SEC,
-        PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
-        WakeLoop,
-    )
-
-    wl = WakeLoop.for_tests()
-    wl._cfg.idle_timeout_sec = 10
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        cap = wl._ptt_input_cap_sec()
-        wl._ptt_input_cap_sec()  # one-shot latch: no second WARN
-
-    # The floor won, and it still beats the watchdog...
-    assert cap == PTT_MIN_INPUT_CAP_SEC
-    assert cap < wl._cfg.idle_timeout_sec
-    # ...but the model is left less than its allowance, which is the point.
-    assert (
-        wl._cfg.idle_timeout_sec - cap < PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC
-    )
-    # Exactly one record is the one-shot latch; the fields are the verdict.
-    fields = event_fields(caplog, "manual_mic.idle_timeout_too_low")
-    assert float(fields["needs_sec"]) == 11.0
-    assert float(fields["cap_sec"]) == float(PTT_MIN_INPUT_CAP_SEC)
-    assert float(fields["idle_timeout_sec"]) == float(wl._cfg.idle_timeout_sec)
-    # ...and NOT the louder band's event: here the cap does still fire.
-    assert event_records(caplog, "manual_mic.hold_cap_unreachable") == []
-
-
-@pytest.mark.parametrize(
-    "idle_timeout, expected_event",
-    [
-        (3, "manual_mic.hold_cap_unreachable"),
-        # 5 is the crossing: the watchdog has walked down TO the floor, so
-        # this is the last timeout at which the cap cannot fire.
-        (5, "manual_mic.hold_cap_unreachable"),
-        # 6 is the first at which it can — one second either side of the
-        # boundary must not be reported as the same verdict.
-        (6, "manual_mic.idle_timeout_too_low"),
-        (10, "manual_mic.idle_timeout_too_low"),
-        # 11 = floor + allowance: the full allowance is restored, silence.
-        (11, None),
-        (20, None),  # the shipped default
-    ],
-)
-def test_hold_cap_degraded_bands_are_reported_distinctly(
-    caplog, idle_timeout, expected_event,
-):
-    """The band boundaries themselves, walked one second at a time.
-
-    "The cap fires but the model is squeezed" and "the cap can never fire"
-    are different verdicts with different remedies, and an off-by-one in
-    the comparison that separates them silently reports one as the other.
-    The spot-check tests below cover the middle of each band; this covers
-    the edges, which is where a boundary bug actually lives.
-    """
-    from jasper.voice_daemon import WakeLoop
-
-    both = {"manual_mic.hold_cap_unreachable", "manual_mic.idle_timeout_too_low"}
-
-    wl = WakeLoop.for_tests()
-    wl._cfg.idle_timeout_sec = idle_timeout
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wl._ptt_input_cap_sec()
-
-    fired = {name for name in both if event_records(caplog, name)}
-    assert fired == ({expected_event} if expected_event else set()), (
-        f"idle_timeout_sec={idle_timeout} should report "
-        f"{expected_event or 'nothing'}, got {fired or 'nothing'}"
-    )
-
-
-def test_a_very_low_idle_timeout_makes_the_cap_unreachable_and_says_so(caplog):
-    """The band the first version of this docstring got wrong.
-
-    `PTT_MIN_INPUT_CAP_SEC` is a constant floor; the watchdog is not. So a
-    low enough `idle_timeout_sec` walks the watchdog down *through* the
-    floor, and below the crossing the cap can never fire at all — the
-    original blocker's exact failure mode, surviving in a narrow band.
-    That is worse than a squeezed allowance (there, only a slow first
-    chunk loses the answer; here every hold does) and gets its own,
-    louder event.
-    """
-    from jasper.voice_daemon import PTT_MIN_INPUT_CAP_SEC, WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._cfg.idle_timeout_sec = 3
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        cap = wl._ptt_input_cap_sec()
-        wl._ptt_input_cap_sec()  # one shared latch: no second WARN
-
-    assert cap == PTT_MIN_INPUT_CAP_SEC
-    assert cap >= wl._cfg.idle_timeout_sec  # the watchdog gets there first
-    # Exactly one record is the shared one-shot latch holding.
-    fields = event_fields(caplog, "manual_mic.hold_cap_unreachable")
-    assert float(fields["cap_sec"]) == float(PTT_MIN_INPUT_CAP_SEC)
-    assert float(fields["idle_timeout_sec"]) == float(wl._cfg.idle_timeout_sec)
-    # The two bands are distinct verdicts and must not be conflated: the
-    # softer one would understate a cap that cannot fire at all.
-    assert event_records(caplog, "manual_mic.idle_timeout_too_low") == []
-
-
-def test_hold_cap_is_silent_when_the_allowance_is_actually_preserved(caplog):
-    """Mutation of the warning above: at the shipped default the
-    derivation does leave the full allowance, so the WARN must not fire —
-    otherwise every household journal carries a permanent false alarm."""
-    from jasper.voice_daemon import WakeLoop
-
-    wl = WakeLoop.for_tests()
-    wl._cfg.idle_timeout_sec = _shipped_idle_timeout_default()
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wl._ptt_input_cap_sec()
-
-    assert event_records(caplog, "manual_mic.idle_timeout_too_low") == []
-    assert event_records(caplog, "manual_mic.hold_cap_unreachable") == []
-
-
 async def test_hold_cap_closes_input_on_a_button_turn(caplog):
     """A release that never arrives (BLE drop, remote under a cushion)
     must still get the user an answer to what was said so far."""
     wl = _session_loop(manual=True)
-    cap = wl._ptt_input_cap_sec()
+    cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - (cap + 0.5)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
@@ -413,7 +195,7 @@ async def test_hold_cap_closes_input_on_a_button_turn(caplog):
 async def test_hold_cap_does_not_fire_early_on_a_button_turn():
     """Just under the cap the turn is still the user's."""
     wl = _session_loop(manual=True)
-    cap = wl._ptt_input_cap_sec()
+    cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - (cap - 1.0)
 
     await wl._handle_session_frame(silent_frame())
@@ -427,7 +209,7 @@ async def test_hold_cap_fires_once_then_frames_are_dropped():
     """`_input_ended` gates re-entry, so a still-held button after the cap
     does not re-send end_input on every frame."""
     wl = _session_loop(manual=True)
-    cap = wl._ptt_input_cap_sec()
+    cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
     wl._turn_started_at_loop = asyncio.get_event_loop().time() - (cap + 0.5)
 
     for _ in range(5):
@@ -491,7 +273,7 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     # incidental AttributeError on the way there.
     wl._content_activity.refresh_now = _noop
     wl._tts.pause_content_meter = _noop
-    wl._active_manual_source = "wiim_remote_2" if manual else None
+    wl._push_to_talk.active_source = "wiim_remote_2" if manual else None
     wl._manual_endpoint_this_turn = not manual  # stale value from before
 
     # `match=` stands: the stub raises a bare AssertionError, which carries
@@ -928,7 +710,7 @@ def test_barge_in_refused_on_a_button_turn_and_says_why(
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True  # would otherwise enable
     wl._manual_endpoint_this_turn = True
-    wl._active_manual_source = "wiim_remote_2"
+    wl._push_to_talk.active_source = "wiim_remote_2"
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         wl._resolve_barge_in_for_turn()
@@ -1026,10 +808,10 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     `InputDeviceUnavailable` and the daemon exits before it ever sees the
     remote. See ADR-0217.
     """
+    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import (
         WakeLoop,
         _configured_wake_legs,
-        _ManualMicRuntime,
         _UNSET,
     )
 
@@ -1040,9 +822,9 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
 
     wl = WakeLoop.for_tests(
         legs=_UNSET if plan else [],
-        manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
     )
-    assert wl._push_to_talk_only is expected_ptt_only
+    assert wl._push_to_talk.only is expected_ptt_only
 
 
 def test_wake_detection_supported_fails_open_on_an_unreadable_install_profile(
@@ -1089,6 +871,7 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
     constructing `SpeechVAD` is what pulls openwakeword + onnxruntime into
     a 415 MB box's resident set."""
     from jasper import voice_daemon as vd
+    from jasper.voice.push_to_talk import ManualMicRuntime
 
     built: list[object] = []
 
@@ -1106,7 +889,7 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
 
     wl = vd.WakeLoop.for_tests(
         legs=[] if ptt_only else vd._UNSET,
-        manual_mics=[vd._ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
         vad=None,
     )
 
@@ -1172,13 +955,14 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
     flags did not already gate, so it is the first thing a held button
     would hit on a speaker that has no model to reset."""
     from jasper import voice_daemon as vd
+    from jasper.voice.push_to_talk import ManualMicRuntime
 
     wl = vd.WakeLoop.for_tests(
         legs=[],
-        manual_mics=[vd._ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
         vad=None,
     )
-    wl._active_manual_source = "wiim_remote_2"
+    wl._push_to_talk.active_source = "wiim_remote_2"
 
     await _drive_begin_turn(wl)
 

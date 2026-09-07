@@ -434,7 +434,7 @@ async def test_manual_start_unknown_source_refused_before_side_effects(caplog):
 
 async def test_manual_start_source_uses_source_audio_without_primary_preroll():
     wl = _make_wake_loop()
-    wl._manual_mics = {"wiim_remote_2": object()}
+    wl._push_to_talk.sources = {"wiim_remote_2": object()}
 
     result = await wl.manual_session_start("wiim_remote_2")
 
@@ -444,7 +444,7 @@ async def test_manual_start_source_uses_source_audio_without_primary_preroll():
         "pre_roll": False,
         "listening_feedback": True,
     }
-    assert wl._active_manual_source == "wiim_remote_2"
+    assert wl._push_to_talk.active_source == "wiim_remote_2"
     assert wl._acquiring is False
 
 
@@ -457,7 +457,7 @@ async def test_manual_mic_loop_forwards_only_active_source():
 
     wl = _make_wake_loop()
     wl._state = State.SESSION
-    wl._manual_mics = {
+    wl._push_to_talk.sources = {
         "wiim_remote_2": types.SimpleNamespace(mic=_FakeMic()),
     }
     seen = []
@@ -469,7 +469,7 @@ async def test_manual_mic_loop_forwards_only_active_source():
     await wl._manual_mic_loop("wiim_remote_2")
     assert seen == []
 
-    wl._active_manual_source = "wiim_remote_2"
+    wl._push_to_talk.active_source = "wiim_remote_2"
     await wl._manual_mic_loop("wiim_remote_2")
     assert seen == ["frame-a"]
 
@@ -480,14 +480,15 @@ def _ptt_only_wake_loop():
     The shape a full-profile box with no local mic (unplugged, or never
     fitted) has once `_configured_wake_legs` reads the reconciler's
     published "no local mic" verdict: zero wake legs, so `_mic` is None,
-    `_push_to_talk_only` derives True, and the only audio path is the
+    `_push_to_talk.only` derives True, and the only audio path is the
     remote's loop.
     """
-    from jasper.voice_daemon import State, WakeLoop, _ManualMicRuntime
+    from jasper.voice.push_to_talk import ManualMicRuntime
+    from jasper.voice_daemon import State, WakeLoop
 
     wl = WakeLoop.for_tests(
         legs=[],
-        manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
     )
     wl._state = State.WAKE
     wl._mic_muted = False
@@ -511,7 +512,7 @@ async def test_source_less_start_on_a_speaker_with_no_room_mic_cues_and_refuses(
     """The silent-turn hole, closed.
 
     Before this guard, a source-less START on a push-to-talk-only speaker was
-    ACCEPTED: `_active_manual_source` stayed None so `_manual_mic_loop`
+    ACCEPTED: `active_source` stayed None so `_manual_mic_loop`
     dropped every frame, `_pre_roll` was empty because no primary loop fills
     it, and the turn ducked the music, chirped, forwarded zero bytes and died
     to the idle watchdog ~20 s later. `bytes_sent == 0` misses both
@@ -572,11 +573,11 @@ async def test_ptt_only_speaker_still_serves_a_named_source():
         "pre_roll": False,
         "listening_feedback": True,
     }
-    assert wl._active_manual_source == "wiim_remote_2"
+    assert wl._push_to_talk.active_source == "wiim_remote_2"
 
 
 async def test_source_less_refusal_reads_the_single_derivation():
-    """The refusal consults `_push_to_talk_only`, not its own `_mic is None`.
+    """The refusal consults `_push_to_talk.only`, not its own `_mic is None`.
 
     Push-to-talk-only is ONE derived fact with one owner; a site that
     re-derives it can drift from run()'s keepalive branch and from
@@ -594,7 +595,7 @@ async def test_source_less_refusal_reads_the_single_derivation():
 
     wl2 = _ptt_only_wake_loop()
     wl2._state = State.SESSION
-    wl2._push_to_talk_only = False
+    wl2._push_to_talk.only = False
     assert wl2._mic is None  # unchanged: only the derived fact moved
     assert await wl2.manual_session_start() == "BUSY"
     assert wl2._cues.played == []

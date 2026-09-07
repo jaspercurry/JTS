@@ -117,7 +117,7 @@ async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
 async def test_run_parks_instead_of_crashing_on_the_impossible_no_mic_state():
     """`run()`'s else branch used to dereference `self._mic` unconditionally.
 
-    On the shape where `_push_to_talk_only` is False yet no primary leg was
+    On the shape where `_push_to_talk.only` is False yet no primary leg was
     ever built, that was a bare AttributeError — main() has no handler for
     it, so the daemon would exit 1 and Restart=on-failure would walk the
     unit into StartLimitAction=reboot, unlike every other input failure,
@@ -129,11 +129,11 @@ async def test_run_parks_instead_of_crashing_on_the_impossible_no_mic_state():
     it directly, the same way
     test_voice_daemon_manual_start_guard.test_source_less_refusal_reads_the_single_derivation
     does: no legs at all (`_mic` stays None) and no manual mics
-    (`_push_to_talk_only` derives False, not True).
+    (`_push_to_talk.only` derives False, not True).
     """
     wl = WakeLoop.for_tests(legs=[])
     assert wl._mic is None
-    assert wl._push_to_talk_only is False
+    assert wl._push_to_talk.only is False
 
     with pytest.raises(InputDeviceUnavailable):
         await wl.run()

@@ -2,67 +2,49 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for push-to-talk-only speakers: the zero-wake-leg derivation
-and the zero-leg run() keepalive/heartbeat/teardown path (#2205)."""
+"""Unit tests for push-to-talk-only speakers: the zero-leg run() keepalive/
+heartbeat/teardown path (#2205). The zero-wake-leg derivation itself is
+pinned directly against `PushToTalk` in tests/test_push_to_talk.py."""
 from __future__ import annotations
 
-from tests._live_turn_fake import _prep_session_status
+import pytest
+
 from tests._log_events import event_fields
 
 
-def _remote_runtime():
-    from jasper.voice_daemon import _ManualMicRuntime
-    return [_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")]
+@pytest.mark.parametrize(
+    "for_tests_kwargs, expected_only",
+    [
+        pytest.param({"legs": []}, True, id="zero_wake_legs"),
+        pytest.param({}, False, id="with_a_wake_leg"),
+    ],
+)
+def test_session_status_surfaces_the_ptt_keys_from_a_real_loop(
+    for_tests_kwargs, expected_only,
+):
+    """`WakeLoop.session_status()` is what `/state` and jasper-control
+    clients read push-to-talk mode from — pin it against a real
+    `WakeLoop`, not just the bare `PushToTalk` collaborator
+    (tests/test_push_to_talk.py pins `.only`'s derivation directly).
 
-
-def test_push_to_talk_only_is_derived_from_resolved_runtime():
-    """The daemon knows it is push-to-talk from what it actually opened —
-    zero wake legs plus at least one manual mic source — never from a config
-    string it might have inherited from a default."""
-    from jasper.voice_daemon import WakeLoop
-
-    assert WakeLoop.for_tests(
-        legs=[], manual_mics=_remote_runtime(),
-    )._push_to_talk_only is True
-    # Zero legs and no manual source is a broken speaker, not a PTT one.
-    assert WakeLoop.for_tests(legs=[])._push_to_talk_only is False
-    # A remote on a speaker that also has a room mic is additive.
-    assert WakeLoop.for_tests(
-        manual_mics=_remote_runtime(),
-    )._push_to_talk_only is False
-
-
-def test_push_to_talk_only_is_the_single_derivation_its_consumers_read():
-    """One fact, one derivation, and the sites that act on it read THAT.
-
-    A field with a producer and no consumer is a claim nothing enforces. The
-    two acting sites used to re-derive the mode from `self._mic is None`
-    independently; forcing the field is now enough to move both, which is
-    what makes it the owner of the fact rather than a parallel copy of it.
+    Both derivations matter: zero wake legs plus a manual mic source is
+    push-to-talk-only; a wake leg plus the same manual mic source is not,
+    even though both resolve the same source.
     """
+    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests(legs=[], manual_mics=_remote_runtime())
-    _prep_session_status(wl)
+    wl = WakeLoop.for_tests(
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        **for_tests_kwargs,
+    )
 
-    # /state, via session_status(). This is the observability half: an empty
-    # `wake_legs` alone cannot tell "arms nothing on purpose" from "every leg
-    # failed to open" — opposite diagnoses that render identically without it.
     status = wl.session_status()
-    assert status["push_to_talk_only"] is True
-    assert status["wake_legs"] == []
-    assert status["manual_mic_sources"] == ["wiim_remote_2"]
 
-    # A speaker WITH a room mic reports the mode off.
-    other = WakeLoop.for_tests(manual_mics=_remote_runtime())
-    _prep_session_status(other)
-    assert other.session_status()["push_to_talk_only"] is False
-    # The other two consumers — run()'s keepalive branch and the source-less
-    # start refusal — are pinned by
-    # test_zero_leg_run_ticks_the_heartbeat_without_a_primary_mic below and by
-    # test_source_less_refusal_reads_the_single_derivation in
-    # tests/test_voice_daemon_manual_start_guard.py, both of which move when
-    # this one field moves.
+    assert status["push_to_talk_only"] is expected_only
+    assert status["manual_mic_sources"] == ["wiim_remote_2"]
+    # No session has opened yet, so nothing is active regardless of mode.
+    assert status["active_manual_mic_source"] is None
 
 
 def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():
@@ -71,77 +53,28 @@ def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():
     its readers need no special case."""
     from collections import deque
 
-    from jasper.voice_daemon import _ManualMicRuntime, WakeLoop
+    from jasper.voice.push_to_talk import ManualMicRuntime
+    from jasper.voice_daemon import WakeLoop
 
     wl = WakeLoop.for_tests(
         legs=[],
-        manual_mics=[_ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
     )
     assert wl._mic is None
     assert wl._detector is None
     assert isinstance(wl._capture_ring_on, deque)
 
 
-def _daemon_heartbeat_stale_threshold() -> float:
-    """The stale threshold the DAEMON actually runs with.
-
-    Read from `jasper/voice/daemon_main.py`'s own `Heartbeat(...)` call, not
-    from the constructor's signature default: those two happen to be the same
-    number today, so a guard that read the signature would be correct only by
-    coincidence and would keep passing if the daemon started asking for a
-    tighter threshold. Parsed with `ast` rather than by line number so a
-    refactor moves it for free (AGENTS.md documentation rule 5).
-    """
-    import ast
-    import inspect
-    from pathlib import Path
-
-    import jasper
-    from jasper.watchdog import Heartbeat
-
-    source = (
-        Path(jasper.__file__).parent / "voice" / "daemon_main.py"
-    ).read_text(encoding="utf-8")
-    calls = [
-        node for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "Heartbeat"
-    ]
-    assert len(calls) == 1, (
-        f"expected exactly one Heartbeat(...) construction in daemon_main.py, "
-        f"found {len(calls)} — this guard must read the live one"
-    )
-    for kw in calls[0].keywords:
-        if kw.arg == "stale_threshold_sec":
-            return float(ast.literal_eval(kw.value))
-    # No explicit value: the daemon runs on the constructor default.
-    return float(
-        inspect.signature(Heartbeat).parameters["stale_threshold_sec"].default
-    )
-
-
-def test_ptt_keepalive_stays_inside_heartbeat_stale_threshold():
-    """Load-bearing relationship: with no mic frames to bump the progress
-    sentinel, the keepalive tick IS the liveness proof. If its interval ever
-    drifts past the threshold the daemon asks for, the heartbeat thread stops
-    patting systemd and WatchdogSec=30s reaps a perfectly healthy daemon."""
-    from jasper.voice_daemon import PTT_KEEPALIVE_INTERVAL_SEC
-
-    stale = _daemon_heartbeat_stale_threshold()
-    assert PTT_KEEPALIVE_INTERVAL_SEC < stale, (
-        f"keepalive {PTT_KEEPALIVE_INTERVAL_SEC}s must stay under the "
-        f"{stale}s heartbeat stale threshold jasper-voice constructs with"
-    )
-
-
 def _zero_leg_loop_with_fast_keepalive(monkeypatch):
     """A PTT-only WakeLoop whose keepalive iterates promptly, plus a
-    heartbeat spy. The cadence itself is pinned by the threshold test above;
-    here we only need the loop to turn over quickly."""
+    heartbeat spy. The cadence itself is pinned by
+    test_ptt_keepalive_stays_inside_heartbeat_stale_threshold in
+    tests/test_push_to_talk.py; here we only need the loop to turn over
+    quickly."""
     import asyncio
 
-    from jasper.voice_daemon import _ManualMicRuntime, WakeLoop
+    from jasper.voice.push_to_talk import ManualMicRuntime
+    from jasper.voice_daemon import WakeLoop
 
     class _IdleMic:
         """A paired remote with its button not pressed — the steady state.
@@ -156,7 +89,7 @@ def _zero_leg_loop_with_fast_keepalive(monkeypatch):
     wl = WakeLoop.for_tests(
         legs=[],
         manual_mics=[
-            _ManualMicRuntime("wiim_remote_2", _IdleMic(), "udp:9892"),
+            ManualMicRuntime("wiim_remote_2", _IdleMic(), "udp:9892"),
         ],
     )
     ticked = asyncio.Event()
@@ -176,7 +109,7 @@ def _zero_leg_loop_with_fast_keepalive(monkeypatch):
         # keepalive spin without ever suspending and starve the test.
         await real_sleep(0)
 
-    monkeypatch.setattr("jasper.voice_daemon.asyncio.sleep", _fast_sleep)
+    monkeypatch.setattr("jasper.voice.push_to_talk.asyncio.sleep", _fast_sleep)
     return wl, ticked, bumps
 
 
