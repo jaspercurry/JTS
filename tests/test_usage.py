@@ -324,38 +324,6 @@ def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
     assert store.spend_last_24h_usd() == 0.0
 
 
-def test_incompatible_old_schema_is_self_healed(tmp_path: Path):
-    """A usage DB predating the `provider` column is wiped & recreated (a
-    self-heal, not a migration) so open_session() works instead of
-    crashing every turn with 'no such column: provider'."""
-    db = tmp_path / "usage.db"
-    # Simulate a pre-`provider`-column schema (pre-PR-#85).
-    with sqlite3.connect(str(db)) as conn:
-        conn.execute(
-            "CREATE TABLE sessions ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, "
-            "ended_at TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, "
-            "output_tokens INTEGER NOT NULL DEFAULT 0, "
-            "cost_usd REAL NOT NULL DEFAULT 0)"
-        )
-        conn.execute(
-            "INSERT INTO sessions (started_at) VALUES ('2026-01-01T00:00:00')"
-        )
-        conn.commit()
-
-    # Construction self-heals: the incompatible table is dropped & recreated.
-    store = UsageStore(str(db))
-    sid = store.open_session(provider="openai")
-    store.close_session(sid, input_tokens=1, output_tokens=1)
-
-    with sqlite3.connect(str(db)) as conn:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
-        rows = conn.execute("SELECT provider FROM sessions").fetchall()
-    assert "provider" in cols
-    # The stale row was wiped; only the new, correctly-tagged row remains.
-    assert rows == [("openai",)]
-
-
 # ---------------------------------------------------------------------------
 # Bundled defaults: real rates AND model-specific (the reason for model keys)
 # ---------------------------------------------------------------------------

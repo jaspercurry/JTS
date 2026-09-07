@@ -25,7 +25,6 @@ from .base import StatusEvent
 
 
 class A2DPSinkHandler:
-
     def applies_to(self, device: BluetoothDevice) -> bool:
         uu = " ".join(device.uuids).lower()
         return (

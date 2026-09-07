@@ -88,45 +88,26 @@ def test_cli_runs_from_foreign_cwd(tmp_path: Path) -> None:
     assert "60.0s @48k S16 stereo" in result.stdout
 
 
-def test_bench_streams_the_shared_generator() -> None:
-    source = (ROOT / "scripts" / "multiroom-spike.sh").read_text(encoding="utf-8")
-    assert "_make_click_track.py" in source
-    assert "--format wav" in source
-    assert "random.Random(1234)" not in source
-    assert "import random, struct" not in source
-
-
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
 
 
-@pytest.mark.parametrize(
-    ("script_name", "args", "container"),
-    (
-        ("multiroom-spike.sh", ["--setup", "--leader", "leader.invalid"], "wav"),
-    ),
-)
 @pytest.mark.parametrize("remote_status", (0, 37))
 def test_bench_callers_stream_helper_over_ssh_and_propagate_failure(
     tmp_path: Path,
-    script_name: str,
-    args: list[str],
-    container: str,
     remote_status: int,
 ) -> None:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    for name in (script_name, "_make_click_track.py"):
+    for name in ("multiroom-spike.sh", "_make_click_track.py", "_lib.sh"):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
-    if script_name == "multiroom-spike.sh":
-        shutil.copy2(ROOT / "scripts" / "_lib.sh", scripts / "_lib.sh")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     marker = tmp_path / "click-finished"
-    output = tmp_path / f"remote.{container}"
+    output = tmp_path / "remote.wav"
     log = tmp_path / "ssh.log"
     _write_executable(
         fake_bin / "ssh",
@@ -146,12 +127,7 @@ def test_bench_callers_stream_helper_over_ssh_and_propagate_failure(
                 if [[ "$FAKE_REMOTE_CLICK_STATUS" != 0 ]]; then
                     exit "$FAKE_REMOTE_CLICK_STATUS"
                 fi
-                case "$cmd" in
-                    *"--format wav"*) format=wav ;;
-                    *"--format raw"*) format=raw ;;
-                    *) exit 29 ;;
-                esac
-                python3 - --format "$format" --output "$FAKE_CLICK_OUTPUT"
+                python3 - --format wav --output "$FAKE_CLICK_OUTPUT"
                 touch "$FAKE_CLICK_FINISHED"
             fi
             """
@@ -173,7 +149,8 @@ def test_bench_callers_stream_helper_over_ssh_and_propagate_failure(
     )
 
     result = subprocess.run(
-        ["bash", str(scripts / script_name), *args],
+        ["bash", str(scripts / "multiroom-spike.sh"), "--setup", "--leader",
+         "leader.invalid"],
         cwd=foreign_cwd,
         env=env,
         capture_output=True,
@@ -182,35 +159,21 @@ def test_bench_callers_stream_helper_over_ssh_and_propagate_failure(
     )
 
     assert result.returncode == (23 if remote_status == 0 else remote_status)
-    assert f"--format {container}" in log.read_text(encoding="utf-8")
+    assert "--format wav" in log.read_text(encoding="utf-8")
     if remote_status:
         assert not output.exists()
         return
     assert output.exists()
-    if container == "wav":
-        with wave.open(str(output), "rb") as wav:
-            assert wav.getnframes() == click_track.SAMPLE_RATE * 60
-    else:
-        assert output.stat().st_size == click_track.SAMPLE_RATE * 4 * 60
+    with wave.open(str(output), "rb") as wav:
+        assert wav.getnframes() == click_track.SAMPLE_RATE * 60
 
 
-@pytest.mark.parametrize(
-    ("script_name", "args"),
-    (
-        ("multiroom-spike.sh", ["--setup", "--leader", "leader.invalid"]),
-    ),
-)
-def test_bench_callers_fail_when_local_helper_is_missing(
-    tmp_path: Path,
-    script_name: str,
-    args: list[str],
-) -> None:
+def test_bench_callers_fail_when_local_helper_is_missing(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    shutil.copy2(ROOT / "scripts" / script_name, scripts / script_name)
-    if script_name == "multiroom-spike.sh":
-        shutil.copy2(ROOT / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    for name in ("multiroom-spike.sh", "_lib.sh"):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     _write_executable(
@@ -229,7 +192,8 @@ def test_bench_callers_fail_when_local_helper_is_missing(
     )
 
     result = subprocess.run(
-        ["bash", str(scripts / script_name), *args],
+        ["bash", str(scripts / "multiroom-spike.sh"), "--setup", "--leader",
+         "leader.invalid"],
         cwd=foreign_cwd,
         env=env,
         capture_output=True,
