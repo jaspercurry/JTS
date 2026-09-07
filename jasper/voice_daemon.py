@@ -64,16 +64,16 @@ from .voice.assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
     AssistantOutput,
     FanInDucker,
-    _await_output_cleanup_owned,
-    _capture_cleanup_error,
+    await_output_cleanup_owned,
+    capture_cleanup_error,
 )
 from .voice.output_gate import (
     AssistantOutputEpisode,
     AssistantOutputGate,
 )
 from .voice.turn_playback import (  # noqa: F401
-    _idle_watchdog,
-    _play_responses,
+    idle_watchdog,
+    play_responses,
 )
 from .volume_coordinator import VolumeCoordinator
 from .mic_mute_persistence import read_mic_muted, write_mic_muted
@@ -92,7 +92,7 @@ VOICE_STARTUP_CONFIG_ERROR_EXIT = EX_CONFIG_EXIT
 VOICE_MIC_UNAVAILABLE_EXIT = 66
 
 
-def _track_task(
+def track_task(
     task: asyncio.Task,
     task_set: set[asyncio.Task],
     *,
@@ -118,7 +118,7 @@ def _track_task(
     return task
 
 
-async def _cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
+async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
     tasks = list(task_set)
     if not tasks:
         return
@@ -188,7 +188,7 @@ CONDITION_REFRESH_SEC = 1.0
 # (pre + post) capture window plus a safety margin: a 4 + 2 = 6 s window
 # with ~2 s slack for the post-fire collection window, so a snapshot
 # never runs off the end of the ring. One ring per leg is allocated at
-# the run() wiring site and handed to its _LegRuntime.
+# the run() wiring site and handed to its LegRuntime.
 CAPTURE_RING_FRAMES = int(
     ((CAPTURE_PRE_SEC + CAPTURE_POST_SEC) * MicCapture.OUTPUT_RATE
      / MicCapture.OUTPUT_FRAME_SAMPLES) + 25
@@ -427,7 +427,7 @@ def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
 
 
 
-class _LegRuntime:
+class LegRuntime:
     """Live state for one wake-detection leg.
 
     The set of legs is declared in `jasper.wake_legs`; adding a leg is a
@@ -477,7 +477,7 @@ _LEG_DEVICE_ATTR: dict[str, str] = {
 _UNSET = object()
 
 
-def _configured_wake_legs(
+def configured_wake_legs(
     cfg: Config,
     *,
     wake_detection_supported: bool = True,
@@ -639,7 +639,7 @@ class WakeLoop:
     the wake-word detector (WAKE state) or the active live turn (SESSION
     state).
 
-    `self._legs` holds one `_LegRuntime` per configured wake leg (keyed
+    `self._legs` holds one `LegRuntime` per configured wake leg (keyed
     by jasper.wake_legs token), assembled by run() and passed in via
     `legs`. The primary "on" (AEC3) leg drives this main loop and carries
     session audio plus the watchdog heartbeat; optional "off"
@@ -664,7 +664,7 @@ class WakeLoop:
         stop_event: asyncio.Event,
         volume_coordinator: "VolumeCoordinator",
         *,
-        legs: "list[_LegRuntime]",
+        legs: "list[LegRuntime]",
         cues: AudioCueManager | None = None,
         heartbeat: "Heartbeat | None" = None,
         wake_event_store: WakeEventStore | None = None,
@@ -675,7 +675,6 @@ class WakeLoop:
         initial_mic_muted: bool | None = None,
         barge_in_reconcile: InterruptReconcile | None = None,
     ) -> None:
-        self._cfg = cfg
         self._assistant_output = AssistantOutput(
             cfg, tts, ducker, cues, volume_coordinator,
             stamp_stage=self._stamp_turn_stage,
@@ -689,7 +688,7 @@ class WakeLoop:
         # by run(), which opens each leg's mic under the AsyncExitStack
         # and builds its detector, capture ring and — for "off" — a
         # session shadow VAD.
-        self._legs: dict[str, _LegRuntime] = {
+        self._legs: dict[str, LegRuntime] = {
             leg.spec.token: leg for leg in legs
         }
         self._push_to_talk = PushToTalk(
@@ -706,7 +705,7 @@ class WakeLoop:
                 "voice/wake_telemetry.py)"
             )
         # `_on` is absent on a push-to-talk-only speaker: no
-        # always-listening microphone, so `_configured_wake_legs` planned no
+        # always-listening microphone, so `configured_wake_legs` planned no
         # legs. Every read site reachable in that mode is None-tolerant —
         # `run()` branches to a keepalive loop, and the capture-ring readers
         # sit behind a wake fire that cannot happen without a detector. The
@@ -779,7 +778,7 @@ class WakeLoop:
             self._vad = SpeechVAD()
         # Session-state shadow VAD for the chip-direct ("off") leg, when
         # configured. Created in run() and carried on that leg's
-        # _LegRuntime.
+        # LegRuntime.
         self._vad_off: SpeechVAD | None = (
             self._legs["off"].shadow_vad if "off" in self._legs else None
         )
@@ -952,10 +951,18 @@ class WakeLoop:
     def _output_gate(self, value: AssistantOutputGate) -> None:
         self._assistant_output._output_gate = value
 
-    # `_tts`, `_cues`, `_ducker` and `_volume_coordinator` live on
+    # `_cfg`, `_tts`, `_cues`, `_ducker` and `_volume_coordinator` live on
     # `AssistantOutput`; these keep one object per collaborator. The
     # getters serve the loop and `MeasurementHold`; the setters serve
     # `for_tests` overrides and the suite's rebinds.
+    @property
+    def _cfg(self) -> Config:
+        return self._assistant_output._cfg
+
+    @_cfg.setter
+    def _cfg(self, value: Config) -> None:
+        self._assistant_output._cfg = value
+
     @property
     def _tts(self) -> TtsPlayout:
         return self._assistant_output._tts
@@ -1167,7 +1174,7 @@ class WakeLoop:
             stop_event=asyncio.Event(),
             volume_coordinator=_TestVolumeCoordinator(),
             legs=[
-                _LegRuntime(
+                LegRuntime(
                     by_token("on"),
                     mic,
                     detector,
@@ -1192,7 +1199,7 @@ class WakeLoop:
         *,
         name: str,
     ) -> asyncio.Task:
-        return _track_task(
+        return track_task(
             asyncio.create_task(coro, name=name),
             self._fire_and_forget,
             label=name,
@@ -1219,7 +1226,7 @@ class WakeLoop:
         await self._end_turn()
 
     async def _cancel_fire_and_forget_tasks(self) -> None:
-        await _cancel_tracked_tasks(self._fire_and_forget)
+        await cancel_tracked_tasks(self._fire_and_forget)
 
     def _arm_turn_background_end(self) -> None:
         """End the turn when a response/playback background task completes.
@@ -2165,7 +2172,7 @@ class WakeLoop:
         AEC-cleaned "on" leg — the same ``frame`` the live session consumed
         (leg selection, NOT an AEC topology change) — and, on a sustained
         speech run at or above ``JASPER_VAD_BARGE_IN_THRESHOLD``, sets the
-        turn's interrupt event so ``_play_responses`` flushes local TTS
+        turn's interrupt event so ``play_responses`` flushes local TTS
         immediately. The felt experience: the user talks over the assistant
         and the speaker goes quiet.
 
@@ -2216,7 +2223,7 @@ class WakeLoop:
             # where a real-time provider may resume) — see _barge_in_reconcile.
             reconcile=self._barge_in_reconcile.value,
         )
-        # Set the turn's interrupt event. _play_responses is awaiting
+        # Set the turn's interrupt event. play_responses is awaiting
         # wait_for_interrupt.
         self._turn.request_local_interrupt()
 
@@ -2866,8 +2873,8 @@ class WakeLoop:
             completed = True
         finally:
             if not completed:
-                cleanup_error = await _capture_cleanup_error(
-                    lambda: _await_output_cleanup_owned(
+                cleanup_error = await capture_cleanup_error(
+                    lambda: await_output_cleanup_owned(
                         self._cleanup_after_failed_begin(),
                         task_name="turn-begin-cleanup",
                     ),
@@ -2985,14 +2992,14 @@ class WakeLoop:
                 len(pre_roll_frames), len(pre_roll_frames) * 80.0,
             )
         playback = asyncio.create_task(
-            _play_responses(
+            play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
                 on_response_started=self._record_response_started,
                 on_first_write=self._record_first_write,
             )
         )
         idle = asyncio.create_task(
-            _idle_watchdog(
+            idle_watchdog(
                 self._turn,
                 self._tts,
                 self._cfg.idle_timeout_sec,
@@ -3032,7 +3039,7 @@ class WakeLoop:
             phase: str,
             operation: Callable[[], object],
         ) -> None:
-            error = await _capture_cleanup_error(operation)
+            error = await capture_cleanup_error(operation)
             if error is not None:
                 record_failure(phase, error)
 
@@ -3196,7 +3203,7 @@ class WakeLoop:
                 episode is not None and self._output_gate.is_current(episode)
             )
 
-        # _play_responses reaches its own end_segment() only when the provider
+        # play_responses reaches its own end_segment() only when the provider
         # closes the audio iterator at turn end: OpenAI does (response.done),
         # Gemini's closes only on release(), which runs after the cancel above.
         # Without this call the cancelled playback task discards the passive
@@ -3464,7 +3471,7 @@ class WakeLoop:
 
 
 def _active_model(*args, **kwargs):
-    from .voice.daemon_main import _active_model as impl
+    from .voice.daemon_main import active_model as impl
     return impl(*args, **kwargs)
 
 

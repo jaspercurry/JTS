@@ -247,6 +247,51 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
     )
 
 
+async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
+    """WakeLoop._cfg (S5) delegates onto AssistantOutput's own cfg — the
+    two are one object, not two captured at construction. Rebinding
+    wl._cfg must reach the duck depth AssistantOutput reads per call,
+    not a stale copy AssistantOutput kept from __init__."""
+    from jasper.voice_daemon import WakeLoop
+
+    class _Cues:
+        async def prerender_text(self, _text: str) -> bool:
+            return True
+
+        async def speak_text_guarded(self, text: str, should_play) -> bool:
+            return bool(should_play())
+
+    class _Owner:
+        def __init__(self) -> None:
+            self.acquired_depths: list[float] = []
+
+        async def acquire_duck(self, depth_db: float) -> object:
+            self.acquired_depths.append(depth_db)
+            return object()
+
+        async def release(self, _claim: object) -> None:
+            pass
+
+    class _Volume:
+        def get_listening_level(self) -> int:
+            return 64
+
+        def __init__(self, owner: _Owner) -> None:
+            self.volume_owner = owner
+
+    wl = WakeLoop.for_tests()
+    owner = _Owner()
+    wl._cues = _Cues()
+    wl._ducker = object()  # not a FanInDucker: takes the owner/CueDuck path
+    wl._volume_coordinator = _Volume(owner)
+
+    assert wl._cfg.duck_db == 0.0  # for_tests() default, confirms the rebind below moves it
+    wl._cfg = SimpleNamespace(duck_db=-9.5)
+
+    assert await wl._play_dynamic_text("Your timer is up.") is True
+    assert owner.acquired_depths == [-9.5]
+
+
 async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
     from jasper.voice_daemon import WakeLoop
 

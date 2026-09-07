@@ -55,7 +55,7 @@ logger = logging.getLogger("jasper.voice_daemon")
 INTERNAL_ERROR_CUE_SLUG = "internal_error"
 
 
-async def _capture_cleanup_error(
+async def capture_cleanup_error(
     operation: Callable[[], object],
 ) -> BaseException | None:
     """Run one sync/async cleanup step and return any raised outcome."""
@@ -177,7 +177,7 @@ class FanInDucker:
             return False
 
 
-async def _await_output_cleanup_owned(
+async def await_output_cleanup_owned(
     operation: Coroutine,
     *,
     task_name: str,
@@ -217,8 +217,6 @@ class AssistantOutput:
         *,
         stamp_stage: Callable[[str], None],
     ) -> None:
-        # Captured at construction (Config is frozen); a test that rebinds
-        # wl._cfg does not reach the duck depth here.
         self._cfg = cfg
         self._tts = tts
         self._ducker = ducker
@@ -581,7 +579,7 @@ class AssistantOutput:
         async def _drain_restore_and_release() -> None:
             drain_base_error: BaseException | None = None
             try:
-                drain_error = await _capture_cleanup_error(
+                drain_error = await capture_cleanup_error(
                     lambda: wait_tts_drained_owned(self._tts),
                 )
                 if isinstance(drain_error, Exception):
@@ -595,7 +593,7 @@ class AssistantOutput:
             finally:
                 restore_base_error: BaseException | None = None
                 try:
-                    restore_error = await _capture_cleanup_error(restore)
+                    restore_error = await capture_cleanup_error(restore)
                     if isinstance(restore_error, Exception):
                         logger.warning(
                             "%s restore failed: %s",
@@ -611,7 +609,7 @@ class AssistantOutput:
             if drain_base_error is not None:
                 raise drain_base_error
 
-        await _await_output_cleanup_owned(
+        await await_output_cleanup_owned(
             _drain_restore_and_release(),
             task_name=f"output-cleanup-{episode.kind}-{episode.id}",
         )
@@ -635,7 +633,7 @@ class AssistantOutput:
             finally:
                 await self._output_gate.end(episode)
 
-        await _await_output_cleanup_owned(
+        await await_output_cleanup_owned(
             _drain_and_release(),
             task_name=f"output-drain-{episode.kind}-{episode.id}",
         )

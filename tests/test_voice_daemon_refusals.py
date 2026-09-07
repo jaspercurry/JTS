@@ -157,7 +157,7 @@ async def _failed_begin_opener(
 ) -> None:
     """The confirmation window's opener dying mid-begin, through the
     REAL `_begin_turn`: its `finally` runs `_cleanup_after_failed_begin`
-    inside the `_await_output_cleanup_owned` task wrapper, which is where
+    inside the `await_output_cleanup_owned` task wrapper, which is where
     the window between reading ownership and acting on it lives."""
 
     async def _inner(**_kwargs) -> None:

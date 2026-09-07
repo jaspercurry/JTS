@@ -4,11 +4,9 @@
 
 """Shared WAV decoding and click-onset detection for sync spike scripts.
 
-The public scripts keep their deliberately different numeric contracts:
-``s0-sync-measure.py`` consumes normalized floats and a centered energy
-window, while ``multiroom-spike-measure.py`` consumes integer PCM and the
-historical trailing energy window.  Keeping those choices as parameters here
-removes the duplicated mechanics without moving either script's measurements.
+``multiroom-spike-measure.py`` consumes integer PCM and the historical
+trailing energy window; keeping those choices as parameters here removes
+the duplicated mechanics without moving the script's measurements.
 """
 from __future__ import annotations
 

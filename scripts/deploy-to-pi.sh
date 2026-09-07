@@ -568,8 +568,7 @@ report_oom_collateral() {
 # command happened to return 0. This is the deploy-side guard for problem
 # #4 (on jts2 the manifest was written early and lied after an OOM abort).
 verify_manifest_advanced() {
-    local manifest installed_full installed_status expected
-    manifest="$(read_pi_file build.txt 2>/dev/null || true)"
+    local manifest="$1" installed_full installed_status expected
     installed_full="$(build_manifest_value "$manifest" JASPER_GIT_SHA_FULL)"
     installed_status="$(build_manifest_value "$manifest" JASPER_INSTALL_STATUS)"
     expected="${SHA_FULL}${DIRTY}"
@@ -942,7 +941,8 @@ fi
 publish_root_facts post
 
 echo "==> Build manifest now on Pi:"
-read_pi_file build.txt 2>/dev/null || echo "(not present)"
+BUILD_MANIFEST="$(read_pi_file build.txt 2>/dev/null)" || BUILD_MANIFEST=""
+printf '%s\n' "${BUILD_MANIFEST:-(not present)}"
 
 if ! REMOTE_INSTALL_PROFILE="$(
     read_pi_file install_profile 2>/dev/null | tail -n1 | tr -d '[:space:]'
@@ -1096,7 +1096,7 @@ else
     exit 1
 fi
 
-verify_manifest_advanced
+verify_manifest_advanced "$BUILD_MANIFEST"
 HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
 gate_core_health || true  # advisory; removal condition in ADR-0242

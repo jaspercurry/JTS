@@ -86,7 +86,6 @@ COMMANDS: dict[str, Command] = {
     "BOOT_STATUS": Command(48, 5, 3, "ro", "char"),
     "REBOOT": Command(48, 7, 1, "wo", "uint8"),
     "USB_BIT_DEPTH": Command(48, 8, 2, "rw", "uint8"),
-    "CLEAR_CONFIGURATION": Command(48, 10, 1, "wo", "uint8"),
     # AEC / SHF controls used by jasper-aec-init and validation.
     "AEC_AECCONVERGED": Command(33, 3, 1, "ro", "int32"),
     "AEC_AECEMPHASISONOFF": Command(33, 4, 1, "rw", "int32"),

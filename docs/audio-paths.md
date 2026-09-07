@@ -147,11 +147,11 @@ Ownership is deliberately split:
   stable `id` also exposed in `/source/state.last_handoff`, so a
   source switch can be correlated across journal, dashboard, and
   control API without phase-by-phase log spam.
-- `jasper-fanin` owns only the cheap audio gate: `AUTO` sums active
-  lanes; `SELECT <label>` passes one renderer lane; `NONE` passes no
-  renderer lane. The correction/test lane is always mixed so
-  diagnostics and room correction still work. Fan-in starts in `NONE`,
-  and mux keeps it there whenever no source has a guarded winner.
+- `jasper-fanin` owns only the cheap audio gate: `SELECT <label>` passes
+  one renderer lane; `NONE` passes no renderer lane. The correction/test
+  lane is always mixed so diagnostics and room correction still work.
+  Fan-in starts in `NONE`, and mux keeps it there whenever no source has
+  a guarded winner.
 - `jasper-control` is the HTTP proxy for the web UI. It also merges
   `/sources/` availability into `/source/state` so unavailable/off
   renderers can be disabled in the landing-page selector.

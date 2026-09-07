@@ -40,8 +40,8 @@ lanes, sums active inputs into Ring A, exposes STATUS over
 `/run/jasper-fanin/control.sock`, logs xruns to
 `/var/lib/jasper/fanin/xrun_history.jsonl`, and participates in systemd
 watchdog supervision. Source selection is controlled by jasper-mux over
-the same socket with `AUTO`, `SELECT <label>`, or `NONE`; fan-in only
-gates lanes and does not own source or volume policy. The mixer starts
+the same socket with `SELECT <label>` or `NONE`; fan-in only gates
+lanes and does not own source or volume policy. The mixer starts
 in `NONE`; mux opens a renderer lane only after its volume handoff is
 prepared.
 

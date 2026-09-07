@@ -36,8 +36,6 @@ jasper_env_quote_value() {
     fi
     case "$value" in
         *[!A-Za-z0-9_./:@,+=-]*)
-            # Reaching here means a value shape production does not produce.
-            echo "event=env_file.quote_splice_engaged value_class=non_safe_charset" >&2
             printf "'"
             local q="'"
             rest="$value"
