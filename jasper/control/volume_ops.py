@@ -100,7 +100,7 @@ def _build_spotify_router_or_none():
         return None
     try:
         from ..accounts import Registry, legacy_cache_path, maybe_migrate_legacy, registry_path
-        from ..spotify_router import Router, build_clients
+        from ..spotify_router import build_router
         accounts_path = registry_path()
         cache_path = legacy_cache_path()
         redirect_uri = resolved_spotify_redirect_uri()
@@ -134,18 +134,15 @@ def _build_spotify_router_or_none():
                 cached.reason,
             )
             return None
-        # build_clients returns BuildResult. The control daemon doesn't
-        # surface revoked-vs-needs-oauth status to the user, so we use
-        # the clients dict only — but still pass statuses through to the
-        # Router so /state can introspect them if a future endpoint adds
-        # a Spotify health probe.
-        result = build_clients(
-            registry,
-            client_id=client_id,
-            redirect_uri=redirect_uri,
+        # The control daemon doesn't surface revoked-vs-needs-oauth status
+        # to the user, so we use the clients dict only — but the Router
+        # still carries statuses so /state can introspect them if a future
+        # endpoint adds a Spotify health probe.
+        router = build_router(
+            client_id=client_id, redirect_uri=redirect_uri, registry=registry,
         )
-        if not result.clients:
-            reason = ",".join(sorted({s.state for s in result.statuses}))
+        if not router.clients:
+            reason = ",".join(sorted({s.state for s in router.statuses}))
             reason = reason or "no_accounts"
             with _spotify_empty_router_cache_lock:
                 _spotify_empty_router_cache = _SpotifyEmptyRouterCache(
@@ -156,11 +153,7 @@ def _build_spotify_router_or_none():
             return None
         with _spotify_empty_router_cache_lock:
             _spotify_empty_router_cache = None
-        return Router(
-            clients=result.clients,
-            default_name=registry.default_name,
-            statuses=result.statuses,
-        )
+        return router
     except Exception as e:  # noqa: BLE001
         logger.debug("control daemon spotify router build failed: %s", e)
         return None
