@@ -53,7 +53,7 @@ from .config import Config
 from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
-from .research import DONE, FAILED, RESEARCH_EMPTY_RESULT_TEXT, ResearchJob, ResearchScheduler
+from .research import ResearchJob, ResearchScheduler
 from .usage import (
     SpendCap,
     UsageStore,
@@ -69,6 +69,7 @@ from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
+from .voice.research_announcer import HostCondition, ResearchAnnouncer
 from .voice.wake_telemetry import LEG_DB, LegFireScore, WakeTelemetry
 from .voice.output_gate import (
     AssistantOutputEpisode,
@@ -94,18 +95,6 @@ INTERNAL_ERROR_CUE_SLUG = "internal_error"
 # restart it on plug-in) instead of crash-looping toward
 # StartLimitAction=reboot.
 VOICE_MIC_UNAVAILABLE_EXIT = 66
-
-
-def _research_confirmation_instruction(job: ResearchJob) -> str:
-    return (
-        "For this turn only, the user is answering yes or no about whether "
-        f"to read research result {job.id}. If the answer is yes or an "
-        f"affirmative, call read_research_result(job_id='{job.id}', "
-        "decision='yes'). If the answer is no or a negative, call "
-        f"read_research_result(job_id='{job.id}', decision='no'). Speak "
-        "only the tool's returned text field. Do not answer from memory, "
-        "summarize, ask a follow-up, or start new research."
-    )
 
 
 def _track_task(
@@ -395,19 +384,6 @@ HARD_RECORDING_CAP_SEC = 30.0
 # 7 × 80 ms = 560 ms covers the wake-word tail + the start of the
 # command for fast speakers.
 PRE_ROLL_FRAMES = 7
-
-# Research results are a "tell me later" promise, unlike timer chimes:
-# completing during a voice session must defer, not disappear. Keep the
-# in-memory hold queue small so a long session plus a burst of completions
-# cannot grow without bound.
-RESEARCH_PENDING_ANNOUNCE_CAP = 5
-RESEARCH_FAILURE_COOLDOWN_SEC = 60.0 * 60.0
-RESEARCH_FAILED_CUE_SLUG = "research_failed"
-RESEARCH_READY_CONFIRMATION_TEXT = (
-    "Your research is ready — want me to read it now?"
-)
-RESEARCH_CONFIRMATION_REFRACTORY_SEC = 0.35
-RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC = 20.0
 
 # Silero speech-probability threshold for marking "the user has
 # actually spoken" within a turn. Decoupled from
@@ -743,6 +719,110 @@ def _configured_wake_legs(
     return legs
 
 
+class _ResearchTurnHost:
+    """`ResearchAnnouncer`'s whole view of the wake loop."""
+
+    def __init__(self, loop: "WakeLoop") -> None:
+        self._loop = loop
+
+    def condition(self) -> HostCondition:
+        loop = self._loop
+        return HostCondition(
+            in_session=loop._state is State.SESSION,
+            in_wake=loop._state is State.WAKE,
+            output_active=loop._output_gate.is_active,
+            measurement_active=loop._measurement_active.is_set(),
+            mic_muted=loop._mic_muted,
+            spend_allowed=loop._spend_cap.allowed(),
+            connection_paused=loop._connection.is_paused(),
+        )
+
+    def turn_episode_active(self) -> bool:
+        return self._loop._turn_output_episode is not None
+
+    def hold_wake_refractory(self, sec: float) -> None:
+        loop = self._loop
+        loop._refractory_until = max(
+            loop._refractory_until,
+            asyncio.get_event_loop().time() + sec,
+        )
+
+    def record_conversation_turn(
+        self,
+        query: str | None,
+        assistant_text: str | None,
+        *,
+        data_json: dict,
+    ) -> None:
+        loop = self._loop
+        loop._conversation_capture.record(
+            query,
+            assistant_text,
+            data_json=data_json,
+            session_id=loop._session_id,
+            mic_muted=loop._mic_muted,
+        )
+
+    async def play_dynamic_text(self, text: str) -> bool:
+        return await self._loop._play_dynamic_text(text)
+
+    async def play_cue(self, slug: str) -> bool:
+        return await self._loop._play_cue(slug)
+
+    async def begin_turn(
+        self, *, pre_roll: bool, text_context: str | None,
+    ) -> None:
+        await self._loop._begin_turn(
+            pre_roll=pre_roll, text_context=text_context,
+        )
+
+    async def end_turn(self, reason: str) -> None:
+        await self._loop._end_turn(reason)
+
+    async def cleanup_after_failed_begin(self) -> None:
+        await self._loop._cleanup_after_failed_begin()
+
+    async def play_cancel_timeout_cue(self) -> None:
+        """Answer a wake the confirmation window's opener never released.
+
+        The opener holds the turn episode, which `_play_cue`'s own "admin"
+        admission cannot preempt — it would skip the cue and leave this
+        wake silent. Take that ownership away rather than lend the cue the
+        opener's episode: nothing cancels the opener here, so it resumes
+        into its own teardown, whose duck restore and gate release would
+        cut a cue playing on a turn-kind episode. Both teardown paths
+        re-ask `is_current` at each of their output actions, so a
+        surrendered opener writes nothing and releases nothing. The
+        succession is one lock hold, not an end followed by a begin: a
+        `begin_turn` waiter queued on the idle signal would otherwise take
+        the gate in between and the wake would go unanswered (NN-6).
+
+        The handover refuses in two cases, and then nothing was ended: the
+        opener's episode is still current — it still owns output, and its
+        duck and its gate release are still its own to do — or it was
+        already gone, and whoever holds the gate now owns them instead.
+        Both leave `_play_cue` to ask for its own admission.
+        """
+        loop = self._loop
+        surrendered = loop._turn_output_episode
+        cue_episode = (
+            await loop._output_gate.hand_over_if_current(
+                surrendered, "admin",
+            )
+            if surrendered is not None else None
+        )
+        played = await loop._play_cue(
+            INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
+        )
+        if cue_episode is not None and not played:
+            # Only on the handover, and only when no cue took the gate to
+            # duck and restore: this arm ended the episode whose teardown
+            # would have handed the opener's duck back, so it hands it
+            # back itself. On a refusal the duck is not this arm's to
+            # touch.
+            await loop._ducker.restore()
+
+
 class WakeLoop:
     """Sole consumer of the primary mic. Dispatches each frame to either
     the wake-word detector (WAKE state) or the active live turn (SESSION
@@ -886,19 +966,7 @@ class WakeLoop:
         self._conversation_capture = ConversationCapture(
             store=conversation_store, voice_provider=cfg.voice_provider,
         )
-        self._research_scheduler: ResearchScheduler | None = None
-        self._research_provider_id: str | None = None
-        self._research_model: str | None = None
-        self._pending_research: list[ResearchJob] = []
-        self._research_pending_cap = RESEARCH_PENDING_ANNOUNCE_CAP
-        self._research_failure_cooldown_sec = RESEARCH_FAILURE_COOLDOWN_SEC
-        self._last_research_failure_announce_at: float | None = None
-        self._research_announce_lock = asyncio.Lock()
-        self._research_window_active: bool = False
-        self._research_window_job: ResearchJob | None = None
-        self._research_window_decided: bool = False
-        self._research_window_cancelled_by_wake: bool = False
-        self._research_window_opening_done: asyncio.Event | None = None
+        self._research = ResearchAnnouncer(host=_ResearchTurnHost(self))
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
@@ -1466,9 +1534,9 @@ class WakeLoop:
     ) -> None:
         """Wire the research scheduler so announcements can mark jobs
         announced only after the wake loop has attempted the spoken path."""
-        self._research_scheduler = scheduler
-        self._research_provider_id = provider_id
-        self._research_model = model
+        self._research.set_scheduler(
+            scheduler, provider_id=provider_id, model=model,
+        )
 
     async def announce_timer(self, timer: "Timer") -> None:
         """Public hook called by `TimerScheduler` when a timer fires.
@@ -1502,314 +1570,9 @@ class WakeLoop:
         )
         await self._play_dynamic_text(text)
 
-    async def announce_research_ready(self, job: "ResearchJob") -> None:
-        """Public hook called by `ResearchScheduler` when a job finishes.
-
-        Research is a "tell me later" promise. Unlike timer chimes, a
-        result that arrives mid-conversation is held until the wake loop
-        returns to WAKE, then drained by _end_turn_inner.
-
-        Held the same way while a room-correction measurement window is
-        open (issue #1786): speaking would corrupt the sweep.
-
-        The drain only runs on the household's next COMPLETED voice turn
-        (_end_turn_inner → _drain_pending_research), not on
-        `MeasurementHold.resume()` — a queued result can therefore sit for a
-        while, bounded only by `_research_pending_cap`. Draining on resume
-        would fire at the sweep's trailing edge, the in-flight-bleed
-        window tracked as issue #1898.
-        """
-        async with self._research_announce_lock:
-            if self._measurement_active.is_set():
-                log_event(
-                    logger,
-                    "research.announce_suppressed",
-                    job_id=job.id,
-                    status=job.status,
-                    reason="measurement_active",
-                )
-                self._queue_pending_research(job)
-                return
-            if self._state is State.SESSION or self._output_gate.is_active:
-                self._queue_pending_research(job)
-                return
-            await self._speak_research_job(job)
-
-    def _queue_pending_research(self, job: ResearchJob) -> None:
-        for idx, pending in enumerate(self._pending_research):
-            if pending.id == job.id:
-                self._pending_research[idx] = job
-                log_event(
-                    logger,
-                    "research.announce_pending_coalesced",
-                    job_id=job.id,
-                    status=job.status,
-                )
-                return
-        self._pending_research.append(job)
-        if len(self._pending_research) > self._research_pending_cap:
-            dropped = self._pending_research.pop(0)
-            log_event(
-                logger,
-                "research.announce_pending_dropped",
-                job_id=dropped.id,
-                status=dropped.status,
-                cap=self._research_pending_cap,
-                level=logging.WARNING,
-            )
-        log_event(
-            logger,
-            "research.announce_held",
-            job_id=job.id,
-            status=job.status,
-            pending=len(self._pending_research),
-        )
-
-    async def _drain_pending_research(self) -> None:
-        # measurement_active is bundled with session here (both mean "don't
-        # emit ANY audio right now" — issue #1786), including in the
-        # per-iteration re-check below. Without that per-iteration check, a
-        # measurement window opening mid-batch loops forever:
-        # _speak_research_job's own measurement guard re-queues the job,
-        # which re-fills `_pending_research`, which the `while` condition
-        # sees as "more work" — a tight busy-spin with no sleep, for as
-        # long as the window stays open (potentially minutes for a held
-        # crossover-v2 session, unlike the normally-brief
-        # `_output_gate.is_active`, which stays out of this check).
-        if (
-            self._state is State.SESSION
-            or self._output_gate.is_active
-            or self._measurement_active.is_set()
-        ):
-            return
-        async with self._research_announce_lock:
-            if (
-                self._state is State.SESSION
-                or self._output_gate.is_active
-                or self._measurement_active.is_set()
-            ):
-                return
-            while self._pending_research and self._state is State.WAKE:
-                batch = self._pending_research
-                self._pending_research = []
-                for idx, job in enumerate(batch):
-                    if (
-                        self._state is State.SESSION
-                        or self._measurement_active.is_set()
-                    ):
-                        self._pending_research = (
-                            batch[idx:] + self._pending_research
-                        )
-                        return
-                    await self._speak_research_job(job)
-
-    async def _speak_research_job(self, job: ResearchJob) -> None:
-        if self._measurement_active.is_set():
-            log_event(
-                logger,
-                "research.announce_suppressed",
-                job_id=job.id,
-                status=job.status,
-                reason="measurement_active",
-            )
-            self._queue_pending_research(job)
-            return
-        if self._state is State.SESSION or self._output_gate.is_active:
-            self._queue_pending_research(job)
-            return
-        text: str | None
-        if job.status == DONE and job.result:
-            text = RESEARCH_READY_CONFIRMATION_TEXT
-        elif job.status == DONE:
-            log_event(
-                logger,
-                "research.announce_missing_result",
-                job_id=job.id,
-                level=logging.WARNING,
-            )
-            text = RESEARCH_EMPTY_RESULT_TEXT
-        elif job.status == FAILED:
-            text = None
-        else:
-            log_event(
-                logger,
-                "research.announce_skipped",
-                job_id=job.id,
-                status=job.status,
-                reason="unexpected_status",
-                level=logging.WARNING,
-            )
-            return
-
-        if job.status == FAILED:
-            remaining = self._research_failure_cooldown_remaining()
-            if remaining > 0:
-                log_event(
-                    logger,
-                    "research.announce_suppressed",
-                    job_id=job.id,
-                    status=job.status,
-                    reason="failure_cooldown",
-                    remaining_s=round(remaining, 1),
-                    level=logging.WARNING,
-                )
-                self._mark_research_announced(job, read=False)
-                return
-
-        if job.status == FAILED:
-            log_event(
-                logger,
-                "research.announce",
-                job_id=job.id,
-                status=job.status,
-                mode="cue",
-                cue=RESEARCH_FAILED_CUE_SLUG,
-            )
-            played = await self._play_cue(RESEARCH_FAILED_CUE_SLUG)
-        else:
-            assert text is not None
-            # Log shape, not content: a research result can carry personal
-            # material (medical/financial queries) and the journal is
-            # persistent. Full text stays at DEBUG (cue manager) only.
-            log_event(
-                logger,
-                "research.announce",
-                job_id=job.id,
-                status=job.status,
-                mode="confirmation",
-                text_len=len(text),
-            )
-            played = await self._play_dynamic_text(text)
-        if not played:
-            log_event(
-                logger,
-                "research.announce_playback_failed",
-                job_id=job.id,
-                status=job.status,
-                level=logging.WARNING,
-            )
-            return
-        if job.status == FAILED:
-            self._last_research_failure_announce_at = (
-                asyncio.get_event_loop().time()
-            )
-        elif job.status == DONE and job.result:
-            self._mark_research_announced(job, read=False)
-            self._refractory_until = max(
-                self._refractory_until,
-                (
-                    asyncio.get_event_loop().time()
-                    + RESEARCH_CONFIRMATION_REFRACTORY_SEC
-                ),
-            )
-            await self._open_confirmation_window(job)
-            return
-        self._mark_research_announced(
-            job,
-            read=job.status == DONE and bool(job.result),
-        )
-
-    async def _open_confirmation_window(self, job: ResearchJob) -> None:
-        reason = self._research_confirmation_guard_reason()
-        if reason is not None:
-            log_event(
-                logger,
-                "research.confirmation_window_skipped",
-                job_id=job.id,
-                reason=reason,
-            )
-            # session_active and measurement_active both mean "don't
-            # emit ANY audio right now" — queue for the drain path
-            # instead (issue #1786). The other reasons (mic_muted,
-            # spend_cap_reached, connection_paused) mean "can't listen
-            # for a reply" but speaking is still safe, so those fall
-            # through to an immediate read.
-            if reason in ("session_active", "measurement_active"):
-                self._queue_pending_research(job)
-                return
-            await self._read_research_job_immediately(job)
-            return
-
-        self._research_window_active = True
-        self._research_window_job = job
-        self._research_window_decided = False
-        self._research_window_cancelled_by_wake = False
-        opening_done = asyncio.Event()
-        self._research_window_opening_done = opening_done
-        reset_window = True
-        try:
-            await self._begin_turn(
-                pre_roll=False,
-                text_context=_research_confirmation_instruction(job),
-            )
-            reset_window = False
-            if self._research_window_cancelled_by_wake:
-                await self._end_turn("research_window_wake")
-                return
-            log_event(logger, "research.confirmation_window_opened", job_id=job.id)
-        except (
-            asyncio.TimeoutError,
-            ConnectionError,
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-        ) as e:
-            if self._research_window_cancelled_by_wake:
-                logger.info(
-                    "research confirmation window cancelled while opening "
-                    "(id=%s): %s",
-                    job.id,
-                    e,
-                )
-                if self._turn_output_episode is not None:
-                    await self._cleanup_after_failed_begin()
-                return
-            logger.exception(
-                "research confirmation window failed; reading immediately "
-                "(id=%s): %s",
-                job.id,
-                e,
-            )
-            if self._turn_output_episode is not None:
-                await self._cleanup_after_failed_begin()
-            await self._read_research_job_immediately(job)
-        finally:
-            if reset_window:
-                self._research_window_active = False
-                self._research_window_job = None
-                self._research_window_decided = False
-                self._research_window_cancelled_by_wake = False
-            if self._research_window_opening_done is opening_done:
-                self._research_window_opening_done = None
-            opening_done.set()
-
-    def _research_confirmation_guard_reason(self) -> str | None:
-        if self._state is State.SESSION:
-            return "session_active"
-        if self._mic_muted:
-            return "mic_muted"
-        if self._measurement_active.is_set():
-            return "measurement_active"
-        if not self._spend_cap.allowed():
-            return "spend_cap_reached"
-        if self._connection.is_paused():
-            return "connection_paused"
-        return None
-
-    async def _read_research_job_immediately(self, job: ResearchJob) -> None:
-        text = (job.result or "").strip()
-        if not text:
-            text = RESEARCH_EMPTY_RESULT_TEXT
-        played = await self._play_dynamic_text(text)
-        if not played:
-            logger.warning(
-                "research immediate readback failed id=%s status=%s",
-                job.id,
-                job.status,
-            )
-            return
-        self._mark_research_announced(job, read=bool(job.result))
+    async def announce_research_ready(self, job: ResearchJob) -> None:
+        """Public hook `ResearchScheduler` calls when a job finishes."""
+        await self._research.announce_ready(job)
 
     def record_research_delivery(
         self,
@@ -1817,51 +1580,7 @@ class WakeLoop:
         assistant_text: str | None,
         decision: str,
     ) -> None:
-        if (
-            self._research_window_active
-            and self._research_window_job is not None
-            and self._research_window_job.id == job.id
-        ):
-            self._research_window_decided = True
-        self._conversation_capture.record(
-            job.query,
-            assistant_text,
-            data_json={"kind": "research", "job_id": job.id},
-            session_id=self._session_id,
-            mic_muted=self._mic_muted,
-        )
-        self._clear_pending_research(job.id)
-
-    def _clear_pending_research(self, job_id: str) -> None:
-        before = len(self._pending_research)
-        if before == 0:
-            return
-        self._pending_research = [
-            job for job in self._pending_research if job.id != job_id
-        ]
-        cleared = before - len(self._pending_research)
-        if cleared:
-            log_event(
-                logger,
-                "research.announce_pending_cleared",
-                job_id=job_id,
-                count=cleared,
-            )
-
-    def _research_failure_cooldown_remaining(self) -> float:
-        last = self._last_research_failure_announce_at
-        if last is None:
-            return 0.0
-        elapsed = asyncio.get_event_loop().time() - last
-        return max(0.0, self._research_failure_cooldown_sec - elapsed)
-
-    def _mark_research_announced(self, job: ResearchJob, *, read: bool) -> None:
-        if self._research_scheduler is not None:
-            self._research_scheduler.mark_announced(job.id)
-            if read:
-                self._research_scheduler.mark_read(job.id)
-        if read:
-            self.record_research_delivery(job, job.result, "yes")
+        self._research.record_delivery(job, assistant_text, decision)
 
     def close_conversation_store(self) -> None:
         self._conversation_capture.close()
@@ -2323,7 +2042,7 @@ class WakeLoop:
                 else:
                     if self._active_manual_source is not None:
                         continue
-                    if self._research_window_active:
+                    if self._research.window_active:
                         await self._handle_wake_frame(frame, leg="on")
                         if self._acquiring or self._state is State.WAKE:
                             continue
@@ -2427,7 +2146,7 @@ class WakeLoop:
                 continue
             if self._state is State.WAKE:
                 await self._handle_wake_frame(frame, leg=leg_name)
-            elif self._state is State.SESSION and self._research_window_active:
+            elif self._state is State.SESSION and self._research.window_active:
                 await self._handle_wake_frame(frame, leg=leg_name)
             elif self._state is State.SESSION and rt.shadow_vad is not None:
                 await self._shadow_vad_score_raw(frame)
@@ -2797,80 +2516,8 @@ class WakeLoop:
             )
             return
 
-        if self._research_window_active:
-            self._research_window_cancelled_by_wake = True
-            log_event(
-                logger,
-                "research.confirmation_window_cancelled",
-                reason="wake_detected",
-                job_id=(
-                    self._research_window_job.id
-                    if self._research_window_job is not None else ""
-                ),
-            )
-            opening_done = self._research_window_opening_done
-            if opening_done is not None:
-                try:
-                    await asyncio.wait_for(
-                        opening_done.wait(),
-                        timeout=RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC,
-                    )
-                except asyncio.TimeoutError:
-                    # NN-6: a dropped wake must never be silent. The
-                    # confirmation window's own opening race lost the
-                    # cancellation, so the wake is abandoned here rather
-                    # than risk colliding with it — but the household
-                    # still needs to hear something happened.
-                    log_event(
-                        logger,
-                        "research.confirmation_window_cancel_timeout",
-                        job_id=(
-                            self._research_window_job.id
-                            if self._research_window_job is not None else ""
-                        ),
-                        level=logging.WARNING,
-                    )
-                    # The opener holds the turn episode, which
-                    # `_play_cue`'s own "admin" admission cannot preempt —
-                    # it would skip the cue and leave this wake silent.
-                    # Take that ownership away rather than lend the cue the
-                    # opener's episode: nothing cancels the opener here, so
-                    # it resumes into its own teardown, whose duck restore
-                    # and gate release would cut a cue playing on a
-                    # turn-kind episode. Both teardown paths re-ask
-                    # `is_current` at each of their output actions, so a
-                    # surrendered opener writes nothing and releases
-                    # nothing. The succession is one lock hold, not an end
-                    # followed by a begin: a `begin_turn` waiter queued on
-                    # the idle signal would otherwise take the gate in
-                    # between and the wake would go unanswered (NN-6).
-                    #
-                    # The handover refuses in two cases, and then nothing
-                    # was ended: the opener's episode is still current — it
-                    # still owns output, and its duck and its gate release
-                    # are still its own to do — or it was already gone, and
-                    # whoever holds the gate now owns them instead. Both
-                    # leave `_play_cue` to ask for its own admission.
-                    surrendered = self._turn_output_episode
-                    cue_episode = (
-                        await self._output_gate.hand_over_if_current(
-                            surrendered, "admin",
-                        )
-                        if surrendered is not None else None
-                    )
-                    played = await self._play_cue(
-                        INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
-                    )
-                    if cue_episode is not None and not played:
-                        # Only on the handover, and only when no cue took
-                        # the gate to duck and restore: this arm ended the
-                        # episode whose teardown would have handed the
-                        # opener's duck back, so it hands it back itself.
-                        # On a refusal the duck is not this arm's to touch.
-                        await self._ducker.restore()
-                    return
-            elif self._state is State.SESSION:
-                await self._end_turn("research_window_wake")
+        if not await self._research.cancel_for_wake():
+            return
 
         self._wake_event_at_monotonic = time.monotonic()
         # Per-leg score summary for the log — ONLY the legs this install
@@ -4021,13 +3668,7 @@ class WakeLoop:
             # whether a barge-in durably stops the assistant (OpenAI/Grok) or
             # only flushes locally while the server may resume (Gemini).
             "barge_in_reconcile": self._barge_in_reconcile.value,
-            "research": {
-                "configured": self._research_scheduler is not None,
-                "provider": self._research_provider_id,
-                "model": self._research_model,
-                "pending_announcements": len(self._pending_research),
-                "confirmation_window_active": self._research_window_active,
-            },
+            "research": self._research.status(),
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:
@@ -4366,11 +4007,7 @@ class WakeLoop:
                 0.0, time.monotonic() - self._turn.last_activity_at(),
             )
         self._emit_turn_timeline("complete")
-        research_window_job = (
-            self._research_window_job if self._research_window_active else None
-        )
-        research_window_decided = self._research_window_decided
-        research_window_cancelled_by_wake = self._research_window_cancelled_by_wake
+        research_window = self._research.window_snapshot()
         # `_user_speech_seen` false means the session got no real user input:
         # a likely false positive (music transient, TTS bleed) or a changed
         # mind. Either way the outcome is 'no_speech', which dual-stream
@@ -4470,7 +4107,7 @@ class WakeLoop:
                 usage.output_tokens,
                 usage=usage.breakdown,
             )
-            if research_window_job is None:
+            if research_window.job is None:
                 try:
                     capture = self._turn.capture()
                 except (RuntimeError, TypeError, ValueError) as exc:
@@ -4499,9 +4136,7 @@ class WakeLoop:
             bytes_sent = self._turn.bytes_sent()
             chunks_received = self._turn.chunks_received()
             expected_research_silence_dismiss = (
-                research_window_job is not None
-                and not research_window_decided
-                and not research_window_cancelled_by_wake
+                research_window.undecided
                 and not self._user_speech_seen
                 and not self._input_ended
             )
@@ -4662,22 +4297,7 @@ class WakeLoop:
         if owns_output():
             await self._output_gate.end_turn(episode)
         self._turn_output_episode = None
-        if research_window_job is not None:
-            self._research_window_active = False
-            self._research_window_job = None
-            self._research_window_decided = False
-            self._research_window_cancelled_by_wake = False
-            if (
-                not research_window_decided
-                and not research_window_cancelled_by_wake
-            ):
-                self._mark_research_announced(research_window_job, read=False)
-                log_event(
-                    logger,
-                    "research.confirmation_window_dismissed",
-                    reason="silence",
-                    job_id=research_window_job.id,
-                )
+        self._research.finish_window(research_window)
         try:
             if play_no_answer_cue:
                 # After the gate release (`_play_cue` takes an "admin"
@@ -4709,7 +4329,7 @@ class WakeLoop:
             self._refractory_until = (
                 asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
             )
-        await self._drain_pending_research()
+        await self._research.drain()
 
 
 def _active_model(*args, **kwargs):

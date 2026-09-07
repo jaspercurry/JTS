@@ -21,7 +21,7 @@ names it, and normal playback once the window closes.
 
 `announce_research_ready` keeps its own early check (a queued job is
 held, not dropped); that coverage lives in
-tests/test_voice_daemon_research_announce.py.
+tests/test_research_announcer.py.
 """
 from __future__ import annotations
 
