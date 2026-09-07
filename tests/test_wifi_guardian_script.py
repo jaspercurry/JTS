@@ -37,7 +37,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.net.wifi_guardian_persistence import write_stash
+from jasper.net.wifi_guardian_persistence import read_stash, write_stash
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -543,6 +543,9 @@ def test_guardian_recreates_missing_profile(tmp_path):
         "semi;colon",
         "it's",
         "hash#tag",
+        " leading dummy psk",
+        r' "dummy\$literal"',
+        r' "dummy\\path and \"quoted\" $value `tick`"',
     ],
 )
 def test_guardian_hands_nmcli_the_written_psk_verbatim(tmp_path, psk):
@@ -553,6 +556,8 @@ def test_guardian_hands_nmcli_the_written_psk_verbatim(tmp_path, psk):
     psk = psk.replace("<TMP>", str(tmp_path))
     written = tmp_path / "written.env"
     write_stash(written, "Home", psk, "wpa-psk")
+    stash = read_stash(written)
+    assert stash is not None and stash.psk == psk
     proc, log = _run_guardian(
         tmp_path,
         written.read_text(encoding="utf-8"),

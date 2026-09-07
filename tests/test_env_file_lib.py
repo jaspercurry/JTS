@@ -16,12 +16,14 @@ makes the fix the single implementation for every env-file writer.
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from jasper.env_file import read_env_file
 from tests._lock_holder import spawn_lock_holder
 from tests.install_surface import installer_text
 
@@ -57,7 +59,7 @@ def _bash(
 
 
 def _quote(value: str) -> str:
-    result = _bash(f"jasper_env_quote_value {value!r}")
+    result = _bash(f"jasper_env_quote_value {shlex.quote(value)}")
     assert result.returncode == 0, result.stderr
     return result.stdout
 
@@ -77,26 +79,32 @@ def _quote(value: str) -> str:
         # Unsafe values get single-quote wrapped.
         ("has space", "'has space'"),
         ("semi;colon", "'semi;colon'"),
-        # Embedded single quotes use the '\'' idiom.
-        ("it's", "'it'\\''s'"),
+        # Apostrophes require double quoting.
+        ("it's", '"it\'s"'),
     ],
 )
 def test_quote_env_value(value: str, expected: str) -> None:
     assert _quote(value) == expected
 
 
-def test_round_trip_through_source(tmp_path: Path) -> None:
-    """Whatever the lib writes, `source` must read back the original."""
-    values = ["hw:CARD=A,DEV=0", "has space", "it's", "a,b;c d'e", "x=1,y=2 z"]
+@pytest.mark.parametrize("value", [
+    "hw:CARD=A,DEV=0", "has space", "it's", "a,b;c d'e", "x=1,y=2 z", "",
+    " leading and trailing ", r"back\slash", "both \"quotes\" and apostrophe's",
+    "'\\\"`$", "'$(touch should-not-exist)`false`$HOME", "'\\n\\t\\q",
+])
+def test_shell_writer_round_trips_through_all_readers(tmp_path: Path, value: str) -> None:
     env_file = tmp_path / "round.env"
-    for value in values:
-        result = _bash(
-            f'jasper_env_file_set "{env_file}" KEY {value!r}\n'
-            f'source "{env_file}"\n'
-            'printf "%s" "$KEY"\n'
-        )
+    result = _bash(f'jasper_env_file_set "{env_file}" KEY {shlex.quote(value)}')
+    assert result.returncode == 0, result.stderr
+    assert read_env_file(str(env_file)) == {"KEY": value}
+    for read in [
+        f'jasper_env_file_get "{env_file}" KEY',
+        f'jasper_env_file_export "{env_file}"; printf "%s\\n" "$KEY"',
+        f'source "{env_file}"; printf "%s\\n" "$KEY"',
+    ]:
+        result = _bash(read)
         assert result.returncode == 0, result.stderr
-        assert result.stdout == value
+        assert result.stdout == value + "\n"
 
 
 def test_env_file_set_waits_out_a_concurrent_holder(tmp_path: Path) -> None:
@@ -520,19 +528,6 @@ def test_env_file_get_missing_file_returns_one(tmp_path: Path) -> None:
     assert result.stdout == ""
 
 
-def test_env_file_get_round_trips_env_file_set(tmp_path: Path) -> None:
-    r"""The lib's two halves must agree: the writer wraps an apostrophe-
-    bearing value in single quotes and splices the apostrophe as `'\''`,
-    so the reader has to undo that splice or `set` becomes unreadable."""
-    env_file = tmp_path / "round.env"
-    result = _bash(
-        f'jasper_env_file_set "{env_file}" WANT "it\'s"\n'
-        f'jasper_env_file_get "{env_file}" WANT'
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "it's\n"
-
-
 def test_env_file_export_loads_every_key_without_evaluating_it(
     tmp_path: Path,
 ) -> None:
@@ -642,12 +637,8 @@ def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
 
 
 def test_lib_consumers_prefer_script_dir_sibling_lib() -> None:
-    """Version-skew guard: install.sh runs the REPO copy of a consumer
-    mid-install (install_alsa's --print-env, install_renderers' seed render)
-    before install_systemd_units publishes /usr/local/lib/jasper at all, so
-    the loader must prefer the readable
-    SCRIPT_DIR-relative sibling over the installed copy — otherwise one
-    mid-install call can pair a new script with a stale lib."""
+    """Repo consumers must use their matching library during install, including
+    install_alsa before the support_files step publishes the installed copy."""
     sibling = '"${SCRIPT_DIR}/../lib/jasper-env-file.sh"'
     installed = "/usr/local/lib/jasper/jasper-env-file.sh"
     for script in LIB_CONSUMERS:

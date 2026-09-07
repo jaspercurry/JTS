@@ -206,24 +206,12 @@ install_renderers() {
     rm -f /usr/local/sbin/jasper-audio-topology
     rm -rf /etc/jasper/audio-topology
     rm -f /usr/local/sbin/jasper-derive-device-name
-    # Default to synced. The shipped template owns the sync values.
-    # Synced preserves video A/V and multi-room AirPlay timing. Users can
-    # still flip to free-running via /airplay/. Existing env files are
-    # preserved across reinstalls.
-    if [[ ! -e /var/lib/jasper/airplay_mode.env ]]; then
-        ensure_state_dir
-        printf 'JASPER_AIRPLAY_FREE_RUNNING=no\n' \
-            > /var/lib/jasper/airplay_mode.env
-        chmod 0644 /var/lib/jasper/airplay_mode.env
-        echo "  /var/lib/jasper/airplay_mode.env defaulted to synced."
-    fi
-    # Seed /etc/shairport-sync.conf so the first start of shairport-sync
-    # has a valid config. ExecStartPre re-renders on every subsequent
-    # restart, picking up any changes made via the web UI / CLI.
-    # The REPO copy, not the installed one: the renderer needs
-    # deploy/lib/jasper-env-file.sh, which install_systemd_units does not
-    # publish to /usr/local/lib until after this phase. Same shape as
-    # install.sh's mid-install `bash .../jasper-audio-hardware-reconcile`.
+    # Synced preserves video A/V and multi-room AirPlay timing; /airplay/ owns
+    # the preference after this seed.
+    ensure_state_dir
+    jasper_env_file_seed_absent "${STATE_DIR}/airplay_mode.env" 0644 0770 \
+        JASPER_AIRPLAY_FREE_RUNNING=no
+    # Seed the first-start config with the repo script and its matching lib.
     bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"
 
     # bluez-alsa-utils was apt-installed in install_deps.

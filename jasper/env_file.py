@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -56,10 +57,11 @@ def parse_env_lines(text: str) -> list[ParsedLine]:
 
 
 def _unquoted(value: str) -> str:
-    """Surrounding whitespace stripped, then ONE matching quote pair — the
-    resolution systemd itself applies to an ``EnvironmentFile`` value."""
+    """Resolve a single-line quoted value per systemd.exec(5) EnvironmentFile=."""
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        if value[0] == '"':
+            return re.sub(r'\\([\\"`$])', r'\1', value[1:-1])
         return value[1:-1]
     return value
 

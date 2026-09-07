@@ -17,35 +17,31 @@ _JASPER_ENV_FILE_LIB_LOADED=1
 # upsert/unset, multi-key seed) for the bash consumers of
 # /etc/jasper/jasper.env and the wizard-owned /var/lib/jasper*/*.env files.
 #
-# Values are single-quote wrapped, never `printf %q`: bash 5.2 escapes commas
+# Values are quoted, never `printf %q`: bash 5.2 escapes commas
 # (`hw:CARD=A\,DEV=0`), systemd's EnvironmentFile= parser keeps that backslash
 # literally, and the corrupted read-back turns idempotence into restart churn
-# (PR #534). EnvironmentFile= also does no shell quote-concatenation, so the
-# '\'' idiom emitted for an apostrophe reads differently to `source` than to
-# systemd — no value written today contains one.
+# (PR #534). Apostrophes require double quotes: EnvironmentFile= does not
+# support shell quote-concatenation. See systemd.exec(5), EnvironmentFile=.
 
 # jasper_env_quote_value VALUE
 # Print VALUE quoted for an env file. Safe-charset values pass through
-# verbatim; anything else is single-quote wrapped with embedded single
-# quotes escaped as '\''.
+# verbatim; other values use systemd-compatible shell quoting.
 jasper_env_quote_value() {
-    local value="$1" rest
+    local value="$1"
     if [[ -z "$value" ]]; then
         printf "''"
         return
     fi
     case "$value" in
+        *"'"*)
+            value="${value//\\/\\\\}"
+            value="${value//\"/\\\"}"
+            value="${value//\$/\\\$}"
+            value="${value//\`/\\\`}"
+            printf '"%s"' "$value"
+            ;;
         *[!A-Za-z0-9_./:@,+=-]*)
-            printf "'"
-            local q="'"
-            rest="$value"
-            # The '\'' idiom goes in as a %s ARGUMENT, never in the FORMAT:
-            # bash printf eats a format's backslashes, malforming the run.
-            while [[ "$rest" == *"'"* ]]; do
-                printf '%s%s' "${rest%%"$q"*}" "'\''"
-                rest="${rest#*"$q"}"
-            done
-            printf "%s'" "$rest"
+            printf "'%s'" "$value"
             ;;
         *)
             printf '%s' "$value"
@@ -57,16 +53,15 @@ jasper_env_quote_value() {
 # key's LAST value (rc 1 when absent); `key` empty prints every key as
 # NAME then value on the next line, in first-appearance order with the
 # last assignment's value. One matched surrounding quote pair is
-# stripped and jasper_env_file_set's own '\'' splice undone, so set ->
-# get round trips an apostrophe-bearing value; nothing is evaluated.
-# Otherwise this parses byte-for-byte like read_stash in
-# jasper/net/wifi_guardian_persistence.py, which reads the same files.
+# stripped; double quotes use systemd escapes and legacy '\'' splices are
+# undone. Nothing is evaluated.
 # readonly: jasper_env_file_export already skips every `_JASPER_`-prefixed
 # key it finds (below), so this is the backstop — nothing may reassign this
 # shell global if that skip is ever weakened.
 readonly _JASPER_ENV_FILE_AWK='
     BEGIN { sq = "\047"; dq = "\042"; splice = sq "\\" sq sq }
-    function unquote(v,   len, q, out, i) {
+    function unquote(v,   len, q, out, i, c) {
+        if (format != "raw") sub(/^[ \t\r\v\f]+/, "", v)
         len = length(v)
         q = substr(v, 1, 1)
         if (len >= 2 && q == substr(v, len, 1) && (q == sq || q == dq)) {
@@ -80,6 +75,15 @@ readonly _JASPER_ENV_FILE_AWK='
                     v = substr(v, i + 4)
                 }
                 v = out v
+            } else if (format != "raw") {
+                out = ""
+                for (i = 1; i <= length(v); i++) {
+                    c = substr(v, i, 1)
+                    if (c == "\\" && index(dq "\\`$", substr(v, i + 1, 1)) && i < length(v))
+                        c = substr(v, ++i, 1)
+                    out = out c
+                }
+                v = out
             }
         }
         return v
@@ -119,17 +123,17 @@ readonly _JASPER_ENV_FILE_AWK='
     }
 '
 
-# jasper_env_file_get FILE KEY
+# jasper_env_file_get FILE KEY [FORMAT=systemd]
 # Print the LAST `KEY=` line's value; return 1 with no output when FILE
-# or the key is absent.
+# or the key is absent. `raw` preserves the Wi-Fi stash's value rules.
 jasper_env_file_get() {
-    local file="$1" key="$2" value
+    local file="$1" key="$2" format="${3:-systemd}" value
 
     # An empty key is _JASPER_ENV_FILE_AWK's "print every key" sentinel;
     # forwarding one here would hand the caller the whole file with rc 0.
     [[ -n "$key" ]] || return 1
     [[ -r "$file" ]] || return 1
-    value="$(awk -v key="$key" "$_JASPER_ENV_FILE_AWK" "$file")" || return 1
+    value="$(awk -v key="$key" -v format="$format" "$_JASPER_ENV_FILE_AWK" "$file")" || return 1
     printf '%s\n' "$value"
 }
 

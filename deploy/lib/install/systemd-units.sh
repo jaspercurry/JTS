@@ -36,6 +36,10 @@ retire_legacy_sources_web_socket() {
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
+    # The recovery timer may run mid-install; its raw reads precede the new lib.
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
+        /usr/local/sbin/jasper-wifi-guardian
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-asound-render.sh" \
         /usr/local/lib/jasper/jasper-asound-render.sh
@@ -56,7 +60,6 @@ install_jasper_support_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-contained-build" \
         /usr/local/sbin/jasper-contained-build
-    retire_legacy_sources_web_socket
 }
 
 # Core audio-graph unit + helper-binary install table. One row per file:
@@ -106,6 +109,7 @@ JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=(
 )
 
 install_local_audio_graph_unit_files() {
+    retire_legacy_sources_web_socket
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
     # The former combo-health timer inferred capture failure from successful
@@ -462,9 +466,6 @@ install_resilience_identity_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-wifi-scan-repair.service" \
         "${SYSTEMD_DIR}/jasper-wifi-scan-repair.service"
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
-        /usr/local/sbin/jasper-wifi-guardian
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-wifi-recover" \
         /usr/local/sbin/jasper-wifi-recover
@@ -1425,7 +1426,6 @@ _stage_streambox_unit_files() {
 }
 
 install_streambox_systemd_units() {
-    install_jasper_support_files
     install_local_audio_graph_unit_files
     _with_unit_install_transaction _stage_streambox_unit_files
     park_streambox_brain_units
@@ -1574,9 +1574,6 @@ _stage_full_unit_files() {
 }
 
 install_systemd_units() {
-    # Full speakers and streamboxes consume the same support-file and core-graph
-    # owners before any profile-specific units are staged or started.
-    install_jasper_support_files
     install_local_audio_graph_unit_files
     _with_unit_install_transaction _stage_full_unit_files
 
