@@ -403,10 +403,10 @@ Wave 3 — our side of the latency
 
 Wave 4 — decompose WakeLoop
 - [x] 4.1 `measurement_hold.py` — landed as #4104 before this brief
-- [ ] 4.2 `peering_client.py`
-- [ ] 4.3 `wake_telemetry.py` (also `_handle_wake_frame` inlay)
-- [ ] 4.4 `research_announcer.py` + `TurnHost`
-- [ ] 4.5 `push_to_talk.py`
+- [x] 4.2 `peering_client.py` — merged #4321
+- [ ] 4.3 `wake_telemetry.py` (also `_handle_wake_frame` inlay) — partial: module extracted, fire-time `_current_condition` write deleted (`_maybe_refresh_condition` sole writer) merged #4325; `_handle_wake_frame` inlay open (untouched by #4325's diff, still 209 lines at HEAD vs the row's ~150 target)
+- [x] 4.4 `research_announcer.py` + `TurnHost` — merged #4330 (`ResearchWindow` enum replaces four booleans)
+- [x] 4.5 `push_to_talk.py` — merged #4340
 - [ ] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` (voice-daemon §2 item 6)
 - [ ] 4.7 `daemon_main.py` table-driven builders + `AsyncExitStack` teardown + `control_socket.py` (providers F1–F3) — partial: exit-stack teardown merged #4301; control_socket.py extraction merged #4315; table-driven builders open
 
