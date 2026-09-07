@@ -44,7 +44,7 @@ from .audio_profile_state import (
     probe_xvf_mic as _probe_xvf_mic,
     runtime_env_from_mapping,
 )
-from .cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from .cli.aec_bridge_telemetry import read_bridge_stats
 from .chip_aec.policy import (
     APPROVED_DAC_IDS,
     HIFIBERRY_DAC8X_DAC_ID,
@@ -76,7 +76,6 @@ CHIP_AEC_SUPPORTED_DAC_IDS = APPROVED_DAC_IDS
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
-DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 DEFAULT_OUTPUTD_STATUS_SOCKET = Path(OUTPUTD_STATUS_SOCKET)
 DEFAULT_CHIP_WAKE_LEGS = ("on",)
 CHIP_AEC_PROFILE_READBACK_COMMANDS = (
@@ -527,21 +526,6 @@ def service_state(unit: str) -> str:
         )
         return "unknown"
     return result.stdout.strip() or "unknown"
-
-
-def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
-    stats_path = path or _env_path(BRIDGE_STATS_PATH_ENV, DEFAULT_BRIDGE_STATS_PATH)
-    try:
-        data = json.loads(stats_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        log_event(
-            logger,
-            "audio_validation.bridge_stats_unavailable",
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:

@@ -42,7 +42,7 @@ from ..memory_policy import disk_usage, memory_pressure, meminfo_fields
 from ..service_units import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
-    parse_systemctl_show_units,
+    read_unit_states,
 )
 
 logger = logging.getLogger(__name__)
@@ -644,36 +644,19 @@ class SystemSampler:
         return sorted(set(JASPER_SERVICE_GROUPS) | set(EXTRA_SERVICE_GROUPS))
 
     @classmethod
-    def _parse_systemctl_show_units(cls, text: str) -> dict[str, dict[str, Any]]:
-        return parse_systemctl_show_units(text)
-
-    @classmethod
     def read_service_states(
         cls,
         units: list[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Read the selected systemd unit states in one bounded call."""
+        """The selected systemd unit states in one bounded call.
+
+        A sampler reads "unknown" as "nothing to show", so systemctl being
+        unavailable collapses to ``{}`` here rather than the reader's None.
+        """
         selected = units if units is not None else cls._tracked_service_units()
         if not selected:
             return {}
-        props = [
-            "Id", "LoadState", "ActiveState", "SubState", "Result",
-            "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent",
-            "CPUUsageNSec", "ControlGroup",
-        ]
-        cmd = ["systemctl", "show", "--no-page"]
-        for prop in props:
-            cmd.append(f"--property={prop}")
-        cmd.extend(selected)
-        try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=2.0,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError, OSError):
-            return {}
-        if proc.returncode not in (0, 1):
-            return {}
-        return cls._parse_systemctl_show_units(proc.stdout)
+        return read_unit_states(selected) or {}
 
     @staticmethod
     def _service_group(unit: str) -> str | None:

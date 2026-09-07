@@ -9,7 +9,6 @@ import contextlib
 import json
 import math
 import os
-from pathlib import Path
 import subprocess
 import threading
 import time
@@ -38,6 +37,7 @@ from ..audio_profile_state import (
 )
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
+from ..cli.aec_bridge_telemetry import read_bridge_stats
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
 from ..usb_mic import (
@@ -59,7 +59,6 @@ _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 _AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
 _UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
-_AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 
 # Default leg policy — must match deploy/install.sh's reconcile_aec_state
@@ -661,14 +660,12 @@ def _fresh_bridge_usb_mic_source(
 
     if not bridge_active:
         return None
+    payload = read_bridge_stats()
+    if payload is None:
+        return None
     try:
-        payload = json.loads(
-            Path(_AEC_BRIDGE_STATS_FILE).read_text(encoding="utf-8")
-        )
-        if not isinstance(payload, dict):
-            return None
         updated = float(payload.get("updated_epoch_sec"))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError):
         return None
     age = (time.time() if now is None else now) - updated
     if not math.isfinite(updated) or age < 0 or age > _AEC_BRIDGE_STATS_FRESH_SECONDS:

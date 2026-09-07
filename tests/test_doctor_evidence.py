@@ -20,6 +20,15 @@ from jasper.cli.doctor._evidence import Evidence, StatusRead
 from .doctor_test_support import _fresh_cfg
 
 
+def _patch_systemctl(monkeypatch, stdout: str) -> None:
+    """One successful ``systemctl show`` answering with ``stdout``."""
+    monkeypatch.setattr(
+        service_units.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
+    )
+
+
 def test_a_key_is_read_once_even_under_concurrent_readers():
     ev = Evidence()
     reads = []
@@ -163,11 +172,7 @@ def test_unit_state_batches_the_roster_and_reads_an_unlisted_unit_once(monkeypat
 def test_read_unit_states_separates_no_answer_from_a_not_found_answer(
     monkeypatch, stdout, expected_keys
 ):
-    monkeypatch.setattr(
-        service_units.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
-    )
+    _patch_systemctl(monkeypatch, stdout)
 
     states = service_units.read_unit_states(("jasper-fanin.service",))
 
@@ -199,11 +204,11 @@ def test_unit_state_is_none_without_systemctl(monkeypatch):
 def test_unit_property_batches_and_memoizes(monkeypatch):
     calls: list[tuple[str, tuple[str, ...]]] = []
 
-    def fake_show(prop, units):
+    def fake_show(prop, units, *, timeout):
         calls.append((prop, tuple(units)))
         return [f"{prop}:{u}" for u in units]
 
-    monkeypatch.setattr(_evidence, "_systemctl_show_property", fake_show)
+    monkeypatch.setattr(_evidence, "read_unit_property", fake_show)
     ev = Evidence()
     units = ("jasper-voice", "jasper-mux")
     expected = ["OOMScoreAdjust:jasper-voice", "OOMScoreAdjust:jasper-mux"]
@@ -214,7 +219,7 @@ def test_unit_property_batches_and_memoizes(monkeypatch):
 
 def test_unit_property_is_none_when_the_reply_shape_mismatches(monkeypatch):
     monkeypatch.setattr(
-        _evidence, "_systemctl_show_property", lambda prop, units: None,
+        _evidence, "read_unit_property", lambda prop, units, *, timeout: None,
     )
     ev = Evidence()
     assert ev.unit_property("StartLimitAction", ("jasper-voice",)) is None
@@ -241,32 +246,24 @@ def test_unit_property_is_none_when_the_reply_shape_mismatches(monkeypatch):
         ("User=\n\nUser=\n\nUser=\n", ["a", "b", "c"], ["", "", ""]),
     ],
 )
-def test_systemctl_show_property_yields_one_value_per_unit(
+def test_read_unit_property_yields_one_value_per_unit(
     monkeypatch, stdout, units, expected,
 ):
-    monkeypatch.setattr(
-        _evidence, "_run", lambda cmd, timeout=5.0: SimpleNamespace(stdout=stdout),
-    )
-    result = _evidence._systemctl_show_property("User", units)
-    assert result == expected
+    _patch_systemctl(monkeypatch, stdout)
+    assert service_units.read_unit_property("User", units) == expected
 
 
-def test_systemctl_show_property_is_none_when_blocks_do_not_cover_the_units(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        _evidence, "_run",
-        lambda cmd, timeout=5.0: SimpleNamespace(stdout="User=root\n"),
-    )
-    assert _evidence._systemctl_show_property("User", ["a", "b"]) is None
+def test_read_unit_property_is_none_when_blocks_do_not_cover_the_units(monkeypatch):
+    _patch_systemctl(monkeypatch, "User=root\n")
+    assert service_units.read_unit_property("User", ["a", "b"]) is None
 
 
-def test_systemctl_show_property_is_none_without_systemctl(monkeypatch):
-    def raises(cmd, timeout=5.0):
+def test_read_unit_property_is_none_without_systemctl(monkeypatch):
+    def raises(*a, **k):
         raise FileNotFoundError("systemctl not found")
 
-    monkeypatch.setattr(_evidence, "_run", raises)
-    assert _evidence._systemctl_show_property("MainPID", ["unit-a"]) is None
+    monkeypatch.setattr(service_units.subprocess, "run", raises)
+    assert service_units.read_unit_property("MainPID", ["unit-a"]) is None
 
 
 def test_status_read_retries_once_when_the_socket_refuses(monkeypatch):
@@ -384,17 +381,29 @@ def test_control_system_snapshot_is_fail_soft_on_transport_error(monkeypatch):
 def test_parse_systemctl_show_units_shapes_one_record_per_unit():
     text = (
         "Id=a.service\nLoadState=loaded\nActiveState=active\nSubState=running\n"
-        "UnitFileState=enabled\nNRestarts=2\nMainPID=41\nMemoryCurrent=[not set]\n"
+        "UnitFileState=enabled\nResult=success\nNRestarts=2\nMainPID=41\n"
+        "TasksCurrent=4\nMemoryCurrent=[not set]\n"
+        "CPUUsageNSec=18446744073709551615\n"
+        "ControlGroup=/jts.slice/jts-audio.slice/jasper-outputd.service\n"
         "\n"
-        "Id=b.service\nLoadState=not-found\nActiveState=inactive\nNRestarts=\n"
+        "Id=b.service\nLoadState=not-found\nActiveState=inactive\n"
+        "Result=exit-code\nNRestarts=\nMemoryCurrent=10485760\n"
     )
     parsed = service_units.parse_systemctl_show_units(text)
     assert parsed["a.service"]["unit_file_state"] == "enabled"
+    assert parsed["a.service"]["result"] == "success"
+    assert parsed["a.service"]["cpu_usage_nsec"] is None
+    assert parsed["b.service"]["result"] == "exit-code"
     assert parsed["a.service"]["n_restarts"] == 2
     assert parsed["a.service"]["main_pid"] == 41
+    assert parsed["a.service"]["tasks_current"] == 4
     assert parsed["a.service"]["memory_current_bytes"] is None
+    assert parsed["a.service"]["control_group"] == (
+        "/jts.slice/jts-audio.slice/jasper-outputd.service"
+    )
     assert parsed["b.service"]["load_state"] == "not-found"
     assert parsed["b.service"]["n_restarts"] == 0
+    assert parsed["b.service"]["memory_current_bytes"] == 10485760
 
 
 @pytest.mark.parametrize(

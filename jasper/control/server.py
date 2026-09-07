@@ -63,6 +63,7 @@ from . import (
 from ..env_load import GROUPING_ENV_FILE
 from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..service_units import read_unit_states
 from ..local_sources import local_source_audio_refresh_units
 from ..transit.state import read_state as read_transit_state
 from ..active_speaker.setup_status import read_active_speaker_setup_status
@@ -778,6 +779,8 @@ _VOICE_TRANSIENT_ACTIVE_STATES = frozenset({
     "deactivating",
     "reloading",
 })
+# Bounds the /mic request this read sits on; a wedged systemd must not hold it.
+_VOICE_UNIT_SHOW_TIMEOUT_SECONDS = 1.0
 
 # Patch seam scoping a test double to the forward's ONE network call;
 # patching stdlib urllib.request.urlopen would also intercept the test
@@ -809,45 +812,7 @@ def _bonded_follower_mic_payload(leader: str) -> dict[str, Any]:
     }
 
 
-def _systemd_show_unit(
-    unit: str,
-    *,
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
-    timeout: float = 1.0,
-) -> dict[str, str]:
-    """Tiny, fail-soft systemd state reader for user-facing liveness labels."""
-    try:
-        proc = run(
-            [
-                "systemctl",
-                "show",
-                unit,
-                "--property=LoadState",
-                "--property=ActiveState",
-                "--property=SubState",
-                "--property=Result",
-                "--no-page",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return {}
-    if proc.returncode != 0:
-        return {}
-    out: dict[str, str] = {}
-    for line in (proc.stdout or "").splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            out[key.strip()] = value.strip()
-    return out
-
-
-def _voice_starting_mic_payload(
-    *,
-    read_unit: Callable[[str], dict[str, str]] = _systemd_show_unit,
-) -> dict[str, Any] | None:
+def _voice_starting_mic_payload() -> dict[str, Any] | None:
     """Return a first-class /mic payload while jasper-voice is in flight.
 
     The voice daemon creates its UDS socket late in startup, so during a
@@ -855,8 +820,9 @@ def _voice_starting_mic_payload(
     not "offline". The distinction is drawn here so the landing page stays a
     dumb renderer of /mic state.
     """
-    unit = read_unit(_VOICE_UNIT)
-    active_state = unit.get("ActiveState", "")
+    states = read_unit_states((_VOICE_UNIT,), timeout=_VOICE_UNIT_SHOW_TIMEOUT_SECONDS)
+    record = (states or {}).get(_VOICE_UNIT) or {}
+    active_state = str(record.get("active_state") or "")
     if active_state not in _VOICE_TRANSIENT_ACTIVE_STATES:
         return None
     return {
@@ -867,9 +833,9 @@ def _voice_starting_mic_payload(
         "message": "Voice control is restarting",
         "unit": {
             "name": _VOICE_UNIT,
-            "active_state": active_state or None,
-            "sub_state": unit.get("SubState") or None,
-            "result": unit.get("Result") or None,
+            "active_state": active_state,
+            "sub_state": record.get("sub_state"),
+            "result": record.get("result"),
         },
     }
 

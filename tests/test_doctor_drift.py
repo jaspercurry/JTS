@@ -33,7 +33,7 @@ _LIVE_OK = {str(pid): _OOM_WANT[unit] for unit, pid in _PID_MAP.items()}
 
 
 def _healthy_property_fake(**overrides):
-    """A ``_systemctl_show_property`` double where every directive row
+    """A ``read_unit_property`` double where every directive row
     matches, then apply overrides.
 
     ``overrides`` accepts ``oom=``, ``actions=`` and ``on_failure=`` partial
@@ -47,7 +47,7 @@ def _healthy_property_fake(**overrides):
     }
     defaults = {"OOMScoreAdjust": "0", "StartLimitAction": "none", "OnFailure": ""}
 
-    def fake(prop, units):
+    def fake(prop, units, *, timeout=None):
         values_for_property = property_maps.get(prop, {})
         default = defaults.get(prop, "")
         return [values_for_property.get(unit, default) for unit in (name.removesuffix('.service') for name in units)]
@@ -88,7 +88,7 @@ def _systemd_drift(live=None, **overrides):
 
     _evidence.evidence.reset()
     with patch.object(
-        _evidence, "_systemctl_show_property",
+        _evidence, "read_unit_property",
         side_effect=_healthy_property_fake(**overrides),
     ), patch.object(
         _evidence, "read_unit_states",
@@ -215,7 +215,7 @@ def test_degraded_directive_read_is_skipped_never_a_silent_pass():
     healthy_checked = _systemd_drift()[1]
     healthy_property = _healthy_property_fake()
 
-    def fake_property(prop, units):
+    def fake_property(prop, units, *, timeout=None):
         if prop == "StartLimitAction":
             return None  # simulates a malformed / length-mismatched reply
         return healthy_property(prop, units)
@@ -225,7 +225,7 @@ def test_degraded_directive_read_is_skipped_never_a_silent_pass():
 
     _evidence.evidence.reset()
     with patch.object(
-        _evidence, "_systemctl_show_property", side_effect=fake_property,
+        _evidence, "read_unit_property", side_effect=fake_property,
     ), patch.object(
         _evidence, "read_unit_states", side_effect=_healthy_unit_states_fake(),
     ), patch("pathlib.Path.read_text", fake_read):

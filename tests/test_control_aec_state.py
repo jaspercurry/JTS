@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from jasper import atomic_io, enhanced_aec
+from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.chip_aec.policy import (
     ACTION_FIX_MIC_PROFILE,
     BLOCKER_DAC,
@@ -728,7 +729,7 @@ def test_usb_mic_source_selection_distinguishes_requested_from_applied_source(
             "comparison_only": True,
         },
     ]
-    monkeypatch.setattr(aec_endpoints, "_AEC_BRIDGE_STATS_FILE", str(stats))
+    monkeypatch.setenv(BRIDGE_STATS_PATH_ENV, str(stats))
     monkeypatch.setattr(aec_endpoints, "read_usb_mic_leg", lambda: requested)
     monkeypatch.setattr(
         aec_endpoints,
@@ -793,7 +794,7 @@ def test_usb_mic_source_selection_never_invents_applied_state(
 ):
     stats = tmp_path / "aec_bridge_stats.json"
     stats.write_text(json.dumps(stats_payload))
-    monkeypatch.setattr(aec_endpoints, "_AEC_BRIDGE_STATS_FILE", str(stats))
+    monkeypatch.setenv(BRIDGE_STATS_PATH_ENV, str(stats))
     monkeypatch.setattr(aec_endpoints, "read_usb_mic_leg", lambda: "primary")
     monkeypatch.setattr(
         aec_endpoints,

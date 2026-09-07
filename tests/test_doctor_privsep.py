@@ -203,14 +203,14 @@ def test_unit_runtime_identity_batches_user_group_across_daemons(monkeypatch):
 
     calls: list[tuple[str, tuple[str, ...]]] = []
 
-    def fake_property(prop, units):
+    def fake_property(prop, units, *, timeout):
         calls.append((prop, tuple(units)))
         return [f"{prop}-value" for _ in units]
 
     def fake_unit_states(units, *, timeout):
         return {u: {"unit": u, "load_state": "loaded"} for u in units}
 
-    monkeypatch.setattr(_evidence, "_systemctl_show_property", fake_property)
+    monkeypatch.setattr(_evidence, "read_unit_property", fake_property)
     monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
 
     first = privsep._unit_runtime_identity("jasper-control")
@@ -232,7 +232,7 @@ def test_unit_runtime_identity_is_none_when_a_property_is_unreadable(monkeypatch
 
     monkeypatch.setattr(_evidence, "read_unit_states", fake_unit_states)
     monkeypatch.setattr(
-        _evidence, "_systemctl_show_property", lambda prop, units: None,
+        _evidence, "read_unit_property", lambda prop, units, *, timeout: None,
     )
 
     assert privsep._unit_runtime_identity("jasper-control") is None

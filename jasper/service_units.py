@@ -208,14 +208,30 @@ def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _show(args: list[str], timeout: float) -> str | None:
+    """``systemctl show`` stdout, or None when systemctl itself is unavailable
+    or the call fails, so a caller can say "unknown" rather than "inactive"."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", "--no-page", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    return proc.stdout
+
+
 def read_unit_states(
     units: tuple[str, ...] | list[str],
     *,
     timeout: float = 2.0,
 ) -> dict[str, dict[str, Any]] | None:
-    """One ``systemctl show`` over ``units``; None when systemctl itself is
-    unavailable or the call fails, so a caller can say "unknown" rather than
-    "inactive". A unit systemd does not know comes back with
+    """One ``systemctl show`` over ``units``, keyed by unit name; None when
+    systemctl is unavailable. A unit systemd does not know comes back with
     ``load_state == "not-found"``.
 
     A non-empty ask that yields NO records is also ``None``: systemctl ran but
@@ -224,13 +240,34 @@ def read_unit_states(
     report every unit as missing on a box where they are all running."""
     if not units:
         return {}
-    cmd = ["systemctl", "show", "--no-page"]
-    cmd.extend(f"--property={prop}" for prop in SHOW_PROPERTIES)
-    cmd.extend(units)
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+    args = [f"--property={prop}" for prop in SHOW_PROPERTIES]
+    args.extend(units)
+    out = _show(args, timeout)
+    if out is None:
         return None
-    if proc.returncode not in (0, 1):
+    return parse_systemctl_show_units(out) or None
+
+
+def read_unit_property(
+    prop: str,
+    units: tuple[str, ...] | list[str],
+    *,
+    timeout: float = 2.0,
+) -> list[str] | None:
+    """One value of ``prop`` per unit, in input order; None when systemctl is
+    unavailable or the reply is not one block per unit.
+
+    The sibling of :func:`read_unit_states` for a property outside
+    ``SHOW_PROPERTIES`` (``ExecStart``, ``OOMScoreAdjust``, ``User``, ...).
+    One subprocess per property rather than per unit: unbatched, such a
+    property would cost N invocations, a large constant-factor loss on the
+    Pi."""
+    if not units:
+        return []
+    out = _show([f"--property={prop}", *units], timeout)
+    if out is None:
         return None
-    return parse_systemctl_show_units(proc.stdout) or None
+    values = parse_property_blocks(out, prop)
+    if len(values) != len(units):
+        return None
+    return values

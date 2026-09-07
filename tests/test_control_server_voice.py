@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from jasper.control import uds as uds_mod
 
 from tests.control_server_fixtures import (
@@ -269,41 +271,50 @@ def test_get_mic_reports_offline_when_socket_missing_and_unit_not_starting(
     assert body["reason"] == "voice_daemon_unreachable"
 
 
-def test_voice_starting_mic_payload_reads_transient_systemd_state():
-    import subprocess as sp
+@pytest.mark.parametrize(
+    "active_state, sub_state, starting",
+    [
+        ("activating", "start-post", True),
+        ("deactivating", "stop-sigterm", True),
+        ("failed", "failed", False),
+        ("active", "running", False),
+    ],
+)
+def test_voice_starting_mic_payload_tracks_transient_systemd_state(
+    monkeypatch, active_state, sub_state, starting,
+):
     import jasper.control.server as srv_mod
 
-    def fake_run(argv, **_kw):
-        return sp.CompletedProcess(
-            argv,
-            0,
-            stdout=(
-                "LoadState=loaded\n"
-                "ActiveState=activating\n"
-                "SubState=start-post\n"
-                "Result=success\n"
-            ),
-            stderr="",
-        )
-
-    payload = srv_mod._voice_starting_mic_payload(
-        read_unit=lambda unit: srv_mod._systemd_show_unit(unit, run=fake_run),
+    monkeypatch.setattr(
+        srv_mod,
+        "read_unit_states",
+        lambda units, *, timeout: {
+            units[0]: {
+                "unit": units[0],
+                "load_state": "loaded",
+                "active_state": active_state,
+                "sub_state": sub_state,
+                "result": "success",
+            },
+        },
     )
 
-    assert payload is not None
+    payload = srv_mod._voice_starting_mic_payload()
+
+    if not starting:
+        assert payload is None
+        return
     assert payload["status"] == "starting"
     assert payload["available"] is False
-    assert payload["unit"]["active_state"] == "activating"
-    assert payload["unit"]["sub_state"] == "start-post"
+    assert payload["unit"]["active_state"] == active_state
+    assert payload["unit"]["sub_state"] == sub_state
 
 
-def test_voice_starting_mic_payload_ignores_failed_systemd_state():
+def test_voice_starting_mic_payload_is_none_without_systemctl(monkeypatch):
     import jasper.control.server as srv_mod
 
-    assert srv_mod._voice_starting_mic_payload(
-        read_unit=lambda unit: {
-            "LoadState": "loaded",
-            "ActiveState": "failed",
-            "SubState": "failed",
-        },
-    ) is None
+    monkeypatch.setattr(
+        srv_mod, "read_unit_states", lambda units, *, timeout: None,
+    )
+
+    assert srv_mod._voice_starting_mic_payload() is None
