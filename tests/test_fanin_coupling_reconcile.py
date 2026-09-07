@@ -299,7 +299,14 @@ def test_restore_snapshot_waits_out_a_concurrent_bash_holder(tmp_path):
         _restore_snapshot(snapshot)
         elapsed = time.monotonic() - start
 
-    assert elapsed >= 0.5
+    # The floor is well under the 0.5 s hold on purpose: spawn_lock_holder
+    # yields only once the holder is provably holding, so the holder's sleep
+    # is already running when ``start`` is taken and ``elapsed`` is always the
+    # shorter of the two. The behaviour under test is that the rollback blocks
+    # on the lock rather than returning at once; the exact wait is the
+    # holder's. A whole-file restore ends at the snapshot either way, so the
+    # siblings' write-back pin cannot discriminate here.
+    assert elapsed >= 0.25
     assert env.read_text(encoding="utf-8") == "SEED=1\n"
 
 
