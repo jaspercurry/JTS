@@ -345,7 +345,7 @@ def check_content_transport_coherence() -> CheckResult:
         output_endpoint_evidence_from_statefiles,
     )
     from jasper.env_file import read_value
-    from jasper.fanin.coupling_reconcile import _outputd_ring_path_for
+    from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
@@ -442,7 +442,7 @@ def check_content_transport_coherence() -> CheckResult:
             reason=REASON_RING_PATH_NOT_CENTRAL_RING,
         )
     # The SUBJECT stays outputd.env's own text: the marker and the ring path are
-    # single-writer keys of that file, and `_outputd_ring_path_for` is contracted
+    # single-writer keys of that file, and `outputd_ring_path_for` is contracted
     # on one snapshot of the file being reconciled.
     try:
         outputd_text = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
@@ -451,7 +451,7 @@ def check_content_transport_coherence() -> CheckResult:
     carried = resolve_outputd_ring_path(
         read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
     )
-    derived = _outputd_ring_path_for(outputd_text)
+    derived = outputd_ring_path_for(outputd_text)
     if carried != derived:
         return _crossed_transport_pair(
             label,

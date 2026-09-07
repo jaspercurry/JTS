@@ -44,7 +44,7 @@ from .accounts import (
     maybe_migrate_legacy, registry_path,
 )
 from .log_event import log_event
-from .spotify_routing import _normalise as _normalise_title
+from .spotify_routing import normalise as _normalise_title
 
 logger = logging.getLogger(__name__)
 

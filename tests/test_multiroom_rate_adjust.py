@@ -500,7 +500,7 @@ def _channel_pick_check(
     )
     monkeypatch.setattr(
         recmod,
-        "_output_topology_state",
+        "output_topology_state",
         lambda: topology_state or (active_box, not active_box),
     )
     # This box's outputd runs the return ring's slot, so the fourth arming gate
@@ -767,7 +767,7 @@ def _tts_lane_check(
         lambda: (groupmod._parse_systemd_environment(resolved_voice_text), ""),
     )
     monkeypatch.setattr(
-        recmod, "_output_topology_state", lambda: (active_box, not active_box)
+        recmod, "output_topology_state", lambda: (active_box, not active_box)
     )
     return groupmod.check_grouping_tts_lane()
 
