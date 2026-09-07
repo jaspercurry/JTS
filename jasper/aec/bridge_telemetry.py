@@ -4,10 +4,9 @@
 
 """AEC bridge telemetry — the UDP leg emitters and the bridge stats file.
 
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`. The
-capture geometry and reference endpoint the snapshot republishes belong to
-the bridge, so they arrive as a `StatsIdentity`, and each emitter carries the
-`_BridgeStats` it counts into rather than reaching for a module global.
+The capture geometry and reference endpoint the snapshot republishes belong
+to the bridge, so they arrive as a `StatsIdentity`, and each emitter carries
+the `_BridgeStats` it counts into rather than reaching for a module global.
 """
 from __future__ import annotations
 
@@ -477,3 +476,31 @@ class TimestampedLegEmitter(LegEmitter):
             leg=self.stats_key,
         )
         del self.batch[:frame_bytes]
+
+
+def add_loop_emitter(
+    emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
+    host: str,
+    leg: str,
+    port: int,
+    *,
+    frame_samples: int = OUT_FRAME_SAMPLES,
+    emitter_cls: type[LegEmitter] = LegEmitter,
+) -> LegEmitter:
+    """Open one leg's UDP socket and register it under `leg` in `emitters`.
+
+    Insertion order is the operator-visible leg order: the stats snapshot's
+    `ports` map and the bridge's shutdown close order both read this dict.
+    """
+    emitter = emitter_cls(
+        sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+        dest=(host, port),
+        batch=bytearray(),
+        stats_key=leg,
+        stats=stats,
+        frame_samples=frame_samples,
+    )
+    emitter.sock.setblocking(False)
+    emitters[leg] = emitter
+    return emitter

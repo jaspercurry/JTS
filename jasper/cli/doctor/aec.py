@@ -44,13 +44,13 @@ from ...chip_aec.policy import (
 )
 from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
 from ...json_fields import sha256_file
-from ..aec_bridge_config import (
+from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     REF_SOURCE_ENV,
 )
-from ..aec_bridge_engines import DTLN_ENABLED_ENV
-from ..aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from ...aec.bridge_engines import DTLN_ENABLED_ENV
+from ...aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -1352,10 +1352,10 @@ def _applied_reference_source(stats: dict | None) -> str | None:
     """The reference source the running bridge APPLIED, or None if unreadable.
 
     The bridge resolves ``JASPER_AEC_REF_SOURCE`` before anything reads it
-    (``aec_bridge_config.resolved_reference_source``) and publishes the resolved
-    value into its stats snapshot, so this is the box's runtime truth where
-    the env file is only its intent — and a box parked by a pre-P7-1
-    reconciler still carries the retired ``alsa`` spelling in
+    (``jasper.aec.bridge_config.resolved_reference_source``) and publishes
+    the resolved value into its stats snapshot, so this is the box's
+    runtime truth where the env file is only its intent — and a box parked
+    by a pre-P7-1 reconciler still carries the retired ``alsa`` spelling in
     /etc/jasper/jasper.env while the bridge converged to ``outputd_udp``.
 
     Reads the schema-v4 ``reference_input.source``, NOT

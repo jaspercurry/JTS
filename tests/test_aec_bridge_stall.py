@@ -38,11 +38,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.cli import (
-    aec_bridge,
-    aec_bridge_engines,
-    aec_bridge_telemetry,
-)
+from jasper.cli import aec_bridge
 from jasper.cli.aec_bridge import (
     BridgeStalled,
     OUT_PORT,
@@ -50,9 +46,10 @@ from jasper.cli.aec_bridge import (
     _aec_loop,
     _shutdown,
 )
-from jasper.cli.aec_bridge_config import OUT_HOST
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
-from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
+from jasper.aec import bridge_engines, bridge_telemetry
+from jasper.aec.bridge_config import OUT_HOST
+from jasper.aec.bridge_engines import FRAME_SAMPLES
+from jasper.aec.bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
 from jasper.cues.registry import (
     NO_ROOM_MIC_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
@@ -226,7 +223,7 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     )
     stub_sounddevice(monkeypatch, sd_mod)
     engine_cls = MagicMock()
-    monkeypatch.setattr(aec_bridge_engines, "Aec3V1Engine", engine_cls)
+    monkeypatch.setattr(bridge_engines, "Aec3V1Engine", engine_cls)
 
     assert aec_bridge.main() == os.EX_NOINPUT
     engine_cls.assert_not_called()
@@ -491,6 +488,11 @@ def test_aec_loop_emits_both_streams(monkeypatch):
     # Each leg emitted exactly 2 packets (8 frames / 4 per packet).
     assert aec_sock.sendto.call_count == 2
     assert raw_sock.sendto.call_count == 2
+
+    # The loop's emitters count into the process singleton the stats writer
+    # and the wake-corpus recorder read.
+    sent = aec_bridge._bridge_stats.snapshot()["counters"]["packets_sent_by_leg"]
+    assert {leg: n for leg, n in sent.items() if n} == {"on": 2, "off": 2}
 
     # Primary stream: bytes match engine output, destination = OUT_PORT.
     expected_aec_p1 = b"".join(aec_frames[:4])
@@ -1122,18 +1124,6 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     usb_engine.close.assert_called_once()
 
 
-def test_loop_emitters_count_into_the_process_bridge_stats() -> None:
-    """The emitters the loop builds feed the singleton the stats writer and
-    the wake-corpus recorder read — the one link the telemetry split moved."""
-    emitters: dict[str, aec_bridge_telemetry.LegEmitter] = {}
-    emitter = aec_bridge._add_loop_emitter(
-        emitters, aec_bridge.BridgeConfig.from_env(), "on", 9876,
-    )
-
-    assert emitter.stats is aec_bridge._bridge_stats
-    emitter.close()
-
-
 def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     """Every configured software/corpus leg uses the shared packet emitter.
 
@@ -1185,7 +1175,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: "/models")
 
     emitted: list[str] = []
-    real_emit_packet = aec_bridge_telemetry.emit_packet
+    real_emit_packet = bridge_telemetry.emit_packet
 
     def counting_emit_packet(**kwargs):
         packet_ready = len(kwargs["batch"]) + len(kwargs["pcm"]) >= OUT_FRAME_BYTES
@@ -1194,7 +1184,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
             emitted.append(kwargs["leg"])
 
     monkeypatch.setattr(
-        aec_bridge_telemetry, "emit_packet", counting_emit_packet,
+        bridge_telemetry, "emit_packet", counting_emit_packet,
     )
 
     engine = engine_returning(100)

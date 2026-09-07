@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wire + stats pin for `jasper.cli.aec_bridge_telemetry`.
+"""Wire + stats pin for `jasper.aec.bridge_telemetry`.
 
 Consumers read the emitted packets (jasper-voice, jasper-usbmic) and the
 counter deltas in the stats file (the wake-corpus recorder, jasper-doctor),
@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from jasper.cli.aec_bridge_telemetry import (
+from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
     LegEmitter,
     TimestampedLegEmitter,
@@ -58,7 +58,7 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(
     monkeypatch, tmp_path,
 ) -> None:
     monkeypatch.setattr(
-        "jasper.cli.aec_bridge_telemetry.time.monotonic", lambda: 1234.5,
+        "jasper.aec.bridge_telemetry.time.monotonic", lambda: 1234.5,
     )
     clock_ids = []
 
@@ -67,7 +67,7 @@ def test_emit_sequence_pins_packets_and_stats_snapshot(
         return 7_000_000_123
 
     monkeypatch.setattr(
-        "jasper.cli.aec_bridge_telemetry.time.clock_gettime_ns",
+        "jasper.aec.bridge_telemetry.time.clock_gettime_ns",
         clock_gettime_ns,
     )
     stats = _BridgeStats(IDENTITY)
@@ -222,7 +222,7 @@ def test_timestamped_sequence_wraps_and_survives_a_refused_send(
     """The u32 sequence is the receiver's only drop detector, so it wraps
     rather than widening and still advances across a refused send."""
     monkeypatch.setattr(
-        "jasper.cli.aec_bridge_telemetry.time.clock_gettime_ns",
+        "jasper.aec.bridge_telemetry.time.clock_gettime_ns",
         lambda _clock: 1,
     )
     stats = _BridgeStats(IDENTITY)

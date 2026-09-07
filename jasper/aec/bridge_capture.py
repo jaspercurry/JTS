@@ -10,10 +10,9 @@ queues `_aec_loop` drains. Capture geometry, the resampler choice the USB
 card's rate forces, and the queue-drop accounting for both cards sit behind
 this one surface.
 
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`. The
-process-wide `_BridgeStats` these threads count into arrives as an argument,
-the way the reference transport takes its own, and the shutdown signal and
-the device settings arrive from the caller that owns them.
+The process-wide `_BridgeStats` these threads count into arrives as an
+argument, the way the reference transport takes its own, and the shutdown
+signal and the device settings arrive from the caller that owns them.
 """
 from __future__ import annotations
 
@@ -27,8 +26,8 @@ import numpy as np
 
 from jasper.dsp_numpy import resample_poly
 from jasper.log_event import log_event
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_telemetry import (
+from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
     _BridgeStats,
     logger,

@@ -455,6 +455,9 @@ exhaustive = true
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
+  # aec transitively imports jasper.usb_mic, whose chain reaches cli/web; aec
+  # ranks when usb_mic does.
+  "aec",
   "assistant_loudness",
   "assistant_volume",
   "attribution",

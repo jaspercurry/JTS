@@ -10,9 +10,6 @@ and the DTLN observation leg all sit behind `JASPER_AEC_CORPUS_*` /
 `JASPER_AEC_DTLN_ENABLED` flags that only `jasper.wake_corpus` sets. Ports come
 from `jasper.wake_legs` via `BridgeConfig`; nothing here is on the production
 wake path.
-
-Imports run one way only: this module reads `jasper.cli.aec_bridge` at module
-scope, so `aec_bridge` must keep its import of this module inside `_aec_loop`.
 """
 from __future__ import annotations
 
@@ -33,20 +30,19 @@ from jasper.aec_sweep import (
     USB_AEC3_SWEEP_BASELINE_OVERRIDES,
 )
 from jasper.log_event import log_event
-from jasper.cli.aec_bridge import (
-    BridgeConfig,
-    _add_loop_emitter,
-    _bridge_stats,
-    env_bool,
-    logger,
-)
-from jasper.cli.aec_bridge_engines import (
+from jasper.aec.bridge_config import BridgeConfig, env_bool
+from jasper.aec.bridge_engines import (
     Aec3Engine,
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
     EngineSelector,
 )
-from jasper.cli.aec_bridge_telemetry import LegEmitter
+from jasper.aec.bridge_telemetry import (
+    LegEmitter,
+    _BridgeStats,
+    add_loop_emitter,
+    logger,
+)
 
 
 @dataclass(frozen=True, eq=False)
@@ -81,6 +77,7 @@ class CorpusLanes:
 
 def build_corpus_lanes(
     emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -102,6 +99,7 @@ def build_corpus_lanes(
         xvf_raw0_dtln_emitter,
     ) = _build_xvf_raw0_optional_paths(
         emitters,
+        stats,
         config,
         select_engine=select_engine,
         webrtc_enabled=xvf_raw0_webrtc_enabled,
@@ -109,7 +107,9 @@ def build_corpus_lanes(
     )
     ref_emitter = None
     if emit_ref:
-        ref_emitter = _add_loop_emitter(emitters, config, "ref", config.out_port_ref)
+        ref_emitter = add_loop_emitter(
+            emitters, stats, config.out_host, "ref", config.out_port_ref
+        )
 
     (
         usb_raw_emitter,
@@ -118,10 +118,11 @@ def build_corpus_lanes(
         usb_dtln_engine,
         usb_dtln_emitter,
     ) = _build_usb_optional_paths(
-        emitters, config, select_engine=select_engine, usb_raw_q=usb_raw_q
+        emitters, stats, config, select_engine=select_engine, usb_raw_q=usb_raw_q
     )
     aec3_sweep_paths, emit_aec3_sweep = _build_aec3_sweep_paths(
         emitters,
+        stats,
         config,
         select_engine=select_engine,
         production_chip_aec_enabled=production_chip_aec_enabled,
@@ -129,6 +130,7 @@ def build_corpus_lanes(
     )
     dtln_engine, dtln_emitter = _build_dtln_optional_path(
         emitters,
+        stats,
         config,
         production_chip_aec_enabled=production_chip_aec_enabled,
     )
@@ -152,6 +154,7 @@ def build_corpus_lanes(
 
 def _build_xvf_raw0_optional_paths(
     emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -163,9 +166,10 @@ def _build_xvf_raw0_optional_paths(
     xvf_raw0_webrtc_emitter = None
     if webrtc_enabled:
         xvf_raw0_engine = select_engine(label="xvf_raw0_webrtc_aec3")
-        xvf_raw0_webrtc_emitter = _add_loop_emitter(
+        xvf_raw0_webrtc_emitter = add_loop_emitter(
             emitters,
-            config,
+            stats,
+            config.out_host,
             "xvf_raw0_webrtc_aec3",
             config.out_port_xvf_raw0_webrtc_aec3,
         )
@@ -185,9 +189,10 @@ def _build_xvf_raw0_optional_paths(
             xvf_raw0_dtln_engine = DTLNEngine(
                 model_dir=default_model_dir(), model_size=xvf_raw0_dtln_size,
             )
-            xvf_raw0_dtln_emitter = _add_loop_emitter(
+            xvf_raw0_dtln_emitter = add_loop_emitter(
                 emitters,
-                config,
+                stats,
+                config.out_host,
                 "xvf_raw0_dtln",
                 config.out_port_xvf_raw0_dtln,
             )
@@ -213,6 +218,7 @@ def _build_xvf_raw0_optional_paths(
 
 def _build_usb_optional_paths(
     emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -231,12 +237,13 @@ def _build_usb_optional_paths(
     usb_dtln_engine = None
     usb_dtln_emitter = None
     if usb_raw_q is not None:
-        usb_raw_emitter = _add_loop_emitter(
-            emitters, config, "usb_raw", config.out_port_usb_raw
+        usb_raw_emitter = add_loop_emitter(
+            emitters, stats, config.out_host, "usb_raw", config.out_port_usb_raw
         )
-        usb_webrtc_emitter = _add_loop_emitter(
+        usb_webrtc_emitter = add_loop_emitter(
             emitters,
-            config,
+            stats,
+            config.out_host,
             "usb_webrtc",
             config.out_port_usb_webrtc,
         )
@@ -279,9 +286,10 @@ def _build_usb_optional_paths(
                 usb_dtln_engine = DTLNEngine(
                     model_dir=default_model_dir(), model_size=usb_dtln_size,
                 )
-                usb_dtln_emitter = _add_loop_emitter(
+                usb_dtln_emitter = add_loop_emitter(
                     emitters,
-                    config,
+                    stats,
+                    config.out_host,
                     "usb_dtln",
                     config.out_port_usb_dtln,
                 )
@@ -307,6 +315,7 @@ def _build_usb_optional_paths(
 
 def _build_aec3_sweep_paths(
     emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
     config: BridgeConfig,
     *,
     select_engine: EngineSelector,
@@ -342,8 +351,8 @@ def _build_aec3_sweep_paths(
                     )
                     continue
                 variant_port = config.out_port_aec3_sweep[variant.leg]
-                variant_emitter = _add_loop_emitter(
-                    emitters, config, variant.leg, variant_port
+                variant_emitter = add_loop_emitter(
+                    emitters, stats, config.out_host, variant.leg, variant_port
                 )
                 aec3_sweep_paths.append(SweepPath(
                     variant=variant,
@@ -387,6 +396,7 @@ def _build_aec3_sweep_paths(
 
 def _build_dtln_optional_path(
     emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
     config: BridgeConfig,
     *,
     production_chip_aec_enabled: bool,
@@ -397,7 +407,7 @@ def _build_dtln_optional_path(
     dtln_wanted = (
         not production_chip_aec_enabled
     ) and env_bool(DTLN_ENABLED_ENV, "0")
-    _bridge_stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
+    stats.set_leg_engine("dtln", enabled=dtln_wanted, loaded=False)
     if dtln_wanted:
         try:
             from jasper.aec_engines import dtln_models
@@ -408,10 +418,10 @@ def _build_dtln_optional_path(
             dtln_engine = DTLNEngine(
                 model_dir=default_model_dir(), model_size=dtln_size,
             )
-            dtln_emitter = _add_loop_emitter(
-                emitters, config, "dtln", config.out_port_dtln
+            dtln_emitter = add_loop_emitter(
+                emitters, stats, config.out_host, "dtln", config.out_port_dtln
             )
-            _bridge_stats.set_leg_engine("dtln", enabled=True, loaded=True)
+            stats.set_leg_engine("dtln", enabled=True, loaded=True)
             logger.info(
                 "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
                 dtln_size, config.out_host, config.out_port_dtln,
@@ -433,7 +443,7 @@ def _build_dtln_optional_path(
             # flag it after this line ages out of the journal window: voice
             # otherwise keeps listening on a permanently unfed leg with no
             # surface anywhere.
-            _bridge_stats.set_leg_engine(
+            stats.set_leg_engine(
                 "dtln", enabled=True, loaded=False, error=str(e),
             )
             log_event(

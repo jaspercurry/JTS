@@ -16,6 +16,7 @@ from typing import Any, Iterator
 
 from ..chip_aec import record as commission_record
 from .. import enhanced_aec
+from ..aec.bridge_telemetry import read_bridge_stats
 from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
     AEC_MODE_ENV,
@@ -37,7 +38,6 @@ from ..audio_profile_state import (
 )
 from ..atomic_io import locked_update_env_file
 from ..audio_input_view import build_microphone_settings_view
-from ..cli.aec_bridge_telemetry import read_bridge_stats
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
 from ..usb_mic import (

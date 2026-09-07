@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin for `jasper.cli.aec_bridge_engines.select_engine`.
+"""Pin for `jasper.aec.bridge_engines.select_engine`.
 
 The engine a configuration selects, and the exact keyword arguments that
 configuration hands the `jasper_aec3` binding, are what reaches WebRTC AEC3
@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper import enhanced_aec
-from jasper.cli import aec_bridge_engines
+from jasper.aec import bridge_engines
 
 V1_DEFAULTS = {
     "stream_delay_ms": 40,
@@ -209,12 +209,12 @@ def test_select_engine_configuration_snapshot(
         SimpleNamespace(HAS_V2=True, Aec3=_FakeAec3, Aec3V2=_FakeAec3V2),
     )
 
-    engine = aec_bridge_engines.select_engine(overrides=overrides, label=label)
+    engine = bridge_engines.select_engine(overrides=overrides, label=label)
 
     expected_engine = (
-        aec_bridge_engines.Aec3V2Engine
+        bridge_engines.Aec3V2Engine
         if expected_binding == "Aec3V2"
-        else aec_bridge_engines.Aec3V1Engine
+        else bridge_engines.Aec3V1Engine
     )
     assert isinstance(engine, expected_engine)
     assert built == [(expected_binding, expected_kwargs)]

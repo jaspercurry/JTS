@@ -9,10 +9,9 @@ as the 16 kHz mono frames AEC3 subtracts from the mic. Conversion, the queue
 publish, and the clip accounting the RMS window reports all sit behind this
 one surface.
 
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`. The
-process-wide `_BridgeStats` this transport counts into arrives as an argument,
-the way the telemetry emitters take theirs, and the shutdown signal and
-endpoint arrive from the caller that owns them.
+The process-wide `_BridgeStats` this transport counts into arrives as an
+argument, the way the telemetry emitters take theirs, and the shutdown
+signal and endpoint arrive from the caller that owns them.
 """
 from __future__ import annotations
 
@@ -26,8 +25,8 @@ import time
 import numpy as np
 
 from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_telemetry import (
+from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
     _BridgeStats,
     logger,
