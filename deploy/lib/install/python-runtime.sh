@@ -123,6 +123,88 @@ migrate_mic_device_candidates_seed() {
         -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch$/d'
 }
 
+# The Python tree publishes from a staging path (See ADR-0252). The checkout
+# rsyncs into ${INSTALL_DIR}/.staging — the live tree's own filesystem by
+# construction, so --link-dest makes an unchanged file a second link to the live
+# inode rather than a copy — and each top-level entry is renamed into place from
+# there. The guarantee is per entry: an entry is absent for the instant between
+# its two renames, is otherwise wholly old or wholly new, and any failure rolls
+# the already-published entries back, so a re-deploy or a reboot finds the whole
+# old tree or the whole new one.
+publish_staged_install_tree() {
+    # The glob never matches a dotfile, so .deps.txt — and any dot-name the
+    # checkout ships at its top level — stays behind in the staging tree.
+    local staging="${INSTALL_DIR}/.staging" staged name
+    for staged in "${staging}"/*; do
+        [[ -e "${staged}" ]] || continue
+        name="${staged##*/}"
+        if [[ -e "${INSTALL_DIR}/${name}" ]]; then
+            mv "${INSTALL_DIR}/${name}" "${staged}.prev" || return 1
+        fi
+        mv "${staged}" "${INSTALL_DIR}/${name}" || return 1
+    done
+    # The rollback globs ${INSTALL_DIR}/.staging/*.prev, so renaming the tree
+    # takes it out of that namespace: a delete cut off partway then leaves a
+    # truncated .prev nothing reads, rather than one the rollback would take
+    # for a complete old copy. Its own `rm -rf .done` is hygiene.
+    mv "${staging}" "${staging}.done" || return 1
+    rm -rf -- "${staging}.done"
+}
+
+stage_install_tree() {
+    remove_staged_install_tree
+    install -d -m 0755 "${INSTALL_DIR}/.staging"
+}
+
+# Roll an unfinished publish back, then drop the staging tree. The EXIT trap
+# calls this through _call_if_defined, which disarms errexit: the explicit
+# return is what stops a failed restore from reaching the rm below and deleting
+# a live entry's only copy.
+remove_staged_install_tree() {
+    local staging="${INSTALL_DIR}/.staging" prev name restored
+    rm -rf -- "${staging}.done"
+    for prev in "${staging}"/*.prev; do
+        [[ -e "${prev}" ]] || continue
+        name="${prev##*/}"
+        name="${name%.prev}"
+        restored=no
+        if [[ ! -e "${INSTALL_DIR}/${name}" ]] \
+           || mv "${INSTALL_DIR}/${name}" "${staging}/${name}"; then
+            if mv "${prev}" "${INSTALL_DIR}/${name}"; then
+                restored=yes
+            fi
+        fi
+        jasper_install_log \
+            "event=install.staging_rollback entry=${name} restored=${restored}"
+        [[ "${restored}" == yes ]] || return 1
+    done
+    rm -rf -- "${staging}"
+}
+
+# Install what the STAGED manifest declares, before anything in the live tree
+# moves: a dependency that will not resolve or build fails the deploy with the
+# box still on its old source and its old venv. This IS the dependency install —
+# the editable install after the publish takes --no-deps — so a manifest that is
+# unreadable, or that does not declare the extra this profile installs, fails
+# here rather than publishing a tree whose dependencies nothing resolved.
+install_staged_dependencies() {
+    local extra="$1" staging="${INSTALL_DIR}/.staging"
+    shift
+    "${INSTALL_DIR}/.venv/bin/python" - "${staging}/pyproject.toml" \
+        "${extra}" >"${staging}/.deps.txt" <<'PY' &&
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as handle:
+    project = tomllib.load(handle)["project"]
+optional = project.get("optional-dependencies", {})
+if not optional.get(sys.argv[2]):
+    raise SystemExit(f"manifest declares no {sys.argv[2]} extra")
+print("\n".join(project.get("dependencies", []) + optional[sys.argv[2]]))
+PY
+    "${INSTALL_DIR}/.venv/bin/pip" install "$@" -r "${staging}/.deps.txt"
+}
+
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     ensure_state_dir
@@ -195,18 +277,20 @@ install_jasper() {
         return 1
     fi
 
-    rsync -a --delete \
+    local staging="${INSTALL_DIR}/.staging" extra=full
+    stage_install_tree
+    rsync -a --link-dest="${INSTALL_DIR}" \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \
         --exclude='build' --exclude='*.egg-info' \
         "${REPO_DIR}/jasper" "${REPO_DIR}/jasper_aec3" \
         "${REPO_DIR}/pyproject.toml" \
-        "${INSTALL_DIR}/"
-    install -d -m 0755 "${INSTALL_DIR}/experiments"
-    rsync -a --delete \
+        "${staging}/"
+    install -d -m 0755 "${staging}/experiments"
+    rsync -a --link-dest="${INSTALL_DIR}/experiments" \
         --exclude='__pycache__' --exclude='*.pyc' \
         "${REPO_DIR}/experiments/usb-turntable" \
-        "${INSTALL_DIR}/experiments/"
+        "${staging}/experiments/"
 
     # The three operator docs (ADR-0204 tier 2): methodology, runbook and
     # doctrine load on demand from the box rather than riding in an agent's
@@ -215,12 +299,12 @@ install_jasper() {
     # of widening this profile's rsync to the whole tree, which would also
     # ship the dev-process corpus (ADRs, research, historical/) this profile
     # has never installed.
-    install -d -m 0755 "${INSTALL_DIR}/docs"
+    install -d -m 0755 "${staging}/docs"
     install -m 0644 \
         "${REPO_DIR}/docs/tuning-methodology.md" \
         "${REPO_DIR}/docs/tuning-operator-runbook.md" \
         "${REPO_DIR}/docs/measurement-loop-doctrine.md" \
-        "${INSTALL_DIR}/docs/"
+        "${staging}/docs/"
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
@@ -262,7 +346,10 @@ install_jasper() {
     "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
 
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"
+    install_staged_dependencies "${extra}" "${pip_constraints[@]}"
+    publish_staged_install_tree
+    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" --no-deps \
+        -e "${INSTALL_DIR}[${extra}]"
 
     # jasper_aec3 — pybind11 bindings for WebRTC AEC3. Two engines:
     #   - _aec3      → links against Debian Trixie's apt-installed
@@ -439,7 +526,9 @@ install_streambox_jasper() {
     # Build manifest is written as the FINAL mutation in main(), not here —
     # see install_jasper's note and write_build_manifest for why (ADR-0172).
 
-    rsync -a --delete \
+    local staging="${INSTALL_DIR}/.staging" extra=streambox
+    stage_install_tree
+    rsync -a --link-dest="${INSTALL_DIR}" \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \
         --exclude='build' --exclude='*.egg-info' \
@@ -447,7 +536,7 @@ install_streambox_jasper() {
         "${REPO_DIR}/pyproject.toml" \
         "${REPO_DIR}/README.md" \
         "${REPO_DIR}/docs" \
-        "${INSTALL_DIR}/"
+        "${staging}/"
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
@@ -462,8 +551,10 @@ install_streambox_jasper() {
         echo "  applying Pi-generated pip constraints: ${constraints_file}"
         pip_constraints=(-c "${constraints_file}")
     fi
-    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
-        -e "${INSTALL_DIR}[streambox]"
+    install_staged_dependencies "${extra}" "${pip_constraints[@]}"
+    publish_staged_install_tree
+    "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" --no-deps \
+        -e "${INSTALL_DIR}[${extra}]"
 
     local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
