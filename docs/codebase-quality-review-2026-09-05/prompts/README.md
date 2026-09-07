@@ -56,7 +56,7 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | **P6 done** (handoff #4387: 14 PRs, net −4,246). Nothing queued; the account's weekly budget is nearly spent | P2 round 2 (#4194: wave A on `main` bar row 8; wave B running; first the ADR-0248 renumber; row 12 = the Cargo workspace, offered) **and** P5 structure #4199 (executing; five PRs open; finishes #4354 as the resolver reshape) | **Two sessions.** P11 web UI #4212 (plan triaged 05:20 UTC; **silent since 04:14, check the session**) **and** P3 resilience #4195 (the P9 session rolled on at 12:30 UTC; **P9 done**, handoff #4385; first act: deploy `main` to jts3 and jts4) |
+| 1 | **P6 done** (handoff #4387: 14 PRs, net −4,246). Nothing queued; the account's weekly budget is nearly spent | P2 round 2 (#4194: wave A on `main` bar row 8; wave B running; first the ADR-0248 renumber; row 12 = the Cargo workspace, offered) **and** P5 structure #4199 (executing; five PRs open; finishes #4354 as the resolver reshape; confirmed on Dip, the same environment as the coordinator) | **Two sessions.** P11 web UI #4212 (plan triaged 05:20 UTC; **silent since 04:14, check the session**) **and** P3 resilience #4195 (the P9 session rolled on at 12:30 UTC; **P9 done**, handoff #4385; first act: deploy `main` to jts3 and jts4) |
 | 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | — |
 | 3 | — | P8 docs #4202 (stale-path pass last) | — |
 
