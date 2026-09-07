@@ -83,7 +83,6 @@ HA_ENV_FILE = "/var/lib/jasper-intsecrets/home_assistant.env"
 CONVERSATION_PATH = "/api/conversation/process"
 HEALTH_PATH = "/api/"
 CONFIG_PATH = "/api/config"
-STATES_PATH = "/api/states"
 
 # httpx is imported lazily (inside the timeout helpers below and the
 # methods that actually perform I/O), never at module level: this module
@@ -537,37 +536,6 @@ class HAClient:
         except (httpx.HTTPError, ValueError) as e:
             logger.debug("ha config: %r", e)
             return None
-
-    async def list_agents(self) -> list[dict[str, str]]:
-        """Enumerate HA conversation agents via `GET /api/states` filtered
-        to entity_id starting with `conversation.`. REST-only (avoids the
-        WebSocket auth dance that `conversation/agent/list` would
-        require). Returns a list of {"entity_id", "name"} dicts."""
-        import httpx  # lazy — see module-level comment
-
-        client = await self._client()
-        try:
-            resp = await client.get(
-                self._url + STATES_PATH,
-                headers=self._headers(),
-                timeout=_health_timeout(),
-            )
-            if resp.status_code != 200:
-                return []
-            states = resp.json()
-        except (httpx.HTTPError, ValueError) as e:
-            logger.debug("ha list_agents: %r", e)
-            return []
-
-        agents: list[dict[str, str]] = []
-        for s in states or []:
-            entity_id = str(s.get("entity_id") or "")
-            if not entity_id.startswith("conversation."):
-                continue
-            attrs = s.get("attributes") or {}
-            name = str(attrs.get("friendly_name") or entity_id.split(".", 1)[-1])
-            agents.append({"entity_id": entity_id, "name": name})
-        return agents
 
 
 def build_ha_client(cfg) -> HAClient | None:

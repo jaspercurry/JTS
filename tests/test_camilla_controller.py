@@ -241,8 +241,8 @@ async def test_get_active_config_raw_none_when_no_active_config():
 
 
 async def test_get_playback_peak_all_returns_full_channel_list_untruncated():
-    # Unlike get_playback_peak (truncated/mirrored to a stereo pair via
-    # _level_pair), every channel Camilla reports passes through in order.
+    # Every channel Camilla reports passes through in order, unlike the
+    # stereo-pair truncation `_level_pair` does for the two-channel readers.
     fake = _FakeClient(playback_peak_value=[-3.0, -6.0, -9.0, -12.0])
     cam = _controller(fake)
 

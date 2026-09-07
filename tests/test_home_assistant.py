@@ -16,8 +16,7 @@ Coverage:
     rotation
   - agent_id / language pass-through in the request body
   - URL normalization (trailing slash, /api suffix)
-  - healthcheck (GET /api/), config (GET /api/config), list_agents
-    (GET /api/states with conversation.* filter)
+  - healthcheck (GET /api/), config (GET /api/config)
   - the no_valid_targets-with-speech case (success=True because the
     text is non-empty, per the multi-speaker-benign convention)
 """
@@ -663,7 +662,7 @@ async def test_language_pass_through():
     assert captured[0]["language"] == "es"
 
 
-# ---- healthcheck / config / list_agents ------------------------------------
+# ---- healthcheck / config ---------------------------------------------------
 
 async def test_healthcheck_returns_true_on_200_api_running():
     def handler(request):
@@ -733,50 +732,6 @@ async def test_config_returns_none_on_error():
     client = _client_with(handler)
     try:
         assert await client.config() is None
-    finally:
-        await client.aclose()
-
-
-async def test_list_agents_filters_conversation_domain():
-    def handler(request):
-        assert request.url.path == "/api/states"
-        return httpx.Response(200, json=[
-            {
-                "entity_id": "conversation.home_assistant",
-                "state": "2026-05-21T10:00:00+00:00",
-                "attributes": {"friendly_name": "Home Assistant"},
-            },
-            {
-                "entity_id": "conversation.openai_conversation",
-                "state": "2026-05-21T10:00:00+00:00",
-                "attributes": {"friendly_name": "OpenAI"},
-            },
-            {
-                "entity_id": "light.bedroom",  # filtered out
-                "state": "off",
-                "attributes": {"friendly_name": "Bedroom"},
-            },
-        ])
-
-    client = _client_with(handler)
-    try:
-        agents = await client.list_agents()
-    finally:
-        await client.aclose()
-
-    ids = {a["entity_id"] for a in agents}
-    assert ids == {"conversation.home_assistant", "conversation.openai_conversation"}
-    names = {a["name"] for a in agents}
-    assert names == {"Home Assistant", "OpenAI"}
-
-
-async def test_list_agents_returns_empty_on_error():
-    def handler(request):
-        return httpx.Response(500, text="boom")
-
-    client = _client_with(handler)
-    try:
-        assert await client.list_agents() == []
     finally:
         await client.aclose()
 

@@ -55,7 +55,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -111,22 +110,9 @@ class VolumeRecord:
 
 
 class VolumePersistence:
-    """Atomic on-disk persistence of speaker volume.
-
-    Writes are debounced: callers may report observed volume frequently
-    and we'll only actually hit the SD card on real changes that haven't
-    been written recently. Explicit user-initiated changes (set_volume
-    voice tool) bypass debounce via `save_now`.
-    """
+    """Atomic on-disk persistence of speaker volume."""
 
     DEFAULT_PATH = "/var/lib/jasper/speaker_volume.json"
-    # Don't write to flash more often than this in the polling path.
-    DEBOUNCE_SEC = 30.0
-    # If a polled main_volume changes by less than this from the last
-    # persisted value, treat it as noise and don't write. Keeps SD-card
-    # writes proportional to real user activity, not every drift in
-    # Camilla's reported value.
-    MIN_DELTA_DB = 0.5
 
     def __init__(self, path: str | None = None) -> None:
         self._path = Path(path or self.DEFAULT_PATH)
@@ -134,8 +120,6 @@ class VolumePersistence:
         self._operation_lock_path = self._path.with_name(
             f".{self._path.name}.operation.lock",
         )
-        self._last_written_db: float | None = None
-        self._last_written_at_mono: float = 0.0
         # In-memory copy of all persisted fields, so we can write the
         # full record whenever any single field changes (avoids losing
         # one field when only another updates).
@@ -303,44 +287,6 @@ class VolumePersistence:
         with self._state_update():
             self._current_main_volume_db = float(main_volume_db)
             self._write_full()
-        self._last_written_db = self._current_main_volume_db
-        self._last_written_at_mono = time.monotonic()
-
-    def maybe_save(self, main_volume_db: float) -> bool:
-        """Debounced main_volume write — for poll-driven detection of
-        external changes (mpc, hardware knob, etc). Returns True if
-        we wrote.
-
-        Refreshes from disk before writing so the file's
-        listening_level + last_used_at fields (which might have been
-        updated by another process — e.g. jasper-control via remote)
-        aren't trampled by this process's stale in-memory state.
-        Only main_volume_db is treated as owned by this writer."""
-        db = float(main_volume_db)
-        now = time.monotonic()
-        last_db = self._last_written_db
-        if last_db is not None:
-            if abs(db - last_db) < self.MIN_DELTA_DB:
-                return False
-            if now - self._last_written_at_mono < self.DEBOUNCE_SEC:
-                return False
-        with self._state_update():
-            self._current_main_volume_db = db
-            self._write_full()
-        self._last_written_db = db
-        self._last_written_at_mono = now
-        return True
-
-    def save_pre_mute_level(self, level: int | None) -> None:
-        """Persist the pre-mute level (or clear it with None).
-
-        Compatibility wrapper for callers that predate transition tokens.
-        VolumeCoordinator uses ``save_mute_state`` so the latch and token land
-        atomically.
-        """
-        with self._state_update():
-            token = self._current_mute_token if level is not None else None
-            self._save_mute_state_locked(level, token)
 
     def save_mute_state(
         self,
