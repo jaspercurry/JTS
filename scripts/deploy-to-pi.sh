@@ -603,10 +603,39 @@ EOF
     exit 1
 }
 
-# Same bound as install.sh's run_doctor_summary. See ADR-0242.
+# The mic/AEC reconciler queues its voice restart with --no-block and
+# nothing else waits for it, so the doctor can reach a unit still in
+# `activating` and fail the row for a start that was going to finish.
+# Remove this wait when that restart stops being --no-block, or when the
+# doctor waits for activating units itself.
+SETTLE_POLL_INTERVAL_SEC=3
+SETTLE_POLL_CEILING_SEC=60
+wait_for_units_settled() {
+    local waited=0 settled=no activating
+    while :; do
+        activating="$(ssh_remote "systemctl list-units --state=activating \
+--plain --no-legend 'jasper-*'" 2>/dev/null || true)"
+        if [[ -z "${activating//[[:space:]]/}" ]]; then
+            settled=yes
+            break
+        fi
+        if (( waited >= SETTLE_POLL_CEILING_SEC )); then
+            break
+        fi
+        sleep "$SETTLE_POLL_INTERVAL_SEC"
+        waited=$(( waited + SETTLE_POLL_INTERVAL_SEC ))
+    done
+    if (( waited > 0 )); then
+        echo "  event=deploy.settle_wait seconds=${waited} settled=${settled}"
+    fi
+}
+
+# Same bound as install.sh's run_doctor_summary, whose own run stays
+# advisory. See ADR-0242.
 gate_core_health() {
-    echo "==> Post-deploy core health (jasper-doctor --core; advisory)"
+    echo "==> Post-deploy core health (jasper-doctor --core)"
     local rc=0
+    wait_for_units_settled
     run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
 -p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" || rc=$?
     [[ "${rc}" == "0" ]] || echo "  event=deploy.core_health rc=${rc}"
@@ -1099,7 +1128,8 @@ fi
 verify_manifest_advanced
 HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
-gate_core_health || true  # advisory; removal condition in ADR-0242
+HEALTH_RC=0
+gate_core_health || HEALTH_RC=$?
 if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
     report_oom_collateral "$HEALTH_START_EPOCH"
 fi
@@ -1116,6 +1146,7 @@ if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
     echo "─────────────────────────────────────────────────────────────" >&2
     exit 1
 fi
+[[ "$HEALTH_RC" == "0" ]] || exit "$HEALTH_RC"
 
 finish_airplay_health_maintenance
 cleanup_remote_facts

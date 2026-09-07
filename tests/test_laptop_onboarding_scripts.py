@@ -189,6 +189,13 @@ case "$cmd" in
     fi
     printf '\nJTS_EOT'
     ;;
+  *--state=activating*)
+    polls=$(( $(cat "$FAKE_SETTLE_POLLS" 2>/dev/null || printf 0) + 1 ))
+    printf '%s\n' "$polls" > "$FAKE_SETTLE_POLLS"
+    if (( polls <= ${FAKE_ACTIVATING_POLLS:-0} )); then
+      printf '%s\n' 'jasper-voice.service loaded activating start running'
+    fi
+    ;;
   *jasper-doctor*)
     exit "${FAKE_DOCTOR_RC:-0}"
     ;;
@@ -311,6 +318,7 @@ class FakeRemote:
                 "FAKE_FACTS_DIR": str(self.tmp / ".jts-deploy-facts.fake"),
                 "FAKE_INSTALL_LOG": str(self.tmp / ".jts-install.log"),
                 "FAKE_INSTALL_POLLS": str(self.tmp / "install-polls"),
+                "FAKE_SETTLE_POLLS": str(self.tmp / "settle-polls"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
         )
@@ -979,11 +987,39 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertLessEqual(len(polls), 2)
         self.assertNotIn("==> Done.", combined)
 
-    def test_a_red_core_health_result_does_not_fail_the_deploy(self):
-        """The post-deploy `jasper-doctor --core` gate is advisory.
+    def test_the_deploy_exit_code_carries_the_core_health_verdict(self):
+        """The post-deploy `jasper-doctor --core` run gates the deploy:
+        its exit code is the deploy's, and only a green one reaches the
+        closing line."""
+        for doctor_rc in ("0", "1"):
+            with self.subTest(doctor_rc=doctor_rc):
+                fake = FakeRemote(self)
+                result = self.run_deploy(
+                    fake,
+                    env_local=None,
+                    PI_HOST="jts3.local",
+                    PI_USER="pi",
+                    JASPER_HOSTNAME="jts3.local",
+                    FAKE_DOCTOR_RC=doctor_rc,
+                )
 
-        Removal condition: flip the expected rc to 1 when the swallow at
-        the gate_core_health call site goes (ADR-0242).
+                calls = fake.calls()
+                combined = result.stdout + result.stderr
+                self.assertEqual(result.returncode, int(doctor_rc), combined)
+                self.assertEqual("==> Done." in combined, doctor_rc == "0")
+                self.assertIn("jasper-doctor\\ --core", calls)
+                # The remote run carries install.sh's bound. See ADR-0242.
+                self.assertIn("systemd-run", calls)
+                self.assertIn("MemoryMax=96M", calls)
+                self.assertIn("RuntimeMaxSec=60", calls)
+
+    def test_core_health_waits_out_activating_units_before_judging(self):
+        """The reconciler's --no-block voice restart is still in flight
+        when the doctor would otherwise read the unit, and an
+        `activating` unit fails its runtime-state row. The doctor runs
+        only after the Pi reports nothing activating.
+
+        Removal condition: delete with the wait it pins.
         """
         fake = FakeRemote(self)
         result = self.run_deploy(
@@ -992,16 +1028,19 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_DOCTOR_RC="1",
+            FAKE_ACTIVATING_POLLS="2",
         )
 
-        calls = fake.calls()
+        calls = fake.calls().replace("\\", "").splitlines()
+        settle = [i for i, c in enumerate(calls) if "--state=activating" in c]
+        doctor = [i for i, c in enumerate(calls) if "jasper-doctor" in c]
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("jasper-doctor\\ --core", calls)
-        # The remote run carries install.sh's bound. See ADR-0242.
-        self.assertIn("systemd-run", calls)
-        self.assertIn("MemoryMax=96M", calls)
-        self.assertIn("RuntimeMaxSec=60", calls)
+        self.assertEqual(len(settle), 3)
+        self.assertEqual(len(doctor), 1)
+        self.assertGreater(doctor[0], settle[-1])
+        self.assertRegex(
+            result.stdout, r"event=deploy\.settle_wait seconds=\d+ settled=yes"
+        )
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)
