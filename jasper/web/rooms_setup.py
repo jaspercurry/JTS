@@ -1697,58 +1697,71 @@ def _set_member_trim(handler: BaseHTTPRequestHandler) -> None:
     _set_pair_balance(handler, parsed)
 
 
-def _make_handler():
-    """Build the request handler class. No state paths are captured here, so
-    every request re-reads mDNS, grouping and peering.env."""
+def _get_rooms_json(handler: BaseHTTPRequestHandler) -> None:
+    _send_json(handler, _build_rooms_payload())
 
-    class _Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):  # noqa: ANN001, A003
-            logger.info("rooms-wizard: " + fmt, *args)
 
-        def do_GET(self):  # noqa: N802
-            if self.path == "/" or self.path.startswith("/?"):
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(self, _render_page(csrf_token=ctx["csrf_token"]))
+# do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+# (exact path -> handler callable) — module-level (not class attributes)
+# so the tables resolve the same way whether `self` is a real _Handler
+# instance or the tests' socketless FakeHandler stand-in. "/" is
+# special-cased ahead of the GET table (it also matches "/?<query>").
+# ORDERING IS LOAD-BEARING: each method recognizes its route first, so
+# an unknown path 404s before the read/CSRF guard runs.
+_GET_ROUTES = {
+    "/rooms.json": _get_rooms_json,
+}
+_POST_ROUTES = {
+    "/peering": _save_peering,
+    "/bond": _save_bond,
+    "/unbond": _unbond,
+    "/swap": _swap_channels,
+    "/trim": _set_member_trim,
+}
+
+
+class _Handler(BaseHTTPRequestHandler):
+    """No state paths are captured here, so every request re-reads mDNS,
+    grouping and peering.env."""
+
+    def log_message(self, fmt, *args):  # noqa: ANN001, A003
+        logger.info("rooms-wizard: " + fmt, *args)
+
+    def do_GET(self):  # noqa: N802
+        if self.path == "/" or self.path.startswith("/?"):
+            if not guard_read_request(self):
                 return
-            if self.path == "/rooms.json":
-                if not guard_read_request(self):
-                    return
-                _send_json(self, _build_rooms_payload())
-                return
+            ctx = begin_request(self)
+            send_html_response(self, _render_page(csrf_token=ctx["csrf_token"]))
+            return
+        handler_fn = _GET_ROUTES.get(self.path)
+        if handler_fn is None:
             self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
+            return
+        if not guard_read_request(self):
+            return
+        handler_fn(self)
 
-        def do_POST(self):  # noqa: N802
-            # Route-check BEFORE the CSRF guard (project convention): a bogus
-            # path 404s without revealing CSRF state.
-            if self.path not in (
-                "/peering",
-                "/bond",
-                "/unbond",
-                "/swap",
-                "/trim",
-            ):
-                self.send_response(HTTPStatus.NOT_FOUND)
-                self.end_headers()
-                return
-            # JSON fetch POST: guard_mutating_request checks the Host/Origin
-            # and the X-CSRF-Token header (no form). Mirrors system_setup.
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            if self.path == "/bond":
-                _save_bond(self)
-            elif self.path == "/unbond":
-                _unbond(self)
-            elif self.path == "/swap":
-                _swap_channels(self)
-            elif self.path == "/trim":
-                _set_member_trim(self)
-            else:
-                _save_peering(self)
+    def do_POST(self):  # noqa: N802
+        # Route-check BEFORE the CSRF guard (project convention): a bogus
+        # path 404s without revealing CSRF state.
+        handler_fn = _POST_ROUTES.get(self.path)
+        if handler_fn is None:
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.end_headers()
+            return
+        # JSON fetch POST: guard_mutating_request checks the Host/Origin
+        # and the X-CSRF-Token header (no form). Mirrors system_setup.
+        if not guard_mutating_request(self):
+            reject_csrf(self)
+            return
+        handler_fn(self)
 
+
+def _make_handler():
+    """Return the request handler class (kept as a function for the
+    existing call convention; _Handler captures no per-call state)."""
     return _Handler
 
 

@@ -416,6 +416,102 @@ def _index_html(
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+    # (exact path -> handler callable). The tables stay local to this
+    # closure (rather than module-level) because the handlers close over
+    # `cfg`, same as the rest of this function always has.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        ctx = begin_request(handler)
+        state = read_state(cfg["state_path"])
+        send_html_response(
+            handler,
+            _index_html(
+                current_name=state.name,
+                current_room=state.room,
+                hostname=resolve_hostname(),
+                csrf_token=ctx["csrf_token"],
+                status_msg=ctx["flash"],
+            ),
+        )
+
+    def _post_save(handler: BaseHTTPRequestHandler, form: dict[str, str]) -> None:
+        name = form.get("name", "")
+        room = form.get("room", "")
+        page = functools.partial(
+            _index_html,
+            current_name=name,
+            current_room=room,
+            hostname=resolve_hostname(),
+        )
+
+        try:
+            requested = validate_name(name)
+            # Room is optional; "" is a valid "unset" answer, not an error.
+            requested_room = validate_room(room)
+        except SpeakerNameError as e:
+            send_rejected_form(handler, page, flash=str(e))
+            return
+
+        state = read_state(cfg["state_path"])
+        current = state.name
+        if requested == current and requested_room == state.room:
+            send_see_other(handler, "./", flash="Name unchanged.")
+            return
+
+        # Conflict-check only the renderer-visible name. The room label
+        # is local-only (no AirPlay/Bluetooth collision), so a room-only
+        # edit skips the network probe.
+        if requested != current:
+            conflicts = _find_conflicts(requested)
+            if conflicts:
+                log_event(
+                    logger,
+                    "speaker_name.conflict",
+                    requested=repr(requested),
+                    conflicts=",".join(
+                        f"{c.protocol}:{c.detail}" for c in conflicts
+                    ),
+                )
+                send_rejected_form(
+                    handler, page, flash=_format_conflicts(conflicts),
+                )
+                return
+
+        try:
+            saved = write_state(
+                requested,
+                requested_room,
+                path=cfg["state_path"],
+                mode=0o644,
+            )
+        except (OSError, SpeakerNameError) as e:
+            logger.exception("speaker name save failed")
+            send_rejected_form(handler, page, flash=f"Could not save: {e}")
+            return
+
+        log_event(
+            logger,
+            "speaker_name.save",
+            previous=repr(current),
+            requested=repr(requested),
+            saved=repr(saved),
+            room=repr(requested_room),
+        )
+        sources_ok = _apply_name(saved, name_changed=(saved != current))
+        if sources_ok:
+            flash = (
+                f'Saved. Speaker renamed to "{saved}". Services restarting.'
+            )
+        else:
+            flash = (
+                f'Saved the name "{saved}", but some audio sources could '
+                "not restart. Try again or check System status."
+            )
+        send_see_other(handler, "./", flash=flash)
+
+    _GET_ROUTES = {"/": _get_index}
+    _POST_ROUTES = {"/save": _post_save}
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
@@ -423,108 +519,26 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                state = read_state(cfg["state_path"])
-                send_html_response(
-                    self,
-                    _index_html(
-                        current_name=state.name,
-                        current_room=state.room,
-                        hostname=resolve_hostname(),
-                        csrf_token=ctx["csrf_token"],
-                        status_msg=ctx["flash"],
-                    ),
-                )
+            handler_fn = _GET_ROUTES.get(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            if not guard_read_request(self):
+                return
+            handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path != "/save":
+            handler_fn = _POST_ROUTES.get(path)
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
             if not guard_mutating_request(self, form):
                 reject_csrf(self)
                 return
-
-            name = form.get("name", "")
-            room = form.get("room", "")
-            page = functools.partial(
-                _index_html,
-                current_name=name,
-                current_room=room,
-                hostname=resolve_hostname(),
-            )
-
-            try:
-                requested = validate_name(name)
-                # Room is optional; "" is a valid "unset" answer, not an error.
-                requested_room = validate_room(room)
-            except SpeakerNameError as e:
-                send_rejected_form(self, page, flash=str(e))
-                return
-
-            state = read_state(cfg["state_path"])
-            current = state.name
-            if requested == current and requested_room == state.room:
-                send_see_other(self, "./", flash="Name unchanged.")
-                return
-
-            # Conflict-check only the renderer-visible name. The room label
-            # is local-only (no AirPlay/Bluetooth collision), so a room-only
-            # edit skips the network probe.
-            if requested != current:
-                conflicts = _find_conflicts(requested)
-                if conflicts:
-                    log_event(
-                        logger,
-                        "speaker_name.conflict",
-                        requested=repr(requested),
-                        conflicts=",".join(
-                            f"{c.protocol}:{c.detail}" for c in conflicts
-                        ),
-                    )
-                    send_rejected_form(
-                        self, page, flash=_format_conflicts(conflicts),
-                    )
-                    return
-
-            try:
-                saved = write_state(
-                    requested,
-                    requested_room,
-                    path=cfg["state_path"],
-                    mode=0o644,
-                )
-            except (OSError, SpeakerNameError) as e:
-                logger.exception("speaker name save failed")
-                send_rejected_form(self, page, flash=f"Could not save: {e}")
-                return
-
-            log_event(
-                logger,
-                "speaker_name.save",
-                previous=repr(current),
-                requested=repr(requested),
-                saved=repr(saved),
-                room=repr(requested_room),
-            )
-            sources_ok = _apply_name(saved, name_changed=(saved != current))
-            if sources_ok:
-                flash = (
-                    f'Saved. Speaker renamed to "{saved}". Services restarting.'
-                )
-            else:
-                flash = (
-                    f'Saved the name "{saved}", but some audio sources could '
-                    "not restart. Try again or check System status."
-                )
-            send_see_other(self, "./", flash=flash)
+            handler_fn(self, form)
 
     return Handler
 
