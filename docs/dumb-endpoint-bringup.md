@@ -392,7 +392,7 @@ Target shape:
   installation, and installs the core Python package, the managed
   snapclient unit, and the ALSA userland bits. `deploy/install.sh --dry-run`
   must show a brain-free plan under the endpoint profile. The
-  `streambox` profile has its own dry-run text and tests: it installs
+  `streambox` profile has its own `INSTALL_STEPS` rows and tests: it installs
   renderers, fan-in/outputd, CamillaDSP, source web, sound web, and
   streambox nginx, while omitting voice/wake/mic/AEC. Streambox also
   installs profile-scoped `jasper-web` service/socket templates under the
@@ -438,10 +438,10 @@ rejected on the strength of them:
   extras such as `spotipy`, `zeroconf`, `evdev`, and `dbus_next`.
 - **Install-plan guard**: the endpoint profile's `--dry-run` plan
   contains no cargo builds, no AEC3 build, no renderer source builds,
-  and no voice/web units. The streambox profile's dry-run plan contains
-  the local renderer/DSP graph and explicitly excludes voice/wake/mic/AEC.
+  and no voice/web units. The streambox profile's dry-run plan lists the
+  local renderer/DSP step names and none of the full-tier-only ones.
   Extend the existing dry-run plan test surface
-  (`tests/test_install_plan_covers_main.py` is the pattern).
+  (`tests/test_install_profile_tiers.py` is the pattern).
 - **Full-profile regression guard**: with the profile env unset, the
   `--dry-run` plan is byte-identical to today's — the endpoint tier
   must be impossible to detect from a normal speaker's install. This

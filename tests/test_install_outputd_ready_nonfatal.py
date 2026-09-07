@@ -120,41 +120,6 @@ def test_require_outputd_ready_is_owned_by_profile_runtime_starters():
         )
 
 
-def test_recovery_surface_is_wired_after_systemd_units_in_main():
-    """Documents *why* non-fatal matters: the operator's recovery surface
-    (nginx + the doctor summary) is wired in `main()` AFTER
-    `install_systemd_units` — which is where the outputd probe lives. If the
-    probe were fatal, a transient miss would skip all of these."""
-    text = installer_text()
-    m = re.search(r"^main\(\)\s*\{\n(.*?)\n\}", text, re.S | re.M)
-    assert m, "could not locate main() body in install.sh"
-    body = m.group(1)
-
-    # Skip past the streambox branch so the calls below resolve in the full
-    # install branch (which owns install_systemd_units / install_nginx_site).
-    streambox_branch = body.find('if [[ "${install_profile}" == "streambox" ]]')
-    assert streambox_branch != -1, "could not locate streambox branch in main()"
-    body = body[streambox_branch:]
-    full_branch_start = body.find("install_systemd_units")
-    assert full_branch_start != -1, "could not locate full install branch in main()"
-    body = body[full_branch_start:]
-
-    def call_pos(name: str) -> int:
-        i = body.find(name)
-        assert i != -1, f"{name} is not called in main()"
-        return i
-
-    units = call_pos("install_systemd_units")
-    assert units < call_pos("install_nginx_site"), (
-        "install_nginx_site must run after install_systemd_units so the web UI "
-        "exists even if the outputd probe failed"
-    )
-    assert units < call_pos("run_doctor_summary"), (
-        "run_doctor_summary must run after install_systemd_units so a genuine "
-        "outputd failure is surfaced through the doctor"
-    )
-
-
 def test_the_readiness_probe_makes_no_content_lane_claim():
     """#2285 P2 (A6/A8 fallout): the probe carried a SECOND copy of doctor's rule.
 

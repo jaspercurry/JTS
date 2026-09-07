@@ -24,7 +24,7 @@ from jasper.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_B_CONTENT_FILE,
 )
-from tests.install_surface import INSTALL_LIB_DIR, INSTALL_SH
+from tests.install_surface import INSTALL_LIB_DIR
 
 
 RING_PLATFORM_SH = INSTALL_LIB_DIR / "ring-platform.sh"
@@ -35,12 +35,6 @@ def _function_body(text: str, name: str) -> str:
     match = re.search(rf"^{name}\(\)\s*\{{\n(?P<body>.*?)\n\}}", text, re.S | re.M)
     assert match is not None, f"could not locate {name}()"
     return match.group("body")
-
-
-def _call_pos(body: str, name: str) -> int:
-    match = re.search(rf"^\s*{re.escape(name)}(?:\s|$)", body, re.M)
-    assert match is not None, f"{name} is not called"
-    return match.start()
 
 
 def test_ring_platform_clears_owned_rings_after_installing_assets(
@@ -89,27 +83,6 @@ install_jts_ring_platform
         assert fnmatch(ring, lane_glob)
         assert not fnmatch(f"{ring}.writer.lock", lane_glob)
         assert not fnmatch(f"{ring}.open.lock", lane_glob)
-
-
-def test_full_install_runs_ring_platform_before_systemd_units():
-    body = _function_body(INSTALL_SH.read_text(encoding="utf-8"), "main")
-
-    full_start = body.index("    fi\n    require_root")
-    full_body = body[full_start:]
-    assert _call_pos(full_body, "install_jts_ring_platform") < _call_pos(
-        full_body, "install_systemd_units"
-    )
-
-
-def test_streambox_install_runs_ring_platform_before_streambox_systemd_units():
-    body = _function_body(INSTALL_SH.read_text(encoding="utf-8"), "main")
-
-    streambox_start = body.index('if [[ "${install_profile}" == "streambox" ]]')
-    streambox_end = body.index("    fi\n    require_root", streambox_start)
-    streambox_body = body[streambox_start:streambox_end]
-    assert _call_pos(streambox_body, "install_jts_ring_platform") < _call_pos(
-        streambox_body, "install_streambox_systemd_units"
-    )
 
 
 def _assert_camilla_restart_stays_after_dsp_reconcile(function_name: str):

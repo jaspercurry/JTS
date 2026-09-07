@@ -194,8 +194,5 @@ def test_install_sh_installs_the_rule():
         "install.sh must install the rule into /etc/polkit-1/rules.d"
     )
     assert "49-jasper-control.rules" in sh
-    # Called in BOTH profiles (full + streambox both run jasper-control).
-    assert sh.count("install_jasper_control_polkit") >= 3, (
-        "install_jasper_control_polkit must be defined and called in both the "
-        "full and streambox main() paths"
-    )
+    # That it RUNS on both profiles (both tiers run jasper-control) is pinned
+    # by _ON_EVERY_PROFILE in test_install_profile_tiers.

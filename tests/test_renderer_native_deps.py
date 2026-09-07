@@ -5,7 +5,6 @@
 """One renderer-native package owner shared by both install profiles."""
 
 from pathlib import Path
-import re
 import shlex
 import subprocess
 
@@ -55,31 +54,3 @@ _install_renderer_native_deps
     )
     argv = shlex.split(result.stdout.strip())
     assert argv == ["install", "-y", "--no-install-recommends", *SHARED_PACKAGES]
-
-
-def test_dry_run_plans_assign_shared_packages_to_the_shared_owner() -> None:
-    source = INSTALL.read_text()
-    plans = (
-        (
-            "print_install_plan",
-            "Core runtime/build packages:",
-            "Renderer and Bluetooth/AirPlay build packages:",
-        ),
-        (
-            "print_streambox_install_plan",
-            "Streambox renderer/DSP stack runtime/build packages:",
-            "Renderer/Bluetooth/AirPlay packages and build inputs:",
-        ),
-    )
-    for function, profile_heading, shared_heading in plans:
-        body = _function_body(source, function)
-        profile_section = body.split(profile_heading, 1)[1].split(shared_heading, 1)[0]
-        shared_section = body.split(shared_heading, 1)[1].split("\n\n", 1)[0]
-        for package in SHARED_PACKAGES:
-            pattern = rf"(?<![\w-]){re.escape(package)}(?![\w-])"
-            assert not re.search(pattern, profile_section), (
-                f"{function} profile package section duplicates {package}"
-            )
-            assert re.search(pattern, shared_section), (
-                f"{function} shared package section omits {package}"
-            )
