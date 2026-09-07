@@ -601,7 +601,7 @@ def _name_env(monkeypatch, *, active: bool, speaker: str = "Kitchen"):
     monkeypatch.setattr(
         os, "uname", lambda: type("U", (), {"release": _KVER})()
     )
-    monkeypatch.setattr("jasper.speaker_name.runtime_name", lambda: speaker)
+    monkeypatch.setattr("jasper.identity.speaker_name.runtime_name", lambda: speaker)
 
 
 def _write_override(root: Path, body: bytes, marker: str | None) -> None:

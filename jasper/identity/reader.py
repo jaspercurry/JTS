@@ -9,17 +9,17 @@ mDNS hostname, and stable peer_id — so consumers (`/sound/pair/`,
 `control_advert`, future bond/grouping code) stop reconstructing identity
 ad-hoc and drifting from each other.
 
-Room precedence is the point: the room now lives in the *identity home*
-(`jasper.speaker_name`), so that wins. A legacy fallback to peering's own
-`JASPER_PEER_ROOM` / `peering.config.default_room()` keeps `/sound/pair/`
-consistent on installs that still carry a pre-identity peering room but
-haven't moved it into the identity home yet.
+Room precedence is the point: the room lives in the identity home
+(:mod:`jasper.identity.speaker_name`), so that wins. A legacy fallback to
+peering's own `JASPER_PEER_ROOM` keeps `/sound/pair/` consistent on installs
+that still carry a pre-identity peering room but haven't moved it into the
+identity home yet.
 
 ``read_identity()`` is TOTAL: every field has a safe fallback and the
 function never raises, so an unreadable file or missing env degrades to a
 sensible default rather than breaking a caller's render path.
 
-Scope split with :mod:`jasper.identity_state`: this module reads the
+Scope split with :mod:`jasper.identity.identity_state`: this module reads the
 *intended* identity (display name, room, configured hostname, stable
 peer_id). ``identity_state`` reads the *observed* network identity —
 what Avahi actually advertises after RFC 6762 collision renames, as
@@ -38,15 +38,16 @@ import os
 from dataclasses import dataclass
 
 from . import identity_state, speaker_name
-from .net.http_security import DEFAULT_MANAGEMENT_HOSTNAME
-from .peering import config as peering_config
+from ..net.http_security import DEFAULT_MANAGEMENT_HOSTNAME
 
 logger = logging.getLogger(__name__)
 
-# Stable per-install peer identifier, written once by the peering layer
-# (jasper/peering/config.py:_ensure_peer_id). We only ever READ it here —
-# generating it is peering's job; identity is a reader, not a writer.
-PEER_ID_FILE = peering_config.PEER_ID_FILE
+# Stable per-install peer identifier — a machine-id equivalent, never
+# user-edited. Lives in /var/lib/jasper so it is scoped to this Pi and
+# survives reboots. Generating it is peering's job
+# (jasper/peering/config.py:_ensure_peer_id); identity owns the field's
+# meaning and reads it, so the path is spelled here.
+PEER_ID_FILE = "/var/lib/jasper/peer_id"
 
 # Default mDNS hostname when neither the environment nor identity.env names
 # one. The same name the management-host allowlist defaults to, from its
@@ -86,9 +87,9 @@ def _read_peer_id(path: str | None = None) -> str:
 def _resolve_room() -> str:
     """Room with identity-home-wins precedence (never raises).
 
-      1. identity home — jasper.speaker_name.runtime_room()
+      1. identity home — speaker_name.runtime_room()
       2. legacy peering env — JASPER_PEER_ROOM
-      3. peering's hostname-derived default — default_room()
+      3. hostname-derived default — speaker_name.default_room()
     """
     try:
         room = speaker_name.runtime_room()
@@ -102,7 +103,7 @@ def _resolve_room() -> str:
         return legacy
 
     try:
-        return peering_config.default_room()
+        return speaker_name.default_room()
     except Exception:  # noqa: BLE001
         logger.debug("identity: default_room failed", exc_info=True)
         return ""
@@ -128,7 +129,7 @@ def resolve_hostname() -> str:
     dev checkout): identity.env is absent, step 1 yields "", and a
     daemon still gets its unit's ``EnvironmentFile=`` value.
 
-    Read through :func:`jasper.identity_state.configured_hostname` rather
+    Read through :func:`jasper.identity.identity_state.configured_hostname` rather
     than by spelling the file's key here: ``identity_state`` owns
     identity.env's vocabulary and its stat-keyed cache, and it is total,
     so this stays total and cheap enough to call per URL built.
@@ -168,7 +169,7 @@ def speaker_url(path: str) -> str:
 def read_identity() -> SpeakerIdentity:
     """Resolve this speaker's identity. TOTAL — never raises.
 
-    name     — jasper.speaker_name.runtime_name() (env → state → "JTS")
+    name     — speaker_name.runtime_name() (env → state → "JTS")
     room     — see _resolve_room
     hostname — see resolve_hostname
     peer_id  — /var/lib/jasper/peer_id stripped, "" on any failure

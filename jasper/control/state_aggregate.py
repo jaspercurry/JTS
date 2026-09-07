@@ -16,7 +16,7 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
-from .. import identity_state
+from ..identity import identity_state
 from ..accessories import status as accessory_status
 from ..memory_policy import disk_usage
 from ..fanin.status import (
@@ -49,7 +49,7 @@ from ..multiroom.state import read_grouping_state
 from ..transit.state import read_state as read_transit_state
 from ..log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
-from ..speaker_name import read_state as _read_speaker_name_state
+from ..identity.speaker_name import read_state as _read_speaker_name_state
 from ..route_latency.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,

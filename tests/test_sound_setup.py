@@ -7758,7 +7758,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     the wrong speaker silently.
     """
     from jasper.active_speaker import tuning_handoff
-    from jasper.identity import DEFAULT_HOSTNAME
+    from jasper.identity.reader import DEFAULT_HOSTNAME
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     payload = tuning_handoff.build_tuning_handoff(

@@ -56,7 +56,7 @@ from jasper.active_speaker.baseline_profile import (
     baseline_profile_state_path,
     load_applied_baseline_profile_state,
 )
-from jasper.identity import read_identity
+from jasper.identity.reader import read_identity
 
 from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 

@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ..identity_state import management_read_allowed, mutating_request_allowed
+from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from .client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..fanin.latency_mode import (

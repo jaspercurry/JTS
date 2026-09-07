@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from jasper.identity import resolve_hostname
+from jasper.identity.reader import resolve_hostname
 from jasper.output_hardware import current_usb_data_role
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, network_wanted
 from jasper.usb_network import (
@@ -636,7 +636,7 @@ def check_identity_coherence() -> CheckResult:
     stopped reconciler timer via snapshot staleness."""
     from datetime import datetime, timedelta, timezone
 
-    from ... import identity_state
+    from ...identity import identity_state
 
     label = "identity coherence"
     snap = identity_state.snapshot()

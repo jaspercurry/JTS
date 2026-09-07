@@ -10,8 +10,8 @@ import urllib.request
 
 import pytest
 
-from jasper.speaker_name import read_state
-from jasper.speaker_name_discovery import NameConflict
+from jasper.identity.speaker_name import read_state
+from jasper.identity.speaker_name_discovery import NameConflict
 from jasper.web import speaker_setup
 
 from ._web_test_helpers import post_with_csrf

@@ -975,13 +975,12 @@ def test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box_because_t
     different, the state the pre-PR-6 constant comparison would have refused on
     every ring-eligible box, including jts.local and its certified USB-route
     latency artifact."""
-    import jasper.camilla_config_contract as contract
-    from jasper.fanin_coupling import RING_WIRE_FORMAT
+    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT
 
     _pin_narrow_ring_wire()
-    assert contract.DEFAULT_PLAYBACK_FORMAT == "S32_LE"
+    assert DEFAULT_PLAYBACK_FORMAT == "S32_LE"
     assert RING_WIRE_FORMAT == "S16_LE"
-    assert contract.DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
+    assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     ok, detail = ring_edge_width_ready()
     assert ok is True
     assert "S16_LE" in detail

@@ -7,7 +7,7 @@
 Avahi (the system mDNS-SD daemon installed on Pi OS by default) is the
 only mDNS responder on the host. This module renders the always-on
 `_jasper-control._tcp` advert from a template, substituting the
-speaker's user-facing display name (jasper/speaker_name.py) into a
+speaker's user-facing display name (jasper/identity/speaker_name.py) into a
 `name=` TXT record so the /sound/pair/ directory shows the same friendly
 name peers see on Spotify / AirPlay / Bluetooth / USB.
 
@@ -57,7 +57,7 @@ from __future__ import annotations
 import logging
 
 from . import avahi_service
-from ..identity import resolve_hostname
+from ..identity.reader import resolve_hostname
 from .avahi_service import RenderResult
 from ..log_event import log_event
 
@@ -93,7 +93,7 @@ def _resolve_name(name: str | None) -> str:
             # happy-path value. read_identity() is itself TOTAL; the
             # except stays as defense-in-depth so a read can never break
             # advertising.
-            from ..identity import read_identity
+            from ..identity.reader import read_identity
 
             resolved = read_identity().name
         except Exception as e:  # noqa: BLE001 — never let a read break advertising
@@ -123,7 +123,7 @@ def _resolve_peer_id() -> str:
     can never break advertising — same posture as ``_resolve_name``.
     """
     try:
-        from ..identity import read_identity
+        from ..identity.reader import read_identity
 
         return (read_identity().peer_id or "").strip()
     except Exception as e:  # noqa: BLE001 — never let a read break advertising

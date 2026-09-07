@@ -32,7 +32,7 @@ import os
 import sys
 
 from jasper.env_load import parse_env_file
-from jasper.speaker_name import initial_name_from_hostname, quote_env_value
+from jasper.identity.speaker_name import initial_name_from_hostname, quote_env_value
 
 env_path, system_hostname = sys.argv[1:]
 configured = os.environ.get("JASPER_HOSTNAME", "").strip()

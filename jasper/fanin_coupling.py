@@ -82,7 +82,7 @@ def ring_capacity_frames() -> int:
     from the DAC floor across all four components (fan-in, the ioplug, the
     conf.d render, the Camilla emitter) instead of the constant product below.
     It does not remove the clamp in
-    ``camilla_config_contract.resolve_camilla_latency_for_devices`` — it makes
+    ``camilla_latency.resolve_camilla_latency_for_devices`` — it makes
     the clamp stop biting, because a board that earns a bigger ring would then
     report one here and its floor would fit.
 
@@ -118,7 +118,7 @@ class RingCamillaGeometry(TypedDict):
 #
 # NOT the fallback for an ordinary sound/correction graph. Those carry the box's
 # own floor clamped to the ring's capacity
-# (``camilla_config_contract.resolve_camilla_latency_for_devices``), so moving
+# (``camilla_latency.resolve_camilla_latency_for_devices``), so moving
 # them onto this pair is a retune with a listening test, not a refactor.
 #
 # ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
@@ -232,6 +232,31 @@ OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
 # that followed the resolver here would refuse an arm for a wire the daemon has
 # in fact declared.
 OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
+
+# The CamillaDSP→outputd content hop's width on the snd-aloop lanes. S32_LE
+# since the wide-output-path program's flip (PR-6,
+# captures/PLAN-wide-output-path-2026-08-07.md): CamillaDSP's float math stays
+# wide all the way to outputd's i32 program spine, so the ONE deliberate output
+# quantization happens at the DAC edge, at the DAC's own declared width. At a
+# ≥24-bit edge that floor sits below the DAC's analog noise, so it stops being
+# audible at all.
+#
+# What changed at an S16 edge is WHERE that single narrowing happens, not how
+# many there are: before the flip there was already exactly one lossy narrowing
+# (CamillaDSP's S16 playback write), and outputd's widen→narrow round trip around
+# it was proven bit-exact. The flip MOVES that narrowing downstream of outputd's
+# mixing, ducking, and trim, which now do their arithmetic on full-resolution
+# content instead of on samples already quantized to 16 bits — which is what makes
+# a −18 dB tweeter trim stop costing three bits of program resolution.
+#
+# Two things must move with this value, and both are derived rather than
+# restated: ``deploy/camilladsp/outputd-cutover.yml`` carries it on BOTH ring
+# halves (since ADR-0100 the flat startup graph names ``jts_ring_capture`` and
+# ``jts_ring_playback``, and the ioplug pins the ring's own geometry), and the
+# audio-hardware reconciler emits outputd's matching
+# ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
+# :func:`content_lane_format_for_coupling`.
+DEFAULT_PLAYBACK_FORMAT = "S32_LE"
 
 # Ring B playback device. CamillaDSP writes its post-DSP stereo program to this
 # ALSA ioplug device (the WRITE direction of the same ``jts_ring`` plugin whose
@@ -437,7 +462,7 @@ def resolve_ring_wire_format(raw: str | None) -> str:
       absent key mean one thing. The default is WIDE because narrow is a width
       REGRESSION on the hop the ring replaces: the loopback CamillaDSP→outputd
       hop already carries
-      :data:`~jasper.camilla_config_contract.DEFAULT_PLAYBACK_FORMAT` (S32_LE),
+      :data:`DEFAULT_PLAYBACK_FORMAT` (S32_LE),
       so arming a ring at S16_LE would narrow a hop that was wide before the
       arm. Nothing in this repo WRITES this key — see
       :data:`RING_WIRE_FORMAT_ENV_VAR` — so an operator's ``S16_LE`` is a
@@ -911,7 +936,7 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
 
     THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is not a fact about the
     transport devices: it is resolved per graph by
-    ``camilla_config_contract.resolve_camilla_latency_for_devices`` (the box's
+    ``camilla_latency.resolve_camilla_latency_for_devices`` (the box's
     floor, clamped to :func:`ring_capacity_frames` at a ring end), and only a
     graph built end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY`
     instead.
@@ -975,10 +1000,6 @@ def content_lane_format_for_coupling() -> str:
     Callers that need the format for an arbitrary sink want
     ``jasper.camilla_config_contract`` instead.
     """
-    # Local import: this module stays stdlib-only at import time for the
-    # socket-activated web surfaces (see the module docstring).
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-
     value = capture_kwargs_for_coupling().get("playback_format")
     if isinstance(value, str) and value:
         return value

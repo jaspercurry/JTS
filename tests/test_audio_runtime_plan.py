@@ -1614,8 +1614,7 @@ def test_transport_coherence_shm_ring_format_axis_is_quiet_with_no_outputd_evide
     ``test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees`` above
     (an explicit operator narrow pin against a wide box's own declaration).
     """
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-    from jasper.fanin_coupling import RING_WIRE_FORMAT
+    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT
 
     assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     errors = transport_coherence_report(

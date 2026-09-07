@@ -93,7 +93,7 @@ from jasper.audio_measurement.measurement_geometry import (
     DeclaredGeometry,
     load_declared_geometry,
 )
-from jasper.identity import CROSSOVER_PAGE_PATH, speaker_url
+from jasper.identity.reader import CROSSOVER_PAGE_PATH, speaker_url
 
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED, answered, failed
 

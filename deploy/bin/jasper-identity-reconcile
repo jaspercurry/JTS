@@ -27,7 +27,7 @@
 # This script is the single writer of /var/lib/jasper/identity.env: a
 # small, always-fresh snapshot of the three names plus a collision flag.
 # Consumers:
-#   - jasper.identity_state.effective_hostnames extends the management-host
+#   - jasper.identity.identity_state.effective_hostnames extends the management-host
 #     allowlist behind the two HTTP guards (so a renamed speaker's UI keeps
 #     working),
 #   - /state.resilience.identity and jasper-doctor surface drift so the
@@ -231,7 +231,7 @@ TMP_FILE="${IDENTITY_FILE}.tmp"
 if ! cat > "$TMP_FILE" 2>/dev/null <<EOF
 # Written by jasper-identity-reconcile — do not edit (rewritten every run).
 # Effective network identity; consumed by
-# jasper.identity_state.effective_hostnames (management allowlist),
+# jasper.identity.identity_state.effective_hostnames (management allowlist),
 # /state.resilience.identity, and jasper-doctor.
 ${IDENTITY_BODY}
 JASPER_IDENTITY_CHECKED_AT=${CHECKED_AT}

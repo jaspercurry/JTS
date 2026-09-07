@@ -21,7 +21,7 @@ re-read wizard/reconciler-owned files fresh, never trust the
 
   * :func:`effective_hostnames` and :func:`configured_hostname` — on the
     management request path and behind every URL
-    :func:`jasper.identity.resolve_hostname` builds, so both read through
+    :func:`jasper.identity.reader.resolve_hostname` builds, so both read through
     one mtime/size-keyed cache (a ``stat()`` per call, a re-parse only
     when the reconciler rewrote the file). Both follow a rename within one
     reconciler period for readers that re-resolve per call, rather than
@@ -35,7 +35,7 @@ A missing file (fresh install before the first reconciler run, dev
 checkout) degrades to "no extra names / status=absent" — exactly the
 pre-reconciler behavior.
 
-Scope split with :mod:`jasper.identity`: that module reads the
+Scope split with :mod:`jasper.identity.reader`: that module reads the
 *intended* identity (display name, room, configured hostname, stable
 peer_id — who the speaker is supposed to be). This one reads the
 *observed* network identity (what the LAN currently resolves). The
@@ -44,7 +44,7 @@ place they meet is ``JASPER_IDENTITY_CONFIGURED_HOSTNAME``, which
 records intent rather than observation: this file is the one place a
 process can read it fresh — a CLI over ssh has no ``EnvironmentFile=``
 at all, and a daemon's copy is frozen at unit start — so
-``jasper.identity`` takes its hostname from here first.
+``jasper.identity.reader`` takes its hostname from here first.
 """
 from __future__ import annotations
 
@@ -53,8 +53,8 @@ import threading
 from collections.abc import Mapping
 from typing import Any
 
-from .env_load import parse_env_file
-from .net import http_security
+from ..env_load import parse_env_file
+from ..net import http_security
 
 DEFAULT_PATH = "/var/lib/jasper/identity.env"
 

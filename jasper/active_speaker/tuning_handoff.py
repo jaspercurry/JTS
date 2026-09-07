@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from jasper.identity import (
+from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
     SOUND_SETUP_PAGE_PATH,
     read_identity,

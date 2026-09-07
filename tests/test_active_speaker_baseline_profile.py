@@ -2853,11 +2853,9 @@ def test_ring_reemit_declares_whatever_the_resolver_answers(
     from jasper.active_speaker.baseline_profile import (
         recompose_applied_baseline_yaml,
     )
-    from jasper.camilla_config_contract import (
-        DEFAULT_PLAYBACK_FORMAT,
-        parse_camilla_devices_config,
-    )
+    from jasper.camilla_config_contract import parse_camilla_devices_config
     from jasper.fanin_coupling import (
+        DEFAULT_PLAYBACK_FORMAT,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT,
         RingWire,

@@ -19,8 +19,8 @@ from ...camilla import CamillaController, CamillaUnavailable
 from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
-    resolve_camilla_chunksize,
 )
+from ...camilla_latency import resolve_camilla_chunksize
 from ...config import Config
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ... import ring_assets

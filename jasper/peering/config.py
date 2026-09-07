@@ -26,8 +26,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-import socket
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -35,6 +33,8 @@ from typing import Mapping
 
 from jasper.atomic_io import atomic_write_text
 from jasper.env_load import read_env_file_or_warn
+from jasper.identity.reader import PEER_ID_FILE
+from jasper.identity.speaker_name import default_room
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +107,6 @@ DEFAULT_HEARTBEAT_TIMEOUT_SEC = 2.0
 # pattern). Lives in /var/lib/jasper so it survives daemon restarts and
 # package upgrades.
 PEERING_ENV_FILE = "/var/lib/jasper/peering.env"
-
-# Stable per-install peer identifier. Generated once on first install
-# (or first daemon start), persists across reboots. Never user-edited —
-# treat as a machine-id equivalent. Lives in /var/lib/jasper so it's
-# scoped to "this Pi" rather than "this user/process".
-PEER_ID_FILE = "/var/lib/jasper/peer_id"
 
 # UDS where jasper-control's peering daemon listens for voice→peering
 # arbitration requests. jasper-control runs non-root and owns
@@ -217,35 +211,6 @@ def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
     return new_id
 
 
-_ROOM_FALLBACK_RE = re.compile(r"[^a-z0-9_-]+")
-
-
-def default_room(hostname: str | None = None) -> str:
-    """Pick a sensible default room label from the system hostname.
-
-    The hostname is usually something like "jts" or "jts-bedroom"; we
-    strip the leading "jts-" if present so "jts-bedroom" → "bedroom".
-    A bare "jts" or a non-conforming hostname falls back to "default".
-    Non-mDNS-safe chars (spaces, punctuation, etc.) collapse into a
-    single dash, so "Living Room" → "living-room".
-
-    Exposed publicly so management surfaces can produce the same
-    fallback as `load_config()` without dragging the full peering
-    package into the wizard's import path.
-    """
-    raw = (hostname if hostname is not None else socket.gethostname()).lower()
-    if raw.startswith("jts-"):
-        raw = raw[4:]
-    cleaned = _ROOM_FALLBACK_RE.sub("-", raw).strip("-")
-    if not cleaned or cleaned == "jts":
-        return "default"
-    return cleaned[:32]
-
-
-# Backwards-compat alias for the historical underscore-prefixed name.
-_default_room = default_room
-
-
 def _parse_mode(raw: str) -> PeeringMode:
     val = raw.strip().lower()
     if val in PEERING_ON_VALUES:
@@ -303,7 +268,7 @@ def load_config(
         src.update(overrides)
 
     mode = _parse_mode(src.get("JASPER_PEERING", "off"))
-    room = src.get("JASPER_PEER_ROOM", "").strip() or _default_room()
+    room = src.get("JASPER_PEER_ROOM", "").strip() or default_room()
     primary = _parse_bool(src.get("JASPER_PEER_PRIMARY", "0"))
     arb_window_ms = _parse_int(
         src.get("JASPER_PEER_ARB_WINDOW_MS", ""),

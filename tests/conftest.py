@@ -360,7 +360,7 @@ def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
 def _isolate_identity_file(tmp_path_factory, monkeypatch):
     """Point the reconciler's identity snapshot at a per-test (absent) file.
 
-    ``jasper.identity.resolve_hostname`` takes its answer from the
+    ``jasper.identity.reader.resolve_hostname`` takes its answer from the
     ``JASPER_HOSTNAME`` that ``jasper-identity-reconcile`` records in
     /var/lib/jasper/identity.env before anything else, so on a real speaker
     that file — not the codified default, and not the process environment —

@@ -164,7 +164,7 @@ def test_guard_mutating_request_still_rejects_bad_token_on_allowed_host():
 def test_guards_accept_the_name_identity_env_records(monkeypatch, tmp_path, guard):
     """After an RFC 6762 collision rename the speaker answers only at the
     name the reconciler wrote to identity.env; both guards must compose
-    the allowlist through jasper.identity_state, not the static rules
+    the allowlist through jasper.identity.identity_state, not the static rules
     alone — and still refuse a foreign name."""
     identity = tmp_path / "identity.env"
     identity.write_text("JASPER_IDENTITY_AVAHI_HOSTNAME=kitchen-2.local\n")

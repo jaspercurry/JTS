@@ -252,11 +252,11 @@ def test_unset_hostname_uses_default_jts_local(template, tmp_path, monkeypatch):
 def test_none_name_reads_speaker_name_module(template, tmp_path, monkeypatch):
     """`render_control_advert()` with no name reads the canonical speaker
     display name through the single identity reader
-    (jasper.identity.read_identity().name, which IS
-    jasper.speaker_name.runtime_name today) so a name change flows through
+    (jasper.identity.reader.read_identity().name, which IS
+    jasper.identity.speaker_name.runtime_name today) so a name change flows through
     without the caller re-passing it, and control_advert is a real
     identity consumer."""
-    monkeypatch.setattr("jasper.speaker_name.runtime_name", lambda: "Living Room")
+    monkeypatch.setattr("jasper.identity.speaker_name.runtime_name", lambda: "Living Room")
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
         None, peer_id="pid-1", template=str(template), out=str(out), reload=False,
@@ -269,7 +269,7 @@ def test_none_name_reader_failure_still_advertises_identity_default(template, tm
     """If the underlying name read raises, the render must NOT propagate it
     and must still advertise a non-empty name.
 
-    The name now resolves through jasper.identity.read_identity(), which is
+    The name now resolves through jasper.identity.reader.read_identity(), which is
     TOTAL: it swallows a raising runtime_name internally and returns the
     identity default ("JTS"). So a broken read advertises "name=JTS" — a
     sensible non-empty value — rather than reaching control_advert's
@@ -279,7 +279,7 @@ def test_none_name_reader_failure_still_advertises_identity_default(template, tm
     def _boom():
         raise RuntimeError("state file unreadable")
 
-    monkeypatch.setattr("jasper.speaker_name.runtime_name", _boom)
+    monkeypatch.setattr("jasper.identity.speaker_name.runtime_name", _boom)
     monkeypatch.setenv("JASPER_HOSTNAME", "fallback.local")
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
@@ -483,7 +483,7 @@ def test_default_peer_id_reads_identity(template, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "jasper.identity.read_identity",
+        "jasper.identity.reader.read_identity",
         lambda: SimpleNamespace(peer_id="uuid-abc-123"),
     )
     out = tmp_path / "rendered.service"
@@ -501,7 +501,7 @@ def test_peer_id_reader_failure_never_breaks_advertising(template, tmp_path, mon
     def _boom():
         raise RuntimeError("peer_id unreadable")
 
-    monkeypatch.setattr("jasper.identity.read_identity", _boom)
+    monkeypatch.setattr("jasper.identity.reader.read_identity", _boom)
     out = tmp_path / "rendered.service"
     ok = ca.render_control_advert(
         "Kitchen", template=str(template), out=str(out), reload=False,

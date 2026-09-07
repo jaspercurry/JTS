@@ -26,7 +26,7 @@ from .atomic_io import locked_update_env_file, read_regular_bytes_nofollow
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source
-from .speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
+from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"

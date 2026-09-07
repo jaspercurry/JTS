@@ -26,14 +26,13 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
-    DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
-    resolve_camilla_latency_for_devices,
     resolve_enable_rate_adjust,
 )
+from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
     MONO_SUM_GAIN_DB,
     emit_gain_filter,
@@ -42,6 +41,7 @@ from jasper.camilla_emit import (
     mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import build_stereo_prefix
+from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from .profile import (
     SoundProfile,

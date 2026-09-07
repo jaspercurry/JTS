@@ -17,10 +17,10 @@ from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
-from .speaker_name import runtime_name as _speaker_runtime_name
+from .identity.speaker_name import runtime_name as _speaker_runtime_name
 from .google_creds import registry_path as google_registry_path
 from .google_oauth import resolved_google_redirect_uri
-from .identity import resolve_hostname
+from .identity.reader import resolve_hostname
 from .spotify_oauth import resolved_spotify_redirect_uri
 from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .usage import (

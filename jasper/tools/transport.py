@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ..identity import resolve_hostname
+from ..identity.reader import resolve_hostname
 from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from ..renderer import airplay_now_playing

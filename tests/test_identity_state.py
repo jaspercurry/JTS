@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.identity_state — the read side of the identity
+"""Tests for jasper.identity.identity_state — the read side of the identity
 reconciler.
 
 The writer is deploy/bin/jasper-identity-reconcile (covered by
@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-from jasper import identity_state
+from jasper.identity import identity_state
 from jasper.net import http_security
 
 

@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from jasper.speaker_name import (
+from jasper.identity.speaker_name import (
     DEFAULT_SPEAKER_NAME,
     ENV_VAR,
     ENV_VAR_ROOM,
@@ -25,7 +25,7 @@ from jasper.speaker_name import (
     validate_room,
     write_state,
 )
-from jasper.speaker_name_discovery import _display_name_candidates
+from jasper.identity.speaker_name_discovery import _display_name_candidates
 
 
 def test_speaker_name_state_positional_name_first_room_defaults_empty():

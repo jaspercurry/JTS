@@ -624,7 +624,7 @@ def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
 # ------------------------------------------------- check_identity_coherence
 #
 # The reconciler writes identity.env; the check reads it via
-# jasper.identity_state and reports whether the advertised name still matches
+# jasper.identity.identity_state and reports whether the advertised name still matches
 # what the operator configured.
 
 

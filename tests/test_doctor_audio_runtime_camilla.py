@@ -482,8 +482,11 @@ def test_playback_format_ok_for_an_armed_ring_pinned_narrow_on_an_otherwise_wide
     while the general (loopback) lane stays wide, recreating the
     two-lanes-can-legitimately-differ shape this test exists to prove.
     """
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, resolve_ring_wire
+    from jasper.fanin_coupling import (
+        DEFAULT_PLAYBACK_FORMAT,
+        RING_PLAYBACK_DEVICE,
+        resolve_ring_wire,
+    )
 
     _pin_ring_wire_narrow(monkeypatch, tmp_path)
     assert resolve_ring_wire().sample_format != DEFAULT_PLAYBACK_FORMAT
@@ -528,10 +531,8 @@ def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
     # the ALSA lane is S32 — the two constants now genuinely differ, no
     # monkeypatch needed. Without the lane split this would red-line every
     # healthy pipe-sink leader and parked box.
-    from jasper.camilla_config_contract import (
-        DEFAULT_PIPE_SINK_FORMAT,
-        DEFAULT_PLAYBACK_FORMAT,
-    )
+    from jasper.camilla_config_contract import DEFAULT_PIPE_SINK_FORMAT
+    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
     assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
     res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
@@ -557,11 +558,9 @@ def test_expected_playback_format_names_one_owner_per_lane(monkeypatch, tmp_path
     The check reports one mismatch reason for all three lanes, so the lane
     split is pinned here, on the resolver whose whole output is that pair.
     """
-    from jasper.camilla_config_contract import (
-        DEFAULT_PIPE_SINK_FORMAT,
-        DEFAULT_PLAYBACK_FORMAT,
-    )
+    from jasper.camilla_config_contract import DEFAULT_PIPE_SINK_FORMAT
     from jasper.fanin_coupling import (
+        DEFAULT_PLAYBACK_FORMAT,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
         resolve_ring_wire,

@@ -22,7 +22,7 @@ from ._shared import (
     _run,
     _systemctl_unavailable_result,
 )
-from ... import identity_state
+from ...identity import identity_state
 from ...active_speaker.environment import (
     camilla_statefile_path,
     read_camilla_statefile_config_path,

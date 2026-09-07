@@ -932,7 +932,7 @@ def check_usbsink_name(modules_root: str = "/lib/modules") -> CheckResult:
 
     # Reuse the canonical speaker-name reader (single source of truth for
     # how the name is parsed/validated) rather than re-implementing it.
-    from jasper.speaker_name import runtime_name
+    from jasper.identity.speaker_name import runtime_name
 
     try:
         name = runtime_name()

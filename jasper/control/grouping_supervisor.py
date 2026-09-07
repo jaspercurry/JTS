@@ -64,7 +64,7 @@ import threading
 import time
 from typing import Any
 
-from jasper import identity
+from jasper.identity import reader as identity
 from jasper.log_event import log_event
 from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET
 

@@ -55,13 +55,13 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
-    DEFAULT_PLAYBACK_FORMAT,
     RETIRED_ALOOP_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
 from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
 from jasper.fanin_coupling import (
+    DEFAULT_PLAYBACK_FORMAT,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,

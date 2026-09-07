@@ -146,7 +146,7 @@ def test_guards_accept_the_name_identity_env_records(
 ):
     """After an RFC 6762 collision rename the speaker answers only at the
     name the reconciler wrote to identity.env; both daemon guards must
-    compose the allowlist through jasper.identity_state, not the static
+    compose the allowlist through jasper.identity.identity_state, not the static
     rules alone — and still refuse a foreign name."""
     base, _ = server_with_coordinator
     identity = tmp_path / "identity.env"
