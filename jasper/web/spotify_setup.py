@@ -68,7 +68,6 @@ Routes (paths the app sees AFTER nginx strips the /spotify/ prefix):
 """
 from __future__ import annotations
 
-import argparse
 import html
 import logging
 import os
@@ -124,7 +123,6 @@ from ._common import (
     send_json_response,
     write_env_file,
 )
-from ..logging_setup import configure_logging
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
@@ -1419,58 +1417,3 @@ def make_server(
         manual_redirect_uri=manual_redirect_uri,
     )
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-web",
-        description="Spotify-account setup web server for the Jasper smart speaker",
-    )
-    parser.add_argument("--host", default=os.environ.get("JASPER_SPOTIFY_WEB_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("JASPER_SPOTIFY_WEB_PORT", "8765")))
-    parser.add_argument(
-        "--registry",
-        default=os.environ.get("JASPER_SPOTIFY_ACCOUNTS_PATH", DEFAULT_REGISTRY_PATH),
-    )
-    parser.add_argument(
-        "--bounce-redirect-uri",
-        default=(
-            os.environ.get("JASPER_SPOTIFY_BOUNCE_REDIRECT_URI")
-            or resolved_spotify_redirect_uri()
-        ),
-        help="HTTPS redirect URI for bounce mode. Defaults to "
-             "SPOTIFY_REDIRECT_URI when set, else the hosted bounce page "
-             "for this speaker's resolved hostname.",
-    )
-    parser.add_argument(
-        "--manual-redirect-uri",
-        default=os.environ.get(
-            "JASPER_SPOTIFY_MANUAL_REDIRECT_URI",
-            DEFAULT_MANUAL_REDIRECT_URI,
-        ),
-        help="Loopback redirect URI for manual mode.",
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    # Standalone CLI path — bind directly. The jasper-web multi-wizard
-    # process calls make_server() with a target picked per-port from
-    # systemd's handed-off sockets.
-    server = make_server(
-        (args.host, args.port),
-        registry_path=args.registry,
-        bounce_redirect_uri=args.bounce_redirect_uri,
-        manual_redirect_uri=args.manual_redirect_uri,
-    )
-    logger.info(
-        "jasper-web listening on http://%s:%d",
-        args.host, args.port,
-    )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

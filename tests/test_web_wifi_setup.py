@@ -110,7 +110,6 @@ def test_wifi_page_has_no_server_form():
 def test_public_surface_is_stable():
     assert callable(wifi_setup._landing_html)
     assert callable(wifi_setup.make_server)
-    assert callable(wifi_setup.main)
     assert callable(wifi_setup.gather_state)
     assert callable(wifi_setup.connect_new)
     assert callable(wifi_setup.connect_saved)

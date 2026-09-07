@@ -279,7 +279,6 @@ def _bound_handler(tmp_path, fake: FakeHandler):
 
 def test_public_surface_is_stable():
     assert callable(transit_setup.make_server)
-    assert callable(transit_setup.main)
     assert callable(transit_setup._index_html)
 
 

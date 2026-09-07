@@ -263,7 +263,6 @@ def _make_request(method, path, *, body=b"", headers=None, cookie=None):
 def test_public_surface_present():
     assert callable(wake_setup._index_html)
     assert callable(wake_setup.make_server)
-    assert callable(wake_setup.main)
 
 
 def test_get_root_renders_canonical_page(tmp_path):

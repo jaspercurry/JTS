@@ -1308,7 +1308,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--host",
-        default=os.environ.get("JASPER_BLUETOOTH_WEB_HOST", "127.0.0.1"),
+        default="127.0.0.1",
     )
     parser.add_argument(
         "--port", type=int,

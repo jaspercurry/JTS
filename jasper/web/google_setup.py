@@ -39,7 +39,6 @@ as before the restyle.
 """
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import logging
@@ -83,7 +82,6 @@ from ._common import (
     write_env_file,
     SECRET_ENV_MODE,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1077,50 +1075,3 @@ def make_server(
         "registry_path": registry_path,
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-google-web",
-        description=(
-            "Google Calendar + Gmail OAuth setup web server "
-            "for the Jasper smart speaker"
-        ),
-    )
-    parser.add_argument(
-        "--host",
-        default=os.environ.get("JASPER_GOOGLE_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768")),
-    )
-    parser.add_argument(
-        "--registry",
-        default=os.environ.get(
-            "JASPER_GOOGLE_ACCOUNTS_PATH",
-            "/var/lib/jasper-secrets/google/accounts.json",
-        ),
-    )
-    parser.add_argument("--redirect-uri", default=resolved_google_redirect_uri())
-    args = parser.parse_args(argv)
-
-    configure_logging()
-    server = make_server(
-        (args.host, args.port),
-        registry_path=args.registry,
-        redirect_uri=args.redirect_uri,
-    )
-    logger.info(
-        "jasper-google-web listening on http://%s:%d (state=%s, redirect_uri=%s)",
-        args.host, args.port, args.registry, args.redirect_uri,
-    )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

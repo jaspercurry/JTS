@@ -316,7 +316,6 @@ def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
 
 def test_public_surface_is_stable():
     assert callable(spotify_setup.make_server)
-    assert callable(spotify_setup.main)
     assert callable(spotify_setup._make_handler)
     assert callable(spotify_setup._setup_wizard_html)
     assert callable(spotify_setup._management_html)

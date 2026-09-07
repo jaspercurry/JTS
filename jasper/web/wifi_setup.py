@@ -52,7 +52,6 @@ Security:
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -81,7 +80,6 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1470,30 +1468,3 @@ def make_server(target) -> ThreadingHTTPServer:
     socket/tuple/int per _systemd.make_http_server's contract."""
     from . import _systemd
     return _systemd.make_http_server(target, _make_handler())
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-wifi-web",
-        description="Wi-Fi network management for the Jasper smart speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_WIFI_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775")),
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    server = make_server((args.host, args.port))
-    logger.info("jasper-wifi-web listening on http://%s:%d", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

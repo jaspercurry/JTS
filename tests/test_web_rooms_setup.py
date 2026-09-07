@@ -1102,7 +1102,6 @@ def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
 
 def test_public_surface_is_stable():
     assert callable(rooms_setup.make_server)
-    assert callable(rooms_setup.main)
     assert callable(rooms_setup._make_handler)
     assert callable(rooms_setup._build_rooms_payload)
     assert callable(rooms_setup._discover_speakers)

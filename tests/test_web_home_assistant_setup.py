@@ -238,7 +238,6 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
 
 def test_public_surface_is_stable():
     assert callable(ha.make_server)
-    assert callable(ha.main)
     assert callable(ha._render_index)
 
 
