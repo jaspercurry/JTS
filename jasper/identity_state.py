@@ -53,7 +53,7 @@ import threading
 from typing import Any
 
 from .env_load import parse_env_file
-from .http_security import normalize_host
+from .net.http_security import normalize_host
 
 DEFAULT_PATH = "/var/lib/jasper/identity.env"
 
@@ -71,7 +71,7 @@ def _names_from(identity: dict[str, str]) -> frozenset[str]:
     """Derive the allowlist-shaped name set from a parsed identity file.
 
     For each recorded hostname both the bare and ``.local`` forms are
-    included, mirroring ``http_security._configured_hostnames``'s
+    included, mirroring ``net.http_security._configured_hostnames``'s
     treatment of the configured name — a browser may present either."""
     names: set[str] = set()
     for key in (

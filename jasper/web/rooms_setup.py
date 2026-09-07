@@ -70,7 +70,7 @@ from ..control.client import (
     PEER_RESPONSE_MAX_BYTES,
     peer_detail,
 )
-from ..mdns import browse_once
+from ..net.mdns import browse_once
 from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import is_private_or_loopback_ipv4
 from ..multiroom.state import (
@@ -229,7 +229,7 @@ def _local_web_host(hostname: str) -> str:
 
 def _peer_label(props: dict, server: str, full_name: str) -> str:
     """Pick the directory label for a discovered speaker, best-first:
-      1. the `name=` TXT record `jasper.control_advert` publishes on
+      1. the `name=` TXT record `jasper.net.control_advert` publishes on
          `_jasper-control._tcp` (the production path),
       2. the resolved SRV hostname (`jts3.local.` -> `jts3`),
       3. the raw mDNS instance name — a last resort, since the default

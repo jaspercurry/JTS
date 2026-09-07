@@ -224,7 +224,7 @@ def test_default_base_url_passes_management_host_guard():
     unspecified connect host, or if the guard stops allowing loopback."""
     from urllib.parse import urlsplit
 
-    from jasper.http_security import management_read_allowed
+    from jasper.net.http_security import management_read_allowed
 
     host = urlsplit(client.DEFAULT_BASE_URL).netloc
     ok, reason = management_read_allowed({"Host": host})
@@ -236,7 +236,7 @@ def test_guarded_server_accepts_client_built_from_bind_address():
     management-read guard (as jasper-control does on every GET) must
     answer 200 to a client whose base URL was derived from the seeded
     bind value 0.0.0.0."""
-    from jasper.http_security import management_read_allowed
+    from jasper.net.http_security import management_read_allowed
 
     class _Guarded(_Echo):
         def do_GET(self):  # noqa: N802

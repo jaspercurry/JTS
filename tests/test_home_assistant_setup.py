@@ -122,17 +122,17 @@ def test_profile_link_empty_for_empty_url():
 
 # ---- discover_sync mapping (browse_once -> output dict) --------------------
 # discover_sync now delegates the browse/resolve/parse mechanics to the
-# shared one-shot primitive jasper.mdns.browse_once and keeps only the
+# shared one-shot primitive jasper.net.mdns.browse_once and keeps only the
 # HA-specific policy (SRV host -> host, port default 8123, IPv4-preferred
 # url, location_name/version from TXT). The end-to-end handler tests stub
 # discover_sync wholesale, so these unit tests are the only coverage of
 # that mapping — they mock browse_once at the source (the in-function
 # `from ..mdns import browse_once` re-reads the attribute each call, so a
-# monkeypatch on jasper.mdns.browse_once is picked up).
+# monkeypatch on jasper.net.mdns.browse_once is picked up).
 
 def _ds(**kw):
-    """Build a jasper.mdns.DiscoveredService with sensible defaults."""
-    from jasper.mdns import DiscoveredService
+    """Build a jasper.net.mdns.DiscoveredService with sensible defaults."""
+    from jasper.net.mdns import DiscoveredService
     base = dict(
         name="Home._home-assistant._tcp.local.",
         server="abc-uuid.local.",
@@ -148,7 +148,7 @@ def test_discover_sync_maps_browse_once_to_output_dict(monkeypatch):
     """A resolved instance maps to the documented dict: name passthrough,
     SRV host with the trailing mDNS dot stripped, str-ified port, TXT-sourced
     location_name + version, and an IPv4 base_url via _normalize_url."""
-    import jasper.mdns as mdns
+    import jasper.net.mdns as mdns
 
     captured = {}
 
@@ -175,7 +175,7 @@ def test_discover_sync_maps_browse_once_to_output_dict(monkeypatch):
 def test_discover_sync_defaults_location_name_when_txt_absent(monkeypatch):
     """No location_name TXT -> the dict falls back to 'Home Assistant';
     a missing version TXT yields an empty string (not a KeyError)."""
-    import jasper.mdns as mdns
+    import jasper.net.mdns as mdns
     monkeypatch.setattr(mdns, "browse_once", lambda st, *, timeout: [_ds(txt={})])
     out = ha_setup.discover_sync()
     assert len(out) == 1
@@ -187,7 +187,7 @@ def test_discover_sync_prefers_resolved_ipv4_address_over_srv_host(monkeypatch):
     """The base_url is built from the resolved address (browse_once is V4Only,
     so addresses[0] is IPv4), NOT the SRV hostname — even though `host`
     still carries the SRV host for display."""
-    import jasper.mdns as mdns
+    import jasper.net.mdns as mdns
     monkeypatch.setattr(
         mdns, "browse_once",
         lambda st, *, timeout: [_ds(server="homeassistant.local.", addresses=("10.0.0.7",))],
@@ -200,7 +200,7 @@ def test_discover_sync_prefers_resolved_ipv4_address_over_srv_host(monkeypatch):
 def test_discover_sync_defaults_port_to_8123_when_srv_reports_none(monkeypatch):
     """A SRV record with port 0 (zeroconf reported none) defaults to 8123 —
     both in the `port` field and the constructed url."""
-    import jasper.mdns as mdns
+    import jasper.net.mdns as mdns
     monkeypatch.setattr(
         mdns, "browse_once",
         lambda st, *, timeout: [_ds(port=0)],
@@ -213,7 +213,7 @@ def test_discover_sync_defaults_port_to_8123_when_srv_reports_none(monkeypatch):
 def test_discover_sync_returns_empty_when_browse_once_returns_empty(monkeypatch):
     """No instances on the LAN -> []. (browse_once is itself fail-soft and
     returns [] on any failure; discover_sync just maps an empty list.)"""
-    import jasper.mdns as mdns
+    import jasper.net.mdns as mdns
     monkeypatch.setattr(mdns, "browse_once", lambda st, *, timeout: [])
     assert ha_setup.discover_sync() == []
 
@@ -222,7 +222,7 @@ def test_discover_sync_never_raises_when_browse_once_raises(monkeypatch):
     """Defense in depth: even though browse_once contracts never to raise,
     discover_sync's own try/except still degrades a raising browse to [] so
     POST /discover never 500s."""
-    import jasper.mdns as mdns
+    import jasper.net.mdns as mdns
 
     def _boom(st, *, timeout):
         raise RuntimeError("zeroconf exploded")

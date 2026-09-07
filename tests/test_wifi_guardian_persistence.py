@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.wifi_guardian_persistence.
+"""Tests for jasper.net.wifi_guardian_persistence.
 
 Covers the storage layer for the WiFi profile guardian:
   - round-trip write/read of (SSID, PSK, key_mgmt)
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wifi_guardian_persistence import (
+from jasper.net.wifi_guardian_persistence import (
     DEFAULT_PATH,
     WifiStash,
     active_wifi_connection,
@@ -226,7 +226,7 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
     write_stash raises so the wizard's hook can log a warning AND
     surface the drift via doctor. The actual swallow happens one layer
     up — see `_stash_after_connect` in wifi_setup."""
-    import jasper.wifi_guardian_persistence as mod
+    import jasper.net.wifi_guardian_persistence as mod
 
     def boom(*args, **kwargs):
         raise OSError("simulated permission denied")
@@ -238,7 +238,7 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
 
 def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
     """A parent-dir fsync failure logs a WARNING and the write succeeds."""
-    import jasper.wifi_guardian_persistence as mod
+    import jasper.net.wifi_guardian_persistence as mod
 
     seen_paths = []
 

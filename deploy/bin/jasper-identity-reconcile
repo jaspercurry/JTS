@@ -27,7 +27,7 @@
 # This script is the single writer of /var/lib/jasper/identity.env: a
 # small, always-fresh snapshot of the three names plus a collision flag.
 # Consumers:
-#   - jasper.http_security extends the management-host allowlist with
+#   - jasper.net.http_security extends the management-host allowlist with
 #     the effective names (so a renamed speaker's UI keeps working),
 #   - /state.resilience.identity and jasper-doctor surface drift so the
 #     household is TOLD to pick a unique name instead of silently
@@ -109,7 +109,7 @@ emit() {
 }
 
 # Lowercase + strip one trailing dot — mirrors
-# jasper.http_security.normalize_host for the bash side. tr, not
+# jasper.net.http_security.normalize_host for the bash side. tr, not
 # ${v,,}: the test harness runs this under macOS bash 3.2.
 normalize() {
     local v="${1:-}"
@@ -229,7 +229,7 @@ fi
 TMP_FILE="${IDENTITY_FILE}.tmp"
 if ! cat > "$TMP_FILE" 2>/dev/null <<EOF
 # Written by jasper-identity-reconcile — do not edit (rewritten every run).
-# Effective network identity; consumed by jasper.http_security (management
+# Effective network identity; consumed by jasper.net.http_security (management
 # allowlist), /state.resilience.identity, and jasper-doctor.
 ${IDENTITY_BODY}
 JASPER_IDENTITY_CHECKED_AT=${CHECKED_AT}

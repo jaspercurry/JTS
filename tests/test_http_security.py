@@ -8,7 +8,8 @@ from email.message import Message
 
 import pytest
 
-from jasper import http_security
+from jasper.identity_state import effective_hostnames
+from jasper.net import http_security
 from jasper.usb_network import derive_plan
 
 
@@ -199,14 +200,20 @@ def test_identity_file_names_extend_the_allowlist(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity))
     monkeypatch.setattr(http_security.socket, "gethostname", lambda: "unrelated")
     for host in ("kitchen.local", "kitchen-2.local", "jts-kitchen.local"):
-        ok, reason = http_security.management_read_allowed({"Host": host})
+        ok, reason = http_security.management_read_allowed(
+            {"Host": host}, extra_hosts=effective_hostnames(),
+        )
         assert (ok, reason) == (True, "ok"), host
     # Still not a free-for-all.
-    ok, reason = http_security.management_read_allowed({"Host": "evil.example"})
+    ok, reason = http_security.management_read_allowed(
+        {"Host": "evil.example"}, extra_hosts=effective_hostnames(),
+    )
     assert (ok, reason) == (False, "host_not_allowed")
 
 
 def test_missing_identity_file_changes_nothing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "absent.env"))
-    ok, reason = http_security.management_read_allowed({"Host": "evil.example"})
+    ok, reason = http_security.management_read_allowed(
+        {"Host": "evil.example"}, extra_hosts=effective_hostnames(),
+    )
     assert (ok, reason) == (False, "host_not_allowed")

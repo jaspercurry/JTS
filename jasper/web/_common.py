@@ -83,7 +83,11 @@ from ..control import client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
 from ..env_load import parse_env_file, read_env_file_or_warn
-from ..http_security import management_read_allowed, mutating_request_allowed
+from ..identity_state import effective_hostnames
+from ..net.http_security import (
+    management_read_allowed,
+    mutating_request_allowed,
+)
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..voice.provider_state import read_active_provider
@@ -1103,7 +1107,7 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     wizards exactly as it can reach the control daemon, so the wizards
     must apply the same allowlist before mutating WiFi PSKs, HA tokens,
     API keys, or triggering reboots. Reuses
-    `jasper.http_security.mutating_request_allowed` — the same allowlist
+    `jasper.net.http_security.mutating_request_allowed` — the same allowlist
     the control daemon already runs in production (configured hostname,
     `.local`, RFC1918/ULA/loopback IPs, missing Host for non-browser
     clients). Used by the shared mutating request guard so every wizard
@@ -1117,7 +1121,9 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
 
     Returns False (so the caller rejects with 403) on a disallowed
     Host/Origin and logs one structured `event=http.reject` line."""
-    ok, reason = mutating_request_allowed(handler.headers)
+    ok, reason = mutating_request_allowed(
+        handler.headers, extra_hosts=effective_hostnames(),
+    )
     if not ok:
         log_event(
             logger,
@@ -1161,7 +1167,9 @@ def guard_read_request(
     management UI do not dead-end on a 403. State-changing GET routes should
     pass ``allow_cross_site_navigation=False`` or, preferably, become POSTs.
     """
-    ok, reason = management_read_allowed(handler.headers)
+    ok, reason = management_read_allowed(
+        handler.headers, extra_hosts=effective_hostnames(),
+    )
     if ok:
         return True
     if (

@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.avahi_service — the ONE Avahi *.service renderer.
+"""Unit tests for jasper.net.avahi_service — the ONE Avahi *.service renderer.
 
 This is the shared render+guard+atomic-write+reload body that both
-``jasper/control_advert.py`` (``_jasper-control._tcp``, free-form name)
+``jasper/net/control_advert.py`` (``_jasper-control._tcp``, free-form name)
 and ``jasper/peering/avahi.py`` (``_jasper-peer._udp``, mDNS-safe
 metadata) route through. The per-caller wrappers have their own suites
 (tests/test_control_advert.py, tests/test_peering_avahi.py); this file
@@ -44,8 +44,8 @@ from xml.dom import minidom
 
 import pytest
 
-from jasper import avahi_service
-from jasper.avahi_service import RenderResult
+from jasper.net import avahi_service
+from jasper.net.avahi_service import RenderResult
 
 
 # A minimal but realistic Avahi service template with two placeholder
