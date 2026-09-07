@@ -229,7 +229,9 @@ _BOTH_CAP_EVENTS = {
             id="silent_allowance_restored",
         ),
         pytest.param(
-            20, 20 - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC, None, None,
+            _shipped_idle_timeout_default(),
+            _shipped_idle_timeout_default() - PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC,
+            None, None,
             id="silent_shipped_default",
         ),
         pytest.param(
