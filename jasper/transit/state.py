@@ -9,7 +9,7 @@ Mirrors ``jasper.multiroom.state.read_grouping_state``: the wizard owns
 that *displays* it (chiefly ``jasper-control``'s ``/state`` and the
 ``/system/`` dashboard) but is NOT ``jasper-voice`` must re-read that file
 fresh on every call — never ``os.environ``. Those long-lived daemons load
-the env file once at start and are not restarted on a ``/transit/`` save, so
+the env file once at start and are not restarted on a ``/assistant/transit/`` save, so
 ``os.environ`` goes stale (the same class of bug as the voice-provider reader
 in :mod:`jasper.voice.provider_state`).
 

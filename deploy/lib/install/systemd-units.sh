@@ -346,7 +346,7 @@ install_streambox_web_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.socket" \
         "${SYSTEMD_DIR}/jasper-system-web.socket"
-    # /chat/ is an ASSISTANT surface, so it ships wherever the assistant
+    # /assistant/chat/ is an ASSISTANT surface, so it ships wherever the assistant
     # wizards do. Same unit as the full tier: socket-activated, stdlib +
     # SQLite in the shared venv, idle-exits after 30 min.
     install -m 0644 \
@@ -1480,7 +1480,7 @@ _stage_full_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-system-web.socket" \
         "${SYSTEMD_DIR}/jasper-system-web.socket"
-    # /chat/ conversation-history dashboard. Read-only; socket-activated
+    # /assistant/chat/ conversation-history dashboard. Read-only; socket-activated
     # like /system/ so opening the history page does not keep a resident
     # web process forever.
     install -m 0644 \

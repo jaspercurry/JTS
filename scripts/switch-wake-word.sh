@@ -8,7 +8,7 @@
 # jasper/wake_models.py — this script just looks one up by key, writes
 # /var/lib/jasper/wake_model.env on the Pi, and restarts jasper-voice.
 #
-# Same effect as visiting http://jts.local/wake/ and picking a row,
+# Same effect as visiting http://jts.local/assistant/wake/ and picking a row,
 # but scriptable from the laptop and inspectable in shell history.
 #
 # Usage:

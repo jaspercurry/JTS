@@ -240,7 +240,7 @@ def check_voice_unit_running() -> CheckResult:
         return CheckResult(
             label, "skipped",
             f"{_VOICE_UNIT} parked with no voice provider chosen yet — "
-            "visit /voice to pick one",
+            "visit /assistant/voice/ to pick one",
             reason=REASON_VOICE_UNIT_NO_PROVIDER,
         )
     if streambox:

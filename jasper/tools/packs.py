@@ -103,7 +103,7 @@ class ToolDeps:
 
 @dataclass(frozen=True)
 class CatalogPack:
-    """Optional user-facing grouping for the /tools/ catalog.
+    """Optional user-facing grouping for the /assistant/tools/ catalog.
 
     This is deliberately separate from CapabilityPack itself:
     CapabilityPack is the internal registration/fault-isolation unit,
@@ -191,21 +191,21 @@ NYC_TRANSIT_PACK = CatalogPack(
     "nyc-transit",
     "NYC Transit",
     "Subway, bus, and Citi Bike arrivals from the configured NYC stops.",
-    setup_url="/transit/",
+    setup_url="/assistant/transit/",
     setup_required=True,
 )
 TRAVEL_ROUTES_PACK = CatalogPack(
     "travel-routes",
     "Travel Time",
     "Destination ETAs and route overviews from the speaker's saved location.",
-    setup_url="/transit/",
+    setup_url="/assistant/transit/",
     setup_required=True,
 )
 HOME_ASSISTANT_PACK = CatalogPack(
     "home-assistant",
     "Home Assistant",
     "Relay household device, scene, script, and state requests.",
-    setup_url="/ha/",
+    setup_url="/assistant/ha/",
     setup_required=True,
 )
 TIMERS_PACK = CatalogPack(
@@ -222,14 +222,14 @@ GOOGLE_PACK = CatalogPack(
     "google",
     "Google",
     "Read calendar and Gmail data from linked Google accounts.",
-    setup_url="/google/",
+    setup_url="/assistant/google/",
     setup_required=True,
 )
 WEATHER_PACK = CatalogPack(
     "weather",
     "Weather",
     "Current conditions and forecast answers for the configured location.",
-    setup_url="/weather/",
+    setup_url="/assistant/weather/",
 )
 TIME_PACK = CatalogPack(
     "time",

@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS wake_events (
 
   -- Chip-AEC beam legs (XVF3800 fixed 150°/210° ASR beams). Opt-in,
   -- hardware-conditional wake legs promoted from corpus-only capture;
-  -- null unless the household enabled the chip leg via /wake/. Same
+  -- null unless the household enabled the chip leg via /assistant/wake/. Same
   -- per-leg score/offset/RMS shape as the software legs above.
   peak_score_chip_aec_150     REAL,
   peak_score_chip_aec_210     REAL,
@@ -397,7 +397,7 @@ class WakeEventStore:
         mic_rms_dbfs_dtln: float | None = None,
         fired_legs: str | None = None,
         # Chip-AEC beam legs (XVF3800 150°/210° ASR beams). Optional —
-        # null on every install until the chip leg is enabled via /wake/,
+        # null on every install until the chip leg is enabled via /assistant/wake/,
         # at which point voice.wake_telemetry.LEG_DB routes the per-beam
         # score/offset/RMS into these columns.
         peak_score_chip_aec_150: float | None = None,

@@ -103,8 +103,8 @@ _API_KEY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
 
 # Flash messages (PRG status text) live in a short-lived cookie instead of a
 # `?msg=…` query param on the redirect target. The query-param pattern
-# poisoned browser history: the post-save URL `/voice/?msg=Saved` was a
-# distinct entry from `/voice/`, so clicking Back went to "the same page
+# poisoned browser history: the post-save URL `/assistant/voice/?msg=Saved` was a
+# distinct entry from `/assistant/voice/`, so clicking Back went to "the same page
 # without the message" rather than the previous page in the wizard flow.
 # Cookies disappear on the next render; URLs stay clean and shareable.
 FLASH_COOKIE_NAME = "jts_flash"
@@ -455,7 +455,7 @@ def safe_back_href(raw: str | None, *, default: str = "/") -> str:
     """Return a local absolute path suitable for a header back link.
 
     `return_to` query params are user-controlled, so keep only same-site
-    absolute paths like `/tools/pack/spotify/`. Reject protocol-relative
+    absolute paths like `/assistant/tools/pack/spotify/`. Reject protocol-relative
     URLs, schemes, backslashes, and control-character tricks before the value
     reaches `canonical_header()`.
     """
@@ -597,7 +597,7 @@ def restart_systemd_units(*units: str) -> None:
     web wizard's save handler hangs that long before returning the
     303 redirect, the browser shows a spinner, the user thinks
     nothing happened and click Save again (then again) — observed
-    on PR #117 when switching wake models via the /wake/ UI.
+    on PR #117 when switching wake models via the /assistant/wake/ UI.
 
     With --no-block, systemctl queues the restart and returns in
     a few ms. The browser gets the success banner immediately.

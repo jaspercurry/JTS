@@ -146,7 +146,7 @@ def test_weather_pack_satisfies_rich_first_party_contract():
                 "Current conditions and forecast answers for the configured "
                 "location."
             ),
-            "setup_url": "/weather/",
+            "setup_url": "/assistant/weather/",
         },
         expected_tool_names=[WEATHER_TOOL_NAME],
         expected_labels={WEATHER_TOOL_NAME: WEATHER_TOOL_LABELS},
@@ -177,7 +177,7 @@ def test_weather_pack_setup_gate_story_is_keyless_and_pack_level():
     assert {
         pack["id"]: pack
         for pack in catalog["packs"]
-    }["weather"]["setup_url"] == "/weather/"
+    }["weather"]["setup_url"] == "/assistant/weather/"
 
 
 def test_travel_routes_pack_satisfies_rich_first_party_contract():
@@ -198,7 +198,7 @@ def test_travel_routes_pack_satisfies_rich_first_party_contract():
                 "Destination ETAs and route overviews from the speaker's "
                 "saved location."
             ),
-            "setup_url": "/transit/",
+            "setup_url": "/assistant/transit/",
         },
         expected_tool_names=[TRAVEL_ROUTES_TOOL_NAME],
         expected_labels={TRAVEL_ROUTES_TOOL_NAME: TRAVEL_ROUTES_TOOL_LABELS},
@@ -322,7 +322,7 @@ def test_travel_routes_pack_is_needs_setup_without_client():
     assert pack.gate(full_tool_deps(google_routes=None)) is True
     assert TRAVEL_ROUTES_TOOL_NAME not in minimal.tools
     assert travel_tool["status"] == "needs_setup"
-    assert travel_tool["setup_url"] == "/transit/"
+    assert travel_tool["setup_url"] == "/assistant/transit/"
     assert travel_tool["requires_setup"] is True
 
 

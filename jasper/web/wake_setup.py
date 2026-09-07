@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Microphone + wake page at /wake/.
+"""Microphone + wake page at /assistant/wake/.
 
 The page is backend-driven. `jasper-control` owns the microphone/AEC
 truth, including the user-facing `mic_settings` view model layered over
@@ -47,7 +47,7 @@ deploy/assets/wake/js/main.js (loaded as ``type="module"``). The
 page-specific layer-row / slider / model-picker visuals are in
 deploy/assets/wake/wake.css. There is no inline ``<script>``.
 
-URL surface (after nginx strips the /wake/ prefix):
+URL surface (after nginx strips the /assistant/wake/ prefix):
   GET  /                page render
   GET  /detection.json  proxy jasper-control /aec — includes the
                         backend-owned mic_settings view model
@@ -588,7 +588,7 @@ def _apply_save(
     error is None.
 
     The sensitivity slider lives in the same page but posts directly
-    to jasper-control via /wake/sensitivity, which writes
+    to jasper-control via /assistant/wake/sensitivity, which writes
     JASPER_WAKE_THRESHOLD into the same env file. Here we preserve
     whatever value is already there by starting from `dict(current)`
     (write_env_file overwrites the whole file with whatever dict we

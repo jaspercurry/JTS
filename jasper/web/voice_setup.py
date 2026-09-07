@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Voice provider configuration wizard at /voice/.
+"""Voice provider configuration wizard at /assistant/voice/.
 
 UX: a single page with distinct sections for the voice decisions:
 enter provider API keys, choose the active configured provider, select
@@ -31,7 +31,7 @@ ships as the ES module /assets/voice/js/main.js — no inline <script>.
 The forms stay server-rendered request/response POSTs; only the
 presentation changed.
 
-URL surface (after nginx strips the /voice/ prefix):
+URL surface (after nginx strips the /assistant/voice/ prefix):
   GET  /                          page render
   POST /save                      save credentials + active provider, restart
   POST /save-test                 save, run one silent voice-level test, restart

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /ha/ wizard after its migration to the canonical look.
+"""Tests for the /assistant/ha/ wizard after its migration to the canonical look.
 
 Two things this guards:
 
@@ -147,7 +147,7 @@ def test_state_connected_status_card_masks_token():
 
 def test_state_connected_links_to_home_assistant_tool_pack():
     out = _render(_state_connected())
-    assert 'href="/tools/pack/home-assistant/"' in out
+    assert 'href="/assistant/tools/pack/home-assistant/"' in out
     assert "Manage Home Assistant tool" in out
 
 
@@ -213,7 +213,7 @@ def _handler_cls():
 
 
 def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
-    """Build a *real* /ha/ Handler instance wired to a synthetic request.
+    """Build a *real* /assistant/ha/ Handler instance wired to a synthetic request.
 
     Mirrors tests/test_web_wifi_setup.py's `_make_request`. The Handler
     defines its response helpers (_send_html / _send_json) as instance
@@ -246,11 +246,11 @@ def test_get_root_renders_canonical_page(monkeypatch):
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(monkeypatch):
     monkeypatch.setattr(ha, "read_env_file", lambda path: {})
-    h = _make_request("/?return_to=%2Ftools%2Fpack%2Fhome-assistant%2F")
+    h = _make_request("/?return_to=%2Fassistant%2Ftools%2Fpack%2Fhome-assistant%2F")
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert 'href="/tools/pack/home-assistant/"' in out
+    assert 'href="/assistant/tools/pack/home-assistant/"' in out
 
 
 def test_get_root_rejects_off_origin_return_link(monkeypatch):

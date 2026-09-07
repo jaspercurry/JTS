@@ -264,7 +264,7 @@ def test_system_instruction_includes_research_nudge_when_unconfigured():
         hostname="jts2.local",
     )
 
-    assert "jts2.local/voice" in prompt
+    assert "jts2.local/assistant/voice/" in prompt
     assert "If the user asks you to research" in prompt
     assert "Research isn't set up yet" in prompt
 

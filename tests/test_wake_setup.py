@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the wake-word picker wizard at /wake/.
+"""Tests for the wake-word picker wizard at /assistant/wake/.
 
 Two layers:
   1. `jasper.wake_models` — registry sanity. Entries can't all be
@@ -362,7 +362,7 @@ def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
 # as a clean "read what the daemon will load" helper independent of
 # where the UI control is rendered.
 #
-# Threshold-preservation across a /wake/ model save is now covered
+# Threshold-preservation across a /assistant/wake/ model save is now covered
 # by test_apply_save_preserves_threshold_in_state below; the daemon-
 # facing JASPER_WAKE_THRESHOLD validation is in jasper/config.py and
 # in jasper.control.aec_endpoints._write_wake_threshold.
@@ -523,7 +523,7 @@ def test_index_html_chip_beam_controls_are_advanced_not_primary():
 
 
 def test_index_html_includes_sensitivity_slider():
-    """Sensitivity is on /wake/ as a native wake-word tuning control."""
+    """Sensitivity is on /assistant/wake/ as a native wake-word tuning control."""
     html = wake_setup._index_html({}).decode()
     assert 'type="range"' in html
     assert 'id="sensitivity-input"' in html
@@ -543,7 +543,7 @@ def test_index_html_discloses_wake_event_recordings():
 
 def test_index_html_no_system_crosslink_for_wake_detection():
     """The stale system-dashboard crosslink must not return now that
-    microphone and wake controls live together on /wake/."""
+    microphone and wake controls live together on /assistant/wake/."""
     html = wake_setup._index_html({}).decode()
     assert 'moved-panel' not in html
     assert '/system/' not in html
@@ -733,7 +733,7 @@ def fake_control():
 
 @pytest.fixture
 def wired_server(tmp_path: Path, fake_control):
-    """The /wake/ server pointed at the fake jasper-control so layer
+    """The /assistant/wake/ server pointed at the fake jasper-control so layer
     + sensitivity POSTs flow through real handler logic and land
     against assertable upstream calls."""
     base, received, responses = fake_control

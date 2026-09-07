@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Home Assistant connection wizard at /ha/.
+"""Home Assistant connection wizard at /assistant/ha/.
 
 Walks the household through three states:
 
@@ -40,7 +40,7 @@ PR core#161715 was still open as of May 2026. LLAT paste is the
 documented industry-standard path for headless HA integrations until
 device-flow ships.
 
-URL surface (after nginx strips /ha/):
+URL surface (after nginx strips /assistant/ha/):
   GET  /              page render (one of three states)
   POST /discover      mDNS browse, JSON list of found instances
   POST /ready         lightweight readiness probe (1 HA call) — used
@@ -426,7 +426,7 @@ def _wrap(
 ) -> bytes:
     """Wrap a state's body fragment in the canonical document shell.
 
-    Single chokepoint for all three /ha/ states: emits the .app-header
+    Single chokepoint for all three /assistant/ha/ states: emits the .app-header
     back bar, the flash banner, the body inside <main class="page">, and
     the page's ES module. The CSRF <meta> (which the module reads for its
     fetch POSTs) + the cache-busted app.css/home-assistant.css links come
@@ -852,7 +852,7 @@ to this Home Assistant instance.</p>
 
 <div class="info-card">
   <p class="form-hint"><strong>Voice tools.</strong> Manage Home Assistant tool
-  prompts and enablement in <a href="/tools/pack/home-assistant/">Tools</a>.</p>
+  prompts and enablement in <a href="/assistant/tools/pack/home-assistant/">Tools</a>.</p>
 </div>
 
 <div class="info-card">

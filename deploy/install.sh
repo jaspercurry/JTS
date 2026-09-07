@@ -1337,9 +1337,10 @@ install_nginx_site_conf() {
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
-    # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
-    # HTTP. /sound/room/ and the /sound/* measurement routes are proxied on
-    # both listeners, but browser mic capture only works on the HTTPS one:
+    # OAuth web flow) and /assistant/voice/ (voice-provider config wizard)
+    # on plain HTTP. /sound/room/ and the /sound/* measurement routes are
+    # proxied on both listeners, but browser mic capture only works on the
+    # HTTPS one:
     # getUserMedia grants mic access in a secure context only. That origin is
     # the installer's own self-signed cert, so it is entered deliberately and
     # never by redirect — a cert interstitial is un-automatable (issue #2632).

@@ -134,7 +134,7 @@ async def test_lights_command_routes_to_home_assistant(harness, trial: int) -> N
     # speech means the model is confused about its own capability.
     if result.spoken_text:
         spoken = result.spoken_text.lower()
-        assert "jts.local/ha" not in spoken and "isn't set up" not in spoken, (
+        assert "jts.local/assistant/ha/" not in spoken and "isn't set up" not in spoken, (
             f"[trial {trial}] model spoke a smart-home-setup redirect even "
             f"though it called home_assistant — capability confusion. "
             f"Spoken text: {result.spoken_text!r}. "

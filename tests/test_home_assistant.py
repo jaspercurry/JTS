@@ -60,7 +60,7 @@ def test_system_prompt_includes_ha_nudge_when_unconfigured():
         location="", ha_configured=False, hostname="jts.local",
     )
     assert "Home Assistant smart-home control isn't set up" in prompt
-    assert "jts.local/ha" in prompt
+    assert "jts.local/assistant/ha/" in prompt
     # The "do not call other tools" guard prevents the misroute we saw
     # on 2026-05-22 (lights → time + now_playing).
     assert "Do not call any other tool" in prompt
@@ -92,9 +92,9 @@ def test_system_prompt_ha_nudge_uses_configured_hostname():
     prompt = _build_system_instruction(
         location="", ha_configured=False, hostname="jts2.local",
     )
-    assert "jts2.local/ha" in prompt
+    assert "jts2.local/assistant/ha/" in prompt
     # And explicitly NOT the wrong default
-    assert "jts.local/ha" not in prompt
+    assert "jts.local/assistant/ha/" not in prompt
 
 
 def test_system_prompt_transit_nudge_uses_configured_hostname():
@@ -104,9 +104,9 @@ def test_system_prompt_transit_nudge_uses_configured_hostname():
     prompt = _build_system_instruction(
         location="", transit_configured=False, hostname="jts2.local",
     )
-    assert "jts2.local/transit" in prompt
+    assert "jts2.local/assistant/transit/" in prompt
     # The OLD hardcoded form must not appear
-    assert "jts.local/transit" not in prompt
+    assert "jts.local/assistant/transit/" not in prompt
 
 
 # ---- Test scaffolding -------------------------------------------------------

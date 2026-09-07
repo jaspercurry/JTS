@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// render.js — pure catalog -> HTML-string builders for the /tools/ UI.
+// render.js — pure catalog -> HTML-string builders for the /assistant/tools/ UI.
 //
 // main.js/detail.js own fetches, POSTs, and event delegation. This module
 // turns catalog packs/tools into markup only. Every catalog field is
@@ -25,9 +25,10 @@ const STATUS_BADGE = {
   needs_setup: { label: "Needs setup", tone: "warn" },
 };
 
-// A setup_url is only ever a same-origin wizard path ("/transit/", "/ha/",
-// "/google/"). Require an absolute path ("/..."), then RESOLVE it against the
-// page origin and demand the result stay on that origin over http(s). A
+// A setup_url is only ever a same-origin wizard path
+// ("/assistant/transit/", "/assistant/ha/", "/assistant/google/"). Require an
+// absolute path ("/..."), then RESOLVE it against the page origin and demand
+// the result stay on that origin over http(s). A
 // character-level guard is not enough: the WHATWG URL parser folds "\" -> "/"
 // AND strips ASCII tab/newline from the whole input BEFORE parsing, so "//host",
 // "/\\host", and even "/<TAB>/host" / "/<LF>/host" all normalize to a
@@ -57,11 +58,11 @@ function safeSetupUrl(u) {
 function currentReturnPath() {
   try {
     const base = (typeof location !== "undefined" && location.href) ||
-      "http://jts.local/tools/";
+      "http://jts.local/assistant/tools/";
     const url = new URL(base);
     return url.pathname + url.search;
   } catch {
-    return "/tools/";
+    return "/assistant/tools/";
   }
 }
 
@@ -69,7 +70,7 @@ function setupUrlWithReturn(u) {
   const href = safeSetupUrl(u);
   if (!href) return null;
   const base = (typeof location !== "undefined" && location.href) ||
-    "http://jts.local/tools/";
+    "http://jts.local/assistant/tools/";
   const url = new URL(href, base);
   url.searchParams.set("return_to", currentReturnPath());
   return url.pathname + url.search;
@@ -77,7 +78,7 @@ function setupUrlWithReturn(u) {
 
 function safePackUrl(id) {
   return typeof id === "string" && id
-    ? "/tools/pack/" + encodeURIComponent(id) + "/"
+    ? "/assistant/tools/pack/" + encodeURIComponent(id) + "/"
     : null;
 }
 
@@ -314,7 +315,7 @@ export function packDetail(pack, tools = []) {
   if (!pack) {
     return (
       '<div class="info-card tool-empty">' +
-      '<p>Tool pack not found. <a href="/tools/">Back to tools</a>.</p>' +
+      '<p>Tool pack not found. <a href="/assistant/tools/">Back to tools</a>.</p>' +
       "</div>"
     );
   }
@@ -342,7 +343,7 @@ export function packDetail(pack, tools = []) {
     '<dl class="deflist tool-detail__meta">' +
     '<div><dt>Category</dt><dd>' + escapeHtml(pack.category || "Other") + "</dd></div>" +
     "</dl>" +
-    '<div class="tool-authoring-link"><a href="/tools/guide/" target="_blank" rel="noopener">Tool authoring guide</a></div>' +
+    '<div class="tool-authoring-link"><a href="/assistant/tools/guide/" target="_blank" rel="noopener">Tool authoring guide</a></div>' +
     '<div class="tool-rows">' + tools.map(toolRow).join("") + "</div>" +
     "</article>"
   );

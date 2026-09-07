@@ -926,10 +926,11 @@ def test_modules_do_not_redefine_the_shared_html_escaper():
 # The text-node DOM builder (h() / svg()) is the entire basis of the
 # "untrusted strings never reach innerHTML" safety argument: string children
 # become text nodes, so transcripts, provider names, device labels, etc. are
-# escaped by the DOM. It was copy-pasted across the /chat/ and /system/ module
-# graphs (and had already drifted — `catch (_)` vs `catch`, divergent comments)
-# before it was promoted to the shared module at /assets/shared/js/dom.js (same
-# shared-by-promotion path as dialog.js / escape.js / http.js). Pages now import
+# escaped by the DOM. It was copy-pasted across the /assistant/chat/ and
+# /system/ module graphs (and had already drifted — `catch (_)` vs `catch`,
+# divergent comments) before it was promoted to the shared module at
+# /assets/shared/js/dom.js (same shared-by-promotion path as dialog.js /
+# escape.js / http.js). Pages now import
 # h/svg from there. This test keeps the duplication from creeping back: no
 # canonical module may re-declare its own h()/svg() builder again — dom.js is
 # the one home for the XSS-safety primitive.
@@ -1033,8 +1034,8 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
 # update the allowlist in the same PR, never pass by accident. Delete an
 # entry outright once its module reaches 0.
 _INLINE_STYLE_ALLOWLIST = {
-    # Services cluster (C.A5): /google/, /ha/, /transit/, /weather/ each get
-    # an app.css-token pass as part of that row.
+    # Services cluster (C.A5): the four /assistant/ service pages each get an
+    # app.css-token pass as part of that row.
     "google_setup.py": 7,
     "home_assistant_setup.py": 1,
     "transit_setup.py": 3,
@@ -1075,14 +1076,14 @@ _PAGE_MODULE = {
     "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
     "/sound/measurements/": "correction_measurements",
-    "/voice/": "voice_setup",
-    "/wake/": "wake_setup",
-    "/chat/": "chat_setup",
-    "/tools/": "tools_setup",
-    "/weather/": "weather_setup",
-    "/transit/": "transit_setup",
-    "/google/": "google_setup",
-    "/ha/": "home_assistant_setup",
+    "/assistant/voice/": "voice_setup",
+    "/assistant/wake/": "wake_setup",
+    "/assistant/chat/": "chat_setup",
+    "/assistant/tools/": "tools_setup",
+    "/assistant/weather/": "weather_setup",
+    "/assistant/transit/": "transit_setup",
+    "/assistant/google/": "google_setup",
+    "/assistant/ha/": "home_assistant_setup",
     "/wifi/": "wifi_setup",
     "/sound/pair/": "rooms_setup",
     "/sound/pair/sync/": "sync_flow",
@@ -1097,13 +1098,13 @@ _PAGE_MODULE = {
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
 _TITLE_ALLOWLIST = {
-    ("/voice/", "Voice"): {"back", "title", "header"},              # C.A2
-    ("/wake/", "Wake word"): {"back"},                              # C.A3
-    ("/tools/", "Tools"): {"back"},                                 # C.A4
-    ("/weather/", "Weather"): {"back"},                             # C.A5
-    ("/transit/", "Transit"): {"back"},                             # C.A5
-    ("/google/", "Google"): {"back", "title", "header"},            # C.A5
-    ("/ha/", "Home Assistant"): {"back"},                           # C.A5
+    ("/assistant/voice/", "Voice"): {"back", "title", "header"},    # C.A2
+    ("/assistant/wake/", "Wake word"): {"back"},                    # C.A3
+    ("/assistant/tools/", "Tools"): {"back"},                       # C.A4
+    ("/assistant/weather/", "Weather"): {"back"},                   # C.A5
+    ("/assistant/transit/", "Transit"): {"back"},                   # C.A5
+    ("/assistant/google/", "Google"): {"back", "title", "header"},  # C.A5
+    ("/assistant/ha/", "Home Assistant"): {"back"},                 # C.A5
 }
 
 _SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}

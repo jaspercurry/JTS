@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// views.js — build-once / update-on-fetch rendering for /chat/.
+// views.js — build-once / update-on-fetch rendering for /assistant/chat/.
 //
 // The conversation store treats transcript text and data_json as untrusted.
 // This module never uses innerHTML; all visible content is built with text

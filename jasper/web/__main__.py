@@ -12,21 +12,21 @@ separate systemd unit per wizard. Which wizards a tier hosts is derived
 from that tier's ``Capability`` grants, never from its name — see
 ``WizardSpec.requires``. nginx routes:
 
-  /spotify/  →  127.0.0.1:8765  (jasper.web.spotify_setup)
-  /voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
-  /google/   →  127.0.0.1:8768  (jasper.web.google_setup)
-  /airplay/  →  127.0.0.1:8771  (jasper.web.airplay_setup)
-  /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
-  /wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
-  /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
-  /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
-  /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
-  /weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
-  /wake-corpus/ → 127.0.0.1:8782  (lazy jasper.web.wake_corpus_setup)
-  /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
-  /sound/    →  127.0.0.1:8784  (jasper.web.sound_setup)
-  /sound/pair/ →  127.0.0.1:8785  (jasper.web.rooms_setup)
-  /tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
+  /spotify/            →  127.0.0.1:8765  (jasper.web.spotify_setup)
+  /assistant/voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
+  /assistant/google/   →  127.0.0.1:8768  (jasper.web.google_setup)
+  /airplay/            →  127.0.0.1:8771  (jasper.web.airplay_setup)
+  /sources/            →  127.0.0.1:8773  (jasper.web.sources_setup)
+  /assistant/wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
+  /wifi/               →  127.0.0.1:8775  (jasper.web.wifi_setup)
+  /assistant/transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
+  /assistant/ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
+  /assistant/weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
+  /wake-corpus/        →  127.0.0.1:8782  (lazy jasper.web.wake_corpus_setup)
+  /speaker/            →  127.0.0.1:8783  (jasper.web.speaker_setup)
+  /sound/              →  127.0.0.1:8784  (jasper.web.sound_setup)
+  /sound/pair/         →  127.0.0.1:8785  (jasper.web.rooms_setup)
+  /assistant/tools/    →  127.0.0.1:8786  (jasper.web.tools_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Google OAuth setup wizard at /google/.
+"""Google OAuth setup wizard at /assistant/google/.
 
 Multi-account, household-aware — mirrors `jasper.web.spotify_setup` but
 simpler (no playlist management, no transport-routing logic; just paste
@@ -16,7 +16,7 @@ Three states, single index page renders the appropriate one:
   3. Creds set, accounts exist → management UI (list, default, remove,
      add more).
 
-Routes (paths the app sees AFTER nginx strips the /google/ prefix):
+Routes (paths the app sees AFTER nginx strips the /assistant/google/ prefix):
   GET  /                    state-aware setup/management UI
   POST /setup-credentials   save CLIENT_ID/SECRET, restart jasper-voice
   POST /reset-credentials   clear creds (back to state 1)

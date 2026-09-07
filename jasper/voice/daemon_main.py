@@ -696,7 +696,8 @@ async def run() -> None:
     if pricing.label.startswith("unpriced:"):
         # No rate for the active model (not in the bundled dated defaults
         # nor the override). We do NOT invent one — cost will read $0 and
-        # the spend cap can't bound it until a rate is entered at /voice.
+        # the spend cap can't bound it until a rate is entered at
+        # /assistant/voice/.
         log_event(
             logger,
             "pricing.unpriced",
@@ -705,7 +706,7 @@ async def run() -> None:
             note=(
                 "no rate available; cost estimates will be $0 and the "
                 "spend cap cannot bound this model until you set a rate "
-                f"at http://{cfg.hostname}/voice"
+                f"at http://{cfg.hostname}/assistant/voice/"
             ),
             level=logging.WARNING,
         )
@@ -751,7 +752,7 @@ async def run() -> None:
             default_lat=cfg.weather_default_lat,
             default_lon=cfg.weather_default_lon,
             default_name=cfg.weather_default_display_name,
-            setup_url=f"{cfg.hostname}/weather",
+            setup_url=f"{cfg.hostname}/assistant/weather/",
         )
         _arelease(stack, "weather", weather.aclose)
         # Transit (subway / bus / Citi Bike today; future city packs add more).
@@ -792,7 +793,7 @@ async def run() -> None:
         else:
             logger.info(
                 "home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN, "
-                "or visit http://%s/ha to configure)",
+                "or visit http://%s/assistant/ha/ to configure)",
                 cfg.hostname,
             )
         # Volume coordinator: owns the canonical listening_level (0-100),
@@ -972,7 +973,7 @@ async def run() -> None:
         )
 
         # Apply user-edited prompt overrides before any provider serializes the
-        # registry, then write the /run catalog the /tools/ wizard reads. Includes
+        # registry, then write the /run catalog the /assistant/tools/ wizard reads. Includes
         # EVERY tool (needs_setup ones via sentinel deps), with status from the
         # live registry + the user's disabled pack/tool sets. Fail-soft.
         from ..tool_prompt_overrides import read_prompt_overrides

@@ -382,7 +382,7 @@ def _build_test_registry(
         untrusted_monitor=untrusted_monitor,
     )
     # Use the production pack walk, but pass explicit empty disabled sets so
-    # evals don't inherit the household's staged /tools/ UI toggles.
+    # evals don't inherit the household's staged /assistant/tools/ UI toggles.
     registry.pack_outcomes = register_packs(
         registry,
         deps,

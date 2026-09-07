@@ -1730,7 +1730,7 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
     assert "openwakeword_asset_for_model(active_model)" in model_text
     assert "required_failures" in model_text
     assert "optional_failures" in model_text
-    assert "unavailable rows will be disabled in /wake/" in model_text
+    assert "unavailable rows will be disabled in /assistant/wake/" in model_text
 
 
 def test_base_source_builds_use_hash_checked_archives():

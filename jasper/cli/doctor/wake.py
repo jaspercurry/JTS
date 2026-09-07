@@ -98,7 +98,7 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                 return CheckResult(
                     "openWakeWord models", "fail",
                     f"active wake model path missing: {wake_model}; "
-                    "restore the custom model or choose a registered model in /wake/",
+                    "restore the custom model or choose a registered model in /assistant/wake/",
                     reason=REASON_ACTIVE_MODEL_MISSING,
                 )
             return CheckResult(
@@ -210,7 +210,7 @@ def _assess_wake_legs(
     speaker's permanent shape rather than a mode setting, and because the
     alternative is a permanent yellow naming causes that cannot exist on that
     box — `wake.leg_skipped` never fires for a leg never planned."""
-    hint = "Toggle at http://jts.local/wake/ (Wake detection card)."
+    hint = "Toggle at http://jts.local/assistant/wake/ (Wake detection card)."
     if push_to_talk_only:
         return CheckResult(
             "Wake legs", "skipped",

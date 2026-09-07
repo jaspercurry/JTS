@@ -1569,7 +1569,7 @@ def _assess_dtln_engine_from_stats(
         "without the DTLN leg. If the active input profile is chip-AEC "
         "(xvf_chip_aec, or auto resolving to it), the bridge never "
         "loads DTLN — check the profile via `curl -s "
-        "localhost:8780/aec` or http://jts.local/wake/. Otherwise the "
+        "localhost:8780/aec` or http://jts.local/assistant/wake/. Otherwise the "
         "bridge may not have restarted since the env changed — try: "
         "sudo systemctl restart jasper-aec-bridge",
         reason=REASON_DTLN_NOT_STARTED_WITH_LEG,

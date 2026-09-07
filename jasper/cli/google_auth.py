@@ -4,10 +4,10 @@
 
 """One-time Google OAuth bootstrap CLI fallback for headless setup.
 
-The web wizard at http://jts.local/google is the supported path. This
-CLI exists as a fallback for headless / scripted installs (mirroring
-``jasper-spotify-auth``) — paste the auth URL into a browser on
-another device, sign in, paste the redirected URL back here.
+The web wizard at http://jts.local/assistant/google/ is the supported
+path. This CLI exists as a fallback for headless / scripted installs
+(mirroring ``jasper-spotify-auth``) — paste the auth URL into a browser
+on another device, sign in, paste the redirected URL back here.
 
 Run: ``jasper-google-auth <name>`` where ``<name>`` is the household-
 member label (``jasper``, ``brittany``). Idempotent — re-running
@@ -43,9 +43,9 @@ def main() -> None:
         prog="jasper-google-auth",
         description=(
             "Headless Google OAuth bootstrap. Prefer the web wizard at "
-            "http://jts.local/google when a browser is reachable on "
-            "the LAN — this CLI exists for scripted installs and "
-            "remote-shell setup."
+            "http://jts.local/assistant/google/ when a browser is "
+            "reachable on the LAN — this CLI exists for scripted "
+            "installs and remote-shell setup."
         ),
     )
     parser.add_argument(

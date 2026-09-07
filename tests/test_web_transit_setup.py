@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /transit/ wizard after its migration to the canonical look.
+"""Tests for the /assistant/transit/ wizard after its migration to the canonical look.
 
 Companion to tests/test_transit_setup.py (which covers the full state /
 save / clear behaviour). This file is the migration guard: it asserts the
@@ -97,8 +97,8 @@ def test_transit_page_has_shared_app_header():
 
 
 def test_transit_page_honors_safe_back_href():
-    out = _render({}, back_href="/tools/pack/nyc-transit/")
-    assert 'href="/tools/pack/nyc-transit/"' in out
+    out = _render({}, back_href="/assistant/tools/pack/nyc-transit/")
+    assert 'href="/assistant/tools/pack/nyc-transit/"' in out
 
 
 def test_transit_page_loads_es_module_not_inline_script():
@@ -287,11 +287,11 @@ def test_get_root_renders_canonical_page(tmp_path):
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(tmp_path):
     handler = _handler_cls(tmp_path)
-    h = FakeHandler("/?return_to=%2Ftools%2Fpack%2Fnyc-transit%2F")
+    h = FakeHandler("/?return_to=%2Fassistant%2Ftools%2Fpack%2Fnyc-transit%2F")
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert 'href="/tools/pack/nyc-transit/"' in out
+    assert 'href="/assistant/tools/pack/nyc-transit/"' in out
 
 
 def test_get_root_rejects_off_origin_return_link(tmp_path):

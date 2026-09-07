@@ -264,7 +264,8 @@ export function haBody(ha) {
   const out = [defList([["Status", statusNode], ["URL", url], ["Version", version]])];
   if (detail) out.push(h("p.info-card__note", null, detail));
   out.push(h("p.info-card__note", null,
-    "Configure at ", h("a.link", { href: "/ha/" }, "jts.local/ha"), "."));
+    "Configure at ", h("a.link", { href: "/assistant/ha/" },
+      "jts.local/assistant/ha"), "."));
   return out;
 }
 

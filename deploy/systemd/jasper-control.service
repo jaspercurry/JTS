@@ -40,7 +40,7 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # producing a 502 "doesn't accept remote control" on every remote click.
 # Leading `-` makes systemd skip if the file's missing (fresh install).
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
-# Voice provider selection written by the wizard at https://jts.local/voice/.
+# Voice provider selection written by the wizard at http://jts.local/assistant/voice/.
 # Same precedence rule as jasper-voice's unit file: later EnvironmentFile=
 # wins, so the wizard-written file overrides any JASPER_VOICE_PROVIDER
 # default in jasper.env. The /system dashboard reads this when rendering

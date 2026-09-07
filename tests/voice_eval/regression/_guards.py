@@ -26,11 +26,12 @@ def require_google(harness, *, product: str) -> None:
         pytest.skip(
             "voice-eval: Google not configured (no GOOGLE_CLIENT_ID / "
             f"GOOGLE_CLIENT_SECRET) — {product_lower} tools not registered. Set "
-            "the env + link an account at jts.local/google to run this."
+            "the env + link an account at jts.local/assistant/google/ to run "
+            "this."
         )
     if not clients.list_account_names():
         pytest.skip(
             "voice-eval: Google CLIENT_ID/SECRET set but no account "
             f"linked — {product_lower} tools not registered. Link one at "
-            "jts.local/google to run this scenario."
+            "jts.local/assistant/google/ to run this scenario."
         )

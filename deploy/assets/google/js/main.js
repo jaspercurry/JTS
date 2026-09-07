@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /google/ wizard behaviour.
+// main.js — /assistant/google/ wizard behaviour.
 //
 // The Google OAuth wizard is server-rendered request/response (forms POST
 // to ./setup-credentials, ./start, ./remove, ./default, ./reset-credentials;

@@ -175,7 +175,7 @@ _ENV_MIGRATIONS_SH = (
 
 def test_install_creates_google_dir_setgid():
     """The Google tree's group access (so non-root voice + web can read/write OAuth tokens) is
-    set authoritatively by install as root, setgid so tokens the /google/ wizard writes
+    set authoritatively by install as root, setgid so tokens the /assistant/google/ wizard writes
     inherit the group directly. It lives in the jasper-secrets compartment at mode 2770 group
     jasper-secrets (was the broad 2750 group jasper). Guard the setgid + group so a
     silently dropped bit can't leave a freshly linked account's tokens unreadable."""

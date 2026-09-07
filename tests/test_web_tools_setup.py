@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Handler-level tests for the /tools/ catalog wizard.
+"""Handler-level tests for the /assistant/tools/ catalog wizard.
 
 The static web-convention/design-system gates (test_web_wizard_conventions,
 test_web_json_island, test_web_design_system) already cover the page's shape;
@@ -177,7 +177,7 @@ def test_get_root_renders_canonical_page(tmp_path):
     assert_canonical_page(out)
     assert "/assets/tools/tools.css?v=" in out
     assert 'meta name="jts-csrf"' in out
-    assert 'href="/tools/guide/"' in out
+    assert 'href="/assistant/tools/guide/"' in out
     assert 'target="_blank" rel="noopener"' in out
     assert '<script type="module" src="/assets/tools/js/main.js">' in out
 
@@ -194,7 +194,7 @@ def test_get_tool_detail_renders_canonical_page(tmp_path):
     out = h.wfile.getvalue().decode()
     assert_canonical_page(out)
     assert "/assets/tools/tools.css?v=" in out
-    assert 'href="/tools/"' in out
+    assert 'href="/assistant/tools/"' in out
     assert 'id="tool-detail-data"' in out
     assert '"pack_id": "tool:get_weather"' in out
     assert '<script type="module" src="/assets/tools/js/detail.js">' in out
@@ -525,13 +525,13 @@ def test_post_toggle_pack_needs_setup_records_setup_intent(tmp_path, monkeypatch
         "tools": [_tool(
             "home_assistant",
             status="needs_setup",
-            setup_url="/ha/",
+            setup_url="/assistant/ha/",
             requires_setup=True,
             pack={
                 "id": "home-assistant",
                 "title": "Home Assistant",
                 "summary": "",
-                "setup_url": "/ha/",
+                "setup_url": "/assistant/ha/",
             },
         )],
     })
@@ -561,13 +561,13 @@ def test_post_toggle_pack_needs_setup_off_clears_setup_intent(tmp_path, monkeypa
         "tools": [_tool(
             "home_assistant",
             status="needs_setup",
-            setup_url="/ha/",
+            setup_url="/assistant/ha/",
             requires_setup=True,
             pack={
                 "id": "home-assistant",
                 "title": "Home Assistant",
                 "summary": "",
-                "setup_url": "/ha/",
+                "setup_url": "/assistant/ha/",
             },
         )],
     })

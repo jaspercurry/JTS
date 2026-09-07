@@ -171,7 +171,7 @@ def test_read_aec_state_parses_all_leg_keys(aec_mode_file):
 
 def test_read_aec_state_chip_aec_defaults_off_when_absent(aec_mode_file):
     """Pre-chip-AEC deploys lack JASPER_WAKE_LEG_CHIP_AEC; the helper
-    surfaces the default (off) so the /wake/ UI doesn't show a stale or
+    surfaces the default (off) so the /assistant/wake/ UI doesn't show a stale or
     accidentally-on chip toggle before the reconciler appends the key."""
     aec_mode_file.write_text(
         "JASPER_AEC_MODE=auto\n"
@@ -444,7 +444,7 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
 
 
 def test_write_wake_threshold_preserves_model(wake_model_file):
-    """The slider on /system writes the same file as the /wake/
+    """The slider on /system writes the same file as the /assistant/wake/
     wizard. A threshold write must preserve any JASPER_WAKE_MODEL
     in place — otherwise picking a new sensitivity would silently
     revert the user's wake-word choice."""
@@ -501,7 +501,7 @@ def test_read_wake_threshold_falls_back_to_env(wake_model_file, monkeypatch):
 
 def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monkeypatch):
     """The control-plane unconfigured fallback MUST equal the daemon's
-    compiled-in default. If they drift, /wake/'s slider and
+    compiled-in default. If they drift, /assistant/wake/'s slider and
     /state.aec.threshold show a value higher than what jasper-voice is
     actually running, and a Save at the displayed value silently RAISES
     the live threshold (the bug this guards). Assert against the daemon
@@ -577,7 +577,7 @@ def test_audio_profile_status_answers_the_same_on_doctor_and_aec(
 def test_aec_full_status_includes_legs_and_threshold(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
-    """The /wake/ microphone settings view polls this every 3s. All
+    """The /assistant/wake/ microphone settings view polls this every 3s. All
     fields must be present in the response shape so the JS doesn't
     have to null-check across deploy boundaries."""
     aec_mode_file.write_text(
@@ -887,7 +887,7 @@ def test_aec_full_status_chip_available_tracks_firmware(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
     """The chip-AEC leg's `available` flag mirrors the detected mic beam
-    plan, so the /wake/ toggle can grey out on unsupported firmware or
+    plan, so the /assistant/wake/ toggle can grey out on unsupported firmware or
     geometry. Configured state is independent of available."""
     aec_mode_file.write_text(
         "JASPER_AEC_MODE=auto\n"
@@ -1132,7 +1132,7 @@ def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
     """After an advanced toggle POST, aec_mode.env is already saved while
-    jasper-aec-reconcile restarts asynchronously. The /wake/ checkbox must
+    jasper-aec-reconcile restarts asynchronously. The /assistant/wake/ checkbox must
     reflect saved intent, not briefly flip back to the old runtime state."""
 
     aec_mode_file.write_text(
@@ -1475,7 +1475,7 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
 def test_aec_full_status_survives_firmware_probe_error(
     aec_mode_file, wake_model_file, monkeypatch,
 ):
-    """A failing firmware probe must never 500 the status GET the /wake/
+    """A failing firmware probe must never 500 the status GET the /assistant/wake/
     page polls every 3 s — it degrades to available=False."""
     aec_mode_file.write_text("JASPER_AEC_MODE=auto\n")
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)

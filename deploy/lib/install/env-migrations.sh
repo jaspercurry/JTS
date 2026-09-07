@@ -643,7 +643,7 @@ widen_control_secret_env_modes() {
     #   - wizard location state: transit.env (DOES carry a secret — the BusTime
     #     API key — and jasper-control reads it off disk, see the doctor's
     #     privsep MANIFEST) and weather.env (coords + units, no secret; the
-    #     /weather/ wizard reads it off disk as jasper-web). Both readers are
+    #     /assistant/weather/ wizard reads it off disk as jasper-web). Both readers are
     #     non-root and in group `jasper`.
     # The WiFi guardian PSK stash is DELIBERATELY NOT widened here — it
     # holds the WiFi password, which jasper-control does not need the value of

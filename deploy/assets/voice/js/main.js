@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /voice/ page behaviour.
+// main.js — /assistant/voice/ page behaviour.
 //
 // The page is server-rendered: every form POSTs to its own endpoint and the
 // server re-renders. This module only adds small client affordances and

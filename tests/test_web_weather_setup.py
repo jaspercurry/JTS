@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Canonical-design-system tests for the migrated /weather/ wizard.
+"""Canonical-design-system tests for the migrated /assistant/weather/ wizard.
 
 Two concerns:
 
@@ -84,8 +84,8 @@ def test_render_has_shared_app_header():
 
 
 def test_render_honors_safe_back_href():
-    out = _render(back_href="/tools/pack/weather/")
-    assert 'href="/tools/pack/weather/"' in out
+    out = _render(back_href="/assistant/tools/pack/weather/")
+    assert 'href="/assistant/tools/pack/weather/"' in out
 
 
 def test_render_embeds_csrf_meta_and_keeps_form_fields():
@@ -192,7 +192,7 @@ def test_render_banner_mirrors_flash_severity():
 
 @pytest.fixture
 def live_server(tmp_path, monkeypatch):
-    """Run /weather/ on a random port against tmp state; suppress
+    """Run /assistant/weather/ on a random port against tmp state; suppress
     systemctl. Mirrors the other web fixture shapes."""
     monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: None)
     state_path = str(tmp_path / "weather.env")
@@ -227,9 +227,9 @@ def test_get_root_serves_canonical_page(live_server):
 def test_get_root_with_tools_return_uses_tool_pack_back_link(live_server):
     import urllib.parse
     import urllib.request
-    path = "/?return_to=" + urllib.parse.quote("/tools/pack/weather/", safe="")
+    path = "/?return_to=" + urllib.parse.quote("/assistant/tools/pack/weather/", safe="")
     body = urllib.request.urlopen(live_server["url"] + path).read().decode()
-    assert 'href="/tools/pack/weather/"' in body
+    assert 'href="/assistant/tools/pack/weather/"' in body
 
 
 def test_get_root_rejects_off_origin_return_link(live_server):

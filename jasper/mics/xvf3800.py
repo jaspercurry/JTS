@@ -675,7 +675,7 @@ def firmware_update_status(
     service_active: bool = False,
     last_update: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the read-only firmware update card for /wake/.
+    """Build the read-only firmware update card for /assistant/wake/.
 
     This is intentionally declarative: it decides whether JTS knows a safe,
     hash-pinned update for the detected geometry. It does not download or flash.

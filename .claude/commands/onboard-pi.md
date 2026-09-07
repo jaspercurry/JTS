@@ -263,12 +263,12 @@ For a **full** profile, walk the user through these one at a time:
 1. **`http://<hostname>.local/sound/setup/`** — required first. Choose mono
    or stereo, then passive or active. Audio stays off until the layout is
    saved.
-2. **`http://<hostname>.local/voice/`** — required. Pick a voice
+2. **`http://<hostname>.local/assistant/voice/`** — required. Pick a voice
    provider (Gemini is the cheapest at ~$0.025/min; OpenAI Realtime
    is best quality at ~$0.30/min; Grok is the middle option). Paste
    an API key. The speaker won't respond to "Hey Jarvis" until this
    is set.
-3. **`http://<hostname>.local/transit/`** — optional. NYC subway / bus
+3. **`http://<hostname>.local/assistant/transit/`** — optional. NYC subway / bus
    / Citi Bike. Skip if they're not in NYC.
 4. **`http://<hostname>.local/spotify/`** — optional. Connect Spotify
    so "play Taylor Swift" works without phone interaction.
@@ -282,7 +282,7 @@ For a **streambox** profile, explain that AirPlay, Spotify Connect,
 Bluetooth, DSP, grouping, and management are installed locally, while the
 voice/microphone brain is intentionally omitted. Walk them through the
 banner's `/sources/`, `/spotify/`, `/sound/`, `/sound/pair/`, and `/system/`
-links. Do not send them to `/voice/` or `/transit/`.
+links. Do not send them to `/assistant/voice/` or `/assistant/transit/`.
 
 If the banner says audio is safely parked because no output DAC was found,
 this is an actionable next step, not an installation failure. Ask them to
@@ -358,7 +358,7 @@ needed.
 For a **full** profile, confirm one last time:
 - They saved a mono/stereo passive/active layout at
   `http://<hostname>.local/sound/setup/`.
-- They can hit `http://<hostname>.local/voice/` from their phone/laptop.
+- They can hit `http://<hostname>.local/assistant/voice/` from their phone/laptop.
 - They've pasted an API key for at least one voice provider.
 - They've heard the speaker respond to "Hey Jarvis" with a brief
   greeting (or whatever the model decides to say) at least once.

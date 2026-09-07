@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// api.js — shared fetch helpers for the /chat/ dashboard.
+// api.js — shared fetch helpers for the /assistant/chat/ dashboard.
 //
 // Re-export the cross-page module so this page keeps the same small graph
 // shape as /system/: page code imports `./api.js`, while the CSRF/header

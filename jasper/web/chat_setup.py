@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conversation-history dashboard and household controls at /chat/."""
+"""Conversation-history dashboard and household controls at /assistant/chat/."""
 from __future__ import annotations
 
 import json
@@ -76,7 +76,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:
-            # nginx strips the /chat/ prefix so we see "/" and "/data.json".
+            # nginx strips the /assistant/chat/ prefix so we see "/" and "/data.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
@@ -261,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
 
     return _wizard_cli.run_wizard_cli(
         "jasper-chat-web",
-        "Conversation history dashboard at /chat/ for JTS",
+        "Conversation history dashboard at /assistant/chat/ for JTS",
         8787,
         argv,
         make_server=make_server,

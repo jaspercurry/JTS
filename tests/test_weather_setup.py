@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /weather/ setup wizard."""
+"""Tests for the /assistant/weather/ setup wizard."""
 from __future__ import annotations
 
 import threading

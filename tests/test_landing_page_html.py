@@ -700,6 +700,88 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert not re.search(r"location\s+=?\s*/correction", nginx)
 
 
+# Every Assistant page whose URL moved under the hub prefix (C.A1), and the
+# upstream it must still reach. `/wake/` is full-profile only: the streambox
+# never gets WAKE_DETECTION.
+_ASSISTANT_MOVES = {
+    "/voice/": "127.0.0.1:8767",
+    "/google/": "127.0.0.1:8768",
+    "/wake/": "127.0.0.1:8774",
+    "/transit/": "127.0.0.1:8777",
+    "/ha/": "127.0.0.1:8778",
+    "/weather/": "127.0.0.1:8779",
+    "/tools/": "127.0.0.1:8786",
+    "/chat/": "127.0.0.1:8787",
+}
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_assistant_pages_proxy_at_their_hub_path_and_redirect_from_the_old_one(
+    conf_path: Path,
+) -> None:
+    """The Assistant hub's children take its prefix, and old links follow.
+
+    A page is served at `/assistant/<name>/` on the same upstream as before,
+    and the bare `/<name>/` prefix returns a prefix-preserving 301 so a
+    bookmark or a deep link with a query string still lands.
+    """
+    conf = conf_path.read_text(encoding="utf-8")
+    served = set()
+    for ports, locations in _nginx_servers(conf):
+        if 80 not in ports:
+            continue
+        for old, upstream in _ASSISTANT_MOVES.items():
+            moved = locations.get(("", f"/assistant{old}"))
+            if moved is None:
+                continue
+            assert _proxy_upstream(moved) == upstream
+            compat = locations[("", old)]
+            assert compat.strip() == "return 301 /assistant$request_uri;"
+            served.add(old)
+
+    assert served == set(_ASSISTANT_MOVES) - (
+        set() if conf_path == _NGINX_PATH else {"/wake/"}
+    )
+    # A redirect block and a proxy block under one path is a duplicate
+    # location: nginx refuses the conf outright, and `_nginx_servers` would
+    # quietly keep only the last one.
+    for chunk in conf.split("\nserver {")[1:]:
+        body = chunk[: chunk.index("\n}")] if "\n}" in chunk else chunk
+        headers = [
+            (m.group("mod") or "", m.group("path"))
+            for m in _LOCATION_RX.finditer(body)
+        ]
+        duplicates = {h for h in headers if headers.count(h) > 1}
+        assert not duplicates, duplicates
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_google_oauth_callback_path_is_pinned_outside_the_wizard_prefix(
+    conf_path: Path,
+) -> None:
+    """`/google/callback` is an externally registered URL, not an in-repo one.
+
+    The bounce page at jaspercurry/google-oauth-callback sends the browser to
+    `http://<host>/google/callback`; nothing in this repo can change where it
+    lands. So the path gets its own exact block on the wizard's upstream,
+    independent of whichever prefix the wizard itself is served under.
+    """
+    servers = _nginx_servers(conf_path.read_text(encoding="utf-8"))
+    listeners = set()
+    for ports, locations in servers:
+        callback = locations.get(("=", "/google/callback"))
+        if callback is None:
+            continue
+        assert "proxy_pass http://127.0.0.1:8768/callback;" in callback
+        listeners |= set(ports)
+
+    assert listeners == {80}
+
+
 def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
         nginx = path.read_text(encoding="utf-8")

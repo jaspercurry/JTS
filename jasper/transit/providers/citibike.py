@@ -4,7 +4,7 @@
 
 """Citi Bike transit provider — keyless, GBFS-backed.
 
-Implements `TransitProvider` for the wizard at `/transit/`. The
+Implements `TransitProvider` for the wizard at `/assistant/transit/`. The
 GBFS fetcher and runtime client live in `jasper.citibike`; this
 module is the thin wizard adapter that uses the same fetcher to
 present "nearest stations" with a live snapshot of capacity.

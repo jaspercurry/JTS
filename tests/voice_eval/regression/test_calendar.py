@@ -25,7 +25,7 @@ library".
 AUTH + COST NOTICE — read carefully before running
 ============================================================
 These scenarios need a linked Google account (CLIENT_ID/SECRET set
-AND at least one account OAuth-linked at jts.local/google). When
+AND at least one account OAuth-linked at jts.local/assistant/google/). When
 Google isn't configured the calendar tools aren't registered in the
 harness, so each scenario **skips cleanly** — `pytest
 tests/voice_eval/regression/test_calendar.py` is safe to run in any

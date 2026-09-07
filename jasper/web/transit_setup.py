@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Transit configuration wizard at /transit/.
+"""Transit configuration wizard at /assistant/transit/.
 
 UX (single page):
 
@@ -45,7 +45,7 @@ Restart: every successful save kicks `systemctl restart jasper-voice`
 (non-blocking, see `_common.restart_voice_daemon`). The transit tools
 re-register on the daemon's next boot based on the new env values.
 
-URL surface (after nginx strips /transit/):
+URL surface (after nginx strips /assistant/transit/):
   GET  /             page render (geocodes once on Submit, never on render)
   POST /geocode      address → coords; redirects back
   POST /save         persist picks; restart voice; redirects back

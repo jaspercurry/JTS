@@ -91,7 +91,7 @@ class GoogleRoutesConfig:
     api_key: str
     origin: location_state.SavedLocation
     default_mode: str = DEFAULT_TRAVEL_MODE
-    setup_url: str = f"{DEFAULT_HOSTNAME}/transit"
+    setup_url: str = f"{DEFAULT_HOSTNAME}/assistant/transit/"
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ class GoogleRoutesConfigStatus:
 
 
 def _setup_url(env: Mapping[str, str] | None) -> str:
-    """The speaker's own /transit URL.
+    """The speaker's own /assistant/transit/ URL.
 
     ``None`` means this process's own environment, so the ONE resolver
     answers and this module stops carrying a second spelling of the
@@ -117,9 +117,9 @@ def _setup_url(env: Mapping[str, str] | None) -> str:
     in must never be handed this box's identity.
     """
     if env is None:
-        return f"{resolve_hostname()}/transit"
+        return f"{resolve_hostname()}/assistant/transit/"
     hostname = (env.get("JASPER_HOSTNAME") or "").strip() or DEFAULT_HOSTNAME
-    return f"{hostname}/transit"
+    return f"{hostname}/assistant/transit/"
 
 
 def normalize_travel_mode(value: str) -> str | None:

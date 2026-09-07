@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the transit setup wizard at /transit/.
+"""Tests for the transit setup wizard at /assistant/transit/.
 
 Risky bits exercised here:
   1. State file lifecycle — geocode writes coords; save merges picks
@@ -854,14 +854,14 @@ def test_transit_env_file_mode_is_0640(tmp_path: Path):
 #
 # When the daemon boots with neither subway nor bus configured, the voice
 # model gets a conditional instruction redirecting transit questions to
-# /transit/. When either tool IS registered, the nudge is omitted so the
+# /assistant/transit/. When either tool IS registered, the nudge is omitted so the
 # model just calls the live tool.
 
 
 def test_system_instruction_includes_transit_nudge_when_unconfigured():
     from jasper.voice.prompt import _build_system_instruction
     prompt = _build_system_instruction(location="", transit_configured=False)
-    assert "jts.local/transit" in prompt
+    assert "jts.local/assistant/transit/" in prompt
     # Conditional framing per CLAUDE.md guidance — "if the user asks…"
     # rather than absolute "never".
     assert "If the user asks" in prompt or "if the user asks" in prompt
@@ -870,7 +870,7 @@ def test_system_instruction_includes_transit_nudge_when_unconfigured():
 def test_system_instruction_omits_transit_nudge_when_configured():
     from jasper.voice.prompt import _build_system_instruction
     prompt = _build_system_instruction(location="", transit_configured=True)
-    assert "jts.local/transit" not in prompt
+    assert "jts.local/assistant/transit/" not in prompt
 
 
 def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
@@ -881,7 +881,7 @@ def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
         hostname="jts2.local",
     )
     assert "Travel time isn't set up yet" in prompt
-    assert "jts2.local/transit" in prompt
+    assert "jts2.local/assistant/transit/" in prompt
     assert "Google Routes API key" in prompt
 
 
@@ -896,4 +896,4 @@ def test_system_instruction_transit_configured_defaults_to_true():
     the nudge. The signature default is `True`."""
     from jasper.voice.prompt import _build_system_instruction
     prompt = _build_system_instruction(location="")
-    assert "jts.local/transit" not in prompt
+    assert "jts.local/assistant/transit/" not in prompt

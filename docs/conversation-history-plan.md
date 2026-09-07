@@ -165,7 +165,7 @@ Feature.
   pass for render + date-filter behavior.
 - New `deploy/jasper-chat-web.{socket,service}` (copy `jasper-system-web.*`),
   added to `WIZARD_UNITS` in `deploy/lib/install/systemd-units.sh` (the
-  `restart`-not-`start` lesson) + a `location /chat/` block in
+  `restart`-not-`start` lesson) + a `location /assistant/chat/` block in
   `deploy/nginx-jasper.conf` + a `console_scripts` entry + a landing-page link.
 
 **Route decision:** `/chat` is currently unclaimed in code. The calibration

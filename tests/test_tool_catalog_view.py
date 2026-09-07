@@ -99,7 +99,7 @@ def test_overlay_setup_required_pack_defaults_off_until_user_opts_in():
     cat = {"tools": [{
         "name": "home_assistant",
         "status": "needs_setup",
-        "setup_url": "/ha/",
+        "setup_url": "/assistant/ha/",
         "requires_setup": True,
         "pack": {"id": "home-assistant", "title": "Home Assistant", "summary": ""},
         "category": "Smart Home",
@@ -119,7 +119,7 @@ def test_overlay_setup_required_pack_shows_needs_setup_after_opt_in():
     cat = {"tools": [{
         "name": "home_assistant",
         "status": "needs_setup",
-        "setup_url": "/ha/",
+        "setup_url": "/assistant/ha/",
         "requires_setup": True,
         "pack": {"id": "home-assistant", "title": "Home Assistant", "summary": ""},
         "category": "Smart Home",

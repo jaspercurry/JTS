@@ -2204,15 +2204,15 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
     tuningActionsEl().hidden,
     "tuning: not offered clears both internal affordances");
 
-  renderTuning({ offered: true, available: false, provider: "openai", nudge: "Add an OpenAI key at /voice" });
+  renderTuning({ offered: true, available: false, provider: "openai", nudge: "Add an OpenAI key at /assistant/voice/" });
   assert(!tuningPanelEl().hidden,
     "tuning: offered-but-unavailable reveals the panel");
   assert(!tuningNudgeEl().hidden,
     "tuning: offered-but-unavailable shows the nudge");
   assert(tuningActionsEl().hidden,
     "tuning: offered-but-unavailable hides the action buttons");
-  assert(tuningNudgeEl().textContent.indexOf("/voice") >= 0,
-    "tuning: the no-key nudge points at /voice");
+  assert(tuningNudgeEl().textContent.indexOf("/assistant/voice/") >= 0,
+    "tuning: the no-key nudge points at /assistant/voice/");
 
   renderTuning({ offered: true, available: true, provider: "openai", model: "gpt-5.4" });
   assert(!tuningActionsEl().hidden,

@@ -192,7 +192,7 @@ def _write_audio_input_profile(profile: str) -> None:
 
 def _read_wake_threshold() -> float:
     """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
-    (the /wake/ wizard's home) with the daemon's compiled-in default
+    (the /assistant/wake/ wizard's home) with the daemon's compiled-in default
     (0.3) as fallback. Same precedence the daemon uses on startup."""
     val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
     if not val:
@@ -211,8 +211,8 @@ def _read_wake_threshold() -> float:
 def _write_wake_threshold(value: float) -> None:
     """Atomic write of JASPER_WAKE_THRESHOLD into wake_model.env,
     preserving JASPER_WAKE_MODEL. Both keys are wizard-managed by the
-    /wake/ page (model picker writes JASPER_WAKE_MODEL via the form
-    save; sensitivity slider posts to /wake/sensitivity which lands
+    /assistant/wake/ page (model picker writes JASPER_WAKE_MODEL via the form
+    save; sensitivity slider posts to /assistant/wake/sensitivity which lands
     here)."""
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"threshold out of range: {value}")
@@ -379,7 +379,7 @@ def _fresh_jasper_env() -> dict[str, str]:
 
 
 def _read_wake_word_status() -> dict[str, Any]:
-    """Wake model label for the /wake/ status card."""
+    """Wake model label for the /assistant/wake/ status card."""
     from .. import wake_models
     state = read_env_file(_WAKE_MODEL_FILE)
     model = (state.get("JASPER_WAKE_MODEL") or "").strip()
@@ -474,7 +474,7 @@ def _aec_full_status() -> dict:
 
 def _build_aec_full_status() -> dict:
     """JSON shape returned by GET /aec — the single source of truth
-    for the /wake/ page's detection card. Includes both the configured
+    for the /assistant/wake/ page's detection card. Includes both the configured
     state (from aec_mode.env) and the observed bridge service state.
 
     Per-leg observed state isn't returned separately today. A
@@ -485,7 +485,7 @@ def _build_aec_full_status() -> dict:
 
     The chip-AEC leg also carries an `available` flag: production chip
     beams require a detected XVF profile with a validated beam plan, so the
-    /wake/ toggle stays disabled when the connected geometry has no plan."""
+    /assistant/wake/ toggle stays disabled when the connected geometry has no plan."""
     state = _read_aec_state()
     bridge_active = _aec_bridge_active()
     env = _fresh_jasper_env()

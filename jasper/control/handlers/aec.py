@@ -35,12 +35,12 @@ class AecRoutes(ControlHandlerMixin):
     def _get_aec(self) -> None:
         # AEC bridge state + per-leg config + wake
         # threshold. Mode and leg booleans are the persisted
-        # request (what the operator asked for, via the /wake/
+        # request (what the operator asked for, via the /assistant/wake/
         # page or aec_mode.env directly); bridge_active is the
         # observed truth from systemd. They diverge briefly
         # during a reconciler-driven transition (~10-15 s).
         # Threshold is read from wake_model.env — the same
-        # file the /wake/ form save writes the model into, so
+        # file the /assistant/wake/ form save writes the model into, so
         # both controls stay in sync without sharing code.
         #
         # DTLN load failures don't surface in this payload —
@@ -323,9 +323,9 @@ class AecRoutes(ControlHandlerMixin):
         return
 
     def _post_aec_threshold(self) -> None:
-        # Sensitivity slider on the /wake/ page. Writes
+        # Sensitivity slider on the /assistant/wake/ page. Writes
         # JASPER_WAKE_THRESHOLD into wake_model.env (same
-        # file the /wake/ form save writes the model into)
+        # file the /assistant/wake/ form save writes the model into)
         # and restarts jasper-voice — the openWakeWord
         # detector reads the threshold at startup, so a hot
         # config change without a restart wouldn't take

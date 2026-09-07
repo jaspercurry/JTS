@@ -201,10 +201,10 @@ Wi-Fi. Replace `jts.local` with your chosen hostname if needed.
 
 - **`http://jts.local/sound/setup/`** — required first. Choose mono or
   stereo, then passive or active. Audio stays off until you save this layout.
-- **`http://jts.local/voice/`** — required. Pick a voice provider
+- **`http://jts.local/assistant/voice/`** — required. Pick a voice provider
   (Gemini / OpenAI / Grok) and paste an API key. The speaker will
   not respond to "Hey Jarvis" until this is done.
-- **`http://jts.local/transit/`** — optional. NYC subway / bus /
+- **`http://jts.local/assistant/transit/`** — optional. NYC subway / bus /
   Citi Bike. Geocode your address; pick stops.
 - **`http://jts.local/spotify/`** — optional. Connect a Spotify
   account so "play Taylor Swift" works without your phone.
@@ -223,10 +223,10 @@ For a **streambox** profile, use only the locally installed surfaces:
 - **`http://jts.local/sound/pair/`** — group speakers.
 - **`http://jts.local/system/`** — dashboard and status.
 
-Streambox intentionally has no `/voice/` or `/transit/` setup. If the
-banner says audio is safely parked because no output DAC was detected,
-connect a supported DAC (the standard build uses the Apple USB-C → 3.5mm
-dongle with its analog plug attached), then open `/sound/`. That hardware
+Streambox intentionally has no `/assistant/voice/` or `/assistant/transit/`
+setup. If the banner says audio is safely parked because no output DAC was
+detected, connect a supported DAC (the standard build uses the Apple USB-C →
+3.5mm dongle with its analog plug attached), then open `/sound/`. That hardware
 next step does not mean installation failed.
 
 ---
@@ -418,7 +418,7 @@ remediation links. Common warnings:
 - **XVF firmware is 2-channel** — software AEC stays off until you
   DFU-flash 6-channel firmware. See
   [BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
-- **Voice provider not configured** — visit `/voice/` and paste an
+- **Voice provider not configured** — visit `/assistant/voice/` and paste an
   API key.
 - **Apple USB-C dongle not detected** — check that headphones (or
   the amp's input) are physically connected. The dongle is a smart

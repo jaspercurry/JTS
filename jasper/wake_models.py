@@ -7,7 +7,7 @@
 One source of truth, consumed by three callers:
   - `install.sh` decides which openWakeWord package assets and
     non-bundled `.onnx` files to fetch.
-  - The `/wake/` web wizard (`jasper/web/wake_setup.py`) renders one
+  - The `/assistant/wake/` web wizard (`jasper/web/wake_setup.py`) renders one
     row per entry so the household can flip models without SSH.
   - The voice daemon's `Config.wake_model` resolves the active
     selection (a registry key OR a raw path/stock name the operator

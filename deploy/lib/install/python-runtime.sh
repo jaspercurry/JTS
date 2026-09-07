@@ -441,7 +441,7 @@ PY
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo
         echo "Created ${ENV_DIR}/jasper.env from template."
-        echo "Pick a voice provider at http://${hostname_value}/voice before"
+        echo "Pick a voice provider at http://${hostname_value}/assistant/voice/ before"
         echo "starting jasper-voice — there is no default."
         echo
     fi

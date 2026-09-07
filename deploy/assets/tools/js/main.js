@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /tools/ catalog wizard behaviour.
+// main.js — /assistant/tools/ catalog wizard behaviour.
 //
-// Fetches /tools/catalog.json (voice's catalog metadata with the fresh
+// Fetches /assistant/tools/catalog.json (voice's catalog metadata with the fresh
 // disabled-set overlaid + a `pending` flag), renders the pack-first tool
 // library view, and wires search + delegated toggle handlers + explicit Apply.
 //
@@ -82,7 +82,7 @@ function onCardKeydown(e) {
 // we never had anything. Returns the freshly-read view (or null on failure).
 async function load({ keepStale = false } = {}) {
   try {
-    const next = await getJSON("/tools/catalog.json");
+    const next = await getJSON("/assistant/tools/catalog.json");
     if (next && next.unavailable && keepStale && toolsOf(catalog).length) {
       // Mid-restart: hold the existing list, just reflect that it's settling.
       catalog = { ...catalog, pending: !!next.pending };
@@ -107,7 +107,7 @@ async function load({ keepStale = false } = {}) {
 }
 
 const { onToggle, onApply } = createToolActions({
-  basePath: "/tools/",
+  basePath: "/assistant/tools/",
   statusEl,
   applyBtn,
   reload: load,

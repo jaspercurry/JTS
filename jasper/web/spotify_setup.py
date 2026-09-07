@@ -729,7 +729,7 @@ def _management_html(
 
 <div class="info-card">
   <p class="form-hint"><strong>Voice tools.</strong> Manage Spotify tool prompts
-     and enablement in <a href="/tools/pack/spotify/">Tools</a>.</p>
+     and enablement in <a href="/assistant/tools/pack/spotify/">Tools</a>.</p>
 </div>
 
 <h2>Accounts</h2>

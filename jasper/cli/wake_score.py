@@ -76,7 +76,7 @@ SAMPLE_RATE_HZ = 16000
 # windows produce undersized model input + misleading scores.
 FRAME_SAMPLES = 1280
 
-# Default wake threshold. Matches `jasper.config` and the `/wake/`
+# Default wake threshold. Matches `jasper.config` and the `/assistant/wake/`
 # wizard. Per-clip "fired" classification uses this unless overridden
 # via --threshold; threshold sweeps come later via repeated runs.
 DEFAULT_THRESHOLD = 0.5

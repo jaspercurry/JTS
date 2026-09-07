@@ -66,7 +66,7 @@ PROVIDER_USAGE="$(printf '%s\n' "$CATALOG_ROWS" | provider_ids_for_usage)"
 
 if [[ -z "$PROVIDER" ]]; then
     echo "Current voice provider on ${PI_HOST}:"
-    "${SSH[@]}" "sudo sh -c 'grep -h \"^JASPER_VOICE_PROVIDER=\" \"${PROVIDER_ENV}\" 2>/dev/null || echo \"(unset — visit http://${PI_HOST}/voice/)\"'"
+    "${SSH[@]}" "sudo sh -c 'grep -h \"^JASPER_VOICE_PROVIDER=\" \"${PROVIDER_ENV}\" 2>/dev/null || echo \"(unset — visit http://${PI_HOST}/assistant/voice/)\"'"
     echo
     MODEL_ENV_REGEX="$(printf '%s\n' "$CATALOG_ROWS" \
         | awk -F '\t' 'BEGIN { sep = "" } { printf "%s%s", sep, $3; sep = "|" } END { print "" }')"
@@ -89,7 +89,7 @@ fi
 KEY_LINE=$("${SSH[@]}" "sudo sh -c 'grep -h -E \"^${KEY_VAR}=.*\" \"${OPERATOR_ENV}\" \"${KEYS_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null | tail -1 || true'")
 if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
     echo "error: ${KEY_VAR} is not set for the effective voice config on ${PI_HOST}." >&2
-    echo "       Set it via http://${PI_HOST}/voice/ or ${OPERATOR_ENV}, then re-run." >&2
+    echo "       Set it via http://${PI_HOST}/assistant/voice/ or ${OPERATOR_ENV}, then re-run." >&2
     exit 3
 fi
 

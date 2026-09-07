@@ -11,7 +11,7 @@ good primary UI language.
 
 This module is the translation boundary. It consumes the read-only
 ``/aec`` status payload and produces task-oriented state for the
-``/wake/`` page: microphone, echo cancellation, wake word, and advanced
+``/assistant/wake/`` page: microphone, echo cancellation, wake word, and advanced
 fusion. It is side-effect-free so future mic families can add profile
 capabilities without pushing policy into browser JavaScript.
 """

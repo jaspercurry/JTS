@@ -334,7 +334,7 @@ class Config:
     # Google integration: per-household-member Calendar + Gmail OAuth.
     # CLIENT_ID/SECRET come from a single Google Cloud Console OAuth
     # client (same shape as Spotify). Per-account refresh tokens live
-    # under the registry path; the wizard at /google/ writes them.
+    # under the registry path; the wizard at /assistant/google/ writes them.
     google_client_id: str
     google_client_secret: str = field(repr=False)
     google_redirect_uri: str
@@ -440,8 +440,8 @@ class Config:
         if not provider:
             raise VoiceProviderNotConfigured(
                 "JASPER_VOICE_PROVIDER is not set — visit "
-                "http://jts.local/voice (or your speaker's hostname) "
-                "and pick a provider. The wizard will write "
+                "http://jts.local/assistant/voice/ (or your speaker's "
+                "hostname) and pick a provider. The wizard will write "
                 "/var/lib/jasper/voice_provider.env and restart "
                 "jasper-voice.",
             )
@@ -530,8 +530,9 @@ class Config:
             grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
             # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
             # (e.g. "hey_jarvis", "alexa") or an absolute path to a
-            # .onnx file under /var/lib/jasper/wake/. The /wake/ wizard
-            # writes /var/lib/jasper/wake_model.env to set it; the
+            # .onnx file under /var/lib/jasper/wake/. The
+            # /assistant/wake/ wizard writes
+            # /var/lib/jasper/wake_model.env to set it; the
             # curated picker rows + install-time download list live in
             # jasper/wake_models.py. The compiled-in fallback below is
             # "hey_jarvis" because it's the openWakeWord-bundled model
@@ -637,7 +638,7 @@ class Config:
             # Paid/provider TTS calibration is explicit opt-in. Passive
             # live-response measurement still learns profiles after real
             # replies; automatic seed calls should only run when an
-            # operator or the /voice/ "Save and Test" flow intentionally asks.
+            # operator or the /assistant/voice/ "Save and Test" flow intentionally asks.
             assistant_loudness_auto_seed=_env_bool(
                 "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
                 False,
@@ -785,7 +786,7 @@ class Config:
             google_redirect_uri=resolved_google_redirect_uri(),
             google_accounts_path=google_registry_path(),
             google_setup_url=_env(
-                "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",
+                "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/assistant/google/",
             ),
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
@@ -952,5 +953,5 @@ class Config:
         home_assistant tool is gated on this in `_build_registry`; when
         false, the model never sees the tool and handles smart-home
         requests conversationally ("smart-home control isn't set up
-        yet — visit jts.local/ha")."""
+        yet — visit jts.local/assistant/ha/")."""
         return bool(self.ha_url and self.ha_token)

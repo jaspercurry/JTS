@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build + write the /run/jasper/tools.json catalog the /tools/ wizard reads.
+"""Build + write the /run/jasper/tools.json catalog the /assistant/tools/ wizard reads.
 
 jasper-voice owns this file: it enumerates EVERY first-party tool (via
 gate-satisfying sentinel deps — the same pattern as
 tests/test_tool_manifest.py::_full_registry), knows the LIVE registry
 (configured + enabled) and the user's disabled-set, and computes each
-tool's status by set membership. The socket-activated /tools/ wizard only
+tool's status by set membership. The socket-activated /assistant/tools/ wizard only
 READS this JSON; it never imports jasper.tools (the transit lazy-import
 lesson — keep the wizard light).
 
@@ -35,7 +35,7 @@ from typing import Any, Iterable
 
 from ..log_event import log_event
 # Pack-payload assembly lives in the LIGHT read-side module so the
-# socket-activated /tools/ wizard can group tools without importing
+# socket-activated /assistant/tools/ wizard can group tools without importing
 # jasper.tools. The heavy bake-side writer here reuses the same helper so the
 # baked /run/jasper/tools.json `packs` and the wizard's re-derived view can't
 # drift (they were two copies that already had).
@@ -49,7 +49,7 @@ CATALOG_SCHEMA_VERSION = 2
 DEFAULT_CATALOG_PATH = "/run/jasper/tools.json"
 
 # Tools that are REAL registry/manifest entries but are NOT independently
-# user-toggleable, so they get no /tools/ card. home_assistant_confirm is the
+# user-toggleable, so they get no /assistant/tools/ card. home_assistant_confirm is the
 # confirmation half of the Home Assistant consequential-action safety flow and
 # read_research_result is the one-shot confirmation half of async research.
 # Both are internal companions, not browsable capabilities. Listing either lets
