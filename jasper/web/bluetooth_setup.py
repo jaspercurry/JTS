@@ -26,7 +26,6 @@ thread.
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import contextlib
 import json
@@ -39,7 +38,7 @@ import urllib.parse
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from dbus_next.errors import DBusError  # type: ignore
@@ -81,8 +80,7 @@ from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
 )
-from . import _systemd
-from ..logging_setup import configure_logging
+from . import _systemd, _wizard_cli
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
@@ -1300,60 +1298,35 @@ def _consume_pair_stream(mac: str):
 # ============================================================
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-bluetooth-web",
-        description="Generic Bluetooth control panel at /bluetooth/",
-    )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=8769,
-    )
-    args = parser.parse_args(argv)
+def make_server(target, *, idle_hold=_systemd.no_hold) -> ThreadingHTTPServer:
+    """Build the /bluetooth server. `target` is a socket / (host, port) tuple
+    / int port per _systemd.make_http_server's contract."""
+    return _systemd.make_http_server(target, _make_handler(idle_hold=idle_hold))
 
-    configure_logging()
 
+def _start_dispatcher(_args, tracker) -> dict[str, Any]:
     global DISPATCH
     DISPATCH = _AsyncDispatcher()
     DISPATCH.start()
+    return {"idle_hold": tracker.hold}
 
-    # When socket-activated by systemd, adopt the inherited listener
-    # instead of binding fresh. Direct CLI invocation falls through.
-    sockets = _systemd.adopt_systemd_sockets()
-    target = sockets[0] if sockets else (args.host, args.port)
 
-    # Idle-exit after 10 min of no requests so the resident set goes
-    # to zero between admin sessions. ~17 MB Pss savings when idle.
-    tracker = _systemd.IdleShutdownTracker()
-    handler_cls = _make_handler(idle_hold=tracker.hold)
-    server = _systemd.make_http_server(target, handler_cls)
-    _systemd.install_request_idle_bump(handler_cls, tracker)
-    tracker.start()
-
-    if sockets:
-        logger.info(
-            "jasper-bluetooth-web adopting systemd fd (pairing mode "
-            "auto-off after %ds when toggled on)",
-            DISCOVERABLE_AUTO_OFF_SEC,
-        )
-    else:
-        logger.info(
-            "jasper-bluetooth-web listening on http://%s:%d (pairing mode "
-            "auto-off after %ds when toggled on)",
-            args.host, args.port, DISCOVERABLE_AUTO_OFF_SEC,
-        )
-
-    _systemd.notify_ready()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    _systemd.notify_stopping()
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    parser = _wizard_cli.build_parser(
+        "jasper-bluetooth-web",
+        "Generic Bluetooth control panel at /bluetooth/",
+        8769,
+    )
+    return _wizard_cli.run_wizard_cli(
+        parser,
+        argv,
+        make_server=make_server,
+        start=_start_dispatcher,
+        detail=lambda _args: (
+            f"pairing mode auto-off after {DISCOVERABLE_AUTO_OFF_SEC}s "
+            f"when toggled on"
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -5,7 +5,6 @@
 """Conversation-history dashboard and household controls at /chat/."""
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import urllib.parse
@@ -26,7 +25,6 @@ from ._common import (
     send_html_response,
     send_proxy_json,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -259,54 +257,22 @@ def make_server(target) -> ThreadingHTTPServer:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-chat-web",
-        description="Conversation history dashboard at /chat/ for JTS",
+    from . import _systemd, _wizard_cli
+
+    parser = _wizard_cli.build_parser(
+        "jasper-chat-web",
+        "Conversation history dashboard at /chat/ for JTS",
+        8787,
     )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
+    return _wizard_cli.run_wizard_cli(
+        parser,
+        argv,
+        make_server=make_server,
+        tracker=_systemd.IdleShutdownTracker(
+            idle_threshold_sec=IDLE_SHUTDOWN_SEC,
+        ),
+        detail=lambda _args: f"idle={int(IDLE_SHUTDOWN_SEC)}s",
     )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8787,
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-
-    from . import _systemd
-
-    sockets = _systemd.adopt_systemd_sockets()
-    target = sockets[0] if sockets else (args.host, args.port)
-    server = make_server(target)
-
-    handler_cls = server.RequestHandlerClass
-    tracker = _systemd.IdleShutdownTracker(
-        idle_threshold_sec=IDLE_SHUTDOWN_SEC,
-    )
-    _systemd.install_request_idle_bump(handler_cls, tracker)
-    tracker.start()
-
-    if sockets:
-        logger.info(
-            "jasper-chat-web adopting systemd fd (idle=%ds)",
-            int(IDLE_SHUTDOWN_SEC),
-        )
-    else:
-        logger.info(
-            "jasper-chat-web listening on http://%s:%d",
-            args.host,
-            args.port,
-        )
-
-    _systemd.notify_ready()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    _systemd.notify_stopping()
-    return 0
 
 
 if __name__ == "__main__":

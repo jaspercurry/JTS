@@ -33,7 +33,6 @@ the idle management UI cheap on a 1 GB Pi.
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import concurrent.futures
 import hashlib
@@ -5046,30 +5045,19 @@ def _claim_crossover_state_owners() -> None:
         raise
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-correction-web",
-        description="HTTPS measurement daemon for the JTS speaker's /sound/ pages",
-    )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=8770,
-    )
-    parser.add_argument(
-        "--hostname",
-        default=os.environ.get("JASPER_HOSTNAME", "jts.local"),
-        help="speaker hostname used in the cert-download fallback link",
-    )
-    args = parser.parse_args(argv)
+def _configure_logging() -> None:
+    """This wizard's own journal bootstrap — unredacted, one of the listed
+    gaps in ``tests/test_logging_setup.py``'s ``_ALLOWLIST``: the measurement
+    program's files adopt ``configure_logging`` together, not one at a time.
+    """
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+
+def _start(args, tracker) -> dict[str, Any]:
     # Correction and crossover applies swap the live graph from this process,
     # so their swap duck needs a canonical target to release to.
     from jasper.volume_coordinator import install_env_canonical_target_provider
@@ -5079,10 +5067,22 @@ def main(argv: list[str] | None = None) -> int:
     # Socket Accept=no + one service ExecStart make this the sole lifecycle
     # boundary that may retire unfinished work from a previous process.
     _claim_crossover_state_owners()
+    return {"hostname": args.hostname, "idle_hold": tracker.hold}
 
-    from . import _systemd
-    sockets = _systemd.adopt_systemd_sockets()
-    target = sockets[0] if sockets else (args.host, args.port)
+
+def main(argv: list[str] | None = None) -> int:
+    from . import _systemd, _wizard_cli
+
+    parser = _wizard_cli.build_parser(
+        "jasper-correction-web",
+        "HTTPS measurement daemon for the JTS speaker's /sound/ pages",
+        8770,
+    )
+    parser.add_argument(
+        "--hostname",
+        default=os.environ.get("JASPER_HOSTNAME", "jts.local"),
+        help="speaker hostname used in the cert-download fallback link",
+    )
     # The idle exit is exactly the abandoned-sequence moment (user closed the
     # tab, no requests for the threshold AND no work in flight) — the daemon's
     # last in-process chance to converge a capture sequence parked on the
@@ -5090,38 +5090,17 @@ def main(argv: list[str] | None = None) -> int:
     # hook is bounded (_run_async timeout) and exception-guarded by the
     # tracker; on a deferred/failed restore the durable stash survives for the
     # next service-start claim boundary.
-    #
-    # The tracker is built BEFORE the server so `tracker.hold` can ride the
-    # handler cfg: a route that spawns background work (the measurement
-    # sessions) holds it for that work's whole lifetime, which is
-    # what makes "idle" mean abandoned again (issue #1854).
-    tracker = _systemd.IdleShutdownTracker(
-        on_idle_exit=_idle_exit_restore_capture_entry,
+    return _wizard_cli.run_wizard_cli(
+        parser,
+        argv,
+        make_server=make_server,
+        tracker=_systemd.IdleShutdownTracker(
+            on_idle_exit=_idle_exit_restore_capture_entry,
+        ),
+        start=_start,
+        detail=lambda args: f"hostname={args.hostname}",
+        configure=_configure_logging,
     )
-    server = make_server(
-        target, hostname=args.hostname, idle_hold=tracker.hold,
-    )
-    _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
-    tracker.start()
-
-    if sockets:
-        logger.info(
-            "jasper-correction-web adopting systemd fd (hostname=%s)",
-            args.hostname,
-        )
-    else:
-        logger.info(
-            "jasper-correction-web listening on http://%s:%d (hostname=%s)",
-            args.host, args.port, args.hostname,
-        )
-
-    _systemd.notify_ready()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    _systemd.notify_stopping()
-    return 0
 
 
 if __name__ == "__main__":
