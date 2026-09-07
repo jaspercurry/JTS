@@ -41,7 +41,6 @@ from ..service_units import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
     parse_systemctl_show_units,
-    systemd_int,
 )
 
 logger = logging.getLogger(__name__)
@@ -641,10 +640,6 @@ class SystemSampler:
     @classmethod
     def _tracked_service_units(cls) -> list[str]:
         return sorted(set(JASPER_SERVICE_GROUPS) | set(EXTRA_SERVICE_GROUPS))
-
-    @staticmethod
-    def _parse_systemd_int(value: str | None) -> int | None:
-        return systemd_int(value)
 
     @classmethod
     def _parse_systemctl_show_units(cls, text: str) -> dict[str, dict[str, Any]]:

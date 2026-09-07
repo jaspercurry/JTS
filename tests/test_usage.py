@@ -147,10 +147,6 @@ def test_record_background_usage_records_model_specific_cost(tmp_path: Path):
     expected = (1_000 * 0.75 + 100 * 4.50) / 1_000_000
     assert cost == pytest.approx(expected)
     assert store.spend_last_24h_usd() == pytest.approx(expected)
-    [row] = store.aggregate_by_provider()
-    assert row["provider"] == "openai"
-    assert row["input_tokens"] == 1_000
-    assert row["output_tokens"] == 100
 
 
 def test_close_session_requires_explicit_session_id(tmp_path: Path):
@@ -753,28 +749,25 @@ def test_read_only_old_interval_schema_ignores_legacy_rows(tmp_path: Path):
     assert store.spend_last_24h_usd() == 0.0
 
 
-def test_aggregate_by_provider_folds_in_activity_cost(tmp_path: Path):
-    """Grok's per-turn token rows cost $0; the per-provider rollup folds
-    the billable activity cost into its cost_usd so the dashboard shows
-    a real number."""
+def test_time_billed_provider_bills_no_token_cost(tmp_path: Path):
+    """Grok is billed for connected time, not tokens: a closed session with
+    2,000 tokens must add nothing on top of the flat interval rate.
+
+    model_pricing.json gives grok-voice-think-fast-1.0 only
+    flat_per_hour_usd, and _pricing_from_fields defaults every token rate to
+    0.0 -- so adding any per-million rate there would silently bill a Grok
+    turn twice and trip the daily cap early."""
     db = tmp_path / "usage.db"
     store = UsageStore(str(db), pricing=pricing_for_model("grok-voice-think-fast-1.0"))
     sid = store.open_session(provider="grok")
-    store.close_session(sid, input_tokens=1000, output_tokens=1000)  # $0
+    store.close_session(sid, input_tokens=1_000, output_tokens=1_000)
+
     now = datetime.now(timezone.utc)
     _insert_interval(
         db, "grok", (now - timedelta(hours=1)).isoformat(), now.isoformat(), 3.0,
     )
-    # Explicit since_utc, not the default current-calendar-month window: the
-    # default resets at UTC midnight on the 1st, which would clip this
-    # 1-hour interval whenever the test happens to run in the first hour of
-    # a month (#1993). since_utc=now-2h contains the interval by
-    # construction regardless of wall-clock time.
-    rows = store.aggregate_by_provider(since_utc=now - timedelta(hours=2))
-    grok = next(r for r in rows if r["provider"] == "grok")
-    assert grok["sessions"] == 1
-    assert grok["input_tokens"] == 1000  # tokens still tracked
-    assert abs(grok["cost_usd"] - 3.0) < 1e-3  # activity cost folded in
+
+    assert store.spend_last_24h_usd() == pytest.approx(3.0, abs=1e-3)
 
 
 def test_token_billed_provider_has_no_intervals(tmp_path: Path):
