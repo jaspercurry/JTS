@@ -375,9 +375,8 @@ Pi for periodic ground truth and the things only hardware reveals.
   `test_install_profile_tiers.py`.
 - Arch guard both ways (supported arch passes; unsupported aborts with a
   clear message and is overridable).
-- The new dry-run "Hardware tier" line is covered automatically by
-  `test_install_plan_covers_main.py`'s ratchet (a new `main()` step must
-  be marked or exempted) — see the PR.
+- The new dry-run "Hardware tier" line is pinned by
+  `test_install_hardware_tier.py`.
 - Keep the shared C++ `build_sandbox_jobs` / `rust_*` threshold tests; the
   tier helper does not change their values (it *names* the regions they
   already act in). Optional v2 reaches the C++ budget through the installed
@@ -402,12 +401,12 @@ source of truth — below it the Rust low-memory build is already active),
 so the only tier-owned constant is the 2 GB `constrained`/`standard`
 split (the jts2 OOM band vs. parallel-build headroom).
 
-**Surfaces it** in `print_install_plan` + `print_streambox_install_plan`
-(a "Hardware tier (detected on this host)" line — informative; identical
-for `full`/`unset` and across legacy aliases on the same machine, so the
-existing plan-equality tests still hold) and at real-install start via a
-structured `event=hardware_tier.detected …` log line (stdout +
-`logger -t jasper-install`, matching the memory-resilience events).
+**Surfaces it** in `print_install_plan`'s header (a "Hardware tier
+(detected on this host)" line — informative; identical for `full`/`unset`
+and across legacy aliases on the same machine, so the existing
+plan-equality tests still hold) and at real-install start via a structured
+`event=hardware_tier.detected …` log line (stdout + `logger -t
+jasper-install`, matching the memory-resilience events).
 
 **Guards arch** via `hardware_tier_preflight`, in the real-install path
 only (after the dry-run early return, before any mutation): a
@@ -415,9 +414,8 @@ non-`aarch64`/`arm64` arch aborts with a clear "JTS needs 64-bit
 Raspberry Pi OS" message unless `JASPER_ALLOW_UNSUPPORTED_ARCH=1` is set
 — the same fail-loud-but-overridable idiom as
 `JASPER_ACCEPT_INSTALL_PROFILE_CHANGE` / `JTS_ACCEPT_NEW_IDENTITY`. The
-new `main()` step is mapped to the "Hardware tier" marker in
-`test_install_plan_covers_main.py`'s drift guard (the plan describes it),
-and a dedicated test pins that the guard does *not* fire during
+preflight runs in `main()`'s fixed prologue, ahead of the `INSTALL_STEPS`
+table, and a dedicated test pins that the guard does *not* fire during
 `--dry-run` (so the plan tests stay green on x86_64 CI).
 
 **Pins it** with a tier-matrix test mirroring

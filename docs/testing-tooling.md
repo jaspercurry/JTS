@@ -156,10 +156,10 @@ python3 scripts/verify-first-party-arm64-release.py \
 pytest -q tests/test_first_party_arm64_release.py
 ```
 
-- `--dry-run` exits before the root check and lists the major install surfaces
-  (apt groups, downloads/source builds, runtime writes, env migrations,
-  boot/config writes, systemd actions, restarts, post-install checks). It is a
-  planning surface; host-specific no-op decisions still live in `install.sh`.
+- `--dry-run` exits before the root check and renders `install.sh`'s
+  `INSTALL_STEPS` table for the resolved profile — one `name: phrase` line per
+  step the real run would execute, in execution order. It is a planning
+  surface; host-specific no-op decisions still live inside each step.
 - `check-provenance.py` validates [`deploy/provenance.toml`](../deploy/provenance.toml)
   against `deploy/install.sh`, Python direct-URL dependencies, and the
   wake/DTLN model registries. Run it when touching install/build downloads.

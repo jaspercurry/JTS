@@ -232,8 +232,8 @@ def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
     ".<record>.lock" name, so install does not respell it) while the records
     stay group-READ, published that way by their own atomic writers.
 
-    Also owns what a source-text drift guard in test_install_plan_covers_main
-    used to assert about the Layer-A SSOT: existing root:root
+    Also owns what a retired source-text drift guard used to assert about
+    the Layer-A SSOT: existing root:root
     active_speaker_baseline_profile.json must become readable by /state. That
     heal moved off its own hand-rolled path-following chgrp/chmod (redirectable
     through a symlink or hardlink under a group-writable dir) onto this

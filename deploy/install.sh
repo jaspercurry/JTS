@@ -13,9 +13,8 @@
 #
 # Two install tiers, set via JASPER_INSTALL_PROFILE=full|streambox (default
 # full): the streambox profile is the Zero-2-W-class local-renderer-only tier
-# and skips voice/wake-word/GEMINI-dependent features — see
-# print_streambox_install_plan() below. The pre-reqs listed here are full-tier
-# only.
+# and skips voice/wake-word/GEMINI-dependent features — see the
+# INSTALL_STEPS table below. The pre-reqs listed here are full-tier only.
 #
 # Idempotent: re-running upgrades the venv and re-applies configs.
 #
@@ -93,6 +92,15 @@ NQPTP_SHA256="d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9"
 # https://github.com/mikebrady/shairport-sync/archive/${SHAIRPORT_SYNC_COMMIT}.tar.gz
 SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download/build-deps-v1/shairport-sync-7b1bee65b2b0.tar.gz"
 SHAIRPORT_SYNC_SHA256="c8d860c68723d78aea3d3eef0861bfbd01aa2f52d81c768c4e359ccabf42cbb5"
+# One structured journald line for the installer, tagged so a deploy can be
+# replayed with `journalctl -t jasper-install`. Best-effort: never fails a run.
+jasper_install_log() {
+    logger -t jasper-install -- "$*" 2>/dev/null || true
+}
+
+# The STEPS row main() is currently on; the EXIT trap records it on failure.
+INSTALL_CURRENT_STEP=""
+
 print_install_usage() {
     cat <<'EOF'
 Usage: bash deploy/install.sh [--dry-run|--plan]
@@ -244,7 +252,7 @@ hardware_tier_preflight() {
     local tier_line
     tier_line="$(detect_hardware_tier)"
     echo "  hardware tier: ${tier_line}"
-    logger -t jasper-install -- "event=hardware_tier.detected ${tier_line}" 2>/dev/null || true
+    jasper_install_log "event=hardware_tier.detected ${tier_line}"
 
     if _hardware_tier_arch_supported; then
         return 0
@@ -359,384 +367,6 @@ jasper_pip_constraints_file() {
     fi
 }
 
-print_streambox_install_plan() {
-    cat <<EOF
-==> JTS streambox install plan (dry run)
-
-No host changes are made in this mode. This is the Raspberry Pi Zero-class
-local-renderer tier: AirPlay, Spotify Connect, Bluetooth, and USB Audio Input,
-CamillaDSP sound/EQ/correction, and the same grouping reconciler as full
-speakers, plus the assistant on a paired mic-bearing remote — without
-wake-word, local microphone, or AEC.
-
-Run for real from a Pi-local checkout:
-  sudo JASPER_INSTALL_PROFILE=streambox JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
-
-1. Profile guard
-   - Resolve JASPER_INSTALL_PROFILE=streambox.
-   - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-   - Refuse later full/streambox tier changes unless
-     JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
-   - A legacy persisted endpoint/satellite marker normalizes to
-     streambox, so the box auto-migrates to the streambox install path.
-   - Mark the install in progress (/run/jasper-install/in_progress) so
-     udev- and timer-started reconcilers skip the half-synced tree; the
-     accessory-reconcile path watcher is stopped and re-armed with it.
-
-Hardware tier (detected on this host): $(detect_hardware_tier)
-  - Informational; orthogonal to the profile. The real install fails
-    fast on a non-arm64 architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1.
-    Low-RAM hosts may enable temporary high-priority build swap for the
-    heavy source/Rust build window, removed automatically on exit.
-    See docs/install-hardware-tier-and-staleness.md.
-
-2. System packages
-   - apt-get update.
-   - Streambox renderer/DSP stack runtime/build packages:
-     python3 python3-venv python3-dev build-essential rustc cargo
-     libasound2-dev libasound2 libasound2-plugins portaudio19-dev
-     libsndfile1 curl ca-certificates rsync nginx-light
-     openssl dnsmasq-base snapclient snapserver.
-   - Renderer/Bluetooth/AirPlay packages and build inputs:
-     autoconf automake libtool pkg-config libpopt-dev libconfig-dev
-     libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
-     libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
-     libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd libplist-utils bluez-alsa-utils rfkill
-     avahi-daemon avahi-utils.
-
-3. Downloaded or built inputs
-   - CamillaDSP: ${CAMILLA_URL}
-     sha256=${CAMILLA_SHA256}
-   - Raspotify/librespot deb: ${RASPOTIFY_URL}
-     sha256=${RASPOTIFY_SHA256}
-   - nqptp source archive: ${NQPTP_ARCHIVE_URL}
-     commit=${NQPTP_COMMIT}
-     sha256=${NQPTP_SHA256}
-   - shairport-sync source archive: ${SHAIRPORT_SYNC_ARCHIVE_URL}
-     ref=${SHAIRPORT_SYNC_VERSION}, commit=${SHAIRPORT_SYNC_COMMIT}
-     sha256=${SHAIRPORT_SYNC_SHA256}
-   - Python runtime dependencies from pyproject.toml [streambox].
-   - jasper-fanin Rust daemon from rust/jasper-fanin with
-     cargo build --release --locked; Zero-class RAM uses the installer
-     low-memory Cargo release overrides.
-   - jasper-outputd daemon from rust/jasper-outputd with
-     cargo build --release --locked; Zero-class RAM uses the installer
-     low-memory Cargo release overrides.
-   - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
-     (needs libasound2-dev), installed to the arch ALSA plugin dir,
-     sha256-compared like the Rust daemons. Installing it opens nothing by
-     itself, but the ring is this box's only transport (ADR-0100) and
-     carries all of its audio. A build failure never fails the install. On
-     a first-ever build failure the .so is absent and the doctor 'ring
-     platform' check fails; on a REBUILD failure a prior good .so stays
-     installed and the deploy REVOKES the installer's provenance record, so
-     the doctor's 'ring ioplug provenance' check reports an unvouched
-     plugin — an informational ok, or fail on a box whose wire needs a
-     conf.d field only a vouched plugin is known to parse.
-   - The shairport-sync/nqptp source builds and Rust daemon builds
-     run RAM-bounded and cgroup-contained via
-     deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
-     never a live daemon.
-   - On low-RAM hosts, park audio/runtime daemons before Rust builds so
-     the build has room without inducing service restart storms.
-
-4. Runtime files and state
-   - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
-     /var/lib/jasper-intsecrets, /opt/camilladsp, /etc/camilladsp,
-     /var/lib/camilladsp, /usr/share/jasper-web, and feature-specific
-     state directories.
-   - Write the /var/lib/jasper/build.txt verified-install marker
-     (written LAST, only on full success) with deploy SHA/branch metadata.
-   - Copy the jasper Python package, pyproject.toml, landing pages,
-     docs, Avahi service templates, systemd units, renderer configs,
-     udev rules, ALSA templates, and helper binaries.
-   - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
-   - Install the jts_ring device definitions (the /etc/alsa/conf.d
-     drop-ins for the coupling rings, the renderer-ingress lanes and the
-     grouping ingress) and the /dev/shm/jts-ring directory lifecycle
-     (/etc/tmpfiles.d/jts-ring.conf). Placing them opens nothing.
-   - Write output hardware state before Camilla statefile seed.
-   - Render outputd flat startup config with active DAC latency floor.
-   - Create, then re-assert ownership and modes on, the
-     /var/lib/jasper-secrets compartment holding the assistant provider
-     API keys jasper-voice reads, relocating any operator-seeded key out
-     of the broad /etc/jasper/jasper.env.
-   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
-     integration-secret compartment holding the HA token and Spotify
-     credentials/caches (streambox keeps only the Spotify side active,
-     but shares the same compartment and forward path).
-
-5. Services and live actions
-   - Enable/start jasper-control, jasper-camilla, jasper-fanin,
-     jasper-outputd, jasper-audio-hardware-reconcile, jasper-mux,
-     renderer services, nginx, Avahi, identity reconciliation, and the
-     multi-room grouping reconciler.
-   - Install jasper-usbsink.service as a process-free readiness marker. Fan-in
-     owns the USB data plane and is covered by the core-graph restart above.
-   - Enable the hardware-gated composite USB gadget
-     (jasper-usbgadget.service): where the resolved USB role permits, its USB
-     management network (a CPU-serial-derived usb0 /30, no forwarding) makes
-     http://<hostname>/ work over USB even with Wi-Fi off, alongside the
-     wizard-toggled USB audio function. Install expresses no composition
-     intent: it converges the descriptor against the gadget's own truth table
-     and rebinds only on a real difference; the source-intent coordinator owns
-     canonical On in direct-lane-before-advertising order. NM keyfile owns usb0 and the
-     device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
-     Kill switch: JASPER_USB_NETWORK=disabled.
-   - Enable socket-activated streambox-safe web surfaces:
-     /spotify/, /sources/, /airplay/, /sound/, /speaker/, /wifi/, /sound/pair/,
-     /bluetooth/, /system/, and HTTPS /sound/room/. The assistant surfaces
-     -- /voice/, /google/, /transit/, /weather/, /ha/, /tools/, /chat/ --
-     are routed and socket-bound here too; jasper-web serves them only
-     once the tier holds Capability.ASSISTANT.
-   - Install the streambox nginx route set with the shared JTS landing
-     page and capability-gated cards.
-   - Preserve household /sources/ intent across pairing: grouping lands the
-     role, then synchronously hands off to the canonical source coordinator,
-     which parks local renderers on a follower and restores allowed sources
-     after unpairing.
-   - Stage jasper-voice.service without boot-enabling it:
-     jasper-accessory-reconcile starts and stops jasper-voice as a
-     mic-bearing remote pairs and unpairs, so the assistant is resident
-     only while such a remote is present. Push-to-talk on that remote's
-     mic — never a wake word, never the local mic.
-   - Seed WiFi guardian recovery, memory/cgroup tuning, journald
-     persistence, Avahi identity, correction TLS, and jasper-doctor.
-
-6. Explicitly out of scope for the streambox tier
-   - Wake-word detection and its ONNX runtime/models, wake corpus
-     tooling, the local microphone array and AEC (including the XVF3800
-     host), local TTS/cue regeneration, and CamillaGUI.
-
-This dry run is a planning aid for contributors; it is not a substitute
-for real Zero 2 W validation of first-run Rust build cost, memory pressure,
-and simultaneous renderer/DSP behavior.
-EOF
-}
-
-print_install_plan() {
-    local profile="${1:-full}"
-    if [[ "${profile}" == "streambox" ]]; then
-        print_streambox_install_plan
-        return 0
-    fi
-    cat <<EOF
-==> JTS install plan (dry run)
-
-No host changes are made in this mode. The plan is intentionally static:
-it describes the installer surfaces and conditional checks, then exits
-before the root check, apt, downloads, file writes, systemd, or restarts.
-The real installer remains the source of truth for exact host-specific
-no-op decisions.
-
-Run for real from a Pi-local checkout:
-  sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
-
-Profile guard:
-  - Resolve JASPER_INSTALL_PROFILE=full on unknown/Pi-5-class hardware
-    unless a persisted profile marker says otherwise. Fresh Raspberry Pi
-    Zero 2 W installs resolve to streambox instead of full.
-  - Persist the install profile tier in ${INSTALL_PROFILE_MARKER}.
-  - Refuse later full/streambox tier changes unless
-    JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 is set deliberately.
-  - Mark the install in progress (/run/jasper-install/in_progress) so
-    udev- and timer-started reconcilers skip the half-synced tree; the
-    accessory-reconcile path watcher is stopped and re-armed with it.
-
-Hardware tier (detected on this host): $(detect_hardware_tier)
-  - Informational; orthogonal to the profile. Build strategy keys off
-    RAM (the Rust low-memory profile under ~1.2 GB). The optional enhanced
-    AEC job later uses the shared C++ budget of ~1.5 GB/job. The real install fails fast on a non-arm64
-    architecture unless JASPER_ALLOW_UNSUPPORTED_ARCH=1. Low-RAM hosts
-    may enable temporary high-priority build swap for the heavy source/Rust
-    build window, removed automatically on exit.
-    See docs/install-hardware-tier-and-staleness.md.
-
-1. System packages
-   - apt-get update.
-   - Core runtime/build packages:
-     python3 python3-venv python3-dev build-essential libasound2-dev
-     libasound2 portaudio19-dev libasound2-plugins libsndfile1 curl
-     ca-certificates rsync dfu-util libwebrtc-audio-processing-dev
-     meson ninja-build nginx-light openssl dnsmasq-base
-     rustc cargo.
-   - Renderer and Bluetooth/AirPlay build packages:
-     autoconf automake libtool pkg-config libpopt-dev libconfig-dev
-     libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
-     libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
-     libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
-     libswresample-dev xxd libplist-utils bluez-alsa-utils rfkill
-     avahi-daemon avahi-utils.
-
-2. Downloaded or built inputs
-   - CamillaDSP: ${CAMILLA_URL}
-     sha256=${CAMILLA_SHA256}
-   - Raspotify/librespot deb: ${RASPOTIFY_URL}
-     sha256=${RASPOTIFY_SHA256}
-   - nqptp source archive: ${NQPTP_ARCHIVE_URL}
-     commit=${NQPTP_COMMIT}
-     sha256=${NQPTP_SHA256}
-   - shairport-sync source archive: ${SHAIRPORT_SYNC_ARCHIVE_URL}
-     ref=${SHAIRPORT_SYNC_VERSION}, commit=${SHAIRPORT_SYNC_COMMIT}
-     sha256=${SHAIRPORT_SYNC_SHA256}
-   - Optional after setup — WebRTC AEC3 v2 source archive:
-     ${WEBRTC_AEC3_ARCHIVE_URL}
-     ref=${WEBRTC_AEC3_VERSION}, commit=${WEBRTC_AEC3_COMMIT}
-     sha256=${WEBRTC_AEC3_SHA256}
-   - CamillaGUI 4.1.0 bundle selected by uname -m, sha256-checked.
-   - openWakeWord ONNX assets, curated wake models, and DTLN AEC models
-     from the Python registries, sha256-checked before staging.
-   - Python runtime dependencies from pyproject.toml; openwakeword is
-     preinstalled without tflite-runtime because Pi OS Trixie ships
-     Python 3.13. When deploy/constraints-pi.pins exists (generated by
-     scripts/generate-pi-constraints.sh), the unpinned pip installs
-     pass it via -c to replay the reviewed on-Pi resolve.
-   - jasper-fanin Rust daemon from rust/jasper-fanin with
-     cargo build --release --locked.
-   - jasper-outputd daemon from rust/jasper-outputd with
-     cargo build --release --locked; enabled as the mainline final-output
-     owner.
-   - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
-     (needs libasound2-dev), installed to the arch ALSA plugin dir,
-     sha256-compared like the Rust daemons. Installing it opens nothing by
-     itself, but the ring is this box's only transport (ADR-0100) and
-     carries all of its audio. A build failure never fails the install: a
-     first-ever failure leaves the .so absent (doctor 'ring platform' check
-     fails); a REBUILD failure leaves the prior .so installed and REVOKES
-     the installer's provenance record, so the doctor's 'ring ioplug
-     provenance' check reports an unvouched plugin — warn, or fail on a box
-     whose wire needs a conf.d field only a vouched plugin is known to
-     parse.
-   - All heavy source builds above (jasper_aec3 v1, the Rust daemons,
-     shairport-sync, nqptp) run RAM-bounded and cgroup-contained
-     via deploy/lib/install/build-sandbox.sh, so an OOM during an
-     in-service update kills only the build, never a live daemon.
-     The optional v2 job reuses that same installed containment helper.
-   - On low-RAM hosts, park audio/runtime daemons before Rust builds so
-     the build has room without inducing service restart storms.
-
-3. Runtime files and state
-   - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
-     /opt/camilladsp, /etc/camilladsp, /var/lib/camilladsp,
-     /usr/share/jasper-web, and feature-specific state directories.
-   - Write the /var/lib/jasper/build.txt verified-install marker
-     (written LAST, only on full success) with deploy SHA/branch metadata
-     when available.
-   - Write /var/lib/jasper/voice_provider_ids from the Python voice
-     catalog so boot/hotplug shell can validate providers without
-     importing Python.
-   - Copy Python source, jasper_aec3, pyproject.toml, the tuning operator
-     docs, landing pages, nginx config, Avahi service templates, systemd
-     units, udev rules, ALSA templates, and helper binaries.
-   - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
-   - Install the jts_ring device definitions (the /etc/alsa/conf.d
-     drop-ins for the coupling rings, the renderer-ingress lanes and the
-     grouping ingress — each names itself in the transcript as it is
-     placed) and the /dev/shm/jts-ring directory lifecycle
-     (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Placing them
-     opens nothing.
-   - Write output hardware state before Camilla statefile seed.
-   - Render outputd flat startup config with active DAC latency floor.
-
-4. Config and migrations
-   - Seed /etc/jasper/jasper.env on fresh installs.
-   - Create, then re-assert ownership and modes on, the
-     /var/lib/jasper-secrets compartment holding the assistant provider
-     API keys jasper-voice reads, relocating any operator-seeded LLM API
-     key or Google Routes key out of the broad /etc/jasper/jasper.env.
-   - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
-     integration-secret compartment holding the HA token and Spotify
-     credentials/caches.
-   - Seed defaults for speaker name, AirPlay mode, ALSA quality,
-     wake model, AEC mode, peer_id, journald persistence, memory
-     resilience, WiFi guardian recovery, and correction TLS CA/cert files.
-   - Remove the retired dmix/fanin topology switch state file, which
-     jasper-doctor warns about on presence.
-   - Reconcile the USB data role from board topology and the registered
-     output-DAC overlay; trim the boot config for headless operation
-     (gpu_mem, vc4-kms-v3d CMA, HDMI audio); add other Pi boot/config
-     changes when needed: memory cgroup/PSI kernel args, MGLRU tmpfiles,
-     sysctl values, and rpi-swap zram sizing.
-   - Disable WiFi power-save on the active wlan0 connection (nmcli)
-     so AirPlay's unicast UDP stream avoids radio-sleep stalls.
-   - Repair stored measurement-mic calibrations fetched under the wrong
-     sign convention (vendor files state the mic's response; the
-     correction is its negation). Keyed on each record's own stored
-     convention, so it is idempotent and never touches a household's
-     uploaded file or an already-correct record.
-
-5. Services and live actions
-   - Create the \`jasper\` group and the non-root service users
-     (jasper-voice / jasper-mux / jasper-input / jasper-usbmic /
-     jasper-control / jasper-web) the Tier-A daemons drop to, plus the
-     secret-compartment groups.
-   - Install /etc/polkit-1/rules.d/49-jasper-control.rules granting the
-     non-root jasper-control its scoped systemctl (MANAGED_UNITS allowlist)
-     + reboot/power-off — its restart broker + supervisors run as that uid.
-     Make /etc/avahi/services group-jasper writable so it
-     can render the peering advert.
-   - Install /etc/polkit-1/rules.d/49-jasper-web.rules granting the non-root
-     jasper-web the NetworkManager actions (scan / connect / forget / radio /
-     PSK re-read) the /wifi/ wizard drives.
-   - Widen /etc/bluetooth + /var/lib/camilladsp/configs to group-jasper 2775
-     so the non-root jasper-web can atomically replace the BlueZ name and the
-     generated sound profiles.
-   - Widen the config/state files jasper-control reads off disk
-     (jasper.env + voice_provider/control_token + non-secret sound state)
-     to 0640 group jasper so the jasper-doctor it spawns + /state can read
-     them. The secret compartments (jasper-secrets/jasper-intsecrets) stay
-     isolated separately.
-   - Reload udev and systemd.
-   - Enable socket-activated setup wizards and always-on audio/control
-     services.
-   - Enable/start or restart renderer services, jasper-fanin,
-     jasper-outputd, audio-hardware reconciliation, DAC init,
-     headphone monitor, nginx, Avahi, CamillaGUI socket, the WiFi
-     guardian, and the boot-loop guard.
-   - Reconcile the USB Audio Input readiness marker from canonical source
-     intent after fan-in and the composite gadget are installed.
-   - Enable the hardware-gated composite USB gadget
-     (jasper-usbgadget.service): where the resolved USB role permits, it carries
-     a USB management network (ncm.usb0, CPU-serial-derived /30, no forwarding) so
-     http://<hostname>/ works over USB even with Wi-Fi off, plus the
-     wizard-toggled USB audio function. Install expresses no composition
-     intent: it converges the descriptor against the gadget's own truth table
-     and rebinds only on a real difference; the source-intent coordinator owns
-     canonical On in direct-lane-before-advertising order. Install the
-     NM keyfile owning usb0 and the scoped,
-     device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
-     dnsmasq service). USB audio stays off by default. Skips cleanly
-     pre-reboot when no UDC exists yet. Kill switch:
-     JASPER_USB_NETWORK=disabled.
-   - Require jasper-outputd to be active and answering STATUS before
-     voice starts against the final-output path.
-   - Seed or validate the outputd Camilla statefile while preserving
-     the normal production statefile. Rollback to a pre-outputd
-     release/branch must also stop/disable jasper-outputd because that
-     older code does not know about the outputd unit.
-   - Seed the camilla#2 crossover Camilla statefile (the dormant
-     endpoint-crossover instance, :1235) through the same active-speaker
-     runtime contract. Its unit is installed but NOT enabled — a later
-     reconciler arms it only on an active leader.
-   - Run the AEC/mic reconciler so voice follows attached hardware.
-   - Install the multi-room grouping units: snapserver + snapclient
-     DISABLED (grouping is never auto-enabled; the snapcast apt
-     packages are NOT installed on a solo speaker; the wizard opt-in
-     owns turning grouping on), and the grouping RECONCILER enabled +
-     run — a boot/install no-op when grouping is off, and what lets a
-     BONDED speaker survive reboots and deploys.
-   - Regenerate audio cues if jasper-cues is installed.
-   - Run jasper-doctor as a final non-blocking health summary.
-
-6. Provenance/checks
-   - Direct downloads and source-build inputs above are tracked in
-     deploy/provenance.toml and checked by:
-       python3 scripts/check-provenance.py
-   - This dry run is a planning aid for contributors; it is not a
-     substitute for a real Pi install/deploy validation before release.
-EOF
-}
 
 _is_truthy() {
     case "${1:-}" in
@@ -2054,8 +1684,97 @@ run_doctor_summary() {
     systemd-run --quiet --wait --pipe --collect \
         -p MemoryMax=96M -p RuntimeMaxSec=60 \
         /opt/jasper/.venv/bin/jasper-doctor --core || rc=$?
-    logger -t jasper-install -- "event=install.doctor_core rc=${rc}" 2>/dev/null || true
+    jasper_install_log "event=install.doctor_core rc=${rc}"
     return "${rc}"
+}
+
+# The install, once. Rows are `name|profiles|fn|phrase` in execution order;
+# `profiles` is full, streambox or both. main() runs every matching row and
+# --dry-run renders every matching row, so the plan cannot drift from the run.
+INSTALL_STEPS=(
+    "build_user|both|require_build_user|require the 'pi' build user the Rust builds run as"
+    "build_swap|both|setup_build_swap_if_needed|add temporary high-priority build swap on a low-RAM host"
+    "service_users|both|create_jasper_service_users|create the jasper group and the non-root service users"
+    "park_build_units|both|park_low_memory_build_units|park audio/runtime daemons before the Rust builds"
+    "deps|full|install_deps|apt-get update and the full-tier runtime/build packages"
+    "deps|streambox|install_streambox_deps|apt-get update and the streambox renderer/DSP packages"
+    # install_alsa exports DONGLE_CARD, which install_camilladsp reads.
+    "alsa|both|install_alsa|render /etc/asound.conf and apply the snd-aloop options"
+    "camilladsp|both|install_camilladsp|fetch and install the pinned CamillaDSP binary"
+    "renderers|both|install_renderers|build/install shairport-sync, nqptp, librespot and bluez-alsa"
+    "headless_boot|both|reconcile_headless_boot_config|trim the Pi boot config for headless operation"
+    "usb_role|both|reconcile_usb_data_role|reconcile the USB data role from board topology"
+    "wifi_airplay|both|tune_wifi_for_airplay|disable WiFi power-save on the active wlan0 connection"
+    "jasper|full|install_jasper|copy the Python package and build the full-tier venv"
+    "jasper|streambox|install_streambox_jasper|copy the Python package and build the streambox venv"
+    "secrets_perms|both|reassert_secrets_compartment_perms|re-assert the /var/lib/jasper-secrets compartment"
+    "intsecrets_perms|both|reassert_intsecrets_compartment_perms|re-assert the /var/lib/jasper-intsecrets compartment"
+    "mic_cal_sign|both|migrate_calibration_sign_convention|repair mic calibrations stored under the wrong sign convention"
+    "output_hw_state|both|ensure_output_hardware_state|write output hardware state before the Camilla statefile seed"
+    "outputd_config|both|render_outputd_cutover_config|render the outputd flat startup config"
+    "outputd_statefile|both|ensure_outputd_camilla_statefile|seed or validate the outputd Camilla statefile"
+    "crossover_statefile|both|ensure_crossover_camilla_statefile|seed the dormant camilla#2 crossover statefile"
+    "fanin|both|build_install_jasper_fanin|build and install the jasper-fanin Rust daemon"
+    "outputd|both|build_install_jasper_outputd|build and install the jasper-outputd Rust daemon"
+    "ring_platform|both|install_jts_ring_platform|install the jts_ring ioplug, its conf.d drop-ins and the shm dir"
+    # jasper-control renders its advert from the template and reads peer_id at
+    # startup, so both land before the unit install restarts it.
+    "avahi_control|both|install_avahi_jasper_control|install the Avahi service template for jasper-control"
+    "peering_template|both|install_peering_template|seed peer_id and the peering advert template"
+    "systemd_units|full|install_systemd_units|install, enable and start the full-tier systemd units"
+    "systemd_units|streambox|install_streambox_systemd_units|install, enable and start the streambox systemd units"
+    "retired_topology_state|both|remove_retired_audio_topology_state|remove the retired dmix/fanin topology switch state"
+    "wifi_guardian|both|migrate_wifi_guardian|seed the WiFi guardian recovery stash"
+    "memory_resilience|both|migrate_memory_resilience|apply the sysctl, MGLRU and zram memory resilience"
+    "cgroup_memory|both|migrate_cgroup_memory_enabled|add the memory cgroup/PSI kernel args"
+    "journald|both|install_journald_persistent_storage|enable persistent journald storage"
+    "control_polkit|both|install_jasper_control_polkit|install the jasper-control polkit rules"
+    "web_polkit|both|install_jasper_web_polkit|install the jasper-web NetworkManager polkit rules"
+    "web_writable_dirs|both|widen_jasper_web_writable_dirs|widen /etc/bluetooth and the camilladsp configs for jasper-web"
+    # provision_correction_tls first: the cert files must exist before nginx -t.
+    "correction_tls|both|provision_correction_tls|provision the correction TLS CA and cert files"
+    "nginx_site|full|install_nginx_site|install the full-tier nginx route set"
+    "nginx_site|streambox|install_streambox_nginx_site|install the streambox nginx route set"
+    "camillagui|full|install_camillagui|install the socket-activated CamillaGUI backend"
+    "audio_cues|full|regenerate_audio_cues|regenerate the local audio cues"
+    "control_env_modes|both|widen_control_secret_env_modes|widen the config/state files jasper-control reads"
+    # ADR-0172: the manifest is the LAST mutation, so reaching it proves every
+    # row above succeeded under set -e. The doctor row after it is read-only.
+    "build_manifest|both|write_build_manifest|stamp the verified-install build manifest"
+    "doctor|both|run_doctor_summary_advisory|run jasper-doctor --core as a non-blocking health summary"
+)
+
+# The doctor is advisory (ADR-0242): its rc is logged by run_doctor_summary and
+# swallowed here so it cannot abort the install. Removal condition: drop this
+# wrapper and point the row at run_doctor_summary when the core doctor gates.
+run_doctor_summary_advisory() {
+    run_doctor_summary || true
+}
+
+# --dry-run: the rows main() would run, in order, and nothing else.
+print_install_plan() {
+    local profile="$1"
+    local row name profiles phrase
+    echo "==> JTS install plan (dry run) - profile: ${profile}"
+    echo "No host changes are made in this mode. Each line below is one step of"
+    echo "the real install, in execution order."
+    echo
+    echo "Hardware tier (detected on this host): $(detect_hardware_tier)"
+    echo "Before the table: report that tier, require root, arm the exit trap,"
+    echo "mark the install in progress, and persist the tier in"
+    echo "${INSTALL_PROFILE_MARKER}."
+    echo
+    echo "Run for real from a Pi-local checkout:"
+    echo "  sudo JASPER_INSTALL_PROFILE=${profile} JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh"
+    echo
+    for row in "${INSTALL_STEPS[@]}"; do
+        IFS='|' read -r name profiles _ phrase <<<"${row}"
+        case "${profiles}" in
+            both|"${profile}") ;;
+            *) continue ;;
+        esac
+        printf '  %s: %s\n' "${name}" "${phrase}"
+    done
 }
 
 main() {
@@ -2095,112 +1814,28 @@ main() {
     if install_profile_legacy_marker_migrating; then
         echo "event=install_profile.migrate previous=$(read_raw_persisted_install_profile) profile=${install_profile} source=marker"
     fi
-    hardware_tier_preflight  # log tier; fail fast on unsupported arch (before any mutation)
-    if [[ "${install_profile}" == "streambox" ]]; then
-        require_root
-        trap install_exit_cleanup EXIT
-        mark_install_in_progress
-        persist_install_profile "${install_profile}"
-        require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
-        setup_build_swap_if_needed
-        create_jasper_service_users  # before unit install + state-dir creation
-        park_low_memory_build_units
-        install_streambox_deps
-        install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
-        install_camilladsp
-        install_renderers
-        reconcile_headless_boot_config
-        reconcile_usb_data_role
-        tune_wifi_for_airplay
-        install_streambox_jasper
-        reassert_secrets_compartment_perms  # assistant provider keys jasper-voice reads
-        reassert_intsecrets_compartment_perms  # streambox Spotify creds/cache perms
-        migrate_calibration_sign_convention  # vendor mic cal files are response curves
-        ensure_output_hardware_state
-        render_outputd_cutover_config
-        ensure_outputd_camilla_statefile
-        ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-        build_install_jasper_fanin
-        build_install_jasper_outputd
-        install_jts_ring_platform  # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
-        # With JASPER_PEERING=on, jasper-control renders its advert from the
-        # template and reads /var/lib/jasper/peer_id at startup — both created
-        # here, so this runs BEFORE the unit install restarts it.
-        install_avahi_jasper_control
-        install_peering_template
-        install_streambox_systemd_units
-        remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
-        migrate_wifi_guardian
-        migrate_memory_resilience
-        migrate_cgroup_memory_enabled
-        install_journald_persistent_storage
-        install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
-        install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
-        widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-        provision_correction_tls
-        install_streambox_nginx_site
-        widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
-        # Final mutation: stamp the verified-install manifest only now that
-        # every step above succeeded (set -e). run_doctor_summary below is
-        # non-mutating diagnostics — keep write_build_manifest the LAST
-        # state change so a failure anywhere above leaves the prior good
-        # manifest. See ADR-0172.
-        write_build_manifest
-        run_doctor_summary || true  # advisory; removal condition in ADR-0242
-        return 0
-    fi
+    # Fixed prologue, not table rows: the tier report and the root check are
+    # read-only and must precede every mutation, the trap can only be armed
+    # once root is proven, and the gate the trap clears is set with it.
+    hardware_tier_preflight
     require_root
+    INSTALL_CURRENT_STEP="prologue"
     trap install_exit_cleanup EXIT
     mark_install_in_progress
     persist_install_profile "${install_profile}"
-    require_build_user  # Rust builds run as 'pi'; fail fast pre-mutation
-    setup_build_swap_if_needed
-    create_jasper_service_users  # before unit install + state-dir creation
-    park_low_memory_build_units
-    install_deps
-    install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
-    install_camilladsp
-    install_renderers
-    reconcile_headless_boot_config
-    reconcile_usb_data_role
-    tune_wifi_for_airplay
-    install_jasper
-    reassert_secrets_compartment_perms
-    reassert_intsecrets_compartment_perms
-    migrate_calibration_sign_convention  # vendor mic cal files are response curves
-    ensure_output_hardware_state
-    render_outputd_cutover_config
-    ensure_outputd_camilla_statefile
-    ensure_crossover_camilla_statefile  # camilla#2 seed (INERT; unit not enabled)
-    build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
-    build_install_jasper_outputd  # Rust mainline final-output owner
-    install_jts_ring_platform     # jts_ring ioplug + conf.d + shm dir (staging only; arming is the coupling reconciler's)
-    # With JASPER_PEERING=on, jasper-control renders its advert from the
-    # template and reads /var/lib/jasper/peer_id at startup — both created
-    # here, so this runs BEFORE the unit install restarts it.
-    install_avahi_jasper_control
-    install_peering_template
-    install_systemd_units
-    remove_retired_audio_topology_state  # retired dmix/fanin switch state; doctor WARNs on its presence
-    migrate_wifi_guardian
-    migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
-    migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
-    install_journald_persistent_storage
-    install_jasper_control_polkit  # grant non-root jasper-control its scoped systemctl/reboot
-    install_jasper_web_polkit  # grant jasper-web NetworkManager wifi management
-    widen_jasper_web_writable_dirs  # /etc/bluetooth + camilladsp/configs group-jasper writable
-    provision_correction_tls   # cert files must exist before nginx -t
-    install_nginx_site
-    install_camillagui
-    regenerate_audio_cues
-    widen_control_secret_env_modes  # secret env group-jasper readable for the spawned doctor
-    # Final mutation: stamp the verified-install manifest only now that
-    # every step above succeeded (set -e). run_doctor_summary below is
-    # non-mutating diagnostics — keep write_build_manifest the LAST state
-    # change so a failure anywhere above leaves the prior good manifest.
-    # See ADR-0172.
-    write_build_manifest
-    run_doctor_summary || true  # advisory; removal condition in ADR-0242
+
+    local row name profiles fn phrase
+    for row in "${INSTALL_STEPS[@]}"; do
+        IFS='|' read -r name profiles fn phrase <<<"${row}"
+        case "${profiles}" in
+            both|"${install_profile}") ;;
+            *) continue ;;
+        esac
+        INSTALL_CURRENT_STEP="${name}"
+        jasper_install_log "event=install.step profile=${install_profile} step=${name} fn=${fn}"
+        echo "==> ${name}: ${phrase}"
+        "${fn}"
+    done
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests
