@@ -478,8 +478,8 @@ impl RingWriter {
     }
 
     /// Free slots available for a non-blocking publish (`n_slots - (W - R)`).
-    /// Exposed for the daemon's poll/observability; publish itself never relies
-    /// on this (it re-reads `read_seq` under the Acquire).
+    /// publish itself never relies on this (it re-reads `read_seq` under the
+    /// Acquire).
     pub fn free_slots(&self) -> u64 {
         let r = self
             .map

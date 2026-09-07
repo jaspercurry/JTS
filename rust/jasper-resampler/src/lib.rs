@@ -560,7 +560,8 @@ pub struct AudioRing {
 
 impl AudioRing {
     /// Allocate a ring holding `capacity_frames` interleaved frames of
-    /// `channels`. Errors on a zero capacity or a sample-count overflow.
+    /// `channels`. Errors on a zero capacity, zero channels, or a
+    /// sample-count overflow.
     pub fn new(capacity_frames: usize, channels: usize) -> Result<Self, RingError> {
         if capacity_frames == 0 {
             return Err(RingError::ZeroCapacity);
@@ -578,11 +579,6 @@ impl AudioRing {
             read_frame: 0,
             write_frame: 0,
         })
-    }
-
-    /// Capacity in frames.
-    pub fn capacity_frames(&self) -> usize {
-        self.capacity_frames
     }
 
     /// Frames currently buffered (`write_frame - read_frame`).
@@ -944,14 +940,6 @@ impl BlockResampler {
         let keep_from = pos.floor() as i64 - RADIUS_FRAMES - 1;
         self.ring.drop_before(keep_from);
         out
-    }
-
-    /// Discard all buffered input and re-prime on the next block (the
-    /// hard-resync / discontinuity path: a fresh phase from the next input).
-    pub fn reset(&mut self) {
-        self.ring.clear();
-        self.next_input_frame = 0.0;
-        self.primed = false;
     }
 }
 
@@ -1392,19 +1380,6 @@ mod tests {
         assert!(ctl.ratio_ppm().abs() > 1.0, "precondition: nonzero ratio");
         ctl.reset();
         assert_eq!(ctl.ratio_ppm(), 0.0, "reset zeroes the reported ppm");
-    }
-
-    /// BlockResampler resync re-primes the cursor: after a reset, the next block
-    /// starts a fresh phase from the new input (no stale cursor / no panic).
-    #[test]
-    fn block_resampler_reset_reprimes() {
-        let table = SincTable::new();
-        let mut r = BlockResampler::with_table(2, 8192, table).expect("resampler");
-        let input = stereo_signal(2048);
-        let _ = r.resample_block(&input, 1.0);
-        r.reset();
-        let out = r.resample_block(&stereo_signal(2048), 1.0);
-        assert!(!out.is_empty(), "resampler re-primes and emits after reset");
     }
 
     /// resample_block never panics on degenerate ratios; a non-finite or
