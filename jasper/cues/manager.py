@@ -450,8 +450,6 @@ class AudioCueManager:
         logger.debug("cue speak_text full text: %r", text)
         return True
 
-    # --- internals ---
-
     def find_any_cached(self, cue: CueDef) -> str | None:
         """A cached WAV for `cue`'s slug at any hash, if one exists — the
         same stale-cache lookup `play()` performs when the current-hash
@@ -463,6 +461,8 @@ class AudioCueManager:
             if entry.startswith(prefix) and entry.endswith(".wav"):
                 return os.path.join(self._sounds_dir, entry)
         return None
+
+    # --- internals ---
 
     def _read_wav_pcm(self, path: str) -> "tuple[bytes, float]":
         """Strip the WAV header, return (raw PCM bytes, duration in

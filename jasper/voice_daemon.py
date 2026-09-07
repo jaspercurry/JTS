@@ -2153,32 +2153,37 @@ class WakeLoop:
         if deferred_cancel:
             raise asyncio.CancelledError
 
-    @staticmethod
-    def _leg_task_dead(task: "asyncio.Task[None]") -> bool:
-        """A leg/manual-mic task that exited on its own, not via
-        cancellation. Shared by `_on_leg_task_done`'s wake.leg_died log
-        and `session_status`'s `wake_legs_dead`."""
-        return task.done() and not task.cancelled()
+    def _leg_task_dead(self, task: "asyncio.Task[None]") -> bool:
+        """A leg or manual-mic consumer task that exited on its own — not
+        via cancellation, and not by returning cleanly because
+        `_stop_event` was set (the leg loop's normal shutdown path, not a
+        death). Shared by `_on_leg_task_done`'s wake.leg_died log, which
+        fires for legs and manual mics alike, and `session_status`'s
+        `wake_legs_dead`, which only iterates `_leg_tasks` — manual-mic
+        tasks never appear there.
+        """
+        if not task.done() or task.cancelled():
+            return False
+        return not (task.exception() is None and self._stop_event.is_set())
 
     def _on_leg_task_done(
         self, name: str, task: "asyncio.Task[None]",
     ) -> None:
         """Log a leg/manual-mic consumer loop dying unexpectedly.
 
-        Cancellation (shutdown) is not a death. No restart, no cue — just
-        the event, so a leg going deaf is visible in the journal instead
-        of surfacing only as asyncio's silent "exception never retrieved"
-        warning at task GC. An `asyncio.TaskGroup` would cancel every
-        sibling leg the instant one fails; a dead leg must not take the
-        others down, so each task is tracked and reaped independently
-        instead.
+        Cancellation (shutdown) is not a death, and neither is returning
+        cleanly once `_stop_event` is set — `_leg_task_dead` is the one
+        place that rule lives. No restart, no cue — just the event, so a
+        leg going deaf is visible in the journal instead of surfacing only
+        as asyncio's silent "exception never retrieved" warning at task
+        GC. An `asyncio.TaskGroup` would cancel every sibling leg the
+        instant one fails; a dead leg must not take the others down, so
+        each task is tracked and reaped independently instead.
         """
         if not self._leg_task_dead(task):
             return
         exc = task.exception()
         if exc is None:
-            if self._stop_event.is_set():
-                return
             log_event(
                 logger, "wake.leg_died", leg=name, exc_type="none",
                 level=logging.WARNING,

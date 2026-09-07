@@ -456,11 +456,19 @@ def test_session_status_reports_only_armed_legs_when_optional_absent():
     assert wl.session_status()["wake_legs"] == ["on", "off"]
 
 
-async def test_dead_wake_leg_logs_and_drops_from_wake_legs(caplog):
-    """A wake-leg consumer loop that raises used to leave the daemon deaf
-    on that leg with zero event line. It must now log wake.leg_died and
-    stop claiming the leg is armed, while the "on" leg (driven inline by
-    run(), not by a task) stays reported."""
+@pytest.mark.parametrize(
+    "case",
+    ["raises", "returns_while_running", "returns_while_stopping", "cancelled"],
+)
+async def test_leg_task_dead_matches_leg_died_log(case, caplog):
+    """`_leg_task_dead` is the single predicate behind both `wake_legs_dead`
+    and the `wake.leg_died` log line — the two must never disagree. Covers
+    every way a leg's task can finish: an unhandled exception (dead, logged),
+    returning while still running with no exception (a dead mic — dead,
+    logged), returning because `_stop_event` was set (the leg loop's own
+    shutdown path — not a death, not logged), and external cancellation
+    (also not a death, not logged). The "on" leg (driven inline by run(),
+    not by a task) stays reported as armed throughout."""
     import logging
 
     from tests._log_events import event_fields, event_records
@@ -470,64 +478,18 @@ async def test_dead_wake_leg_logs_and_drops_from_wake_legs(caplog):
     _prep_session_status(wl)
     wl._heartbeat = None
 
-    async def _dying_wake_leg_loop(_leg_name: str) -> None:
-        raise RuntimeError("boom")
-
-    wl._wake_leg_loop = _dying_wake_leg_loop
-
-    class _IdleMic:
-        async def frames(self):
-            while True:
-                await asyncio.sleep(0)
-                yield None
-
-    wl._mic = _IdleMic()
-
-    run_task = asyncio.create_task(wl.run())
-    try:
-        for _ in range(200):
-            task = wl._leg_tasks.get("off")
-            if task is not None and task.done():
-                break
-            await asyncio.sleep(0)
-        else:
-            pytest.fail("the 'off' leg task never completed")
-        # The done-callback fires via call_soon, one tick after the task
-        # itself transitions to done — a few extra yields make sure it ran.
-        for _ in range(10):
-            await asyncio.sleep(0)
-
-        fields = event_fields(caplog, "wake.leg_died")
-        assert fields["leg"] == "off"
-        assert fields["exc_type"] == "RuntimeError"
-        (record,) = event_records(caplog, "wake.leg_died")
-        assert record.levelno == logging.WARNING
-
-        wake_legs = wl.session_status()["wake_legs"]
-        assert "off" not in wake_legs
-        assert "on" in wake_legs
-    finally:
-        wl._stop_event.set()
-        await asyncio.wait_for(run_task, timeout=2.0)
-
-
-async def test_wake_legs_dead_excludes_cancelled_legs(caplog):
-    """wake_legs_dead reports only legs whose task exited on its own
-    (done, not cancelled) — a leg cancelled mid-teardown is absent from
-    both wake_legs and wake_legs_dead, not misreported as dead."""
-    import logging
-
-    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
-    wl = _wake_loop_with_legs("on", "off", "dtln")
-    _prep_session_status(wl)
-    wl._heartbeat = None
-
-    async def _mixed_wake_leg_loop(leg_name: str) -> None:
-        if leg_name == "off":
+    async def _off_leg_loop(_leg_name: str) -> None:
+        if case == "raises":
             raise RuntimeError("boom")
-        await asyncio.Event().wait()
+        if case == "returns_while_stopping":
+            while not wl._stop_event.is_set():
+                await asyncio.sleep(0)
+            return
+        if case == "cancelled":
+            await asyncio.Event().wait()
+        # returns_while_running: fall through and return immediately.
 
-    wl._wake_leg_loop = _mixed_wake_leg_loop
+    wl._wake_leg_loop = _off_leg_loop
 
     class _IdleMic:
         async def frames(self):
@@ -535,13 +497,35 @@ async def test_wake_legs_dead_excludes_cancelled_legs(caplog):
                 await asyncio.sleep(0)
                 yield None
 
-    wl._mic = _IdleMic()
+    class _SlowMic:
+        """Keeps run()'s own primary loop parked mid-frame, so its
+        stop-event teardown can't race ahead of this test's assertions —
+        real time never advances while the test only does `sleep(0)`."""
+
+        async def frames(self):
+            while True:
+                await asyncio.sleep(1.0)
+                yield None
+
+    wl._mic = _SlowMic() if case == "returns_while_stopping" else _IdleMic()
 
     run_task = asyncio.create_task(wl.run())
     try:
         for _ in range(200):
-            task = wl._leg_tasks.get("off")
-            if task is not None and task.done():
+            if "off" in wl._leg_tasks:
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the 'off' leg task was never created")
+        off_task = wl._leg_tasks["off"]
+
+        if case == "cancelled":
+            off_task.cancel()
+        elif case == "returns_while_stopping":
+            wl._stop_event.set()
+
+        for _ in range(200):
+            if off_task.done():
                 break
             await asyncio.sleep(0)
         else:
@@ -550,72 +534,23 @@ async def test_wake_legs_dead_excludes_cancelled_legs(caplog):
         # itself transitions to done — a few extra yields make sure it ran.
         for _ in range(10):
             await asyncio.sleep(0)
-
-        wl._leg_tasks["dtln"].cancel()
-        for _ in range(10):
-            await asyncio.sleep(0)
-        assert wl._leg_tasks["dtln"].cancelled()
 
         status = wl.session_status()
-        assert status["wake_legs_dead"] == ["off"]
-        assert "dtln" not in status["wake_legs"]
-        assert "dtln" not in status["wake_legs_dead"]
+        died = event_records(caplog, "wake.leg_died")
+        assert "off" not in status["wake_legs"]
         assert "on" in status["wake_legs"]
-    finally:
-        wl._stop_event.set()
-        await asyncio.wait_for(run_task, timeout=2.0)
 
-
-async def test_returning_wake_leg_logs_as_dead_with_no_exc_type(caplog):
-    """A wake-leg loop can also die by returning cleanly — its mic's frame
-    generator ended — with no exception at all. That is just as deaf as a
-    raise, so wake.leg_died must fire for it too, with exc_type="none" so
-    the field is always present, and the leg drops out of wake_legs."""
-    import logging
-
-    from tests._log_events import event_fields, event_records
-
-    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
-    wl = _wake_loop_with_legs("on", "off")
-    _prep_session_status(wl)
-    wl._heartbeat = None
-
-    async def _returning_wake_leg_loop(_leg_name: str) -> None:
-        return
-
-    wl._wake_leg_loop = _returning_wake_leg_loop
-
-    class _IdleMic:
-        async def frames(self):
-            while True:
-                await asyncio.sleep(0)
-                yield None
-
-    wl._mic = _IdleMic()
-
-    run_task = asyncio.create_task(wl.run())
-    try:
-        for _ in range(200):
-            task = wl._leg_tasks.get("off")
-            if task is not None and task.done():
-                break
-            await asyncio.sleep(0)
+        if case in ("raises", "returns_while_running"):
+            assert status["wake_legs_dead"] == ["off"]
+            fields = event_fields(caplog, "wake.leg_died")
+            assert fields["leg"] == "off"
+            assert fields["exc_type"] == (
+                "RuntimeError" if case == "raises" else "none"
+            )
+            assert died[0].levelno == logging.WARNING
         else:
-            pytest.fail("the 'off' leg task never completed")
-        # The done-callback fires via call_soon, one tick after the task
-        # itself transitions to done — a few extra yields make sure it ran.
-        for _ in range(10):
-            await asyncio.sleep(0)
-
-        fields = event_fields(caplog, "wake.leg_died")
-        assert fields["leg"] == "off"
-        assert fields["exc_type"] == "none"
-        (record,) = event_records(caplog, "wake.leg_died")
-        assert record.levelno == logging.WARNING
-
-        wake_legs = wl.session_status()["wake_legs"]
-        assert "off" not in wake_legs
-        assert "on" in wake_legs
+            assert status["wake_legs_dead"] == []
+            assert died == []
     finally:
         wl._stop_event.set()
         await asyncio.wait_for(run_task, timeout=2.0)
