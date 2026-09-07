@@ -128,7 +128,7 @@ migrate_mic_device_candidates_seed() {
         -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch$/d'
 }
 
-# The Python tree publishes from a staging path (See ADR-0250). The checkout
+# The Python tree publishes from a staging path (See ADR-0251). The checkout
 # rsyncs into ${INSTALL_DIR}/.staging — the live tree's own filesystem by
 # construction, so --link-dest makes an unchanged file a second link to the live
 # inode rather than a copy — and each top-level entry is renamed into place from

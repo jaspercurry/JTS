@@ -1,4 +1,4 @@
-# ADR-0250: The Python tree publishes from a staging path
+# ADR-0251: The Python tree publishes from a staging path
 
 - **Date:** 2026-09-07
 - **Status:** Accepted (takes the cheaper option
