@@ -405,6 +405,202 @@ def test_switch_runs_the_shared_restart_and_verify_chain_in_one_session(
     assert "systemctl is-active jasper-voice" in switch_calls[0]
 
 
+_WAKE_ENV_FAKE_SSH = """\
+#!/usr/bin/env bash
+set -uo pipefail
+cmd="${@: -1}"
+printf '%s\\n' "$cmd" >> "$FAKE_WRITE_LOG"
+case "$cmd" in
+    *"from jasper.wake_models import by_key"*)
+        printf '%s|1\\n' "$FAKE_RESOLVED_MODEL"
+        ;;
+    *"jasper_env_file_set"*)
+        # Real-execute the whole chain (write + restart_voice_and_verify_cmd):
+        # fake sudo/systemctl/sleep/journalctl on PATH make the trailing
+        # restart chain harmless, so only the two hardcoded paths need
+        # redirecting to prove the write itself.
+        cmd="${cmd//\\/usr\\/local\\/lib\\/jasper\\/jasper-env-file.sh/$FAKE_LIB_COPY}"
+        cmd="${cmd//\\/var\\/lib\\/jasper\\/wake_model.env/$FAKE_WAKE_ENV}"
+        exec bash -c "$cmd"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+"""
+
+_NOOP_SUDO = """\
+#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do shift; done
+exec "$@"
+"""
+
+_NOOP_SYSTEMCTL = """\
+#!/usr/bin/env bash
+[[ "$1" == "is-active" ]] && printf 'active\\n'
+exit 0
+"""
+
+_NOOP_CMD = """\
+#!/usr/bin/env bash
+exit 0
+"""
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["/tmp/jarvis-v2.onnx", "it's a value with a space"],
+    ids=["plain", "space-and-quote"],
+)
+def test_switch_wake_word_write_goes_through_the_shared_env_file_lib(
+    tmp_path: Path, value: str,
+) -> None:
+    """The write is a real jasper_env_file_set call (locked, atomic), not a
+    lockless `tee` — real-execute it against a temp file and confirm the
+    value round-trips exactly, including one needing the lib's own
+    single-quote escaping."""
+    scripts = tmp_path / "repo" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "switch-wake-word.sh", scripts / "switch-wake-word.sh")
+    shutil.copy2(ROOT / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    lib_copy = tmp_path / "jasper-env-file.sh"
+    shutil.copy2(ROOT / "deploy" / "lib" / "jasper-env-file.sh", lib_copy)
+    wake_env = tmp_path / "wake_model.env"
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    write_log = tmp_path / "ssh-write.log"
+    _write_executable(fake_bin / "ssh", _WAKE_ENV_FAKE_SSH)
+    _write_executable(fake_bin / "sudo", _NOOP_SUDO)
+    _write_executable(fake_bin / "systemctl", _NOOP_SYSTEMCTL)
+    _write_executable(fake_bin / "sleep", _NOOP_CMD)
+    _write_executable(fake_bin / "journalctl", _NOOP_CMD)
+
+    env = os.environ.copy()
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        env.pop(key, None)
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "PI_HOST": "explicit.invalid",
+            "PI_USER": "operator",
+            "FAKE_WRITE_LOG": str(write_log),
+            "FAKE_RESOLVED_MODEL": value,
+            "FAKE_LIB_COPY": str(lib_copy),
+            "FAKE_WAKE_ENV": str(wake_env),
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(scripts / "switch-wake-word.sh"), "jarvis_v2"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "jasper_env_file_set" in write_log.read_text(encoding="utf-8")
+    assert wake_env.read_text(encoding="utf-8").count("JASPER_WAKE_MODEL=") == 1
+
+    get_result = subprocess.run(
+        ["bash", "-c", '. "$1" && jasper_env_file_get "$2" JASPER_WAKE_MODEL',
+         "_", str(lib_copy), str(wake_env)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert get_result.returncode == 0, get_result.stderr
+    assert get_result.stdout == f"{value}\n"
+
+
+_RENAME_SPEAKER_FAKE_SSH = """\
+#!/usr/bin/env bash
+set -uo pipefail
+cmd="${@: -1}"
+printf '%s\\n' "$cmd" >> "$FAKE_WRITE_LOG"
+if [[ "$cmd" == *"systemctl restart avahi-daemon"* ]]; then
+    exit 9
+fi
+cmd="${cmd//\\/usr\\/local\\/lib\\/jasper\\/jasper-env-file.sh/$FAKE_LIB_COPY}"
+cmd="${cmd//\\/etc\\/jasper\\/jasper.env/$FAKE_JASPER_ENV}"
+cmd="${cmd//\\/etc\\/hosts/$FAKE_HOSTS_FILE}"
+exec bash -c "$cmd"
+"""
+
+def test_rename_speaker_write_goes_through_the_shared_env_file_lib(
+    tmp_path: Path,
+) -> None:
+    """rename-speaker.sh's JASPER_HOSTNAME write is a real jasper_env_file_set
+    call, not the old unlocked grep+sed-or-append upsert. Real-execute it
+    against a temp file (short-circuiting right after, at the next remote
+    call) and confirm the derived FQDN round-trips exactly. Hostnames are
+    mDNS-label constrained (regex-checked before any remote call), so the
+    quote/space round-trip is covered by the wake-word test above instead."""
+    value = "jts4.local"
+    scripts = tmp_path / "repo" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "rename-speaker.sh", scripts / "rename-speaker.sh")
+    shutil.copy2(ROOT / "scripts" / "_lib.sh", scripts / "_lib.sh")
+    lib_copy = tmp_path / "jasper-env-file.sh"
+    shutil.copy2(ROOT / "deploy" / "lib" / "jasper-env-file.sh", lib_copy)
+    jasper_env = tmp_path / "jasper.env"
+    hosts_file = tmp_path / "hosts"
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    write_log = tmp_path / "ssh-write.log"
+    _write_executable(fake_bin / "ssh", _RENAME_SPEAKER_FAKE_SSH)
+    _write_executable(fake_bin / "sudo", _NOOP_SUDO)
+    _write_executable(fake_bin / "hostnamectl", _NOOP_CMD)
+
+    env = os.environ.copy()
+    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+        env.pop(key, None)
+    env.update(
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            "PI_HOST": "explicit.invalid",
+            "PI_USER": "operator",
+            "FAKE_WRITE_LOG": str(write_log),
+            "FAKE_LIB_COPY": str(lib_copy),
+            "FAKE_JASPER_ENV": str(jasper_env),
+            "FAKE_HOSTS_FILE": str(hosts_file),
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(scripts / "rename-speaker.sh"), "jts4", "--no-deploy"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    # set -e stops the script at the deliberately-failing next remote call
+    # (avahi-daemon restart), right after the write under test.
+    assert result.returncode == 9, result.stdout + result.stderr
+    write_calls = [
+        line for line in write_log.read_text(encoding="utf-8").splitlines()
+        if "JASPER_HOSTNAME" in line
+    ]
+    assert len(write_calls) == 1, write_calls
+    assert "jasper_env_file_set" in write_calls[0]
+    assert jasper_env.read_text(encoding="utf-8").count("JASPER_HOSTNAME=") == 1
+
+    get_result = subprocess.run(
+        ["bash", "-c", '. "$1" && jasper_env_file_get "$2" JASPER_HOSTNAME',
+         "_", str(lib_copy), str(jasper_env)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert get_result.returncode == 0, get_result.stderr
+    assert get_result.stdout == f"{value}\n"
+
+
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
 def test_pi_target_scripts_are_valid_bash(name: str) -> None:
     subprocess.run(["bash", "-n", str(ROOT / "scripts" / name)], check=True)
