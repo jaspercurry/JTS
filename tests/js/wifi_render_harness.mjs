@@ -2,16 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Render harness for /wifi/ (C.R1). Until now the only coverage for
-// deploy/assets/wifi/js/main.js was a pin on its JS *source text*
-// (tests/test_web_wifi_setup.py's three-minute-proxy-contract check) —
-// bluetooth/crossover/rooms all have a tests/js/*.mjs DOM harness, wifi did
-// not (see docs handoff). This fills that gap the way rooms_bond_card_link_
-// test.mjs does: load the real module (dom.js/escape.js run for real; only
-// the network-touching http.js/dialog.js imports are stubbed), drive its
-// exported fetchState()/rescan() with fixture /state and /scan payloads, and
-// assert the resulting DOM *structure* (tags, classes, ids, data-* attrs,
-// child counts) — never copy/prose, which changes for reasons unrelated to
+// Render harness for /wifi/ (deploy/assets/wifi/js/main.js). Loads the real
+// module (dom.js/escape.js run for real; only the network-touching
+// http.js/dialog.js imports are stubbed), drives its exported
+// fetchState()/rescan() with fixture /state and /scan payloads, and asserts
+// the resulting DOM *structure* (tags, classes, ids, data-* attrs, child
+// counts) — never copy/prose, which changes for reasons unrelated to
 // behavior.
 //
 //   node tests/js/wifi_render_harness.mjs [path/to/main.js]
@@ -118,9 +114,17 @@ function hasClass(node, cls) { return !!(node && node.classList && node.classLis
 // either never reaches them or only needs a harmless stand-in.
 let fixtureState = null;
 let fixtureScan = null;
+// Set by the connect-failure and state-fetch-failure cases below; both
+// reset their flag once done so they don't leak into a later case.
+let connectResponse = null;
+let stateFetchShouldThrow = false;
 globalThis.fetch = async (url) => {
-  if (url === "./state") return { ok: true, json: async () => fixtureState };
+  if (url === "./state") {
+    if (stateFetchShouldThrow) throw new Error("network down");
+    return { ok: true, json: async () => fixtureState };
+  }
   if (url === "./scan") return { ok: true, json: async () => fixtureScan };
+  if (url === "./connect") return { ok: true, json: async () => connectResponse || {} };
   return { ok: true, json: async () => ({}) };
 };
 
@@ -128,7 +132,7 @@ const domUrl = pathToFileURL(repoPath("deploy/assets/shared/js/dom.js")).href;
 const escapeUrl = pathToFileURL(repoPath("deploy/assets/shared/js/escape.js")).href;
 const modulePath = process.argv[2] || repoPath("deploy/assets/wifi/js/main.js");
 
-const { fetchState, rescan } = await loadEsm(modulePath, {
+const { fetchState, rescan, openConnect, submitConnect } = await loadEsm(modulePath, {
   rewrite: [
     [/^import \{ jsonHeaders, startPolling \} from "\/assets\/shared\/js\/http\.js";\n/m, ""],
     [/^import \{ jtsConfirm, jtsAlert \} from "\/assets\/shared\/js\/dialog\.js";\n/m, ""],
@@ -143,7 +147,7 @@ const { fetchState, rescan } = await loadEsm(modulePath, {
   // this harness calls fetchState()/rescan() directly and never wants the
   // module reaching for a real network timer.
   truncateBefore: "\n// Bootstrap",
-  exportNames: ["fetchState", "rescan"],
+  exportNames: ["fetchState", "rescan", "openConnect", "submitConnect"],
 });
 
 // ---- current-network card + radio toggle, parametrized over states ----
@@ -329,6 +333,53 @@ for (const c of AVAIL_CASES) {
     const badges = findAll(row, (r) => hasClass(r, "badge") && hasClass(r, "badge--ok"));
     assert.equal(badges.length > 0, !!n.inUse, `${c.name}: ${n.ssid} "Connected" badge matches inUse`);
   }
+}
+
+// ---- connect failure renders errorPanel() ----
+const CONNECT_FAILURE_CASES = [
+  { name: "server-rejects-connect", response: { ok: false, message: "nope" } },
+];
+
+for (const c of CONNECT_FAILURE_CASES) {
+  fixtureState = {
+    adapterPresent: true, radioOn: true, hasEthernet: true,
+    lockoutRisk: "low", current: null, saved: [],
+  };
+  await fetchState();
+  fixtureScan = {
+    networks: [{ ssid: "OpenNet", secured: false, channel: 6, signal: 40, inUse: false }],
+    scan: { degraded: false, suspect: false, hideScanButton: false, debug: {} },
+  };
+  await rescan();
+  openConnect("OpenNet");
+  connectResponse = c.response;
+  await submitConnect("OpenNet", false);
+  connectResponse = null;
+
+  const slot = document.getElementById(`av-panel-${cssIdSafe("OpenNet")}`);
+  const [panel] = slot.children;
+  assert.ok(panel, `${c.name}: a panel is rendered`);
+  assert.equal(hasClass(panel, "panel"), true, `${c.name}: .panel wrapper`);
+  const [errDiv] = findAll(panel, (n) => hasClass(n, "result") && hasClass(n, "err"));
+  assert.ok(errDiv, `${c.name}: .result.err present`);
+  const [dismissBtn] = findAll(panel, (n) => n.tagName === "button" && hasClass(n, "btn--ghost"));
+  assert.ok(dismissBtn, `${c.name}: Dismiss button present`);
+  assert.equal(dismissBtn.getAttribute("data-action"), "dismiss-connect", `${c.name}: Dismiss data-action`);
+  assert.equal(dismissBtn.getAttribute("data-ssid"), "OpenNet", `${c.name}: Dismiss data-ssid`);
+}
+
+// ---- fetchState's network-error card ----
+{
+  stateFetchShouldThrow = true;
+  await fetchState();
+  stateFetchShouldThrow = false;
+
+  const card = elements.current.children[0];
+  assert.ok(card, "state-fetch-failure: a card is rendered");
+  assert.equal(hasClass(card, "current-card"), true, "state-fetch-failure: .current-card");
+  assert.equal(hasClass(card, "disconnected"), true, "state-fetch-failure: .disconnected");
+  assert.equal(findAll(card, (n) => hasClass(n, "ssid")).length, 1, "state-fetch-failure: .ssid present");
+  assert.equal(findAll(card, (n) => hasClass(n, "meta")).length, 1, "state-fetch-failure: .meta present");
 }
 
 console.log(JSON.stringify({ ok: true }));
