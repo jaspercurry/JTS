@@ -221,7 +221,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # The dashboard writes nothing and proxies the rest to
             # jasper-control. Its one on-disk read is the token canonical_page()
-            # embeds — and _stored_token() fails safe to gate-OFF on EACCES.
+            # embeds — and the token read fails safe to gate-OFF on EACCES.
             "/var/lib/jasper/control_token",
         ),
     ),

@@ -54,6 +54,7 @@ __all__ = [
     "VOLUME_FLOOR_MIN_DB",
     "load_sound_settings",
     "output_trim_db",
+    "resolve_settings_path",
     "save_sound_settings",
 ]
 
@@ -117,12 +118,12 @@ class SoundSettings:
         }
 
 
-def _settings_path(path: str | Path | None) -> Path:
+def resolve_settings_path(path: str | Path | None) -> Path:
     return Path(path or os.environ.get("JASPER_SOUND_SETTINGS_PATH", SETTINGS_PATH))
 
 
 def load_sound_settings(path: str | Path | None = None) -> SoundSettings:
-    settings_path = _settings_path(path)
+    settings_path = resolve_settings_path(path)
     try:
         return SoundSettings.from_mapping(json.loads(settings_path.read_text()))
     except FileNotFoundError:
@@ -135,7 +136,7 @@ def load_sound_settings(path: str | Path | None = None) -> SoundSettings:
 def save_sound_settings(
     settings: SoundSettings, path: str | Path | None = None
 ) -> None:
-    settings_path = _settings_path(path)
+    settings_path = resolve_settings_path(path)
     data = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
     # 0640 group jasper so the non-root jasper-control can read these
     # (non-secret) sound settings for /state.
