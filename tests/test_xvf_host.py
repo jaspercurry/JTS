@@ -232,8 +232,7 @@ def test_production_xvf_callers_use_only_registered_commands() -> None:
         write_only_reads = {
             name
             for name in command_names
-            if name not in {"REBOOT"}
-            and xvf_host.COMMANDS[name].access == "wo"
+            if xvf_host.COMMANDS[name].access == "wo"
         }
         assert not write_only_reads, (
             f"{relpath} reads or read-verifies write-only XVF command(s): "

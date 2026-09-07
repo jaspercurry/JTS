@@ -13,8 +13,7 @@ Socket setup follows RFC 6762 (mDNS) / RFC 2365 (admin-local scope)
 plus the standard Linux IP_MULTICAST_* knobs:
 
   - TTL = 1 (single subnet — packet dies at first router hop)
-  - LOOP = 1 (we receive our own multicast; the daemon drops its own
-    datagrams by sender peer id)
+  - LOOP = 1 (we receive our own multicast)
   - REUSEPORT (allow multiple processes on the host to join the same
     group; matches python-zeroconf's pattern)
 """
@@ -349,9 +348,10 @@ class MulticastTransport:
 
     async def _recv_loop(self) -> None:
         assert self._sock is not None and self._loop is not None
+        assert self._on_message is not None
         while not self._stopped.is_set():
             try:
-                data, _ = await self._loop.sock_recvfrom(
+                data = await self._loop.sock_recv(
                     self._sock, MAX_DATAGRAM_BYTES,
                 )
             except asyncio.CancelledError:
@@ -366,7 +366,7 @@ class MulticastTransport:
             if msg is None:
                 continue
             try:
-                result = self._on_message(msg) if self._on_message else None
+                result = self._on_message(msg)
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:  # noqa: BLE001

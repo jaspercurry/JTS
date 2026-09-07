@@ -458,8 +458,8 @@ class UsageStore:
         # Status surfaces (the /voice spend-cap card, jasper-doctor) read
         # this DB but run as root, NOT as jasper-voice. They MUST pass
         # read_only=True: a read-WRITE open auto-creates the file and runs
-        # the CREATE TABLE / self-heal DDL below — which can leave usage.db
-        # owned by the wrong user (root/jasper-mux, mode 644). Once that
+        # the CREATE TABLE DDL below — which can leave usage.db owned
+        # by the wrong user (root/jasper-mux, mode 644). Once that
         # happens jasper-voice can no longer write its own DB, open_session()
         # raises "attempt to write a readonly database" on EVERY wake, and
         # the daemon plays the cant_connect cue instead of answering (the
@@ -484,29 +484,6 @@ class UsageStore:
         try:
             if not read_only:
                 self._conn.execute(_SESSIONS_TABLE_DDL)
-                # `provider` is recorded per session at open_session() time. We
-                # deliberately do NOT backfill historic NULL rows: the active
-                # provider's source of truth is /var/lib/jasper/voice_provider.env,
-                # not this process's frozen env, and guessing a provider for rows
-                # that predate the column is exactly the kind of legacy-accounting
-                # code this project doesn't carry. Pre-existing rows aggregate as
-                # "unknown".
-                #
-                # Schema self-heal (a wipe, NOT a value-preserving migration): a
-                # usage DB that predates the `provider` column (pre-PR-#85) would
-                # fail open_session()'s INSERT with "no such column: provider" on
-                # every turn. Rather than carry migration code, drop & recreate —
-                # this is disposable cost telemetry, so the household loses nothing
-                # that matters, and the voice loop self-recovers instead of wedging.
-                # One-time: a no-op once the schema has the column (every current
-                # and fresh DB).
-                cols = {
-                    row[1]
-                    for row in self._conn.execute("PRAGMA table_info(sessions)")
-                }
-                if "provider" not in cols:
-                    self._conn.execute("DROP TABLE sessions")
-                    self._conn.execute(_SESSIONS_TABLE_DDL)
                 # Billable realtime-activity intervals for time-billed providers
                 # (Grok). The table name is historical; each active turn is a row,
                 # and cost = duration × rate snapshot. Separate from `sessions`
