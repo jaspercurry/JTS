@@ -14,7 +14,7 @@ added 2026-05-23. The critical regression these tests pin down:
   - All three legs' offsets + RMSes flow to the wake_events store.
 
 Constructs WakeLoop via `for_tests()` (no real mic, model, or daemon),
-mocks `_wake_event_store`, and inspects the kwargs passed to
+mocks the wake-telemetry store, and inspects the kwargs passed to
 `begin_event`.
 """
 from __future__ import annotations
@@ -54,11 +54,13 @@ def _make_wake_loop_triple(
 
     The chip-AEC beam legs are opt-in (pass a detector to wire one in),
     mirroring the optional off/dtln legs."""
-    wl = WakeLoop.for_tests()
+    # Mocked telemetry store. begin_event is an AsyncMock so the
+    # `await store.begin_event(...)` call resolves without real DB I/O.
+    store = MagicMock()
+    store.begin_event = AsyncMock()
+    wl = WakeLoop.for_tests(wake_event_store=store)
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
-    wl._cfg.wake_model = "test_model"
-    wl._cfg.voice_provider = "gemini"
     wl._detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     # capture_ring=None is fine — _tail_frame_rms_dbfs tolerates None.
@@ -102,12 +104,6 @@ def _make_wake_loop_triple(
     wl._capture_ring_dtln = None
     wl._content_activity = MagicMock()
     wl._content_activity.music_dbfs = None
-    # Mocked telemetry store. begin_event is an AsyncMock so the
-    # `await store.begin_event(...)` call resolves without real DB I/O.
-    store = MagicMock()
-    store.begin_event = AsyncMock()
-    wl._wake_event_store = store
-    wl._current_event_id = None
 
     async def _noop(**kwargs):
         return None
@@ -149,12 +145,12 @@ async def test_dtln_only_fire_records_trigger_kind_fire_dtln():
     await wl._handle_wake_frame(_frame(), leg="dtln")
 
     # Exactly one begin_event call, with correct attribution.
-    assert wl._wake_event_store.begin_event.await_count == 1
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    assert wl._wake_telemetry.store.begin_event.await_count == 1
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_dtln", (
         f"DTLN fire mis-recorded as {kwargs['trigger_kind']!r}; the bug"
-        " is back — check the if/elif chain in _handle_wake_frame's"
-        " telemetry block."
+        " is back — check the per-leg column routing in"
+        " WakeTelemetry.on_fire."
     )
     # DTLN score lands in the DTLN column, NOT the AEC OFF column.
     assert kwargs["peak_score_dtln_aec"] == pytest.approx(0.82)
@@ -173,7 +169,7 @@ async def test_dtln_fire_passes_all_three_leg_telemetry_fields():
 
     await wl._handle_wake_frame(_frame(), leg="dtln")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     # The DTLN-specific kwargs must be present (even if None).
     assert "peak_offset_ms_dtln" in kwargs
     assert "mic_rms_dbfs_dtln" in kwargs
@@ -189,7 +185,7 @@ async def test_aec_on_fire_still_records_fire_aec_on():
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_aec_on"
     assert kwargs["peak_score_aec_on"] == pytest.approx(0.91)
 
@@ -202,7 +198,7 @@ async def test_aec_off_fire_still_records_fire_aec_off():
 
     await wl._handle_wake_frame(_frame(), leg="off")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_aec_off"
     assert kwargs["peak_score_aec_off"] == pytest.approx(0.88)
 
@@ -223,7 +219,7 @@ async def test_non_primary_fire_records_firing_leg_effective_threshold():
 
     await wl._handle_wake_frame(_frame(), leg="off")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_aec_off"
     assert kwargs["fired_legs"] == "off"
     assert kwargs["threshold"] == pytest.approx(0.7)
@@ -250,7 +246,7 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
 
     await wl._handle_wake_frame(_frame(), leg="dtln")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_dtln"  # DTLN won the race
     legs = set(kwargs["fired_legs"].split(","))
     assert legs == {"on", "off", "dtln"}, kwargs["fired_legs"]
@@ -273,7 +269,7 @@ async def test_chip_aec_150_fire_records_trigger_and_score():
 
     await wl._handle_wake_frame(_frame(), leg="chip_aec_150")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_chip_aec_150"
     assert kwargs["peak_score_chip_aec_150"] == pytest.approx(0.79)
     assert "chip_aec_150" in kwargs["fired_legs"].split(","), kwargs["fired_legs"]
@@ -296,7 +292,7 @@ async def test_chip_beam_corroborates_in_fired_legs_when_software_leg_fires():
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
-    kwargs = wl._wake_event_store.begin_event.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_aec_on"  # "on" claimed the lock
     assert set(kwargs["fired_legs"].split(",")) == {"on", "chip_aec_150"}, (
         kwargs["fired_legs"]
@@ -312,7 +308,7 @@ async def test_finalize_event_audio_attaches_chip_beam_rings(monkeypatch):
         detector_chip_aec_150=_make_detector(),
         detector_chip_aec_210=_make_detector(),
     )
-    monkeypatch.setattr("jasper.voice_daemon.CAPTURE_POST_SEC", 0.0)
+    monkeypatch.setattr("jasper.voice.wake_telemetry.CAPTURE_POST_SEC", 0.0)
     frame_on = np.full(4, 1, dtype=np.int16)
     frame_150 = np.full(4, 150, dtype=np.int16)
     frame_210 = np.full(4, 210, dtype=np.int16)
@@ -320,11 +316,13 @@ async def test_finalize_event_audio_attaches_chip_beam_rings(monkeypatch):
     wl._legs["chip_aec_150"].capture_ring = deque([frame_150])
     wl._legs["chip_aec_210"].capture_ring = deque([frame_210])
     wl._snapshot_ring = WakeLoop._snapshot_ring
-    wl._wake_event_store.attach_audio = AsyncMock()
+    wl._wake_telemetry.store.attach_audio = AsyncMock()
 
-    await wl._finalize_event_audio("evt-chip")
+    await wl._wake_telemetry.finalize_event_audio(
+        "evt-chip", snapshot=wl._snapshot_leg_audio,
+    )
 
-    kwargs = wl._wake_event_store.attach_audio.await_args.kwargs
+    kwargs = wl._wake_telemetry.store.attach_audio.await_args.kwargs
     assert kwargs["event_id"] == "evt-chip"
     assert kwargs["audio_on"] == frame_on.tobytes()
     assert kwargs["audio_off"] is None

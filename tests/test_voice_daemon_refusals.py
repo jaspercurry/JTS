@@ -188,7 +188,7 @@ async def _success_arm_opener(
     wl._session_id = "sess-stalled-opener"
     wl._turn = turn
     wl._bg_tasks = set()
-    wl._wake_event_store = None
+    wl._wake_telemetry.store = None
     wl._state = State.SESSION
     try:
         await wl._end_turn_inner("test")
@@ -366,7 +366,7 @@ def _prepare_teardown(
     turn = FakeLiveTurn(bytes_sent=bytes_sent, chunks_received=chunks_received)
     wl._turn = turn
     wl._bg_tasks = set()
-    wl._wake_event_store = None
+    wl._wake_telemetry.store = None
     wl._session_id = "sess-refusals"
     wl._input_ended = input_ended
     wl._user_speech_seen = user_speech

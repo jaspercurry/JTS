@@ -185,9 +185,9 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     await asyncio.sleep(0.002)
     await wl._end_session_input("test")
     await asyncio.sleep(0.002)
-    await wl._record_response_started()
+    await wl._on_response_started()
     await asyncio.sleep(0.002)
-    await wl._record_first_write()
+    await wl._on_first_write()
     await wl._end_turn("test")
 
     fields = event_fields(caplog, "turn.timeline")
@@ -314,8 +314,8 @@ async def test_session_status_publishes_the_last_turn_timeline():
     assert wl.session_status()["last_turn_ms"] == {}
 
     await wl._end_session_input("test")
-    await wl._record_response_started()
-    await wl._record_first_write()
+    await wl._on_response_started()
+    await wl._on_first_write()
     await wl._end_turn("test")
 
     last = wl.session_status()["last_turn_ms"]

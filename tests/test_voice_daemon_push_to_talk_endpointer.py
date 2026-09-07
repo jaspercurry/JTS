@@ -666,7 +666,7 @@ async def _torn_down_mid_hold(
     )
     wl._turn = turn
     wl._bg_tasks = set()
-    wl._wake_event_store = None
+    wl._wake_telemetry.store = None
     wl._session_id = "sess-teardown"
     wl._input_ended = input_ended
     wl._user_speech_seen = user_speech
