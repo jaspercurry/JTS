@@ -491,8 +491,8 @@ class _SingleFlightTTLCache:
         Only successful computations are cached. If the compute raises,
         waiters are released and the next caller may retry.
 
-        Blocks up to `wait_timeout_sec` for the in-flight compute, then
-        returns the stale value if there is one, else raises TimeoutError.
+        Blocks up to `wait_timeout_sec` per in-flight compute, then returns
+        the stale value if there is one, else raises TimeoutError.
         """
         while True:
             with self._cond:

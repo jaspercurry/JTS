@@ -862,9 +862,9 @@ async def _get_state(
     camilla, voice, fanin, outputd, mux = gathered
     voice_status = voice or {}
 
-    # One pass over every section read that depends on nothing else, so they
-    # share the pool instead of each waiting out the one before it — serial
-    # submission spends one worker and the deadline a read at a time.
+    # One pass over every section read that depends on nothing still pending,
+    # so they share the pool instead of each waiting out the one before it —
+    # serial submission spends one worker and the deadline a read at a time.
     (
         volume_state, sound_profile, airplay_playing, aec_status, audio_health,
         usb_forensics, audition_state, bass_extension_state, transit_state,
@@ -907,7 +907,9 @@ async def _get_state(
         ),
         _soft_read(
             "grouping",
-            lambda: read_grouping_state(local_outputd_reader=lambda: outputd),
+            lambda: with_airplay_latency_fit(
+                read_grouping_state(local_outputd_reader=lambda: outputd),
+            ),
         ),
         _soft_read(
             "active_speaker_setup",
@@ -918,11 +920,10 @@ async def _get_state(
         ),
         _soft_read(
             "research",
-            lambda: _research_state((voice or {}).get("research")),
+            lambda: _research_state(voice_status.get("research")),
             exc=(ImportError, OSError, RuntimeError, ValueError),
         ),
     )
-    grouping_state = with_airplay_latency_fit(grouping_state)
     listening_level, persisted_main_volume_db = volume_state or (None, None)
 
     spotify = _spotify_state()
