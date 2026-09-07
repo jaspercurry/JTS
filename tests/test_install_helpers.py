@@ -589,24 +589,29 @@ def _run_install_streambox_jasper(
     state_dir_mode: int | None = None,
     env_file_text: str | None = None,
     epilogue: str = "",
-    checkout: str | None = None,
+    checkout: str | None = _MANIFEST,
     pip_rc: int = 0,
     failing_mv: tuple[int, ...] = (),
+    orphaned_done_tree: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     """Run install_streambox_jasper against a scratch root.
 
     `install` is always stubbed: it records its argv and then runs the real
     `install` without the `-o root -g root` flags, which need privileges CI
-    lacks. Stubbing `rsync` too lets the run reach the env step; leaving it real
-    makes rsync fail on an empty REPO_DIR, so only dir-prep has run. Every stub
-    appends its argv to the returned `calls` path, and the venv `pip` appends to
-    `pip_calls` and returns `pip_rc` for the staged-requirements install (every
-    other pip call succeeds).
+    lacks. Every stub appends its argv to the returned `calls` path, and the
+    venv `pip` appends to `pip_calls` and returns `pip_rc` for the
+    staged-requirements install (every other pip call succeeds).
 
     `checkout` populates REPO_DIR with that manifest and a source tree, so rsync
-    and the staged-manifest reader run for real. `failing_mv` holds the 1-based
-    `mv` calls that fail, which is how a publish is interrupted between its two
-    renames (and how the rollback itself is made to fail). The EXIT trap is
+    and the staged-manifest reader run for real; `checkout=None` leaves REPO_DIR
+    empty, which fails the rsync and stops the run at dir-prep.
+    `orphaned_done_tree` plants the wreckage a publish whose delete was cut off
+    partway would leave. `failing_mv` holds the 1-based `mv` calls that fail,
+    which is how a publish is interrupted between its two renames (and how the
+    rollback itself is made to fail).
+
+    The profile function runs as its own statement, so install.sh's errexit
+    stays armed inside it even when an `epilogue` follows, and the EXIT trap is
     armed the way install_exit_cleanup arms it — through `_call_if_defined`, so
     errexit is disarmed inside the recovery here too.
     """
@@ -638,8 +643,12 @@ def _run_install_streambox_jasper(
         env_file = paths["env"] / "jasper.env"
         env_file.write_text(env_file_text, encoding="utf-8")
         env_file.chmod(0o600)
+    (venv_bin / "python").symlink_to(sys.executable)
+    if orphaned_done_tree:
+        truncated = paths["install"] / ".staging.done/jasper.prev"
+        truncated.mkdir(parents=True)
+        (truncated / "__init__.py").write_text("old\n", encoding="utf-8")
     if checkout is not None:
-        (venv_bin / "python").symlink_to(sys.executable)
         for name in _CHECKOUT_FILES:
             source = paths["repo"] / name
             source.parent.mkdir(parents=True, exist_ok=True)
@@ -650,7 +659,7 @@ def _run_install_streambox_jasper(
             "jts-base-dep==1.0\n", encoding="utf-8"
         )
         # The live tree this deploy is replacing, and a file the checkout no
-        # longer ships (so `--delete` has something to carry through).
+        # longer ships (so the publish has a deletion to carry through).
         for name in (*_CHECKOUT_FILES, "pyproject.toml", "jasper/sentinel.py"):
             live = paths["install"] / name
             live.parent.mkdir(parents=True, exist_ok=True)
@@ -701,14 +710,13 @@ def _run_install_streambox_jasper(
         f"STATE_DIR={shlex.quote(str(paths['state']))}",
         f"ENV_DIR={shlex.quote(str(paths['env']))}",
         f"INSTALL_DIR={shlex.quote(str(paths['install']))}",
-        f"INSTALL_STAGING_DIR={shlex.quote(str(staging))}",
         "trap '_call_if_defined remove_staged_install_tree' EXIT",
-        "install_streambox_jasper >/dev/null",
     ]
+    run = "install_streambox_jasper >/dev/null"
     if epilogue:
-        steps.append(epilogue)
+        run = f'{run}; rc=$?; {epilogue}; exit "$rc"'
     result = subprocess.run(
-        ["bash", "-c", " && ".join(steps)],
+        ["bash", "-c", " && ".join(steps) + "\n" + run],
         capture_output=True,
         text=True,
         timeout=60,
@@ -727,7 +735,9 @@ def test_install_streambox_jasper_does_not_rechmod_an_existing_state_dir(tmp_pat
     install/upgrade. Fixed by delegating to ensure_state_dir, same as
     install_jasper. Pin that an existing STATE_DIR survives the streambox
     dir-prep step untouched and is never passed to `install -d` directly."""
-    result, paths = _run_install_streambox_jasper(tmp_path, state_dir_mode=0o770)
+    result, paths = _run_install_streambox_jasper(
+        tmp_path, state_dir_mode=0o770, checkout=None
+    )
 
     # rsync is real here and fails past dir-prep — expected, and irrelevant.
     assert result.returncode != 0
@@ -752,7 +762,6 @@ def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_pat
     land parsable by `source`, keep every other key, and keep mode 0640."""
     result, paths = _run_install_streambox_jasper(
         tmp_path,
-        stubs=("install", "rsync"),
         env_file_text="JASPER_HOSTNAME=jts.local\nJASPER_INSTALL_PROFILE=full\n",
         epilogue=(
             'source "$ENV_DIR/jasper.env" && '
@@ -770,8 +779,9 @@ def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_pat
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="requires rsync")
 @pytest.mark.parametrize(
     "scenario",
-    ["published", "dependency_install_fails", "manifest_declares_nothing",
-     "publish_interrupted_early", "publish_interrupted_late", "repair_fails"],
+    ["published", "orphaned_done_tree", "dependency_install_fails",
+     "manifest_declares_nothing", "publish_interrupted_early",
+     "publish_interrupted_late", "repair_fails"],
 )
 def test_the_live_source_tree_changes_only_on_a_finished_install(
     tmp_path: Path, scenario: str
@@ -796,6 +806,7 @@ def test_the_live_source_tree_changes_only_on_a_finished_install(
         ),
         pip_rc=1 if scenario == "dependency_install_fails" else 0,
         failing_mv=failing_mv,
+        orphaned_done_tree=scenario == "orphaned_done_tree",
     )
     install_dir = paths["install"]
     pip_calls = (
@@ -807,7 +818,7 @@ def test_the_live_source_tree_changes_only_on_a_finished_install(
     editable = f"-c {constraints} --no-deps -e {install_dir}[streambox]"
     staged_requirements = f"-c {constraints} -r {paths['staging']}/.deps.txt"
 
-    if scenario == "published":
+    if scenario in ("published", "orphaned_done_tree"):
         assert result.returncode == 0, result.stdout + result.stderr
         assert f"install {staged_requirements}" in pip_calls
         assert f"install {editable}" in pip_calls
@@ -815,11 +826,14 @@ def test_the_live_source_tree_changes_only_on_a_finished_install(
             assert install_dir.joinpath(name).read_text(encoding="utf-8") == (
                 "new source\n"
             )
-        # Renaming onto a live directory would nest inside it, and `--delete`
-        # must carry the checkout's deletions through the publish.
+        # Renaming onto a live directory would nest inside it; the entry is
+        # replaced whole, which is what carries the checkout's deletions
+        # through. The truncated copy a cut-off delete leaves is dropped, not
+        # restored over the tree that was published.
         assert not install_dir.joinpath("jasper/jasper").exists()
         assert not install_dir.joinpath("jasper/sentinel.py").exists()
         assert not paths["staging"].exists()
+        assert not install_dir.joinpath(".staging.done").exists()
         return
 
     assert result.returncode != 0, result.stdout + result.stderr
@@ -868,7 +882,6 @@ def test_the_staged_manifest_reader_resolves_the_repo_extras(
                 [
                     f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
                     f"INSTALL_DIR={shlex.quote(str(install_dir))}",
-                    f"INSTALL_STAGING_DIR={shlex.quote(str(staging))}",
                     f"install_staged_dependencies {extra}",
                 ]
             ),
@@ -880,8 +893,51 @@ def test_the_staged_manifest_reader_resolves_the_repo_extras(
 
     assert (result.returncode == 0) is resolves, result.stderr
     if resolves:
-        specs = staging.joinpath(".deps.txt").read_text(encoding="utf-8").split()
-        assert len(specs) >= 10
+        specs = staging.joinpath(".deps.txt").read_text(encoding="utf-8")
+        assert len(specs.splitlines()) >= 10
+
+
+def test_a_failed_publish_rename_never_deletes_the_staging_tree(tmp_path: Path):
+    """The publish's renames return rather than falling through to its own
+    delete: a caller with errexit disarmed — the shape `_call_if_defined` gives
+    the EXIT trap — would otherwise drop the moved-aside copy and report
+    success."""
+    install_dir = tmp_path / "opt/jasper"
+    staging = install_dir / ".staging"
+    (staging / "jasper").mkdir(parents=True)
+    (install_dir / "jasper").mkdir()
+    (install_dir / "jasper/__init__.py").write_text("old\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "mv").write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    (bin_dir / "mv").chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            " && ".join(
+                [
+                    f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+                    "set +e",
+                    f"INSTALL_DIR={shlex.quote(str(install_dir))}",
+                    "publish_staged_install_tree",
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert staging.joinpath("jasper").exists()
+    assert install_dir.joinpath("jasper/__init__.py").read_text(
+        encoding="utf-8"
+    ) == "old\n"
 
 
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
