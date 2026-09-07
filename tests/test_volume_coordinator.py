@@ -1216,7 +1216,7 @@ async def test_handoff_finalize_honors_mute_landed_after_prepare(tmp_path):
 
     # jasper-control handling the remote while mux owns this coordinator's
     # source-transition sequence.
-    persistence.save_pre_mute_level(60)
+    persistence.save_mute_state(60, None)
 
     assert await coord.finalize_source_handoff(handoff) is True
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
@@ -1660,7 +1660,7 @@ async def test_persisted_mute_intent_outranks_what_camilla_reports(
     coord, cam, persistence = _real_coord(
         tmp_path, active={}, db=percent_to_db(59), level=59,
     )
-    persistence.save_pre_mute_level(59)
+    persistence.save_mute_state(59, None)
     cam.muted = False
     if not camilla_readable:
         async def unreadable():
@@ -1688,7 +1688,7 @@ async def test_unmute_and_push_mode_nonzero_publish_unmuted_context(tmp_path):
         level=59,
         volume_context_publisher=publish,
     )
-    persistence.save_pre_mute_level(59)
+    persistence.save_mute_state(59, None)
     cam.muted = True
 
     await coord.unmute()
@@ -2030,7 +2030,7 @@ async def test_reconcile_preserves_toggle_mute_restore_level(tmp_path):
     )
     cam.muted = True
     persistence.save_now(percent_to_db(0))
-    persistence.save_pre_mute_level(59)
+    persistence.save_mute_state(59, None)
 
     await coord.maybe_reconcile_camilla()
 
@@ -2213,7 +2213,7 @@ async def test_get_camilla_target_db_uses_effective_temporary_mute(tmp_path):
     coord, _, persistence = _real_coord(
         tmp_path, active={}, db=percent_to_db(0), level=70,
     )
-    persistence.save_pre_mute_level(70)
+    persistence.save_mute_state(70, None)
 
     assert await coord.get_camilla_target_db() == pytest.approx(percent_to_db(0))
 
@@ -2258,7 +2258,7 @@ async def test_transition_uses_effective_level_while_temporarily_muted(tmp_path)
         db=percent_to_db(0),
         level=80,
     )
-    persistence.save_pre_mute_level(80)
+    persistence.save_mute_state(80, None)
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
