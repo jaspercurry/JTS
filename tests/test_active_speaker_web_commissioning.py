@@ -16,7 +16,6 @@ import pytest
 import jasper.active_speaker.playback as active_playback
 import jasper.audio_measurement.playback as measurement_playback
 from jasper.active_speaker import web_commissioning as web
-from jasper.active_speaker.measurement import active_driver_targets
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
@@ -76,36 +75,6 @@ def _staged_anchor_for(topology, staged_path):
             for channel in group.channels
         ],
     }
-
-
-def _driver_comparison_set(topology):
-    from jasper.active_speaker.capture_geometry import comparison_set_fingerprint
-
-    core = {
-        "schema_version": 2,
-        "comparison_set_id": "1" * 32,
-        "created_at": "2026-07-11T12:00:00Z",
-        "topology_id": topology.topology_id,
-        "profile_context_id": "profile-1",
-        "setup_sha256": "2" * 64,
-        "device_sha256": "3" * 64,
-        "calibration_id": "",
-        "driver_level_locks": {
-            target["target_id"]: {
-                "target_id": target["target_id"],
-                "speaker_group_id": target["speaker_group_id"],
-                "role": target["role"],
-                "tone_frequency_hz": (
-                    250.0 if target["role"] == "woofer" else 6250.0
-                ),
-                "tone_peak_dbfs": -12.0,
-                "commissioning_gain_db": 0.0,
-                "locked_main_volume_db": -4.0,
-            }
-            for target in active_driver_targets(topology)
-        },
-    }
-    return {**core, "fingerprint": comparison_set_fingerprint(core)}
 
 
 def test_commission_tone_select_fanin_lane_indeterminate_recovery_standalone(
