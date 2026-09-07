@@ -13,10 +13,11 @@ from ...audio_profile_state import (
     resolve_audio_input_intent,
 )
 from ...config import Config, local_mic_present_from_env
+from ...json_fields import sha256_file
 from ...openwakeword_guard import ensure_openwakeword_import_safe
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _sha256_file
+from ._shared import CheckResult
 from .aec import (
     _aec_mode_setting,
     _aec_profile_setting,
@@ -69,7 +70,7 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
             if not path.is_file() or path.stat().st_size <= 0:
                 missing_assets.append(asset.filename)
                 continue
-            if _sha256_file(path) != asset.download_sha256:
+            if sha256_file(path) != asset.download_sha256:
                 mismatched_assets.append(asset.filename)
         if missing_assets:
             return CheckResult(
@@ -126,7 +127,7 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
                     break
         if (
             expected_model_sha is not None
-            and _sha256_file(active_candidate) != expected_model_sha
+            and sha256_file(active_candidate) != expected_model_sha
         ):
             return CheckResult(
                 "openWakeWord models", "fail",

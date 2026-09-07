@@ -12,7 +12,6 @@ hash check when a SHA-256 is available.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import http.client
 import os
 import ssl
@@ -25,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.env_load import parse_env_file
+from jasper.json_fields import sha256_file
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -57,14 +57,6 @@ class StageResult:
     @property
     def failures(self) -> int:
         return self.required_failures + self.optional_failures
-
-
-def sha256_file(path: str | os.PathLike[str]) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as f:
-        for chunk in iter(lambda: f.read(DEFAULT_CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def download_model_file(
