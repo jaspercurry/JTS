@@ -7,7 +7,7 @@
 Covers what ``jasper.control.server`` itself owns — the route table and
 its install-profile policy, the host/origin/body guards, control-token
 and household-credential gating, leader forwarding for a paired
-follower, the active-speaker output-safety helpers, and the
+follower, the active-speaker setup blocks it consults, and the
 ThreadingHTTPServer's own lifecycle. Route bodies are tested beside the
 ``jasper.control.handlers`` mixin that owns them, in the sibling
 ``test_control_server_<concern>.py`` modules.
@@ -31,14 +31,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 import pytest
 
 from jasper.control.server import (
-    VOLUME_MAX_DB,
-    VOLUME_MIN_DB,
-    _active_speaker_level_match_provisional,
-    _active_speaker_output_safety_snapshot,
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
-from jasper.control.volume_ops import _clamp_db, _db_to_percent
+from jasper.control.state_aggregate import (
+    _active_speaker_level_match_provisional,
+    active_speaker_output_safety_snapshot,
+)
+from jasper.control.volume_ops import (
+    VOLUME_MAX_DB,
+    VOLUME_MIN_DB,
+    _clamp_db,
+    _db_to_percent,
+)
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
@@ -62,7 +67,7 @@ _IMPORTED_FIXTURES = (
 def test_active_speaker_output_safety_snapshot_uses_setup_status(
     monkeypatch,
 ) -> None:
-    import jasper.control.server as srv_mod
+    import jasper.control.state_aggregate as state_agg_mod
 
     def fake_setup(*, active_config_path=None, **_kwargs):
         assert active_config_path.endswith("active_speaker_staged_startup.yml")
@@ -76,9 +81,11 @@ def test_active_speaker_output_safety_snapshot_uses_setup_status(
             "issues": [],
         }
 
-    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+    monkeypatch.setattr(
+        state_agg_mod, "read_active_speaker_setup_status", fake_setup,
+    )
 
-    payload = _active_speaker_output_safety_snapshot({
+    payload = active_speaker_output_safety_snapshot({
         "current": {
             "camilla": {
                 "config_path": (
@@ -99,7 +106,7 @@ def test_active_speaker_output_safety_snapshot_uses_setup_status(
 def test_active_speaker_output_safety_snapshot_allows_setup_ready(
     monkeypatch,
 ) -> None:
-    import jasper.control.server as srv_mod
+    import jasper.control.state_aggregate as state_agg_mod
 
     def fake_setup(*, active_config_path=None, **_kwargs):
         return {
@@ -112,9 +119,11 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
             "issues": [],
         }
 
-    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+    monkeypatch.setattr(
+        state_agg_mod, "read_active_speaker_setup_status", fake_setup,
+    )
 
-    payload = _active_speaker_output_safety_snapshot({
+    payload = active_speaker_output_safety_snapshot({
         "current": {
             "camilla": {
                 "config_path": (
@@ -188,7 +197,7 @@ def test_level_match_provisional_deduped_from_snapshot_setup(
     # report an applied+provisional baseline and assert the snapshot surfaces it.
     # Reverting the dedup to a stale second disk read against an absent file
     # would yield None here (it would no longer track the snapshot).
-    import jasper.control.server as srv_mod
+    import jasper.control.state_aggregate as state_agg_mod
 
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
@@ -206,9 +215,11 @@ def test_level_match_provisional_deduped_from_snapshot_setup(
             "issues": [],
         }
 
-    monkeypatch.setattr(srv_mod, "read_active_speaker_setup_status", fake_setup)
+    monkeypatch.setattr(
+        state_agg_mod, "read_active_speaker_setup_status", fake_setup,
+    )
 
-    payload = _active_speaker_output_safety_snapshot({
+    payload = active_speaker_output_safety_snapshot({
         "current": {"camilla": {"config_path": "/var/lib/camilladsp/configs/x.yml"}},
     })
     # Tracks the snapshot's baseline_profile, despite the on-disk file being absent.

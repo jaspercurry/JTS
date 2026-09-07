@@ -265,10 +265,11 @@ def diagnostics_snapshot(monkeypatch, tmp_path):
     The refresh window is process-global state, so every diagnostics test
     starts from "nothing running" or its own start would be swallowed.
     """
+    import jasper.control.handlers.system as system_routes
     import jasper.control.server as srv_mod
 
     path = tmp_path / "doctor-result.json"
-    monkeypatch.setattr(srv_mod, "_DIAGNOSTICS_RESULT_PATH", str(path))
+    monkeypatch.setattr(system_routes, "DOCTOR_RESULT_PATH", str(path))
     monkeypatch.setattr(srv_mod, "_diagnostics_refresh_started_at", None)
 
     def write(payload: dict, *, age_seconds: float = 0.0) -> Path:
@@ -1863,7 +1864,7 @@ def test_single_flight_cache_recomputes_after_ttl_expiry():
     """Within the TTL the cached value is reused; once it expires the
     next caller recomputes. Uses an injected clock so the assertion is
     deterministic, not wall-clock timed."""
-    from jasper.control.server import _SingleFlightTTLCache
+    from jasper.control.single_flight import SingleFlightTTLCache
 
     now = {"t": 1000.0}
     calls = {"n": 0}
@@ -1872,7 +1873,7 @@ def test_single_flight_cache_recomputes_after_ttl_expiry():
         calls["n"] += 1
         return calls["n"]
 
-    cache = _SingleFlightTTLCache(
+    cache = SingleFlightTTLCache(
         ttl_sec=1.0, wait_timeout_sec=60.0, clock=lambda: now["t"],
     )
 
@@ -1889,9 +1890,9 @@ def test_single_flight_cache_does_not_cache_failures():
     """A raising compute propagates, is not cached, and clears the
     in-flight flag so the next caller retries cleanly rather than
     inheriting a stuck in-flight state."""
-    from jasper.control.server import _SingleFlightTTLCache
+    from jasper.control.single_flight import SingleFlightTTLCache
 
-    cache = _SingleFlightTTLCache(ttl_sec=60.0, wait_timeout_sec=60.0)
+    cache = SingleFlightTTLCache(ttl_sec=60.0, wait_timeout_sec=60.0)
     calls = {"n": 0}
 
     def flaky():
@@ -1914,9 +1915,9 @@ def test_single_flight_cache_waiter_gives_up_on_a_wedged_compute():
     bounded request worker — and, with enough waiters, the control plane —
     on one compute that overran. Retire with the cache's wait timeout.
     """
-    from jasper.control.server import _SingleFlightTTLCache
+    from jasper.control.single_flight import SingleFlightTTLCache
 
-    cache = _SingleFlightTTLCache(ttl_sec=0.0, wait_timeout_sec=0.05)
+    cache = SingleFlightTTLCache(ttl_sec=0.0, wait_timeout_sec=0.05)
     assert cache.get_or_compute(lambda: "first") == "first"
 
     entered = threading.Event()

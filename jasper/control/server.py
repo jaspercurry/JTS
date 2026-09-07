@@ -83,6 +83,7 @@ from . import household_credential
 from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
+from .single_flight import SingleFlightTTLCache
 from .uds import (
     _local_status_json,
     _mux_socket_command,
@@ -96,7 +97,6 @@ _peering_loop: asyncio.AbstractEventLoop | None = None
 _peering_stop_requested = threading.Event()
 CORE_AUDIO_RESTART_UNITS = ["jasper-camilla.service"]
 LOCAL_SOURCE_AUDIO_REFRESH_UNITS = list(local_source_audio_refresh_units())
-_DIAGNOSTICS_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 _DIAGNOSTICS_CACHE_TTL_SECONDS = 60.0
 # Ceiling on how long a start can be treated as in flight. Sized to
 # `TimeoutStartSec=600` in deploy/systemd/jasper-doctor-json.service: systemd
@@ -288,50 +288,6 @@ _ASSISTANT_POST_ROUTES = frozenset({
 })
 
 
-def _active_speaker_level_match_provisional(
-    setup: dict[str, Any] | None,
-) -> bool | None:
-    """Whether the APPLIED active-speaker baseline's per-driver level match is a
-    datasheet estimate rather than a phone measurement.
-
-    Read from the readiness snapshot (`setup`) the caller already computed via
-    `read_active_speaker_setup_status`, so `active_speaker_baseline_profile.json`
-    has one reader here. The `status == "applied"` gate is load-bearing: the
-    candidate only carries that status when it returns the persisted applied
-    profile verbatim (see `build_baseline_profile_candidate`), so `provisional`
-    then equals the on-disk value. Fail-soft: None when there is no applied
-    active baseline (passive speaker, unreadable topology, or a superseded /
-    not-yet-applied profile).
-    """
-    if not isinstance(setup, dict):
-        return None
-    profile = setup.get("baseline_profile")
-    if not isinstance(profile, dict) or profile.get("status") != "applied":
-        return None
-    return bool(profile.get("provisional"))
-
-
-def _active_speaker_output_safety_snapshot(
-    airplay_health: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Return the landing-page speaker-output safety state."""
-
-    current = airplay_health.get("current") if isinstance(airplay_health, dict) else {}
-    camilla = current.get("camilla") if isinstance(current, dict) else {}
-    raw_path = camilla.get("config_path") if isinstance(camilla, dict) else None
-    config_path = str(raw_path or "")
-    setup = read_active_speaker_setup_status(
-        active_config_path=config_path or None,
-    )
-    return {
-        **setup,
-        # Back-compat alias for the landing page's field name.
-        "safety_muted": not bool(setup.get("volume_allowed")),
-        "level_match_provisional": _active_speaker_level_match_provisional(setup),
-        "source": "active_speaker.setup_status",
-    }
-
-
 def _active_speaker_volume_block() -> dict[str, Any] | None:
     setup = read_active_speaker_setup_status()
     if setup.get("volume_allowed") is not True:
@@ -463,79 +419,6 @@ STATE_RESPONSE_CACHE_TTL_SEC = 1.0
 STATE_RESPONSE_WAIT_SEC = 2.0
 
 
-_MISSING = object()
-
-
-class _SingleFlightTTLCache:
-    """Small thread-safe cache for expensive read-only JSON routes."""
-
-    def __init__(
-        self,
-        ttl_sec: float,
-        wait_timeout_sec: float,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._ttl_sec = float(ttl_sec)
-        self._wait_timeout_sec = float(wait_timeout_sec)
-        self._clock = clock
-        self._cond = threading.Condition()
-        self._value: Any = _MISSING
-        self._computed_at = 0.0
-        self._expires_at = 0.0
-        self._inflight = False
-
-    def get_or_compute(self, compute: Callable[[], Any]) -> Any:
-        """Return a fresh value, sharing one in-flight computation.
-
-        Only successful computations are cached. If the compute raises,
-        waiters are released and the next caller may retry.
-
-        Blocks up to `wait_timeout_sec` per in-flight compute, then returns
-        the stale value if there is one, else raises TimeoutError.
-        """
-        while True:
-            with self._cond:
-                now = self._clock()
-                if self._value is not _MISSING and now < self._expires_at:
-                    return self._value
-                if not self._inflight:
-                    self._inflight = True
-                    break
-                if not self._cond.wait(timeout=self._wait_timeout_sec):
-                    if self._value is not _MISSING:
-                        log_event(
-                            logger,
-                            "state.stale_value_served",
-                            age_sec=round(self._clock() - self._computed_at, 1),
-                            level=logging.WARNING,
-                        )
-                        return self._value
-                    raise TimeoutError(
-                        "state compute did not finish within its budget",
-                    )
-
-        computed = False
-        try:
-            value = compute()
-            computed = True
-        finally:
-            if not computed:
-                with self._cond:
-                    self._inflight = False
-                    self._cond.notify_all()
-
-        with self._cond:
-            self._value = value
-            self._computed_at = self._clock()
-            self._expires_at = self._computed_at + self._ttl_sec
-            self._inflight = False
-            self._cond.notify_all()
-            return value
-
-
-VOLUME_MIN_DB = _volume_ops.VOLUME_MIN_DB
-VOLUME_MAX_DB = _volume_ops.VOLUME_MAX_DB
 _read_volume_state = _volume_ops.read_volume_state
 
 _USB_LATENCY_APPLY_GRACE_SEC = 30.0
@@ -747,10 +630,6 @@ async def _get_state(
     )
 
 
-def _build_spotify_router_or_none():
-    return _volume_ops._build_spotify_router_or_none()
-
-
 async def _with_coordinator(
     op: Callable[[Any], Any],
     *,
@@ -778,7 +657,7 @@ def _make_duck_active_probe(
 async def _dispatch_transport(action: str) -> dict:
     return await _volume_ops._dispatch_transport(
         action,
-        spotify_router_factory=_build_spotify_router_or_none,
+        spotify_router_factory=_volume_ops._build_spotify_router_or_none,
     )
 
 
@@ -1394,7 +1273,7 @@ def _make_handler(
     # voice_socket_path), so all mutating volume ops share it. Read-only
     # `_get_op` bypasses coordinator/actuator construction.
     duck_active_probe = _make_duck_active_probe(voice_socket_path)
-    state_response_cache = _SingleFlightTTLCache(
+    state_response_cache = SingleFlightTTLCache(
         STATE_RESPONSE_CACHE_TTL_SEC, STATE_RESPONSE_WAIT_SEC,
     )
     if ha_status_cache is None:
