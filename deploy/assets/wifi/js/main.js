@@ -10,8 +10,6 @@
 // shell (current-network slot, scan list, join-by-name fields, saved-networks
 // collapse); everything that changes at runtime is rendered here.
 //
-// Relocated verbatim from the page's old inline <script> when /wifi/ moved onto
-// the canonical design system. Two seams changed, nothing else:
 //   * jsonHeaders() comes from the shared http.js module; it reads the CSRF
 //     token from the <meta name="jts-csrf"> tag and attaches X-CSRF-Token to
 //     every mutating POST.
@@ -19,10 +17,11 @@
 //     window.confirm/alert, which the
 //     browser can suppress (that silently defeated the radio-kill guard).
 //
-// SSIDs and NM profile names are UNTRUSTED. Every interpolation into innerHTML
-// goes through escapeHtml(); per-row Connect/Forget targets ride in escaped
-// data-ssid / data-name attributes read by one delegated click handler — never
-// inline onclick with a network name.
+// SSIDs and NM profile names are UNTRUSTED. Every value reaches the DOM only
+// as an h() text child or a DOM property (never innerHTML); per-row
+// Connect/Forget targets ride in data-ssid / data-name attributes set
+// through h() props, read by one delegated click handler — never inline
+// onclick with a network name.
 //
 // Lockout safety (preserved exactly): toggleRadio() blocks turning Wi-Fi off
 // behind a stark caps-lock jtsConfirm when the Pi has no Ethernet fallback;
@@ -31,7 +30,8 @@
 
 import { jsonHeaders, startPolling } from "/assets/shared/js/http.js";
 import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
-import { escapeHtml, cssIdSafe } from "/assets/shared/js/escape.js";
+import { cssIdSafe } from "/assets/shared/js/escape.js";
+import { h, appendChildren } from "/assets/shared/js/dom.js";
 
 // State + DOM helpers ------------------------------------------------
 let state = { adapterPresent: true, radioOn: false, hasEthernet: false,
@@ -62,11 +62,10 @@ async function fetchState() {
     renderSaved();
     maybeAutoScan();
   } catch (e) {
-    document.getElementById('current').innerHTML =
-      '<div class="current-card disconnected">' +
-      '<div class="ssid">Status unavailable</div>' +
-      '<div class="meta">Could not reach the Wi-Fi backend.</div>' +
-      '</div>';
+    document.getElementById('current').replaceChildren(
+      h("div.current-card.disconnected", null,
+        h("div.ssid", null, "Status unavailable"),
+        h("div.meta", null, "Could not reach the Wi-Fi backend.")));
   }
 }
 
@@ -79,40 +78,38 @@ function maybeAutoScan() {
 function renderCurrent() {
   const wrap = document.getElementById('current');
   if (!state.adapterPresent) {
-    wrap.innerHTML = '<div class="current-card disconnected">' +
-      '<div class="ssid">No Wi-Fi adapter detected</div>' +
-      '<div class="meta">This Pi has no wireless interface ' +
-      'NetworkManager can drive.</div></div>';
+    wrap.replaceChildren(h("div.current-card.disconnected", null,
+      h("div.ssid", null, "No Wi-Fi adapter detected"),
+      h("div.meta", null,
+        "This Pi has no wireless interface NetworkManager can drive.")));
     return;
   }
 
   const cur = state.current;
-  const cardClass = cur ? 'current-card' : 'current-card disconnected';
+  const cardTag = cur ? "div.current-card" : "div.current-card.disconnected";
 
-  let inner = '';
+  const inner = [];
   if (cur) {
     const bars = cur.signal != null ? signalBars(cur.signal) : '';
-    inner += '<div class="ssid">' + escapeHtml(cur.ssid) +
-             '  <span class="bars">' +
-             bars + '</span></div>';
-    inner += '<div class="meta">';
+    inner.push(h("div.ssid", null, cur.ssid, "  ", h("span.bars", null, bars)));
+    const metaRows = [];
     if (cur.ip) {
-      inner += '<div class="row"><span class="key">IP</span>' +
-               '<span class="val">' + escapeHtml(cur.ip) + '</span></div>';
+      metaRows.push(h("div.row", null,
+        h("span.key", null, "IP"), h("span.val", null, cur.ip)));
     }
-    inner += '<div class="row"><span class="key">Security</span>' +
-             '<span class="val">' + escapeHtml(cur.security) + '</span></div>';
+    metaRows.push(h("div.row", null,
+      h("span.key", null, "Security"), h("span.val", null, cur.security)));
     if (cur.signal != null) {
-      inner += '<div class="row"><span class="key">Signal</span>' +
-               '<span class="val">' + cur.signal + ' / 100</span></div>';
+      metaRows.push(h("div.row", null,
+        h("span.key", null, "Signal"), h("span.val", null, `${cur.signal} / 100`)));
     }
-    inner += '</div>';
+    inner.push(h("div.meta", null, ...metaRows));
   } else if (!state.radioOn) {
-    inner += '<div class="ssid">Wi-Fi is off</div>';
-    inner += '<div class="meta">Turn Wi-Fi on to scan and connect.</div>';
+    inner.push(h("div.ssid", null, "Wi-Fi is off"));
+    inner.push(h("div.meta", null, "Turn Wi-Fi on to scan and connect."));
   } else {
-    inner += '<div class="ssid">Not connected</div>';
-    inner += '<div class="meta">No active Wi-Fi connection.</div>';
+    inner.push(h("div.ssid", null, "Not connected"));
+    inner.push(h("div.meta", null, "No active Wi-Fi connection."));
   }
 
   // Radio toggle row. No always-visible warning copy — the lockout
@@ -120,18 +117,16 @@ function renderCurrent() {
   // user actually tries to turn the radio off (see toggleRadio()).
   // Persistent red copy here just spooks people who weren't going to
   // touch it.
-  const checked = state.radioOn ? ' checked' : '';
-  inner += '<div class="radio-row">' +
-           '  <div class="label">Wi-Fi radio</div>' +
-           '  <label class="toggle">' +
-           '    <input type="checkbox" id="radio-toggle" ' +
-                  'aria-label="Wi-Fi radio"' + checked + '>' +
-           '    <span class="track"></span>' +
-           '  </label>' +
-           '</div>';
+  inner.push(h("div.radio-row", null,
+    h("div.label", null, "Wi-Fi radio"),
+    h("label.toggle", null,
+      h("input#radio-toggle", {
+        type: "checkbox", "attr:aria-label": "Wi-Fi radio", checked: state.radioOn,
+      }),
+      h("span.track"))));
 
   wrap.className = '';
-  wrap.innerHTML = '<div class="' + cardClass + '">' + inner + '</div>';
+  wrap.replaceChildren(h(cardTag, null, ...inner));
   const radioToggle = document.getElementById('radio-toggle');
   if (radioToggle) radioToggle.addEventListener('change', toggleRadio);
 }
@@ -140,32 +135,13 @@ function renderSaved() {
   const list = document.getElementById('saved-list');
   const countEl = document.getElementById('saved-count');
   const saved = state.saved || [];
-  countEl.textContent = saved.length ? '(' + saved.length + ')' : '(none)';
+  countEl.textContent = saved.length ? `(${saved.length})` : '(none)';
   if (!saved.length) {
-    list.innerHTML = '<div class="empty">No saved networks yet.</div>';
+    list.replaceChildren(h("div.empty", null, "No saved networks yet."));
     return;
   }
   const curName = state.current ? state.current.profileName : null;
-  list.innerHTML = saved.map(p => {
-    const isCurrent = p.name === curName;
-    const idsafe = cssIdSafe(p.name);
-    const badge = isCurrent
-      ? '<span class="badge badge--ok">In use</span>' : '';
-    // Display the SSID (what the user knows the network as); the
-    // profile NAME goes through the API as the operate-on key.
-    return '<div class="net-row" id="sv-' + idsafe + '">' +
-      '<div class="head">' +
-      '  <div class="info">' +
-      '    <div class="ssid">' + escapeHtml(p.ssid || p.name) + badge + '</div>' +
-      '  </div>' +
-      '  <div class="actions">' +
-      '    <button class="btn btn--danger" data-action="open-forget" ' +
-             'data-name="' + escapeHtml(p.name) + '">Forget</button>' +
-      '  </div>' +
-      '</div>' +
-      '<div id="sv-panel-' + idsafe + '"></div>' +
-      '</div>';
-  }).join('');
+  list.replaceChildren(...saved.map(p => savedRow(p, curName)));
 
   // Re-open any panel that was open before this render so the user's
   // in-flight Forget confirmation isn't yanked by a poll.
@@ -174,18 +150,33 @@ function renderSaved() {
   }
 }
 
+function savedRow(p, curName) {
+  const isCurrent = p.name === curName;
+  const idsafe = cssIdSafe(p.name);
+  // Display the SSID (what the user knows the network as); the
+  // profile NAME goes through the API as the operate-on key.
+  return h(`div.net-row#sv-${idsafe}`, null,
+    h("div.head", null,
+      h("div.info", null,
+        h("div.ssid", null, p.ssid || p.name,
+          isCurrent ? h("span.badge.badge--ok", null, "In use") : null)),
+      h("div.actions", null,
+        h("button.btn.btn--danger", {
+          "data-action": "open-forget", "data-name": p.name,
+        }, "Forget"))),
+    h(`div#sv-panel-${idsafe}`));
+}
+
 // Available networks list --------------------------------------------
 function renderScanHealth() {
   const box = document.getElementById('scan-health');
   const btn = document.getElementById('scan-btn');
   if (!box) return;
   if (btn) {
-    btn.style.display = scanHealth && scanHealth.hideScanButton ? 'none' : '';
+    btn.hidden = !!(scanHealth && scanHealth.hideScanButton);
   }
-  if (!scanHealth) {
-    box.innerHTML = '';
-    return;
-  }
+  box.replaceChildren();
+  if (!scanHealth) return;
   const debug = scanHealth.debug || {};
   if (scanHealth.degraded) {
     let msg = 'Wi-Fi scanning looks degraded. ';
@@ -195,14 +186,13 @@ function renderScanHealth() {
       msg += 'The scan command did not complete cleanly.';
     }
     msg += ' Join by name still works and keeps rollback enabled.';
-    box.innerHTML = '<div class="scan-note warn">' + escapeHtml(msg) + '</div>';
+    box.replaceChildren(h("div.scan-note.warn", null, msg));
     return;
   }
   if (scanHealth.suspect || debug.onlyCurrentNetwork) {
-    box.innerHTML = '<div class="scan-note">Scan only found the current network. Join by name is available below.</div>';
-    return;
+    box.replaceChildren(h("div.scan-note", null,
+      "Scan only found the current network. Join by name is available below."));
   }
-  box.innerHTML = '';
 }
 
 function renderAvail() {
@@ -216,30 +206,26 @@ function renderAvail() {
     } else if (hasScanned) {
       msg = 'No other networks found.';
     }
-    list.innerHTML = '<div class="empty">' + escapeHtml(msg) + '</div>';
+    list.replaceChildren(h("div.empty", null, msg));
     return;
   }
-  list.innerHTML = scanResults.map(n => {
-    const idsafe = cssIdSafe(n.ssid);
-    const lock = n.secured ? ' 🔒' : '';
-    const inUseBadge = n.inUse ? '<span class="badge badge--ok">Connected</span>' : '';
-    return '<div class="net-row" id="av-' + idsafe + '">' +
-      '<div class="head" data-action="open-connect" ' +
-           'data-ssid="' + escapeHtml(n.ssid) + '">' +
-      '  <div class="info">' +
-      '    <div class="ssid">' + escapeHtml(n.ssid) + lock + inUseBadge + '</div>' +
-      '    <div class="meta">' + escapeHtml(n.security) +
-              ' · ch ' + escapeHtml(n.channel) + '</div>' +
-      '  </div>' +
-      '  <div class="signal">' + signalBars(n.signal) + '</div>' +
-      '</div>' +
-      '<div id="av-panel-' + idsafe + '"></div>' +
-      '</div>';
-  }).join('');
+  list.replaceChildren(...scanResults.map(availRow));
   // Re-open any panel that was open before this render.
   if (openSsid) {
     openConnect(openSsid, /*keepOpen*/true);
   }
+}
+
+function availRow(n) {
+  const idsafe = cssIdSafe(n.ssid);
+  return h(`div.net-row#av-${idsafe}`, null,
+    h("div.head", { "data-action": "open-connect", "data-ssid": n.ssid },
+      h("div.info", null,
+        h("div.ssid", null, n.ssid, n.secured ? ' 🔒' : '',
+          n.inUse ? h("span.badge.badge--ok", null, "Connected") : null),
+        h("div.meta", null, n.security, ` · ch ${n.channel}`)),
+      h("div.signal", null, signalBars(n.signal))),
+    h(`div#av-panel-${idsafe}`));
 }
 
 // Scan ---------------------------------------------------------------
@@ -252,7 +238,8 @@ async function rescan() {
   scanning = true;
   const btn = document.getElementById('scan-btn');
   btn.classList.add('scanning');
-  btn.innerHTML = '<span class="spinner spinner--button"></span>Scanning';
+  btn.replaceChildren();
+  appendChildren(btn, [h("span.spinner.spinner--button"), "Scanning"]);
   btn.disabled = true;
   renderAvail();
   try {
@@ -276,7 +263,7 @@ async function rescan() {
     hasScanned = true;
     scanning = false;
     btn.classList.remove('scanning');
-    btn.innerHTML = 'Scan';
+    btn.textContent = 'Scan';
     btn.disabled = false;
     renderScanHealth();
     renderAvail();
@@ -284,20 +271,35 @@ async function rescan() {
 }
 
 // Connect panel ------------------------------------------------------
-function connectRiskWarningHtml() {
-  return (state.lockoutRisk === 'high' && state.current)
-    ? '<div class="warn"><span class="lead">⚠ Lockout risk:</span>' +
-      ' You\'re reaching this page over Wi-Fi and the Pi has no ' +
-      'Ethernet fallback. If the new network fails, the Pi will try ' +
-      'to reconnect to ' + escapeHtml(state.current.ssid) +
-      ' automatically. The full switch and recovery attempt can take ' +
-      'up to 3 minutes. If that also fails you\'ll need ' +
-      'physical access to recover.</div>'
-    : (state.current
-        ? '<div class="warn">Switching from ' +
-          escapeHtml(state.current.ssid) + '. Connection will ' +
-          'drop briefly — page will reload.</div>'
-        : '');
+function connectRiskWarningEl() {
+  if (state.lockoutRisk === 'high' && state.current) {
+    return h("div.warn", null,
+      h("span.lead", null, "⚠ Lockout risk:"),
+      ` You're reaching this page over Wi-Fi and the Pi has no Ethernet fallback. If the new network fails, the Pi will try to reconnect to ${state.current.ssid} automatically. The full switch and recovery attempt can take up to 3 minutes. If that also fails you'll need physical access to recover.`);
+  }
+  if (state.current) {
+    return h("div.warn", null,
+      `Switching from ${state.current.ssid}. Connection will drop briefly — page will reload.`);
+  }
+  return null;
+}
+
+// Shared "<result err>" panel with a Dismiss button, used by both the
+// connect and forget failure paths.
+function errorPanel(message, action, dataAttr, dataValue) {
+  return h("div.panel", null,
+    h("div.result.err", null, message),
+    h("div.btns", null,
+      h("button.btn.btn--ghost", { "data-action": action, [dataAttr]: dataValue },
+        "Dismiss")));
+}
+
+// Shared "connecting…" status row, used by both the per-network panel and
+// the manual-join result slot.
+function connectingSpinner(ssid) {
+  return h("div", null,
+    h("span.spinner"), ` Connecting to ${ssid}… `,
+    h("span.hint", null, "(up to 3 minutes including rollback)"));
 }
 
 async function confirmManualLockoutRisk(ssid) {
@@ -315,7 +317,7 @@ function openConnect(ssid, keepOpen) {
   // Close any other open connect panel.
   if (openSsid && openSsid !== ssid && !keepOpen) {
     const prev = document.getElementById('av-panel-' + cssIdSafe(openSsid));
-    if (prev) prev.innerHTML = '';
+    if (prev) prev.replaceChildren();
   }
   openSsid = ssid;
   const slot = document.getElementById('av-panel-' + cssIdSafe(ssid));
@@ -324,35 +326,32 @@ function openConnect(ssid, keepOpen) {
   if (slot.dataset.locked === '1') return;
 
   const net = scanResults.find(n => n.ssid === ssid);
-  if (!net) { slot.innerHTML = ''; return; }
+  if (!net) { slot.replaceChildren(); return; }
 
   const idsafe = cssIdSafe(ssid);
-  const warn = connectRiskWarningHtml();
 
-  let pwBlock = '';
-  if (net.secured) {
-    pwBlock =
-      '<label for="pw-' + idsafe + '">Password</label>' +
-      '<input id="pw-' + idsafe + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">' +
-      '<span class="show-pw" data-action="toggle-pw" ' +
-           'data-ssid="' + escapeHtml(ssid) + '">' +
-      'Show password</span>';
-  } else {
-    pwBlock = '<div class="meta open-note">Open network — no password required.</div>';
-  }
+  const pwBlock = net.secured
+    ? [
+        h("label", { for: `pw-${idsafe}` }, "Password"),
+        h(`input#pw-${idsafe}`, {
+          type: "password", autocomplete: "off",
+          "attr:autocapitalize": "off", "attr:spellcheck": "false",
+        }),
+        h("span.show-pw", { "data-action": "toggle-pw", "data-ssid": ssid },
+          "Show password"),
+      ]
+    : [h("div.meta.open-note", null, "Open network — no password required.")];
 
-  slot.innerHTML =
-    '<div class="panel" id="panel-' + idsafe + '">' +
-    warn +
-    pwBlock +
-    '<div class="btns">' +
-    '  <button class="btn btn--primary" data-action="submit-connect" ' +
-          'data-ssid="' + escapeHtml(ssid) + '" ' +
-          'data-secured="' + (net.secured ? 'true' : 'false') + '">Connect</button>' +
-    '  <button class="btn btn--ghost" data-action="close-connect" ' +
-          'data-ssid="' + escapeHtml(ssid) + '">Cancel</button>' +
-    '</div>' +
-    '</div>';
+  slot.replaceChildren(h(`div.panel#panel-${idsafe}`, null,
+    connectRiskWarningEl(),
+    ...pwBlock,
+    h("div.btns", null,
+      h("button.btn.btn--primary", {
+        "data-action": "submit-connect", "data-ssid": ssid,
+        "data-secured": net.secured ? "true" : "false",
+      }, "Connect"),
+      h("button.btn.btn--ghost", { "data-action": "close-connect", "data-ssid": ssid },
+        "Cancel"))));
 }
 
 function togglePw(ssid) {
@@ -364,7 +363,7 @@ function togglePw(ssid) {
 function closeConnect(ssid) {
   if (openSsid === ssid) openSsid = null;
   const slot = document.getElementById('av-panel-' + cssIdSafe(ssid));
-  if (slot && slot.dataset.locked !== '1') slot.innerHTML = '';
+  if (slot && slot.dataset.locked !== '1') slot.replaceChildren();
 }
 
 async function submitConnect(ssid, secured) {
@@ -380,11 +379,7 @@ async function submitConnect(ssid, secured) {
     }
   }
   slot.dataset.locked = '1';
-  slot.innerHTML =
-    '<div class="panel"><div><span class="spinner"></span> ' +
-    'Connecting to ' + escapeHtml(ssid) + '… ' +
-    '<span class="hint">' +
-    '(up to 3 minutes including rollback)</span></div></div>';
+  slot.replaceChildren(h("div.panel", null, connectingSpinner(ssid)));
   try {
     const r = await fetch('./connect', {
       method: 'POST',
@@ -393,36 +388,25 @@ async function submitConnect(ssid, secured) {
     });
     const data = await r.json();
     if (r.ok && data.ok) {
-      slot.innerHTML =
-        '<div class="panel"><div class="result ok">✓ ' +
-        escapeHtml(data.message || 'Connected') + '</div></div>';
+      slot.replaceChildren(h("div.panel", null,
+        h("div.result.ok", null, `✓ ${data.message || 'Connected'}`)));
       // Force a state refresh so the current-network card updates.
       setTimeout(fetchState, 500);
       // Clear the lock after a moment so the user can dismiss.
       setTimeout(function() {
         slot.dataset.locked = '';
         openSsid = null;
-        slot.innerHTML = '';
+        slot.replaceChildren();
       }, 3000);
     } else {
-      slot.innerHTML =
-        '<div class="panel"><div class="result err">' +
-        escapeHtml(data.message || data.error || 'Connection failed') +
-        '</div><div class="btns"><button class="btn btn--ghost" ' +
-        'data-action="dismiss-connect" ' +
-        'data-ssid="' + escapeHtml(ssid) + '">Dismiss</button>' +
-        '</div></div>';
+      slot.replaceChildren(errorPanel(
+        data.message || data.error || 'Connection failed', 'dismiss-connect', 'data-ssid', ssid));
       slot.dataset.locked = '1';
       setTimeout(fetchState, 500);
     }
   } catch (e) {
-    slot.innerHTML =
-      '<div class="panel"><div class="result err">' +
-      'Network error talking to the Wi-Fi backend.' +
-      '</div><div class="btns"><button class="btn btn--ghost" ' +
-      'data-action="dismiss-connect" ' +
-      'data-ssid="' + escapeHtml(ssid) + '">Dismiss</button>' +
-      '</div></div>';
+    slot.replaceChildren(errorPanel(
+      'Network error talking to the Wi-Fi backend.', 'dismiss-connect', 'data-ssid', ssid));
     slot.dataset.locked = '1';
   }
 }
@@ -431,7 +415,7 @@ function dismissPanel(ssid) {
   const slot = document.getElementById('av-panel-' + cssIdSafe(ssid));
   if (slot) {
     slot.dataset.locked = '';
-    slot.innerHTML = '';
+    slot.replaceChildren();
   }
   if (openSsid === ssid) openSsid = null;
 }
@@ -465,10 +449,7 @@ async function submitManualConnect() {
   const payload = {ssid: ssid, hidden: hidden};
   if (password) payload.password = password;
   if (btn) btn.disabled = true;
-  result.innerHTML =
-    '<div><span class="spinner"></span> Connecting to ' +
-    escapeHtml(ssid) + '… <span class="hint">' +
-    '(up to 3 minutes including rollback)</span></div>';
+  result.replaceChildren(connectingSpinner(ssid));
   try {
     const r = await fetch('./connect', {
       method: 'POST',
@@ -477,18 +458,16 @@ async function submitManualConnect() {
     });
     const data = await r.json();
     if (r.ok && data.ok) {
-      result.innerHTML = '<div class="result ok">✓ ' +
-        escapeHtml(data.message || 'Connected') + '</div>';
+      result.replaceChildren(h("div.result.ok", null, `✓ ${data.message || 'Connected'}`));
       setTimeout(fetchState, 500);
     } else {
-      result.innerHTML = '<div class="result err">' +
-        escapeHtml(data.message || data.error || 'Connection failed') +
-        '</div>';
+      result.replaceChildren(h("div.result.err", null,
+        data.message || data.error || 'Connection failed'));
       setTimeout(fetchState, 500);
     }
   } catch (e) {
-    result.innerHTML =
-      '<div class="result err">Network error talking to the Wi-Fi backend.</div>';
+    result.replaceChildren(h("div.result.err", null,
+      "Network error talking to the Wi-Fi backend."));
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -498,7 +477,7 @@ async function submitManualConnect() {
 function openForget(name, keepOpen) {
   if (openSavedName && openSavedName !== name && !keepOpen) {
     const prev = document.getElementById('sv-panel-' + cssIdSafe(openSavedName));
-    if (prev) prev.innerHTML = '';
+    if (prev) prev.replaceChildren();
   }
   openSavedName = name;
   const slot = document.getElementById('sv-panel-' + cssIdSafe(name));
@@ -511,38 +490,36 @@ function openForget(name, keepOpen) {
   const profile = (state.saved || []).find(p => p.name === name);
   const displayName = (profile && profile.ssid) || name;
   const extra = isCurrent
-    ? '<div class="warn kill">⚠ This is the network the Pi is ' +
-      'currently using. Forgetting it will disconnect Wi-Fi.' +
-      (state.hasEthernet
-        ? ' (Ethernet is connected so the Pi stays reachable.)'
-        : ' Pi has no Ethernet fallback — you may lose access.') +
-      '</div>'
-    : '';
+    ? h("div.warn.kill", null,
+        "⚠ This is the network the Pi is currently using. Forgetting it will disconnect Wi-Fi."
+        + (state.hasEthernet
+          ? " (Ethernet is connected so the Pi stays reachable.)"
+          : " Pi has no Ethernet fallback — you may lose access."))
+    : null;
 
-  slot.innerHTML =
-    '<div class="panel">' + extra +
-    '<div>Forget <strong>' + escapeHtml(displayName) + '</strong>? ' +
-    'You\'ll need the password again to reconnect.</div>' +
-    '<div class="btns">' +
-    '  <button class="btn btn--danger" data-action="submit-forget" ' +
-          'data-name="' + escapeHtml(name) + '">Forget</button>' +
-    '  <button class="btn btn--ghost" data-action="close-forget" ' +
-          'data-name="' + escapeHtml(name) + '">Cancel</button>' +
-    '</div></div>';
+  slot.replaceChildren(h("div.panel", null,
+    extra,
+    h("div", null, "Forget ", h("strong", null, displayName),
+      "? You'll need the password again to reconnect."),
+    h("div.btns", null,
+      h("button.btn.btn--danger", { "data-action": "submit-forget", "data-name": name },
+        "Forget"),
+      h("button.btn.btn--ghost", { "data-action": "close-forget", "data-name": name },
+        "Cancel"))));
 }
 
 function closeForget(name) {
   if (openSavedName === name) openSavedName = null;
   const slot = document.getElementById('sv-panel-' + cssIdSafe(name));
-  if (slot && slot.dataset.locked !== '1') slot.innerHTML = '';
+  if (slot && slot.dataset.locked !== '1') slot.replaceChildren();
 }
 
 async function submitForget(name) {
   const slot = document.getElementById('sv-panel-' + cssIdSafe(name));
   if (!slot) return;
   slot.dataset.locked = '1';
-  slot.innerHTML = '<div class="panel"><div><span class="spinner"></span> ' +
-                   'Forgetting…</div></div>';
+  slot.replaceChildren(h("div.panel", null,
+    h("div", null, h("span.spinner"), " Forgetting…")));
   try {
     const r = await fetch('./forget', {
       method: 'POST',
@@ -551,36 +528,26 @@ async function submitForget(name) {
     });
     const data = await r.json();
     if (r.ok && data.ok) {
-      slot.innerHTML = '<div class="panel"><div class="result ok">✓ ' +
-                       escapeHtml(data.message || 'Forgotten') + '</div></div>';
+      slot.replaceChildren(h("div.panel", null,
+        h("div.result.ok", null, `✓ ${data.message || 'Forgotten'}`)));
       setTimeout(function() {
         slot.dataset.locked = '';
         openSavedName = null;
         fetchState();
       }, 800);
     } else {
-      slot.innerHTML =
-        '<div class="panel"><div class="result err">' +
-        escapeHtml(data.message || data.error || 'Failed') + '</div>' +
-        '<div class="btns"><button class="btn btn--ghost" ' +
-        'data-action="dismiss-forget" ' +
-        'data-name="' + escapeHtml(name) + '">Dismiss</button>' +
-        '</div></div>';
+      slot.replaceChildren(errorPanel(
+        data.message || data.error || 'Failed', 'dismiss-forget', 'data-name', name));
     }
   } catch (e) {
-    slot.innerHTML =
-      '<div class="panel"><div class="result err">' +
-      'Network error talking to the Wi-Fi backend.</div>' +
-      '<div class="btns"><button class="btn btn--ghost" ' +
-      'data-action="dismiss-forget" ' +
-      'data-name="' + escapeHtml(name) + '">Dismiss</button>' +
-      '</div></div>';
+    slot.replaceChildren(errorPanel(
+      'Network error talking to the Wi-Fi backend.', 'dismiss-forget', 'data-name', name));
   }
 }
 
 function dismissForget(name) {
   const slot = document.getElementById('sv-panel-' + cssIdSafe(name));
-  if (slot) { slot.dataset.locked = ''; slot.innerHTML = ''; }
+  if (slot) { slot.dataset.locked = ''; slot.replaceChildren(); }
   if (openSavedName === name) openSavedName = null;
 }
 
@@ -649,9 +616,10 @@ async function toggleRadio() {
 
 // Bootstrap ----------------------------------------------------------
 // One delegated click handler for every data-action control. Per-row
-// Connect/Forget targets ride in escaped data-ssid / data-name attributes,
-// so an SSID never lands inside an inline onclick. The page-level controls
-// (Scan, manual Connect, Show password) use the same mechanism.
+// Connect/Forget targets ride in data-ssid / data-name attributes set
+// through h() props, so an SSID never lands inside an inline onclick. The
+// page-level controls (Scan, manual Connect, Show password) use the same
+// mechanism.
 document.addEventListener('click', function(e) {
   const el = e.target.closest('[data-action]');
   if (!el) return;

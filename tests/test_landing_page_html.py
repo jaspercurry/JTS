@@ -148,7 +148,7 @@ def test_volume_slider_polls_faster_only_while_page_is_visible() -> None:
     script = _volume_slider_script(_landing_js())
 
     assert "var POLL_MS = 500;" in script
-    assert "setInterval(poll, POLL_MS);" in script
+    assert "startPolling(poll, { intervalMs: POLL_MS });" in script
     assert re.search(
         r"async function poll\(\).*?"
         r"if \(document\.visibilityState === 'hidden'\) return;.*?"
@@ -318,9 +318,10 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
               if (url === '/volume/set') posted.push(JSON.parse(options.body));
               return {{ ok: true, json: async () => ({{ percent: 50 }}) }};
             }},
-            // The module imports this from http.js; the slice runs bare.
+            // Both http.js imports are stripped from the slice; the module
+            // runs bare, so the harness supplies a stand-in for each.
             jsonHeaders: () => ({{ 'Content-Type': 'application/json' }}),
-            setInterval() {{ return 1; }},
+            startPolling(fn) {{ fn(); return () => {{}}; }},
             setTimeout,
             Promise,
             Date,
