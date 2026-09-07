@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from jasper.web import wifi_setup
-from tests._web_test_helpers import make_real_handler
+from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 def _render(csrf_token: str = "tok-abcdefghijklmnopqrstuvwx") -> str:
@@ -39,8 +39,7 @@ def _render(csrf_token: str = "tok-abcdefghijklmnopqrstuvwx") -> str:
 
 def test_wifi_page_is_canonical_document():
     out = _render()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     # The old hand-rolled shell and inline page styling are gone.
     assert "max-width: 720px" not in out
     assert "TOGGLE" "_CSS" not in out
@@ -53,7 +52,7 @@ def test_wifi_page_links_page_css():
 
 def test_wifi_page_has_shared_app_header():
     out = _render()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Wi-Fi</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -437,8 +436,7 @@ def test_get_root_renders_canonical_page():
     h.do_GET()
     assert cap["status"] == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<script type="module" src="/assets/wifi/js/main.js">' in out
 
 

@@ -27,6 +27,7 @@ from jasper.local_sources import local_source_lifecycle
 from jasper.music_sources import Source
 from jasper.web import _common
 from jasper.web import sources_setup as mod
+from tests._web_test_helpers import assert_canonical_page
 
 CSRF = "x" * 43
 
@@ -43,12 +44,8 @@ assert SPOTIFY_CONNECT_UNIT is not None
 
 def test_renders_through_canonical_page():
     html = mod._index_html(csrf_token=CSRF, status_msg="Saved.").decode("utf-8")
-    # Canonical document shell: doctype + cache-busted app.css + CSRF meta.
-    assert html.startswith("<!doctype html>")
-    assert "/assets/app.css" in html
+    assert_canonical_page(html)
     assert '<meta name="jts-csrf"' in html
-    # The sticky app header (canonical_header) is present.
-    assert 'class="app-header"' in html
     assert "Music sources" in html
 
 

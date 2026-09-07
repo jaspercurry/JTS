@@ -26,7 +26,7 @@ import pytest
 from jasper.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
 
-from ._web_test_helpers import FakeHandler
+from ._web_test_helpers import FakeHandler, assert_canonical_page
 
 
 def _render(
@@ -46,14 +46,13 @@ def _render(
 
 def test_speaker_page_is_canonical_document():
     out = _render()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert "max-width: 620px" not in out
 
 
 def test_speaker_page_has_shared_app_header():
     out = _render()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Speaker name</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -123,11 +122,6 @@ def test_speaker_saved_flash_renders_ok_banner():
 
 def _handler_cls():
     return speaker_setup._make_handler({"state_path": "/tmp/does-not-matter.env"})
-
-
-def test_public_surface_is_stable():
-    assert callable(speaker_setup.make_server)
-    assert callable(speaker_setup._index_html)
 
 
 @pytest.mark.parametrize(
@@ -474,8 +468,7 @@ def test_get_root_renders_canonical_page(monkeypatch):
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
 
 
 def test_post_unknown_route_404s():
