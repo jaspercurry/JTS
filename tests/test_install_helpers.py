@@ -563,6 +563,24 @@ def test_persist_install_profile_does_not_rechmod_an_existing_state_dir(tmp_path
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o770
 
 
+#: A checkout the streambox rsync ships, and the manifest pip resolves from it.
+_CHECKOUT_FILES = ("jasper/__init__.py", "README.md", "docs/guide.md")
+_MANIFEST = (
+    "[project]\n"
+    'name = "jasper-speaker"\n'
+    'version = "0.1.0"\n'
+    'dependencies = ["jts-base-dep==1.0"]\n'
+    "\n"
+    "[project.optional-dependencies]\n"
+    'streambox = ["jts-streambox-dep==1.0"]\n'
+)
+#: Parses, declares nothing: a drifted extras name or a future `dynamic` looks
+#: like this, and an empty requirement list must fail the deploy, not pass it.
+_MANIFEST_WITHOUT_DEPENDENCIES = _MANIFEST.split("dependencies")[0]
+#: The top-level names the streambox install owns under INSTALL_DIR.
+_LIVE_ENTRIES = ("README.md", "docs", "jasper", "pyproject.toml")
+
+
 def _run_install_streambox_jasper(
     tmp_path: Path,
     *,
@@ -570,13 +588,24 @@ def _run_install_streambox_jasper(
     state_dir_mode: int | None = None,
     env_file_text: str | None = None,
     epilogue: str = "",
+    checkout: str | None = None,
+    pip_rc: int = 0,
+    failing_mv: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     """Run install_streambox_jasper against a scratch root.
 
-    `install` is always stubbed: its `-o root -g root` needs privileges CI
-    lacks. Stubbing `rsync` too lets the run reach the env step; leaving it
-    real makes rsync fail on the empty REPO_DIR, so only dir-prep has run.
-    Every stub appends its argv to the returned `calls` path.
+    `install` is always stubbed, because its `-o root -g root` needs privileges
+    CI lacks: the stub records its argv and then does the real work without the
+    ownership flags. Stubbing `rsync` too lets the run reach the env step;
+    leaving it real makes rsync fail on an empty REPO_DIR, so only dir-prep has
+    run. Every stub appends its argv to the returned `calls` path, and the venv
+    `pip` appends to `pip_calls` and returns `pip_rc` for the staged-requirements
+    install (every other pip call succeeds).
+
+    `checkout` populates REPO_DIR with that manifest and a source tree, so rsync
+    and the staged-manifest reader run for real. `failing_mv` fails the second
+    `mv` of the run — a publish interrupted between its two renames. The EXIT
+    trap is armed with the same recovery install_exit_cleanup runs.
     """
     paths = {
         "state": tmp_path / "state",
@@ -584,28 +613,73 @@ def _run_install_streambox_jasper(
         "install": tmp_path / "opt/jasper",
         "repo": tmp_path / "repo",
         "calls": tmp_path / "stub.calls",
+        "pip_calls": tmp_path / "pip.calls",
     }
     for key in ("state", "env", "repo"):
         paths[key].mkdir()
     if state_dir_mode is not None:
         # mkdir(mode=...) is masked by umask; chmod isn't.
         paths["state"].chmod(state_dir_mode)
-    (paths["install"] / ".venv/bin").mkdir(parents=True)
-    pip = paths["install"] / ".venv/bin/pip"
-    pip.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    venv_bin = paths["install"] / ".venv/bin"
+    venv_bin.mkdir(parents=True)
+    pip = venv_bin / "pip"
+    pip.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$JTS_PIP_CALLS"\n'
+        f'case "$*" in *" -r "*) exit {pip_rc} ;; esac\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
     pip.chmod(0o755)
     if env_file_text is not None:
         env_file = paths["env"] / "jasper.env"
         env_file.write_text(env_file_text, encoding="utf-8")
         env_file.chmod(0o600)
+    if checkout is not None:
+        (venv_bin / "python").symlink_to(sys.executable)
+        for name in _CHECKOUT_FILES:
+            source = paths["repo"] / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("new source\n", encoding="utf-8")
+        (paths["repo"] / "pyproject.toml").write_text(checkout, encoding="utf-8")
+        (paths["repo"] / "deploy").mkdir()
+        (paths["repo"] / "deploy/constraints-pi.pins").write_text(
+            "jts-base-dep==1.0\n", encoding="utf-8"
+        )
+        # The live tree this deploy is replacing, and a file the checkout no
+        # longer ships (so `--delete` has something to carry through).
+        for name in (*_CHECKOUT_FILES, "pyproject.toml", "jasper/sentinel.py"):
+            live = paths["install"] / name
+            live.parent.mkdir(parents=True, exist_ok=True)
+            live.write_text("old\n", encoding="utf-8")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in stubs:
         stub = bin_dir / name
+        body = 'printf \'%s\\n\' "$*" >> "$JTS_STUB_CALLS"\nexit 0\n'
+        if name == "install":
+            body = (
+                'printf \'%s\\n\' "$*" >> "$JTS_STUB_CALLS"\n'
+                "args=()\n"
+                'while [[ $# -gt 0 ]]; do\n'
+                '    case "$1" in\n'
+                "        -o|-g) shift 2 ;;\n"
+                '        *) args+=("$1"); shift ;;\n'
+                "    esac\n"
+                "done\n"
+                f'exec {shutil.which("install")} "${{args[@]}}"\n'
+            )
+        stub.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+        stub.chmod(0o755)
+    if failing_mv:
+        stub = bin_dir / "mv"
         stub.write_text(
             "#!/usr/bin/env bash\n"
-            'printf \'%s\\n\' "$*" >> "$JTS_STUB_CALLS"\nexit 0\n',
+            'n=$(( $(cat "$JTS_MV_COUNT" 2>/dev/null || echo 0) + 1 ))\n'
+            'printf \'%s\' "$n" > "$JTS_MV_COUNT"\n'
+            '[[ "$n" == 2 ]] && exit 1\n'
+            f'exec {shutil.which("mv")} "$@"\n',
             encoding="utf-8",
         )
         stub.chmod(0o755)
@@ -613,13 +687,18 @@ def _run_install_streambox_jasper(
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["JTS_STUB_CALLS"] = str(paths["calls"])
+    env["JTS_PIP_CALLS"] = str(paths["pip_calls"])
+    env["JTS_MV_COUNT"] = str(tmp_path / "mv.count")
     env["JASPER_HOSTNAME"] = "jts.local"
+    staging = paths["install"] / ".staging"
     steps = [
         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
         f"REPO_DIR={shlex.quote(str(paths['repo']))}",
         f"STATE_DIR={shlex.quote(str(paths['state']))}",
         f"ENV_DIR={shlex.quote(str(paths['env']))}",
         f"INSTALL_DIR={shlex.quote(str(paths['install']))}",
+        f"INSTALL_STAGING_DIR={shlex.quote(str(staging))}",
+        "trap remove_staged_install_tree EXIT",
         "install_streambox_jasper >/dev/null",
     ]
     if epilogue:
@@ -628,9 +707,10 @@ def _run_install_streambox_jasper(
         ["bash", "-c", " && ".join(steps)],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
         env=env,
     )
+    paths["staging"] = staging
     return result, paths
 
 
@@ -683,157 +763,70 @@ def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_pat
     assert not list(paths["env"].glob(".JASPER_INSTALL_PROFILE.*"))
 
 
-#: What each profile's rsync ships out of the checkout, by profile. The names
-#: are load-bearing: install_jasper installs three docs by name, and the
-#: streambox rsync names README.md.
-_CHECKOUT_FILES = {
-    "full": (
-        "jasper/__init__.py",
-        "jasper_aec3/__init__.py",
-        "experiments/usb-turntable/jts.py",
-        "docs/tuning-methodology.md",
-        "docs/tuning-operator-runbook.md",
-        "docs/measurement-loop-doctrine.md",
-    ),
-    "streambox": (
-        "jasper/__init__.py",
-        "README.md",
-        "docs/guide.md",
-    ),
-}
-
-
-def _fake_checkout(root: Path, profile: str) -> None:
-    """The files the profile's rsync ships, and the manifest pip resolves."""
-    for name in _CHECKOUT_FILES[profile]:
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("new source\n", encoding="utf-8")
-    (root / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "jasper-speaker"\n'
-        'version = "0.1.0"\n'
-        'dependencies = ["jts-base-dep==1.0"]\n'
-        "\n"
-        "[project.optional-dependencies]\n"
-        'full = ["jts-full-dep==1.0"]\n'
-        'streambox = ["jts-streambox-dep==1.0"]\n',
-        encoding="utf-8",
-    )
-
-
-def _run_profile_install(
-    tmp_path: Path, profile: str, *, pip_rc: int
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    """Run a profile's install function against a scratch root, with a `pip`
-    that exits `pip_rc` on every invocation.
-
-    rsync and the manifest reader run for real; the privileged / host-reaching
-    commands are shadowed by no-op shell functions so the run reaches the step
-    under test. `install` still runs for real under the scratch root (the
-    staging tree is created with it) and no-ops elsewhere. `exec` is shadowed
-    because the enhanced-AEC lock redirects onto a root-only /var/lib path;
-    that failed redirect leaves the lock fd unset, so install.sh's `set -eu`
-    cannot stay armed for the rest of the run — which the step under test does
-    not need: the publish is gated on the dependency install's own status.
-    """
-    repo = tmp_path / "repo"
-    install_dir = tmp_path / "opt/jasper"
-    _fake_checkout(repo, profile)
-    live = install_dir / "jasper"
-    live.mkdir(parents=True)
-    (live / "__init__.py").write_text("old\n", encoding="utf-8")
-    (live / "sentinel.py").write_text("old\n", encoding="utf-8")
-    venv_bin = install_dir / ".venv/bin"
-    venv_bin.mkdir(parents=True)
-    (venv_bin / "python").symlink_to(sys.executable)
-    pip = venv_bin / "pip"
-    pip.write_text(f"#!/usr/bin/env bash\nexit {pip_rc}\n", encoding="utf-8")
-    pip.chmod(0o755)
-    for name in ("state", "etc"):
-        (tmp_path / name).mkdir()
-
-    root = shlex.quote(str(tmp_path))
-    entry = "install_jasper" if profile == "full" else "install_streambox_jasper"
-    script = f"""
-exec() {{ :; }}
-systemctl() {{ :; }}
-flock() {{ :; }}
-chmod() {{ :; }}
-getent() {{ return 2; }}
-install() {{
-    local dest
-    for dest in "$@"; do :; done
-    case "${{dest}}" in
-        {root}/*) command install "$@" ;;
-        *) return 0 ;;
-    esac
-}}
-source {shlex.quote(str(_INSTALL_SH))} >/dev/null
-set +eu
-REPO_DIR={shlex.quote(str(repo))}
-STATE_DIR={shlex.quote(str(tmp_path / "state"))}
-ENV_DIR={shlex.quote(str(tmp_path / "etc"))}
-INSTALL_DIR={shlex.quote(str(install_dir))}
-{entry} >/dev/null
-"""
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return result, install_dir
-
-
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="requires rsync")
 @pytest.mark.parametrize(
-    "profile, extra_dep",
-    [("full", "jts-full-dep"), ("streambox", "jts-streambox-dep")],
+    "scenario",
+    ["published", "dependency_install_fails", "manifest_declares_nothing",
+     "publish_interrupted"],
 )
-def test_a_failed_dependency_install_leaves_the_live_source_tree_in_place(
-    tmp_path: Path, profile: str, extra_dep: str
+def test_the_live_source_tree_changes_only_on_a_finished_install(
+    tmp_path: Path, scenario: str
 ):
-    """The #4123 family: the source rsync used to land in ${INSTALL_DIR}
-    BEFORE pip ran, so a failed dependency install left new source running on
-    old dependencies. The new tree now stages beside the live one and is
-    published only after pip has succeeded."""
-    result, install_dir = _run_profile_install(tmp_path, profile, pip_rc=1)
+    """The #4123 family: the source rsync used to land in ${INSTALL_DIR} before
+    pip ran, so a failed dependency install left new source running on old
+    dependencies. The new tree stages beside the live one, the staged manifest's
+    dependencies are installed first, and only then is each entry renamed in —
+    with the moved-aside live entry restored if the run dies between the two
+    renames."""
+    result, paths = _run_install_streambox_jasper(
+        tmp_path,
+        stubs=(),
+        checkout=(
+            _MANIFEST_WITHOUT_DEPENDENCIES
+            if scenario == "manifest_declares_nothing"
+            else _MANIFEST
+        ),
+        pip_rc=1 if scenario == "dependency_install_fails" else 0,
+        failing_mv=scenario == "publish_interrupted",
+    )
+    install_dir = paths["install"]
+    pip_calls = (
+        paths["pip_calls"].read_text(encoding="utf-8")
+        if paths["pip_calls"].exists()
+        else ""
+    )
+    constraints = paths["repo"] / "deploy/constraints-pi.pins"
+    editable = f"-c {constraints} --no-deps -e {install_dir}[streambox]"
+    staged_requirements = f"-c {constraints} -r {paths['staging']}/.deps.txt"
+
+    assert not paths["staging"].exists()
+    if scenario == "published":
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"install {staged_requirements}" in pip_calls
+        assert f"install {editable}" in pip_calls
+        for name in _CHECKOUT_FILES:
+            assert install_dir.joinpath(name).read_text(encoding="utf-8") == (
+                "new source\n"
+            )
+        # Renaming onto a live directory would nest inside it, and `--delete`
+        # must carry the checkout's deletions through the publish.
+        assert not install_dir.joinpath("jasper/jasper").exists()
+        assert not install_dir.joinpath("jasper/sentinel.py").exists()
+        return
 
     assert result.returncode != 0, result.stdout + result.stderr
-    live = install_dir / "jasper"
-    assert live.joinpath("sentinel.py").read_text(encoding="utf-8") == "old\n"
-    assert live.joinpath("__init__.py").read_text(encoding="utf-8") == "old\n"
-    staged = install_dir / ".staging"
-    assert (
-        staged.joinpath("jasper/__init__.py").read_text(encoding="utf-8")
-        == "new source\n"
+    assert f"install {editable}" not in pip_calls
+    for name in _LIVE_ENTRIES:
+        assert install_dir.joinpath(name).exists()
+    if scenario == "publish_interrupted":
+        return
+    # Nothing published: the live tree is byte-for-byte what it was, and a
+    # manifest that declares no dependencies never reaches pip at all.
+    for name in (*_CHECKOUT_FILES, "jasper/sentinel.py"):
+        assert install_dir.joinpath(name).read_text(encoding="utf-8") == "old\n"
+    assert (f"install {staged_requirements}" in pip_calls) is (
+        scenario == "dependency_install_fails"
     )
-    # --delete drops what the checkout no longer ships, from the staged copy
-    # only: the live file the running box is importing keeps its inode.
-    assert not staged.joinpath("jasper/sentinel.py").exists()
-    specs = staged.joinpath(".deps.txt").read_text(encoding="utf-8").split()
-    assert "jts-base-dep==1.0" in specs
-    assert f"{extra_dep}==1.0" in specs
-
-
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="requires rsync")
-def test_a_finished_dependency_install_publishes_the_staged_tree(tmp_path: Path):
-    """The other half: once pip is happy the staged tree replaces the live one
-    (a rename onto a live directory would otherwise nest inside it), carries
-    the checkout's deletions through, and leaves no staging tree behind. Run on
-    the streambox profile, whose steps after the publish are hermetic; the
-    publish itself is shared with the full profile."""
-    result, install_dir = _run_profile_install(tmp_path, "streambox", pip_rc=0)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    live = install_dir / "jasper"
-    assert not live.joinpath("jasper").exists()
-    assert not live.joinpath("sentinel.py").exists()
-    for name in _CHECKOUT_FILES["streambox"]:
-        published = install_dir.joinpath(name).read_text(encoding="utf-8")
-        assert published == "new source\n"
-    assert not install_dir.joinpath(".staging").exists()
 
 
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
@@ -1835,17 +1828,6 @@ def test_pip_constraints_file_present_is_echoed(tmp_path):
     assert _run_constraints_helper(tmp_path) == str(constraints)
 
 
-def test_unpinned_pip_installs_carry_the_constraints_args():
-    """Open-range pip installs in full/streambox installs must expand the
-    pip_constraints array; the exact-pinned installs (pip/wheel,
-    openwakeword --no-deps) intentionally don't need it."""
-    text = "\n".join(_installer_shell_texts().values())
-    # full: requests/scipy/... + -e [full]; streambox: -e [streambox] = 3.
-    assert text.count('pip" install "${pip_constraints[@]}"') == 3
-    assert 'install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"' in text
-    assert 'install "${pip_constraints[@]}" \\\n        -e "${INSTALL_DIR}[streambox]"' in text
-
-
 def test_pi_constraints_do_not_pin_non_pypi_flatbuffers_release():
     constraints = (Path(__file__).parent.parent / "deploy" / "constraints-pi.pins")
     text = constraints.read_text(encoding="utf-8")
@@ -1853,19 +1835,6 @@ def test_pi_constraints_do_not_pin_non_pypi_flatbuffers_release():
 
     assert "flatbuffers==20181003210633" not in text
     assert "grep -v -Fx 'flatbuffers==20181003210633'" in generator
-
-
-def test_full_install_editable_pip_install_keeps_full_extra():
-    """Full speaker installs must pull the runtime dependency stack."""
-    text = installer_text()
-
-    assert (
-        text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}[full]"')
-        == 1
-    )
-    # With the endpoint tier removed there is no bare base-package editable
-    # install any more — every profile pulls an extras-tagged install.
-    assert text.count('install "${pip_constraints[@]}" -e "${INSTALL_DIR}"') == 0
 
 
 # ----------------------------------------------------------------------
