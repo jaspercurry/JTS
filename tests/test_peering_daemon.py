@@ -11,6 +11,7 @@ Verifies:
   - mode=ON: ARBITRATE returns LOSE when a peer outbids us
   - session lifecycle drives correct broadcasts (CLAIM → HEART → END)
   - a datagram we sent ourselves is dropped before dispatch
+  - a start that fails partway still unwinds what it owns
 
 We monkey-patch the multicast transport so tests don't open real
 sockets. The state machine and dispatch logic run unmodified.
@@ -61,13 +62,16 @@ class _FakeTransport:
     """Mock MulticastTransport that captures sent bytes + lets tests
     inject incoming messages."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, raise_on_start: BaseException | None = None, **kwargs):
         self.sent: list[bytes] = []
         self._on_message = None
         self.started = False
         self.stopped = False
+        self._raise_on_start = raise_on_start
 
     async def start(self, on_message):
+        if self._raise_on_start is not None:
+            raise self._raise_on_start
         self.started = True
         self._on_message = on_message
 
@@ -110,6 +114,70 @@ async def daemon_setup(monkeypatch):
         yield d, transport
     finally:
         await d.stop()
+
+
+# ---------- start() failure paths ----------
+
+
+async def test_bind_failure_unwinds_the_advert(monkeypatch):
+    """A start that dies at the multicast bind must not leave the box
+    advertising _jasper-peer._udp for a daemon that cannot arbitrate:
+    stop() is the only caller of avahi.uninstall(), so whatever it skips
+    stays on disk until someone edits the box by hand."""
+    uninstalled: list[int] = []
+    monkeypatch.setattr(
+        daemon_mod.avahi, "uninstall", lambda **kw: uninstalled.append(1),
+    )
+    monkeypatch.setattr(
+        daemon_mod, "MulticastTransport",
+        lambda **kw: _FakeTransport(raise_on_start=OSError("address in use")),
+    )
+
+    d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.ON))
+    await d.start()
+    assert d._running is False
+    assert d._transport is None
+
+    await d.stop()
+    assert uninstalled == [1]
+
+
+async def test_uds_failure_unwinds_the_bound_socket(monkeypatch):
+    """The UDS listen fails with the transport already bound, so stop()
+    must tear it down rather than leave it holding the fd with its recv
+    task pending."""
+    uninstalled: list[int] = []
+    transport = _FakeTransport()
+    monkeypatch.setattr(
+        daemon_mod.avahi, "uninstall", lambda **kw: uninstalled.append(1),
+    )
+    monkeypatch.setattr(daemon_mod, "MulticastTransport", lambda **kw: transport)
+
+    async def _boom(**kw):
+        raise OSError("socket path too long")
+
+    monkeypatch.setattr(daemon_mod.uds, "serve", _boom)
+
+    d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.ON))
+    with pytest.raises(OSError):
+        await d.start()
+
+    await d.stop()
+    assert transport.stopped is True
+    assert uninstalled == [1]
+
+
+async def test_mode_off_stop_stays_a_noop(monkeypatch):
+    """An OFF household is the default: stop() must not reach the
+    filesystem or spawn an avahi reload on a jasper-control restart."""
+    uninstalled: list[int] = []
+    monkeypatch.setattr(
+        daemon_mod.avahi, "uninstall", lambda **kw: uninstalled.append(1),
+    )
+    d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.OFF))
+    await d.start()
+    await d.stop()
+    assert uninstalled == []
 
 
 # ---------- mode=OFF: nothing happens ----------

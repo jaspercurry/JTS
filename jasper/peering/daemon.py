@@ -102,6 +102,7 @@ class PeeringDaemon:
         self._pending_epoch: Optional[str] = None
         self._send_tasks: set[asyncio.Task[None]] = set()
         self._running = False
+        self._start_attempted = False
 
     # ---------- public lifecycle ----------
 
@@ -118,6 +119,7 @@ class PeeringDaemon:
             logger.warning("peering daemon already running")
             return
 
+        self._start_attempted = True
         self._loop = asyncio.get_running_loop()
         self._sm = PeeringStateMachine(StateMachineParams(
             peer_id=self._cfg.peer_id,
@@ -141,10 +143,12 @@ class PeeringDaemon:
         try:
             await self._transport.start(on_message=self._on_multicast_message)
         except OSError as e:
-            logger.error(
-                "peering: could not bind multicast socket (%s); "
-                "daemon staying down. Likely cause: another process "
-                "holds the port.", e,
+            log_event(
+                logger,
+                "peering.daemon.start_failed",
+                step="multicast_bind",
+                error=str(e),
+                level=logging.ERROR,
             )
             self._transport = None
             return
@@ -168,8 +172,12 @@ class PeeringDaemon:
         )
 
     async def stop(self) -> None:
-        if not self._running:
+        # A start that failed partway still owns an advert and possibly a
+        # bound socket; every step below is null-guarded and idempotent, so
+        # the gate is start_attempted rather than _running. See #4332.
+        if not self._start_attempted:
             return
+        self._start_attempted = False
         self._running = False
         log_event(logger, "peering.daemon.stopping")
 
