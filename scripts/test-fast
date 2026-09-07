@@ -154,17 +154,31 @@ add_globbed_tests() {
   [[ "${matched}" == true ]]
 }
 
-# add_tests_naming <literal>
+# add_tests_naming <changed-path>
 #
-# Selects every tests/test_*.py naming <literal>, directly or via a
-# non-test helper under tests/ (excluding conftest.py, too broad for one
-# mention in it to mean anything) that names it and that the test imports --
-# pytest only collects tests/test_*.py, so a helper's own text never runs.
-# The import match is loose (a `from`/`import` line mentioning the module
-# name), covering `from tests.x import`, `import tests.x`, `from .x import`
-# and `from tests import x`. Returns whether anything matched.
+# Derives the search literal from <changed-path>'s basename: the stem for a
+# .py file (tests import these as modules, e.g. scripts/_wake_pipeline_common.py
+# -> "_wake_pipeline_common"), the full path for a suffix-less basename
+# (scripts/use, deploy/bin/jasper-aec-reconcile -- too short/common a bare
+# word otherwise: "use" alone names 729 of this repo's tests/test_*.py
+# files), or the bare basename otherwise (widget.sh). Selects every
+# tests/test_*.py naming that literal, directly or via a non-test helper
+# under tests/ (excluding conftest.py, too broad for one mention in it to
+# mean anything) that names it and that the test imports -- pytest only
+# collects tests/test_*.py, so a helper's own text never runs. The import
+# match is loose (a `from`/`import` line mentioning the module name),
+# covering `from tests.x import`, `import tests.x`, `from .x import` and
+# `from tests import x`. Returns whether anything matched.
 add_tests_naming() {
-  local literal="$1"
+  local changed="$1"
+  local base="${changed##*/}"
+  local literal
+  case "${base}" in
+    *.py) literal="${base%.py}" ;;
+    *.*) literal="${base}" ;;
+    *) literal="${changed}" ;;
+  esac
+
   local matched=false
   local f
   while IFS= read -r f; do
@@ -184,7 +198,7 @@ add_tests_naming() {
       add_test_if_present "${f}"
       matched=true
     done < <(grep -lE "^(from|import) .*\\b${mod}\\b" tests/test_*.py 2>/dev/null || true)
-  done < <(find tests -maxdepth 1 -type f -name '*.py' ! -name 'test_*.py' ! -name 'conftest.py')
+  done < <(find tests -maxdepth 1 -type f -name '*.py' ! -name 'test_*.py' ! -name 'conftest.py' 2>/dev/null)
 
   [[ "${matched}" == true ]]
 }
@@ -194,13 +208,22 @@ while IFS= read -r changed; do
     tests/test_*.py)
       add_test_if_present "${changed}"
       ;;
-    tests/*_fixtures.py)
-      # A shared fixtures module has no jasper/*.py path component and its
-      # several importers aren't named by the jasper arms' module-name
-      # convention below -- name its own basename instead.
-      fixtures_module="${changed##*/}"
-      fixtures_module="${fixtures_module%.py}"
-      add_tests_naming "${fixtures_module}" || echo "==> no test names ${changed}"
+    tests/voice_eval/*)
+      # Ahead of the tests/*.py arm below on purpose: never let anything
+      # under voice_eval, paid realtime-LLM sessions, be reached by content
+      # derivation.
+      ;;
+    tests/*.py)
+      # A non-test helper under tests/ (a shared fixtures module, a corpus
+      # constant) has no jasper/*.py path component and its importers
+      # aren't named by the jasper arms' module-name convention below --
+      # name its own basename instead. conftest.py is excluded: pytest
+      # auto-loads it for every test in scope, so one mention in it means
+      # nothing about which tests actually use it.
+      case "${changed}" in
+        tests/conftest.py) ;;
+        *) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
+      esac
       ;;
     wake_training/*)
       # wake_training/ lives outside jasper/ (laptop-side training tooling,
@@ -211,12 +234,10 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
       add_test_if_present "tests/test_wake_training_feature_bank.py"
       ;;
-    tests/voice_eval/*)
-      ;;
     .env.example)
       # No jasper/*.py path component, so name the literal path across
       # every test file that names it.
-      add_tests_naming '.env.example' || echo "==> no test names ${changed}"
+      add_tests_naming "${changed}" || echo "==> no test names ${changed}"
       ;;
     jasper/secret_redaction.py|scripts/_diagnostic_redaction.sh|scripts/tail-pi-logs.sh|scripts/fetch-pi-logs.sh|scripts/pi-bundle.sh|scripts/pi-run-diagnostic.sh)
       # The Python and bash redactors are pinned side by side against one
@@ -240,7 +261,7 @@ while IFS= read -r changed; do
       # On top of the curated tests above: whatever else names this script
       # (issue #4194, #4248).
       case "${changed}" in
-        *.sh) add_tests_naming "${changed##*/}" || echo "==> no test names ${changed}" ;;
+        *.sh) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
       esac
       ;;
     jasper/*/*.py)
@@ -282,7 +303,7 @@ while IFS= read -r changed; do
       # pyproject.toml and friends are also members, cited in dozens of
       # test docstrings.
       case "${changed}" in
-        scripts/*) add_tests_naming "${changed##*/}" || echo "==> no test names ${changed}" ;;
+        scripts/*) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
       esac
       ;;
     deploy/assets/*/js/*.js|tests/js/*.mjs)
@@ -301,17 +322,18 @@ while IFS= read -r changed; do
       # No import graph routes these (reached by subprocess). A sibling
       # glob catches a pattern-named test with different content (issue
       # #3846); the derivation always also runs -- a reconciler edit
-      # honestly costs its full referrer set (issue #4194, #4248).
-      script="${changed##*/}"
-      script_module="${script#jasper-}"
+      # honestly costs its full referrer set (issue #4194, #4248). Tests
+      # reference these scripts as `REPO / "deploy" / "bin" / "jasper-x"`,
+      # a Path-join whose parts never appear concatenated in the source, so
+      # the grep step is handed the bare basename rather than the full
+      # path add_tests_naming's own suffix-less case would otherwise use.
+      raw_base="${changed##*/}"
+      script_module="${raw_base#jasper-}"
       script_module="${script_module//-/_}"
-      for candidate in \
-        "tests/test_${script_module}.py" \
-        "tests/test_${script_module}_script.py"; do
-        [[ -f "${candidate}" ]] && add_test_if_present "${candidate}"
-      done
+      add_test_if_present "tests/test_${script_module}.py"
+      add_test_if_present "tests/test_${script_module}_script.py"
       add_globbed_tests "test_${script_module}_*.py" || true
-      add_tests_naming "${script}" || echo "==> no test names ${changed}"
+      add_tests_naming "${raw_base}" || echo "==> no test names ${changed}"
       ;;
     scripts/*|deploy/*.sh)
       # Laptop-side scripts (any suffix under scripts/) and shared bash
@@ -319,7 +341,7 @@ while IFS= read -r changed; do
       # (issue #4194, #4248). deploy/install.sh's basename alone names ~9%
       # of tests/test_*.py; accepted, not narrowed -- it is the repo's one
       # install entry point.
-      add_tests_naming "${changed##*/}" || echo "==> no test names ${changed}"
+      add_tests_naming "${changed}" || echo "==> no test names ${changed}"
       ;;
     deploy/systemd/jasper-wifi-guardian*)
       # The guardian's unit pins live in the script's test file, which the

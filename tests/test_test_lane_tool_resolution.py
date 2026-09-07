@@ -66,7 +66,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.lane_fixtures import lane_env, write_recording_pytest
+from tests.lane_fixtures import TRUE_BIN, fast_lane_selected_tests, lane_env
 
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
@@ -88,12 +88,8 @@ _LANES = ("test-fast", "test-merge")
 # Invoked by absolute path: the sandbox PATH deliberately excludes bash itself.
 _BASH = shutil.which("bash") or "/bin/bash"
 
-# `true` accepts and ignores whatever flags a gate is handed and exits 0, so
-# every gate a test is not about clears without doing anything.
-_TRUE_BIN = shutil.which("true") or "/usr/bin/true"
 
-
-def _other_gate_stand_ins(lane: str, stand_in: str = _TRUE_BIN) -> dict[str, str]:
+def _other_gate_stand_ins(lane: str, stand_in: str = TRUE_BIN) -> dict[str, str]:
     """Overrides that clear the gates ``lane`` runs ahead of its pytest phase."""
     if lane == "test-fast":
         return {"RUFF": stand_in}
@@ -182,7 +178,7 @@ def test_test_fast_also_refuses_on_a_missing_ruff(
     failure attributable to ``ruff`` is the one observed.
     """
     repo, env = lane_sandbox
-    result = _run(repo, {**env, "PYTEST": _TRUE_BIN}, "test-fast")
+    result = _run(repo, {**env, "PYTEST": TRUE_BIN}, "test-fast")
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -333,57 +329,6 @@ def test_fatal_headline_survives_tail_truncation(
     assert "issue #1836" in last_line
 
 
-def _fast_lane_selected_tests(
-    tmp_path: Path,
-    *,
-    changed_path: str,
-    routed_tests: tuple[str, ...],
-    test_contents: dict[str, str] | None = None,
-) -> set[str]:
-    repo = tmp_path / "repo"
-    (repo / "scripts").mkdir(parents=True)
-    (repo / "tests").mkdir()
-    for name in ("test-fast", "_test_lane.sh"):
-        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
-    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
-    for relative in (changed_path, *routed_tests):
-        path = repo / relative
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                (test_contents or {}).get(relative, ""), encoding="utf-8"
-            )
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "tests@example.invalid")
-    _git(repo, "config", "user.name", "JTS Tests")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
-    changed = repo / changed_path
-    changed.write_text(
-        changed.read_text(encoding="utf-8") + "\n# edited\n",
-        encoding="utf-8",
-    )
-
-    calls = repo / "pytest-calls.jsonl"
-    recorder = write_recording_pytest(repo / "recording-pytest")
-
-    subprocess.run(
-        [_BASH, "scripts/test-fast"],
-        cwd=repo,
-        env=lane_env(recorder, calls),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    return {
-        arg
-        for line in calls.read_text(encoding="utf-8").splitlines()
-        for arg in json.loads(line)
-    }
-
-
 @pytest.mark.parametrize(
     ("changed_path", "routed_tests", "test_contents"),
     [
@@ -396,10 +341,10 @@ def _fast_lane_selected_tests(
             None,
         ),
         (
-            # The tests/*_fixtures.py arm routes by grepping each routed
-            # test for the changed module's own basename (same idiom as the
-            # deploy/bin arm's grep fallback below), so the stand-in test
-            # files need that basename in them, same as a real importer.
+            # The tests/*.py arm (any non-test helper under tests/) routes
+            # by grepping each routed test for the changed module's own
+            # stem, so the stand-in test files need that stem in them, same
+            # as a real importer.
             "tests/wake_feature_bank_fixtures.py",
             (
                 "tests/test_build_wake_feature_bank.py",
@@ -455,7 +400,7 @@ def test_fast_lane_routes_internal_support_files_to_their_guards(
     Everything is committed first so ``changed_path`` is the only edit.
     """
 
-    selected = _fast_lane_selected_tests(
+    selected = fast_lane_selected_tests(
         tmp_path,
         changed_path=changed_path,
         routed_tests=routed_tests,
@@ -496,7 +441,7 @@ def test_fast_lane_routes_deploy_index_html_to_the_landing_bundle(
     running it explicitly. Verified failing on origin/main, passing here.
 
     Wrinkle: LANDING_PYTEST_TARGETS' one function-scoped entry is a
-    `file::test_name` pytest node id. _fast_lane_selected_tests's
+    `file::test_name` pytest node id. fast_lane_selected_tests's
     changed_path/routed_tests plumbing creates each `routed_tests` entry AS
     A FILE so test-fast's `[[ -f ... ]]` existence check can see it -- the
     literal string with `::` in it is never a real path, so this stubs the
@@ -516,7 +461,7 @@ def test_fast_lane_routes_deploy_index_html_to_the_landing_bundle(
         target.split("::", 1)[0] for target in qualified_targets
     )
 
-    selected = _fast_lane_selected_tests(
+    selected = fast_lane_selected_tests(
         tmp_path,
         changed_path="deploy/index.html",
         routed_tests=stub_files,
@@ -1171,7 +1116,7 @@ def test_test_merge_also_refuses_on_a_missing_mypy(
     by this addition.
     """
     repo, env = lane_sandbox
-    result = _run(repo, {**env, "PYTEST": _TRUE_BIN}, "test-merge")
+    result = _run(repo, {**env, "PYTEST": TRUE_BIN}, "test-merge")
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -1318,7 +1263,7 @@ def test_fast_lane_routes_deploy_bin_scripts_to_their_tests(
     reproduces how the real tree pins it -- by literal reference, not by
     filename.
     """
-    selected = _fast_lane_selected_tests(
+    selected = fast_lane_selected_tests(
         tmp_path,
         changed_path=f"deploy/bin/{script}",
         routed_tests=routed_tests,
