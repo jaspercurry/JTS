@@ -17,7 +17,7 @@ import ipaddress
 import os
 import socket
 import urllib.parse
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Mapping, Set as AbstractSet
 
 
 DEFAULT_MANAGEMENT_HOSTNAME = "jts.local"
@@ -137,16 +137,17 @@ def is_allowed_management_host(
     host: str | None,
     *,
     configured_hostname: str | None = None,
-    extra_hosts: Collection[str] = (),
+    extra_hosts: Callable[[], AbstractSet[str]] = frozenset,
 ) -> bool:
     """Return True for hostnames/IPs a household should legitimately use.
 
-    ``extra_hosts`` are normalized names the caller observed this speaker
-    actually answering to (``jasper.identity_state.effective_hostnames()``
-    — the OS hostname and Avahi's post-collision FQDN, which the static
-    rules cannot derive once ``hostname`` and the advertised name
-    diverge). Passed in rather than read here: this module sits below
-    identity_state.
+    ``extra_hosts`` yields normalized names the caller observed this
+    speaker actually answering to — the OS hostname and Avahi's
+    post-collision FQDN, which the static rules cannot derive once
+    ``hostname`` and the advertised name diverge. A callable, called only
+    once the static rules miss, so the common request pays no lookup;
+    ``jasper.identity_state`` binds it (a ``stat()`` of identity.env) and
+    owns the composition — this module sits below it.
     """
     normalized = normalize_host(host)
     if not normalized:
@@ -157,7 +158,7 @@ def is_allowed_management_host(
         return True
     if _is_avahi_suffix_of_local_hostname(normalized):
         return True
-    if normalized in extra_hosts:
+    if normalized in extra_hosts():
         return True
     ip = _parse_ip(normalized)
     return bool(ip and _is_private_or_loopback_ip(ip))
@@ -197,7 +198,7 @@ def management_read_allowed(
     headers: Mapping[str, str],
     *,
     configured_hostname: str | None = None,
-    extra_hosts: Collection[str] = (),
+    extra_hosts: Callable[[], AbstractSet[str]] = frozenset,
 ) -> tuple[bool, str]:
     """Validate Host + Fetch Metadata for GET management requests."""
     request_host = normalize_host(_header(headers, "Host"))
@@ -214,7 +215,7 @@ def mutating_request_allowed(
     headers: Mapping[str, str],
     *,
     configured_hostname: str | None = None,
-    extra_hosts: Collection[str] = (),
+    extra_hosts: Callable[[], AbstractSet[str]] = frozenset,
 ) -> tuple[bool, str]:
     """Validate Host/Origin for a state-changing management request.
 

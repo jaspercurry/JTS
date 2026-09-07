@@ -498,9 +498,8 @@ exhaustive_ignores = [
   "model_downloads",
   "multiroom",
   "mux",
-  # Holdout for one edge: jasper/net/control_advert.py:60,96,126 ->
-  # jasper.identity (name/peer_id/hostname for the advert TXT). The rest
-  # of jasper.net sits on the net/hardware layer line above.
+  # Holdout for jasper/net/control_advert.py -> jasper.identity, whose own
+  # upward imports row 6 of #4199 cuts; net ranks once identity does.
   "net",
   "oauth_redirect",
   "output_hardware",

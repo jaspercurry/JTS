@@ -47,11 +47,7 @@ if TYPE_CHECKING:
     from ..volume_coordinator import VolumeState
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ..identity_state import effective_hostnames
-from ..net.http_security import (
-    management_read_allowed,
-    mutating_request_allowed,
-)
+from ..identity_state import management_read_allowed, mutating_request_allowed
 from .client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..fanin.latency_mode import (
@@ -1485,12 +1481,9 @@ def _make_handler(
             if self.path == "/healthz":
                 ok, reason = management_read_allowed(
                     {"Host": self.headers.get("Host") or ""},
-                    extra_hosts=effective_hostnames(),
                 )
             else:
-                ok, reason = management_read_allowed(
-                    self.headers, extra_hosts=effective_hostnames(),
-                )
+                ok, reason = management_read_allowed(self.headers)
             if ok:
                 return True
             log_event(
@@ -1507,9 +1500,7 @@ def _make_handler(
             return False
 
         def _guard_mutating_request(self) -> bool:
-            ok, reason = mutating_request_allowed(
-                self.headers, extra_hosts=effective_hostnames(),
-            )
+            ok, reason = mutating_request_allowed(self.headers)
             if not ok:
                 log_event(
                     logger,

@@ -8,13 +8,17 @@ reconciler.
 The writer is deploy/bin/jasper-identity-reconcile (covered by
 tests/test_identity_reconcile_script.py); this file pins the consumer
 contract: fresh reads, allowlist-shaped name derivation, the
-mtime-keyed cache, and the /state snapshot statuses.
+mtime-keyed cache, the two HTTP-guard wrappers that fold the observed
+names into the management allowlist, and the /state snapshot statuses.
 """
 from __future__ import annotations
 
 import os
 
+import pytest
+
 from jasper import identity_state
+from jasper.net import http_security
 
 
 def _write_identity(path, *, os_host="jts3", avahi="jts3.local",
@@ -59,6 +63,37 @@ def test_effective_hostnames_cache_refreshes_on_rewrite(tmp_path):
     os.utime(f, (os.path.getmtime(f) + 2, os.path.getmtime(f) + 2))
     second = identity_state.effective_hostnames(str(f))
     assert "jts3-2.local" in second
+
+
+@pytest.mark.parametrize(
+    "guard", ("management_read_allowed", "mutating_request_allowed"),
+)
+def test_guard_wrappers_extend_the_allowlist_with_observed_names(
+    monkeypatch, tmp_path, guard,
+):
+    """Both guards accept the names the reconciler observed — shapes the
+    static rules can't derive, e.g. a stale-but-still-advertised
+    configured name after an operator rename — and nothing beyond them."""
+    f = tmp_path / "identity.env"
+    _write_identity(
+        f, os_host="kitchen", avahi="kitchen-2.local",
+        configured="jts-kitchen.local",
+    )
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(f))
+    monkeypatch.setattr(http_security.socket, "gethostname", lambda: "unrelated")
+    allowed = getattr(identity_state, guard)
+    for host in ("kitchen.local", "kitchen-2.local", "jts-kitchen.local"):
+        assert allowed({"Host": host}) == (True, "ok"), host
+    assert allowed({"Host": "evil.example"}) == (False, "host_not_allowed")
+
+
+def test_guard_wrappers_degrade_to_static_rules_without_the_file(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "absent.env"))
+    assert identity_state.management_read_allowed(
+        {"Host": "evil.example"},
+    ) == (False, "host_not_allowed")
 
 
 def test_snapshot_absent(tmp_path):

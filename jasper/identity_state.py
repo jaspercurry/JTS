@@ -50,10 +50,11 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Mapping
 from typing import Any
 
 from .env_load import parse_env_file
-from .net.http_security import normalize_host
+from .net import http_security
 
 DEFAULT_PATH = "/var/lib/jasper/identity.env"
 
@@ -79,7 +80,7 @@ def _names_from(identity: dict[str, str]) -> frozenset[str]:
         "JASPER_IDENTITY_AVAHI_HOSTNAME",
         "JASPER_IDENTITY_CONFIGURED_HOSTNAME",
     ):
-        value = normalize_host(identity.get(key, ""))
+        value = http_security.normalize_host(identity.get(key, ""))
         if not value:
             continue
         names.add(value)
@@ -128,6 +129,22 @@ def effective_hostnames(path: str | None = None) -> frozenset[str]:
 def configured_hostname(path: str | None = None) -> str:
     """The reconciler's snapshot of ``JASPER_HOSTNAME``; "" when absent."""
     return _cached(path)[0].get("JASPER_IDENTITY_CONFIGURED_HOSTNAME", "").strip()
+
+
+def management_read_allowed(headers: Mapping[str, str]) -> tuple[bool, str]:
+    """:func:`jasper.net.http_security.management_read_allowed` with this
+    speaker's observed names folded into the allowlist."""
+    return http_security.management_read_allowed(
+        headers, extra_hosts=effective_hostnames,
+    )
+
+
+def mutating_request_allowed(headers: Mapping[str, str]) -> tuple[bool, str]:
+    """:func:`jasper.net.http_security.mutating_request_allowed` with this
+    speaker's observed names folded into the allowlist."""
+    return http_security.mutating_request_allowed(
+        headers, extra_hosts=effective_hostnames,
+    )
 
 
 def snapshot(path: str | None = None) -> dict[str, Any]:
