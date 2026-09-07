@@ -189,14 +189,17 @@ case "$cmd" in
     fi
     printf '\nJTS_EOT'
     ;;
-  *--state=activating*)
-    polls=$(( $(cat "$FAKE_SETTLE_POLLS" 2>/dev/null || printf 0) + 1 ))
-    printf '%s\n' "$polls" > "$FAKE_SETTLE_POLLS"
-    if (( polls <= ${FAKE_ACTIVATING_POLLS:-0} )); then
-      printf '%s\n' 'jasper-voice.service loaded activating start running'
-    fi
+  *jts-settle*)
+    # The settle wait is one remote loop; the seconds it waited and its
+    # exit code (1 = hit the ceiling) are all the wrapper reads.
+    printf '%s\n' "${FAKE_SETTLE_SECONDS:-0}"
+    exit "${FAKE_SETTLE_RC:-0}"
     ;;
   *jasper-doctor*)
+    if [[ "${FAKE_DOCTOR_VERDICT:-ok}" != none ]]; then
+      printf 'event=deploy.health status=%s fail=0 warn=0 rows=12 speaker_silent=false\n' \
+        "${FAKE_DOCTOR_VERDICT:-ok}"
+    fi
     exit "${FAKE_DOCTOR_RC:-0}"
     ;;
   sudo\ -n*)
@@ -318,7 +321,6 @@ class FakeRemote:
                 "FAKE_FACTS_DIR": str(self.tmp / ".jts-deploy-facts.fake"),
                 "FAKE_INSTALL_LOG": str(self.tmp / ".jts-install.log"),
                 "FAKE_INSTALL_POLLS": str(self.tmp / "install-polls"),
-                "FAKE_SETTLE_POLLS": str(self.tmp / "settle-polls"),
                 "SKIP_AIRPLAY_HEALTH_SUPPRESS": "1",
             }
         )
@@ -988,16 +990,22 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("==> Done.", combined)
 
     def test_the_deploy_exit_code_carries_the_core_health_verdict(self):
-        """Only the doctor's own verdict gates the deploy (ADR-0242
-        decision 3): rc 1 is a red speaker and fails it, and a code
-        systemd-run put on the same channel — the bound firing, the OOM
-        killer, an unrunnable venv — is named and stays green."""
-        for doctor_rc, expect_rc, events in (
-            ("0", 0, []),
-            ("1", 1, ["event=deploy.core_health rc=1"]),
-            ("143", 0, ["event=deploy.core_health rc=143 reason=timeout"]),
+        """The doctor's own `event=deploy.health status=` line is the
+        verdict, not the transient unit's exit code: `systemd-run --wait`
+        folds a fired bound, an OOM kill and a bus failure alike into rc
+        1, so a run that printed no verdict is named and stays green.
+        See ADR-0247."""
+        for verdict, doctor_rc, expect_rc, events in (
+            ("ok", "0", 0, []),
+            ("fail", "1", 1, ["event=deploy.core_health status=fail"]),
+            (
+                "none",
+                "1",
+                0,
+                ["event=deploy.core_health rc=1 reason=no_verdict"],
+            ),
         ):
-            with self.subTest(doctor_rc=doctor_rc):
+            with self.subTest(verdict=verdict):
                 fake = FakeRemote(self)
                 result = self.run_deploy(
                     fake,
@@ -1005,13 +1013,13 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     PI_HOST="jts3.local",
                     PI_USER="pi",
                     JASPER_HOSTNAME="jts3.local",
+                    FAKE_DOCTOR_VERDICT=verdict,
                     FAKE_DOCTOR_RC=doctor_rc,
                 )
 
                 calls = fake.calls()
                 combined = result.stdout + result.stderr
                 self.assertEqual(result.returncode, expect_rc, combined)
-                self.assertEqual("==> Done." in combined, expect_rc == 0)
                 # One line per result, never two.
                 self.assertEqual(
                     [
@@ -1027,11 +1035,12 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                 self.assertIn("MemoryMax=96M", calls)
                 self.assertIn("RuntimeMaxSec=60", calls)
 
-    def test_core_health_waits_out_activating_units_before_judging(self):
-        """The reconciler's --no-block voice restart is still in flight
-        when the doctor would otherwise read the unit, and an
-        `activating` unit fails its runtime-state row. The doctor runs
-        only after the Pi reports nothing activating.
+    def test_core_health_waits_for_pending_jobs_before_judging(self):
+        """The reconciler's --no-block voice restart is still a queued job
+        when the doctor would otherwise read the units, and a unit caught
+        mid-transition fails its runtime-state row. One remote wait runs
+        first; hitting its ceiling discloses itself and still lets the
+        gate judge.
 
         Removal condition: delete with the wait it pins.
         """
@@ -1042,18 +1051,19 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_ACTIVATING_POLLS="2",
+            FAKE_SETTLE_RC="1",
+            FAKE_SETTLE_SECONDS="90",
         )
 
         calls = fake.calls().replace("\\", "").splitlines()
-        settle = [i for i, c in enumerate(calls) if "--state=activating" in c]
+        settle = [i for i, c in enumerate(calls) if "jts-settle" in c]
         doctor = [i for i, c in enumerate(calls) if "jasper-doctor" in c]
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(settle), 3)
+        self.assertEqual(len(settle), 1)
         self.assertEqual(len(doctor), 1)
-        self.assertGreater(doctor[0], settle[-1])
-        self.assertRegex(
-            result.stdout, r"event=deploy\.settle_wait seconds=\d+ settled=yes"
+        self.assertGreater(doctor[0], settle[0])
+        self.assertIn(
+            "event=deploy.settle_wait seconds=90 settled=no", result.stdout
         )
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):

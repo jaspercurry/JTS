@@ -603,40 +603,43 @@ EOF
     exit 1
 }
 
-# The mic/AEC reconciler's voice restart is --no-block and nothing waits
-# for it; the doctor fails a unit still `activating`. Remove this wait
-# when that restart stops being --no-block, or when the doctor waits.
-SETTLE_POLL_INTERVAL_SEC=3
-SETTLE_POLL_CEILING_SEC=60
+# 90 s is systemd's DefaultTimeoutStartSec: past it a Type=notify start has
+# already failed on its own. Goes when the reconcile's voice restart stops
+# being --no-block, or when the doctor waits for pending jobs. See ADR-0247.
 wait_for_units_settled() {
-    local waited=0 settled=yes
-    while [[ -n "$(ssh_remote "systemctl list-units --state=activating \
---plain --no-legend 'jasper-*'" 2>/dev/null | tr -d '[:space:]')" ]]; do
-        (( waited < SETTLE_POLL_CEILING_SEC )) || { settled=no; break; }
-        sleep "$SETTLE_POLL_INTERVAL_SEC"
-        waited=$(( waited + SETTLE_POLL_INTERVAL_SEC ))
-    done
-    [[ "$waited" == "0" ]] || \
-        echo "  event=deploy.settle_wait seconds=${waited} settled=${settled}"
+    local waited settled=yes rc=0 body
+    remote_body body 'w=0' \
+        'while [ -n "$(systemctl list-jobs --no-legend)" ]; do [ "$w" -lt 90 ] || { echo "$w"; exit 1; }; sleep 3; w=$(( w + 3 )); done' \
+        'echo "$w"'
+    waited="$(ssh_remote "$(remote_sh jts-settle "$body")" 2>/dev/null \
+| tr -dc '0-9')" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) settled=no ;;
+        *) settled=unknown ;;
+    esac
+    [[ "${waited:-0}" == "0" && "$settled" == "yes" ]] || \
+        echo "  event=deploy.settle_wait seconds=${waited:-0} settled=${settled}"
 }
 
 # Same bound as install.sh's run_doctor_summary. See ADR-0242.
 gate_core_health() {
     echo "==> Post-deploy core health (jasper-doctor --core)"
-    local rc=0 reason=
+    local rc=0 out
     wait_for_units_settled
-    run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
--p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" || rc=$?
-    # Only 0 and 1 are the doctor's own verdict. See ADR-0242 decision 3.
-    case "${rc}" in
-        0) return 0 ;;
-        1) echo "  event=deploy.core_health rc=1"; return 1 ;;
-        143) reason="timeout" ;;
-        137) reason="oom_kill" ;;
-        203) reason="exec" ;;
-        *) reason="other" ;;
+    # tee, not a deferred print: an attended sudo prompt rides this channel.
+    out="$(run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
+-p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" \
+| tee /dev/stderr)" || rc=$?
+    # --wait folds timeout, oom-kill and a bus failure alike into rc 1, so
+    # only the doctor's own line is a verdict. See ADR-0247.
+    case "$out" in
+        *"event=deploy.health status=fail"*)
+            echo "  event=deploy.core_health status=fail"
+            return 1 ;;
+        *"event=deploy.health status=ok"*) return 0 ;;
     esac
-    echo "  event=deploy.core_health rc=${rc} reason=${reason}"
+    echo "  event=deploy.core_health rc=${rc} reason=no_verdict"
     return 0
 }
 
@@ -1144,7 +1147,11 @@ if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
     echo "─────────────────────────────────────────────────────────────" >&2
     exit 1
 fi
-[[ "$HEALTH_RC" == "0" ]] || exit "$HEALTH_RC"
+if [[ "$HEALTH_RC" != "0" ]]; then
+    finish_airplay_health_maintenance
+    trap 'cleanup_remote_facts' EXIT
+    exit "$HEALTH_RC"
+fi
 
 finish_airplay_health_maintenance
 cleanup_remote_facts
