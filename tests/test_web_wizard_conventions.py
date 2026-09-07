@@ -166,7 +166,7 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
     )
     assert correction_handler.index(
         "guard_mutating_request",
-    ) < correction_handler.index("self._dispatch_sync(path)")
+    ) < correction_handler.index("getattr(self, _POST_ROUTES[path])")
 
     delegated_readers = {
         "wake_setup.py": (

@@ -207,7 +207,7 @@ def classify_program_failure(
     and logged) instead of being erased.
 
     This is the ONE classifier. ``build_v2_run_and_consume``'s cleanup arm and
-    ``jasper.web.correction_setup._capture_failure_message`` both call it, so the
+    ``jasper.web.correction_capture._capture_failure_message`` both call it, so the
     wizard's capture status line and the failure screen can
     never disagree about which refusal happened — the drift that let a raw
     ``"program re-admission refused: program_profile_not_confirmed"`` reach the
@@ -274,7 +274,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     :func:`classify_program_failure` exists to close, defeated by the rewrap
     happening BEFORE any classification: once it is a ``ValueError`` the
     classifier no longer claims it, and
-    ``correction_setup._capture_failure_message`` never sees it either.
+    ``correction_capture._capture_failure_message`` never sees it either.
 
     So classify FIRST and carry the code out. The message comes from the same
     :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY` entry the
@@ -2367,7 +2367,7 @@ def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     """
     from jasper.correction.household_mic import resolve_setup_calibration as resolve
 
-    from .correction_setup import _calibration_root, _household_mic_path
+    from .correction_capture import _calibration_root, _household_mic_path
 
     return resolve(
         setup if isinstance(setup, Mapping) else None,
@@ -2388,7 +2388,7 @@ def default_setup_calibration_for_v2() -> Any | None:
     calibration-picker screen of its own (design: CHECK's own pilot pairs
     solve gain), so nothing carried the household's remembered mic into it.
 
-    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the ONE
+    Reuses ``correction_capture._default_setup_calibration_for_spec`` — the ONE
     household-mic-hint resolver. Threaded into
     ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
     shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``, and
@@ -2396,7 +2396,7 @@ def default_setup_calibration_for_v2() -> Any | None:
     (``correction_crossover_v2_wired._wired_setup_reference``). Fail-soft: any
     resolution miss yields no hint, never blocks session open.
     """
-    from .correction_setup import _default_setup_calibration_for_spec
+    from .correction_capture import _default_setup_calibration_for_spec
 
     try:
         return _default_setup_calibration_for_spec()
@@ -5499,7 +5499,7 @@ def prepare_v2_session(
     ``POST /crossover/v2/session`` (S1a) when false, ``POST
     /crossover/v2/verify`` when true. The flag is the dispatch's own
     discriminator handed one frame down, never re-derived here
-    (``correction_setup._handle_crossover_v2_capture``).
+    (``correction_handlers._handle_crossover_v2_capture``).
 
     **One sequence, and the nine steps along it that fork.** From the
     capture-source resolution onward both stages run the same steps in the same

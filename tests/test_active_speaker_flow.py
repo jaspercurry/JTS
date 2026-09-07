@@ -58,14 +58,17 @@ def test_active_phase_idle_or_stopped_is_none(tmp_path, monkeypatch):
 
 
 def test_blocking_measurement_phase_reports_each_flow(monkeypatch):
-    from jasper.web import correction_setup, sync_flow
+    from jasper.web import (
+        correction_capture,
+        sync_flow,
+    )
 
     # Nothing active -> None.
     monkeypatch.setattr(sync_flow, "active_phase", lambda: None)
-    monkeypatch.setattr(correction_setup, "active_correction_phase", lambda: None)
+    monkeypatch.setattr(correction_capture, "active_correction_phase", lambda: None)
     assert active_speaker_flow.blocking_measurement_phase() is None
 
-    monkeypatch.setattr(correction_setup, "active_correction_phase", lambda: "sweeping")
+    monkeypatch.setattr(correction_capture, "active_correction_phase", lambda: "sweeping")
     assert active_speaker_flow.blocking_measurement_phase() == "correction:sweeping"
 
     monkeypatch.setattr(sync_flow, "active_phase", lambda: "measuring")
@@ -74,9 +77,11 @@ def test_blocking_measurement_phase_reports_each_flow(monkeypatch):
 
 
 def test_correction_reserve_slot_blocked_by_commissioning(tmp_path, monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(active_speaker_flow, "active_phase", lambda: "commissioning")
     # _reserve_start_slot must refuse a correction /start while commissioning.
-    blocking = correction_setup._reserve_start_slot()
+    blocking = correction_capture._reserve_start_slot()
     assert blocking == "active_speaker:commissioning"

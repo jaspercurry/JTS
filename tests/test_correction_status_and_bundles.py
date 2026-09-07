@@ -51,7 +51,11 @@ from jasper.active_speaker.runtime_contract import (
 )
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
-from jasper.web import correction_setup
+from jasper.web import (
+    correction_capture,
+    correction_handlers,
+    correction_setup,
+)
 from ._web_test_helpers import json_post_with_csrf
 from .correction_bundle_fixtures import write_golden_correction_bundle
 from .correction_session_fixtures import (
@@ -90,7 +94,7 @@ def _stable_no_bass_graph_authority(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_classify_live_bass_extension_graph",
         classify,
     )
@@ -811,7 +815,6 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     tmp_path: Path,
     monkeypatch,
 ):
-    from jasper.web import correction_setup
 
     sess = _make_session(tmp_path)
     sess.cfg.config_dir.mkdir()
@@ -836,7 +839,7 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     )
     fake_cam = _FakeCamilla(current_path=str(current))
 
-    out_path = await correction_setup._write_no_room_correction_config(sess, fake_cam)
+    out_path = await correction_handlers._write_no_room_correction_config(sess, fake_cam)
 
     yaml = out_path.read_text(encoding="utf-8")
     assert len(safety_checks) == 2
@@ -1014,7 +1017,7 @@ class _FakeCamilla:
 def _stub_replace_to_tmp(correction_setup, tmp_path: Path, captured: dict):
     from jasper.correction.session import SessionConfig
 
-    real_replace = correction_setup._replace_session
+    real_replace = correction_capture._replace_session
 
     def stub_replace(
         *,
@@ -1072,7 +1075,9 @@ _READY_ROOM_CORRECTION_SETUP = {
 
 def test_room_readiness_producer_binds_fresh_camilla_active_raw(monkeypatch):
     from jasper.active_speaker import setup_status
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     captured = {}
 
@@ -1085,15 +1090,15 @@ def test_room_readiness_producer_binds_fresh_camilla_active_raw(monkeypatch):
         captured.update(kwargs)
         return _READY_ROOM_CORRECTION_SETUP
 
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: FakeCamilla())
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: FakeCamilla())
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_run_async",
         lambda awaitable, *, timeout: asyncio.run(awaitable),
     )
     monkeypatch.setattr(setup_status, "read_active_speaker_setup_status", fake_status)
 
-    result = correction_setup._room_correction_readiness()
+    result = correction_capture._room_correction_readiness()
 
     assert result is _READY_ROOM_CORRECTION_SETUP
     assert captured == {
@@ -1102,25 +1107,29 @@ def test_room_readiness_producer_binds_fresh_camilla_active_raw(monkeypatch):
 
 
 def test_room_readiness_accepts_consistent_passive_authority(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is True
     assert readiness.blocker is None
 
 
 def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: {
             "active": True,
@@ -1134,7 +1143,7 @@ def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatc
             },
         },
     )
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is False
     assert readiness.reason == "speaker_readiness_malformed"
@@ -1151,10 +1160,12 @@ def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatc
 
 
 def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: {
             "active": True,
@@ -1170,7 +1181,7 @@ def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
         },
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is True
     assert readiness.blocker is None
@@ -1182,10 +1193,12 @@ def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
 
 
 def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: {
             "active": True,
@@ -1203,7 +1216,7 @@ def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
         },
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is False
     assert readiness.reason == "active_grouped_room_correction_not_supported"
@@ -1218,10 +1231,12 @@ def test_room_readiness_consumes_active_owned_grouped_scope(monkeypatch):
 def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
     monkeypatch,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: {
             "active": True,
@@ -1237,7 +1252,7 @@ def test_room_readiness_accepts_only_explicit_automatic_receipt_authority(
         },
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is True
     assert readiness.blocker is None
@@ -1275,15 +1290,17 @@ def test_room_readiness_malformed_shapes_fail_closed_with_retry(
     monkeypatch,
     raw,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: raw,
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is False
     assert readiness.blocker["code"] == "speaker_readiness_unavailable"
@@ -1294,10 +1311,12 @@ def test_room_readiness_malformed_shapes_fail_closed_with_retry(
 
 
 def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: {
             "artifact_schema_version": 1,
@@ -1317,7 +1336,7 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
         },
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is False
     assert readiness.blocker["code"] == "speaker_readiness_unavailable"
@@ -1330,14 +1349,16 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
 
 
 def test_room_readiness_read_failure_has_bounded_retry(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     def unreadable():
         raise OSError("secret filesystem detail")
 
-    monkeypatch.setattr(correction_setup, "_room_correction_readiness", unreadable)
+    monkeypatch.setattr(correction_capture, "_room_correction_readiness", unreadable)
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.blocker["code"] == "speaker_readiness_unavailable"
     assert readiness.blocker["recovery_action"] == {
@@ -1357,10 +1378,12 @@ def test_room_readiness_read_failure_has_bounded_retry(monkeypatch):
     ],
 )
 def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: {
             "active": True,
@@ -1377,7 +1400,7 @@ def test_room_readiness_rejects_unsafe_owner_recovery_links(monkeypatch, href):
         },
     )
 
-    readiness = correction_setup._room_readiness()
+    readiness = correction_capture._room_readiness()
 
     assert readiness.allowed is False
     assert readiness.blocker["code"] == "speaker_setup_incomplete"
@@ -1396,9 +1419,11 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     Without this, a sweep run on top of an existing correction would design
     new filters from the already-corrected curve and compound distortion.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
@@ -1409,7 +1434,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_assert_room_authority_current",
         authority_current,
     )
@@ -1417,7 +1442,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
     )
-    monkeypatch.setattr(correction_setup, "_session", None)
+    monkeypatch.setattr(correction_capture, "_session", None)
     prior_path = tmp_path / "configs" / "correction_xyz_1700.yml"
     prior_path.parent.mkdir()
     prior_path.write_text(
@@ -1428,7 +1453,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
         encoding="utf-8",
     )
     fake_cam = _FakeCamilla(current_path=str(prior_path))
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: fake_cam)
 
     # Hold the sweep entirely — we just want to observe the reset
     # call ordering. The first-sweep task fires-and-forgets onto the
@@ -1454,7 +1479,7 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     # Point the new session at tmp_path so we don't write to /var.
     captured: dict = {}
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_replace_session",
         _stub_replace_to_tmp(correction_setup, tmp_path, captured),
     )
@@ -1520,7 +1545,9 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     is derived from the locked anchor. The saved prior descriptor should match
     that same anchor, not the stale pre-lock path.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
@@ -1550,12 +1577,12 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
         raise AssertionError("measurement start performed a second live proof")
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_assert_room_authority_current",
         authority_current,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_classify_live_bass_extension_graph",
         duplicate_proof,
     )
@@ -1601,7 +1628,7 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
         async def get_active_config_raw(self, *, best_effort: bool = False):
             return Path(self.current_path).read_text(encoding="utf-8")
 
-    payload = await correction_setup._load_measurement_baseline(
+    payload = await correction_handlers._load_measurement_baseline(
         sess,
         SwappingCamilla(),
         expected_authority_binding=(False, "passive_not_required", None),
@@ -1628,7 +1655,9 @@ async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
 ):
     """The graph admitted before reservation must still be current in prepare."""
     from jasper.dsp_apply import DspApplyError
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",
@@ -1658,13 +1687,13 @@ async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
         }
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_read_room_correction_readiness",
         changed_authority,
     )
 
     with pytest.raises(DspApplyError) as exc_info:
-        await correction_setup._load_measurement_baseline(
+        await correction_handlers._load_measurement_baseline(
             sess,
             fake_cam,
             expected_authority_binding=(
@@ -1690,7 +1719,9 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     still host the leader program bake when it resolves to the Snapcast pipe.
     """
     from jasper.multiroom.reconcile import SNAPFIFO
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from tests.test_active_speaker_runtime_contract import _active_topology
 
     topology_path = tmp_path / "output_topology.json"
@@ -1714,7 +1745,7 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
         return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_assert_room_authority_current",
         authority_current,
     )
@@ -1731,7 +1762,7 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
     )
     fake_cam = _FakeCamilla(current_path=str(current))
 
-    payload = await correction_setup._load_measurement_baseline(
+    payload = await correction_handlers._load_measurement_baseline(
         sess,
         fake_cam,
         expected_authority_binding=(True, "manual_applied_profile", "layer-a"),
@@ -1761,9 +1792,11 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
 ):
     """If CamillaDSP cannot switch to the measurement baseline, /start must
     fail before playing a sweep."""
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
@@ -1771,7 +1804,7 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_assert_room_authority_current",
         authority_current,
     )
@@ -1779,7 +1812,7 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         "JASPER_DSP_APPLY_STATE_PATH",
         str(tmp_path / "dsp_apply_state.json"),
     )
-    monkeypatch.setattr(correction_setup, "_session", None)
+    monkeypatch.setattr(correction_capture, "_session", None)
 
     prior_path = tmp_path / "configs" / "correction_xyz_1700.yml"
     prior_path.parent.mkdir()
@@ -1788,15 +1821,15 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
         encoding="utf-8",
     )
     fake_cam = _FakeCamilla(current_path=str(prior_path), reset_ok=False)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: fake_cam)
     captured: dict = {}
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_replace_session",
         _stub_replace_to_tmp(correction_setup, tmp_path, captured),
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_run_async",
         lambda coro, timeout=10.0: asyncio.run(coro),
     )
@@ -1814,12 +1847,12 @@ def test_start_handler_aborts_if_measurement_baseline_load_fails(
     )
 
     with pytest.raises(RuntimeError, match="CamillaDSP reload failed"):
-        correction_setup._handle_start(_DummyJsonHandler())
+        correction_handlers._handle_start(_DummyJsonHandler())
 
     assert fake_cam.set_calls
     assert Path(fake_cam.set_calls[0]).name.startswith("correction_measurement_")
     assert scheduled["value"] is False
-    assert correction_setup._start_in_progress is False
+    assert correction_capture._start_in_progress is False
 
 
 def test_start_handler_rejects_active_measurement(monkeypatch):
@@ -1829,9 +1862,11 @@ def test_start_handler_rejects_active_measurement(monkeypatch):
     backend also needs to refuse a second /start while a sweep/capture
     lifecycle is already active.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
@@ -1839,10 +1874,10 @@ def test_start_handler_rejects_active_measurement(monkeypatch):
     class ActiveSession:
         state = SessionState.SWEEPING
 
-    monkeypatch.setattr(correction_setup, "_session", ActiveSession())
+    monkeypatch.setattr(correction_capture, "_session", ActiveSession())
 
     with pytest.raises(RuntimeError, match="measurement already in progress"):
-        correction_setup._handle_start(_DummyJsonHandler())
+        correction_handlers._handle_start(_DummyJsonHandler())
 
 
 def test_start_handler_rejects_failed_browser_audio_before_sweep(
@@ -1852,29 +1887,31 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
     """A handcrafted /start cannot bypass the browser's disabled Run
     button when getUserMedia reports a capture path that is unsafe for
     measurement."""
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
 
-    monkeypatch.setattr(correction_setup, "_session", None)
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_capture, "_session", None)
+    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_camilla",
         lambda: pytest.fail("CamillaDSP should not be touched"),
     )
     captured: dict = {}
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_replace_session",
         _stub_replace_to_tmp(correction_setup, tmp_path, captured),
     )
 
     with pytest.raises(ValueError, match="not safe for measurement"):
-        correction_setup._handle_start(_DummyJsonHandler({
+        correction_handlers._handle_start(_DummyJsonHandler({
             "input_device": {
                 "label": "iPhone microphone",
                 "sample_rate": 44100,
@@ -1887,7 +1924,7 @@ def test_start_handler_rejects_failed_browser_audio_before_sweep(
 
     # Validation happens before replacing the prior session or touching DSP.
     assert captured == {}
-    assert correction_setup._start_in_progress is False
+    assert correction_capture._start_in_progress is False
 
 
 @pytest.mark.parametrize("strategy_choice", ["assertive", "unknown"])
@@ -1895,26 +1932,28 @@ def test_start_rejects_non_household_strategy_before_dsp(
     monkeypatch,
     strategy_choice,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_camilla",
         lambda: pytest.fail("CamillaDSP should not be touched"),
     )
 
     with pytest.raises(ValueError, match="authorized household strategy"):
-        correction_setup._handle_start(
+        correction_handlers._handle_start(
             _DummyJsonHandler({"strategy_choice": strategy_choice})
         )
 
-    assert correction_setup._start_in_progress is False
+    assert correction_capture._start_in_progress is False
 
 
 @pytest.mark.parametrize(
@@ -1933,43 +1972,47 @@ def test_start_rejects_values_outside_the_disclosed_run_contract_before_dsp(
     body,
     message,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_camilla",
         lambda: pytest.fail("CamillaDSP should not be touched"),
     )
 
     with pytest.raises(ValueError, match=message):
-        correction_setup._handle_start(_DummyJsonHandler(body))
+        correction_handlers._handle_start(_DummyJsonHandler(body))
 
-    assert correction_setup._start_in_progress is False
+    assert correction_capture._start_in_progress is False
 
 
 def test_start_passes_the_disclosed_run_contract_to_session_admission(
     monkeypatch,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
 
     async def restore_level_match_volume(_setter):
         return True
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_get_or_create_session",
         lambda: SimpleNamespace(
             restore_level_match_volume=restore_level_match_volume,
@@ -1983,8 +2026,8 @@ def test_start_passes_the_disclosed_run_contract_to_session_admission(
         captured["session"] = sess
         return sess
 
-    monkeypatch.setattr(correction_setup, "_replace_session", replace_session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_capture, "_replace_session", replace_session)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
 
     # Stop the handler at the next real step after session admission, so the
     # assertions below are about what /start passed into _replace_session and
@@ -2000,17 +2043,17 @@ def test_start_passes_the_disclosed_run_contract_to_session_admission(
         )
 
     monkeypatch.setattr(
-        correction_setup, "_load_measurement_baseline", _refuse_baseline
+        correction_handlers, "_load_measurement_baseline", _refuse_baseline
     )
 
     with pytest.raises(CarrierCannotHostEq, match="test stop after admission"):
-        correction_setup._handle_start(_DummyJsonHandler())
+        correction_handlers._handle_start(_DummyJsonHandler())
 
     assert captured["total_positions"] == 6
     assert captured["target_choice"] == "flat"
     assert captured["strategy_choice"] == "balanced"
     assert captured["repeat_main_position"] is True
-    assert correction_setup._start_in_progress is False
+    assert correction_capture._start_in_progress is False
 
 
 def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
@@ -2026,41 +2069,43 @@ def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
     answers for an unready speaker.
     """
     from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
 
     async def restore_level_match_volume(_setter):
         return True
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_get_or_create_session",
         lambda: SimpleNamespace(
             restore_level_match_volume=restore_level_match_volume,
         ),
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_replace_session",
         lambda **_kwargs: SimpleNamespace(browser_audio_report={"failed": False}),
     )
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
 
     def _unsafe(*_args, **_kwargs):
         raise CorrectionRuntimeSafetyError("graph would be unsafe")
 
-    monkeypatch.setattr(correction_setup, "_load_measurement_baseline", _unsafe)
+    monkeypatch.setattr(correction_handlers, "_load_measurement_baseline", _unsafe)
 
     with pytest.raises(CorrectionRuntimeSafetyError):
-        correction_setup._handle_start(_DummyJsonHandler())
+        correction_handlers._handle_start(_DummyJsonHandler())
 
-    assert correction_setup._start_in_progress is False
+    assert correction_capture._start_in_progress is False
 
 
 def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatch):
@@ -2069,22 +2114,24 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
     A second handcrafted /start must be rejected even before the first
     background sweep has transitioned the fresh session into PREPARING.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: _READY_ROOM_CORRECTION_SETUP,
     )
 
-    monkeypatch.setattr(correction_setup, "_session", None)
-    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+    monkeypatch.setattr(correction_capture, "_session", None)
+    monkeypatch.setattr(correction_capture, "_start_in_progress", False)
 
-    assert correction_setup._reserve_start_slot() is None
+    assert correction_capture._reserve_start_slot() is None
     try:
         with pytest.raises(RuntimeError, match="measurement already in progress"):
-            correction_setup._handle_start(_DummyJsonHandler())
+            correction_handlers._handle_start(_DummyJsonHandler())
     finally:
-        correction_setup._clear_start_slot()
+        correction_capture._clear_start_slot()
 
 
 @pytest.mark.parametrize(
@@ -2141,10 +2188,12 @@ def test_start_discloses_unproven_speaker_readiness_instead_of_refusing(
     reservation, and the disclosure the idle screen and ``/envelope`` publish
     is still there for as long as it is true.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     monkeypatch.setattr(
-        correction_setup, "_room_correction_readiness", lambda: readiness_payload
+        correction_capture, "_room_correction_readiness", lambda: readiness_payload
     )
     reserved: list[str] = []
 
@@ -2154,21 +2203,21 @@ def test_start_discloses_unproven_speaker_readiness_instead_of_refusing(
         reserved.append("reached")
         return "measuring"
 
-    monkeypatch.setattr(correction_setup, "_reserve_start_slot", _reserve)
+    monkeypatch.setattr(correction_capture, "_reserve_start_slot", _reserve)
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_replace_session",
         lambda **_kwargs: pytest.fail("the reservation must end this run"),
     )
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(correction_setup.RequestConflict):
-            correction_setup._handle_start(_DummyJsonHandler())
+        with pytest.raises(correction_capture.RequestConflict):
+            correction_handlers._handle_start(_DummyJsonHandler())
 
     assert reserved == ["reached"]
     assert "event=correction.start_unproven_speaker_readiness" in caplog.text
     assert f"reason={expected_reason}" in caplog.text
-    assert correction_setup._room_readiness().blocker is not None
+    assert correction_capture._room_readiness().blocker is not None
 
 
 def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
@@ -2177,7 +2226,9 @@ def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
 ):
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
     from jasper.output_topology import new_topology_draft, save_output_topology
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     topology_path = tmp_path / "output_topology.json"
@@ -2188,7 +2239,7 @@ def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
         topology_path,
     )
 
-    blocked = correction_setup._normalize_room_readiness(
+    blocked = correction_capture._normalize_room_readiness(
         read_active_speaker_setup_status()
     )
 
@@ -2201,7 +2252,7 @@ def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
     }
 
     save_output_topology(passive, topology_path)
-    allowed = correction_setup._normalize_room_readiness(
+    allowed = correction_capture._normalize_room_readiness(
         read_active_speaker_setup_status()
     )
 
@@ -2217,7 +2268,9 @@ def test_room_readiness_blocks_zero_active_layout_without_flat_authority(
 ):
     from jasper.active_speaker.setup_status import read_active_speaker_setup_status
     from jasper.output_topology import OutputTopology, save_output_topology
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from tests.test_active_speaker_runtime_contract import (
         _full_range_stereo,
         _subwoofer_topology,
@@ -2233,7 +2286,7 @@ def test_room_readiness_blocks_zero_active_layout_without_flat_authority(
         topology = OutputTopology.from_mapping(raw)
     save_output_topology(topology, topology_path)
 
-    blocked = correction_setup._normalize_room_readiness(
+    blocked = correction_capture._normalize_room_readiness(
         read_active_speaker_setup_status()
     )
 
@@ -2250,7 +2303,9 @@ def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):
     """GET /sessions returns recent info.json entries sorted newest-
     first. Bundles missing an info.json (in-progress writes) are
     skipped silently so a partial state doesn't 500 the endpoint."""
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from jasper.correction.session import SessionConfig
 
     sessions_dir = tmp_path / "sessions"
@@ -2283,7 +2338,7 @@ def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: fake_sess,
+        correction_capture, "_get_or_create_session", lambda: fake_sess,
     )
 
     server = correction_setup.make_server(
@@ -2318,7 +2373,9 @@ def test_session_delete_endpoint_removes_historical_bundle(
     tmp_path: Path,
     monkeypatch,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from jasper.correction.session import SessionConfig
 
     sessions_dir = tmp_path / "sessions"
@@ -2333,7 +2390,7 @@ def test_session_delete_endpoint_removes_historical_bundle(
         ),
     )
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: fake_sess,
+        correction_capture, "_get_or_create_session", lambda: fake_sess,
     )
 
     server = correction_setup.make_server(
@@ -2361,7 +2418,9 @@ def test_session_delete_endpoint_refuses_current_ready_bundle(
     tmp_path: Path,
     monkeypatch,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from jasper.correction.session import SessionConfig, SessionState
 
     sessions_dir = tmp_path / "sessions"
@@ -2377,7 +2436,7 @@ def test_session_delete_endpoint_refuses_current_ready_bundle(
     fake_sess.state = SessionState.READY
     bundle = write_golden_correction_bundle(sessions_dir, fake_sess.session_id)
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: fake_sess,
+        correction_capture, "_get_or_create_session", lambda: fake_sess,
     )
 
     server = correction_setup.make_server(
@@ -2408,7 +2467,9 @@ def test_session_report_endpoint_returns_evidence_packet(
     tmp_path: Path,
     monkeypatch,
 ):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from jasper.correction.session import SessionConfig
 
     sessions_dir = tmp_path / "sessions"
@@ -2423,7 +2484,7 @@ def test_session_report_endpoint_returns_evidence_packet(
         ),
     )
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: fake_sess,
+        correction_capture, "_get_or_create_session", lambda: fake_sess,
     )
 
     server = correction_setup.make_server(
@@ -2489,7 +2550,9 @@ def test_session_report_endpoint_rejects_path_traversal(
     preserve the client-visible 400 instead of accidentally probing
     outside the sessions directory.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
     from jasper.correction.session import SessionConfig
 
     sessions_dir = tmp_path / "sessions"
@@ -2504,7 +2567,7 @@ def test_session_report_endpoint_rejects_path_traversal(
         ),
     )
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: fake_sess,
+        correction_capture, "_get_or_create_session", lambda: fake_sess,
     )
 
     server = correction_setup.make_server(
@@ -2533,7 +2596,6 @@ def test_render_page_includes_current_correction_banner():
     """
     from pathlib import Path
 
-    from jasper.web import correction_setup
     body = correction_setup._render_page("jts.local").decode()
     # Banner markup + the auto-reset hint stay in the page; the render/refresh
     # logic moved into the relocated static ES module when /sound/room/ adopted

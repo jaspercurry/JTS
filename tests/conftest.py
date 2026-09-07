@@ -458,16 +458,19 @@ def _isolate_commissioning_disclosure(monkeypatch):
 
 
 # These claims span correction requests in production. Tests must not share them.
-_CORRECTION_SETUP_CLAIMS = ("_AUTOLEVEL_CLAIM", "_LEVEL_MATCH_CLAIM")
+_CORRECTION_CLAIMS = (
+    ("jasper.web.correction_handlers", "_AUTOLEVEL_CLAIM"),
+    ("jasper.web.correction_capture", "_LEVEL_MATCH_CLAIM"),
+)
 
 
 @pytest.fixture(autouse=True)
 def _isolate_correction_volume_claims(monkeypatch):
     """Keep request-spanning correction claims from leaking between tests."""
-    mod = sys.modules.get("jasper.web.correction_setup")
-    if mod is None:
-        return
-    for claim in _CORRECTION_SETUP_CLAIMS:
+    for module_name, claim in _CORRECTION_CLAIMS:
+        mod = sys.modules.get(module_name)
+        if mod is None:
+            continue
         monkeypatch.setattr(mod, claim, None, raising=False)
 
 

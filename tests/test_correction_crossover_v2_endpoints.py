@@ -101,7 +101,7 @@ def _isolated_state(tmp_path, monkeypatch):
 
 
 def _bg_run_async(coro, *, timeout=None):
-    """Mimic correction_setup._run_async for the host recovery helpers: run the
+    """Mimic correction_capture._run_async for the host recovery helpers: run the
     coroutine to completion and return its result (each on a fresh loop — the
     session-volume drains are self-contained, no cross-loop context manager)."""
     return asyncio.run(coro)
@@ -2864,9 +2864,11 @@ def test_the_apply_endpoint_cannot_skip_the_preflight():
     assert status_param.kind is inspect.Parameter.KEYWORD_ONLY
     assert status_param.default is inspect.Parameter.empty
 
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_handlers,
+    )
 
-    source = inspect.getsource(correction_setup._handle_crossover_v2_apply)
+    source = inspect.getsource(correction_handlers._handle_crossover_v2_apply)
     assert "status=correction_crossover_backend.status_payload()" in source
     # …and the call site really is inside handle_v2_apply, before the commit.
     apply_source = inspect.getsource(v2host.handle_v2_apply)
@@ -4831,7 +4833,7 @@ def test_production_analyze_default_resolver_is_the_household_mic_owner():
 # level_ramp/room_sweep) and, unlike the legacy per-driver crossover flow
 # (which inherits its choice from the level_ramp page visited first in the
 # same tab), never had anywhere to carry the Wave-2 household-mic hint. The
-# fix threads correction_setup._default_setup_calibration_for_spec() into
+# fix threads correction_capture._default_setup_calibration_for_spec() into
 # build_v2_session_spec/build_v2_verify_session_spec (their existing
 # **spec_kwargs already forwards to build_crossover_sweep_spec's new
 # default_setup_calibration parameter) and applies it silently on the
@@ -4872,7 +4874,7 @@ def test_default_setup_calibration_for_v2_reuses_the_household_mic_hint(
     tmp_path, monkeypatch,
 ):
     """No household mic ⇒ no hint (fail-soft); a resolvable one ⇒ the SAME
-    hint correction_setup._default_setup_calibration_for_spec builds for
+    hint correction_capture._default_setup_calibration_for_spec builds for
     level_ramp, now available to a v2 session too."""
     assert v2host.default_setup_calibration_for_v2() is None
 
@@ -5039,7 +5041,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 
     # The household record was never re-persisted against the wrong device.
     from jasper.correction.household_mic import read_household_mic
-    from jasper.web.correction_setup import _household_mic_path
+    from jasper.web.correction_capture import _household_mic_path
 
     saved = read_household_mic(path=_household_mic_path())
     assert saved is not None

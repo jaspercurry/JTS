@@ -111,6 +111,7 @@ from tests.test_crossover_v2_stage_bridge import (
     _production_host_seams as _production_host_seams,
     _status,
 )
+from jasper.web import correction_capture, correction_handlers
 
 HAND_WALKED = (TIER_FULL, TIER_EXPRESS)
 
@@ -1425,7 +1426,10 @@ def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatc
     measurement is waiting to re-take a spot") becomes the honest answer.
     """
     from jasper.web import correction_crossover_v2 as v2host
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+        correction_handlers,
+    )
 
     monkeypatch.setattr(
         v2host, "_resolve_prepare_wired_mic",
@@ -1441,21 +1445,21 @@ def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatc
     # ...and the completion signal is untouched: it has a real reader.
     assert prepared.request_complete is not None
 
-    correction_setup._set_capture_slot(None)
-    assert correction_setup._begin_capture_slot(
+    correction_capture._set_capture_slot(None)
+    assert correction_capture._begin_capture_slot(
         "crossover_v2:verify",
         request_complete=prepared.request_complete,
         request_retake=prepared.request_retake,
     )
     try:
         with pytest.raises(ValueError, match="no wired measurement"):
-            correction_setup._handle_crossover_v2_retake(
+            correction_handlers._handle_crossover_v2_retake(
                 SimpleNamespace(
                     headers={"Content-Length": "2"}, rfile=io.BytesIO(b"{}"),
                 )
             )
     finally:
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
 
 def test_a_person_may_be_asked_for_a_bearing_the_arm_cannot_reach():
@@ -1499,34 +1503,34 @@ def _json_handler(payload: str):
 @contextmanager
 def _live_remote_slot(gate):
     """Claim the process's single capture slot for a crossover v2 session."""
-    from jasper.web import correction_setup
+    from jasper.web import correction_capture
 
-    correction_setup._set_capture_slot(None)
-    assert correction_setup._begin_capture_slot(
+    correction_capture._set_capture_slot(None)
+    assert correction_capture._begin_capture_slot(
         "crossover_v2:session", position_gate=gate,
     )
     try:
-        yield correction_setup
+        yield
     finally:
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
 
 def test_a_live_hold_reaches_the_envelope_on_the_capture_block():
     """The driver's read path: the gate owns the fact, the capture block carries
     it, and the envelope copies that block through verbatim."""
     gate = PositionGate()
-    with _live_remote_slot(gate) as setup:
+    with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(2, 2, _entry(-22, POSITION_ROLE_OFFAX))
-        capture = setup._get_capture_slot_for("crossover_v2:")
+        capture = correction_capture._get_capture_slot_for("crossover_v2:")
         pending = capture["position_pending"]
         assert pending["degrees"] == -22
         assert pending["index"] == 2
         assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
         # Another flow's reader must never see this session's hold.
-        assert setup._get_capture_slot_for("sync:") is None
+        assert correction_capture._get_capture_slot_for("sync:") is None
         gate.release(2)
-        assert "position_pending" not in setup._get_capture_slot_for("crossover_v2:")
+        assert "position_pending" not in correction_capture._get_capture_slot_for("crossover_v2:")
 
 
 def test_a_finished_session_stops_advertising_its_hold():
@@ -1534,20 +1538,20 @@ def test_a_finished_session_stops_advertising_its_hold():
     session holding it; riding the capture slot means the existing terminal
     transition drops it, with no new cleanup path to forget."""
     gate = PositionGate()
-    with _live_remote_slot(gate) as setup:
+    with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(1, 1, _entry(0))
-        assert setup._get_capture_slot_for("crossover_v2:")["position_pending"]
+        assert correction_capture._get_capture_slot_for("crossover_v2:")["position_pending"]
         # The runner's own terminal publish, verbatim in shape.
-        setup._set_capture_slot(
+        correction_capture._set_capture_slot(
             {"status": "complete", "kind": "crossover_v2:session"}
         )
-        assert setup._capture_position_gate is None
-        capture = setup._get_capture_slot_for("crossover_v2:")
+        assert correction_capture._capture_position_gate is None
+        capture = correction_capture._get_capture_slot_for("crossover_v2:")
         assert "position_pending" not in capture
         # …and a late driver POST cannot reach a gate nobody is holding.
         with pytest.raises(ValueError, match="no remote measurement is waiting"):
-            setup._handle_crossover_v2_position_ready(_json_handler('{"index": 1}'))
+            correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 1}'))
 
 
 def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
@@ -1563,20 +1567,20 @@ def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
     gate = PositionGate()
     quiet = SimpleNamespace(enforce_session_volume_ceiling_if_stale=lambda *_: False)
     stale = SimpleNamespace(enforce_session_volume_ceiling_if_stale=lambda *_: True)
-    with _live_remote_slot(gate) as setup:
+    with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
-        setup._enforce_session_volume_ceiling(quiet)
+        correction_capture._enforce_session_volume_ceiling(quiet)
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
-        setup._enforce_session_volume_ceiling(stale)
+        correction_capture._enforce_session_volume_ceiling(stale)
         with pytest.raises(CaptureBeginRefused) as refused:
             gate.gate(7, 7, _entry(-22, POSITION_ROLE_OFFAX))
         assert refused.value.code == SESSION_CEILING_EXPIRED_CODE
     # A tap-paced session (every ungated round) registers no gate at all, and
     # the same poll must still enforce the ceiling rather than raise on the
     # missing gate.
-    setup._enforce_session_volume_ceiling(stale)
+    correction_capture._enforce_session_volume_ceiling(stale)
 
 
 def test_an_abandoned_hold_stops_being_the_advertised_position():
@@ -1609,10 +1613,10 @@ def test_an_abandoned_hold_stops_being_the_advertised_position():
 
 def test_the_release_route_admits_the_pending_capture():
     gate = PositionGate()
-    with _live_remote_slot(gate) as setup:
+    with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
-        body = setup._handle_crossover_v2_position_ready(_json_handler('{"index": 4}'))
+        body = correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 4}'))
         assert body["ok"] is True
         assert body["released"]["degrees"] == 7
         gate.gate(4, 4, _entry(7))  # admitted — no raise
@@ -1630,7 +1634,9 @@ def _serving():
     request over a real socket can tell "raised a 400-shaped error" apart from
     "answered 400".
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_setup,
+    )
 
     server = correction_setup.make_server(("127.0.0.1", 0), hostname="jts.local")
     port = server.server_address[1]
@@ -1720,11 +1726,11 @@ def test_the_release_route_demands_an_index_it_can_check():
     """An untargeted release is the hazard: a mismatched index is refused
     rather than applied to whatever happens to be pending."""
     gate = PositionGate()
-    with _live_remote_slot(gate) as setup:
+    with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
         with pytest.raises(ValueError, match="measurement 4 is waiting, not 9"):
-            setup._handle_crossover_v2_position_ready(_json_handler('{"index": 9}'))
+            correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 9}'))
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
 
@@ -1732,7 +1738,9 @@ def test_the_release_route_demands_an_index_it_can_check():
 def test_the_release_route_is_allowlisted_and_matches_the_minted_action():
     """The endpoint the envelope mints must be one the dispatcher will accept —
     a self-describing action pointing at an unrouted path is a dead contract."""
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_setup,
+    )
 
     assert POSITION_READY_ENDPOINT.endswith("/crossover/v2/position-ready")
     assert "/crossover/v2/position-ready" in correction_setup._POST_ROUTES
@@ -1741,16 +1749,18 @@ def test_the_release_route_is_allowlisted_and_matches_the_minted_action():
 def test_a_tap_paced_session_registers_no_gate_at_all():
     """A session opened with no gate advertises no hold — the capture round's
     shape, and the one a household paces with its own taps on the page."""
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
-    correction_setup._set_capture_slot(None)
-    assert correction_setup._begin_capture_slot("crossover_v2:session")
+    correction_capture._set_capture_slot(None)
+    assert correction_capture._begin_capture_slot("crossover_v2:session")
     try:
-        assert correction_setup._capture_position_gate is None
-        capture = correction_setup._get_capture_slot_for("crossover_v2:")
+        assert correction_capture._capture_position_gate is None
+        capture = correction_capture._get_capture_slot_for("crossover_v2:")
         assert "position_pending" not in capture
     finally:
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
 
 def _tier_resolved_by_prepare(body, state, tmp_path):
