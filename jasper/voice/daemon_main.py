@@ -90,11 +90,11 @@ from ..voice_daemon import (
     FanInDucker,
     WakeLoop,
     _LegRuntime,
-    _ManualMicRuntime,
     _cancel_tracked_tasks,
     _configured_wake_legs,
     _track_task,
 )
+from .push_to_talk import ManualMicRuntime
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
@@ -196,7 +196,7 @@ def _active_voice(cfg: Config) -> str:
 
 def _require_usable_input(
     legs: list[_LegRuntime],
-    manual_mics: list[_ManualMicRuntime],
+    manual_mics: list[ManualMicRuntime],
     declared_manual_devices: Iterable[str],
 ) -> None:
     """Refuse to run a daemon that can never hear anything.
@@ -1223,7 +1223,7 @@ async def run() -> None:
                 deque(maxlen=CAPTURE_RING_FRAMES),
                 shadow_vad=SpeechVAD() if spec.token == "off" else None,
             ))
-        manual_mics: list[_ManualMicRuntime] = []
+        manual_mics: list[ManualMicRuntime] = []
         for source_id, device in cfg.manual_mic_sources.items():
             try:
                 manual_mic = await _aenter(
@@ -1253,7 +1253,7 @@ async def run() -> None:
                     level=logging.WARNING,
                 )
                 continue
-            manual_mics.append(_ManualMicRuntime(
+            manual_mics.append(ManualMicRuntime(
                 source_id,
                 manual_mic,
                 device,
