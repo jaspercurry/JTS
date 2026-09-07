@@ -81,6 +81,7 @@ from ..multiroom.state import (
 )
 from ..peering import config as peering_config
 from ..log_event import log_event
+from ..env_file import write_env_file
 from ._common import (
     begin_request,
     canonical_header,
@@ -93,7 +94,6 @@ from ._common import (
     restart_systemd_units,
     send_html_response,
     send_json_response,
-    write_env_file,
 )
 
 logger = logging.getLogger(__name__)

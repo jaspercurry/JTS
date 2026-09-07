@@ -35,7 +35,7 @@ from jasper.log_event import log_event
 from .. import debug_mode
 from ..atomic_io import locked_update_env_file
 from ..debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
-from ..web._common import read_env_file
+from ..env_file import read_env_file
 
 logger = logging.getLogger(__name__)
 

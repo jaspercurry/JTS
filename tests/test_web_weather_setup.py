@@ -29,6 +29,7 @@ import urllib.parse
 import pytest
 
 import jasper.location_state as ls
+from jasper import env_file
 from jasper.web import _common, weather_setup
 
 from ._web_test_helpers import (
@@ -247,7 +248,7 @@ def test_post_save_manual_coords_writes_and_redirects(live_server):
         {"manual_lat": "40.700", "manual_lon": "-74.000", "units": "celsius"},
         expect_status=303,
     )
-    saved = _common.read_env_file(live_server["state_path"])
+    saved = env_file.read_env_file(live_server["state_path"])
     assert saved[weather_setup.LAT_ENV] == "40.700"
     assert saved[weather_setup.LON_ENV] == "-74.000"
     assert saved[weather_setup.UNITS_ENV] == "celsius"
@@ -302,7 +303,7 @@ def test_seed_weather_skips_atomically_when_coords_present(tmp_path):
     from jasper.web import transit_setup
 
     wp = str(tmp_path / "weather.env")
-    _common.write_env_file(wp, {
+    env_file.write_env_file(wp, {
         ls.WEATHER_LAT_ENV: "1.000",
         ls.WEATHER_LON_ENV: "2.000",
         ls.WEATHER_DISPLAY_NAME_ENV: "Home",
@@ -318,7 +319,7 @@ def test_seed_weather_skips_atomically_when_coords_present(tmp_path):
         transit_state, weather_path=wp,
     )
     assert seeded is False
-    saved = _common.read_env_file(wp)
+    saved = env_file.read_env_file(wp)
     assert saved[ls.WEATHER_LAT_ENV] == "1.000"  # not overwritten
     assert saved["FOO"] == "bar"  # foreign key preserved
 
@@ -334,7 +335,7 @@ def test_concurrent_weather_save_and_transit_seed_dont_lose_keys(tmp_path):
 
     wp = str(tmp_path / "weather.env")
     # Start with only a foreign key: no coords, so the seed is eligible.
-    _common.write_env_file(wp, {"FOO": "bar"}, mode=ls.WEATHER_FILE_MODE)
+    env_file.write_env_file(wp, {"FOO": "bar"}, mode=ls.WEATHER_FILE_MODE)
 
     owned = weather_setup._owned_env_keys()
     # A realistic weather /save always carries a location (a location-less save
@@ -374,7 +375,7 @@ def test_concurrent_weather_save_and_transit_seed_dont_lose_keys(tmp_path):
     for t in threads:
         t.join(5.0)
 
-    saved = _common.read_env_file(wp)
+    saved = env_file.read_env_file(wp)
     # The foreign key survives every interleaving (it was never owned by
     # either writer, and both preserve non-owned keys under the lock).
     assert saved["FOO"] == "bar"

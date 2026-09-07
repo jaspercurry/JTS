@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..env_load import parse_env_text
+from ..env_file import parse_env_mapping
 
 
 def read(path: str) -> tuple[dict[str, Any] | None, dict[str, str]]:
@@ -44,7 +44,7 @@ def read(path: str) -> tuple[dict[str, Any] | None, dict[str, str]]:
         }, {}
 
     try:
-        fields = parse_env_text(text)
+        fields = parse_env_mapping(text)
     except Exception:  # noqa: BLE001 - a malformed record must not raise here
         fields = {}
     return None, fields

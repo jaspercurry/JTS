@@ -39,8 +39,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
+
+from jasper.env_file import parse_env_mapping, read_env_file_text
 
 
 #: The operator-owned base layer every daemon unit loads first.
@@ -168,43 +169,19 @@ def bounded_env_int(
     return default
 
 
-def parse_env_text(text: str) -> dict[str, str]:
-    """Parse shell-style KEY=VALUE env file text, as systemd resolves it.
-
-    Strips matching surrounding quotes; ignores blanks and ``#`` lines.
-    Not ``atomic_io._parse_env_text``, which keeps quotes for round-trips.
-    """
-    out: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if (len(value) >= 2 and value[0] == value[-1]
-                and value[0] in ('"', "'")):
-            value = value[1:-1]
-        out[key] = value
-    return out
-
-
 def read_env_file_state(path: str) -> EnvFileState:
     """Read and parse an env file while preserving read status."""
-    try:
-        text = Path(path).read_text()
-    except FileNotFoundError:
-        return EnvFileState(path, {}, "missing")
-    except (OSError, UnicodeError) as e:
+    text, err = read_env_file_text(path)
+    if text is None:
+        if err is None:
+            return EnvFileState(path, {}, "missing")
         return EnvFileState(
             path,
             {},
             "unreadable",
-            error=f"{type(e).__name__}: {e}",
+            error=f"{type(err).__name__}: {err}",
         )
-    return EnvFileState(path, parse_env_text(text), "loaded")
+    return EnvFileState(path, parse_env_mapping(text), "loaded")
 
 
 def read_env_file_or_warn(path: str, *, logger: logging.Logger) -> dict[str, str]:

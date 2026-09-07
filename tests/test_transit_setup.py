@@ -30,8 +30,9 @@ from pathlib import Path
 
 import pytest
 
+from jasper import env_file
 from jasper.transit import geocode as geocode_mod
-from jasper.web import _common, transit_setup
+from jasper.web import transit_setup
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -147,7 +148,7 @@ def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
         transit_state,
         weather_path=str(weather_path),
     ) is True
-    fields = _common.read_env_file(str(weather_path))
+    fields = env_file.read_env_file(str(weather_path))
     assert fields["JASPER_WEATHER_LAT"] == "40.653"
     assert fields["JASPER_WEATHER_LON"] == "-74.007"
     assert fields["JASPER_WEATHER_DISPLAY_NAME"] == "Sunset Park, Brooklyn"
@@ -161,7 +162,7 @@ def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
         transit_state,
         weather_path=str(weather_path),
     ) is False
-    assert _common.read_env_file(str(weather_path))["JASPER_WEATHER_LAT"] == "1.000"
+    assert env_file.read_env_file(str(weather_path))["JASPER_WEATHER_LAT"] == "1.000"
 
 
 def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
@@ -172,7 +173,7 @@ def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
     from jasper.web import weather_setup
 
     tp = str(tmp_path / "transit.env")
-    _common.write_env_file(tp, {
+    env_file.write_env_file(tp, {
         transit_setup.LAT_ENV: "40.646",
         transit_setup.LON_ENV: "-73.994",
         transit_setup.DISPLAY_NAME_ENV: "Sunset Park",
@@ -188,7 +189,7 @@ def test_seed_transit_skips_atomically_when_coords_present(tmp_path):
         weather_state, transit_path=tp,
     )
     assert seeded is False
-    saved = _common.read_env_file(tp)
+    saved = env_file.read_env_file(tp)
     assert saved[transit_setup.LAT_ENV] == "40.646"  # not overwritten
     assert saved["FOO"] == "bar"  # foreign key preserved
 
@@ -200,7 +201,7 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     survive. Symmetric with the weather.env concurrency test (DA-0036)."""
     tp = str(tmp_path / "transit.env")
     # Start with only a foreign key: no coords, so the seed is eligible.
-    _common.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
+    env_file.write_env_file(tp, {"FOO": "bar"}, mode=transit_setup.TRANSIT_FILE_MODE)
 
     # A transit save that writes an explicit coord set (as _handle_geocode
     # would after resolving an address).
@@ -211,7 +212,7 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     }
 
     def transit_save():
-        current = _common.read_env_file(tp)
+        current = env_file.read_env_file(tp)
         new = dict(current)
         new.update(london)
         transit_setup._locked_apply(tp, current, new)
@@ -235,7 +236,7 @@ def test_concurrent_transit_save_and_weather_seed_dont_lose_keys(tmp_path):
     for t in threads:
         t.join(5.0)
 
-    saved = _common.read_env_file(tp)
+    saved = env_file.read_env_file(tp)
     # The foreign key survives every interleaving (neither writer owns it and
     # _locked_apply preserves non-diffed keys under the lock).
     assert saved["FOO"] == "bar"
@@ -728,7 +729,7 @@ def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
     r = _post(f"{base_url}/geocode", {"address": "9 Av Brooklyn"})
     # 303 See Other with empty body — the wizard's redirect pattern.
     assert r.status in (200, 303)  # urllib follows by default
-    state = _common.read_env_file(state_path)
+    state = env_file.read_env_file(state_path)
     assert state[transit_setup.LAT_ENV] == "40.646"
     assert state[transit_setup.LON_ENV] == "-73.994"
     assert "event=transit.geocode" in caplog.text
@@ -739,7 +740,7 @@ def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
 def test_handler_post_save_restarts_voice(wizard_server):
     base_url, state_path, restarts = wizard_server
     # Seed with coords so the save path doesn't trip the locked card.
-    _common.write_env_file(state_path, {
+    env_file.write_env_file(state_path, {
         transit_setup.LAT_ENV: "40.646",
         transit_setup.LON_ENV: "-73.994",
     }, mode=transit_setup.TRANSIT_FILE_MODE)
@@ -749,13 +750,13 @@ def test_handler_post_save_restarts_voice(wizard_server):
     })
     assert r.status in (200, 303)
     assert len(restarts) == 1
-    state = _common.read_env_file(state_path)
+    state = env_file.read_env_file(state_path)
     assert state["JASPER_SUBWAY_STATION_ID"] == "B12"
 
 
 def test_handler_post_clear_wipes_owned_keys(wizard_server):
     base_url, state_path, restarts = wizard_server
-    _common.write_env_file(state_path, {
+    env_file.write_env_file(state_path, {
         "JASPER_SUBWAY_STATION_ID": "B12",
         "JASPER_TRANSIT_LAT": "40.646",
         "FOREIGN": "kept",
@@ -763,7 +764,7 @@ def test_handler_post_clear_wipes_owned_keys(wizard_server):
     r = _post(f"{base_url}/clear", {})
     assert r.status in (200, 303)
     assert len(restarts) == 1
-    state = _common.read_env_file(state_path)
+    state = env_file.read_env_file(state_path)
     assert "JASPER_SUBWAY_STATION_ID" not in state
     assert "JASPER_TRANSIT_LAT" not in state
     assert state.get("FOREIGN") == "kept"
@@ -778,7 +779,7 @@ def test_handler_clear_relocks_bus_card_on_next_render(wizard_server):
     even with an env-var ghost present, the rendered page reflects
     persisted state only."""
     base_url, state_path, _restarts = wizard_server
-    _common.write_env_file(state_path, {
+    env_file.write_env_file(state_path, {
         "JASPER_TRANSIT_LAT": "40.646",
         "JASPER_TRANSIT_LON": "-73.994",
         "JASPER_MTA_BUSTIME_KEY": "configured-key",
@@ -808,7 +809,7 @@ def test_handler_save_uses_registry_bus_provider_by_default(wizard_server, monke
     registry's bus provider with a stub and observing the probe."""
     from jasper import transit as transit_mod
     base_url, state_path, _restarts = wizard_server
-    _common.write_env_file(state_path, {
+    env_file.write_env_file(state_path, {
         "JASPER_TRANSIT_LAT": "40.646",
         "JASPER_TRANSIT_LON": "-73.994",
     }, mode=transit_setup.TRANSIT_FILE_MODE)
@@ -828,7 +829,7 @@ def test_handler_save_uses_registry_bus_provider_by_default(wizard_server, monke
 
     _post(f"{base_url}/save", {"nyc_bus_key": "test-key"})
     assert stub.probed == ["test-key"]
-    state = _common.read_env_file(state_path)
+    state = env_file.read_env_file(state_path)
     assert state["JASPER_MTA_BUSTIME_KEY"] == "test-key"
 
 
@@ -845,7 +846,7 @@ def test_transit_env_file_mode_is_0640(tmp_path: Path):
     """BusTime key is mildly sensitive — broader than wake (0644) but
     narrower than OAuth secrets (0600). 0640 is the documented choice."""
     p = tmp_path / "transit.env"
-    _common.write_env_file(str(p), {"K": "v"}, mode=transit_setup.TRANSIT_FILE_MODE)
+    env_file.write_env_file(str(p), {"K": "v"}, mode=transit_setup.TRANSIT_FILE_MODE)
     assert os.stat(p).st_mode & 0o777 == 0o640
 
 

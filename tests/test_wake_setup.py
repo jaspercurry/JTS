@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import wake_models
-from jasper.web import _common, wake_setup
+from jasper import env_file, wake_models
+from jasper.web import wake_setup
 
 
 def _stage_bundled_asset(
@@ -214,7 +214,7 @@ def test_load_state_returns_empty_for_missing_file(tmp_path: Path):
 
 def test_load_state_round_trips(tmp_path: Path):
     p = str(tmp_path / "w.env")
-    _common.write_env_file(p, {"JASPER_WAKE_MODEL": "/var/lib/jasper/wake/jarvis_v2.onnx"})
+    env_file.write_env_file(p, {"JASPER_WAKE_MODEL": "/var/lib/jasper/wake/jarvis_v2.onnx"})
     assert wake_setup._load_state(p) == {
         "JASPER_WAKE_MODEL": "/var/lib/jasper/wake/jarvis_v2.onnx",
     }

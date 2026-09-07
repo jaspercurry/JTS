@@ -5,11 +5,10 @@
 """Shared helpers for the JTS web setup pages.
 
 Every wizard under `jasper/web/` (Spotify, voice, transit, wake, …)
-shares the look, the systemd-style env-file atomics, the
-`systemctl restart jasper-voice` shell-out, and the request-response
-plumbing for navigation hygiene (flash cookies, CSRF tokens, no-store
-caching). What's NOT shared: per-wizard route handlers, page layouts,
-form bodies.
+shares the look, the `systemctl restart jasper-voice` shell-out, and
+the request-response plumbing for navigation hygiene (flash cookies,
+CSRF tokens, no-store caching). What's NOT shared: per-wizard route
+handlers, page layouts, form bodies.
 
 ## Conventions for new wizards
 
@@ -82,7 +81,10 @@ from ..atomic_io import atomic_write_text
 from ..control import client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
-from ..env_load import parse_env_file, read_env_file_or_warn
+# Re-exported: google_setup.py still imports both from this module. Drop
+# this line once it imports jasper.env_file directly.
+from ..env_file import read_env_file, write_env_file  # noqa: F401
+from ..env_load import parse_env_file
 from ..identity_state import management_read_allowed, mutating_request_allowed
 from ..install_profile import BUILD_MANIFEST_FILE
 from ..log_event import log_event
@@ -543,15 +545,6 @@ def json_island(element_id: str, payload: Any) -> str:
     )
 
 
-def read_env_file(path: str) -> dict[str, str]:
-    """Read a systemd-style EnvironmentFile through the canonical parser.
-
-    Same shape used by `/var/lib/jasper-intsecrets/spotify_credentials.env` and
-    `/var/lib/jasper/voice_provider.env` — both are sourced into
-    jasper-voice's environment via systemd's `EnvironmentFile=`."""
-    return read_env_file_or_warn(path, logger=logger)
-
-
 def value_for_env(
     state: dict[str, str],
     env_var: str,
@@ -581,45 +574,6 @@ def value_for_env(
 #     what narrows those secrets away from jasper-mux/-control/-input.
 # Files only one daemon reads keep the 0o600 default.
 SECRET_ENV_MODE = 0o640
-
-
-def write_env_file(path: str, values: dict[str, str], *, mode: int = 0o600) -> None:
-    """Atomically write a systemd EnvironmentFile-shaped key=value file
-    with the given mode (default 0o600 — these files contain API keys
-    and OAuth secrets; pass ``SECRET_ENV_MODE`` for the ones a non-root
-    jasper-control reads off disk — see that constant).
-
-    Atomicity matters: a half-written env file at restart time could
-    leave jasper-voice with a partial config and a real-world impact
-    (silent failure cue, lost session). Routes through the canonical
-    ``jasper.atomic_io.atomic_write_text`` (unique-temp-file + ``os.replace``),
-    which prevents torn reads by concurrent readers but does NOT protect
-    against a lost-update race between two writers that each read the old
-    file, change different keys, and then publish whole-file replacements —
-    the ``ThreadingHTTPServer`` runs ``/save``/``/cities``/``/clear`` on
-    separate threads against the same file with no lock. Callers that need
-    cross-writer read-modify-write safety should use
-    ``jasper.atomic_io.locked_update_env_file`` instead."""
-    lines: list[str] = []
-    for key, val in values.items():
-        # KEY=VALUE without quoting, matching systemd's EnvironmentFile
-        # parsing. API keys are alphanumeric with `-`/`_`/`.` so this is
-        # safe; the guard keeps the contract honest if someone passes a
-        # value with a newline (which would split into a bogus second line).
-        if "\n" in val or "\r" in val:
-            raise ValueError(f"env value for {key} contains newline")
-        lines.append(f"{key}={val}\n")
-    atomic_write_text(path, "".join(lines), mode=mode)
-
-
-def delete_env_file(path: str) -> None:
-    """Best-effort delete; missing-file is fine."""
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.warning("could not delete %s: %s", path, e)
 
 
 def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:

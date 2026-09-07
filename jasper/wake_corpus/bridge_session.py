@@ -46,11 +46,7 @@ from jasper.cli.wake_enroll import (
     VOICE_UNIT,
 )
 from jasper.wake_ports import build_ports
-from jasper.web._common import (
-    delete_env_file,
-    read_env_file,
-    write_env_file,
-)
+from jasper.env_file import delete_env_file, read_env_file, write_env_file
 from . import runtime_probe
 # Both blocks carry names this module only re-exports: the thin
 # ``jasper.web.wake_corpus_setup`` HTTP adapter and ``session_store`` import

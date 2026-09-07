@@ -102,6 +102,7 @@ from ..spotify_oauth import (
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
+from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     SECRET_ENV_MODE,
     begin_request,
@@ -109,11 +110,9 @@ from ._common import (
     canonical_header,
     canonical_page,
     csrf_field_html,
-    delete_env_file,
     flash_error,
     guard_mutating_request,
     guard_read_request,
-    read_env_file,
     read_form,
     redirect_with_legacy_msg,
     reject_csrf,
@@ -121,7 +120,6 @@ from ._common import (
     safe_back_href,
     send_html_response,
     send_json_response,
-    write_env_file,
 )
 
 # Page-specific stylesheet served static from /assets/. Shared primitives

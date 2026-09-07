@@ -72,16 +72,15 @@ def test_read_env_file_state_reports_loaded_and_missing(tmp_path: Path):
 
 
 def test_read_env_file_state_reports_unreadable(monkeypatch, tmp_path: Path):
-    import jasper.env_load as env_load
     from jasper.env_load import read_env_file_state
 
     p = tmp_path / "jasper.env"
     p.write_text("JASPER_HOSTNAME=jts.local\n")
 
-    def boom(self):
+    def boom(self, *args, **kwargs):
         raise PermissionError("blocked")
 
-    monkeypatch.setattr(env_load.Path, "read_text", boom)
+    monkeypatch.setattr(Path, "read_text", boom)
 
     state = read_env_file_state(str(p))
     assert state.status == "unreadable"

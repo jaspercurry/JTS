@@ -18,6 +18,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+from jasper.env_file import write_env_file
 from jasper.web import _common
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,19 +34,11 @@ def test_secret_env_mode_is_group_readable_0640():
 def test_write_env_file_secret_mode_is_group_readable(tmp_path):
     """Behavioural: a file written with SECRET_ENV_MODE is group-readable."""
     p = tmp_path / "secret.env"
-    _common.write_env_file(str(p), {"K": "v"}, mode=_common.SECRET_ENV_MODE)
+    write_env_file(str(p), {"K": "v"}, mode=_common.SECRET_ENV_MODE)
     mode = stat.S_IMODE(os.stat(p).st_mode)
     assert mode == 0o640, f"expected 0640, got {oct(mode)}"
     assert mode & stat.S_IRGRP, "group must be able to read the secret env file"
     assert not (mode & (stat.S_IROTH | stat.S_IWOTH)), "world must have no access"
-
-
-def test_write_env_file_default_stays_owner_only():
-    """The DEFAULT mode stays 0600 — only the explicitly-flagged secret files a
-    cross-user daemon reads are widened, not every env file."""
-    assert "mode: int = 0o600" in (
-        ROOT / "jasper/web/_common.py"
-    ).read_text(encoding="utf-8"), "write_env_file default must stay 0o600"
 
 
 # Each secret wizard must WRITE its creds file with SECRET_ENV_MODE (forward

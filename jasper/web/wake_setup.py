@@ -91,6 +91,7 @@ from ..audio_input_view import profile_choice_specs, valid_profile_ids
 from ..atomic_io import locked_update_env_file
 from ..log_event import log_event
 from .. import wake_models
+from ..env_file import read_env_file
 from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
@@ -102,7 +103,6 @@ from ._common import (
     proxy_get,
     proxy_post,
     read_json_body,
-    read_env_file,
     read_form,
     reject_csrf,
     restart_voice_daemon,

@@ -800,7 +800,7 @@ def test_credentials_for_copy_returns_400_when_no_state(wizard_server):
 # ---- helper ---------------------------------------------------------------
 
 def _read_env(path: str) -> dict:
-    """Parse the test's env file the same way _common.read_env_file would."""
+    """Parse the test's env file the same way env_file.read_env_file would."""
     out = {}
     try:
         with open(path) as f:
