@@ -36,7 +36,16 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const modulePath = process.argv[2] || join(root, "deploy/assets/correction/js/main.js");
-let rawSource = readFileSync(modulePath, "utf8");
+
+// The page is one entry module plus the siblings it imports. The runner below
+// evaluates a single Function body, so the siblings are concatenated ahead of
+// the entry with their `export` keywords dropped; the import lines are then
+// stripped from every source alike and the named imports stubbed in `preamble`.
+const SIBLING_MODULES = ["api.js", "capture.js", "format.js", "quality.js"];
+let rawSource = SIBLING_MODULES
+  .map((name) => readFileSync(join(dirname(modulePath), name), "utf8").replace(/^export /gm, ""))
+  .concat(readFileSync(modulePath, "utf8"))
+  .join("\n");
 
 // ---- classList stub ----
 function makeClassList(initial) {
