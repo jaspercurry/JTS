@@ -162,7 +162,7 @@ jasper_env_file_export() {
 
 # jasper_env_lock_path FILE
 # Print FILE's advisory-lock sibling path — the one formula jasper.atomic_io's
-# _env_lock_path also emits, so a bash writer and the Python one name the same
+# env_lock_path also emits, so a bash writer and the Python one name the same
 # lock file for the same FILE.
 jasper_env_lock_path() {
     printf '%s/.%s.lock' "$(dirname "$1")" "${1##*/}"
@@ -170,7 +170,7 @@ jasper_env_lock_path() {
 
 # _jasper_env_lock_acquire DIR FILE
 # Hold FILE's advisory lock on descriptor 9 (the caller closes it). Path and
-# create-time mode/group are jasper/atomic_io.py's _env_lock_path /
+# create-time mode/group are jasper/atomic_io.py's env_lock_path /
 # advisory_file_lock, whose group bit matters only where DIR carries group
 # jasper (/var/lib/jasper).
 #

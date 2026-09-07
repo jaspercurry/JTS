@@ -183,7 +183,7 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
 # pass it actually has to outlast.
 _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
     _ACCESSORY_RECONCILE_UNIT: 65.0,  # target TimeoutStartSec=60
-    _USB_COUPLING_UNIT: 755.0,  # target TimeoutStartSec=750
+    _USB_COUPLING_UNIT: 785.0,  # target TimeoutStartSec=780
 }
 
 

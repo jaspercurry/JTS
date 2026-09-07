@@ -65,7 +65,7 @@ Type=oneshot
 # Erring LONG stays the safe direction within the live-broker envelope: a systemd
 # kill between camilla-stop and camilla-start leaves CamillaDSP cleanly stopped,
 # which OnFailure=jasper-camilla-recover does NOT catch (clean stop != failed).
-TimeoutStartSec=750
+TimeoutStartSec=780
 # The CLI hydrates the trusted base and reconciler-owned fanin env internally.
 # Do not inject the group-writable fanin.env into this root Python process:
 # values such as PYTHONPATH/LD_PRELOAD must never cross the privilege boundary.

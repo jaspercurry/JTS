@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -267,7 +268,7 @@ def test_outputd_env_write_waits_out_a_concurrent_bash_holder(tmp_path):
     ``atomic_write_text`` serialized only by the process-local
     ``ENTRY_LOCK_PATH`` — not the per-file ``<dir>/.<basename>.lock`` both the
     bash writer (``deploy/lib/jasper-env-file.sh``'s ``jasper_env_lock_path``)
-    and ``atomic_io._env_lock_path`` compute. A bash holder publishing between
+    and ``atomic_io.env_lock_path`` compute. A bash holder publishing between
     this reconciler's read and its write would have been silently discarded
     by the blind overwrite. Mirrors test_env_file_lib.py's
     ``test_env_file_set_waits_out_a_concurrent_holder`` for the bash side.
@@ -284,6 +285,27 @@ def test_outputd_env_write_waits_out_a_concurrent_bash_holder(tmp_path):
     assert changed is True
     assert new_text == expected
     assert outputd_env.read_text(encoding="utf-8") == expected
+
+
+def test_restore_snapshot_waits_out_a_concurrent_bash_holder(tmp_path):
+    """The rollback write reacquires the per-file lock, same as a real write.
+
+    ``_converge_ring``'s except branch calls ``_restore_snapshot`` after
+    ``_write_env_actions`` already released that lock; an unlocked rollback
+    could race a concurrent bash writer the way the write path used to.
+    """
+    from jasper.fanin.coupling_reconcile import _read_snapshot, _restore_snapshot
+
+    env = _write(tmp_path / "fanin.env", "SEED=1\n")
+    snapshot = _read_snapshot(env)
+
+    with spawn_lock_holder(env, hold_seconds=0.5):
+        start = time.monotonic()
+        _restore_snapshot(snapshot)
+        elapsed = time.monotonic() - start
+
+    assert elapsed >= 0.5
+    assert env.read_text(encoding="utf-8") == "SEED=1\n"
 
 
 def test_outputd_env_write_gives_up_after_the_bound_wait(tmp_path, monkeypatch):

@@ -74,6 +74,7 @@ __all__ = [
     "advisory_file_lock_async",
     "atomic_write_json",
     "atomic_write_text",
+    "env_lock_path",
     "fsync_directory",
     "locked_transform_env_file",
     "locked_update_env_file",
@@ -468,7 +469,7 @@ def _format_env_text(values: Mapping[str, str]) -> str:
     return "".join(lines)
 
 
-def _env_lock_path(path: str) -> str:
+def env_lock_path(path: str) -> str:
     parent = os.path.dirname(path) or "."
     basename = os.path.basename(path)
     return os.path.join(parent, f".{basename}.lock")
@@ -568,7 +569,7 @@ def locked_update_env_file(
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    lock_path = _env_lock_path(fspath)
+    lock_path = env_lock_path(fspath)
     with advisory_file_lock(
         lock_path,
         mode=lock_mode,
@@ -614,7 +615,7 @@ def locked_transform_env_file(
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."
     os.makedirs(parent, exist_ok=True)
-    lock_path = _env_lock_path(fspath)
+    lock_path = env_lock_path(fspath)
     with advisory_file_lock(
         lock_path,
         mode=lock_mode,

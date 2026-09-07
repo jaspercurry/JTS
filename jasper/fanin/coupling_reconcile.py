@@ -46,9 +46,9 @@ from pathlib import Path
 from typing import IO
 
 from jasper.atomic_io import (
-    _env_lock_path,
     advisory_file_lock,
     atomic_write_text,
+    env_lock_path,
     read_regular_bytes_nofollow,
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
@@ -140,7 +140,7 @@ ENTRY_LOCK_TIMEOUT_SECONDS = 10.0
 ENTRY_LOCK_POLL_SECONDS = 0.2
 
 # Bound on the PER-FILE advisory lock :func:`_write_env_actions` takes on
-# fanin.env/outputd.env (``atomic_io._env_lock_path``) — matches the bash
+# fanin.env/outputd.env (``atomic_io.env_lock_path``) — matches the bash
 # env-file writer's own `flock -w 10` (deploy/lib/jasper-env-file.sh) so a
 # hot-path Python reconcile cannot block forever on
 # ``advisory_file_lock``'s default (``LOCK_EX``, no ``LOCK_NB``).
@@ -467,11 +467,14 @@ def _daemon_op_ceiling_sec(
     return preamble + attempts * timeout + _BROKER_SOCKET_MARGIN_SEC
 
 
-# Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s), and
+# Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
 # the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
-# 10 s) — the three in-process figures jasper-fanin-coupling-auto.service's own
-# tally carries, which no broker multiplier touches.
-_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 39.0
+# 10 s), and up to three :data:`ENV_FILE_LOCK_TIMEOUT_SECONDS` per-file env
+# lock waits (10 s each: the combo write in ``reconcile_auto``, the fanin and
+# outputd writes in ``_converge_ring``) — the in-process figures
+# jasper-fanin-coupling-auto.service's own tally carries, which no broker
+# multiplier touches.
+_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 69.0
 
 
 def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
@@ -811,7 +814,7 @@ def reconcile_coupling(
         return result
     if result.changed and result.ok:
         # FIRE-AND-FORGET: the re-bake outruns any wait this side could justify
-        # (TimeoutStartSec=6346) and killing the client would not cancel the
+        # (TimeoutStartSec=6466) and killing the client would not cancel the
         # queued job. `ok` is "systemd ACCEPTED the job" — logged because a
         # drifted unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
@@ -1750,12 +1753,21 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
 
 
 def _restore_snapshot(snapshot: _EnvSnapshot) -> None:
-    """Restore the env file to its pre-write contents. Best-effort."""
+    """Restore the env file to its pre-write contents. Best-effort.
+
+    Runs from ``_converge_ring``'s except branch, after ``_write_env_actions``
+    already released the per-file lock — so the rollback write reacquires it
+    under the same shape.
+    """
     try:
-        if snapshot.existed:
-            atomic_write_text(snapshot.path, snapshot.text)
-        elif snapshot.path.exists():
-            snapshot.path.unlink(missing_ok=True)
+        with advisory_file_lock(
+            env_lock_path(os.fspath(snapshot.path)),
+            timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS,
+        ):
+            if snapshot.existed:
+                atomic_write_text(snapshot.path, snapshot.text)
+            elif snapshot.path.exists():
+                snapshot.path.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -1767,7 +1779,7 @@ def _write_env_actions(
     """Fold ``build_actions`` onto ``path`` under its per-file advisory lock.
 
     That lock is the SAME one the bash env-file writers take
-    (``atomic_io._env_lock_path`` == ``jasper_env_lock_path`` in
+    (``atomic_io.env_lock_path`` == ``jasper_env_lock_path`` in
     ``deploy/lib/jasper-env-file.sh``) — NOT :data:`ENTRY_LOCK_PATH`, which
     only serializes this process's own reconcile passes against each other.
     ``build_actions`` runs against the FRESH text read while the lock is
@@ -1788,7 +1800,7 @@ def _write_env_actions(
     old unlocked write.
     """
     with advisory_file_lock(
-        _env_lock_path(os.fspath(path)), timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS
+        env_lock_path(os.fspath(path)), timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS
     ):
         try:
             text = read_regular_bytes_nofollow(path).decode("utf-8")
