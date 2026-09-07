@@ -26,7 +26,12 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.web import correction_setup
-from tests.conftest import seat_process_volume_owner
+from tests.conftest import bare_root_logger, seat_process_volume_owner
+from tests.test_web_wizard_cli import (
+    wizard_harness_fixture as _wizard_harness_fixture,
+)
+
+_IMPORTED_FIXTURES = (_wizard_harness_fixture,)
 
 
 _CORRECTION_MODULE = (
@@ -1112,62 +1117,7 @@ def test_idle_shutdown_invokes_capture_entry_restore(monkeypatch):
     assert calls == ["restore", "broken"]
 
 
-def test_main_wires_idle_tracker_to_capture_entry_restore(monkeypatch):
-    """main() hands the capture-entry restore to the IdleShutdownTracker — and
-    the tracker's hold to the server, so a route can keep the process alive
-    across background work it starts but does not await (#1854)."""
-
-    from jasper.web import _systemd
-
-    captured = {}
-    server_kwargs = {}
-
-    class FakeTracker:
-        def __init__(self, *_args, **kwargs):
-            captured.update(kwargs)
-
-        def hold(self, label=""):
-            raise AssertionError("not called in this test")
-
-        def start(self):
-            pass
-
-    class FakeServer:
-        RequestHandlerClass = object
-
-        def serve_forever(self):
-            raise KeyboardInterrupt
-
-    tracker_holder = {}
-
-    def _fake_tracker(*args, **kwargs):
-        tracker = FakeTracker(*args, **kwargs)
-        tracker_holder["tracker"] = tracker
-        return tracker
-
-    def _fake_make_server(*_a, **kw):
-        server_kwargs.update(kw)
-        return FakeServer()
-
-    monkeypatch.setattr(
-        correction_setup, "_claim_crossover_state_owners", lambda: None
-    )
-    monkeypatch.setattr(correction_setup, "make_server", _fake_make_server)
-    monkeypatch.setattr(_systemd, "adopt_systemd_sockets", lambda: [])
-    monkeypatch.setattr(_systemd, "IdleShutdownTracker", _fake_tracker)
-    monkeypatch.setattr(_systemd, "install_request_idle_bump", lambda *_a: None)
-    monkeypatch.setattr(_systemd, "notify_ready", lambda: None)
-    monkeypatch.setattr(_systemd, "notify_stopping", lambda: None)
-
-    assert correction_setup.main(["--host", "127.0.0.1", "--port", "0"]) == 0
-    assert (
-        captured.get("on_idle_exit")
-        is correction_setup._idle_exit_restore_capture_entry
-    )
-    assert server_kwargs["idle_hold"] == tracker_holder["tracker"].hold
-
-
-def test_main_configures_root_logging_at_info(monkeypatch):
+def test_main_configures_root_logging_at_info(wizard_harness):
     """``event=dsp.baseline_base_trim_banked`` (and every other INFO event this
     process logs) needs a root handler at INFO, or Python's ``lastResort``
     floors at WARNING and drops it silently — a trim could replace another
@@ -1175,50 +1125,17 @@ def test_main_configures_root_logging_at_info(monkeypatch):
     this same dependency for the now-deleted ``jasper-driver-trim`` verb
     (#3388); this process is the only one left that reaches the apply seam,
     so it is the one that must configure it now.
+
+    Unredacted by design: this file is a listed entry in
+    ``tests/test_logging_setup.py``'s ``_ALLOWLIST``, which is why it hands
+    the shared runner its own ``configure``.
     """
 
-    from jasper.web import _systemd
-
-    class FakeTracker:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def hold(self, label=""):
-            raise AssertionError("not called in this test")
-
-        def start(self):
-            pass
-
-    class FakeServer:
-        RequestHandlerClass = object
-
-        def serve_forever(self):
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr(
-        correction_setup, "_claim_crossover_state_owners", lambda: None
-    )
-    monkeypatch.setattr(
-        correction_setup, "make_server", lambda *_a, **_kw: FakeServer()
-    )
-    monkeypatch.setattr(_systemd, "adopt_systemd_sockets", lambda: [])
-    monkeypatch.setattr(_systemd, "IdleShutdownTracker", FakeTracker)
-    monkeypatch.setattr(_systemd, "install_request_idle_bump", lambda *_a: None)
-    monkeypatch.setattr(_systemd, "notify_ready", lambda: None)
-    monkeypatch.setattr(_systemd, "notify_stopping", lambda: None)
-
-    root = logging.getLogger()
-    saved_handlers, saved_level = root.handlers[:], root.level
-    # A fresh process has no root handler; under pytest the capture plugin's
-    # own handlers would make basicConfig a silent no-op if left in place.
-    root.handlers.clear()
-    try:
+    wizard_harness(correction_setup, [])
+    with bare_root_logger() as root:
         assert correction_setup.main(["--host", "127.0.0.1", "--port", "0"]) == 0
         assert root.handlers, "main() must configure a root handler (basicConfig)"
         assert root.getEffectiveLevel() <= logging.INFO
-    finally:
-        root.handlers[:] = saved_handlers
-        root.setLevel(saved_level)
 
 
 def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):

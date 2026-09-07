@@ -257,21 +257,16 @@ def make_server(target) -> ThreadingHTTPServer:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from . import _systemd, _wizard_cli
+    from . import _wizard_cli
 
-    parser = _wizard_cli.build_parser(
+    return _wizard_cli.run_wizard_cli(
         "jasper-chat-web",
         "Conversation history dashboard at /chat/ for JTS",
         8787,
-    )
-    return _wizard_cli.run_wizard_cli(
-        parser,
         argv,
         make_server=make_server,
-        tracker=_systemd.IdleShutdownTracker(
-            idle_threshold_sec=IDLE_SHUTDOWN_SEC,
-        ),
         detail=lambda _args: f"idle={int(IDLE_SHUTDOWN_SEC)}s",
+        idle_threshold_sec=IDLE_SHUTDOWN_SEC,
     )
 
 

@@ -206,31 +206,26 @@ def make_server(target, *, control_base: str = DEFAULT_CONTROL_BASE) -> Threadin
 
 
 def main(argv: list[str] | None = None) -> int:
-    from . import _systemd, _wizard_cli
+    from . import _wizard_cli
 
-    parser = _wizard_cli.build_parser(
+    return _wizard_cli.run_wizard_cli(
         "jasper-system-web",
         "Status dashboard at /system/ and /system/audio/ for JTS",
         8772,
-    )
-    parser.add_argument(
-        "--control-base",
-        default=os.environ.get(
-            "JASPER_CONTROL_BASE", DEFAULT_CONTROL_BASE,
-        ),
-        help="jasper-control HTTP base URL (default 127.0.0.1:8780)",
-    )
-    return _wizard_cli.run_wizard_cli(
-        parser,
         argv,
         make_server=make_server,
-        tracker=_systemd.IdleShutdownTracker(
-            idle_threshold_sec=IDLE_SHUTDOWN_SEC,
+        extra=lambda parser: parser.add_argument(
+            "--control-base",
+            default=os.environ.get(
+                "JASPER_CONTROL_BASE", DEFAULT_CONTROL_BASE,
+            ),
+            help="jasper-control HTTP base URL (default 127.0.0.1:8780)",
         ),
         start=lambda args, _tracker: {"control_base": args.control_base},
         detail=lambda args: (
             f"control={args.control_base}, idle={int(IDLE_SHUTDOWN_SEC)}s"
         ),
+        idle_threshold_sec=IDLE_SHUTDOWN_SEC,
     )
 
 

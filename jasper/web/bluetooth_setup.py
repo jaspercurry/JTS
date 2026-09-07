@@ -80,7 +80,7 @@ from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
 )
-from . import _systemd, _wizard_cli
+from . import _systemd
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
@@ -1312,13 +1312,15 @@ def _start_dispatcher(_args, tracker) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _wizard_cli.build_parser(
+    from . import _wizard_cli
+
+    # Idle-exit (the runner's default) after 10 min of no requests so the
+    # resident set goes to zero between admin sessions; ~17 MB Pss saved when
+    # idle.
+    return _wizard_cli.run_wizard_cli(
         "jasper-bluetooth-web",
         "Generic Bluetooth control panel at /bluetooth/",
         8769,
-    )
-    return _wizard_cli.run_wizard_cli(
-        parser,
         argv,
         make_server=make_server,
         start=_start_dispatcher,

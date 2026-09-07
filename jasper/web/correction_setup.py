@@ -5058,12 +5058,6 @@ def _configure_logging() -> None:
 
 
 def _start(args, tracker) -> dict[str, Any]:
-    # Correction and crossover applies swap the live graph from this process,
-    # so their swap duck needs a canonical target to release to.
-    from jasper.volume_coordinator import install_env_canonical_target_provider
-
-    install_env_canonical_target_provider()
-
     # Socket Accept=no + one service ExecStart make this the sole lifecycle
     # boundary that may retire unfinished work from a previous process.
     _claim_crossover_state_owners()
@@ -5071,18 +5065,13 @@ def _start(args, tracker) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from . import _systemd, _wizard_cli
+    from . import _wizard_cli
+    from jasper.volume_coordinator import install_env_canonical_target_provider
 
-    parser = _wizard_cli.build_parser(
-        "jasper-correction-web",
-        "HTTPS measurement daemon for the JTS speaker's /sound/ pages",
-        8770,
-    )
-    parser.add_argument(
-        "--hostname",
-        default=os.environ.get("JASPER_HOSTNAME", "jts.local"),
-        help="speaker hostname used in the cert-download fallback link",
-    )
+    # Correction and crossover applies swap the live graph from this process,
+    # so their swap duck needs a canonical target to release to.
+    install_env_canonical_target_provider()
+
     # The idle exit is exactly the abandoned-sequence moment (user closed the
     # tab, no requests for the threshold AND no work in flight) — the daemon's
     # last in-process chance to converge a capture sequence parked on the
@@ -5091,15 +5080,20 @@ def main(argv: list[str] | None = None) -> int:
     # tracker; on a deferred/failed restore the durable stash survives for the
     # next service-start claim boundary.
     return _wizard_cli.run_wizard_cli(
-        parser,
+        "jasper-correction-web",
+        "HTTPS measurement daemon for the JTS speaker's /sound/ pages",
+        8770,
         argv,
         make_server=make_server,
-        tracker=_systemd.IdleShutdownTracker(
-            on_idle_exit=_idle_exit_restore_capture_entry,
+        extra=lambda parser: parser.add_argument(
+            "--hostname",
+            default=os.environ.get("JASPER_HOSTNAME", "jts.local"),
+            help="speaker hostname used in the cert-download fallback link",
         ),
         start=_start,
         detail=lambda args: f"hostname={args.hostname}",
         configure=_configure_logging,
+        on_idle_exit=_idle_exit_restore_capture_entry,
     )
 
 

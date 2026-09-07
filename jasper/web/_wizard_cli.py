@@ -7,11 +7,6 @@
 Four wizards — bluetooth, chat, correction, system — are each a systemd
 service whose ExecStart runs this same sequence. Everything they differ on
 arrives through the parameters below (#4328).
-
-Deliberately not in ``_systemd.py``: that module owns generic
-socket-activation primitives with importers outside ``jasper.web``, while
-this is web-wizard CLI surface — argparse prog names, start-up log copy —
-that belongs beside the wizards it serves.
 """
 from __future__ import annotations
 
@@ -27,51 +22,50 @@ from . import _systemd
 logger = logging.getLogger(__name__)
 
 
-def build_parser(
-    prog: str, description: str, default_port: int,
-) -> argparse.ArgumentParser:
-    """The argument surface every wizard shares. Add per-wizard flags to it."""
-
-    parser = argparse.ArgumentParser(prog=prog, description=description)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=default_port)
-    return parser
-
-
 def run_wizard_cli(
-    parser: argparse.ArgumentParser,
+    prog: str,
+    description: str,
+    default_port: int,
     argv: Sequence[str] | None = None,
     *,
     make_server: Callable[..., ThreadingHTTPServer],
-    tracker: _systemd.IdleShutdownTracker | None = None,
+    extra: Callable[[argparse.ArgumentParser], Any] | None = None,
     start: Callable[
         [argparse.Namespace, _systemd.IdleShutdownTracker], Mapping[str, Any]
     ] | None = None,
     detail: Callable[[argparse.Namespace], str] | None = None,
     configure: Callable[[], None] = configure_logging,
+    idle_threshold_sec: float = _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
+    on_idle_exit: Callable[[], None] | None = None,
 ) -> int:
     """Run one wizard's whole service lifecycle; return its process exit code.
 
-    ``tracker`` exists before ``make_server`` so ``start`` can hand
-    ``tracker.hold`` to the handler — see ``IdleShutdownTracker.hold`` for
-    why a route needs one. Pass one only for a non-default threshold or an
-    on-idle-exit hook.
+    ``start`` runs before the listener is adopted, so a raise there leaves
+    ``main`` without ever serving — correction's claim boundary needs that.
 
-    ``start`` is the wizard's pre-start work: after logging is up, before the
-    listener is adopted, so a raise there leaves ``main`` without ever
-    serving. It returns the keyword arguments for ``make_server``.
+    ``detail`` is a caller-written string: the caller chooses which fields are
+    journal-safe.
 
-    ``detail`` renders the parenthesised note on the start-up log line. A
-    caller-written string rather than the parsed namespace, so a future flag
-    cannot put a secret in the journal (non-negotiable 3).
+    ``configure`` is overridable only for ``correction_setup``, a listed entry
+    in ``tests/test_logging_setup.py``'s ``_ALLOWLIST`` whose stated removal
+    condition (that set emptying) is not met yet.
     """
 
+    parser = argparse.ArgumentParser(prog=prog, description=description)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=default_port)
+    if extra is not None:
+        extra(parser)
     args = parser.parse_args(argv)
     configure()
 
-    if tracker is None:
-        tracker = _systemd.IdleShutdownTracker()
-    kwargs = dict(start(args, tracker)) if start is not None else {}
+    # Built before the server so ``start`` can hand ``tracker.hold`` to the
+    # handler: background work a request never awaits has to take the busy
+    # counter, or the process idle-exits out from under it (issue #1854).
+    tracker = _systemd.IdleShutdownTracker(
+        idle_threshold_sec=idle_threshold_sec, on_idle_exit=on_idle_exit,
+    )
+    kwargs = start(args, tracker) if start is not None else {}
 
     # When socket-activated by systemd, adopt the inherited listener instead
     # of binding fresh. Direct CLI invocation falls through.
@@ -83,11 +77,10 @@ def run_wizard_cli(
 
     note = f" ({detail(args)})" if detail is not None else ""
     if sockets:
-        logger.info("%s adopting systemd fd%s", parser.prog, note)
+        logger.info("%s adopting systemd fd%s", prog, note)
     else:
         logger.info(
-            "%s listening on http://%s:%d%s",
-            parser.prog, args.host, args.port, note,
+            "%s listening on http://%s:%d%s", prog, args.host, args.port, note,
         )
 
     _systemd.notify_ready()

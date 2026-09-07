@@ -5,10 +5,9 @@
 """The service lifecycle every socket-activated wizard's ``main()`` runs.
 
 One pin over all four wizards on the shared runner (#4328): the CLI defaults
-each ``ExecStart`` relies on, socket adoption winning over a fresh bind, and
-the notify_ready -> serve -> notify_stopping -> exit-0 tail. Per-wizard
-behaviour (correction's capture-entry restore wiring and its own journal
-bootstrap) stays pinned beside its own module.
+each ``ExecStart`` relies on, socket adoption winning over a fresh bind, the
+idle tracker each wizard asks the runner to build, and the notify_ready ->
+serve -> notify_stopping -> exit-0 tail.
 """
 from __future__ import annotations
 
@@ -23,18 +22,49 @@ from jasper.web import (
     correction_setup,
     system_setup,
 )
+from tests.test_web_systemd import _FakeServer
 
-# module, console-script prog, ExecStart default port
+# module, console-script prog, ExecStart default port, the idle threshold the
+# wizard asks the runner for, and its on-idle-exit hook.
 WIZARDS = [
-    (bluetooth_setup, "jasper-bluetooth-web", 8769),
-    (chat_setup, "jasper-chat-web", 8787),
-    (correction_setup, "jasper-correction-web", 8770),
-    (system_setup, "jasper-system-web", 8772),
+    (
+        bluetooth_setup, "jasper-bluetooth-web", 8769,
+        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC, None,
+    ),
+    (
+        chat_setup, "jasper-chat-web", 8787,
+        chat_setup.IDLE_SHUTDOWN_SEC, None,
+    ),
+    (
+        correction_setup, "jasper-correction-web", 8770,
+        _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
+        correction_setup._idle_exit_restore_capture_entry,
+    ),
+    (
+        system_setup, "jasper-system-web", 8772,
+        system_setup.IDLE_SHUTDOWN_SEC, None,
+    ),
 ]
 
+_COLUMNS = "module, prog, default_port, idle_sec, on_idle_exit"
 
-class _FakeTracker:
-    def __init__(self, *_args, **_kwargs) -> None:
+# The two whose routes start work they do not await, so they need the hold.
+_HOLDERS = [row for row in WIZARDS if row[0] in (bluetooth_setup, correction_setup)]
+
+
+class _RecordingTracker:
+    """Mirrors ``IdleShutdownTracker.__init__`` so a signature change fails
+    here rather than leaving the assertions silently reading nothing."""
+
+    def __init__(
+        self,
+        idle_threshold_sec: float = _systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
+        watchdog_period_sec: float = _systemd.DEFAULT_WATCHDOG_NOTIFY_SEC,
+        on_idle_exit: Any = None,
+    ) -> None:
+        self.idle_threshold_sec = idle_threshold_sec
+        self.watchdog_period_sec = watchdog_period_sec
+        self.on_idle_exit = on_idle_exit
         self.started = False
 
     def hold(self, label: str = ""):
@@ -49,15 +79,8 @@ class _FakeDispatcher:
         pass
 
 
-class _FakeServer:
-    RequestHandlerClass = object
-
-    def serve_forever(self) -> None:
-        raise KeyboardInterrupt
-
-
-@pytest.fixture
-def wizard_harness(monkeypatch):
+@pytest.fixture(name="wizard_harness")
+def wizard_harness_fixture(monkeypatch):
     """Neutralize systemd and each wizard's pre-start side effects.
 
     The returned installer takes the module under test and what
@@ -67,7 +90,11 @@ def wizard_harness(monkeypatch):
 
     record: dict[str, Any] = {"ready": 0, "stopping": 0}
 
-    monkeypatch.setattr(_systemd, "IdleShutdownTracker", _FakeTracker)
+    def _tracker(*args, **kwargs):
+        record["tracker"] = _RecordingTracker(*args, **kwargs)
+        return record["tracker"]
+
+    monkeypatch.setattr(_systemd, "IdleShutdownTracker", _tracker)
     monkeypatch.setattr(_systemd, "install_request_idle_bump", lambda *_a: None)
     monkeypatch.setattr(
         _systemd, "notify_ready", lambda: record.__setitem__("ready", record["ready"] + 1)
@@ -95,8 +122,9 @@ def wizard_harness(monkeypatch):
     def install(module, sockets):
         monkeypatch.setattr(_systemd, "adopt_systemd_sockets", lambda: sockets)
 
-        def _make_server(target, **_kwargs):
+        def _make_server(target, **kwargs):
             record["target"] = target
+            record["kwargs"] = kwargs
             return _FakeServer()
 
         monkeypatch.setattr(module, "make_server", _make_server)
@@ -105,9 +133,9 @@ def wizard_harness(monkeypatch):
     return install
 
 
-@pytest.mark.parametrize("module, prog, default_port", WIZARDS)
+@pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_main_binds_the_execstart_defaults(
-    wizard_harness, module, prog, default_port
+    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
 ):
     """Every unit's ExecStart passes --host 127.0.0.1 and this port, so the
     runner's defaults have to be the same two values."""
@@ -119,9 +147,9 @@ def test_main_binds_the_execstart_defaults(
     assert record["target"] == ("10.0.0.5", 1)
 
 
-@pytest.mark.parametrize("module, prog, default_port", WIZARDS)
+@pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_main_serves_the_inherited_listener_not_a_fresh_bind(
-    wizard_harness, module, prog, default_port
+    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
 ):
     """Socket activation: the adopted fd wins over --host/--port, or systemd's
     listener stays unserved and every request times out in nginx."""
@@ -132,9 +160,37 @@ def test_main_serves_the_inherited_listener_not_a_fresh_bind(
     assert record["target"] is inherited
 
 
-@pytest.mark.parametrize("module, prog, default_port", WIZARDS)
+@pytest.mark.parametrize(_COLUMNS, WIZARDS)
+def test_main_builds_the_tracker_this_wizard_asked_for(
+    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+):
+    """The runner constructs the tracker now, so each wizard's threshold and
+    on-idle-exit hook have to survive the scalars it passes instead."""
+
+    record = wizard_harness(module, [])
+    assert module.main([]) == 0
+    tracker = record["tracker"]
+    assert tracker.idle_threshold_sec == idle_sec
+    assert tracker.on_idle_exit is on_idle_exit
+    assert tracker.started
+
+
+@pytest.mark.parametrize(_COLUMNS, _HOLDERS)
+def test_a_wizard_with_background_work_gets_the_trackers_hold(
+    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
+):
+    """The tracker is built before the server precisely so these two can hand
+    ``hold`` to the handler; without it a route's unawaited work looks like an
+    abandoned tab and the process exits out from under it (#1854)."""
+
+    record = wizard_harness(module, [])
+    assert module.main([]) == 0
+    assert record["kwargs"]["idle_hold"] == record["tracker"].hold
+
+
+@pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_main_notifies_ready_then_stopping_once_each(
-    wizard_harness, module, prog, default_port
+    wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
 ):
     """Type=notify units hang in `activating` without READY=1, and the
     interrupted serve_forever must still emit STOPPING=1 and exit 0."""
@@ -145,9 +201,9 @@ def test_main_notifies_ready_then_stopping_once_each(
     assert record["stopping"] == 1
 
 
-@pytest.mark.parametrize("module, prog, default_port", WIZARDS)
+@pytest.mark.parametrize(_COLUMNS, WIZARDS)
 def test_usage_errors_name_the_console_script(
-    capsys, module, prog, default_port
+    capsys, wizard_harness, module, prog, default_port, idle_sec, on_idle_exit
 ):
     """argparse's prog is what the operator sees when an ExecStart flag is
     wrong; it must stay the console-script name, not `__main__.py`."""
