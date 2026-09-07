@@ -113,7 +113,6 @@ def mux(tmp_path):
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
     m._fanin_select = AsyncMock(return_value={})
-    m._fanin_auto = AsyncMock(return_value={})
     m._fanin_none = AsyncMock(return_value={})
     return m
 
@@ -1262,12 +1261,10 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
     m = Mux(librespot_state_path=str(tmp_path / "librespot.state.env"))
 
     await m._fanin_select_label("correction")
-    await m._fanin_auto()
     await m._fanin_none()
     await m._fanin_lane_mute("usbsink", True)
 
     assert [call.kwargs["socket_path"] for call in command.await_args_list] == [
-        "/tmp/override.sock",
         "/tmp/override.sock",
         "/tmp/override.sock",
         "/tmp/override.sock",
@@ -1645,7 +1642,6 @@ async def test_auto_select_is_rejected_before_probe_during_test_gate(
     result = await mux.auto_select()
 
     assert "correction-measurement" in result["error"]
-    mux._fanin_auto.assert_not_awaited()
     mux._fanin_none.assert_not_awaited()
     assert mux._volume_coordinator.events == []
     for probe in vars(patched_probes).values():
@@ -2266,7 +2262,6 @@ async def test_auto_select_with_no_active_sources_holds_fanin_none(
     status = await mux.auto_select()
 
     mux._fanin_none.assert_awaited_once()
-    mux._fanin_auto.assert_not_awaited()
     assert mux._manual_source is None
     assert mux._winner is None
     assert status["mode"] == "auto"
@@ -2290,7 +2285,6 @@ def _fresh_mux_after_restart(tmp_path):
         mode_state_path=str(tmp_path / "mux_mode.json"),
     )
     m._fanin_select = AsyncMock(return_value={})
-    m._fanin_auto = AsyncMock(return_value={})
     m._fanin_none = AsyncMock(return_value={})
     return m
 
