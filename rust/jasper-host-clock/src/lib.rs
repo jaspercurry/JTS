@@ -43,12 +43,13 @@
 //!
 //! ## Outer loop (this module)
 //!
-//! A pure-integral law ([`CORRECTION_INTEGRAL_GAIN`]) ticked at exactly 1 Hz,
-//! deliberately NOT a DLL (See ADR-0247) — that constant carries the plant analysis, the
-//! measured stability margin, and why a third-order loop limit-cycles against
-//! this plant. The slow settle is deliberate: PipeWire's docs warn UAC2 pitch
-//! oscillates at a normal DLL bandwidth, and Windows `usbaudio2.sys` reacts with
-//! a ~163 ppm deadband, so a wide/fast outer loop would ring against the host.
+//! A pure-integral law ([`CORRECTION_INTEGRAL_GAIN`]) ticked once per
+//! [`TICK_INTERVAL_MS`], deliberately NOT a DLL — ADR-0109 owns that decision
+//! and the limit cycle it was reproduced against, and that constant carries the
+//! plant analysis and the measured stability margin. The slow settle is
+//! deliberate: PipeWire's docs warn UAC2 pitch oscillates at a normal DLL
+//! bandwidth, and Windows `usbaudio2.sys` reacts with a ~163 ppm deadband, so a
+//! wide/fast outer loop would ring against the host.
 //!
 //! ## Feed-forward so the slow loop does not rail the 3-period ring
 //!
@@ -63,8 +64,8 @@
 //! `fill_variance` (EW variance of the gadget fill) and `fill_slope_ppm` are
 //! published every MEASURED tick so a soak can DETECT a cascade limit-cycle: a
 //! two-controller oscillation shows up as periodic fill variance. If a soak
-//! ever shows one, widen the separation or disable — the mechanism ships
-//! default-OFF for exactly this reason.
+//! ever shows one, lower [`CORRECTION_INTEGRAL_GAIN`] or disable — the
+//! mechanism ships default-OFF for exactly this reason.
 //!
 //! A tick with [`Obs::steady`] false is NOT measured, so `fill_frames`,
 //! `fill_slope_ppm`, `fill_variance` and `correction_ppm` hold their
@@ -80,7 +81,8 @@
 //!   ~163 ppm reaction deadband and IGNORES commanded values outside roughly
 //!   nominal ±1 sample/interval, so the steady-state commanded bias MUST stay
 //!   inside a ±1000 ppm validity window (enforced by [`MAX_BIAS_PPM`]).
-//! - Both react slowly ⇒ the low outer-loop bandwidth above.
+//! - Both react slowly ⇒ the deliberately slow outer loop above (one tick per
+//!   [`TICK_INTERVAL_MS`], gain [`CORRECTION_INTEGRAL_GAIN`]).
 //!
 //! The host OS or the playing application can change between sessions (a Mac
 //! unplugged and a Windows box plugged in; an app that opens the endpoint in a
@@ -209,8 +211,9 @@ pub const CORRECTION_PROBE_STEP_SECS: u64 = 15;
 /// baseline is genuinely near a rail.
 pub const CORRECTION_PROBE_FLIP_DEADBAND_PPM: f64 = 150.0;
 
-// Nominal frame rate, in Hz — the ladder scales its per-tick frame count as
-// `rate × Δt`. Fixed: the gadget capture and the whole fan-in path are 48 kHz.
+// The ladder's nominal frame rate, in Hz: it scales its per-tick frame count as
+// `rate × Δt`. 48 kHz is the shipped fan-in rate (`JASPER_FANIN_SAMPLE_RATE`'s
+// default); the ladder does not read that knob.
 const NOMINAL_RATE_HZ: f64 = 48000.0;
 
 /// Which observable the probe and the L0 servo run on — a TYPED, per-daemon
@@ -448,9 +451,6 @@ pub struct HostClockConfig {
     /// one-time startup neutralize runs) — every consuming daemon resolves this
     /// from its own literal-`enabled` gate.
     pub enabled: bool,
-    /// Gadget fill setpoint in frames. Fan-in derives it from its resampler's
-    /// held target.
-    pub target_fill_frames: f64,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
     /// Which observable the probe + L0 servo run on (see [`ObsMode`]). Fan-in
@@ -473,7 +473,6 @@ impl HostClockConfig {
     pub fn disabled(log_prefix: &'static str) -> Self {
         Self {
             enabled: false,
-            target_fill_frames: 384.0,
             probe_ppm: 300.0,
             // A disabled ladder never probes or servos, so the observable mode
             // is moot; nothing pins this value.
@@ -754,10 +753,6 @@ pub struct HostClock {
     // Lifetime counters + last transition token.
     demotions: u64,
     transitions: u64,
-    /// Lifetime count of outer-loop anti-windup resets (diagnostic; not in the
-    /// wire contract — surfaced only via the accessor for tests / future
-    /// telemetry).
-    anti_windup_events: u64,
     last_transition_reason: &'static str,
 
     // Whether the one-time startup neutralize has been emitted.
@@ -827,7 +822,6 @@ impl HostClock {
             fallback_reason: FallbackReason::None,
             demotions: 0,
             transitions: 0,
-            anti_windup_events: 0,
             last_transition_reason: "startup",
             startup_neutralized: false,
         }
@@ -840,18 +834,6 @@ impl HostClock {
     }
     pub fn commanded_ppm(&self) -> f64 {
         self.commanded_ppm
-    }
-
-    /// Update the fill setpoint carried on the config. Fan-in combo mode — the
-    /// sole live caller — shares it with the inner resampler's LIVE held target,
-    /// which the DEFAULT-OFF post-lock cushion decay lowers over time, so the
-    /// servo thread re-pins it each tick from the resampler's held-target gauge.
-    /// Single source of truth: the resampler owns the value; the ladder never
-    /// originates it. `NaN`/non-finite is ignored (keeps the last good value).
-    pub fn set_target_fill_frames(&mut self, target_fill_frames: f64) {
-        if target_fill_frames.is_finite() {
-            self.cfg.target_fill_frames = target_fill_frames;
-        }
     }
 
     pub fn fill_variance(&self) -> f64 {
@@ -918,10 +900,6 @@ impl HostClock {
             let mut ignored_actions = Vec::new();
             self.enter_actuator_fallback("pitch_write_failed", &mut ignored_actions);
         }
-    }
-    /// Lifetime count of outer-loop anti-windup resets (diagnostic).
-    pub fn anti_windup_events(&self) -> u64 {
-        self.anti_windup_events
     }
 
     /// The one-time startup neutralize action. Emitted ONCE, unconditionally
@@ -1512,7 +1490,7 @@ impl HostClock {
             // Steps that move the total back toward zero always apply, so the
             // integrator unwinds immediately when the error reverses. Gated on a
             // non-trivial error (probe_ppm/2) so ordinary near-target jitter
-            // doesn't count as a windup event.
+            // doesn't wind the integrator down a rail.
             let step = -CORRECTION_INTEGRAL_GAIN * err;
             let candidate = self.correction_trim_ppm + step;
             let total_raw = self.feed_forward_ppm + candidate;
@@ -1520,11 +1498,9 @@ impl HostClock {
                 && total_raw.abs() > MAX_BIAS_PPM
                 && err.abs() >= anti_windup_threshold
                 && total_raw.signum() == step.signum();
-            if railed_further {
-                self.anti_windup_events = self.anti_windup_events.saturating_add(1);
-                // Hold the integrator (do not accumulate further into the rail);
-                // the output clamp below still bounds the command.
-            } else if candidate.is_finite() {
+            // Holding the integrator on `railed_further` is the anti-windup;
+            // the output clamp below still bounds the command either way.
+            if !railed_further && candidate.is_finite() {
                 self.correction_trim_ppm = candidate;
             }
             self.correction_trim_ppm
@@ -1715,8 +1691,7 @@ impl HostClock {
     }
 
     /// Render the `host_clock` block for `state.json`. Byte-exact shape pinned
-    /// by `tests::host_clock_fragment_shape_is_stable` and its Python twin,
-    /// `tests/test_fanin_host_clock_contract.py`.
+    /// by `tests::host_clock_fragment_shape_is_stable`.
     pub fn status_fragment(&self) -> String {
         let ratio = match self.response_ratio {
             Some(r) => format!("{r:.4}"),
@@ -1995,7 +1970,6 @@ mod tests {
     fn enabled_cfg() -> HostClockConfig {
         HostClockConfig {
             enabled: true,
-            target_fill_frames: 384.0,
             probe_ppm: 300.0,
             obs_mode: ObsMode::Correction,
             log_prefix: "fanin",
@@ -3572,14 +3546,12 @@ mod tests {
         );
     }
 
-    // ---- state.json fragment (byte-exact twin fixture) ---------------------
+    // ---- state.json fragment (byte-exact fixture) --------------------------
 
-    /// BYTE-EXACT contract pin. The disabled default fragment must match this
-    /// string verbatim. Its Python twin,
-    /// `tests/test_fanin_host_clock_contract.py`, greps this identical literal
-    /// out of this source, so the expected value MUST stay a RAW string literal
-    /// (`r#"..."#`): the bare (unescaped) `"` bytes then appear contiguously in
-    /// the source, exactly matching the Python side's bare-quote fixture.
+    /// BYTE-EXACT contract pin, and the ONLY one on this wire shape:
+    /// `tests/test_fanin_host_clock_contract.py` asserts that this function
+    /// still exists but never reads the literal, so a removed, renamed or
+    /// reordered key is caught here and nowhere else.
     #[test]
     fn host_clock_fragment_shape_is_stable() {
         let mut cfg = enabled_cfg();

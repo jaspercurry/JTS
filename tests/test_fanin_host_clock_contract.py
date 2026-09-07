@@ -50,8 +50,7 @@ def _fanin_host_clock_text() -> str:
 # --------------------------------------------------------------------------
 # Env-key names + defaults, pinned against config.rs + .env.example prose.
 # The live fan-in host-clock keys; there is NO target or probe-duration env.
-# The setpoint is the resampler's held target and Correction mode uses a fixed
-# probe window.
+# Correction mode carries no fill setpoint and uses a fixed probe window.
 # --------------------------------------------------------------------------
 
 _PINNED_ENV_KEYS = {
@@ -116,21 +115,16 @@ def test_no_dead_fanin_host_clock_probe_duration_env():
 
 
 def test_no_fanin_host_clock_target_env_key():
-    # The setpoint is DERIVED from the resampler's held target (target +
-    # cushion) — NOT a second env knob that could fight the inner loop. Pin the
-    # absence so nobody reintroduces a target env.
+    # Correction mode has no fill setpoint at all (ADR-0109), so there is
+    # nothing for a target env to configure. Pin the absence so nobody
+    # reintroduces one.
     config = _fanin_config_text()
     host_clock = _fanin_host_clock_text()
     assert "JASPER_FANIN_HOST_CLOCK_TARGET" not in config, (
-        "there must be NO JASPER_FANIN_HOST_CLOCK_TARGET env key — the setpoint "
-        "is the resampler's held target (shared with the inner controller)."
+        "there must be NO JASPER_FANIN_HOST_CLOCK_TARGET env key — the "
+        "Correction-mode ladder has no fill setpoint to configure."
     )
     assert "JASPER_FANIN_HOST_CLOCK_TARGET" not in host_clock
-    # And the adapter derives the setpoint from the resampler's held target.
-    assert "target_fill_frames" in host_clock, (
-        "the fan-in host-clock adapter must derive its setpoint from the "
-        "resampler's target_fill_frames (the held target)."
-    )
 
 
 def test_fanin_host_clock_runs_the_correction_observable_mode():

@@ -318,15 +318,10 @@ fn run() -> Result<()> {
         // owns direct gadget capture or its clock in this state.
         warn!("event=fanin.host_clock.noop reason=usb_direct_off");
     }
-    // The setpoint is the resampler's HELD target (target + warmup cushion),
-    // shared with the inner RateController (C4). Fall back to the config sum
-    // when the mixer has no direct-lane resampler (signals absent) — the config
-    // is inert then anyway, but keep the fragment coherent.
     let host_clock_signals = mixer.host_clock_signals();
-    // The INITIAL setpoint that seeds the config / disabled-fragment. Once the
-    // servo thread runs it re-pins the setpoint each tick from the resampler's
-    // LIVE held-target gauge (single source of truth — tracks the cushion decay),
-    // so this is only the boot-time seed (the ceiling, before any decay).
+    // Reported once on the `armed` line below: the resampler's held target at
+    // arm time (the ceiling, before any cushion decay). Falls back to the config
+    // sum when the mixer has no direct-lane resampler.
     let host_clock_setpoint = host_clock_signals
         .as_ref()
         .map(|s| {
@@ -337,11 +332,8 @@ fn run() -> Result<()> {
             u64::from(config.input_resampler_target_frames)
                 + u64::from(config.input_resampler_warmup_cushion_frames)
         });
-    let host_clock_config = crate::host_clock::build_config(
-        host_clock_enabled_effective,
-        config.host_clock_probe_ppm,
-        host_clock_setpoint,
-    );
+    let host_clock_config =
+        crate::host_clock::build_config(host_clock_enabled_effective, config.host_clock_probe_ppm);
     let host_clock_fragment = Arc::new(std::sync::Mutex::new(crate::host_clock::initial_fragment(
         host_clock_config,
     )));
@@ -386,12 +378,8 @@ fn run() -> Result<()> {
             // thread will ever update it here — so overwrite it with the DISABLED
             // rendering, or `/state.fanin.host_clock.enabled` would read `true`
             // forever while nothing runs (review N4). Build a disabled config
-            // with the same setpoint/knobs so only `enabled` flips.
-            let disabled = crate::host_clock::build_config(
-                false,
-                config.host_clock_probe_ppm,
-                host_clock_setpoint,
-            );
+            // with the same knobs so only `enabled` flips.
+            let disabled = crate::host_clock::build_config(false, config.host_clock_probe_ppm);
             *host_clock_fragment
                 .lock()
                 .unwrap_or_else(|p| p.into_inner()) = crate::host_clock::initial_fragment(disabled);
