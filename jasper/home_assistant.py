@@ -129,13 +129,14 @@ def _health_timeout() -> "httpx.Timeout":
 CONVERSATION_ID_TTL_SEC = 240.0
 
 # Outcome buckets — used in structured log lines so dashboards can
-# slice ha.call by category. Six in total, mirroring dubot's split:
+# slice ha.call by category. Eight in total, mirroring dubot's split:
 #   network       — connection refused, DNS failure, connector error
 #   timeout       — explicit asyncio/httpx timeout
-#   auth          — 401 from HA (token revoked / invalid)
+#   auth          — 401/403 from HA (token revoked / invalid)
 #   agent_error   — 5xx from HA (broken conversation entity, etc.)
 #   intent_miss   — 200 with response_type=error
 #   parse_error   — 200 but unexpected body shape
+#   not_ha        — health probe only: the URL is not Home Assistant
 #   ok            — everything else
 OUTCOME_OK = "ok"
 OUTCOME_NETWORK = "network"
@@ -144,6 +145,19 @@ OUTCOME_AUTH = "auth"
 OUTCOME_AGENT_ERROR = "agent_error"
 OUTCOME_INTENT_MISS = "intent_miss"
 OUTCOME_PARSE_ERROR = "parse_error"
+OUTCOME_NOT_HA = "not_ha"
+
+
+@dataclass(frozen=True)
+class HealthProbe:
+    """Result of `HAClient.probe_health()`. `outcome` is an OUTCOME_*
+    constant; `status` is the HTTP status when HA answered, else None."""
+    outcome: str
+    status: int | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == OUTCOME_OK
 
 
 @dataclass(frozen=True)
@@ -492,14 +506,14 @@ class HAClient:
             error_detail=detail,
         )
 
-    # ---- Helpers used by the wizard (PR 2) and the doctor ------------------
+    # ---- Helpers used by the wizard and the doctor -------------------------
 
-    async def healthcheck(self) -> bool:
-        """Cheap probe of `GET /api/` — returns True if HA responds 200
-        with the expected body. Used by the wizard's verify step and
-        `jasper-doctor` (skip-if-not-configured). Does NOT touch the
-        conversation endpoint — that would cost money on LLM-backed
-        HA agents."""
+    async def probe_health(self) -> HealthProbe:
+        """`GET /api/`, with the failure mode named. Never raises. Buckets:
+        401/403 auth, 5xx agent_error, a 200 whose body is not a JSON object
+        parse_error, not_ha for both a 200 lacking HA's `API running.` sigil
+        and any other status — an `/api/` that answers 404 is not HA. Never
+        touches the conversation endpoint — costly on LLM-backed HA agents."""
         import httpx  # lazy — see module-level comment
 
         client = await self._client()
@@ -510,14 +524,41 @@ class HAClient:
                 timeout=_health_timeout(),
             )
         except httpx.HTTPError as e:
-            logger.debug("ha healthcheck: %r", e)
-            return False
-        if resp.status_code != 200:
-            return False
+            logger.debug("ha probe_health: %r", e)
+            timed_out = isinstance(e, httpx.TimeoutException)
+            return HealthProbe(OUTCOME_TIMEOUT if timed_out else OUTCOME_NETWORK)
+        status = resp.status_code
+        if status in (401, 403):
+            return HealthProbe(OUTCOME_AUTH, status)
+        if status >= 500:
+            return HealthProbe(OUTCOME_AGENT_ERROR, status)
+        if status != 200:
+            return HealthProbe(OUTCOME_NOT_HA, status)
         try:
-            return resp.json().get("message") == "API running."
+            body = resp.json()
         except ValueError:
-            return False
+            body = None
+        if not isinstance(body, dict):
+            return HealthProbe(OUTCOME_PARSE_ERROR, status)
+        if body.get("message") != "API running.":
+            return HealthProbe(OUTCOME_NOT_HA, status)
+        return HealthProbe(OUTCOME_OK, status)
+
+    async def probe(
+        self, *, with_agents: bool = False,
+    ) -> tuple[HealthProbe, dict[str, Any], list[dict[str, str]]]:
+        """`probe_health()`, then — only when it passed — the extras callers
+        display: `config()`, plus `list_agents()` when `with_agents`. The two
+        are independent, so run concurrently; either failing leaves {} / []."""
+        import asyncio  # lazy — import cost, same reason as httpx above
+
+        health = await self.probe_health()
+        if not health.ok:
+            return health, {}, []
+        if not with_agents:
+            return health, (await self.config()) or {}, []
+        cfg, agents = await asyncio.gather(self.config(), self.list_agents())
+        return health, cfg or {}, agents
 
     async def config(self) -> dict[str, Any] | None:
         """GET /api/config — used by the wizard to display location_name +
@@ -586,23 +627,11 @@ def build_ha_client(cfg) -> HAClient | None:
 
 # ---- probe_status: cached one-shot probe ----------------------------------
 #
-# probe_status is consumed by jasper-control's /state aggregator,
-# /system/snapshot, and jasper-doctor. The dashboard polls
-# /system/snapshot every 5 seconds while it's open, which means without
-# caching, an unreachable HA would block each poll for up to 5 seconds
-# (_health_timeout) — making the dashboard unusable when HA is down AND
-# burning ~12 wasted RPM against a dead URL. We cache the probe result
-# with a TTL of PROBE_CACHE_TTL_SEC. Doctor passes force=True to bypass
-# the cache so its output reflects ground truth at invocation time.
-#
-# The cache is module-global and process-local. That's fine because:
-#  - jasper-control is a single process; one cache per process.
-#  - jasper-voice also calls probe_status indirectly (via HAClient) for
-#    its own purposes, but probe_status is only invoked from the
-#    control daemon — voice owns its own HAClient lifecycle separately.
-#
-# Cache key is (url, token). When the wizard updates the env, the key
-# changes and the next probe is uncached.
+# Cached because /system/snapshot polls every 5 s while the dashboard is
+# open and an unreachable HA blocks each poll for up to _health_timeout
+# (5 s), which makes the page unusable when HA is down. The cache is
+# module-global and process-local: only jasper-control calls
+# probe_status, and it is a single process.
 
 # Cache for probe_status. Aligned to how often HA reachability actually
 # changes in a household (reboots, network blips): 15 s is plenty fresh
@@ -797,17 +826,17 @@ async def _probe_uncached(
         return unconfigured
     client = HAClient(url=url, token=token, verify_ssl=verify_ssl)
     try:
-        if not await client.healthcheck():
+        health, cfg, _ = await client.probe()
+        if not health.ok:
             return {
                 "configured": True, "connected": False, "url": client.url,
                 "instance_name": None, "version": None,
                 "error": "Couldn't reach Home Assistant — check the URL and token.",
             }
-        cfg = await client.config()
         return {
             "configured": True, "connected": True, "url": client.url,
-            "instance_name": (cfg or {}).get("location_name") or "Home Assistant",
-            "version": (cfg or {}).get("version"),
+            "instance_name": cfg.get("location_name") or "Home Assistant",
+            "version": cfg.get("version"),
             "error": None,
         }
     finally:
