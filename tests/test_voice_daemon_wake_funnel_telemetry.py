@@ -10,9 +10,9 @@ import asyncio
 
 
 from jasper.tools import ToolRegistry, dispatch_tool
-from jasper.voice_daemon import WakeLoop
 from jasper.wake_events import WakeEventStore
 from tests._async_wait import wait_signalled
+from tests._wake_loop import wake_loop_for_tests
 
 
 async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
@@ -27,7 +27,7 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
             threshold=0.5,
             wake_model="jarvis_v2.onnx",
         )
-        wake_loop = WakeLoop.for_tests(
+        wake_loop = wake_loop_for_tests(
             wake_event_store=store,
             current_event_id="evt-funnel",
         )
@@ -73,7 +73,7 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
             threshold=0.5,
             wake_model="jarvis_v2.onnx",
         )
-        wake_loop = WakeLoop.for_tests(
+        wake_loop = wake_loop_for_tests(
             wake_event_store=store,
             current_event_id="evt-concurrent",
         )

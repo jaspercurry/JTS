@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
@@ -58,7 +59,7 @@ class _RecordingTts:
 
 
 def _make_wakeloop(tts: _RecordingTts):
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
     class _Noop:
         def note_voice_session(self, *_a, **_k):
@@ -71,7 +72,7 @@ def _make_wakeloop(tts: _RecordingTts):
         async def restore(self):
             return None
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7

@@ -18,12 +18,13 @@ from jasper.voice.research_announcer import (
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 from tests._log_events import event_records
 from tests._turn_host_fake import _job, _MarkingScheduler
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 def _wake_loop():
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.WAKE
     return wl
 
