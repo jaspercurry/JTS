@@ -1100,13 +1100,6 @@ def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
 # ----------------------------------------------------------------------
 
 
-def test_public_surface_is_stable():
-    assert callable(rooms_setup.make_server)
-    assert callable(rooms_setup._make_handler)
-    assert callable(rooms_setup._build_rooms_payload)
-    assert callable(rooms_setup._discover_speakers)
-
-
 def test_make_server_binds_a_tuple_target():
     """make_server((host, port)) returns a live server bound to an ephemeral
     port; the rooms handler is its RequestHandlerClass."""

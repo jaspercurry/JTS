@@ -122,7 +122,6 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-DISCOVERY_CACHE_FILE = DEFAULT_CACHE_PATH
 
 # Page-specific stylesheet served static from /assets/ (the same path as
 # app.css + the fonts). Only the visuals app.css doesn't already cover
@@ -1723,7 +1722,7 @@ def make_server(
     *,
     state_path: str = PROVIDER_FILE,
     keys_path: str = KEYS_FILE,
-    discovery_cache_path: str = DISCOVERY_CACHE_FILE,
+    discovery_cache_path: str = DEFAULT_CACHE_PATH,
     discovery_http_client: Any | None = None,
     pricing_path: str | None = None,
     assistant_loudness_profile_path: str | None = None,

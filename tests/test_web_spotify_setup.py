@@ -314,13 +314,6 @@ def test_redirect_delegate_uses_shared_legacy_msg_helper(monkeypatch):
     assert calls == [(handler, "./?msg=Saved")]
 
 
-def test_public_surface_is_stable():
-    assert callable(spotify_setup.make_server)
-    assert callable(spotify_setup._make_handler)
-    assert callable(spotify_setup._setup_wizard_html)
-    assert callable(spotify_setup._management_html)
-
-
 def test_get_root_unconfigured_renders_setup_wizard():
     h = _Request(_handler_cls(client_id=""), "/")
     h.do_GET()

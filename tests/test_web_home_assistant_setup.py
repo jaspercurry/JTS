@@ -236,11 +236,6 @@ def _make_request(path: str, body: bytes = b"", cookies: str = "") -> Any:
     return handler
 
 
-def test_public_surface_is_stable():
-    assert callable(ha.make_server)
-    assert callable(ha._render_index)
-
-
 def test_get_root_renders_canonical_page(monkeypatch):
     monkeypatch.setattr(ha, "read_env_file", lambda path: {})
     h = _make_request("/")

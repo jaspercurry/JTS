@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--port", type=int,
-        default=int(os.environ.get("JASPER_SYSTEM_WEB_PORT", "8772")),
+        default=8772,
     )
     parser.add_argument(
         "--control-base",

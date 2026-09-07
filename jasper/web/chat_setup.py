@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import urllib.parse
 from dataclasses import asdict
 from http import HTTPStatus
@@ -271,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("JASPER_CHAT_WEB_PORT", "8787")),
+        default=8787,
     )
     args = parser.parse_args(argv)
     configure_logging()

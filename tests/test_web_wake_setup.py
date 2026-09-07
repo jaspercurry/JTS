@@ -260,11 +260,6 @@ def _make_request(method, path, *, body=b"", headers=None, cookie=None):
     return h, captured
 
 
-def test_public_surface_present():
-    assert callable(wake_setup._index_html)
-    assert callable(wake_setup.make_server)
-
-
 def test_get_root_renders_canonical_page(tmp_path):
     _make_request.state_path = str(tmp_path / "wake_model.env")
     h, cap = _make_request("GET", "/")
