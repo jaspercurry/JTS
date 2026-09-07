@@ -189,7 +189,20 @@ case "$cmd" in
     fi
     printf '\nJTS_EOT'
     ;;
+  *jts-settle*)
+    # The settle wait is one remote loop; the seconds it waited and its
+    # exit code (1 = hit the ceiling) are all the wrapper reads.
+    printf '%s\n' "${FAKE_SETTLE_SECONDS:-0}"
+    exit "${FAKE_SETTLE_RC:-0}"
+    ;;
   *jasper-doctor*)
+    # The shape a Pi prints: coloured rows, a blank line, then the verdict
+    # line the wrapper parses out.
+    printf '\n  \033[32m\xe2\x9c\x93\033[0m service runtime state    no failed units\n\n'
+    if [[ "${FAKE_DOCTOR_VERDICT:-ok}" != none ]]; then
+      printf 'event=deploy.health status=%s fail=0 warn=0 rows=12 speaker_silent=false\n' \
+        "${FAKE_DOCTOR_VERDICT:-ok}"
+    fi
     exit "${FAKE_DOCTOR_RC:-0}"
     ;;
   sudo\ -n*)
@@ -979,11 +992,66 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertLessEqual(len(polls), 2)
         self.assertNotIn("==> Done.", combined)
 
-    def test_a_red_core_health_result_does_not_fail_the_deploy(self):
-        """The post-deploy `jasper-doctor --core` gate is advisory.
+    def test_the_deploy_exit_code_carries_the_core_health_verdict(self):
+        """The doctor's own `event=deploy.health status=` line is the
+        verdict, not the transient unit's exit code: `systemd-run --wait`
+        folds a fired bound, an OOM kill and a bus failure alike into rc
+        1, so a run that printed no verdict is named and stays green —
+        while a transport that died is named and is not. See ADR-0247."""
+        for verdict, doctor_rc, expect_rc, events in (
+            ("ok", "0", 0, []),
+            ("fail", "1", 1, ["event=deploy.core_health status=fail rc=1"]),
+            (
+                "none",
+                "1",
+                0,
+                ["event=deploy.core_health status=no_verdict rc=1"],
+            ),
+            (
+                "none",
+                "255",
+                255,
+                ["event=deploy.core_health status=unreachable rc=255"],
+            ),
+        ):
+            with self.subTest(verdict=verdict, doctor_rc=doctor_rc):
+                fake = FakeRemote(self)
+                result = self.run_deploy(
+                    fake,
+                    env_local=None,
+                    PI_HOST="jts3.local",
+                    PI_USER="pi",
+                    JASPER_HOSTNAME="jts3.local",
+                    FAKE_DOCTOR_VERDICT=verdict,
+                    FAKE_DOCTOR_RC=doctor_rc,
+                )
 
-        Removal condition: flip the expected rc to 1 when the swallow at
-        the gate_core_health call site goes (ADR-0242).
+                calls = fake.calls()
+                combined = result.stdout + result.stderr
+                self.assertEqual(result.returncode, expect_rc, combined)
+                # One line per result, never two.
+                self.assertEqual(
+                    [
+                        line.strip()
+                        for line in result.stdout.splitlines()
+                        if "event=deploy.core_health" in line
+                    ],
+                    events,
+                )
+                self.assertIn("jasper-doctor\\ --core", calls)
+                # The remote run carries install.sh's bound. See ADR-0242.
+                self.assertIn("systemd-run", calls)
+                self.assertIn("MemoryMax=96M", calls)
+                self.assertIn("RuntimeMaxSec=60", calls)
+
+    def test_core_health_waits_for_pending_jobs_before_judging(self):
+        """The reconciler's --no-block voice restart is still a queued job
+        when the doctor would otherwise read the units, and a unit caught
+        mid-transition fails its runtime-state row. One remote wait runs
+        first; hitting its ceiling discloses itself and still lets the
+        gate judge.
+
+        Removal condition: delete with the wait it pins.
         """
         fake = FakeRemote(self)
         result = self.run_deploy(
@@ -992,16 +1060,20 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             PI_HOST="jts3.local",
             PI_USER="pi",
             JASPER_HOSTNAME="jts3.local",
-            FAKE_DOCTOR_RC="1",
+            FAKE_SETTLE_RC="1",
+            FAKE_SETTLE_SECONDS="90",
         )
 
-        calls = fake.calls()
+        calls = fake.calls().replace("\\", "").splitlines()
+        settle = [i for i, c in enumerate(calls) if "jts-settle" in c]
+        doctor = [i for i, c in enumerate(calls) if "jasper-doctor" in c]
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("jasper-doctor\\ --core", calls)
-        # The remote run carries install.sh's bound. See ADR-0242.
-        self.assertIn("systemd-run", calls)
-        self.assertIn("MemoryMax=96M", calls)
-        self.assertIn("RuntimeMaxSec=60", calls)
+        self.assertEqual(len(settle), 1)
+        self.assertEqual(len(doctor), 1)
+        self.assertGreater(doctor[0], settle[0])
+        self.assertIn(
+            "event=deploy.settle_wait seconds=90 settled=no", result.stdout
+        )
 
     def test_passwordless_sudo_uses_noninteractive_sudo_and_remote_home(self):
         fake = FakeRemote(self)
