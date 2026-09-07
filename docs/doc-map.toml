@@ -917,8 +917,6 @@ code = [
   "deploy/lib/jasper-camilla-guard-common.sh",
   "scripts/multiroom-spike.sh",
   "scripts/multiroom-spike-measure.py",
-  "scripts/s0-sync-bench.sh",
-  "scripts/s0-sync-measure.py",
 ]
 docs = [
   "docs/dumb-endpoint-bringup.md",

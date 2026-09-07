@@ -88,16 +88,12 @@ def test_cli_runs_from_foreign_cwd(tmp_path: Path) -> None:
     assert "60.0s @48k S16 stereo" in result.stdout
 
 
-def test_both_benches_stream_the_shared_generator() -> None:
-    for name, container in (
-        ("multiroom-spike.sh", "wav"),
-        ("s0-sync-bench.sh", "raw"),
-    ):
-        source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
-        assert "_make_click_track.py" in source
-        assert f"--format {container}" in source
-        assert "random.Random(1234)" not in source
-        assert "import random, struct" not in source
+def test_bench_streams_the_shared_generator() -> None:
+    source = (ROOT / "scripts" / "multiroom-spike.sh").read_text(encoding="utf-8")
+    assert "_make_click_track.py" in source
+    assert "--format wav" in source
+    assert "random.Random(1234)" not in source
+    assert "import random, struct" not in source
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -109,7 +105,6 @@ def _write_executable(path: Path, body: str) -> None:
     ("script_name", "args", "container"),
     (
         ("multiroom-spike.sh", ["--setup", "--leader", "leader.invalid"], "wav"),
-        ("s0-sync-bench.sh", ["--up"], "raw"),
     ),
 )
 @pytest.mark.parametrize("remote_status", (0, 37))
@@ -203,7 +198,6 @@ def test_bench_callers_stream_helper_over_ssh_and_propagate_failure(
     ("script_name", "args"),
     (
         ("multiroom-spike.sh", ["--setup", "--leader", "leader.invalid"]),
-        ("s0-sync-bench.sh", ["--up"]),
     ),
 )
 def test_bench_callers_fail_when_local_helper_is_missing(
