@@ -48,7 +48,7 @@ def test_resolve_for_transport_no_match_returns_none():
 
 def test_resolve_for_transport_normalizes_title():
     """Punctuation/case differences between MPRIS title and Spotify
-    canonical name shouldn't kill the match — same _normalise the
+    canonical name shouldn't kill the match — same normalise the
     AirPlay→Spotify resolver already uses."""
     jasper = _ac("jasper", title="Hey Jude")
     r = Router(clients={"jasper": jasper}, default_name="jasper")

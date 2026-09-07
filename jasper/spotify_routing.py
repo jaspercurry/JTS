@@ -53,7 +53,7 @@ _LEADING_ARTICLE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
-def _normalise(s: str) -> str:
+def normalise(s: str) -> str:
     """Lowercase, strip leading 'the/a/an', collapse non-alphanumeric to single
     spaces, trim. Two strings normalise to the same value if they're 'the same
     thing' for human matching purposes."""
@@ -81,7 +81,7 @@ def _match_track(airplay_song: dict, spotify_playback: dict | None) -> bool:
 
     if not (sp_title and ap_title):
         return False
-    return _normalise(sp_title) == _normalise(ap_title)
+    return normalise(sp_title) == normalise(ap_title)
 
 
 def _find_librespot_id(devices: list[dict], name_pattern: str) -> str | None:

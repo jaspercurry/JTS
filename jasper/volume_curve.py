@@ -50,15 +50,14 @@ def normalize_volume_floor_db(value: Any) -> float:
 def configured_volume_floor_db() -> float:
     """Return the wizard-configured floor, falling back to the shipped default.
 
-    Imported lazily to keep this small utility usable from ``sound.settings``
-    itself. The sound-settings reader already logs corrupt-file details; this
-    wrapper keeps volume changes fail-soft if that path is temporarily broken.
+    The sound-settings reader already logs corrupt-file details; this wrapper
+    keeps volume changes fail-soft if that path is temporarily broken.
     """
     global _SETTINGS_FLOOR_CACHE, _SETTINGS_FLOOR_WARNING_LOGGED
     try:
-        from .sound import settings as sound_settings
+        from .sound import settings as sound_settings  # lazy: cycle
 
-        settings_path = sound_settings._settings_path(None)
+        settings_path = sound_settings.resolve_settings_path(None)
         signature: tuple[str, int | None, int | None]
         try:
             stat = settings_path.stat()

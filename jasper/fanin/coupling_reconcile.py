@@ -906,7 +906,7 @@ def _converge_ring(
         read_value(outputd_snapshot.text, OUTPUTD_RING_PATH_ENV_VAR)
     )
     ring_path_converged = (
-        _outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
+        outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
     )
     changed = fanin_changed or outputd_changed
 
@@ -938,7 +938,7 @@ def _converge_ring(
             result="ring_path_converged",
             reason=reason,
             was=ring_path_before,
-            now=_outputd_ring_path_for(outputd_new_text),
+            now=outputd_ring_path_for(outputd_new_text),
         )
 
     _sync_process_env_for_emit(outputd_new_text)
@@ -1750,7 +1750,7 @@ def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
     return remove(text, action.key)
 
 
-def _outputd_ring_path_for(outputd_text: str) -> str:
+def outputd_ring_path_for(outputd_text: str) -> str:
     """The ring file outputd must read, derived from the endpoint marker.
 
     ONE writer for the path half of outputd's ring-path/marker biconditional.
@@ -1822,7 +1822,7 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     read only that file. The marker is the FACT (written by
     ``jasper-audio-hardware-reconcile`` from the accepted active-lane decision)
     and the path is its PROJECTION, derived here by
-    :func:`_outputd_ring_path_for`. A preserve-else-stereo default would write
+    :func:`outputd_ring_path_for`. A preserve-else-stereo default would write
     the full-range Ring B path onto an armed box, and outputd would refuse the
     pair at startup.
 
@@ -1844,7 +1844,7 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
         RuntimeEnvAction(
             "set",
             OUTPUTD_RING_PATH_ENV_VAR,
-            _outputd_ring_path_for(outputd_text),
+            outputd_ring_path_for(outputd_text),
         ),
         RuntimeEnvAction(
             "set",
@@ -1876,13 +1876,13 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
     content-source keys the files now carry so the immediate camilla re-emit names
     the right devices for any reader. The ring PATH comes from
-    :func:`_outputd_ring_path_for`, the same single derivation the persisted
+    :func:`outputd_ring_path_for`, the same single derivation the persisted
     write uses, so the in-process env can never carry a different ring than the
     file just written.
     """
     os.environ[COUPLING_ENV_VAR] = COUPLING_SHM_RING
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    os.environ[OUTPUTD_RING_PATH_ENV_VAR] = _outputd_ring_path_for(outputd_text)
+    os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
     os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
         resolve_outputd_ring_slots(
             read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
