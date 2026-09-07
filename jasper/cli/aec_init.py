@@ -1122,7 +1122,7 @@ def publish_alignment_record(
 
 
 def main() -> int:
-    configure_logging(fmt="%(asctime)s aec-init %(levelname)s %(message)s")
+    configure_logging()
     corpus = _truthy(CORPUS_CHIP_AEC_ENABLED_ENV)
     mode = (
         "corpus"

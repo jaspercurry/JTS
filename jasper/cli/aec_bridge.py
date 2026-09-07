@@ -1118,7 +1118,7 @@ def _park(code: int, reason: str, detail: str) -> int:
 
 
 def main() -> int:
-    configure_logging(fmt="%(asctime)s aec-bridge %(levelname)s %(message)s")
+    configure_logging()
     # Log flight recorder + runtime debug toggle. See
     # jasper/flight_recorder.py.
     from .. import flight_recorder

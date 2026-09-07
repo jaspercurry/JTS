@@ -1305,7 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--udp-port", type=int, default=USB_HOST_MIC_UDP_PORT)
     parser.add_argument("--status-path", default=RELAY_STATUS_PATH)
     args = parser.parse_args(argv)
-    configure_logging(fmt="%(asctime)s usb-mic %(levelname)s %(message)s")
+    configure_logging()
     try:
         return run_relay(udp_port=args.udp_port, status_path=args.status_path)
     except (OSError, RelayError) as exc:
