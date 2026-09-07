@@ -389,30 +389,7 @@ jobs:
           node scripts/check-sensitivity-trim-parity.mjs
 
   rust:
-    # CI formats, lints, compiles, and tests the Rust audio daemons — the
-    # pytest job above does not. Keep the historical stable `rust` context
-    # visible during and after the branch-protection cutover; `ci` is the sole
-    # long-term required context. On full-lane PRs that do not touch
-    # Rust-relevant surfaces, this job exits green quickly after
-    # scripts/rust-ci-needed. Rust-relevant PRs and every push to main run the
-    # full Cargo gate. Without this, a dependency
-    # bump (e.g. the `alsa` crate used by jasper-fanin/jasper-outputd) that
-    # breaks the build passes CI green and only fails at deploy-time
-    # `cargo build` on the Pi, and a logic regression in the output/loudness
-    # path goes uncaught. `cargo test --release --locked` mirrors install.sh's
-    # release build profile and runs each crate's hardware-free unit tests.
-    # scripts/check-rust.sh owns the crate list and the low-noise Rustfmt +
-    # default Clippy-with-warnings-as-errors gate used both here and on macOS.
-    # Do not broaden to pedantic/restriction lint groups without a separate
-    # triage. Pin the Rust toolchain to the Pi/Trixie-era rustc so Clippy's
-    # warn-by-default set is not a moving merge gate.
-    #
-    # History: enabling this gate first surfaced 3 stale jasper-outputd
-    # tests (assistant-gain clamp + loudness) that had been red since the
-    # "calibrate assistant loudness" rework but were invisible because Rust
-    # tests never ran in CI; those expectations were corrected (the
-    # calibrated gain is QUIETER, safe-direction) and `cargo test` re-enabled
-    # here.
+    # Pin Clippy to the Pi/Trixie toolchain so warnings do not change at each run.
     needs: classify
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
@@ -443,68 +420,22 @@ jobs:
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16  # v2
         if: steps.rust-needed.outputs.run == 'true'
         with:
-          workspaces: |
-            rust/jasper-env
-            rust/jasper-daemon
-            rust/jasper-clock
-            rust/jasper-resampler
-            rust/jasper-ring
-            rust/jasper-host-clock
-            rust/jasper-fanin
-            rust/jasper-outputd
-            rust/jasper-tts-protocol
+          workspaces: rust
 
       - name: Rust formatting + Clippy
         if: steps.rust-needed.outputs.run == 'true'
         run: scripts/check-rust.sh
 
-      - name: jasper-env — build + test (shared environment parsing crate)
+      - name: Rust workspace — build + test
         if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-env
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+        working-directory: rust
+        run: cargo +"$RUST_TOOLCHAIN" test --workspace --release --locked
 
-      - name: jasper-daemon — build + test (shared daemon skeleton crate)
+      - name: Host clock without ALSA
         if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-daemon
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-clock — build + test (pure DLL crate; no ALSA)
-        if: steps.rust-needed.outputs.run == 'true'
-        # The shared clock primitive (spa_dll port). Pure Rust, no libasound,
-        # so this is the crate whose convergence/no-oscillation properties are
-        # the regression gate for every consumer's loop math.
-        working-directory: rust/jasper-clock
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-resampler — build + test (pure resampler crate; no ALSA)
-        if: steps.rust-needed.outputs.run == 'true'
-        # The shared windowed-sinc resampler + rate controller. Pure Rust, no
-        # libasound, so its pass-through / capture-follower frame-count /
-        # streaming-continuity / loop-sign properties are the regression gate
-        # for the daemon path (jasper-outputd's content_bridge), its sole
-        # consumer.
-        working-directory: rust/jasper-resampler
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-ring — build + test (pure SHM ring crate; no ALSA)
-        if: steps.rust-needed.outputs.run == 'true'
-        # PROTOTYPE (latency/ring-proto-shm): the SPSC SHM ping-pong ring
-        # reader. Pure Rust (mmap via libc), so its seq/wrap/epoch/attach-resync
-        # and golden-layout properties (the cross-language drift pin against the
-        # C `_Static_assert`ed header) are the regression gate for the shm_ring
-        # content bridge, and run on any host.
-        working-directory: rust/jasper-ring
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-host-clock — build + test (pure ladder/servo; no ALSA)
-        if: steps.rust-needed.outputs.run == 'true'
-        # The shared host-slaved USB clock. The pure ladder/probe/servo/write-gate
-        # + the status-fragment byte-shape run with NO features (no libasound), so
-        # its ladder-transition / probe / write-gate / clamp / anti-windup /
-        # fragment-shape properties are the regression gate for jasper-fanin's
-        # USB DIRECT consumer and run on any host.
-        working-directory: rust/jasper-host-clock
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
+        # A workspace build enables fan-in's ALSA feature on the host clock.
+        working-directory: rust
+        run: cargo +"$RUST_TOOLCHAIN" test -p jasper-host-clock --release --locked
 
       - name: jts-ring-ioplug — C core host test + plugin compile check
         if: steps.rust-needed.outputs.run == 'true'
@@ -521,21 +452,6 @@ jobs:
         # stays Pi-only, driven by build-on-pi.sh.
         working-directory: c/jts-ring-ioplug
         run: make test bench plugin
-
-      - name: jasper-tts-protocol — build + test (shared wire-protocol crate)
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-tts-protocol
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-fanin — build + test (release, locked; mirrors install.sh)
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-fanin
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
-
-      - name: jasper-outputd — build + test (release, locked; mirrors install.sh)
-        if: steps.rust-needed.outputs.run == 'true'
-        working-directory: rust/jasper-outputd
-        run: cargo +"$RUST_TOOLCHAIN" test --release --locked
 
   ci:
     # The only long-term branch-protection context. Keep this aggregate

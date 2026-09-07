@@ -1,84 +1,32 @@
 [package]
 name = "jasper-fanin"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "JTS renderer fan-in: sums per-renderer snd-aloop substreams into a single summed-music output stream for CamillaDSP."
-license = "Apache-2.0"
-repository = "https://github.com/jaspercurry/JTS"
-authors = ["Jasper Curry <jaspercurry@gmail.com>"]
-rust-version = "1.75"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
-# Why these dependencies — pinned to current stable versions on Trixie's
-# rustc (1.75+).
 [dependencies]
-# The shared daemon skeleton: the hand-built JSON emitter, the systemd
-# notify seam (READY=1 / WATCHDOG=1 / STOPPING=1 for the unit's
-# Type=notify + WatchdogSec=30s contract), the config-class park contract,
-# and mlockall. Same crate jasper-outputd stands on.
 jasper-daemon = { path = "../jasper-daemon" }
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
-# Shared policy-light scalar environment parsing. Fan-in keeps its own
-# feature-token, optional-string, fallback-key, and positive-dimension policy.
 jasper-env = { path = "../jasper-env" }
-# The ONE shared windowed-sinc resampler + DLL rate controller (same crate
-# jasper-outputd's content_bridge consumes). Pure, no ALSA — used here for the
-# DEFAULT-OFF per-input adaptive resampler on the clock-crossing (USB) lane,
-# DLL-steered to the DAC clock. See src/lane_resampler.rs.
 jasper-resampler = { path = "../jasper-resampler" }
-# The SPSC ping-pong SHM ring — the same crate jasper-outputd's Ring B reader
-# consumes. Pure (mmap via libc, no ALSA). Ring A is this daemon's only output
-# (ADR-0100): its RingWriter is the publish half, and CamillaDSP reads it via a
-# capture-direction ioplug.
 jasper-ring = { path = "../jasper-ring" }
-# The shared host-slaved USB clock ladder + servo + ALSA pitch actuator. When
-# JASPER_FANIN_USB_DIRECT=enabled fan-in owns the gadget capture, so the
-# `fanin-host-clock` thread drives this to steer the host's Capture Pitch ctl
-# toward the DAC clock. The `alsa` feature enables the real `AlsaPitchCtl`;
-# fan-in always links libasound so it is enabled unconditionally here. Default
-# OFF via JASPER_FANIN_HOST_CLOCK.
 jasper-host-clock = { path = "../jasper-host-clock", features = ["alsa"] }
-# Idiomatic Rust wrapper around libasound — the daemon's primary I/O
-# surface. Mature crate, used by most Rust ALSA projects (paplay,
-# pulse-pipewire-bridge, etc.). Compiles against Trixie's
-# libasound2-dev. Every ALSA-linking crate in rust/ shares one version;
-# tests/test_build_and_ci_contracts.py owns that invariant.
-alsa = "0.12"
+alsa.workspace = true
 
-# Structured logging to stderr. journald captures it; the daemon's
-# stdout/stderr are how it surfaces event= lines for jasper-trace.sh
-# and the /state aggregator to consume.
 log = "0.4"
 env_logger = "0.11"
 
-# Signal handling that doesn't fight async/tokio. We're a plain-thread
-# daemon (no async runtime), so signal-hook's flag pattern is the
-# right shape.
 signal-hook = "0.4"
 
-# Top-level error ergonomics. Internal modules may use thiserror for
-# structured errors; anyhow is the catch-all at main().
 anyhow = "1"
 
-# Direct libc bindings — poll(2) on the control socket, clock_gettime, and
-# ALSA errno classification.
 libc = "0.2"
 
-# JSON parsing for the impulse-tap arm-body endpoint (src/impulse_tap.rs
-# `TapConfig::from_arm_body`). The emit side is jasper-daemon's.
 serde_json = "1"
-
-[profile.release]
-# Optimize aggressively. The hot path (per-frame mixer) is small;
-# compile time isn't a concern on a Pi 5. Smaller binary via
-# strip=debuginfo (keep symbols for crash debugging via journald;
-# strip the dwarf section). panic=abort because we don't want to
-# unwind from a panic in audio code anyway — let the daemon die,
-# systemd restarts in ~2s.
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = "debuginfo"
-panic = "abort"
 
 [[bin]]
 name = "jasper-fanin"

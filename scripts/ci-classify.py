@@ -86,7 +86,6 @@ DOCS_TEST_FILES = (
     "tests/test_build_and_ci_contracts.py",
     "tests/test_calibration_agent_advisor_context.py",
     "tests/test_calibration_agent_tools.py",
-    "tests/test_check_rust_script.py",
     "tests/test_ci_classifier.py",
     "tests/test_crossover_v2_prescriber_status.py",
     "tests/test_docs_impact.py",

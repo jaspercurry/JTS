@@ -700,7 +700,7 @@ impl TtsMixer {
                 && self
                     .assistant_segment_playback
                     .as_ref()
-                    .map_or(true, |playback| playback.segment_serial != segment_serial);
+                    .is_none_or(|playback| playback.segment_serial != segment_serial);
             // Arc-clone the owned identity strings once when this segment first
             // reaches playout, never once per audio frame.
             let playback_decision = starts_assistant_playback

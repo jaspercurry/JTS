@@ -254,13 +254,13 @@ notes = "nqptp and shairport-sync core install builds plus the optional webrtc-a
 [[surface]]
 id = "rust-fanin-crates"
 kind = "cargo-lockfile"
-consumer = "rust/jasper-fanin/Cargo.toml and rust/jasper-fanin/Cargo.lock"
+consumer = "rust/jasper-fanin/Cargo.toml and rust/Cargo.lock"
 status = "pinned"
-notes = "Cargo.lock is committed for the jasper-fanin binary crate. install.sh builds from rust/jasper-fanin with cargo --locked, so lock drift fails deploy instead of resolving live."
+notes = "The workspace lockfile pins both daemons. The installer builds with cargo --locked, so lock drift fails deploy."
 
 [[surface]]
 id = "rust-outputd-crates"
 kind = "cargo-lockfile"
-consumer = "rust/jasper-outputd/Cargo.toml and rust/jasper-outputd/Cargo.lock"
+consumer = "rust/jasper-outputd/Cargo.toml and rust/Cargo.lock"
 status = "pinned"
-notes = "Cargo.lock is committed for the jasper-outputd binary crate. install.sh builds from rust/jasper-outputd with cargo --locked, so lock drift fails deploy instead of resolving live."
+notes = "The workspace lockfile pins both daemons. The installer builds with cargo --locked, so lock drift fails deploy."

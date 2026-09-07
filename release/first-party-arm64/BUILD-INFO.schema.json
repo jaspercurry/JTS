@@ -187,7 +187,7 @@
       "required": ["root", "lockfile", "lockfile_sha256", "packages"],
       "properties": {
         "root": {"enum": ["jasper-fanin", "jasper-outputd"]},
-        "lockfile": {"type": "string", "pattern": "^rust/.+/Cargo.lock$"},
+        "lockfile": {"type": "string", "pattern": "^rust/Cargo.lock$"},
         "lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "packages": {
           "type": "array",

@@ -213,7 +213,26 @@ name = "jasper-host-clock"
 version = "0.1.0"
 dependencies = [
  "alsa",
+ "jasper-resampler",
  "log",
+ "serde_json",
+]
+
+[[package]]
+name = "jasper-outputd"
+version = "0.1.0"
+dependencies = [
+ "alsa",
+ "anyhow",
+ "jasper-clock",
+ "jasper-daemon",
+ "jasper-env",
+ "jasper-resampler",
+ "jasper-ring",
+ "jasper-tts-protocol",
+ "libc",
+ "serde_json",
+ "signal-hook",
 ]
 
 [[package]]

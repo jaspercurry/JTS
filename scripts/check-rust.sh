@@ -15,19 +15,6 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 workflow="${repo_root}/.github/workflows/tests.yml"
 
-rust_crates=(
-  rust/jasper-env
-  rust/jasper-daemon
-  rust/jasper-clock
-  rust/jasper-resampler
-  rust/jasper-ring
-  rust/jasper-host-clock
-  rust/jasper-tts-protocol
-  rust/jasper-fanin
-  rust/jasper-outputd
-)
-host_clock_crate="rust/jasper-host-clock"
-
 die() {
   printf 'check-rust: %s\n' "$*" >&2
   exit 1
@@ -105,10 +92,6 @@ case "${host_os}" in
     ;;
 esac
 
-for crate in "${rust_crates[@]}"; do
-  [[ -f "${repo_root}/${crate}/Cargo.toml" ]] || die "missing Rust crate manifest: ${crate}/Cargo.toml"
-done
-
 stub_dir=""
 cleanup() {
   status=$?
@@ -156,36 +139,10 @@ if [[ -n "${linux_target}" ]]; then
 fi
 printf ')\n'
 
-for crate in "${rust_crates[@]}"; do
-  printf '==> rustfmt: %s\n' "${crate}"
-  (
-    cd "${repo_root}/${crate}"
-    rustup run "${rust_toolchain}" cargo fmt --all -- --check
-  )
-done
-
-for crate in "${rust_crates[@]}"; do
-  printf '==> Clippy: %s\n' "${crate}"
-  clippy_args=(
-    clippy
-    --release
-    --locked
-    --all-targets
-  )
-  if [[ "${crate}" == "${host_clock_crate}" ]]; then
-    clippy_args+=(--all-features)
-  fi
-  clippy_args+=("${target_args[@]}" -- --no-deps -D warnings)
-  (
-    cd "${repo_root}/${crate}"
-    if [[ "${#cargo_env[@]}" -gt 0 ]]; then
-      env "${cargo_env[@]}" rustup run "${rust_toolchain}" cargo \
-        "${clippy_args[@]}"
-    else
-      rustup run "${rust_toolchain}" cargo "${clippy_args[@]}"
-    fi
-  )
-done
+cd "${repo_root}/rust"
+rustup run "${rust_toolchain}" cargo fmt --all -- --check
+env ${cargo_env[@]+"${cargo_env[@]}"} rustup run "${rust_toolchain}" cargo clippy --workspace --release --locked \
+  --all-targets --all-features ${target_args[@]+"${target_args[@]}"} -- --no-deps -D warnings
 
 printf '%s\n' 'Rust formatting and Clippy passed.'
 printf '%s\n' 'This lane type-checks and lints only; run linked Rust unit tests on Linux or in CI.'

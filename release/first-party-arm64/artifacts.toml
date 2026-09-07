@@ -91,12 +91,12 @@ build = ["make", "-C", "c/jts-ring-ioplug", "clean", "plugin"]
 [[cargo_graph]]
 root = "jasper-fanin"
 manifest_path = "rust/jasper-fanin/Cargo.toml"
-lockfile_path = "rust/jasper-fanin/Cargo.lock"
+lockfile_path = "rust/Cargo.lock"
 
 [[cargo_graph]]
 root = "jasper-outputd"
 manifest_path = "rust/jasper-outputd/Cargo.toml"
-lockfile_path = "rust/jasper-outputd/Cargo.lock"
+lockfile_path = "rust/Cargo.lock"
 
 [[derived_notice]]
 component = "PipeWire spa_dll"

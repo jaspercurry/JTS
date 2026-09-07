@@ -742,7 +742,7 @@ pub(super) fn push_capture_chunk(
     narrow: Option<&[i16]>,
 ) {
     // PANIC-AUDITED: both views are slices of one just-read chunk, cut at the same got
-    debug_assert!(narrow.map_or(true, |n| n.len() == raw.len()));
+    debug_assert!(narrow.is_none_or(|n| n.len() == raw.len()));
     let Some(r) = resampler else {
         return;
     };

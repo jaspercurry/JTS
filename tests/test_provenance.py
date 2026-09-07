@@ -8,6 +8,8 @@ import copy
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-provenance.py"
@@ -207,40 +209,27 @@ def test_install_source_archive_mirrors_retain_upstream_provenance() -> None:
     )
 
 
-def test_rust_fanin_lock_check_detects_dependency_drift(tmp_path: Path) -> None:
+@pytest.mark.parametrize("daemon", ["fanin", "outputd"])
+def test_rust_lock_check_detects_dependency_drift(tmp_path: Path, daemon: str) -> None:
     check_provenance = _load_check_module()
-    _write_rust_crate_with_missing_bar(tmp_path, "jasper-fanin")
-    data = {
-        "surface": [
-            {
-                "id": "rust-fanin-crates",
-                "status": "pinned",
-            }
-        ]
-    }
-
+    _write_rust_crate_with_missing_bar(tmp_path, f"jasper-{daemon}")
+    data = {"surface": [{"id": f"rust-{daemon}-crates", "status": "pinned"}]}
     errors: list[str] = []
-    check_provenance._validate_rust_fanin_lock(data, tmp_path, errors)
 
-    assert any("bar" in error for error in errors)
+    check_provenance._validate_rust_crate_lock(
+        data, tmp_path, errors,
+        surface_id=f"rust-{daemon}-crates", crate_relpath=f"rust/jasper-{daemon}",
+    )
 
-
-def test_rust_outputd_lock_check_detects_dependency_drift(tmp_path: Path) -> None:
-    check_provenance = _load_check_module()
-    _write_rust_crate_with_missing_bar(tmp_path, "jasper-outputd")
-    data = {
-        "surface": [
-            {
-                "id": "rust-outputd-crates",
-                "status": "pinned",
-            }
-        ]
-    }
-
-    errors: list[str] = []
-    check_provenance._validate_rust_outputd_lock(data, tmp_path, errors)
-
-    assert any("bar" in error for error in errors)
+    assert len(errors) == 1
+    lockfile = tmp_path / "rust/Cargo.lock"
+    lockfile.write_text(lockfile.read_text().replace('"foo",', '"foo", "bar",'))
+    errors.clear()
+    check_provenance._validate_rust_crate_lock(
+        data, tmp_path, errors,
+        surface_id=f"rust-{daemon}-crates", crate_relpath=f"rust/jasper-{daemon}",
+    )
+    assert errors == []
 
 
 def _write_rust_crate_with_missing_bar(tmp_path: Path, crate_name: str) -> None:
@@ -258,7 +247,7 @@ bar = "1"
 """.lstrip(),
         encoding="utf-8",
     )
-    (crate_dir / "Cargo.lock").write_text(
+    (crate_dir.parent / "Cargo.lock").write_text(
         f"""
 version = 3
 

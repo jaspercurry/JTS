@@ -1,38 +1,24 @@
 [package]
 name = "jasper-host-clock"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "JTS host-slaved USB clock: the daemon-agnostic ladder + probe + servo + write-gate that steers the UAC2 gadget's Capture Pitch ctl so the host tracks the DAC clock."
-license = "Apache-2.0"
-repository = "https://github.com/jaspercurry/JTS"
-authors = ["Jasper Curry <jaspercurry@gmail.com>"]
-# MSRV: 1.75 for the jasper-fanin consumer —
-# this crate compiles under the pinned 1.85.0 CI toolchain with clippy's
-# `incompatible_msrv` lint honoring 1.75.
-rust-version = "1.75"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 log = "0.4"
-# The real ALSA pitch actuator (`AlsaPitchCtl`) is behind an off-by-default
-# feature so `cargo test` on a macOS host (no libasound) is pure. Fan-in enables
-# it unconditionally.
-alsa = { version = "0.12", optional = true }
+alsa = { workspace = true, optional = true }
 
 [dev-dependencies]
-# One in-module test asserts the status_fragment() byte shape is valid JSON.
 serde_json = "1"
-# The REAL inner rate controller the CORRECTION-mode servo-sim closes against —
-# `jasper_resampler::RateController` constructed exactly as `lane_resampler`
-# builds it (±500 ppm, period 256 @ 48 kHz, max_resync disabled). Pure (no ALSA,
-# only jasper-clock), so it composes into the host-side `cargo test` and the
-# servo-sim measures the composite loop's ACTUAL dynamics instead of a
-# first-order tracker that hid the limit cycle (review PR #1144).
 jasper-resampler = { path = "../jasper-resampler" }
 
 [features]
+# The pure clock tests must also link on hosts without libasound.
 default = []
-# Compile the real ALSA `AlsaPitchCtl` actuator (name-based element resolution).
-# Off by default so the pure ladder/servo tests link on any host.
 alsa = ["dep:alsa"]
 
 [lib]

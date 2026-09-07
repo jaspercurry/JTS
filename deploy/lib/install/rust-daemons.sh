@@ -64,28 +64,12 @@ rust_cargo_build_env() {
         "CARGO_PROFILE_RELEASE_OPT_LEVEL=2"
 }
 
-# Build-cache staging format. Bump when the staging/freshness contract
-# changes in a way that requires discarding cargo's incremental state
-# once (rust_build_cache_reset_if_stale_format below clears target/ on
-# mismatch). Format 1 = the 2026-07-10 mtime-trap fix: caches populated
-# by mtime-preserving rsync can hold fingerprints NEWER than current
-# source mtimes, which cargo reads as "Fresh" forever — the purge is the
-# only way an already-poisoned cache ever recompiles.
-RUST_BUILD_CACHE_FORMAT=1
+# Format 2 moves the daemon caches into one workspace. Bump when staging
+# changes require Cargo's fingerprints to be discarded.
+RUST_BUILD_CACHE_FORMAT=2
 
-# Stage a crate's source into a build/staging dir without poisoning
-# cargo's freshness check. Cargo rebuilds a unit only when a source file
-# is NEWER than the fingerprint stamped at the last compile, and rsync's
-# -a preserves mtimes end to end (laptop -> checkout -> cache). A changed
-# file whose checkout mtime predates the cache's last build therefore
-# lands "in the past", cargo declares the crate Fresh, and install.sh
-# ships the stale binary while reporting success (the 2026-07-02
-# jasper-usbsink-audio and 2026-07-10 jasper-outputd incidents — proven
-# live: cache source carried a fix, `cargo build -v` said Fresh in
-# 0.03s). So: compare by content (--checksum) and do NOT preserve times
-# (-rlpgoD is -a minus -t) — an unchanged file is skipped and keeps its
-# old mtime (no spurious rebuild), a changed file is written with the
-# current time and is always newer than the last fingerprint.
+# Cargo freshness uses mtimes. Changed content must receive a current mtime;
+# unchanged content keeps its old mtime to avoid needless rebuilds.
 stage_rust_crate() {
     local from="$1"
     local to="$2"
@@ -95,10 +79,6 @@ stage_rust_crate() {
         "${from}/" "${to}/"
 }
 
-# One-time incremental-state reset when the staging contract changes.
-# stage_rust_crate keeps future syncs honest, but a cache whose
-# fingerprints already postdate its (correct) source mtimes stays
-# false-Fresh forever — only dropping target/ forces the recompile.
 rust_build_cache_reset_if_stale_format() {
     local cache_dir="$1"
     local name="$2"
@@ -108,8 +88,10 @@ rust_build_cache_reset_if_stale_format() {
         have="$(<"${marker}")"
     fi
     if [[ "${have}" != "${RUST_BUILD_CACHE_FORMAT}" ]]; then
-        echo "  ${name}: build-cache format '${have:-none}' != '${RUST_BUILD_CACHE_FORMAT}'; clearing ${cache_dir}/target (one-time full rebuild)"
-        rm -rf "${cache_dir}/target"
+        echo "  ${name}: build-cache format '${have:-none}' != '${RUST_BUILD_CACHE_FORMAT}'; clearing workspace and legacy daemon targets (one-time full rebuild)"
+        rm -rf "${cache_dir}/target" \
+            "${cache_dir%/*}/jasper-fanin-build/target" \
+            "${cache_dir%/*}/jasper-outputd-build/target"
         printf '%s\n' "${RUST_BUILD_CACHE_FORMAT}" >"${marker}"
     fi
 }
@@ -118,7 +100,7 @@ build_install_rust_daemon() {
     local name="$1"
     local required="$2"
     local src_dir="${REPO_DIR}/rust/${name}"
-    local cache_dir="/var/cache/${name}-build"
+    local cache_dir="${3:-/var/cache/jasper-rust-build}"
     local bin_dest="/opt/jasper/bin/${name}"
     local missing_source_message="${name} source missing"
     local required_reason="This tree requires ${name} as part of the audio runtime."
@@ -146,32 +128,7 @@ build_install_rust_daemon() {
     chown "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
     rust_build_cache_reset_if_stale_format "${cache_dir}" "${name}"
 
-    # Stage the source tree into the cache dir, keeping cargo's
-    # incremental compile state in target/ between runs. --delete
-    # removes stale source files (e.g., a renamed module).
-    stage_rust_crate "${src_dir}" "${cache_dir}"
-    # Every crate a production daemon reaches through `path = "../<name>"`,
-    # staged as a sibling of the cache dir so those paths resolve like the repo
-    # layout. jasper-resampler's own `../jasper-clock` dep is covered because
-    # jasper-clock is staged here too. Existence-guarded so a branch predating a
-    # crate still builds; tests/test_install_rust_daemon_restart.py pins this
-    # list against the manifests' actual reachable path dependencies.
-    local -a sibling_crates=(
-        jasper-daemon
-        jasper-tts-protocol
-        jasper-env
-        jasper-clock
-        jasper-resampler
-        jasper-ring
-        jasper-host-clock
-    )
-    local sibling sibling_dest
-    for sibling in "${sibling_crates[@]}"; do
-        [[ -d "${REPO_DIR}/rust/${sibling}" ]] || continue
-        sibling_dest="$(dirname "${cache_dir}")/${sibling}"
-        stage_rust_crate "${REPO_DIR}/rust/${sibling}" "${sibling_dest}"
-        chown -R "${BUILD_USER}:${BUILD_USER}" "${sibling_dest}"
-    done
+    stage_rust_crate "${REPO_DIR}/rust" "${cache_dir}"
     chown -R "${BUILD_USER}:${BUILD_USER}" "${cache_dir}"
 
     local -a cargo_env=()
@@ -189,7 +146,7 @@ build_install_rust_daemon() {
     # build, never a live daemon. cargo_env stays inside the command so
     # the user-drop + profile env are unaffected by the scope.
     run_contained_build "${name}" -- \
-        sudo -u "${BUILD_USER}" -H env "${cargo_env[@]}" bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
+        sudo -u "${BUILD_USER}" -H env "${cargo_env[@]}" bash -c "cd '${cache_dir}' && cargo build --package '${name}' --release --locked --quiet" \
         || { echo "  ${name} build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/${name}"
@@ -198,7 +155,7 @@ build_install_rust_daemon() {
         return 1
     fi
 
-    mkdir -p /opt/jasper/bin
+    mkdir -p "$(dirname "${bin_dest}")"
     install -m 0755 -o root -g root "${built_bin}" "${bin_dest}"
     echo "  -> installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1))"
 }

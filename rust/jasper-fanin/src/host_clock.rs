@@ -220,12 +220,8 @@ pub fn build_obs(signals: &HostClockSignals) -> Obs {
 /// card cannot spam the journal. Pure (no clock read inside — `now_ms` is the
 /// caller's monotonic clock), so it is unit-testable. `last` is the last logged
 /// ms, `None` meaning "never logged".
-///
-/// `Option::is_none_or` is stable only since Rust 1.82; the crate declares
-/// rust-version 1.75, so clippy's `incompatible_msrv` (`-D warnings` in CI)
-/// would reject it. `map_or` has been stable since 1.0 and is MSRV-safe.
 fn should_log_ctl_error(last: Option<u64>, now_ms: u64) -> bool {
-    last.map_or(true, |last| now_ms.saturating_sub(last) >= 10_000)
+    last.is_none_or(|last| now_ms.saturating_sub(last) >= 10_000)
 }
 
 /// Bounded retry cadence for a missing/failed control handle. The servo itself

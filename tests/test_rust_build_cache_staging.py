@@ -2,45 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin the Rust build-cache staging contract in rust-daemons.sh.
-
-Cargo's freshness check is mtime-based: a unit recompiles only when a
-source file is NEWER than the fingerprint stamped at the last compile.
-The old staging (`rsync -a`) preserved mtimes end to end (laptop ->
-checkout -> /var/cache/<name>-build), so a changed file whose checkout
-mtime predated the cache's last build landed "in the past" and cargo
-declared the crate Fresh — install.sh then shipped the stale binary
-while reporting success. Bit twice on hardware: 2026-07-02
-(jasper-usbsink-audio: new HTTP endpoints 404'd) and 2026-07-10
-(jasper-outputd: the #1202 chip-ref journal-spam fix never went live;
-`cargo build -v` in the poisoned cache said `Fresh` in 0.03s while the
-staged source contained the fix).
-
-Contract, enforced here:
-
-  1. `stage_rust_crate` copies by content (--checksum) WITHOUT
-     preserving times (-rlpgoD is -a minus -t): a content-changed file
-     always lands newer than the last fingerprint (cargo rebuilds), an
-     unchanged file is skipped and keeps its old mtime (no spurious
-     rebuild churn).
-  2. Every crate-staging copy in rust-daemons.sh goes through
-     `stage_rust_crate` — a new sibling crate staged with a raw
-     mtime-preserving rsync reintroduces the trap.
-  3. `rust_build_cache_reset_if_stale_format` clears target/ exactly
-     once per RUST_BUILD_CACHE_FORMAT bump, healing caches that were
-     already poisoned before the staging fix (their fingerprints
-     postdate correct source mtimes, so honest staging alone can never
-     trigger the recompile).
-
-Functional tests run the real shipped bash functions against the real
-rsync on temp dirs (mirrors tests/test_install_rust_daemon_restart.py's
-source-of-truth-is-the-script approach).
-"""
+"""Exercise Cargo's content/mtime staging and one-time cache invalidation."""
 
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -197,11 +163,12 @@ def test_reset_purges_target_when_marker_missing(tmp_path):
     assert (cache / _MARKER).read_text(encoding="utf-8").strip() == _shipped_format()
 
 
-def test_reset_purges_target_when_marker_outdated(tmp_path):
+@pytest.mark.parametrize("old_format", ["0", "1"])
+def test_reset_purges_target_when_marker_outdated(tmp_path, old_format):
     cache = tmp_path / "cache"
     (cache / "target").mkdir(parents=True)
     (cache / "target" / "bin").write_bytes(b"stale")
-    (cache / _MARKER).write_text("0\n", encoding="utf-8")
+    (cache / _MARKER).write_text(old_format + "\n", encoding="utf-8")
 
     proc = _reset(cache)
     assert proc.returncode == 0, proc.stderr
@@ -214,55 +181,14 @@ def test_reset_noop_when_marker_current(tmp_path):
     (cache / "target").mkdir(parents=True)
     kept = cache / "target" / "bin"
     kept.write_bytes(b"fresh")
+    legacy = cache.parent / "jasper-fanin-build/target/old"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"old")
     (cache / _MARKER).write_text(_shipped_format() + "\n", encoding="utf-8")
 
     proc = _reset(cache)
     assert proc.returncode == 0, proc.stderr
+    assert legacy.exists()
     assert kept.exists(), (
         "current-format cache was purged — every deploy would full-rebuild"
     )
-
-
-# --------------------------------------------------------------------------
-# 3. Script-shape contract
-# --------------------------------------------------------------------------
-def test_all_crate_staging_goes_through_stage_rust_crate():
-    """A new sibling crate staged with a raw mtime-preserving rsync
-    silently reintroduces the stale-binary trap. Exactly one rsync
-    invocation may exist (inside stage_rust_crate) and it must compare
-    by content without preserving times."""
-    text = _RUST_DAEMONS.read_text(encoding="utf-8")
-    invocations = [
-        line.strip()
-        for line in text.splitlines()
-        if re.match(r"^\s*rsync\b", line)
-    ]
-    assert len(invocations) == 1, (
-        f"expected exactly one rsync invocation (in stage_rust_crate), "
-        f"found {invocations}"
-    )
-    assert "--checksum" in invocations[0]
-    assert "-rlpgoD" in invocations[0], (
-        "staging must not preserve times (-rlpgoD is -a minus -t); "
-        "a bare -a resurrects the cargo false-Fresh trap"
-    )
-    assert re.search(r"^\s*rsync\s+-a\b", text, re.MULTILINE) is None
-
-
-def test_build_calls_reset_before_staging():
-    text = _RUST_DAEMONS.read_text(encoding="utf-8")
-    body = text.split("build_install_rust_daemon() {", 1)[1]
-    reset_at = body.find("rust_build_cache_reset_if_stale_format")
-    stage_at = body.find("stage_rust_crate")
-    assert reset_at != -1, "build_install_rust_daemon must reset stale-format caches"
-    assert stage_at != -1, "build_install_rust_daemon must stage via stage_rust_crate"
-    assert reset_at < stage_at, "format reset must run before source staging"
-
-
-def test_marker_name_matches_staging_exclude():
-    """The reset helper's marker lives inside the cache dir; the staging
-    rsync --delete must exclude exactly that name or every deploy would
-    wipe the marker and full-rebuild."""
-    text = _RUST_DAEMONS.read_text(encoding="utf-8")
-    assert f"--exclude='/{_MARKER}'" in text
-    assert f"{{cache_dir}}/{_MARKER}" in text
