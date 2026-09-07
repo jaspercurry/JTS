@@ -187,6 +187,7 @@ class EnclosureAdapter(Protocol):
                         n_targets: int = 5) -> tuple[TargetSpec, ...]: ...
     def predicted_response(self, plant, target, freqs_hz) -> np.ndarray: ...
 
+# adapters/__init__.py:
 ADAPTERS: dict[str, EnclosureAdapter]   # keys: sealed_v1, ported_v1, passive_radiator_v1
 def adapter_for_enclosure(enclosure_kind: str) -> EnclosureAdapter | None
     # sealed->sealed_v1, vented->ported_v1, passive_radiator->passive_radiator_v1, else None

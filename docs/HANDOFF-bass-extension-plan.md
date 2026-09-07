@@ -526,8 +526,9 @@ multi-radiator in v1), `TUNING_NOT_LOCATED` (ported/PR: no fb),
 ### 6.1 The contract (`jasper/bass_extension/adapters/base.py`)
 
 Small Protocol, three implementations, dict registry keyed by
-`adapter_id`. Pure functions of numpy arrays + dataclasses; no I/O,
-no CamillaDSP knowledge beyond emitting filter *parameter dicts*.
+`adapter_id` (`adapters/__init__.py`). Pure functions of numpy
+arrays + dataclasses; no I/O, no CamillaDSP knowledge beyond
+emitting filter *parameter dicts*.
 
 ```python
 class EnclosureAdapter(Protocol):
