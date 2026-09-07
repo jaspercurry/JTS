@@ -488,14 +488,6 @@ impl RingWriter {
         (self.map.geometry.n_slots as u64).saturating_sub(self.write_seq.wrapping_sub(r))
     }
 
-    /// True iff a reader is currently live: `reader_pid != 0` AND its heartbeat
-    /// is younger than [`crate::WRITER_LIVENESS_TIMEOUT_NS`]. Mirrors the C
-    /// writer's `reader_is_live`, including the saturating age (a future
-    /// heartbeat clamps to 0 = definitely live).
-    pub fn reader_is_live_now(&self) -> bool {
-        self.reader_is_live(monotonic_ns())
-    }
-
     fn reader_is_live(&self, now_ns: u64) -> bool {
         let pid = self
             .map
