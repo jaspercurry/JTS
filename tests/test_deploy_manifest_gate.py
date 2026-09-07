@@ -12,8 +12,8 @@ and FAILS the deploy on a mismatch (the install didn't run to completion).
 
 This is a deploy-failing gate, so it gets a behavioral pin, not just the
 structural one in test_deploy_wiring_guards.py. We drive the real function
-body — extracted from the script and sourced — stubbing only its external
-seams (the ssh manifest read and the maintenance-marker finalizer). The
+body — extracted from the script and sourced, manifest passed as $1 — stubbing
+only its remaining external seam (the maintenance-marker finalizer). The
 DECISION (match vs mismatch, status check) stays real, using the real
 build_manifest_value parser from _lib.sh.
 """
@@ -38,14 +38,13 @@ JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 # column-0 '}'. eval defines it; nothing else in the deploy script runs.
 eval "$(awk '/^verify_manifest_advanced\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
 declare -F verify_manifest_advanced >/dev/null || { echo "harness: extraction failed" >&2; exit 99; }
-# Stub the external seams: the Pi-file read returns $MANIFEST; the
-# maintenance finalizer is a no-op (it would otherwise try to ssh).
-read_pi_file() { printf '%s\n' "$MANIFEST"; }
+# Stub the external seam: the maintenance finalizer is a no-op (it would
+# otherwise try to ssh).
 finish_airplay_health_maintenance() { :; }
 cleanup_remote_facts() { :; }
 trap - EXIT
 SHA_FULL="@FULL@"; DIRTY=""; SHA="${SHA_FULL:0:8}"; PI_HOST="bench-pi.local"
-verify_manifest_advanced
+verify_manifest_advanced "$MANIFEST"
 """
 
 

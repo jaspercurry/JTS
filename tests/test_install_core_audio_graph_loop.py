@@ -554,7 +554,13 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
     Remove when the installer stops managing unit lifecycle.
     """
     result = subprocess.run(
-        ["bash", "-c", _profile_runtime_harness(tmp_path, function)],
+        [
+            "bash",
+            "-c",
+            _profile_runtime_harness(
+                tmp_path, function, keep=("restart_jasper_control_and_input",)
+            ),
+        ],
         capture_output=True,
         text=True,
         timeout=60,
@@ -571,6 +577,11 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
     # cleared or the restart reboots the Pi mid-install.
     assert first("systemctl reset-failed jasper-control.service") < first(
         "systemctl restart jasper-control.service"
+    )
+    # jasper-input's HID bridge posts key events to jasper-control, so it must
+    # restart after, never before.
+    assert first("systemctl restart jasper-control.service") < first(
+        "systemctl restart jasper-input.service"
     )
 
     refreshed = {
@@ -639,7 +650,7 @@ def test_both_profiles_close_the_install_window_between_staging_and_runtime(
 
     Remove when the installer stops staging units transactionally.
     """
-    keep = ("_with_unit_install_transaction",)
+    keep = ("_with_unit_install_transaction", "restart_jasper_control_and_input")
     if entry == "install_streambox_systemd_units":
         keep += ("start_streambox_runtime_units",)
     result = subprocess.run(

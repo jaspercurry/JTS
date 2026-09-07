@@ -228,7 +228,7 @@ detect_hardware_tier() {
     arch="${JASPER_HW_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
     [[ -n "${arch}" ]] || arch="unknown"
 
-    # The low boundary REUSES rust-daemons.sh's threshold (one source of
+    # The low boundary REUSES build-sandbox.sh's threshold (one source of
     # truth) so the label can't drift from the build knob it describes —
     # below it, the Rust low-memory build profile is already active.
     local low_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB}"

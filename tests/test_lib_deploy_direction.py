@@ -542,7 +542,7 @@ preflight_deploy_direction
 # is (the redeploy target) rather than what was installed before.
 MANIFEST="JASPER_GIT_SHA_FULL=@LOCAL@
 JASPER_INSTALL_STATUS=ok"
-verify_manifest_advanced
+verify_manifest_advanced "$MANIFEST"
 """
 
 
