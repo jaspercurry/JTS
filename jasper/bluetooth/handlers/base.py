@@ -28,13 +28,6 @@ class BluetoothHandler(Protocol):
     """One device-class handler. Add a new class by implementing
     this and registering in handlers/__init__.py."""
 
-    #: Stable id used in /var/lib/jasper/bt_roles.json so the right
-    #: handler runs again on re-connect.
-    id: str
-
-    #: Short label for the UI ("HID accessory", "Audio sink", ...).
-    label: str
-
     def applies_to(self, device: BluetoothDevice) -> bool:
         """Does this device match this handler? Inspect `device.uuids`,
         `device.class_of_device`, or `device.icon`. The DefaultHandler

@@ -153,10 +153,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             "/var/lib/jasper/weather.env",
             "/var/lib/jasper/speaker_name.env",
             "/var/lib/jasper/tool_state.env",
-            # jasper-web hosts the bluetooth engine (web/bluetooth_setup.py ->
-            # bluetooth.engine.RoleStore.load), which reads bt_roles.json;
-            # jasper-control does NOT read it.
-            "/var/lib/jasper/bt_roles.json",
             # /sound/ wizard reads the active profile + global settings.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
@@ -211,10 +207,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("bluetooth",),
         paths=(
-            # bt_roles.json from its other reader. RoleStore.set() LOADS
-            # before it writes, so unreadable here does not degrade — it
-            # republishes an empty map and forgets every device's handler.
-            "/var/lib/jasper/bt_roles.json",
             # The shared source-intent SSOT the Bluetooth power switch and
             # /sources/ both drive.
             "/var/lib/jasper/source_intent.env",
@@ -562,8 +554,7 @@ def check_correction_web_readable_inputs() -> CheckResult:
 
 @doctor_check()
 def check_bluetooth_web_readable_inputs() -> CheckResult:
-    """jasper-bluetooth-web must be able to read the device role map (an
-    unreadable one is republished EMPTY) and the shared source intent."""
+    """jasper-bluetooth-web must be able to read the shared source intent."""
     return _check_daemon("jasper-bluetooth-web")
 
 
