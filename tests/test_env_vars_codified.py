@@ -124,6 +124,11 @@ _UNCODIFIED = {
     # (pinned by tests/test_voice_input_gate.py), which is why the guard's
     # deploy/ scan cannot see it.
     "JASPER_ACCESSORY_MIC_ENV_FILE",
+    # Secret-compartment registry path override, read once in
+    # jasper.google_creds.registry_path(). A test/diagnostic seam, never
+    # operator config: a registry written under an override lands outside the
+    # setgid `jasper-secrets` dir and so outside the compartment's guarantees.
+    "JASPER_GOOGLE_ACCOUNTS_PATH",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",

@@ -65,11 +65,16 @@ logger = logging.getLogger(__name__)
 
 # The Google token tree lives in the group-`jasper-secrets` dir (readable only by
 # jasper-voice + jasper-web), NOT under the shared /var/lib/jasper StateDirectory.
-# Overridable via JASPER_GOOGLE_ACCOUNTS_PATH (config.google_accounts_path). No
-# legacy tree remains to migrate; reassert_secrets_compartment_perms only
+# No legacy tree remains to migrate; reassert_secrets_compartment_perms only
 # re-narrows ownership/modes here on every deploy.
 DEFAULT_REGISTRY_PATH = "/var/lib/jasper-secrets/google/accounts.json"
 DEFAULT_TOKEN_DIR = "/var/lib/jasper-secrets/google/tokens"
+
+
+def registry_path() -> str:
+    """JASPER_GOOGLE_ACCOUNTS_PATH override, or DEFAULT_REGISTRY_PATH."""
+    return os.environ.get("JASPER_GOOGLE_ACCOUNTS_PATH", DEFAULT_REGISTRY_PATH)
+
 
 # Read-only v1 scopes. The OIDC triplet (openid/email/profile) is used
 # during the OAuth dance to fetch the user's email + display name so

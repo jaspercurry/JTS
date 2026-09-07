@@ -49,6 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ...accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
+from ...google_creds import registry_path as google_registry_path
 from . import privsep
 from ._registry import doctor_check
 from ._shared import CheckResult, _systemctl_unavailable_result
@@ -75,7 +76,8 @@ class SecretCompartment:
     that MUST be able to read the secrets (the availability side); the drift
     test pins them against each unit's ``SupplementaryGroups=``. Absent
     ``files`` are skipped — absent means "not configured", not the bug class.
-    ``files`` may hold a ``jasper.accounts`` resolver, read at check time.
+    ``files`` may hold an env-override resolver, read at check time, so the
+    audit stats the path in force rather than the compartment default.
     """
 
     group: str
@@ -121,7 +123,7 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             "/var/lib/jasper-secrets/google_credentials.env",
             # Billable Google Routes API key written by /transit/.
             "/var/lib/jasper-secrets/google_routes.env",
-            "/var/lib/jasper-secrets/google/accounts.json",
+            google_registry_path,
             "/var/lib/jasper-secrets/google/tokens/*.json",
         ),
     ),

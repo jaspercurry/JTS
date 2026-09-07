@@ -59,7 +59,6 @@ from ..google_creds import (
     GoogleRegistry,
     default_token_path_for,
     save_token,
-    DEFAULT_REGISTRY_PATH,
 )
 from ..google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
@@ -1063,7 +1062,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    registry_path: str = DEFAULT_REGISTRY_PATH,
+    registry_path: str,
     redirect_uri: str | None = None,
     creds_path: str = CREDS_FILE,
 ) -> ThreadingHTTPServer:

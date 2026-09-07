@@ -275,14 +275,9 @@ def _make_voice_server(target: object) -> object:
 
 def _make_google_server(target: object) -> object:
     from . import google_setup
+    from ..google_creds import registry_path as google_registry_path
 
-    return google_setup.make_server(
-        target,
-        registry_path=os.environ.get(
-            "JASPER_GOOGLE_ACCOUNTS_PATH",
-            google_setup.DEFAULT_REGISTRY_PATH,
-        ),
-    )
+    return google_setup.make_server(target, registry_path=google_registry_path())
 
 
 def _make_airplay_server(target: object) -> object:
