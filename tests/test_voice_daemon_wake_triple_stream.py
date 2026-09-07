@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
-from jasper.voice_daemon import WakeLoop, _LegRuntime
+from jasper.voice_daemon import WakeLoop, LegRuntime
 from jasper.wake_legs import by_token
 from tests._log_events import event_fields
 
@@ -65,22 +65,22 @@ def _make_wake_loop_triple(
     # Build the leg collection the refactored _handle_wake_frame reads.
     # capture_ring=None is fine — _tail_frame_rms_dbfs tolerates None.
     wl._legs = {
-        "on": _LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
+        "on": LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
     }
     if detector_off is not None:
-        wl._legs["off"] = _LegRuntime(
+        wl._legs["off"] = LegRuntime(
             by_token("off"), MagicMock(), detector_off, None,
         )
     if detector_dtln is not None:
-        wl._legs["dtln"] = _LegRuntime(
+        wl._legs["dtln"] = LegRuntime(
             by_token("dtln"), MagicMock(), detector_dtln, None,
         )
     if detector_chip_aec_150 is not None:
-        wl._legs["chip_aec_150"] = _LegRuntime(
+        wl._legs["chip_aec_150"] = LegRuntime(
             by_token("chip_aec_150"), MagicMock(), detector_chip_aec_150, None,
         )
     if detector_chip_aec_210 is not None:
-        wl._legs["chip_aec_210"] = _LegRuntime(
+        wl._legs["chip_aec_210"] = LegRuntime(
             by_token("chip_aec_210"), MagicMock(), detector_chip_aec_210, None,
         )
     wl._wake_fire_lock = asyncio.Lock()

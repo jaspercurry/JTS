@@ -95,7 +95,7 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
     return True
 
 
-async def _play_responses(
+async def play_responses(
     turn: LiveTurn,
     tts: TtsPlayout,
     *,
@@ -243,7 +243,7 @@ async def _play_responses(
                 pass
 
 
-async def _idle_watchdog(
+async def idle_watchdog(
     turn: LiveTurn,
     tts: TtsPlayout,
     timeout: float,
@@ -268,7 +268,7 @@ async def _idle_watchdog(
         seconds and the server never sends turn_complete, end the turn
         through the normal teardown path.
 
-    Coordinates with ``_play_responses``: the consumer awaits
+    Coordinates with ``play_responses``: the consumer awaits
     ``tts.wait_drained()`` after its final write, while this watchdog
     polls ``expected_drain_at()`` cooperatively. Both consult the same
     drain anchor, so whichever observes "drained" first completes its
