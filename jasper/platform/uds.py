@@ -127,74 +127,33 @@ async def mux_socket_command(
     return payload
 
 
-async def read_status_body(
-    reader: asyncio.StreamReader,
-    *,
-    timeout: float,
-    max_bytes: int = MAX_STATUS_BYTES,
-) -> bytes | None:
-    """Read one STATUS reply to EOF, byte- and time-bounded. None if over cap.
-
-    The mechanic, not the policy: each caller keeps its own timeout and its own
-    meaning for None.  It is shared because a SINGLE bounded ``read(n)`` is a
-    silent-truncation trap — it returns a prefix, `json.loads` raises, and a
-    fail-soft caller reports "daemon unreachable" for a daemon that answered
-    perfectly.  jasper-outputd's STATUS crossed 8 KiB when the chip-reference
-    writer's sample ring landed (#2253) and blinded exactly that way, so the
-    ceiling now lives in one place with one reader.
-
-    A reply genuinely larger than the cap returns None rather than a prefix:
-    a truncated object is not a smaller answer, it is a wrong one.
-    """
-
-    chunks: list[bytes] = []
-    total = 0
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise asyncio.TimeoutError("STATUS reply did not complete in time")
-        chunk = await asyncio.wait_for(reader.read(65_536), timeout=remaining)
-        if not chunk:
-            return b"".join(chunks)
-        total += len(chunk)
-        if total > max_bytes:
-            return None
-        chunks.append(chunk)
-
-
 async def local_status_json(
     socket_path: str,
     *,
     timeout: float = 2.0,
     max_bytes: int = MAX_STATUS_BYTES,
 ) -> dict | None:
-    """Best-effort one-shot STATUS probe for local daemon UDS sockets."""
+    """Read STATUS JSON to EOF within one deadline; return None on failure."""
     try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_unix_connection(socket_path),
-            timeout=timeout,
-        )
-    except (FileNotFoundError, ConnectionRefusedError,
-            asyncio.TimeoutError, OSError):
-        return None
-    try:
-        writer.write(b"STATUS\n")
-        await writer.drain()
-        body = await read_status_body(reader, timeout=timeout, max_bytes=max_bytes)
-    except (asyncio.TimeoutError, ConnectionResetError, OSError):
-        writer.close()
-        return None
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except (OSError, AssertionError):
-            pass
-    if body is None:
-        return None
-    try:
-        payload = json.loads(body.decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
+        async with asyncio.timeout(timeout):
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+            try:
+                writer.write(b"STATUS\n")
+                await writer.drain()
+                chunks: list[bytes] = []
+                total = 0
+                while chunk := await reader.read(65_536):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        return None
+                    chunks.append(chunk)
+            finally:
+                # Transport teardown must not extend the deadline or consume cancellation.
+                try:
+                    writer.close()
+                except (OSError, RuntimeError):
+                    pass
+        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+    except (TimeoutError, OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None

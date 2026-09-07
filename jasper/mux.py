@@ -94,6 +94,7 @@ from . import librespot_state, mux_mode_persistence
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .busctl import system_busctl
 from .control import restart_broker
+from .platform.uds import local_status_json
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
@@ -586,36 +587,9 @@ class Mux:
         return self._usbsink_combo.streaming
 
     async def _fanin_status_best_effort(self) -> dict[str, Any] | None:
-        """Read jasper-fanin's STATUS snapshot over its control UDS, fail-soft."""
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(FANIN_CONTROL_SOCKET),
-                timeout=1.0,
-            )
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            asyncio.TimeoutError,
-            OSError,
-        ):
-            return None
-        try:
-            writer.write(b"STATUS\n")
-            await writer.drain()
-            body = await asyncio.wait_for(reader.read(65536), timeout=1.0)
-        except (asyncio.TimeoutError, ConnectionResetError, OSError):
-            return None
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except (OSError, AssertionError):
-                pass
-        try:
-            payload = json.loads(body.decode("utf-8", errors="replace"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        return payload if isinstance(payload, dict) else None
+        return await local_status_json(
+            FANIN_CONTROL_SOCKET, timeout=1.0, max_bytes=65_536,
+        )
 
     async def _tick(
         self, *, defer_probes: frozenset[Source] = frozenset(),

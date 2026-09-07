@@ -58,7 +58,6 @@ case-insensitive; anything else logs a warning and stays enabled).
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
@@ -74,7 +73,7 @@ from ..platform.control_client import (
     AsyncControlClient,
     peer_detail,
 )
-from ..platform.uds import read_status_body
+from ..platform.uds import local_status_json
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -439,43 +438,9 @@ class GroupingSupervisor:
         return is_active_speaker_box()
 
     async def outputd_status(self) -> dict | None:
-        """One-shot STATUS probe of outputd's control socket.
-
-        Self-contained UDS probe (the supervisor owns its probe, like
-        ShairportSupervisor owns its RTSP probe). None on any failure —
-        the caller treats None as "outputd unreachable".
-        """
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(OUTPUTD_CONTROL_SOCKET),
-                timeout=self._probe_timeout,
-            )
-        except (OSError, asyncio.TimeoutError):
-            return None
-        try:
-            writer.write(b"STATUS\n")
-            await writer.drain()
-            # Read to EOF under the shared ceiling, never one bounded read: a
-            # truncated reply parses as nothing, and None here means "outputd
-            # unreachable" — which this supervisor answers with a reconciler
-            # kick that RESTARTS outputd. A healthy daemon whose STATUS simply
-            # grew past a private cap would be restarted every poll, forever.
-            body = await read_status_body(reader, timeout=self._probe_timeout)
-        except (OSError, asyncio.TimeoutError):
-            return None
-        finally:
-            try:
-                writer.close()
-                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
-            except (OSError, asyncio.TimeoutError, AssertionError):
-                pass
-        if body is None:
-            return None
-        try:
-            payload = json.loads(body.decode("utf-8", errors="replace"))
-        except json.JSONDecodeError:
-            return None
-        return payload if isinstance(payload, dict) else None
+        return await local_status_json(
+            OUTPUTD_CONTROL_SOCKET, timeout=self._probe_timeout,
+        )
 
     async def repair_bindings(self) -> dict[str, Any]:
         """Run the binding pin once (no retries — we poll again in 30 s).
