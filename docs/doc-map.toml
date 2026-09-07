@@ -459,7 +459,7 @@ title = "Speaker identity, mDNS collision handling, and the management-host allo
 safety = "connectivity-risk"
 code = [
   "jasper/net/http_security.py",
-  "jasper/identity_state.py",
+  "jasper/identity/identity_state.py",
   "deploy/bin/jasper-identity-reconcile",
   "deploy/systemd/jasper-identity-reconcile.service",
   "deploy/systemd/jasper-identity-reconcile.timer",
@@ -892,13 +892,13 @@ code = [
   # Shared primitives the /sound/pair/ directory + friendly-name advert ride on:
   # the one-shot mDNS browse, the one Avahi *.service renderer, and the
   # single speaker-identity reader (name + room + hostname + peer_id).
-  # identity.py + speaker_name.py are cross-cutting (control_advert, future
+  # The identity package is cross-cutting (control_advert, future
   # bond code also read them); a coarse add here is fine — this is the
   # subsystem that consumes them for the directory.
   "jasper/net/mdns.py",
   "jasper/net/avahi_service.py",
-  "jasper/identity.py",
-  "jasper/speaker_name.py",
+  "jasper/identity/reader.py",
+  "jasper/identity/speaker_name.py",
   "deploy/assets/rooms/**",
   "deploy/avahi/jasper-control.service.template",
   "deploy/systemd/jasper-snapserver.service",
@@ -926,7 +926,7 @@ requires_docs_when = [
   "The follower/leader Layer-A path (active crossover across a wireless pair): member-config role resolution, the round-trip capture repoint, outputd dac_content lane vs CamillaDSP re-entry, or the active-follower fail-closed/clock contract changes.",
   "The Zero 2 W streambox bring-up path, the full/streambox install profile boundary, streambox DAC assumptions, or the lab spike invocation changes.",
   "The /sound/pair/ directory, its discovery service, or the friendly-name advert (the name= TXT on _jasper-control._tcp rendered by control_advert from the service template) changes.",
-  "The shared mDNS browse (jasper/net/mdns.py), the Avahi *.service renderer (jasper/net/avahi_service.py), the speaker-identity reader (jasper/identity.py), or where the room label lives (jasper/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
+  "The shared mDNS browse (jasper/net/mdns.py), the Avahi *.service renderer (jasper/net/avahi_service.py), the speaker-identity reader (jasper/identity/reader.py), or where the room label lives (jasper/identity/speaker_name.py — now the identity home) changes. The peering->identity room consolidation is a flagged follow-up (see §6).",
 ]
 verification = [
   "pytest tests/test_multiroom_config.py tests/test_multiroom_reconcile.py tests/test_multiroom_state.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_mdns.py tests/test_avahi_service.py tests/test_identity.py tests/test_speaker_name.py tests/test_web_rooms_setup.py",

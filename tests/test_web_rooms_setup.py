@@ -591,7 +591,7 @@ def test_rooms_json_self_name_defaults_when_unset(monkeypatch):
 
 def test_rooms_json_self_hostname_and_room_flow_from_identity(monkeypatch):
     """Wiring contract: the self block sources name + hostname + room from the
-    shared identity reader (jasper.identity.read_identity), read ONCE in
+    shared identity reader (jasper.identity.reader.read_identity), read ONCE in
     _build_rooms_payload — NOT ad-hoc env/file reads or per-field helpers.
     Patch read_identity at the source so this genuinely exercises the single
     identity read. `room` now lives in the speaker-identity home."""

@@ -174,7 +174,7 @@ async def _with_coordinator(
     from ..camilla import CamillaController
     from ..assistant_volume import volume_context_publisher_for_runtime
     from ..renderer import RendererClient
-    from ..speaker_name import runtime_name as _speaker_runtime_name
+    from ..identity.speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
     from ..volume_persistence import VolumePersistence
     from ..volume_persistence import configured_path as volume_state_path

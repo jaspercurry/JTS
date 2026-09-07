@@ -18,10 +18,12 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
     parse_camilla_devices_config,
-    resolve_camilla_chunksize,
-    resolve_camilla_target_level,
     resolve_enable_rate_adjust,
     total_positive_boost_db,
+)
+from jasper.camilla_latency import (
+    resolve_camilla_chunksize,
+    resolve_camilla_target_level,
 )
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,

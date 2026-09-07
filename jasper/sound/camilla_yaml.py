@@ -31,9 +31,9 @@ from jasper.camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
     ensure_volume_limit_db,
-    resolve_camilla_latency_for_devices,
     resolve_enable_rate_adjust,
 )
+from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
     MONO_SUM_GAIN_DB,
     emit_gain_filter,

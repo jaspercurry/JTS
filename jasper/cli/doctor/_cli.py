@@ -34,14 +34,14 @@ from ...env_load import (
     bounded_env_int,
     load_env_files as _load_env_files,
 )
-from ...identity import resolve_hostname
+from ...identity.reader import resolve_hostname
 from ...install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )
 from ...log_event import render_logfmt
 from ...secret_redaction import redact_secrets
-from ...speaker_name import runtime_name as _speaker_runtime_name
+from ...identity.speaker_name import runtime_name as _speaker_runtime_name
 from ...spotify_oauth import resolved_spotify_redirect_uri
 from ...usage import DEFAULT_USAGE_DB
 

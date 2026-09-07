@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from ..speaker_name import (
+from ..identity.speaker_name import (
     DEFAULT_SPEAKER_NAME,
     MAX_SPEAKER_NAME_CHARS,
     SpeakerNameError,
@@ -40,10 +40,10 @@ from ..speaker_name import (
 )
 from ..atomic_io import atomic_write_text
 from ..env_load import SPEAKER_NAME_ENV_PATH
-from ..identity import resolve_hostname
+from ..identity.reader import resolve_hostname
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
-from ..speaker_name_discovery import NameConflict, find_name_conflicts
+from ..identity.speaker_name_discovery import NameConflict, find_name_conflicts
 from ..source_intent import kick_source_reconcile
 from ._common import (
     begin_request,

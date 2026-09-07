@@ -12,7 +12,7 @@ without importing each other's private functions.
 
 from __future__ import annotations
 
-from ..identity import resolve_hostname
+from ..identity.reader import resolve_hostname
 
 
 def resolve_pair() -> tuple[dict | None, dict | None, str]:

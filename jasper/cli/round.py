@@ -54,7 +54,7 @@ from jasper.active_speaker.wizard_client import (
     error_of,
     wait_for_round,
 )
-from jasper.identity import CROSSOVER_PAGE_PATH, read_identity, speaker_url
+from jasper.identity.reader import CROSSOVER_PAGE_PATH, read_identity, speaker_url
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,

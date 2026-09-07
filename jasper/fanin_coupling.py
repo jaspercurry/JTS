@@ -82,7 +82,7 @@ def ring_capacity_frames() -> int:
     from the DAC floor across all four components (fan-in, the ioplug, the
     conf.d render, the Camilla emitter) instead of the constant product below.
     It does not remove the clamp in
-    ``camilla_config_contract.resolve_camilla_latency_for_devices`` — it makes
+    ``camilla_latency.resolve_camilla_latency_for_devices`` — it makes
     the clamp stop biting, because a board that earns a bigger ring would then
     report one here and its floor would fit.
 
@@ -118,7 +118,7 @@ class RingCamillaGeometry(TypedDict):
 #
 # NOT the fallback for an ordinary sound/correction graph. Those carry the box's
 # own floor clamped to the ring's capacity
-# (``camilla_config_contract.resolve_camilla_latency_for_devices``), so moving
+# (``camilla_latency.resolve_camilla_latency_for_devices``), so moving
 # them onto this pair is a retune with a listening test, not a refactor.
 #
 # ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
@@ -911,7 +911,7 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
 
     THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is not a fact about the
     transport devices: it is resolved per graph by
-    ``camilla_config_contract.resolve_camilla_latency_for_devices`` (the box's
+    ``camilla_latency.resolve_camilla_latency_for_devices`` (the box's
     floor, clamped to :func:`ring_capacity_frames` at a ring end), and only a
     graph built end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY`
     instead.

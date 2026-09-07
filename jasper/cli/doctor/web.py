@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 
 from ...control import control_token
-from ...identity import resolve_hostname
+from ...identity.reader import resolve_hostname
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _run, _systemctl_unavailable_result

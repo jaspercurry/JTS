@@ -87,7 +87,7 @@ _jasper_usbgadget_env_value() {
     # inert config value into a code path.
     #
     # Mode 0 mirrors jasper.env_load.parse_env_text; mode 1 adds
-    # jasper.speaker_name's shlex rules on top — `KEY=` with no spacing, and an
+    # jasper.identity.speaker_name's shlex rules on top — `KEY=` with no spacing, and an
     # unquoted value ends at the first whitespace or `#`.
     #
     # This NARROWS jasper.atomic_io.read_regular_bytes_nofollow, it does not
@@ -156,7 +156,7 @@ jasper_usbgadget_usb_mic_enabled() {
 }
 
 jasper_usbgadget_speaker_name() {
-    # Ports jasper.speaker_name.validate_name for descriptor strings and module
+    # Ports jasper.identity.speaker_name.validate_name for descriptor strings and module
     # labels, JTS on any rejection; pinned equal to that validator by
     # tests/test_usbgadget_script.py. LC_ALL=C so the ranges cannot admit an
     # accented character Python's isascii() rejects. The readers still part on

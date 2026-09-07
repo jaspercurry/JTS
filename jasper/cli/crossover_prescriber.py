@@ -89,7 +89,7 @@ from jasper.active_speaker.seat_level_reference import (
 # One owner for how this tool is spelled under sudo: an SSH session gets no
 # EnvironmentFile and /opt/jasper/.venv is not on the default PATH.
 from jasper.active_speaker.tuning_handoff import ORIENTATION_COMMAND
-from jasper.identity import (
+from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
     SOUND_SETUP_PAGE_PATH,
     read_identity,

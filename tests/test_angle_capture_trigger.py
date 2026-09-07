@@ -72,7 +72,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.cli import angle_capture as cli
 from jasper.cli._refusal import STATUS_BY_CODE
-from jasper.identity import CROSSOVER_PAGE_PATH
+from jasper.identity.reader import CROSSOVER_PAGE_PATH
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 

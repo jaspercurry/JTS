@@ -83,7 +83,7 @@ def check_env_file_secrets() -> CheckResult:
 @doctor_check()
 def check_speaker_name() -> CheckResult:
     from ...env_load import SPEAKER_NAME_ENV_PATH
-    from ...speaker_name import read_state
+    from ...identity.speaker_name import read_state
 
     state = read_state()
     p = Path(SPEAKER_NAME_ENV_PATH)

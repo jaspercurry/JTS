@@ -69,7 +69,7 @@ MIC_SUFFIX = " Mic"
 
 DEFAULT_NAME = "JTS"
 
-# The speaker-name wizard (jasper/speaker_name.py) already constrains
+# The speaker-name wizard (jasper/identity/speaker_name.py) already constrains
 # the charset to this ASCII set; we re-apply it defensively here so a
 # hand-edited speaker_name.env can never inject control bytes or
 # non-ASCII into a USB string descriptor.

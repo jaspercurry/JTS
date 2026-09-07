@@ -14,10 +14,11 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import socket
 from dataclasses import dataclass
 
-from .atomic_io import atomic_write_text
-from .env_load import SPEAKER_NAME_ENV_PATH
+from ..atomic_io import atomic_write_text
+from ..env_load import SPEAKER_NAME_ENV_PATH
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"
@@ -37,6 +38,25 @@ MAX_SPEAKER_NAME_CHARS = 32
 # room/device names without inviting quoting or path-like surprises.
 ALLOWED_PUNCTUATION = " .,'&()+-_#"
 _ALLOWED_RE = re.compile(rf"^[A-Za-z0-9{re.escape(ALLOWED_PUNCTUATION)}]+$")
+_ROOM_FALLBACK_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+def default_room(hostname: str | None = None) -> str:
+    """The hostname-derived room label, for a box whose room is unset.
+
+    "jts-bedroom" -> "bedroom"; a bare "jts" or a non-conforming hostname ->
+    "default". Non-mDNS-safe characters collapse to a single dash, so
+    "Living Room" -> "living-room". Lives beside the room state it backstops
+    so peering's ``load_config`` and :func:`jasper.identity.reader.read_identity`
+    cannot drift apart.
+    """
+    raw = (hostname if hostname is not None else socket.gethostname()).lower()
+    if raw.startswith("jts-"):
+        raw = raw[4:]
+    cleaned = _ROOM_FALLBACK_RE.sub("-", raw).strip("-")
+    if not cleaned or cleaned == "jts":
+        return "default"
+    return cleaned[:32]
 
 
 class SpeakerNameError(ValueError):

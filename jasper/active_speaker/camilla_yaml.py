@@ -35,10 +35,10 @@ from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
     ensure_volume_limit_db,
-    resolve_camilla_latency_for_devices,
     resolve_enable_rate_adjust,
     total_positive_boost_db,
 )
+from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
     emit_butterworth_highpass,

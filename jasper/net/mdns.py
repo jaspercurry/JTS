@@ -29,7 +29,7 @@ when no browse is performed.
 
 Deliberately NOT routed through here (so the boundary's scope is explicit):
 
-  - `jasper/speaker_name_discovery.py` — needs NAMES-ONLY across MULTIPLE
+  - `jasper/identity/speaker_name_discovery.py` — needs NAMES-ONLY across MULTIPLE
     service types and must INCLUDE instances that don't resolve to an
     address (a name conflict is real even with no A record). `browse_once`
     is single-type and drops address-less instances, the opposite of what a

@@ -23,7 +23,7 @@ import types
 
 import pytest
 
-from jasper.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
+from jasper.identity.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
 
 from ._web_test_helpers import FakeHandler, assert_canonical_page
@@ -302,7 +302,7 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
 def test_apply_name_room_only_edit_skips_gadget_restart(monkeypatch):
     """A room-only edit (name unchanged) must never pay for a gadget rebuild
     plus a fan-in/usbmic bounce: the gadget descriptor carries only the NAME
-    (jasper/speaker_name.py's CLI reader prints just `.name`, which is all
+    (jasper/identity/speaker_name.py's CLI reader prints just `.name`, which is all
     deploy/usbsink/jasper-usbsink-name-patch reads), so nothing about a room
     edit needs the gadget touched -- even though the gadget IS active."""
     events = []

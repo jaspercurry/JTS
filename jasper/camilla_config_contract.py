@@ -7,12 +7,14 @@
 Keep this module import-cheap. Socket-activated web surfaces use these
 defaults to build and inspect CamillaDSP YAML without pulling NumPy/SciPy
 into the combined ``jasper-web`` process.
+
+Vocabulary only. Resolution that reads hardware, the environment or the lab
+override artifact lives above, in :mod:`jasper.camilla_latency`.
 """
 
 from __future__ import annotations
 
 import math
-import os
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
@@ -179,244 +181,12 @@ class CamillaFloor:
             )
 
 
-# Sentinel distinguishing "caller did not pass profile_floor → auto-resolve the
-# active DAC's codified floor" from an explicit ``profile_floor=None`` ("no
-# floor, keep the global default" — the byte-identical contract path the
-# emitters' own None-sentinel relies on). Auto-resolution reads the DacProfile
-# registry directly, so the floor reaches EVERY live generation path (install.sh
-# runtime-safe-graph, the ExecStartPre statefile guards, and jasper-control's
-# sound / active-speaker generation) regardless of whether that path happens to
-# have outputd.env in its environment — the #27 keystone fix.
-class _Unset:
-    __slots__ = ()
-
-
-_UNSET = _Unset()
-
-
-def _active_camilla_floor(field: str) -> int | None:
-    """The active output DAC's declared ``CamillaFloor.<field>``, or None.
-
-    None when the reconciler has resolved no DAC, the profile is unknown, or
-    the DAC declares no floor — the caller then keeps the global default, so
-    a box whose record is not yet written still generates a config. The
-    hardware modules are imported lazily so this contract module stays
-    import-cheap for the socket-activated web surfaces that never call it.
-    """
-    try:
-        from jasper.audio_hardware.dac import camilla_floor_for
-        from jasper.output_hardware import active_dac_profile_id
-    except ImportError:
-        return None
-    profile_id = active_dac_profile_id()
-    if profile_id is None:
-        return None
-    floor = camilla_floor_for(profile_id)
-    if floor is None:
-        return None
-    return int(getattr(floor, field))
-
-
-def _lab_override_allows_below_floor(
-    env_var: str,
-    value: int,
-    env: Mapping[str, str],
-) -> bool:
-    """Return whether an explicit audio-runtime lab override owns ``value``.
-
-    The DacProfile latency floor is the production safety/stability floor. Lab
-    tuning may intentionally probe below it, but only when the dedicated
-    ``audio_runtime_overrides.json`` artifact carries the same active value.
-    This keeps ordinary stale ``outputd.env`` values clamped while allowing the
-    generated CamillaDSP config to match the route plan during visible lab work.
-    """
-
-    try:
-        from jasper.audio_runtime_overrides import (
-            load_runtime_overrides,
-            runtime_overrides_path,
-        )
-    except ImportError:
-        return False
-    overrides = load_runtime_overrides(runtime_overrides_path(env))
-    raw = overrides.values().get(env_var)
-    try:
-        override_value = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return False
-    return override_value == value
-
-
-def _resolve_camilla_int(
-    env_var: str,
-    default: int,
-    env: Mapping[str, str],
-    profile_floor: int | None,
-) -> int:
-    """Resolve a positive-int CamillaDSP latency knob with floor precedence.
-
-    Precedence: max(explicit operator env, active DacProfile floor) > global
-    default. ``profile_floor`` is the active DAC's codified floor value (None
-    when the DAC declares no floor — the non-breaking path that keeps the
-    global default). An explicit operator override can raise latency above the
-    profile floor for testing, but a stale or over-aggressive value below the
-    measured floor is clamped back up. That makes the DacProfile value a true
-    safety/stability floor, not only a fresh-box default.
-
-    Returns ``default`` (or ``profile_floor`` when given) when the var is unset
-    OR malformed (non-int, zero, negative) — a bad override must never produce a
-    config that won't load, so it degrades rather than raising. With the env var
-    unset and no profile floor the result is byte-identical to the literal
-    default, so threading these through the emitters does not change any emitted
-    YAML unless an operator opts in or the active DAC declares a floor. Read at
-    emitter-call time so a systemd EnvironmentFile change takes effect on the
-    next config regeneration without a code edit.
-    """
-    fallback = default if profile_floor is None else profile_floor
-    raw = str(env.get(env_var, "")).strip()
-    if not raw:
-        return fallback
-    try:
-        value = int(raw)
-    except ValueError:
-        return fallback
-    if value <= 0:
-        return fallback
-    if profile_floor is not None and value < profile_floor:
-        if _lab_override_allows_below_floor(env_var, value, env):
-            return value
-        return profile_floor
-    return value
-
-
-def resolve_camilla_chunksize(
-    env: Mapping[str, str] | None = None,
-    profile_floor: int | None | _Unset = _UNSET,
-) -> int:
-    """CamillaDSP ``chunksize`` — ``JASPER_CAMILLA_CHUNKSIZE`` or the active
-    DAC's profile floor or ``DEFAULT_CHUNKSIZE`` (1024).
-
-    ``profile_floor`` left unset (the live-emitter default) auto-resolves the
-    active output DAC profile's codified floor from the registry, so every live
-    generation path gets the floor with max(operator-env, profile-floor) >
-    global precedence. Pass ``profile_floor=None`` explicitly to force the
-    no-floor (global-default) path — the byte-identical contract used by tests
-    and by the pre-#27 explicit-literal call. See :func:`_resolve_camilla_int`.
-    """
-    if isinstance(profile_floor, _Unset):
-        profile_floor = _active_camilla_floor("chunksize")
-    return _resolve_camilla_int(
-        "JASPER_CAMILLA_CHUNKSIZE", DEFAULT_CHUNKSIZE,
-        os.environ if env is None else env,
-        profile_floor,
-    )
-
-
-def resolve_camilla_target_level(
-    env: Mapping[str, str] | None = None,
-    profile_floor: int | None | _Unset = _UNSET,
-) -> int:
-    """CamillaDSP ``target_level`` — ``JASPER_CAMILLA_TARGET_LEVEL`` or the
-    active DAC's profile floor or ``DEFAULT_TARGET_LEVEL`` (2048).
-
-    ``profile_floor`` left unset (the live-emitter default) auto-resolves the
-    active output DAC profile's codified floor from the registry. Pass
-    ``profile_floor=None`` explicitly to force the no-floor (global-default)
-    path. See :func:`resolve_camilla_chunksize` and :func:`_resolve_camilla_int`.
-    """
-    if isinstance(profile_floor, _Unset):
-        profile_floor = _active_camilla_floor("target_level")
-    return _resolve_camilla_int(
-        "JASPER_CAMILLA_TARGET_LEVEL", DEFAULT_TARGET_LEVEL,
-        os.environ if env is None else env,
-        profile_floor,
-    )
-
-
-def resolve_camilla_latency_for_devices(
-    *,
-    capture_device: str,
-    playback_device: str | None,
-    chunksize: int | None = None,
-    target_level: int | None = None,
-) -> tuple[int, int]:
-    """The ``(chunksize, target_level)`` a graph between these devices needs.
-
-    A caller value passed here is returned untouched — the lab seam every
-    emitter already offers, and the half a caller leaves ``None`` is the only
-    half resolved. Filling both halves here rather than at each emitter keeps
-    "an explicit value wins" spelled once.
-
-    WHY A DEVICE DECIDES THIS. The DacProfile ``LatencyFloor`` sizes the DAC's
-    OWN buffer, and jasper-outputd is what feeds that buffer. CamillaDSP does
-    not: since ADR-0100 its chunk crosses THE RING, whose capacity is
-    ``RING_SLOT_FRAMES x DEFAULT_FANIN_RING_SLOTS`` frames — a compile-time
-    constant of the fan-in writer and the ioplug, identical on every box and
-    unrelated to which DAC is fitted. A chunk larger than that cannot be
-    negotiated at all: CamillaDSP exits with "Trying to set avail_min to N, must
-    be smaller than or equal to device buffer size of 256" and systemd
-    restart-loops it, which is silent deafness (AGENTS.md #6).
-
-    So a ring end CLAMPS the resolved chunk to what the ring can carry. It does
-    not replace the box's floor with the ring's certified geometry: jts.local
-    runs the Apple floor's 256 across this same ring healthily, so a floor that
-    already fits is the box's own tuning and is passed through untouched. Only a
-    floor the transport physically cannot serve is brought down — the InnoMaker
-    floor's 1024, which is what crash-looped jts4. Whether every ring graph
-    should instead run the certified ``RING_CAMILLA_*`` pair is a deliberate
-    retune of healthy boxes, not this clamp; the armed active path and the
-    fresh-install boot graph already pass that pair explicitly.
-
-    ``target_level`` is not bounded by the ring's capacity — jts.local carries
-    1536 over a 256-frame ring with no complaint — but it IS bounded by
-    CamillaDSP relative to the chunk, so a clamped chunk drags its ceiling down
-    with it and the pair scales together. See the comment at the clamp.
-
-    ``playback_device=None`` is a CLOCKLESS sink (a ``File`` — the bonded
-    leader's snapserver FIFO, the parked graph's ``/dev/null``). It declares no
-    ALSA buffer, so a ring capture is then the only ALSA end and it governs.
-
-    A non-ring ALSA playback device keeps the box's floor whole even when
-    capture is Ring A, because that sink's own hardware buffer is what the
-    process must feed (pinned by the ALSA-lane control in
-    ``test_ring_reemit_carries_the_certified_ring_chunk_and_target``).
-    """
-
-    resolved_target = target_level is None
-    if target_level is None:
-        target_level = resolve_camilla_target_level()
-    if chunksize is None:
-        chunksize = resolve_camilla_chunksize()
-        governing_device = (
-            capture_device if playback_device is None else playback_device
-        )
-        if governing_device in RING_PCM_DEVICES:
-            capacity = ring_capacity_frames()
-            if chunksize > capacity:
-                # THE PAIR SCALES TOGETHER. CamillaDSP bounds target_level at
-                # `chunksize x (queuelimit + 4)` — measured against 4.1.3 on
-                # jts4, exact across chunk 128/256/512 and queuelimit 1/2/4 —
-                # so the ceiling falls with the chunk. Clamping the chunk alone
-                # pushed jts4's floor-declared target of 4096 over the new
-                # 2048 ceiling and swapped one fatal config for another
-                # ("target_level cannot be larger than 2048", same crash loop).
-                #
-                # Scaling by the same ratio keeps the pair valid without
-                # encoding CamillaDSP's formula here: the bound is proportional
-                # to chunksize, so a pair that fit before fits after. It also
-                # preserves the RELATIONSHIP the DacProfile declared rather
-                # than substituting a number of our own.
-                if resolved_target:
-                    target_level = max(1, target_level * capacity // chunksize)
-                chunksize = capacity
-    return chunksize, target_level
-
-
 def resolve_enable_rate_adjust(playback_device: str | None) -> bool:
     """Whether CamillaDSP's rate adjuster can steer THIS graph's sink.
 
     A property of the SINK, never of the graph's role. False for ``None``, the
-    clockless ``File`` sink :func:`resolve_camilla_latency_for_devices` reads
+    clockless ``File`` sink
+    :func:`~jasper.camilla_latency.resolve_camilla_latency_for_devices` reads
     the same way, because it has no output clock to follow. False for a ring
     PCM (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`) because it is an
     ioplug: alsa-lib reports card -1 for every ioplug, so CamillaDSP builds no

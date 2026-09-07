@@ -1031,7 +1031,7 @@ def test_shell_and_python_name_readers_cannot_disagree(tmp_path: Path, body: str
     """One answer from both readers: quoting, whitespace, length, character
     policy and the JTS fallback. A quoted value with trailing text is the one
     shape left out — it lands on JTS, as an unreadable file does."""
-    from jasper.speaker_name import read_state
+    from jasper.identity.speaker_name import read_state
 
     state = tmp_path / "speaker_name.env"
     state.write_text(body, encoding="utf-8")

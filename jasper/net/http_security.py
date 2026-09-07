@@ -146,7 +146,7 @@ def is_allowed_management_host(
     post-collision FQDN, which the static rules cannot derive once
     ``hostname`` and the advertised name diverge. A callable, called only
     once the static rules miss, so the common request pays no lookup;
-    ``jasper.identity_state`` binds it (a ``stat()`` of identity.env) and
+    ``jasper.identity.identity_state`` binds it (a ``stat()`` of identity.env) and
     owns the composition — this module sits below it.
     """
     normalized = normalize_host(host)

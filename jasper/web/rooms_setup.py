@@ -63,7 +63,7 @@ import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .. import identity
+from ..identity import reader as identity
 from ..control import household_credential
 from ..control.client import (
     CONTROL_PORT,
@@ -129,7 +129,7 @@ ROOMS_SNAPSHOT_SLOW_MS = 1000
 # Self identity.
 # ----------------------------------------------------------------------
 #
-# Name / room / hostname come from jasper.identity.read_identity, read ONCE
+# Name / room / hostname come from jasper.identity.reader.read_identity, read ONCE
 # per request in _build_rooms_payload so the three fields agree within one
 # render. The LAN address is NOT part of identity (it is NIC-derived), which
 # is why self_addresses / _self_address live here.
@@ -189,7 +189,7 @@ def _leader_handle() -> str:
 def _strip_service_type(full_name: str) -> str:
     """Turn a full mDNS instance name into a display label: drop the trailing
     service-type suffix and unescape avahi's `\\032` space encoding. Mirrors
-    jasper.speaker_name_discovery._strip_service_type."""
+    jasper.identity.speaker_name_discovery._strip_service_type."""
     name = full_name.rstrip(".")
     suffix = "." + CONTROL_MDNS_TYPE.rstrip(".")
     if name.endswith(suffix):
