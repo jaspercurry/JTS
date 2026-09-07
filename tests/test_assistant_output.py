@@ -2,12 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""`AssistantOutput` driven directly, with no wake loop around it."""
+
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 
 class _FakeTts:
     def __init__(self) -> None:
         self.calls: list[tuple[bytes, dict]] = []
+
+    def set_emission_admission(self, _admission) -> None:
+        return None
 
     async def write_segment(self, pcm: bytes, **kwargs) -> None:
         self.calls.append((pcm, kwargs))
@@ -15,10 +22,33 @@ class _FakeTts:
     async def wait_drained(self) -> None:
         return None
 
+    def expected_drain_at(self) -> float:
+        return 0.0
+
+
+class _FakeDucker:
+    async def duck(self) -> None:
+        return None
+
+    async def restore(self) -> None:
+        return None
+
+
+def _output(tts: _FakeTts, *, stamped: list[str] | None = None):
+    from jasper.voice.assistant_output import AssistantOutput
+
+    return AssistantOutput(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        tts,  # type: ignore[arg-type]
+        _FakeDucker(),  # type: ignore[arg-type]
+        None,
+        SimpleNamespace(),  # type: ignore[arg-type]
+        stamp_stage=(stamped if stamped is None else stamped.append),
+    )
+
 
 async def test_mute_click_uses_matched_cue_path():
     from jasper.assistant_loudness import AssistantLoudnessProfile
-    from jasper.voice_daemon import WakeLoop
 
     profile = AssistantLoudnessProfile(
         provider="jts",
@@ -31,18 +61,18 @@ async def test_mute_click_uses_matched_cue_path():
         method="synthetic_generated",
     )
     tts = _FakeTts()
+    output = _output(tts)
     # STATED, not inherited: the bake width comes from `tts_wire_is_wide()`,
     # which reads the box's own fanin.env — absent on a test runner, and an
     # undeclared box is WIDE since #3655. The flag asserted below is this
     # value, so the test must declare it rather than read the host's.
-    wl = WakeLoop.for_tests(_earcon_wide=False)
-    wl._tts = tts
-    wl._mute_click_on_pcm = b"on"
-    wl._mute_click_off_pcm = b"off"
-    wl._mute_click_on_profile = profile
-    wl._mute_click_off_profile = object()
+    output._earcon_wide = False
+    output._mute_click_on_pcm = b"on"
+    output._mute_click_off_pcm = b"off"
+    output._mute_click_on_profile = profile
+    output._mute_click_off_profile = object()
 
-    await wl._play_mute_click(going_on=True)
+    await output.play_mute_click(going_on=True)
 
     assert tts.calls == [
         (
@@ -51,7 +81,7 @@ async def test_mute_click_uses_matched_cue_path():
                 "segment_kind": "cue",
                 "source_profile": profile,
                 # The earcon bake's width travels with its bytes. This
-                # WakeLoop is DECLARED narrow above, so the flag reads False.
+                # output is DECLARED narrow above, so the flag reads False.
                 "pcm_wide": False,
             },
         )
@@ -60,7 +90,6 @@ async def test_mute_click_uses_matched_cue_path():
 
 async def test_listening_chirp_uses_matched_chirp_path():
     from jasper.assistant_loudness import AssistantLoudnessProfile
-    from jasper.voice_daemon import WakeLoop
 
     profile = AssistantLoudnessProfile(
         provider="jts",
@@ -73,15 +102,16 @@ async def test_listening_chirp_uses_matched_chirp_path():
         method="synthetic_generated",
     )
     tts = _FakeTts()
+    stamped: list[str] = []
+    output = _output(tts, stamped=stamped)
     # STATED, not inherited — see the mute-click test above.
-    wl = WakeLoop.for_tests(_earcon_wide=False)
-    wl._tts = tts
-    wl._chirp_on_pcm = b"wake"
-    wl._chirp_off_pcm = b"end"
-    wl._chirp_on_profile = profile
-    wl._chirp_off_profile = object()
+    output._earcon_wide = False
+    output._chirp_on_pcm = b"wake"
+    output._chirp_off_pcm = b"end"
+    output._chirp_on_profile = profile
+    output._chirp_off_profile = object()
 
-    await wl._play_listening_chirp(going_on=True)
+    await output.listening_chirp(going_on=True)
 
     assert tts.calls == [
         (
@@ -93,3 +123,12 @@ async def test_listening_chirp_uses_matched_chirp_path():
             },
         )
     ]
+    # The wake-side chirp stamps the turn timeline before it writes.
+    assert stamped == ["cue"]
+
+
+async def test_admission_and_drain_are_open_while_the_gate_is_idle():
+    output = _output(_FakeTts())
+
+    assert output.admission_refusal() is None
+    assert await output.drain_inflight(timeout_sec=0.0) is True

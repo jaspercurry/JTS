@@ -700,10 +700,11 @@ async def test_partial_mute_write_keeps_gate_until_accepted_prefix_drains(
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
     )
-    wl = WakeLoop.for_tests(_earcon_wide=False)
+    wl = WakeLoop.for_tests()
+    wl._assistant_output._earcon_wide = False
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
-    wl._mute_click_on_pcm = b"\x01\x00" * 5
+    wl._assistant_output._mute_click_on_pcm = b"\x01\x00" * 5
 
     click = asyncio.create_task(wl._play_mute_click(going_on=True))
     await wait_signalled(
@@ -772,10 +773,11 @@ async def test_cancelled_mute_write_waits_for_acceptance_and_physical_tail(
     tts.pause_content_meter_for_measurement = (  # type: ignore[method-assign]
         _allow_test_measurement_meter
     )
-    wl = WakeLoop.for_tests(_earcon_wide=False)
+    wl = WakeLoop.for_tests()
+    wl._assistant_output._earcon_wide = False
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
-    wl._mute_click_on_pcm = b"\x01\x00" * 5
+    wl._assistant_output._mute_click_on_pcm = b"\x01\x00" * 5
 
     click = asyncio.create_task(wl._play_mute_click(going_on=True))
     assert await asyncio.to_thread(write_started.wait, 1.0)
@@ -872,7 +874,6 @@ async def test_cancelled_cue_tail_retains_output_episode(
     wl._cfg.tts_outputd_socket = tts_socket
     wl._tts = tts
     wl._cues = _Cues()
-    wl._camilla = None
     if path == "admin":
         playing = asyncio.create_task(wl._play_cue("cant_connect"))
         expected_kind = "admin"
@@ -1785,7 +1786,7 @@ async def test_duck_cleanup_logs_both_failures_and_releases_exactly_once(
     episode = await gate.begin_if_idle("admin")
     assert episode is not None
 
-    await wl._finish_ducked_output_episode_after_drain(
+    await wl._assistant_output.finish_ducked_episode_after_drain(
         episode,
         failing_restore,
         cleanup_label="contract cue",
@@ -1829,7 +1830,7 @@ async def test_duck_cleanup_preserves_base_exception_precedence(
     assert episode is not None
 
     with pytest.raises(_CleanupAbort) as caught:
-        await wl._finish_ducked_output_episode_after_drain(
+        await wl._assistant_output.finish_ducked_episode_after_drain(
             episode,
             restore,
             cleanup_label="contract cue",
