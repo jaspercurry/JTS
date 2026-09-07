@@ -121,12 +121,9 @@ async def daemon_setup(monkeypatch):
 
 async def test_bind_failure_unwinds_the_advert(monkeypatch):
     """A start that dies at the multicast bind must not leave the box
-    advertising _jasper-peer._udp for a daemon that cannot arbitrate.
-
-    stop() used to return early unless _running was set, so nothing
-    uninstalled -- and flipping peering off afterwards never constructs a
-    daemon to clean up either (#4332). Every sibling's jasper-doctor
-    "peering: discovery" count stays inflated until someone edits the box."""
+    advertising _jasper-peer._udp for a daemon that cannot arbitrate:
+    stop() is the only caller of avahi.uninstall(), so whatever it skips
+    stays on disk until someone edits the box by hand."""
     uninstalled: list[int] = []
     monkeypatch.setattr(
         daemon_mod.avahi, "uninstall", lambda **kw: uninstalled.append(1),
@@ -146,9 +143,9 @@ async def test_bind_failure_unwinds_the_advert(monkeypatch):
 
 
 async def test_uds_failure_unwinds_the_bound_socket(monkeypatch):
-    """The UDS listen is the second failable step. Its exception escapes
-    start(), so the transport is already bound when stop() runs -- it must
-    be torn down, not left holding the fd with its recv task pending."""
+    """The UDS listen fails with the transport already bound, so stop()
+    must tear it down rather than leave it holding the fd with its recv
+    task pending."""
     uninstalled: list[int] = []
     transport = _FakeTransport()
     monkeypatch.setattr(
@@ -171,8 +168,8 @@ async def test_uds_failure_unwinds_the_bound_socket(monkeypatch):
 
 
 async def test_mode_off_stop_stays_a_noop(monkeypatch):
-    """An OFF household is the default. stop() must not reach the
-    filesystem or spawn an avahi reload on every jasper-control restart."""
+    """An OFF household is the default: stop() must not reach the
+    filesystem or spawn an avahi reload on a jasper-control restart."""
     uninstalled: list[int] = []
     monkeypatch.setattr(
         daemon_mod.avahi, "uninstall", lambda **kw: uninstalled.append(1),

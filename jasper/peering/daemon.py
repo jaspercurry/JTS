@@ -172,9 +172,9 @@ class PeeringDaemon:
         )
 
     async def stop(self) -> None:
-        # Gated on start_attempted, not _running: a start that failed partway
-        # still owns an advert and possibly a bound socket, and every step
-        # below is null-guarded and idempotent. See #4332.
+        # A start that failed partway still owns an advert and possibly a
+        # bound socket; every step below is null-guarded and idempotent, so
+        # the gate is start_attempted rather than _running. See #4332.
         if not self._start_attempted:
             return
         self._start_attempted = False
