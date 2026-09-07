@@ -25,7 +25,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-from ...accounts import DEFAULT_REGISTRY_PATH, LEGACY_CACHE_PATH
+from ...accounts import legacy_cache_path, registry_path
 from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...volume_persistence import configured_path as volume_state_path
@@ -211,15 +211,9 @@ def _local_audio_config_from_env() -> SimpleNamespace:
         ),
         spotify_client_id=spotify_client_id,
         spotify_redirect_uri=resolved_spotify_redirect_uri(),
-        spotify_cache_path=os.environ.get(
-            "SPOTIFY_CACHE_PATH",
-            LEGACY_CACHE_PATH,
-        ),
+        spotify_cache_path=legacy_cache_path(),
         spotify_device_name=_speaker_runtime_name(),
-        spotify_accounts_path=os.environ.get(
-            "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            DEFAULT_REGISTRY_PATH,
-        ),
+        spotify_accounts_path=registry_path(),
         spotify_setup_url=os.environ.get(
             "JASPER_SPOTIFY_SETUP_URL",
             f"http://{hostname}/spotify",

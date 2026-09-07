@@ -2,7 +2,9 @@
 
 - **Date:** 2026-08-26
 - **Status:** Accepted (records the 2026-05-24 A/B verdict; written when
-  HANDOFF-vad-experiments.md was trimmed to its operational spine)
+  HANDOFF-vad-experiments.md was trimmed to its operational spine). The
+  "knob remains for experiments" clause is superseded by
+  [ADR-0244](0244-the-server-vad-path-is-deleted-not-kept-as-a-knob.md).
 
 ## Context
 

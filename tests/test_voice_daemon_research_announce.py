@@ -88,7 +88,6 @@ def _put_in_session(
     wl._session_id = 7
     wl._usage_store = FakeUsageStore()
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._input_ended = False
 
     async def _noop(*_args, **_kwargs):
@@ -99,7 +98,7 @@ def _put_in_session(
 
     wl._telemetry_stage = _noop
     wl._telemetry_outcome = _noop
-    wl._notify_peering_session_ended = _noop
+    wl._peering.session_ended = _noop
     wl._play_listening_chirp = _noop_chirp
     return turn
 
@@ -447,7 +446,7 @@ def test_record_research_delivery_clears_stale_pending_job():
     def _record(user_text, assistant_text, **_kwargs):
         recorded.append((user_text, assistant_text))
 
-    wl._record_conversation_turn = _record
+    wl._conversation_capture.record = _record
 
     wl.record_research_delivery(job, job.result, "yes")
 
@@ -476,7 +475,6 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert scheduler.announced == ["job12345"]
     assert scheduler.read == []
     assert wl._research_window_active is False
-    assert "RECORDING TIMEOUT" not in caplog.text
     assert not event_records(caplog, "turn.silent_response")
 
 

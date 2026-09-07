@@ -67,9 +67,7 @@ def _make_wakeloop():
     wl._session_id = 7
     wl._usage_store = FakeUsageStore()
     wl._bg_tasks = set()
-    wl._peering_current_epoch = "ep-1"
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._max_silero_score_in_turn = 0.0
     wl._max_silero_raw_in_turn = 0.0
     wl._silero_aec_armed_at_ms = None
@@ -100,7 +98,7 @@ def _make_wakeloop():
 
     wl._telemetry_stage = _noop_stage
     wl._telemetry_outcome = _noop_outcome
-    wl._notify_peering_session_ended = _noop_peering
+    wl._peering.session_ended = _noop_peering
     wl._play_listening_chirp = _noop_chirp
     return wl
 

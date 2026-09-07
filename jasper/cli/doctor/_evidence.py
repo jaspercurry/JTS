@@ -231,6 +231,24 @@ class Evidence:
 
     # -- files and readers shared by several checks ----------------------
 
+    def mem_total_kb(self) -> int | None:
+        """``MemTotal``, in KiB, read once regardless of how many of
+        ``check_ram``, ``check_memory_headroom``, and
+        ``check_zram_size_ratio`` consume it — safe to memoize because it is
+        a boot-time constant. ``None`` when ``/proc/meminfo`` is unreadable.
+
+        ``MemAvailable`` must NOT be memoized here: it moves second to
+        second, and ``check_memory_headroom`` samples it LIVE inside its own
+        ``memory-sample`` exclusive lane specifically so it is never
+        observed while ``voice.check_provider_importable`` (the same lane)
+        is transiently depressing it — a value captured here by an unlaned
+        caller (``check_ram``) could already be stale by the time that
+        lane's turn comes.
+        """
+        from ...memory_policy import meminfo_kb
+
+        return self.get("mem_total_kb", lambda: meminfo_kb("MemTotal"))
+
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)
 

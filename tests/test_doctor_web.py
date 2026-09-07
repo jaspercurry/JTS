@@ -21,7 +21,7 @@ import pytest
 
 from jasper import tool_catalog_view
 from jasper.cli import doctor
-from jasper.cli.doctor import _evidence
+from jasper.cli.doctor import _evidence, _shared
 from jasper.cli.doctor import web as doctor_web
 from jasper.control import control_token
 from jasper.conversation_history import (
@@ -228,13 +228,17 @@ def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
 
     monkeypatch.setattr(doctor_web, "_run", raises)
 
-    assert doctor_web.check_camillagui_loopback().status == "warn"
+    result = doctor_web.check_camillagui_loopback()
+    assert result.status == "skipped"
+    assert result.reason == doctor_web.REASON_CAMILLAGUI_PROBE_FAILED
 
 
-def test_camillagui_loopback_warns_when_ss_exits_nonzero(monkeypatch):
+def test_camillagui_loopback_skips_when_ss_exits_nonzero(monkeypatch):
     monkeypatch.setattr(doctor_web, "_run", _fake_ss(returncode=1))
 
-    assert doctor_web.check_camillagui_loopback().status == "warn"
+    result = doctor_web.check_camillagui_loopback()
+    assert result.status == "skipped"
+    assert result.reason == doctor_web.REASON_CAMILLAGUI_PROBE_FAILED
 
 
 # --------------------------------------------------------- control token
@@ -593,7 +597,7 @@ def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
     r = doctor_web.check_wizard_socket_start_limits()
 
     assert r.status == "skipped"
-    assert r.reason == doctor_web.REASON_SYSTEMCTL_UNAVAILABLE
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
 
 
 def test_swept_units_match_the_installers_wizard_family():

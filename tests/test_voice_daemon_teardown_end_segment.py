@@ -18,7 +18,9 @@ fanin's louder fallback gain (`reason=fallback_profile`) — the "Gemini
 is louder than OpenAI" bug.
 
 The fix calls `self._tts.end_segment()` in `_end_turn_inner` right
-after the bg-task cancel join. These tests pin that contract:
+after the bg-task cancel join, guarded on the teardown still owning
+output (it writes to the shared TTS stream). These tests pin that
+contract:
 
 * teardown calls end_segment exactly once;
 * an end_segment failure (socket gone mid-teardown) does not abort
@@ -75,9 +77,7 @@ def _make_wakeloop(tts: _RecordingTts):
     wl._session_id = 7
     wl._usage_store = FakeUsageStore()
     wl._bg_tasks = set()
-    wl._peering_current_epoch = "ep-1"
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._max_silero_score_in_turn = 0.0
     wl._max_silero_raw_in_turn = 0.0
     wl._silero_aec_armed_at_ms = None
@@ -104,9 +104,17 @@ def _make_wakeloop(tts: _RecordingTts):
 
     wl._telemetry_stage = _noop_stage
     wl._telemetry_outcome = _noop_outcome
-    wl._notify_peering_session_ended = _noop_peering
+    wl._peering.session_ended = _noop_peering
     wl._play_listening_chirp = _noop_chirp
     return wl
+
+
+async def _teardown_owning_output(wl) -> None:
+    """A real turn always holds the output episode `_end_turn_inner` guards
+    its stream writes on, `end_segment` among them; a fixture without one
+    would satisfy the counts below by never reaching the call."""
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    await wl._end_turn()
 
 
 def test_teardown_calls_end_segment_once():
@@ -119,7 +127,7 @@ def test_teardown_calls_end_segment_once():
     tts = _RecordingTts()
     wl = _make_wakeloop(tts)
 
-    asyncio.run(wl._end_turn())
+    asyncio.run(_teardown_owning_output(wl))
 
     assert tts.end_segment_calls == 1
 
@@ -132,7 +140,7 @@ def test_teardown_survives_end_segment_failure():
     tts = _RecordingTts(end_segment_raises=True)
     wl = _make_wakeloop(tts)
 
-    asyncio.run(wl._end_turn())
+    asyncio.run(_teardown_owning_output(wl))
 
     assert tts.end_segment_calls == 1
     assert wl._usage_store.close_calls == 1

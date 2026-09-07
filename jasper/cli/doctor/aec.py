@@ -15,6 +15,7 @@ from typing import NamedTuple
 from ... import enhanced_aec
 from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
 from ...audio_profile_state import (
+    AEC_MODE_AUTO,
     AEC_MODE_ENV,
     AecIntent,
     DEFAULT_AEC_MODE_PATH,
@@ -25,6 +26,7 @@ from ...audio_profile_state import (
     RuntimeAecEnv,
     audio_profile_status,
     infer_audio_input_profile,
+    normalize_aec_mode,
     normalize_audio_input_profile,
     parse_env_bool,
     probe_xvf_mic,
@@ -420,7 +422,7 @@ def check_enhanced_aec() -> CheckResult:
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return CheckResult(
             "Enhanced AEC",
-            "warn",
+            "skipped",
             "requested optional enhancement status could not be inspected "
             f"({type(exc).__name__}); standard echo cancellation remains "
             "available — retry from /system/",
@@ -589,8 +591,9 @@ def check_aec_bridge_running() -> CheckResult:
     chip_present = capture_ch is not None
     is_6ch = capture_ch == xvf3800.RECOMMENDED_CAPTURE_CHANNELS
 
-    if aec_mode != "auto":
-        # Explicit operator opt-out is fine.
+    if normalize_aec_mode(aec_mode) != AEC_MODE_AUTO:
+        # Explicit operator opt-out is fine; the message names the raw
+        # spelling the operator will find in the file.
         return CheckResult(
             "AEC bridge service", "ok",
             f"disabled (JASPER_AEC_MODE={aec_mode})",
@@ -1279,8 +1282,15 @@ def check_aec_bridge_output_health() -> CheckResult:
         timeout=8.0,
     )
     if proc.returncode != 0:
+        if stats_assessment is not None:
+            return CheckResult(
+                "AEC bridge output", "warn",
+                f"could not read journal for content assessment: "
+                f"{proc.stderr.strip() or 'unknown error'}; {stats_result.detail}",
+                reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
+            )
         return CheckResult(
-            "AEC bridge output", "warn",
+            "AEC bridge output", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
             reason=REASON_BRIDGE_OUTPUT_JOURNAL_UNREADABLE,
         )
@@ -1672,7 +1682,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     )
     if proc.returncode != 0:
         return CheckResult(
-            "DTLN-aec engine", "warn",
+            "DTLN-aec engine", "skipped",
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
             reason=REASON_DTLN_JOURNAL_UNREADABLE,
         )

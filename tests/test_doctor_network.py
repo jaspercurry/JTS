@@ -566,10 +566,10 @@ def test_check_hostname_avahi_consistency_verdicts(
 ):
     """Two boxes on one name breaks `<hostname>.local` for the whole
     household, so the collision fails; the arms that resolved nothing at all
-    (no hostname, no avahi-utils) skip, a daemon that answered but could not
-    resolve our own name warns (an observation, not nothing — check_avahi_daemon
-    only catches not-found/inactive, not this), and output that arrived but
-    did not parse is still an observation."""
+    (no hostname, no avahi-utils — nothing to observe) skip, while a daemon
+    that answered — whether with rc=0 and unparseable stdout, or unable to
+    resolve our own name — warns: data arrived, it just isn't the answer we
+    wanted (check_avahi_daemon only catches not-found/inactive, not this)."""
     _patch_avahi_resolve(monkeypatch, **kwargs)
 
     r = doctor_network.check_hostname_avahi_consistency()
@@ -1047,6 +1047,9 @@ def test_usbnet_interface_present_missing_address_is_fail(monkeypatch, tmp_path)
 
 
 def test_usbnet_interface_ip_command_failure_is_warn(monkeypatch, tmp_path):
+    """sysfs already confirmed usb0 exists; `ip addr show` failing on it is
+    the interface vanishing mid-probe — the same event the sibling
+    management-probe row keeps as warn, not a missing evidence channel."""
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     net_root = tmp_path / "sys-class-net"
     (net_root / "usb0").mkdir(parents=True)

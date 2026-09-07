@@ -375,7 +375,12 @@ def test_capture_disable_stops_future_capture_without_clearing_rows(
         assert len(store.recent(10)) == 2
         wl = WakeLoop.for_tests(conversation_store=store)
         monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
-        wl._record_conversation_turn("future command", "future answer")
+        wl._conversation_capture.record(
+            "future command",
+            "future answer",
+            session_id=wl._session_id,
+            mic_muted=wl._mic_muted,
+        )
         assert len(store.recent(10)) == 2
     finally:
         store.close()

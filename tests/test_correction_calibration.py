@@ -479,7 +479,7 @@ def test_model_label_aliases_default_and_unknown():
 #
 # The registry is the ONE owner of "which hardware is a measurement
 # microphone". deploy/bin/jasper-aec-reconcile reads it through
-# `python -m jasper.cli.measurement_mic` so a calibrated measurement mic can
+# `python -m jasper.cli.capture_card` so a calibrated measurement mic can
 # never be selected as the voice/wake input — it carries no wake or AEC
 # contract, so selecting one would swap the room mic for an instrument.
 
@@ -529,16 +529,6 @@ def test_measurement_mic_usb_ids_never_collides_with_the_voice_array():
     assert not set(calibration.measurement_mic_usb_ids()) & set(
         xvf3800.USB_VID_PIDS
     )
-
-
-def test_measurement_mic_cli_prints_exactly_the_registered_ids(capsys):
-    """The shell bridge's output contract: one lower-cased id per line, exit
-    0. deploy/bin/jasper-aec-reconcile parses stdout on this shape."""
-    from jasper.cli import measurement_mic
-
-    assert measurement_mic.main([]) == 0
-    printed = capsys.readouterr().out.split()
-    assert tuple(printed) == calibration.measurement_mic_usb_ids()
 
 
 # --- mic_tier_for_model: correction-envelope trust-tier resolution (#1668 PR-B)

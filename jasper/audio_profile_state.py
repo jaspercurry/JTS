@@ -41,6 +41,11 @@ from .mics.xvf3800 import (
 DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
 AEC_MODE_ENV = "JASPER_AEC_MODE"
 AEC_MODE_FILE_ENV = "JASPER_AEC_MODE_FILE"
+AEC_MODE_AUTO = "auto"
+AEC_MODE_DISABLED = "disabled"
+# Opt-in lab observation of the chip reference path; never authorizes a
+# production DAC.
+CHIP_REF_OBSERVE_ENV = "JASPER_AEC_CHIP_REF_OBSERVE"
 
 PROFILE_AUTO = "auto"
 PROFILE_XVF_CHIP_AEC = "xvf_chip_aec"
@@ -125,6 +130,17 @@ def parse_env_bool(raw: str, default: bool = False) -> bool:
     return default
 
 
+def normalize_aec_mode(raw: str) -> str:
+    """Normalize the JASPER_AEC_MODE master toggle to the two applied values.
+
+    Anything outside the vocabulary reads as `disabled`: a mode this build
+    cannot route must not leave the AEC path armed on a guess.
+    """
+
+    value = raw.strip().strip("'\"").lower()
+    return AEC_MODE_AUTO if value in ("", AEC_MODE_AUTO) else AEC_MODE_DISABLED
+
+
 def normalize_audio_input_profile(raw: str, default: str = PROFILE_CUSTOM) -> str:
     """Normalize the operator-facing audio input profile id."""
 
@@ -158,8 +174,7 @@ def normalize_audio_input_profile(raw: str, default: str = PROFILE_CUSTOM) -> st
 def infer_audio_input_profile(intent: AecIntent) -> str:
     """Infer the closest profile for pre-profile aec_mode.env files."""
 
-    mode = (intent.mode or "auto").strip().strip("'\"").lower()
-    if mode != "auto":
+    if normalize_aec_mode(intent.mode) != AEC_MODE_AUTO:
         return PROFILE_DIRECT_MIC
     if intent.chip_aec_150_enabled or intent.chip_aec_210_enabled:
         return PROFILE_CUSTOM
@@ -194,7 +209,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
     updates = {"JASPER_AUDIO_INPUT_PROFILE": normalized}
     if normalized == PROFILE_AUTO:
         updates.update({
-            AEC_MODE_ENV: "auto",
+            AEC_MODE_ENV: AEC_MODE_AUTO,
             "JASPER_WAKE_LEG_RAW": "1",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
@@ -203,7 +218,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
         })
     elif normalized in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}:
         updates.update({
-            AEC_MODE_ENV: "auto",
+            AEC_MODE_ENV: AEC_MODE_AUTO,
             "JASPER_WAKE_LEG_RAW": "0",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "1",
@@ -212,7 +227,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
         })
     elif normalized == PROFILE_XVF_SOFTWARE_AEC3:
         updates.update({
-            AEC_MODE_ENV: "auto",
+            AEC_MODE_ENV: AEC_MODE_AUTO,
             "JASPER_WAKE_LEG_RAW": "1",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",
@@ -221,7 +236,7 @@ def profile_env_updates(profile: str) -> dict[str, str]:
         })
     elif normalized == PROFILE_DIRECT_MIC:
         updates.update({
-            AEC_MODE_ENV: "disabled",
+            AEC_MODE_ENV: AEC_MODE_DISABLED,
             "JASPER_WAKE_LEG_RAW": "0",
             "JASPER_WAKE_LEG_DTLN": "0",
             "JASPER_WAKE_LEG_CHIP_AEC": "0",

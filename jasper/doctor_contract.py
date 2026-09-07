@@ -47,8 +47,10 @@ class CheckResult:
     #     correct state;
     #   - the role or hardware makes the check inapplicable on this box (a
     #     streambox with no mic, no USB gadget): `skipped`;
-    #   - the evidence source is unreachable, so nothing was observed at all
-    #     (no systemd, an unreadable statefile): `skipped`.
+    #   - the evidence source is unreachable — a probe that could not run,
+    #     an absent source, a timeout with no partial reading (no systemd, an
+    #     unreadable statefile): nothing was observed, so it's `skipped`
+    #     even for what would otherwise be a `warn` or `fail`.
     # `skipped` counts toward neither fails nor warns and renders dim.
     status: str
     detail: str = ""

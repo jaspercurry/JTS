@@ -157,6 +157,9 @@ class BaseLiveTurn:
     def request_local_interrupt(self) -> None:
         self._interrupt_event.set()
 
+    def audio_chunks_pending(self) -> int:
+        return self._audio_q.qsize()
+
     def drop_pending_audio(self) -> int:
         dropped = 0
         try:
@@ -322,6 +325,12 @@ class BaseLiveConnection:
 
     def is_paused(self) -> bool:
         return self._state in (
+            # `LiveConnection.is_paused` (session.py) counts a first
+            # connect still dialling as paused, and the state stays
+            # IDLE_INIT until `start()` runs — which daemon_main reaches
+            # one tick after it opens the control socket, so a manual
+            # start can read this state.
+            ConnectionState.IDLE_INIT,
             ConnectionState.CONNECTING,
             ConnectionState.RECONNECTING,
             ConnectionState.PAUSED_FOR_BACKOFF,
@@ -337,7 +346,7 @@ class BaseLiveConnection:
         A rejection body can echo a credential in a shape
         `redact_secrets`'s prefix patterns don't know; passing the exact
         value here catches it. Base has nothing to retain — see
-        `OpenAIRealtimeConnection` for the one provider that does.
+        `OpenAIRealtimeConnection` for a provider that does.
         """
         return ()
 

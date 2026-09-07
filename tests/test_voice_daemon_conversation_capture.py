@@ -2,6 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Tests for the conversation-capture integration in jasper.voice_daemon.
+
+ConversationCapture's own gating, lazy-open, reopen and retention
+behavior is covered by tests/test_conversation_capture.py. These pin
+the WakeLoop-level wiring that can't be exercised without a full
+WakeLoop: `_end_turn_inner`'s single write path via `turn.capture()`,
+and `record_research_delivery`'s research-window bookkeeping.
+"""
+
 from __future__ import annotations
 
 import json
@@ -9,26 +18,11 @@ import json
 from jasper.conversation_history import (
     CAPTURE_ALIAS_ENV,
     ConversationStore,
-    ConversationTurn,
     DB_PATH_ENV,
-    RETENTION_DAYS_ENV,
-    RETENTION_MAX_ROWS_ENV,
 )
 from jasper.research import DONE, ResearchJob
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 from tests.usage_store_fixtures import FakeUsageStore
-
-
-class _MarkingScheduler:
-    def __init__(self) -> None:
-        self.announced: list[str] = []
-        self.read: list[str] = []
-
-    def mark_announced(self, job_id: str) -> None:
-        self.announced.append(job_id)
-
-    def mark_read(self, job_id: str) -> None:
-        self.read.append(job_id)
 
 
 def _wake_loop(tmp_path, monkeypatch, *, capture: bool = True):
@@ -50,7 +44,6 @@ def _put_in_session(wl, turn: _FakeTurn) -> None:
     wl._session_id = 7
     wl._usage_store = FakeUsageStore()
     wl._user_speech_seen = True
-    wl._server_vad_this_turn = False
     wl._input_ended = False
 
     async def _noop(*_args, **_kwargs):
@@ -61,7 +54,7 @@ def _put_in_session(wl, turn: _FakeTurn) -> None:
 
     wl._telemetry_stage = _noop
     wl._telemetry_outcome = _noop
-    wl._notify_peering_session_ended = _noop
+    wl._peering.session_ended = _noop
     wl._play_listening_chirp = _noop_chirp
 
 
@@ -113,150 +106,6 @@ async def test_end_turn_records_metadata_when_provider_has_no_transcripts(
         "transcripts_available": False,
         "tools": ["get_weather"],
     }
-
-
-def test_record_conversation_turn_is_gated_by_capture_env(tmp_path, monkeypatch) -> None:
-    wl, store = _wake_loop(tmp_path, monkeypatch, capture=False)
-
-    wl._record_conversation_turn("hello", "hi")
-
-    assert store.recent(10) == []
-
-
-def test_record_conversation_turn_allows_metadata_only_rows(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    wl, store = _wake_loop(tmp_path, monkeypatch)
-
-    wl._record_conversation_turn(
-        None,
-        None,
-        data_json={"kind": "voice_turn", "transcripts_available": False},
-    )
-
-    rows = store.recent(10)
-    assert len(rows) == 1
-    assert rows[0].user_text is None
-    assert rows[0].assistant_text is None
-    assert json.loads(rows[0].data_json or "{}") == {
-        "kind": "voice_turn",
-        "transcripts_available": False,
-    }
-
-
-def test_record_conversation_turn_lazily_opens_store_after_capture_enabled(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from jasper.voice_daemon import WakeLoop
-
-    db_path = tmp_path / "conversation_history.db"
-    monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1")
-    monkeypatch.setenv(DB_PATH_ENV, str(db_path))
-    wl = WakeLoop.for_tests()
-
-    wl._record_conversation_turn("hello", "hi")
-
-    assert wl._conversation_store_path == str(db_path)
-    assert wl._conversation_store is not None
-    rows = wl._conversation_store.recent(10)
-    assert len(rows) == 1
-    assert rows[0].user_text == "hello"
-    assert rows[0].assistant_text == "hi"
-
-
-def test_record_conversation_turn_reopens_store_when_db_path_changes(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from jasper.voice_daemon import WakeLoop
-
-    first_db = tmp_path / "first.db"
-    second_db = tmp_path / "second.db"
-    monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1")
-    monkeypatch.setenv(DB_PATH_ENV, str(first_db))
-    wl = WakeLoop.for_tests()
-
-    wl._record_conversation_turn("first", "one")
-    monkeypatch.setenv(DB_PATH_ENV, str(second_db))
-    wl._record_conversation_turn("second", "two")
-
-    assert wl._conversation_store_path == str(second_db)
-    first_reader = ConversationStore(str(first_db), read_only=True)
-    second_reader = ConversationStore(str(second_db), read_only=True)
-    try:
-        assert [row.user_text for row in first_reader.recent(10)] == ["first"]
-        assert [row.user_text for row in second_reader.recent(10)] == ["second"]
-    finally:
-        first_reader.close()
-        second_reader.close()
-
-
-def test_record_conversation_turn_skips_while_mic_muted(tmp_path, monkeypatch) -> None:
-    wl, store = _wake_loop(tmp_path, monkeypatch)
-    wl._mic_muted = True
-
-    wl._record_conversation_turn("hello", "hi")
-
-    assert store.recent(10) == []
-
-
-def test_record_conversation_turn_enforces_retention_max_rows(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    import jasper.voice_daemon as voice_daemon
-
-    wl, store = _wake_loop(tmp_path, monkeypatch)
-    monkeypatch.setenv(RETENTION_MAX_ROWS_ENV, "2")
-    timestamps = iter([
-        "2026-06-19T20:10:00Z",
-        "2026-06-19T20:20:00Z",
-        "2026-06-19T20:30:00Z",
-    ])
-    monkeypatch.setattr(
-        voice_daemon,
-        "_conversation_ts_utc",
-        lambda: next(timestamps),
-    )
-
-    wl._record_conversation_turn("first", "one")
-    wl._record_conversation_turn("second", "two")
-    wl._record_conversation_turn("third", "three")
-
-    assert [row.user_text for row in store.recent(10)] == ["third", "second"]
-
-
-def test_record_conversation_turn_enforces_retention_days(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    import jasper.voice_daemon as voice_daemon
-
-    wl, store = _wake_loop(tmp_path, monkeypatch)
-    monkeypatch.setenv(RETENTION_DAYS_ENV, "1")
-    assert store.add(
-        ConversationTurn(
-            id="old",
-            ts_utc="2026-06-19T20:00:00Z",
-            provider="gemini",
-            user_text="old",
-            assistant_text="old answer",
-            tool_calls_json=None,
-            data_json=None,
-            session_id=1,
-        ),
-    )
-    monkeypatch.setattr(
-        voice_daemon,
-        "_conversation_ts_utc",
-        lambda: "2026-06-21T20:00:00Z",
-    )
-
-    wl._record_conversation_turn("new", "new answer")
-
-    assert [row.user_text for row in store.recent(10)] == ["new"]
 
 
 async def test_research_readback_records_query_report_and_data_json(

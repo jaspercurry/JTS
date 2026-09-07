@@ -17,7 +17,12 @@ import pytest
 from jasper import wake_legs
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
-from jasper.audio_profile_state import ALL_PROFILES, profile_env_updates
+from jasper.audio_profile_state import (
+    ALL_PROFILES,
+    normalize_aec_mode,
+    parse_env_bool,
+    profile_env_updates,
+)
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
 from jasper.env_load import parse_env_file
@@ -44,6 +49,7 @@ from jasper.usb_mic import (
 )
 from jasper.voice.catalog import VALID_PROVIDER_IDS, provider_ids_manifest_text
 from tests._lock_holder import spawn_lock_holder
+from tests._log_events import stderr_event, stderr_events
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
@@ -129,23 +135,6 @@ def _env_assignments(path: Path) -> dict[str, str]:
         line.split("=", 1)
         for line in path.read_text(encoding="utf-8").splitlines()
         if line and not line.lstrip().startswith("#") and "=" in line
-    )
-
-
-def _event_values(stderr: str, event: str, field: str) -> list[str]:
-    """Every `field=` value, one per stderr line carrying `event=<event>`.
-
-    Captures up to the next `key=` token or end of line, never to the next
-    space alone: several of this reconciler's fields carry embedded spaces
-    (absence-marker `reason=` prose, ALSA mixer control names), so `field`
-    need not be the last key=value pair on the line. Same anchor-on-the-next-
-    known-field idiom the pass-summary `candidates=(.*?) legs=` pin already
-    relies on (ADR-0235 PR 12).
-    """
-    return re.findall(
-        rf"^.*\bevent={re.escape(event)}(?= |$).*\b{re.escape(field)}=(.*?)(?= \S+=|$)",
-        stderr,
-        flags=re.MULTILINE,
     )
 
 
@@ -448,15 +437,20 @@ def _python_double(
     *,
     failing_module: str,
     stderr_message: str = "",
+    stdout_message: str = "",
+    exit_code: int = 1,
     passthrough: bool = True,
 ) -> Path:
     """An interpreter that fails one of the script's Python bridges.
 
     ``passthrough`` serves every other bridge from the real interpreter; the
     partial-/opt/jasper-deploy shape sets it False so nothing else answers
-    either.
+    either. ``stdout_message`` with ``exit_code=0`` is the other failure a
+    bridge can have: a clean exit whose stdout is not the payload contract.
     """
     echo = f"  echo '{stderr_message}' >&2\n" if stderr_message else ""
+    if stdout_message:
+        echo += f"  echo '{stdout_message}'\n"
     tail = (
         f'exec "{sys.executable}" "$@"\n' if passthrough else "exit 0\n"
     )
@@ -465,7 +459,7 @@ def _python_double(
         "#!/usr/bin/env bash\n"
         f"if [[ \"$*\" == *'{failing_module}'* ]]; then\n"
         f"{echo}"
-        "  exit 1\n"
+        f"  exit {exit_code}\n"
         "fi\n"
         f"{tail}",
         encoding="utf-8",
@@ -580,7 +574,13 @@ def test_jasper_env_values_are_data_never_shell(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert not marker.exists()
-    assert _event_values(result.stderr, "aec_reconcile.pass", "current_mic") == [mic]
+    # `current_mic` is the one field this test deliberately gives an embedded
+    # space, to pin that the value reaches its use whole (see docstring) —
+    # this shell script never logfmt-quotes it the way jasper.log_event does,
+    # so stderr_events' tokenizer would itself split on that space and
+    # truncate the value it exists to check. Anchor on the next field
+    # instead, same idiom as the `candidates=(.*?) legs=` pin below.
+    assert re.findall(r"current_mic=(.*?) aec_mic=", result.stderr) == [mic]
 
 
 def test_the_configured_card_only_reorders_the_registry_list(
@@ -607,9 +607,10 @@ def test_the_configured_card_only_reorders_the_registry_list(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.direct_mic_selected", "mic"
-    ) == ["C16K6Ch"]
+    assert [
+        d["mic"]
+        for d in stderr_events(result.stderr, "aec_reconcile.direct_mic_selected")
+    ] == ["C16K6Ch"]
     values = _env_assignments(tmp_path / "jasper.env")
     assert values["JASPER_MIC_DEVICE"] == "C16K6Ch"
     assert values["JASPER_LOCAL_MIC_PRESENT"] == "1"
@@ -718,9 +719,9 @@ def test_bridge_ready_marker_publish_and_revoke_are_events(tmp_path: Path) -> No
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.bridge_ready", "state"
-    ) == ["revoked", "published"]
+    assert [
+        d["state"] for d in stderr_events(result.stderr, "aec_reconcile.bridge_ready")
+    ] == ["revoked", "published"]
 
 
 def test_bridge_ready_marker_stays_revoked_with_no_candidate_mic(
@@ -733,7 +734,9 @@ def test_bridge_ready_marker_stays_revoked_with_no_candidate_mic(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    states = _event_values(result.stderr, "aec_reconcile.bridge_ready", "state")
+    states = [
+        d["state"] for d in stderr_events(result.stderr, "aec_reconcile.bridge_ready")
+    ]
     assert states and set(states) == {"revoked"}
 
 
@@ -755,12 +758,14 @@ def test_direct_mic_selected_event_for_a_non_6_channel_custom_mic(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.direct_mic_selected", "reason"
-    ) == ["not_6_channel"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.direct_mic_selected", "changed"
-    ) == [changed]
+    assert [
+        d["reason"]
+        for d in stderr_events(result.stderr, "aec_reconcile.direct_mic_selected")
+    ] == ["not_6_channel"]
+    assert [
+        d["changed"]
+        for d in stderr_events(result.stderr, "aec_reconcile.direct_mic_selected")
+    ] == [changed]
 
 
 def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> None:
@@ -773,14 +778,22 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "state"
-    ) == ["marked"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == [MIC_ABSENT_NO_LOCAL_OR_ACCESSORY]
-    [detail] = _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "detail"
+    assert [
+        d["state"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == ["marked"]
+    assert [
+        d["reason"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == [MIC_ABSENT_NO_LOCAL_OR_ACCESSORY]
+    # `detail=` is operator prose with embedded spaces and always the last
+    # field on its line; this shell script never logfmt-quotes it, so
+    # stderr_events' tokenizer (built for jasper.log_event's quoted output)
+    # would truncate it at the first space. Match to end of line instead.
+    [detail] = re.findall(
+        r"^.*event=aec_reconcile\.voice_input_absent.*\bdetail=(.*)$",
+        result.stderr,
+        flags=re.MULTILINE,
     )
     assert detail == _marker_fields(_marker(tmp_path))["detail"]
 
@@ -824,12 +837,14 @@ def test_voice_input_absent_marker_clear_carries_the_markers_own_reason(
     result = _run_reconcile(tmp_path, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "state"
-    ) == ["cleared"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.voice_input_absent", "reason"
-    ) == [MIC_ABSENT_XVF_CAPTURE_ABSENT]
+    assert [
+        d["state"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == ["cleared"]
+    assert [
+        d["reason"]
+        for d in stderr_events(result.stderr, "aec_reconcile.voice_input_absent")
+    ] == [MIC_ABSENT_XVF_CAPTURE_ABSENT]
 
 
 @pytest.mark.parametrize(
@@ -1309,8 +1324,17 @@ def test_mixer_repair_failure_is_one_event_per_invocation(
     )
 
     assert result.returncode == 0, result.stderr
+    # `control=` can be an ALSA mixer name with embedded spaces (e.g.
+    # "Headset Capture Switch") and is always the last field on its line;
+    # this shell script never logfmt-quotes it, so stderr_events' tokenizer
+    # (built for jasper.log_event's quoted output) would truncate it at the
+    # first space. Match to end of line instead.
     assert (
-        _event_values(result.stderr, "aec_reconcile.mixer_repair", "control")
+        re.findall(
+            r"^.*event=aec_reconcile\.mixer_repair.*\bcontrol=(.*)$",
+            result.stderr,
+            flags=re.MULTILINE,
+        )
         == controls
     )
     # Non-fatal: the pass still arms AEC on the same run.
@@ -2621,6 +2645,9 @@ _SHIM_LEG_VARS = (
     "LEG_CHIP_AEC_210",
 )
 _SHIM_VARS = ("AUDIO_INPUT_PROFILE", *_SHIM_LEG_VARS)
+# What --normalize emits instead: the same master toggle and legs, plus the
+# chip-ref observe opt-in — all read from the pass's raw environment.
+_SHIM_NORMALIZE_VARS = (*_SHIM_LEG_VARS, "CHIP_REF_OBSERVE")
 _SHIM_ENV_KEYS = (
     "JASPER_AEC_MODE",
     "JASPER_WAKE_LEG_RAW",
@@ -2654,15 +2681,17 @@ def _expected_legs(effective: str | None) -> tuple[str, ...]:
     return tuple(updates[key] for key in _SHIM_ENV_KEYS)
 
 
-def _eval_shim(*shim_args: str) -> dict[str, str]:
+def _eval_shim(
+    *shim_args: str, names: tuple[str, ...] = _SHIM_VARS
+) -> dict[str, str]:
     """Run the shim behind the same `eval` the reconciler uses."""
     shim = shlex.join(
         [sys.executable, "-m", "jasper.cli.audio_input_profile", *shim_args]
     )
     script = (
-        "".join(f"{name}={_SHIM_SENTINEL}\n" for name in _SHIM_VARS)
+        "".join(f"{name}={_SHIM_SENTINEL}\n" for name in names)
         + f'eval "$({shim})"\n'
-        + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in _SHIM_VARS)
+        + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in names)
     )
     shell = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", script],
@@ -2696,6 +2725,97 @@ def test_reconciler_evals_the_python_profile_tables(
     assert _eval_shim(
         f"--profile={profile}", f"--chip-available={chip_available}"
     ) == dict(zip(_SHIM_VARS, (normalized, *_expected_legs(effective))))
+
+
+# The wizard writes only "1"/"0" and "auto"/"disabled", but an operator
+# hand-editing aec_mode.env may write any of these. The shell compares the
+# evaled values against those literals, so anything else silently reads as
+# off — the reduction is the whole reason --normalize exists (ADR-0235 D1).
+_HAND_EDIT_VALUES = ("yes", "true", "on", "ENABLED", " 1 ", "off", "no", "garbage", "")
+_APPLIED_VALUES = frozenset({"1", "0", "auto", "disabled"})
+# The build default each normalized boolean falls back to when the file said
+# nothing, or said something the vocabulary cannot express. RAW is the only
+# one that defaults on.
+_NORMALIZE_DEFAULTS = {
+    "LEG_RAW": True,
+    "LEG_DTLN": False,
+    "LEG_CHIP_AEC": False,
+    "LEG_CHIP_AEC_150": False,
+    "LEG_CHIP_AEC_210": False,
+    "CHIP_REF_OBSERVE": False,
+}
+
+
+@pytest.mark.parametrize("value", _HAND_EDIT_VALUES)
+def test_reconciler_evals_normalized_hand_edits(value: str) -> None:
+    """--normalize reduces every hand-edit spelling to an applied value.
+
+    `jasper.audio_profile_state` owns both vocabularies; the shell carries no
+    second copy, so this drives the same eval the reconciler does and pins the
+    emitted strings against the Python rules rather than against a table here.
+    A value the vocabulary cannot express takes the same fallback an empty one
+    does — the key's own build default — which is why RAW is the one that
+    comes back on for both.
+    """
+    emitted = _eval_shim(
+        "--normalize",
+        "--profile=custom",
+        f"--mode={value}",
+        *(
+            f"--{name.lower().replace('_', '-')}={value}"
+            for name in _NORMALIZE_DEFAULTS
+        ),
+        names=_SHIM_NORMALIZE_VARS,
+    )
+
+    assert emitted == {
+        "AEC_MODE": normalize_aec_mode(value),
+        **{
+            name: "1" if (
+                default if value == "" else parse_env_bool(value, default)
+            ) else "0"
+            for name, default in _NORMALIZE_DEFAULTS.items()
+        },
+    }
+    assert set(emitted.values()) <= _APPLIED_VALUES
+
+
+def test_normalize_names_the_raw_spelling_it_rewrote() -> None:
+    """stdout is an eval, so a rewritten spelling is only visible to an
+    operator if it reaches the journal. One structured stderr line per key the
+    vocabulary changed, with the raw value shell-quoted so a spelling carrying
+    whitespace stays one field; a canonical value says nothing.
+    """
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "jasper.cli.audio_input_profile", "--normalize",
+            "--profile=custom", "--mode=AUTO", "--leg-raw= 1 ", "--leg-dtln=0",
+            "--chip-ref-observe=yes",
+        ],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [
+        dict(field.split("=", 1) for field in shlex.split(line))
+        for line in result.stderr.splitlines()
+    ] == [
+        {
+            "event": "audio_input_profile.normalized",
+            "key": "JASPER_AEC_MODE", "raw": "AUTO", "value": "auto",
+        },
+        {
+            "event": "audio_input_profile.normalized",
+            "key": "JASPER_WAKE_LEG_RAW", "raw": " 1 ", "value": "1",
+        },
+        {
+            "event": "audio_input_profile.normalized",
+            "key": "JASPER_AEC_CHIP_REF_OBSERVE", "raw": "yes", "value": "1",
+        },
+    ]
 
 
 def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None:
@@ -2841,12 +2961,14 @@ def test_aec_disabled_clears_every_leg_and_keeps_the_operator_booleans(
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
     # No card staged, so no candidate mic; the custom "Array" device is
     # neither udp: nor unset, so the reconciler leaves it alone.
-    assert _event_values(
-        result.stderr, "aec_reconcile.no_candidate_mic", "current"
-    ) == ["Array"]
-    assert _event_values(
-        result.stderr, "aec_reconcile.no_candidate_mic", "cleared"
-    ) == ["0"]
+    assert [
+        d["current"]
+        for d in stderr_events(result.stderr, "aec_reconcile.no_candidate_mic")
+    ] == ["Array"]
+    assert [
+        d["cleared"]
+        for d in stderr_events(result.stderr, "aec_reconcile.no_candidate_mic")
+    ] == ["0"]
     mode_values = _env_assignments(tmp_path / "aec_mode.env")
     assert mode_values["JASPER_WAKE_LEG_RAW"] == "1"
     assert mode_values["JASPER_WAKE_LEG_DTLN"] == "1"
@@ -4255,7 +4377,7 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     broken = _python_double(
         tmp_path,
         "broken-measurement-python",
-        failing_module="jasper.cli.measurement_mic",
+        failing_module="jasper.cli.capture_card",
     )
     _stage(
         tmp_path,
@@ -4276,6 +4398,43 @@ def test_measurement_registry_probe_failure_excludes_nothing(
     assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
 
 
+def test_measurement_registry_noisy_payload_excludes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The other way the bridge breaks: exit 0, but stdout is not the one
+    assignment the contract promises (a warning, a traceback printed before a
+    clean exit). Under `set -e` an eval of that kills the pass where it
+    stands — before the env write, the park and its cue — so it must read as
+    "could not classify" and exclude nothing, exactly like a non-zero exit."""
+    noisy = _python_double(
+        tmp_path,
+        "noisy-measurement-python",
+        failing_module="jasper.cli.capture_card",
+        stdout_message="Traceback (most recent call last):",
+        exit_code=0,
+    )
+    _stage(
+        tmp_path,
+        "udp:9876",
+        extra="JASPER_MIC_DEVICE_CANDIDATES=UMIK2\n",
+        mode="auto",
+    )
+    _write_usb_card(tmp_path, "UMIK2", UMIK2_USB_ID, channels=1)
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "systemd",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(noisy)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "JASPER_MIC_DEVICE=UMIK2" in (tmp_path / "jasper.env").read_text()
+    fields = stderr_event(result.stderr, "aec_reconcile.measurement_registry")
+    assert fields["status"] == "failed"
+    assert fields["python"] == str(noisy)
+
+
 def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
     tmp_path: Path,
 ) -> None:
@@ -4286,7 +4445,7 @@ def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
     tripwire = _python_double(
         tmp_path,
         "tripwire-python",
-        failing_module="jasper.cli.measurement_mic",
+        failing_module="jasper.cli.capture_card",
         stderr_message="measurement resolver was spawned",
     )
     # stream0 only, no usbid.

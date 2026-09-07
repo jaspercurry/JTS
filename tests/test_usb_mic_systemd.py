@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper.usb_mic import GADGET_PATH, INTENT_PATH, usb_mic_enabled
-from tests.systemd_unit_helpers import values_for
+from tests.systemd_unit_helpers import seconds_for, values_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,15 +80,6 @@ def _directive(text: str, key: str) -> str:
     raise AssertionError(f"{key}= not found in {APPLY_UNIT}")
 
 
-def _seconds(raw: str) -> float:
-    """Parse the systemd time spans this unit uses (bare seconds, `s`, `min`)."""
-    value = raw.strip()
-    for suffix, scale in (("min", 60.0), ("s", 1.0)):
-        if value.endswith(suffix):
-            return float(value[: -len(suffix)]) * scale
-    return float(value)
-
-
 def test_usb_mic_apply_retries_accepted_failures_with_a_hard_bound() -> None:
     text = APPLY_UNIT.read_text()
     assert "Restart=on-failure" in text
@@ -108,10 +99,10 @@ def test_usb_mic_apply_start_limit_window_outlasts_its_own_worst_case_run() -> N
     """
 
     text = APPLY_UNIT.read_text()
-    interval = _seconds(_directive(text, "StartLimitIntervalSec"))
+    interval = seconds_for(text, "StartLimitIntervalSec")
     burst = int(_directive(text, "StartLimitBurst"))
-    timeout = _seconds(_directive(text, "TimeoutStartSec"))
-    backoff = _seconds(_directive(text, "RestartSec"))
+    timeout = seconds_for(text, "TimeoutStartSec")
+    backoff = seconds_for(text, "RestartSec")
 
     worst_case_span = (burst - 1) * (timeout + backoff)
     assert interval > worst_case_span, (

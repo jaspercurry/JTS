@@ -116,6 +116,20 @@ def test_read_meminfo_returns_sensible_values() -> None:
     assert out["swap_used_mb"] >= 0
 
 
+def test_read_meminfo_propagates_an_unreadable_file(monkeypatch) -> None:
+    """An unreadable /proc/meminfo must raise here, not be swallowed into a
+    zero-filled sample: SystemSampler._run's outer per-tick guard is what
+    drops the whole tick, and a caught-and-zeroed reading would instead get
+    recorded as if it were real."""
+    def raise_oserror(*names, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(system_metrics, "meminfo_fields", raise_oserror)
+
+    with pytest.raises(OSError):
+        SystemSampler._read_meminfo()
+
+
 @pytest.mark.parametrize("psi,oom,expected", [
     (12.34, 3, {"mem_psi_some_avg60": 12.34, "oom_kill": 3}),
     (0.0, 0, {"mem_psi_some_avg60": 0.0, "oom_kill": 0}),

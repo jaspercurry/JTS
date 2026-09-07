@@ -16,6 +16,7 @@ import pytest
 from jasper.cli import xvf_firmware_update
 from jasper.mics import xvf3800
 from tests.download_response_fixtures import FakeResponse
+from tests.systemd_unit_helpers import seconds_for
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,10 +24,7 @@ UNIT_PATH = ROOT / "deploy/systemd/jasper-xvf-firmware-update.service"
 
 
 def _unit_timeout_start_sec() -> float:
-    for line in UNIT_PATH.read_text(encoding="utf-8").splitlines():
-        if line.startswith("TimeoutStartSec="):
-            return float(line.partition("=")[2])
-    raise AssertionError(f"{UNIT_PATH} has no TimeoutStartSec")
+    return seconds_for(UNIT_PATH.read_text(encoding="utf-8"), "TimeoutStartSec")
 
 
 def _runtime_profile(

@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import os
 
+from ...audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from ...route_latency.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
-    REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
     _service_state_failure,
+    _systemctl_unavailable_result,
 )
 from .audio_runtime_fanin import _assistant_gain_fault
 
@@ -80,8 +81,6 @@ REASON_AEC_CLOCK_CHIP_REF_UNAVAILABLE = "aec_clock_chip_ref_unavailable"
 REASON_AEC_CLOCK_UNTRUSTED = "aec_clock_untrusted"
 
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
-
-_OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
 def _outputd_reconciled_env() -> dict[str, str]:
     """outputd's env as its own unit layers it, read once per doctor run.
@@ -651,7 +650,7 @@ def check_outputd_service() -> CheckResult:
         "jasper-outputd.service",
         missing=REASON_OUTPUTD_UNIT_MISSING,
         not_enabled=REASON_OUTPUTD_UNIT_NOT_ENABLED,
-        inactive=REASON_OUTPUTD_INACTIVE, speaker_silent=True,
+        inactive=REASON_OUTPUTD_INACTIVE,
     )
     if service_failure is not None:
         return service_failure
@@ -672,7 +671,7 @@ def check_outputd_service() -> CheckResult:
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
     expected_dac_pcm = (
-        _OUTPUTD_EXPECTED_DUAL_DAC_PCM
+        DUAL_APPLE_USB_C_DAC_4CH_ID
         if sink_mode == "dual_apple"
         else _OUTPUTD_EXPECTED_DAC_PCM
     )
@@ -874,12 +873,7 @@ def check_aec_clock_drift() -> CheckResult:
     label = "AEC clock drift"
     state = evidence.unit_state("jasper-outputd.service")
     if state is None:
-        return CheckResult(
-            label,
-            "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result(label)
     if state.get("load_state") == "not-found" or state.get(
         "unit_file_state"
     ) not in ("enabled", "enabled-runtime"):

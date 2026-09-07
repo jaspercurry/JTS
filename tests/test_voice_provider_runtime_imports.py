@@ -318,7 +318,7 @@ def test_child_output_is_length_capped(monkeypatch, probe):
     assert result.detail.count("x") <= doctor_voice._EXCEPTION_DETAIL_LIMIT
 
 
-def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
+def test_probe_timeout_warns(monkeypatch, probe):
     monkeypatch.setattr(
         doctor_voice,
         "read_active_provider_state",
@@ -327,7 +327,7 @@ def test_timeout_is_a_warning_not_a_failure(monkeypatch, probe):
     probe["raises"] = subprocess.TimeoutExpired(cmd=["python"], timeout=30.0)
     result = doctor_voice.check_provider_importable()
     assert result.status == "warn"
-    assert "timed out" in result.detail
+    assert result.reason == doctor_voice.REASON_PROVIDER_IMPORTS_TIMEOUT
 
 
 # ---------------------------------------------------------------------------

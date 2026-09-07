@@ -114,7 +114,6 @@ async def _state_snapshot(monkeypatch, tmp_path):
         return None
 
     monkeypatch.setattr(camilla_mod, "CamillaController", _FakeCamillaController)
-    monkeypatch.setattr(state_aggregate, "_audio_graph_state", lambda **_kwargs: None)
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spotify.env"))
     return await state_aggregate._get_state(

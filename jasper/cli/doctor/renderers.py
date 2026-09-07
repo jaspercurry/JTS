@@ -33,12 +33,12 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
-    REASON_SYSTEMCTL_UNAVAILABLE,
     CheckResult,
     _exception_detail,
     _parked_follower_result,
     _parse_systemd_environment,
     _run,
+    _systemctl_unavailable_result,
 )
 
 # Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
@@ -355,12 +355,7 @@ def check_jasper_mux() -> CheckResult:
         return parked
     unit_state = evidence.unit_state("jasper-mux.service")
     if unit_state is None:
-        return CheckResult(
-            "jasper-mux",
-            "skipped",
-            "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result("jasper-mux")
     state = unit_state.get("active_state") or "unknown"
     if state == "active":
         return CheckResult(
@@ -425,12 +420,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     expected_exec = "/opt/jasper/.venv/bin/jasper-bluetooth-agent"
     unit_state = evidence.unit_state("bt-agent.service")
     if unit_state is None:
-        return CheckResult(
-            "Bluetooth pairing policy",
-            "skipped",
-            "systemctl unavailable — skipped",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result("Bluetooth pairing policy")
     active = unit_state.get("active_state") or ""
     sub = unit_state.get("sub_state") or ""
     if active != "active" or sub != "running":
@@ -445,12 +435,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     try:
         exec_proc = _run(["systemctl", "show", "bt-agent.service", "-p", "ExecStart"])
     except FileNotFoundError:
-        return CheckResult(
-            "Bluetooth pairing policy",
-            "skipped",
-            "systemctl unavailable — skipped",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result("Bluetooth pairing policy")
     if exec_proc.returncode != 0:
         return CheckResult(
             "Bluetooth pairing policy",
@@ -476,7 +461,7 @@ def check_bluetooth_pairing_policy() -> CheckResult:
     if isinstance(bt_or_exc, FileNotFoundError):
         return CheckResult(
             "Bluetooth pairing policy",
-            "warn",
+            "skipped",
             "agent OK, but bluetoothctl unavailable — adapter gate not checked",
             reason=REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE,
         )

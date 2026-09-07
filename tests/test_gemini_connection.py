@@ -1118,14 +1118,17 @@ async def test_tool_round_metadata_captures_tool_name_without_args_or_payload():
             timeout=2.0,
         )
 
-        metadata = turn.conversation_metadata()
-        assert metadata == {
+        capture = turn.capture()
+        assert capture is not None
+        assert capture.user_text is None
+        assert capture.assistant_text is None
+        assert capture.data == {
             "kind": "voice_turn",
             "transcripts_available": False,
             "tools": ["get_weather"],
         }
-        assert "Home" not in repr(metadata)
-        assert "temperature" not in repr(metadata)
+        assert "Home" not in repr(capture)
+        assert "temperature" not in repr(capture)
 
         await turn.release()
     finally:
@@ -1169,9 +1172,21 @@ class _SlowThenDeadConnect:
 
 
 async def test_reconnect_nudge_needs_a_paused_connection_and_is_gated():
+    """A nudge only cuts a wait short while the connection is paused.
+
+    `IDLE_INIT` (a fresh, not-yet-started connection) counts as paused
+    per `LiveConnection.is_paused`, so the "refused" arm drives past it
+    into `CONNECTED` — a genuinely not-paused state — via the real
+    connect path before asserting the refusal.
+    """
     conn, _factory = _make_conn()
-    # Nothing is waiting, so there is nothing to cut short.
-    assert conn.request_reconnect_now() is False
+    await conn.start(ToolRegistry(), "system")
+    try:
+        assert not conn.is_paused()
+        # Nothing is waiting, so there is nothing to cut short.
+        assert conn.request_reconnect_now() is False
+    finally:
+        await conn.stop()
     conn._state = ConnectionState.PAUSED_FOR_BACKOFF
     assert conn.request_reconnect_now() is True
     # Repeated wakes must not retry the provider faster than an

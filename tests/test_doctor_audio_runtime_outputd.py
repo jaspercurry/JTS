@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jasper import audio_runtime_plan
+from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
 from jasper.control import audio_health
 
@@ -492,7 +493,7 @@ def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_p
     payload = json.loads(
         _outputd_status_payload(
             sink_mode="dual_apple",
-            dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
         ).decode()
     )
     payload.pop("dual_apple", None)
@@ -510,7 +511,7 @@ def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
-            dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
             dual_apple_status={
                 "dac_a_pcm": "hw:CARD=A,DEV=0",
                 "dac_b_pcm": "hw:CARD=A_1,DEV=0",
@@ -542,7 +543,7 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
         monkeypatch,
         _outputd_status_payload(
             sink_mode="dual_apple",
-            dac_pcm=audio_runtime_outputd._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
+            dac_pcm=DUAL_APPLE_USB_C_DAC_4CH_ID,
         ),
     )
     _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)

@@ -137,7 +137,10 @@ def resolve_wired_mic(
     Fail-soft to ``None`` on any probe error, including an unreadable or non-UTF-8 proc file.
     ``None`` means "no mic answered", never a source choice — the caller decides what to do.
     """
-    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
+    from jasper.audio_measurement.mic_identity import (
+        SUPPORTED_MODELS,
+        read_card_usb_id,
+    )
 
     # id -> model, DERIVED per call from the one registry owner.
     known: dict[str, str] = {}
@@ -156,9 +159,8 @@ def resolve_wired_mic(
     except OSError:
         return None
     for card_index, card_dir in card_dirs:
-        try:
-            usb_id = (card_dir / "usbid").read_text().strip().lower()
-        except (OSError, UnicodeDecodeError):
+        usb_id = read_card_usb_id(card_dir)
+        if not usb_id:
             continue  # not a USB card, or not a readable text file
         model_key = known.get(usb_id)
         if model_key is None:

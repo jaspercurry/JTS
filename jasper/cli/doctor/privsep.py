@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import REASON_SYSTEMCTL_UNAVAILABLE, CheckResult
+from ._shared import CheckResult, _systemctl_unavailable_result
 
 # Machine-stable codes naming which branch of a privsep check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -483,10 +483,7 @@ def _resolve_runtime(
     resolved."""
     info = _unit_runtime_identity(unit)
     if info is None:
-        return CheckResult(
-            label, "skipped", "systemctl unavailable — skipped (not Linux?)",
-            reason=REASON_SYSTEMCTL_UNAVAILABLE,
-        )
+        return _systemctl_unavailable_result(label)
     if info.get("LoadState", "") in ("not-found", "masked"):
         return CheckResult(
             label, "skipped", f"{unit} not installed",

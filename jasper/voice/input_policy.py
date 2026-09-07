@@ -22,6 +22,10 @@ from jasper.mics.xvf3800 import ALSA_CARD_NAMES
 from jasper.wake_ports import DEFAULT_AEC_ON_PORT
 
 
+# The endpointer JTS ships. Provider server VAD was measured and ruled out
+# permanently — see ADR-0152 and ADR-0244.
+ENDPOINTING = "manual_silero"
+
 OPENAI_NOISE_REDUCTION_AUTO = "auto"
 OPENAI_NOISE_REDUCTION_DISABLED = frozenset((
     "",
@@ -183,11 +187,6 @@ def _resolve_openai_noise_reduction(
 
 def build_effective_speech_input_policy(cfg: Any) -> EffectiveSpeechInputPolicy:
     contract = contract_from_config(cfg)
-    endpointing = (
-        "server_vad_when_music"
-        if bool(getattr(cfg, "server_vad_enabled", False))
-        else "manual_silero"
-    )
     provider = str(getattr(cfg, "voice_provider", "") or "")
     requested_nr = str(getattr(cfg, "openai_noise_reduction", "") or "")
     openai_nr, openai_nr_source, warnings = _resolve_openai_noise_reduction(
@@ -197,7 +196,7 @@ def build_effective_speech_input_policy(cfg: Any) -> EffectiveSpeechInputPolicy:
     return EffectiveSpeechInputPolicy(
         provider=provider,
         input_contract=contract,
-        endpointing=endpointing,
+        endpointing=ENDPOINTING,
         openai_noise_reduction=openai_nr,
         openai_noise_reduction_source=openai_nr_source,
         warnings=warnings,

@@ -1528,7 +1528,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
             return "WIN"
 
         wl._wake_late_cancelled = lambda *_args: False
-        wl._peer_arbitrate = win_arbitration
+        wl._peering.arbitrate = win_arbitration
         wl._acquiring = True
         beginning = asyncio.create_task(
             wl._arbitrate_acquire_drain(
@@ -2146,7 +2146,7 @@ async def test_uds_slow_setup_reduces_drain_to_aggregate_remaining(
     """The real wire shares one budget across volume, meter, and drain."""
 
     import jasper.voice.measurement_hold as measurement_hold_mod
-    from jasper.voice.daemon_main import _start_control_socket
+    from jasper.voice.control_socket import serve
 
     clock = _FakeMonotonic()
     monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock)
@@ -2179,7 +2179,7 @@ async def test_uds_slow_setup_reduces_drain_to_aggregate_remaining(
     started = clock()
     sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-shared-budget-")
     socket_path = f"{sock_dir}/voice.sock"
-    server = await _start_control_socket(wl, socket_path)
+    server = await serve(wl, socket_path)
     try:
         assert await _voice_uds_command(
             socket_path,
@@ -2206,7 +2206,7 @@ async def test_uds_setup_expiry_rolls_back_inside_declared_total(
     """The real wire returns non-ok after local rollback, below old 3 s."""
 
     import jasper.voice.measurement_hold as measurement_hold_mod
-    from jasper.voice.daemon_main import _start_control_socket
+    from jasper.voice.control_socket import serve
 
     clock = _FakeMonotonic()
     monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock)
@@ -2238,7 +2238,7 @@ async def test_uds_setup_expiry_rolls_back_inside_declared_total(
     started = clock()
     sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-budget-")
     socket_path = f"{sock_dir}/voice.sock"
-    server = await _start_control_socket(wl, socket_path)
+    server = await serve(wl, socket_path)
     try:
         response = await _voice_uds_command(
             socket_path,
@@ -2270,7 +2270,7 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
 
     import jasper.audio_io as audio_io_mod
     from jasper.audio_io import TtsPlayout
-    from jasper.voice.daemon_main import _start_control_socket
+    from jasper.voice.control_socket import serve
 
     parent, child = socket.socketpair()
     poisoned = audio_io_mod._OutputdStreamAdapter(parent)
@@ -2299,7 +2299,7 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     wl._tts = tts
     sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-poisoned-")
     socket_path = f"{sock_dir}/voice.sock"
-    server = await _start_control_socket(wl, socket_path)
+    server = await serve(wl, socket_path)
     try:
         response = await _voice_uds_command(
             socket_path,
@@ -2361,7 +2361,7 @@ async def test_old_coordinator_read_timeout_survives_a_held_reply() -> None:
     regardless, so a plain "not done yet" would pass even with no drain
     at all.
     """
-    from jasper.voice.daemon_main import _start_control_socket
+    from jasper.voice.control_socket import serve
 
     wl = WakeLoop.for_tests()
     gate = _ObservedGate()
@@ -2370,7 +2370,7 @@ async def test_old_coordinator_read_timeout_survives_a_held_reply() -> None:
     # pytest tmpdir overruns it.
     sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-")
     socket_path = f"{sock_dir}/voice.sock"
-    server = await _start_control_socket(wl, socket_path)
+    server = await serve(wl, socket_path)
     try:
         episode = await gate.begin_if_idle("admin")
         assert episode is not None
@@ -2409,14 +2409,14 @@ async def test_old_coordinator_read_timeout_survives_a_held_reply() -> None:
 
 async def test_old_coordinator_resumes_new_daemon_after_drain_timeout() -> None:
     """The legacy result stays ``ok`` so old cleanup logic still runs."""
-    from jasper.voice.daemon_main import _start_control_socket
+    from jasper.voice.control_socket import serve
 
     wl = WakeLoop.for_tests()
     gate = _StuckGate()
     wl._output_gate = gate
     sock_dir = tempfile.mkdtemp(dir="/tmp", prefix="jts-uds-")
     socket_path = f"{sock_dir}/voice.sock"
-    server = await _start_control_socket(wl, socket_path)
+    server = await serve(wl, socket_path)
     try:
         response = await _voice_uds_command(socket_path, "MEASURE_PAUSE")
         assert response == {"result": "ok", "drained": False}

@@ -331,6 +331,57 @@ def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
     assert result.reason == doctor_grouping.REASON_RATE_ADJUST_UNCONFIRMED
 
 
+@pytest.mark.parametrize(
+    "check_name", ["check_grouping_rate_adjust", "check_grouping_leader_pipe"],
+)
+@pytest.mark.parametrize(
+    "unreadable, status, reason_name",
+    [
+        # `read_camilla_statefile_config_path` returns None both for an
+        # unreadable statefile (unobserved) and a readable one with no
+        # `config_path:` line (observed-malformed) — the reader conflates
+        # the two, so this arm stays `warn` (same rule as
+        # REASON_RATE_ADJUST_UNCONFIRMED below).
+        ("statefile", "warn", "REASON_CAMILLA_STATEFILE_UNREADABLE"),
+        # The config path resolved; `open()` on it raised — unambiguously
+        # the doctor's own read failing, nothing about the config observed.
+        ("config", "skipped", "REASON_CAMILLA_CONFIG_UNREADABLE"),
+    ],
+    ids=["statefile-unreadable", "config-unreadable"],
+)
+def test_doctor_backstops_on_an_unreadable_active_config(
+    monkeypatch, tmp_path, check_name, unreadable, status, reason_name,
+):
+    """Both backstops read the active CamillaDSP config through the same
+    reader (correction._active_camilla_config_path)."""
+    import jasper.cli.doctor.correction as corrmod
+    import jasper.cli.doctor.grouping as groupmod
+    import jasper.multiroom.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: _cfg(enabled=True, role="leader", channel="left",
+                             bond_id="b"),
+    )
+    if unreadable == "statefile":
+        monkeypatch.setattr(
+            corrmod, "_active_camilla_config_path",
+            lambda: ("/var/lib/jasper/camilla-active.yml", None),
+        )
+    else:
+        unreadable_path = tmp_path / "active.yml"
+        unreadable_path.mkdir()
+        monkeypatch.setattr(
+            corrmod, "_active_camilla_config_path",
+            lambda: ("statefile", str(unreadable_path)),
+        )
+
+    result = getattr(groupmod, check_name)()
+
+    assert result.status == status
+    assert result.reason == getattr(corrmod, reason_name)
+
+
 def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_path):
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
@@ -467,6 +518,21 @@ def test_channel_pick_check_warns_when_env_missing(monkeypatch):
     )
     assert r.status == "warn"
     assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_LANE_MISSING
+
+
+def test_channel_pick_check_skips_when_env_is_unreadable(monkeypatch, tmp_path):
+    """The lane env file exists but cannot be read (OSError) — the doctor's
+    own read failed, so this is a skip, not a verdict about the channel."""
+    unreadable = tmp_path / "grouping-outputd.env"
+    unreadable.mkdir()
+    r = _channel_pick_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="follower", channel="right",
+                 bond_id="b", leader_addr="jts.local"),
+        env_path=unreadable,
+    )
+    assert r.status == "skipped"
+    assert r.reason == doctor_grouping.REASON_CHANNEL_PICK_ENV_UNREADABLE
 
 
 def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
@@ -665,6 +731,7 @@ def test_daemon_config_exit_code_contract(unit):
 def _tts_lane_check(
     monkeypatch, *, cfg, voice_text=None, outputd_text=None,
     resolved_voice_text=None, tmp_path=None, active_box=False,
+    outputd_unreadable=False,
 ):
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
@@ -676,7 +743,13 @@ def _tts_lane_check(
         f = tmp_path / "grouping-voice.env"
         f.write_text(voice_text)
         voice_path = str(f)
-    if outputd_text is not None:
+    if outputd_unreadable:
+        # A directory in place of the file: it exists, so `.read_text()`
+        # raises `OSError` — the doctor's own read failing, not drift.
+        d = tmp_path / "grouping-outputd.env"
+        d.mkdir()
+        outputd_path = str(d)
+    elif outputd_text is not None:
         f = tmp_path / "grouping-outputd.env"
         f.write_text(outputd_text)
         outputd_path = str(f)
@@ -793,6 +866,23 @@ def test_tts_lane_check_bonded_unarmed_lane_warns_broken(monkeypatch, tmp_path):
     )
     assert r.status == "warn"
     assert r.reason == doctor_grouping.REASON_TTS_OUTPUTD_LANE_UNARMED
+
+
+def test_tts_lane_check_bonded_skips_when_outputd_env_is_unreadable(
+    monkeypatch, tmp_path,
+):
+    """The outputd lane-env file exists but cannot be read (OSError) — the
+    doctor's own read failed, so this is a skip, not a verdict about the
+    TTS lane's arming."""
+    r = _tts_lane_check(
+        monkeypatch,
+        cfg=_cfg(enabled=True, role="leader", channel="left", bond_id="b"),
+        resolved_voice_text=f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n",
+        outputd_unreadable=True,
+        tmp_path=tmp_path,
+    )
+    assert r.status == "skipped"
+    assert r.reason == doctor_grouping.REASON_TTS_OUTPUTD_ENV_UNREADABLE
 
 
 def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path):

@@ -80,6 +80,10 @@ def _pending_reboot_role() -> UsbPortRoleState:
     )
 
 
+def _role_read_error() -> UsbPortRoleState:
+    raise RuntimeError("usb port role probe failed")
+
+
 @pytest.fixture(autouse=True)
 def _available_usb_role(monkeypatch):
     monkeypatch.setattr(usbsink, "current_usb_data_role", _role)
@@ -91,8 +95,9 @@ def _available_usb_role(monkeypatch):
         (_role, "ok", ""),
         (_zero_host_role, "ok", usbsink.REASON_DATA_ROLE_HOST_ONLY),
         (_pending_reboot_role, "ok", usbsink.REASON_DATA_ROLE_REBOOT_REQUIRED),
+        (_role_read_error, "skipped", usbsink.REASON_DATA_ROLE_UNAVAILABLE),
     ],
-    ids=["available", "zero-host", "pending-reboot"],
+    ids=["available", "zero-host", "pending-reboot", "role-probe-failed"],
 )
 def test_check_usb_data_role_verdicts(monkeypatch, role, status, reason):
     monkeypatch.setattr(usbsink, "current_usb_data_role", role)
