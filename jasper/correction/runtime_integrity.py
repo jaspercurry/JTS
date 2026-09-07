@@ -12,9 +12,7 @@ whether the measurement environment looked trustworthy.
 """
 from __future__ import annotations
 
-import json
 import os
-import socket
 import time
 import wave
 from dataclasses import dataclass
@@ -24,6 +22,7 @@ from typing import Any
 from jasper.audio_measurement.quality_model import Severity
 from jasper.fanin.status import FANIN_STATUS_SOCKET
 from jasper.memory_policy import memory_headroom_thresholds
+from jasper.route_latency.status_socket import read_status_socket_or_none
 
 SCHEMA_VERSION = 1
 
@@ -98,24 +97,15 @@ def _read_status(
     *,
     timeout_sec: float,
 ) -> dict[str, Any] | None:
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout_sec)
-            sock.connect(socket_path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(8192)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError):
-        return None
-    try:
-        data = json.loads(b"".join(chunks).decode("utf-8", "replace"))
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+    # read_status_socket_or_none already returns None on any
+    # OSError/JSONDecodeError/non-object reply — the exact failure set this
+    # used to catch by hand (FileNotFoundError/ConnectionRefusedError/
+    # TimeoutError are all OSError subclasses).
+    return read_status_socket_or_none(
+        socket_path,
+        timeout=timeout_sec,
+        event="runtime_integrity.status_unavailable",
+    )
 
 
 def _read_fanin_status(

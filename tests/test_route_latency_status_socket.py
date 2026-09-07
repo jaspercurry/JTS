@@ -14,13 +14,18 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from jasper import audio_validation
+from jasper.control.airplay_health import AirPlayHealthSampler
+from jasper.correction import runtime_integrity
 from jasper.route_latency import status_socket
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
-from tests.status_socket_fixtures import FakeStatusSocket
+from tests.status_socket_fixtures import DribblingStatusSocket, FakeStatusSocket
 
 _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 
@@ -189,3 +194,74 @@ def test_reader_decodes_lossily_rather_than_raising_on_a_stray_byte(monkeypatch)
     monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
 
     assert status_socket.read_status_socket("/run/test.sock")["ok"] is True
+
+
+# ---- convergence: the three former hand-rolled STATUS readers -------------
+#
+# jasper.audio_validation.query_outputd_status,
+# jasper.control.airplay_health.AirPlayHealthSampler._read_fanin_status and
+# jasper.correction.runtime_integrity._read_status each used to hand-roll
+# this same connect/send/recv-loop with a PER-OPERATION `settimeout` and no
+# byte cap; all three now delegate to `read_status_socket_or_none`. A
+# dribbling server (one byte every 100 ms, forever, never closing) is the
+# shape that tells the two implementations apart: a per-operation timeout
+# never fires because every recv succeeds inside its own window, so a
+# reader without a TOTAL deadline hangs on it forever. The byte cap itself
+# is already pinned deterministically above
+# (test_reader_rejects_a_reply_over_the_byte_cap) — a real 100 ms/byte
+# trickle would take days to reach 1 MiB, so it is not re-proven here.
+
+_DRIBBLE_TIMEOUT_SEC = 0.3
+_DRIBBLE_WALL_SLACK_SEC = 2.0
+
+
+def _call_audio_validation(sock_path: Path) -> dict | None:
+    return audio_validation.query_outputd_status(sock_path, timeout=_DRIBBLE_TIMEOUT_SEC)
+
+
+def _call_airplay_health(sock_path: Path) -> dict | None:
+    return AirPlayHealthSampler._read_fanin_status(str(sock_path), timeout_sec=_DRIBBLE_TIMEOUT_SEC)
+
+
+def _call_runtime_integrity(sock_path: Path) -> dict | None:
+    return runtime_integrity._read_status(str(sock_path), timeout_sec=_DRIBBLE_TIMEOUT_SEC)
+
+
+def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
+    """Run `call(sock_path)` on a daemon thread; return (finished, result).
+
+    A daemon thread rather than a bounded executor: if `call` never returns
+    (the regression this test exists to catch), joining with a timeout lets
+    THIS test fail promptly instead of hanging the whole suite, and the
+    daemon flag means the leaked thread cannot block interpreter exit.
+    """
+    box: list[object] = []
+    thread = threading.Thread(target=lambda: box.append(call(sock_path)), daemon=True)
+    thread.start()
+    thread.join(timeout=join_timeout)
+    if thread.is_alive():
+        return False, None
+    return True, box[0]
+
+
+@pytest.mark.parametrize(
+    "label, call",
+    [
+        ("audio_validation.query_outputd_status", _call_audio_validation),
+        ("airplay_health.AirPlayHealthSampler._read_fanin_status", _call_airplay_health),
+        ("correction.runtime_integrity._read_status", _call_runtime_integrity),
+    ],
+)
+def test_converged_caller_bounds_a_dribbling_status_server(label, call):
+    with DribblingStatusSocket(interval_seconds=0.1) as sock_path:
+        started = time.monotonic()
+        finished, result = _run_on_daemon_thread(
+            call, sock_path, join_timeout=_DRIBBLE_TIMEOUT_SEC + _DRIBBLE_WALL_SLACK_SEC
+        )
+        elapsed = time.monotonic() - started
+
+    assert finished, (
+        f"{label} did not return within the total deadline "
+        f"(still blocked after {elapsed:.2f}s)"
+    )
+    assert result is None, f"{label} should fall through to None, not a partial reply"

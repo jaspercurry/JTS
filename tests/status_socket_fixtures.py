@@ -102,6 +102,79 @@ class JsonStatusSocket:
             self._ready.set()
 
 
+class DribblingStatusSocket:
+    """Accept a ``STATUS`` request and dribble one byte every
+    ``interval_seconds`` forever — never a complete reply, never a close.
+
+    Models a wedged or malicious peer: a per-operation ``settimeout`` (what a
+    hand-rolled reader arms) never fires because each byte arrives inside the
+    window, so only a reader with a TOTAL deadline across the whole read can
+    escape this without an outer test harness forcing it.
+    """
+
+    def __init__(self, *, name: str = "dribble.sock", interval_seconds: float = 0.1) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory(prefix="jts-status-")
+        self.path = Path(self._tmpdir.name) / name
+        self.interval_seconds = interval_seconds
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._errors: list[BaseException] = []
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> Path:
+        self._thread.start()
+        assert self._ready.wait(timeout=2), f"dribble socket did not bind: {self.path}"
+        if self._errors:
+            raise self._errors[0]
+        return self.path
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._stop.set()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(0.2)
+                client.connect(str(self.path))
+        except OSError:
+            pass
+        self._thread.join(timeout=2)
+        self._tmpdir.cleanup()
+        if exc_type is None and self._errors:
+            raise self._errors[0]
+
+    def _serve(self) -> None:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                server.bind(str(self.path))
+                server.listen()
+                server.settimeout(0.1)
+                self._ready.set()
+                while not self._stop.is_set():
+                    try:
+                        connection, _ = server.accept()
+                    except TimeoutError:
+                        continue
+                    with connection:
+                        connection.settimeout(1.0)
+                        try:
+                            connection.recv(1024)
+                        except OSError:
+                            continue
+                        while not self._stop.is_set():
+                            try:
+                                connection.sendall(b"x")
+                            except OSError:
+                                break
+                            time.sleep(self.interval_seconds)
+        except OSError as error:
+            self._errors.append(error)
+            self._ready.set()
+
+
 class FakeStatusSocket:
     """A ``socket.socket`` stand-in that replays canned recv chunks."""
 

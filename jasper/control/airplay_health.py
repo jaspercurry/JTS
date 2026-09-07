@@ -21,12 +21,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import datetime
-import json
 import logging
 import math
 import os
 import re
-import socket
 import subprocess
 import threading
 import time
@@ -39,7 +37,10 @@ from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
+from jasper.route_latency.status_socket import (
+    FANIN_STATUS_SOCKET,
+    read_status_socket_or_none,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1688,23 +1689,15 @@ class AirPlayHealthSampler:
         socket_path: str = FANIN_STATUS_SOCKET,
         timeout_sec: float = FANIN_TIMEOUT_SEC,
     ) -> dict[str, Any] | None:
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(timeout_sec)
-                sock.connect(socket_path)
-                sock.sendall(b"STATUS\n")
-                chunks: list[bytes] = []
-                while True:
-                    chunk = sock.recv(8192)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-        except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError):
-            return None
-        try:
-            return json.loads(b"".join(chunks).decode("utf-8", "replace"))
-        except json.JSONDecodeError:
-            return None
+        # read_status_socket_or_none already returns None on any
+        # OSError/JSONDecodeError/non-object reply — the exact failure set
+        # this used to catch by hand (FileNotFoundError/ConnectionRefusedError/
+        # TimeoutError are all OSError subclasses).
+        return read_status_socket_or_none(
+            socket_path,
+            timeout=timeout_sec,
+            event="airplay_health.fanin_status_unavailable",
+        )
 
     @staticmethod
     def _read_journal_lines(unit: str, since: float, now: float) -> list[str]:
