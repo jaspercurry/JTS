@@ -24,9 +24,8 @@ from jasper.fanin.coupling_reconcile import (
     default_ring_gates,
     reconcile_coupling,
 )
+from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_health import (
-    FANIN_ENV_PATH,
-    OUTPUTD_ENV_PATH,
     persisted_coupling_feeds_ring,
     read_persisted_coupling,
     ring_edge_width_ready,
@@ -60,10 +59,8 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
 
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
-    )
-    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env))
     # ...and of its /var/lib state. ``resolve_ring_wire`` reads the box's declared
     # ring wire off the SAME jasper.env -> fanin.env chain jasper-fanin resolves,
     # so a real /var/lib/jasper/fanin.env on the host running the suite (a Pi, or
@@ -72,9 +69,7 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     # exercises a real fanin.env passes its own path explicitly.
     fanin_env = tmp_path / "isolated-fanin.env"
     fanin_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
-    )
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
     # Keep every main() invocation's entry flock inside the test tmp dir — never
     # the real /run path — so parallel test workers can't contend on one file.
@@ -838,10 +833,10 @@ def _pin_narrow_ring_wire() -> None:
     own to declare it in. Mirrors ``_declared_wire`` in
     ``tests/test_ring_ioplug_provenance.py``.
     """
-    import jasper.fanin.coupling_reconcile as cr
+    import jasper.env_load as env_load
     from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
 
-    Path(cr.FANIN_ENV_PATH).write_text(
+    Path(env_load.FANIN_ENV_PATH).write_text(
         f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
     )
 
@@ -1174,9 +1169,9 @@ def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, mo
     _stub_ring_ioplug_wire_supported(monkeypatch)
     jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+        "jasper.env_load.BASE_ENV_PATH", str(jasper_env)
     )
-    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env))
 
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")

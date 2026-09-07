@@ -1022,7 +1022,6 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     the three this test is actually about — so the chain stays non-vacuous.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
     from jasper.fanin_coupling import (
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -1055,7 +1054,7 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
     )
-    monkeypatch.setattr(cr, "OUTPUTD_ENV_PATH", str(outputd_env))
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
 
     conf_d = tmp_path / "60-jts-ring.conf"
     conf_d.write_text(
@@ -2331,8 +2330,7 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
 
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env)
     )
 
     topology = mono_output_topology()

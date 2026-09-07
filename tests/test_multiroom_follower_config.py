@@ -387,13 +387,11 @@ def test_typod_ring_wire_refusal_surfaces_as_follower_error(
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
     )
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env)
     )
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")

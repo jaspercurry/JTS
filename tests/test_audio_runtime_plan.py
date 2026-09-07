@@ -719,7 +719,7 @@ def test_the_system_plan_reads_both_of_outputds_env_layers(monkeypatch, tmp_path
         "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
     )
     monkeypatch.setattr(
-        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+        "jasper.audio_runtime_plan.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
 
     plan = audio_plan.build_audio_runtime_plan_from_system(

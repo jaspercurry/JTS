@@ -363,7 +363,8 @@ def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
     indeterminate marker must never assert an active-ring endpoint.
     """
     if env is None:
-        from jasper.fanin.coupling_reconcile import OUTPUTD_ENV_PATH, read_value
+        from jasper.env_load import OUTPUTD_ENV_PATH
+        from jasper.fanin.coupling_reconcile import read_value
 
         try:
             with open(OUTPUTD_ENV_PATH, encoding="utf-8") as fh:
@@ -482,14 +483,12 @@ def read_declared_ring_wire_format() -> str:
     the ordinary unarmed state — but a file that IS readable and declares a
     value this repo does not recognize raises, exactly as fan-in would.
     """
-    # Lazy imports: jasper.fanin.coupling_reconcile imports THIS module, so a
-    # top-level import would be circular.
     from pathlib import Path
 
     from jasper.env_file import read_value
-    from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH, JASPER_ENV_PATH
+    from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH
 
-    for path in (FANIN_ENV_PATH, JASPER_ENV_PATH):
+    for path in (FANIN_ENV_PATH, BASE_ENV_PATH):
         try:
             text = Path(path).read_text(encoding="utf-8")
         except OSError:

@@ -45,7 +45,7 @@ from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_EN
 # the JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
 # tests/test_aec_init.py pins this against jasper-outputd.service's own
 # EnvironmentFile= line.
-from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
+from jasper.env_load import OUTPUTD_ENV_PATH
 from jasper.chip_aec.alignment import (
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
@@ -474,7 +474,7 @@ def outputd_env_staleness(env: Mapping[str, str] | None = None) -> str:
     """
 
     source = os.environ if env is None else env
-    path = source.get("JASPER_OUTPUTD_ENV_FILE") or DEFAULT_OUTPUTD_ENV_PATH
+    path = source.get("JASPER_OUTPUTD_ENV_FILE") or OUTPUTD_ENV_PATH
     try:
         env_mtime = os.stat(path).st_mtime
     except OSError:

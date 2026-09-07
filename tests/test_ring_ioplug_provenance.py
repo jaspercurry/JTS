@@ -587,10 +587,10 @@ def _declared_wire(tmp_path, monkeypatch):
     )
 
     def declare(value: str | None) -> None:
-        import jasper.fanin.coupling_reconcile as cr
+        import jasper.env_load as env_load
 
         text = "" if value is None else f"{RING_WIRE_FORMAT_ENV_VAR}={value}\n"
-        Path(cr.FANIN_ENV_PATH).write_text(text, encoding="utf-8")
+        Path(env_load.FANIN_ENV_PATH).write_text(text, encoding="utf-8")
 
     return declare
 

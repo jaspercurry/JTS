@@ -112,7 +112,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     _point_entry_lock_at(monkeypatch, tmp_path)
     _seed_units()
@@ -509,7 +509,7 @@ def _stage_ring_geometry(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env)
+        "jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env)
     )
     return fanin_env, program
 
@@ -1527,7 +1527,7 @@ def _arrange(
     # the module constant is what the ring-path derivation still reads.
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     # The SECOND env layer, exactly where a bonded member's marker really lives
     # — never in the first file. Writing it here is what proves the doctor reads
@@ -1538,7 +1538,7 @@ def _arrange(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
     monkeypatch.setattr(
         audio_runtime_ring, "_grouped_dac_content_lane_parked", lambda: grouped_park

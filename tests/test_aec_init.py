@@ -1034,7 +1034,7 @@ def test_guard_watches_the_same_env_file_the_outputd_unit_loads() -> None:
         ROOT / "deploy" / "systemd" / "jasper-outputd.service"
     ).read_text(encoding="utf-8")
 
-    assert f"EnvironmentFile=-{aec_init.DEFAULT_OUTPUTD_ENV_PATH}\n" in unit
+    assert f"EnvironmentFile=-{aec_init.OUTPUTD_ENV_PATH}\n" in unit
 
 
 def test_settle_wait_fits_inside_the_calling_reconcilers_start_budget() -> None:

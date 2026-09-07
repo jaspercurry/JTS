@@ -39,17 +39,12 @@ import logging
 import re
 from dataclasses import dataclass
 
-from jasper.env_load import read_env_file_or_warn
+from jasper.env_load import GROUPING_ENV_FILE, read_env_file_or_warn
 
 logger = logging.getLogger(__name__)
 
 
 # ---------- File layout ----------
-
-# Wizard-managed env file (matches the peering.env / wake_model.env /
-# voice_provider.env pattern). Lives in /var/lib/jasper so it survives
-# daemon restarts and package upgrades. ABSENT => grouping off.
-GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 
 # The snapserver stream id — ONE definition: the argv builder names the pipe
 # source with it, the reconciler's binding pin re-binds persisted groups to it,

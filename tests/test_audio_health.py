@@ -425,8 +425,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
     )
     # The FIRST layer of the merge every surface now reads (`outputd.env`, then
     # `grouping-outputd.env`); the grouping layer is absent on this box.
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(env_file)
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(env_file)
     )
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",

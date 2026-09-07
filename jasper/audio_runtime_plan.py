@@ -38,7 +38,15 @@ from jasper.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     read_camilla_devices_config,
 )
-from jasper.env_load import BASE_ENV_PATH, env_file_path, read_env_file_state
+from jasper.env_load import (
+    BASE_ENV_PATH,
+    FANIN_ENV_PATH,
+    GROUPING_ENV_FILE,
+    OUTPUTD_ENV_PATH,
+    OUTPUTD_GROUPING_ENV_FILE,
+    env_file_path,
+    read_env_file_state,
+)
 from jasper.fanin.ring_health import saved_topology_reader
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
@@ -57,10 +65,6 @@ from jasper.transport_coherence import (
     transport_topology_for_coupling,
 )
 
-DEFAULT_BASE_ENV_PATH = BASE_ENV_PATH
-DEFAULT_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
-DEFAULT_FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
-DEFAULT_GROUPING_ENV_PATH = "/var/lib/jasper/grouping.env"
 DEFAULT_CAMILLA_STATEFILE_PATH = "/var/lib/camilladsp/outputd-statefile.yml"
 DEFAULT_CAMILLA2_STATEFILE_PATH = "/var/lib/camilladsp/crossover-statefile.yml"
 
@@ -1042,17 +1046,6 @@ def _route_policy_errors(
     return tuple(errors)
 
 
-def outputd_grouping_env_file() -> str:
-    """``jasper-outputd``'s SECOND ``EnvironmentFile=`` — the path its writer owns.
-
-    Lazy so this module keeps no top-level ``jasper.multiroom`` import (that
-    package imports this one).
-    """
-    from jasper.multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
-
-    return OUTPUTD_GROUPING_ENV_FILE
-
-
 def resolve_outputd_period_setting(
     *,
     base_env: Mapping[str, str],
@@ -1124,10 +1117,10 @@ def outputd_period_frames_as_loaded(
 def build_audio_runtime_plan_from_system(
     *,
     base_env_path: str | None = None,
-    outputd_env_path: str = DEFAULT_OUTPUTD_ENV_PATH,
+    outputd_env_path: str = OUTPUTD_ENV_PATH,
     outputd_grouping_env_path: str | None = None,
-    fanin_env_path: str = DEFAULT_FANIN_ENV_PATH,
-    grouping_env_path: str = DEFAULT_GROUPING_ENV_PATH,
+    fanin_env_path: str = FANIN_ENV_PATH,
+    grouping_env_path: str = GROUPING_ENV_FILE,
     overrides_path: str | None = None,
     output_hardware_state_path: str | None = None,
 ) -> AudioRuntimePlan:
@@ -1141,7 +1134,7 @@ def build_audio_runtime_plan_from_system(
     if base_env_path is None:
         base_env_path = env_file_path()
     if outputd_grouping_env_path is None:
-        outputd_grouping_env_path = outputd_grouping_env_file()
+        outputd_grouping_env_path = OUTPUTD_GROUPING_ENV_FILE
 
     base = read_env_file_state(base_env_path)
     outputd = read_env_file_state(outputd_env_path)
@@ -1233,9 +1226,9 @@ def build_audio_runtime_plan(
     # name the wrong file: the settings below resolve from ``outputd_env``
     # alone, which is the only layer that carries them.
     grouping_outputd_env: Mapping[str, str] | None = None,
-    base_env_label: str = DEFAULT_BASE_ENV_PATH,
-    outputd_env_label: str = DEFAULT_OUTPUTD_ENV_PATH,
-    fanin_env_label: str = DEFAULT_FANIN_ENV_PATH,
+    base_env_label: str = BASE_ENV_PATH,
+    outputd_env_label: str = OUTPUTD_ENV_PATH,
+    fanin_env_label: str = FANIN_ENV_PATH,
     override_label: str = DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     plan_warnings: tuple[str, ...] = (),
     correction_config_path: str | None = None,

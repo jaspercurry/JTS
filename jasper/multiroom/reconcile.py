@@ -31,6 +31,7 @@ from pathlib import Path
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
+from ..env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
 from ..fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -160,7 +161,6 @@ _CLIENT_ARGS_KEY = "JASPER_SNAPCLIENT_ARGS"
 # with the lane already configured — no extra outputd restart at boot. Both
 # derived keys are written as empty strings when this speaker is not an active
 # member, so a stale file can never leave the lane half-configured.
-OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
@@ -172,7 +172,6 @@ CAMILLA_UNIT = "jasper-camilla.service"
 # voice at outputd, parks voice/AEC, or OMITS the socket so voice falls back to
 # fan-in. Omission (not present-but-empty) is required: an empty value is read as
 # a real, invalid path.
-VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_UNIT = "jasper-voice.service"
 
 # Reconciler-owned PERSISTENT env file the shairport-sync unit's ExecStartPre

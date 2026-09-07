@@ -879,7 +879,6 @@ def test_a_declared_narrow_pin_moves_the_resolver_and_the_refusal(
     mechanism, same remedy, the tokens exchanged.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin import coupling_reconcile as cr
     from jasper.fanin_coupling import (
         RING_WIRE_FORMAT,
         RING_WIRE_FORMAT_ENV_VAR,
@@ -891,7 +890,7 @@ def test_a_declared_narrow_pin_moves_the_resolver_and_the_refusal(
     fanin_env.write_text(
         f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
     )
-    monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
@@ -928,7 +927,7 @@ def test_an_unparseable_declared_wire_refuses_instead_of_raising(
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s16le\n", encoding="utf-8")
-    monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )

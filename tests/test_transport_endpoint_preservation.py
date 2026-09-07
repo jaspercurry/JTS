@@ -809,8 +809,7 @@ def _ring_transport_state(monkeypatch, tmp_path, *, coupling, marker: str):
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
     monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     return fanin_env, outputd_env
 
@@ -903,8 +902,7 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     monkeypatch.setattr(
         "jasper.fanin.ring_health.FANIN_ENV_PATH", str(tmp_path / "gone" / "fanin.env")
     )
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH",
         str(tmp_path / "gone" / "outputd.env"),
     )
 
@@ -1061,7 +1059,7 @@ async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
     topology, preset = commissioning_box
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 
     out_dir = tmp_path / "ring"
     payload = stage_protected_startup_config(

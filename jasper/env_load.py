@@ -45,6 +45,18 @@ from typing import Literal
 
 #: The operator-owned base layer every daemon unit loads first.
 BASE_ENV_PATH = "/etc/jasper/jasper.env"
+#: Single-writer env files, declared here for every reader (the writing
+#: daemon/wizard imports the name from this module).
+FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
+GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
+OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
+OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
+SOURCE_INTENT_ENV = "/var/lib/jasper/source_intent.env"
+SPEAKER_NAME_ENV_PATH = "/var/lib/jasper/speaker_name.env"
+#: CLIENT_ID + OAUTH_MODE. Separate from ``jasper.env`` so jasper-web can
+#: write it without /etc being RW (systemd ``ProtectSystem=full``).
+SPOTIFY_CREDENTIALS_ENV_PATH = "/var/lib/jasper-intsecrets/spotify_credentials.env"
+VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 
 
 def env_file_path() -> str:
@@ -58,8 +70,8 @@ def env_file_path() -> str:
 ENV_FILES = (
     BASE_ENV_PATH,
     # jasper-voice.service order (the most config-consuming daemon):
-    "/var/lib/jasper/speaker_name.env",
-    "/var/lib/jasper-intsecrets/spotify_credentials.env",
+    SPEAKER_NAME_ENV_PATH,
+    SPOTIFY_CREDENTIALS_ENV_PATH,
     "/var/lib/jasper/voice_provider.env",
     # High-value provider/Google secrets live in jasper-secrets (voice+web), while HA +
     # Spotify integration secrets live in jasper-intsecrets (voice+control+mux+web). A
@@ -77,11 +89,11 @@ ENV_FILES = (
     "/var/lib/jasper/conversation_history.env",
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):
     "/var/lib/jasper/aec_mode.env",
-    "/var/lib/jasper/fanin.env",
-    "/var/lib/jasper/grouping.env",
-    "/var/lib/jasper/grouping-outputd.env",
-    "/var/lib/jasper/grouping-voice.env",
-    "/var/lib/jasper/outputd.env",
+    FANIN_ENV_PATH,
+    GROUPING_ENV_FILE,
+    OUTPUTD_GROUPING_ENV_FILE,
+    VOICE_GROUPING_ENV_FILE,
+    OUTPUTD_ENV_PATH,
     "/var/lib/jasper/peering.env",
     "/var/lib/jasper/renderer_lanes.env",
     "/var/lib/jasper/accessory-mics.env",
@@ -218,9 +230,9 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     freshly-read view of the wizard-owned SSOT files.
 
     The base layer resolves through :func:`env_file_path`, reaching every
-    reader that goes through ``env_load`` — not the literal
-    ``/etc/jasper/jasper.env`` readers in ``fanin/ring_health.py``,
-    ``renderer_lanes.py`` and ``model_downloads.py``, nor the separate
+    reader that goes through ``env_load`` — not the readers that open
+    ``BASE_ENV_PATH`` directly (``fanin/ring_health.py``,
+    ``renderer_lanes.py``, ``model_downloads.py``), nor the separate
     ``JASPER_SYSTEM_ENV_FILE`` seam in ``wake_corpus/runtime_probe.py``."""
     files = paths if paths is not None else ENV_FILES
     merged: dict[str, str] = {}
@@ -251,13 +263,8 @@ def outputd_reconciled_env(outputd_env_path: str | None = None) -> dict[str, str
     ``JASPER_OUTPUTD_ENV_FILE`` operator seam); ``grouping-outputd.env`` keeps
     its own path. The base ``jasper.env`` layer has its own seam,
     ``JASPER_ENV_FILE`` (:func:`env_file_path`), applied inside
-    :func:`merged_env_files`. Paths come from the modules that own them,
-    through lazy imports because this module is a leaf every one of them can
-    import.
+    :func:`merged_env_files`.
     """
-    from jasper.fanin.coupling_reconcile import OUTPUTD_ENV_PATH
-    from jasper.multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
-
     return merged_env_files(
         (
             BASE_ENV_PATH,

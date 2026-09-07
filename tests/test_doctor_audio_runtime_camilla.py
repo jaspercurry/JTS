@@ -449,7 +449,6 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     so the pin neither leaks from nor needs the developer host's real
     ``/var/lib/jasper/fanin.env``.
     """
-    import jasper.fanin.coupling_reconcile as coupling_reconcile
     import jasper.fanin.ring_health as ring_health
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
 
@@ -460,7 +459,7 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     # letting monkeypatch import coupling_reconcile afterwards would record the
     # PATCHED value as its original and leak the tmp path into later tests.
     monkeypatch.setattr(ring_health, "FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr(coupling_reconcile, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 
 
 def test_playback_format_ok_for_an_armed_ring_pinned_narrow_on_an_otherwise_wide_box(
