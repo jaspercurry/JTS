@@ -143,8 +143,10 @@ publish_staged_install_tree() {
         fi
         mv "${staged}" "${INSTALL_DIR}/${name}" || return 1
     done
-    # Out of the rollback's reach before the delete: a delete cut off partway
-    # leaves a truncated .prev, which reads exactly like a complete old copy.
+    # The rollback globs ${INSTALL_DIR}/.staging/*.prev, so renaming the tree
+    # takes it out of that namespace: a delete cut off partway then leaves a
+    # truncated .prev nothing reads, rather than one the rollback would take
+    # for a complete old copy. Its own `rm -rf .done` is hygiene.
     mv "${staging}" "${staging}.done" || return 1
     rm -rf -- "${staging}.done"
 }

@@ -12,13 +12,19 @@ reboot-inside-a-failed-update window is an observed failure mode", naming the
 fallback to revisit first: "a cheaper atomic swap of just the Python tree via a
 staging path".
 
-#4123 is the observation. Both install profiles rsynced the checkout into
-`/opt/jasper` with `--delete` *before* the venv and pip steps, with every daemon
-still serving the old code from RAM. A dependency that would not resolve or
-build therefore left the box with the new source tree on disk and the old
+#4123 is the observation, and it is a *read* of a torn tree rather than a failed
+install: a udev `controlC*` event fired `jasper-audio-hardware-reconcile` while
+the install's rsync was mid-flight, and it died on `ModuleNotFoundError: No
+module named 'jasper.audio_hardware.hat_eeprom'` — a package half-replaced under
+a live importer. Anything the box spawns during a deploy — udev, a timer, an
+operator's `jasper-doctor` — could read that window, and it lasts as long as the
+rsync.
+
+The same ordering carries a second hazard, reasoned rather than observed: the
+rsync landed before the venv and pip steps, so a dependency that would not
+resolve or build left the box with the new source tree on disk and the old
 dependency set in the venv — a state ADR-0172's "no restart on failed install"
-survives only until the next restart or reboot, which is exactly the window it
-named.
+survives only until the next restart or reboot, which is the window it named.
 
 ## Decision
 
@@ -35,8 +41,9 @@ The Python tree publishes from `${INSTALL_DIR}/.staging`, under five rules:
    live entry moving aside to `<name>.prev` inside the staging tree first —
    a rename onto an existing directory would nest inside it.
 4. The success path renames the staging tree to `.staging.done` before deleting
-   it, so a delete cut off partway cannot leave a truncated `.prev` where the
-   rollback would read it as a complete old copy.
+   it. The rollback globs `${INSTALL_DIR}/.staging/*.prev`, so the renamed tree
+   is outside its namespace and a delete cut off partway cannot leave a
+   truncated `.prev` the rollback would take for a complete old copy.
 5. Any failure runs `remove_staged_install_tree` from the installer's EXIT
    trap: every `.prev` is restored, including over an entry already published,
    and a restore that itself fails returns rather than reaching the delete. Each
@@ -44,13 +51,16 @@ The Python tree publishes from `${INSTALL_DIR}/.staging`, under five rules:
 
 The guarantee is **per entry, not per tree**: an entry is absent for the instant
 between its two renames, is otherwise wholly old or wholly new, and any failure
-rolls the published entries back — so what a re-deploy or a reboot finds is the
-whole old tree or the whole new one.
+rolls the published entries back — so what a re-deploy, a reboot, or a process
+the box spawns mid-deploy finds is the whole old tree or the whole new one. The
+reader in #4123 would now import the old `jasper/` or the new one; the residual
+window is an absent entry for one rename, which fails an import cleanly instead
+of tearing one.
 
 ## Consequences
 
-- ADR-0172's named residual risk — a reboot inside a failed-update window —
-  is retired *for the Python source tree only*. The venv, the Rust binaries,
+- The torn-tree read is gone, and ADR-0172's named residual risk — a reboot
+  inside a failed-update window — is retired *for the Python source tree only*. The venv, the Rust binaries,
   the systemd units and the nginx config are not covered by this and keep the
   cheap four's guarantees; that is why full A-B stays deferred rather than
   refuted.

@@ -840,12 +840,13 @@ def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_pat
 def test_the_live_source_tree_changes_only_on_a_finished_install(
     tmp_path: Path, scenario: str
 ):
-    """The #4123 family: the source rsync used to land in ${INSTALL_DIR} before
-    pip ran, so a failed dependency install left new source running on old
-    dependencies. The new tree stages beside the live one, the staged manifest's
-    dependencies are installed first, and only then is each entry renamed in —
-    and a run that dies partway through the publish is rolled back entry by
-    entry, whether the entry was still parked or already swapped."""
+    """#4123 read a half-replaced `jasper/` out of ${INSTALL_DIR} while the
+    install's rsync was still running; the same ordering also left a failed
+    dependency install with new source on old dependencies. The new tree stages
+    beside the live one, the staged manifest's dependencies are installed first,
+    and only then is each entry renamed in as a whole — and a run that dies
+    partway through the publish is rolled back entry by entry, whether the entry
+    was still parked or already swapped."""
     failing_mv = {
         "publish_interrupted_early": (2,),  # nothing published yet
         "publish_interrupted_late": (4,),   # the first entry is already live
@@ -908,11 +909,27 @@ def test_the_live_source_tree_changes_only_on_a_finished_install(
     assert reached_pip is (scenario != "manifest_declares_nothing")
 
 
+#: Declared, and empty: what a retired extra or a mid-edit manifest looks like.
+#: Without the reader's guard this prints the base dependencies and exits 0,
+#: where a name the manifest does not declare at all fails on the lookup.
+_MANIFEST_WITH_AN_EMPTY_EXTRA = (
+    _MANIFEST_WITHOUT_THE_EXTRA + "[project.optional-dependencies]\nstreambox = []\n"
+)
+
+
 @pytest.mark.parametrize(
-    "extra, resolves", [("full", True), ("streambox", True), ("fulll", False)]
+    "extra, manifest, resolves",
+    [
+        pytest.param("full", None, True, id="full"),
+        pytest.param("streambox", None, True, id="streambox"),
+        pytest.param("fulll", None, False, id="undeclared-extra"),
+        pytest.param(
+            "streambox", _MANIFEST_WITH_AN_EMPTY_EXTRA, False, id="empty-extra"
+        ),
+    ],
 )
 def test_the_staged_manifest_reader_resolves_the_repo_extras(
-    tmp_path: Path, extra: str, resolves: bool
+    tmp_path: Path, extra: str, manifest: str | None, resolves: bool
 ):
     """Each profile spells its extras name twice — the staged read and the
     editable install — and the editable install no longer resolves anything.
@@ -922,7 +939,10 @@ def test_the_staged_manifest_reader_resolves_the_repo_extras(
     staging = install_dir / ".staging"
     (install_dir / ".venv/bin").mkdir(parents=True)
     staging.mkdir()
-    shutil.copy(REPO_ROOT / "pyproject.toml", staging / "pyproject.toml")
+    if manifest is None:
+        shutil.copy(REPO_ROOT / "pyproject.toml", staging / "pyproject.toml")
+    else:
+        staging.joinpath("pyproject.toml").write_text(manifest, encoding="utf-8")
     (install_dir / ".venv/bin/python").symlink_to(sys.executable)
     pip = install_dir / ".venv/bin/pip"
     pip.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -992,6 +1012,53 @@ def test_a_failed_publish_rename_never_deletes_the_staging_tree(tmp_path: Path):
     assert install_dir.joinpath("jasper/__init__.py").read_text(
         encoding="utf-8"
     ) == "old\n"
+
+
+def test_a_cut_off_publish_delete_cannot_roll_back_over_the_published_tree(
+    tmp_path: Path,
+):
+    """The publish renames the staging tree before deleting it, so the delete
+    can be cut off (SIGKILL, power loss) without leaving a `.prev` in the
+    namespace the next deploy's rollback globs. Deleting in place instead leaves
+    the old copy where that rollback reads it as complete and swaps it back over
+    the tree that was just published."""
+    install_dir = tmp_path / "opt/jasper"
+    staging = install_dir / ".staging"
+    (staging / "jasper").mkdir(parents=True)
+    (staging / "jasper/__init__.py").write_text("new\n", encoding="utf-8")
+    (install_dir / "jasper").mkdir()
+    (install_dir / "jasper/__init__.py").write_text("old\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # A delete that never removes anything: the shape a SIGKILL leaves behind.
+    (bin_dir / "rm").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    (bin_dir / "rm").chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            " && ".join(
+                [
+                    f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+                    f"INSTALL_DIR={shlex.quote(str(install_dir))}",
+                    "publish_staged_install_tree",
+                    "stage_install_tree",  # the next deploy's first move
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert install_dir.joinpath("jasper/__init__.py").read_text(
+        encoding="utf-8"
+    ) == "new\n"
 
 
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
