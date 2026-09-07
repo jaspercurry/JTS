@@ -99,6 +99,16 @@ PR in that plan, sensitive tier included, once `/code-review`, `/simplify` and (
 demands it) `/adversarial-review` have no open blockers. No lane waits for a per-PR word; four
 lanes stalled on that on the first night.
 
+**Paused (owner's call, 2026-09-07 14:45 UTC).** Each running lane finishes a cut and hands off; nothing
+new starts. The cuts: P2 lands wave B (rows 4, 5, 6) and stops before wave C and the Cargo workspace;
+P5 lands its nine built PRs and #4354 and stops before rows 16–20; P11 lands W1 and stops before the
+URL moves (W2–W6); P3 lands P0 and wave 1 (R1–R6) and stops before wave 2. Then, with the owner at
+home: deploy `main` to jts.local, the box items above, and a fresh grade pass over `main` by the
+coordinator. **Restart order when the pause ends:** P7 tests (#4201) and P8 docs (#4202) first, since
+both sweep what the moves left behind; then the deferred rows from each handoff (P2 wave C and the
+Cargo workspace, P5 rows 16–20 and PR 19, P11 W2–W6, P3 waves 2–4, P6's env-knob contract), each
+resuming from its triage, not from a new plan.
+
 **Overnight mode.** When the owner is away, the coordinator session runs the lanes on a
 half-hourly check. The channel is each lane's own issue, nothing else. On each check that finds `main` or an issue moved, an Opus subagent reads
 `main`, the open PRs, #4027 and the newest comments on every active lane issue; the coordinator then
