@@ -410,14 +410,19 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     assert "idle_hold" not in inspect.signature(v2host.prepare_v2_session).parameters
     assert seen["orchestrator"] is idle_hold
 
-    # ...and the route reads it off the handler cfg make_server builds. That
-    # dict is closed over by the handler class with no runtime seam to observe,
-    # so the last link is pinned on the source that must stay wired.
+    # ...and the route reads it off the handler class make_server binds.
     # (main() handing tracker.hold to make_server is pinned at runtime by
     # test_web_correction_setup::test_main_wires_idle_tracker_to_capture_entry_restore.)
-    dispatch = inspect.getsource(correction_setup._make_handler)
-    assert 'idle_hold=cfg["idle_hold"]' in dispatch
-    assert '"idle_hold": idle_hold' in inspect.getsource(correction_setup.make_server)
+    from jasper.web import _systemd
+
+    built: dict[str, object] = {}
+    monkeypatch.setattr(
+        _systemd,
+        "make_http_server",
+        lambda _target, handler_cls: built.setdefault("cls", handler_cls),
+    )
+    correction_setup.make_server(0, idle_hold=idle_hold)
+    assert built["cls"].idle_hold is idle_hold
 
 
 @pytest.mark.parametrize(
@@ -2595,8 +2600,8 @@ def test_e2e_local_setup_and_noise_conflicts_are_client_errors(monkeypatch):
 
 
 def test_sync_analyze_rejects_oversized_capture_before_body_read():
-    handler_cls = correction_setup._make_handler(
-        {"hostname": "jts.local", "idle_hold": nullcontext},
+    handler_cls = correction_setup._make_handler_class(
+        hostname="jts.local", idle_hold=nullcontext,
     )
     handler = handler_cls.__new__(handler_cls)
     handler.headers = Message()

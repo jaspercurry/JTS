@@ -1154,27 +1154,11 @@ def test_build_envelope_logged_emits_only_on_presentation_transition(caplog):
 
 def test_envelope_route_is_registered_and_additive():
     """`/envelope` is a recognized GET route and `/status` is untouched
-    (additive — the legacy payload keeps its own handler).
-
-    The GET dispatch lives in a nested `Handler` class inside the
-    `_make_handler` factory (a closure, not module-accessible), so this
-    pins against the module source file directly.
-    """
-    import inspect
-
+    (additive — the legacy payload keeps its own handler)."""
     from jasper.web import correction_setup
 
-    src = inspect.getsource(correction_setup)
-    # `/envelope` is in the GET allowlist and has its own dispatch branch.
-    assert '"/envelope"' in src
-    assert 'path == "/envelope"' in src
-    # The additive guarantee: /status still has its own dispatch branch.
-    assert 'path == "/status"' in src
-
-    # The handler delegates to the logged builder over the live session.
-    handler_src = inspect.getsource(correction_setup._handle_envelope)
-    assert "build_envelope_logged" in handler_src
-    assert "_get_or_create_session" in handler_src
+    assert correction_setup._GET_ROUTES["/envelope"] == "_get_envelope"
+    assert correction_setup._GET_ROUTES["/status"] == "_get_status"
 
 
 def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):

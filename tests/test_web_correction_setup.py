@@ -306,10 +306,10 @@ def _drive(path: str, method: str = "GET", *, headers=None, body: bytes = b""):
     """Construct the wizard's Handler without binding a socket and drive a
     single request through it. Returns the raw response bytes."""
     # Same shape make_server builds: a route that spawns background work reads
-    # the idle-exit hold off the cfg (#1854). nullcontext is the no-tracker
+    # the idle-exit hold off the handler class. nullcontext is the no-tracker
     # default, so driving a handler here behaves exactly as before.
-    Handler = correction_setup._make_handler(
-        {"hostname": "jts.local", "idle_hold": nullcontext},
+    Handler = correction_setup._make_handler_class(
+        hostname="jts.local", idle_hold=nullcontext,
     )
 
     request_line = f"{method} {path} HTTP/1.1\r\n".encode()
@@ -562,7 +562,7 @@ def test_known_post_routes_reach_csrf_guard():
         # P6 tuning-LLM routes.
         "/interpret", "/propose", "/propose/apply",
     }
-    assert known == correction_setup._POST_ROUTES
+    assert known == set(correction_setup._POST_ROUTES)
     for route in sorted(known):
         resp = _drive(route, method="POST", body=b"{}")
         assert b"403" in resp.split(b"\r\n", 1)[0], (
@@ -926,7 +926,7 @@ def test_public_surface_present():
     assert callable(correction_setup.make_server)
     assert callable(correction_setup.main)
     assert callable(correction_setup._render_page)
-    assert callable(correction_setup._make_handler)
+    assert callable(correction_setup._make_handler_class)
 
 
 def test_service_start_claims_all_crossover_state_owners(monkeypatch):
