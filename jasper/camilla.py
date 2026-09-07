@@ -540,28 +540,11 @@ class CamillaController:
                 return None
             raise
 
-    async def get_playback_peak(
-        self, *, best_effort: bool = False,
-    ) -> tuple[float, float] | None:
-        """Per-channel playback peak in dBFS for the last processed chunk."""
-        def read(c):
-            return _level_pair(c.levels.playback_peak())
-        try:
-            return await self._call(read)
-        except CamillaUnavailable as e:
-            if best_effort:
-                logger.debug(
-                    "camilla unavailable; get_playback_peak -> None: %s", e,
-                )
-                return None
-            raise
-
     async def get_playback_rms_all(
         self, *, best_effort: bool = False,
     ) -> list[float] | None:
         """Full per-channel playback RMS in dBFS — the list analog of
-        `get_playback_rms`, exactly as `get_playback_peak_all` is to
-        `get_playback_peak`, with the same no-truncation / no-mirroring
+        `get_playback_rms`, with the same no-truncation / no-mirroring
         contract and the same `c.levels.playback_rms()` websocket call.
 
         `get_playback_rms` stays the stereo-master surface the TTS gain
@@ -587,27 +570,19 @@ class CamillaController:
         """Full per-channel playback peak in dBFS for the last processed
         chunk.
 
-        `get_playback_peak` is the stereo-master metering surface: it
-        truncates/mirrors CamillaDSP's per-channel meter down to a 2-tuple
-        via `_level_pair` and remains the surface for main L/R metering.
-        This method is additive to it, not a replacement — it serves the
-        readers that must see a channel beyond index 0/1: multi-channel
-        owner metering (the bass-extension bench R10 live cross-check
-        reads this once per owner channel — see `cross_check.py` under
-        `jasper/bass_extension/bench/`, whose admissibility rule is a
-        per-entry index check, not a topology restriction) and
-        `/state`'s per-driver
-        playback level readout on an active-crossover box. It returns every channel
-        CamillaDSP reports, in channel order, with no truncation and no
-        mirroring. It reuses the exact same `c.levels.playback_peak()`
-        websocket call `get_playback_peak` uses — no new websocket surface.
+        Serves readers that must see a channel beyond a stereo pair:
+        multi-channel owner metering (the bass-extension bench R10 live
+        cross-check reads this once per owner channel — see
+        `cross_check.py` under `jasper/bass_extension/bench/`, whose
+        admissibility rule is a per-entry index check, not a topology
+        restriction) and `/state`'s per-driver playback level readout on
+        an active-crossover box. It returns every channel CamillaDSP
+        reports, in channel order, with no truncation and no mirroring.
 
-        Returns an empty list when Camilla reports no channel data at all
-        (the list analog of `_level_pair`'s ``(-inf, -inf)`` sentinel pair
-        used by `get_playback_peak`); an individual channel Camilla reports
-        as ``None`` normalizes to ``float("-inf")``, same as
-        `get_playback_peak`. Returns None if ``best_effort=True`` and
-        camilla is unreachable.
+        Returns an empty list when Camilla reports no channel data at all;
+        an individual channel Camilla reports as ``None`` normalizes to
+        ``float("-inf")``. Returns None if ``best_effort=True`` and camilla
+        is unreachable.
         """
         def read(c):
             return _level_list(c.levels.playback_peak())
@@ -727,23 +702,6 @@ class CamillaController:
                 )
                 return False
             raise
-
-    async def adjust_volume_db(
-        self, delta_db: float, *, best_effort: bool = False,
-    ) -> float | None:
-        current = await self.get_volume_db(best_effort=best_effort)
-        if current is None:
-            return None
-        try:
-            target = _coerce_main_volume_db(current + float(delta_db))
-        except ValueError as e:
-            if best_effort:
-                logger.warning("camilla main_volume adjust rejected: %s", e)
-                return None
-            raise
-        if not await self.set_volume_db(target, best_effort=best_effort):
-            return None
-        return target
 
     async def get_config_file_path(
         self, *, best_effort: bool = False,

@@ -7,8 +7,6 @@
 Covers:
 - atomic write + read round-trip
 - corrupt / missing file handling
-- debounce: maybe_save respects min-delta and time gates
-- save_now bypasses debounce
 - regress_listening_level_if_stale: first boot, fresh, stale clamps
 - out-of-range stored values are rejected
 """
@@ -134,29 +132,8 @@ def test_load_handles_missing_field(tmp_path):
     assert VolumePersistence(str(path)).load() is None
 
 
-# ---------- debounce ------------------------------------------------------
-
-def test_maybe_save_writes_first_call(tmp_path):
-    p = VolumePersistence(_path(tmp_path))
-    assert p.maybe_save(-15.0) is True
-
-
-def test_maybe_save_skips_micro_changes(tmp_path):
-    p = VolumePersistence(_path(tmp_path))
-    p.save_now(-20.0)  # baseline
-    # Change smaller than MIN_DELTA_DB → no write.
-    assert p.maybe_save(-20.1) is False
-
-
-def test_maybe_save_skips_within_debounce_window(tmp_path):
-    p = VolumePersistence(_path(tmp_path))
-    p.save_now(-20.0)
-    # Big change, but right after a write → debounce blocks it.
-    assert p.maybe_save(-10.0) is False
-
-
 def test_save_now_always_writes(tmp_path):
-    """Voice-tool path bypasses debounce entirely."""
+    """Every explicit write lands immediately, however small the change."""
     p = VolumePersistence(_path(tmp_path))
     p.save_now(-20.0)
     p.save_now(-21.0)  # tiny change, but explicit
@@ -435,7 +412,7 @@ def test_mute_state_partial_update_bootstraps_from_existing_file(tmp_path):
 
 
 def test_pre_mute_level_clear(tmp_path):
-    """save_pre_mute_level(None) drops the field from disk so a fresh
+    """save_mute_state(None, None) drops the field from disk so a fresh
     read sees pre_mute=None (the unmuted state)."""
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(70)
@@ -450,7 +427,7 @@ def test_pre_mute_level_clear(tmp_path):
 def test_pre_mute_level_clamps(tmp_path):
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(50)
-    p.save_pre_mute_level(150)
+    p.save_mute_state(150, None)
     rec = p.load()
     assert rec.pre_mute_level == 100
 
@@ -539,11 +516,10 @@ def test_mute_token_without_latch_is_ignored(tmp_path):
     assert rec.mute_token is None
 
 
-def test_save_pre_mute_works_on_fresh_persistence(tmp_path):
-    """save_pre_mute_level called before any save_listening_level
-    needs to bootstrap a coherent file — the persistence has no
-    main_volume yet at that point. Either it writes a coherent file
-    with derived main_volume, or it skips silently. Either way it
-    must not crash."""
+def test_save_mute_state_works_on_fresh_persistence(tmp_path):
+    """save_mute_state called before any save_listening_level needs to
+    bootstrap a coherent file — the persistence has no main_volume yet
+    at that point. Either it writes a coherent file with derived
+    main_volume, or it skips silently. Either way it must not crash."""
     p = VolumePersistence(_path(tmp_path))
-    p.save_pre_mute_level(50)  # No prior state — should be a no-op or no-crash.
+    p.save_mute_state(50, None)  # No prior state — should be a no-op or no-crash.
