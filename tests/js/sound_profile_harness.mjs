@@ -1064,6 +1064,84 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
   return { volumeFloorRequiresExplicitSaveButAuditionsDraft: true };
 }
 
+// A carrier that refuses to host EQ is page state on the settings card, not a
+// line of prose below the fold: the save succeeded, the sound did not change.
+async function testBlockedSettingsSaveRendersOnTheCard() {
+  const statePayload = {
+    ...basePayload,
+    profile: { ...flatProfile, enabled: false },
+    filter_count: 0,
+    dsp_write_epoch: "state-0",
+  };
+  const harness = setupHarness(baseFetch({
+    "./settings": (_path, options = {}) => Promise.resolve(response({
+      ...statePayload,
+      sound_settings: JSON.parse(options.body || "{}"),
+      status: "blocked",
+      reason_code: "active_baseline_recompose_unavailable",
+      message: "This speaker runs an active crossover.",
+    })),
+  }));
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  harness.dispatchChange({ id: "set-match-loudness", checked: true });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  if (!/<div class="info-card"[^>]*>\s*<p>This speaker runs an active crossover\.<\/p>/.test(html)) {
+    fail("a blocked settings save should render the refusal on the card", { html });
+  }
+  if (!harness.elements.get("status").textContent.includes("active crossover")) {
+    fail("a blocked settings save should also say so on the status line", {
+      status: harness.elements.get("status").textContent,
+    });
+  }
+  return { blockedSettingsSaveRendersOnTheCard: true };
+}
+
+// An unsaved Draft is live in CamillaDSP and persisted nowhere, so leaving the
+// page must put the persisted profile back or the speaker keeps playing an EQ
+// no surface will ever show again.
+async function testLeavingAnUnsavedDraftRestoresThePersistedProfile() {
+  const appliedProfile = { ...flatProfile, curve_id: "harman" };
+  const applyPosts = [];
+  const harness = setupHarness(baseFetch({
+    "./state": () => Promise.resolve(response({
+      ...basePayload, profile: appliedProfile, filter_count: 1, dsp_write_epoch: "state-0",
+    })),
+    "./apply": (_path, options = {}) => {
+      applyPosts.push(options);
+      return Promise.resolve(response({
+        ...basePayload, profile: appliedProfile, dsp_write_epoch: "apply-1",
+      }));
+    },
+    "./live-draft": () => Promise.resolve(response({
+      live_status: "live", dsp_write_epoch: "live-1",
+    })),
+  }), { mode: "eq" });
+  await harness.flush(); await harness.flush();
+
+  harness.elements.get("tab-draft").click();
+  await harness.flush(); await harness.flush(); await harness.flush();
+  applyPosts.length = 0;
+
+  for (const listener of globalThis.window._listeners.pagehide || []) listener();
+  await harness.flush(); await harness.flush();
+
+  if (applyPosts.length !== 1) {
+    fail("leaving a live Draft should re-apply the persisted profile once", { applyPosts });
+  }
+  if (applyPosts[0].keepalive !== true) {
+    fail("the pagehide restore must outlive the page", { options: applyPosts[0] });
+  }
+  if (JSON.parse(applyPosts[0].body).curve_id !== appliedProfile.curve_id) {
+    fail("the restore should post the persisted profile, not the draft", {
+      body: applyPosts[0].body,
+    });
+  }
+  return { leavingAnUnsavedDraftRestoresThePersistedProfile: true };
+}
+
 async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   const eqFetched = [];
   const eqBase = baseFetch();
@@ -1075,12 +1153,12 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   eq.elements.get("tab-saved").click();
   await eq.flush(); await eq.flush();
   const eqHtml = eq.elements.get("view-body").innerHTML;
-  for (const expected of ["Your profiles", "Match loudness"]) {
+  for (const expected of ["Your profiles"]) {
     if (!eqHtml.includes(expected)) {
       fail("EQ mode omitted an owned Saved control", { expected, eqHtml });
     }
   }
-  for (const forbidden of ["Volume floor", "Extra headroom", "Speaker setup"]) {
+  for (const forbidden of ["Volume floor", "Extra headroom", "Speaker setup", "Match loudness"]) {
     if (eqHtml.includes(forbidden)) {
       fail("EQ mode rendered a Setup-owned control", { forbidden, eqHtml });
     }
@@ -1125,12 +1203,14 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   }, { mode: "setup" });
   await setup.flush(); await setup.flush(); await setup.flush();
   const setupHtml = setup.elements.get("view-body").innerHTML;
-  for (const expected of ["Volume floor", "Extra headroom", "Speaker setup", "I²S audio HAT"]) {
+  for (const expected of [
+    "Volume floor", "Extra headroom", "Speaker setup", "I²S audio HAT", "Match loudness",
+  ]) {
     if (!setupHtml.includes(expected)) {
       fail("Setup mode omitted an owned control", { expected, setupHtml });
     }
   }
-  for (const forbidden of ["Match loudness", "Your profiles", "Simple", "PEQ"]) {
+  for (const forbidden of ["Your profiles", "Simple", "PEQ"]) {
     if (setupHtml.includes(forbidden)) {
       fail("Setup mode rendered an EQ-owned control", { forbidden, setupHtml });
     }
@@ -8690,6 +8770,8 @@ const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
+results.push(await testBlockedSettingsSaveRendersOnTheCard());
+results.push(await testLeavingAnUnsavedDraftRestoresThePersistedProfile());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());

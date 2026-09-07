@@ -18,7 +18,7 @@
 // Do not blind-refactor it.
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
-import { jsonHeaders } from "/assets/shared/js/http.js";
+import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
 import {
   DEFAULT_SUB_CROSSOVER_HZ,
   SUB_CROSSOVER_HZ_HI,
@@ -51,6 +51,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     volume_floor_min_db: -60, volume_floor_max_db: -10, volume_floor_default_db: -50
   };
   var DEFAULT_SAVED_ID = 'stock:flat';
+  // Fallback for a `status: "blocked"` body with no message of its own.
+  var EQ_BLOCKED_MESSAGE = 'Sound EQ is unavailable for this speaker setup.';
   var FLAT = function() {
     return {enabled: true, curve_id: 'flat',
             simple_eq: zeroSimple(), parametric_bands: [],
@@ -79,6 +81,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     match_loudness: false,
     volume_floor_db: volumeFloorDefault()
   };  // global output settings
+  var soundSettingsBlocked = null;  // carrier refusal message from ./settings
   var i2sHat = null;
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
@@ -689,8 +692,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
       '<div class="list-card"><div class="list-card__rows">' +
         presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
-    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection +
-      renderMatchLoudnessSetting() + '</div>';
+    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
   }
   function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
   function fmtVolumeFloor(v) {
@@ -752,16 +754,14 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
   function renderMatchLoudnessSetting() {
     var ml = soundSettings.match_loudness ? ' checked' : '';
-    return '<section class="sound-settings">' +
-      '<div class="setting-row">' +
+    return '<div class="setting-row">' +
         '<div class="setting-row__text">' +
           '<p class="setting-row__title">Match loudness</p>' +
           '<p class="setting-row__hint">Level-match profiles so switching compares tone, not volume.</p>' +
         '</div>' +
         '<label class="toggle"><input type="checkbox" id="set-match-loudness"' + ml +
           ' aria-label="Match loudness"><span class="track"></span></label>' +
-      '</div>' +
-    '</section>';
+      '</div>';
   }
   function renderSetupSoundSettings() {
     var trim = Number(soundSettings.headroom_trim_db) || 0;
@@ -778,6 +778,9 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var saveLabel = volumeFloorSaving ? 'Saving' :
       (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
     return '<section class="sound-settings">' +
+      (soundSettingsBlocked ? '<div class="info-card" role="status"><p>' +
+        escapeHtml(soundSettingsBlocked) + '</p></div>' : '') +
+      renderMatchLoudnessSetting() +
       '<details class="advanced"' + (advancedOpen ? ' open' : '') + '>' +
         '<summary>Advanced</summary>' +
         '<div class="setting-row setting-row--stack">' +
@@ -5003,7 +5006,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         if (payload.status === 'blocked') {
           // The loaded graph can't host EQ (e.g. an active crossover). Show
           // the server's honest hint; do not touch the draft/epoch state.
-          status(payload.message || 'Sound EQ is unavailable for this speaker setup.', true);
+          status(payload.message || EQ_BLOCKED_MESSAGE, true);
         } else {
           if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
           if (payload.live_status === 'live') status('Listening to this draft live.');
@@ -5053,7 +5056,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       if (payload.status === 'blocked') {
         // Refused (e.g. EQ over an active crossover). Surface the honest hint
         // and skip ingestState — a blocked body carries no profile state.
-        if (sourceSeq === liveSourceSeq) status(payload.message || 'Sound EQ is unavailable for this speaker setup.', true);
+        if (sourceSeq === liveSourceSeq) status(payload.message || EQ_BLOCKED_MESSAGE, true);
       } else {
         ingestState(payload);
         if (sourceSeq === liveSourceSeq) status(okMsg || '');
@@ -5088,12 +5091,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     var prev = soundSettings;
     soundSettings = Object.assign({}, soundSettings, patch);
     try {
-      var resp = await fetch('./settings', {method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify(patch)});
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'settings failed');
+      var payload = await postJSON('./settings', patch);
+      // The setting is saved either way; a blocked body says the loaded graph
+      // refused to carry it, and stays on the card until the next save.
+      var blocked = payload.status === 'blocked'
+        ? (payload.message || EQ_BLOCKED_MESSAGE) : null;
+      var blockChanged = blocked !== soundSettingsBlocked;
+      soundSettingsBlocked = blocked;
       ingestState(payload);
-      if (payload.warning) status(payload.warning, true);
+      if (blockChanged) render();
+      if (blocked) status(blocked, true);
+      else if (payload.warning) status(payload.warning, true);
       else if (payload.volume_warning) status(payload.volume_warning, true);
       return true;
     } catch (e) {
@@ -5154,13 +5162,7 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (value === null || value === undefined) return;
     volumeFloorTone.inFlight = true;
     try {
-      var resp = await fetch('./volume-floor/audition', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({volume_floor_db: value})
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'tone failed');
+      var payload = await postJSON('./volume-floor/audition', {volume_floor_db: value});
       if (generation !== volumeFloorTone.generation) {
         if (!volumeFloorTone.active) stopVolumeFloorTone({quiet: true});
         return;
@@ -5234,6 +5236,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     setVolumeFloorToneButton();
     try {
+      // Stays a bare fetch: postJSON cannot set `keepalive`, which is what
+      // makes the pagehide stop survive the page going away.
       var resp = await fetch('./volume-floor/stop', {
         method: 'POST',
         headers: jsonHeaders(),
@@ -7648,6 +7652,17 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     if (volumeFloorTone.active || volumeFloorTone.inFlight) {
       stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'});
+    }
+    // A Draft is live in CamillaDSP but persisted nowhere, so leaving the page
+    // would keep it audible with no surface that shows it. Put the persisted
+    // profile back; keepalive is why this is a bare fetch, not postJSON.
+    if (view === 'draft') {
+      fetch('./apply', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(normalizeProfile(applied)),
+        keepalive: true
+      }).catch(function() {});
     }
   });
   if (followerMode) loadFollowerActive();
