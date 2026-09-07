@@ -628,7 +628,7 @@ gate_core_health() {
     wait_for_units_settled
     # tee to a file, not a capture: the rows stay on stdout, where an
     # attended sudo prompt also rides.
-    tmp="$(mktemp "${TMPDIR:-/tmp}/jts-core-health.XXXXXX")"
+    tmp="$(mktemp "${TMPDIR:-/tmp}/jts-core-health.XXXXXX")" || return 1
     run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
 -p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" \
 | tee "$tmp" || rc=$?

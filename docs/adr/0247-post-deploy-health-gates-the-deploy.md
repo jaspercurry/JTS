@@ -24,7 +24,7 @@ alike into 1 (v252-v257 `run.c`).
 1. **The verdict is the doctor's own line, not the exit code.** The wrapper `tee`s
    the run to the transcript and reads the line starting `event=deploy.health `:
    `status=fail` fails the deploy, `status=ok` passes it, an ssh that died fails it
-   as `unreachable` (the deploy exits non-zero on anything it could not verify), and
+   as `unreachable` (the deploy exits non-zero on anything it could not reach), and
    any other rc with no verdict line passes as `no_verdict` — a fired bound, an OOM
    kill, an unrunnable venv and a downed bus are not "the speaker is broken". One
    event name, one line per result: `event=deploy.core_health status= rc=`.
