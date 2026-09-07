@@ -290,8 +290,8 @@ def _build_system_instruction(
         # say X" better than "never do Y". Provider-agnostic phrasing
         # — no mention of Gemini/OpenAI/Grok.
         # Hostname is interpolated so multi-Pi households see the
-        # right speaker URL ("jts2.local/transit") rather than the
-        # default. cfg.hostname is the canonical source.
+        # right speaker URL ("jts2.local/assistant/transit/") rather than
+        # the default. cfg.hostname is the canonical source.
         # City-agnostic copy: the available transit modes/cities are
         # data-driven (CityPacks), so don't name NYC-specific tools here —
         # a future city would make hardcoded "subway, bus, Citi Bike" wrong.
@@ -299,9 +299,9 @@ def _build_system_instruction(
             " Transit tools aren't set up on this speaker yet — no transit "
             "tool is available. If the user asks about transit (the next "
             "train, bus, bike share, or similar), briefly say: 'Transit "
-            f"isn't set up yet — visit {hostname}/transit to configure it.' "
-            "Don't promise to check or look it up; the data source is "
-            "genuinely absent."
+            f"isn't set up yet — visit {hostname}/assistant/transit/ to "
+            "configure it.' Don't promise to check or look it up; the data "
+            "source is genuinely absent."
         )
     if not travel_routes_configured:
         addendum += (
@@ -309,9 +309,9 @@ def _build_system_instruction(
             "no destination-routing tool is available. If the user asks how "
             "long it will take to get somewhere, how to get somewhere, or "
             "for route options to a destination, briefly say: 'Travel time "
-            f"isn't set up yet — visit {hostname}/transit to add a Google "
-            "Routes API key and saved location.' Don't promise to check or "
-            "look it up; the data source is genuinely absent."
+            f"isn't set up yet — visit {hostname}/assistant/transit/ to add "
+            "a Google Routes API key and saved location.' Don't promise to "
+            "check or look it up; the data source is genuinely absent."
         )
     if not research_configured:
         # Conditional setup redirect for the gated research pack. When
@@ -323,9 +323,10 @@ def _build_system_instruction(
             "research tool is available. If the user asks you to research "
             "something, look something up and report back later, or tell "
             "them later when you find an answer, briefly say: 'Research "
-            f"isn't set up yet — visit {hostname}/voice to add a research "
-            "provider.' Don't promise to research it, check later, or look "
-            "it up in the background; the research tool is genuinely absent."
+            f"isn't set up yet — visit {hostname}/assistant/voice/ to add a "
+            "research provider.' Don't promise to research it, check "
+            "later, or look it up in the background; the research tool is "
+            "genuinely absent."
         )
     if not ha_configured:
         # Same conditional pattern as transit above. Critical that the
@@ -345,7 +346,7 @@ def _build_system_instruction(
             "thermostats, locks, blinds, scenes, scripts, household "
             "automations) or asks about the state of devices in the home, "
             f"say exactly: 'Smart-home control isn't set up yet — visit "
-            f"{hostname}/ha to enable it.' Do not call any other "
+            f"{hostname}/assistant/ha/ to enable it.' Do not call any other "
             "tool in this case — not get_current_time, not get_now_playing, "
             "not get_weather. The user's request cannot be fulfilled without "
             "the home_assistant tool; redirecting them to the setup page is "

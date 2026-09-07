@@ -117,8 +117,14 @@ def test_setup_url_hostname_source_follows_the_injected_mapping(
     monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity_file))
     monkeypatch.delenv("JASPER_HOSTNAME", raising=False)
 
-    assert google_routes.config_status(ENV).setup_url == "jts3.local/transit"
-    assert google_routes.config_status().setup_url == "jts9.local/transit"
+    assert (
+        google_routes.config_status(ENV).setup_url
+        == "jts3.local/assistant/transit/"
+    )
+    assert (
+        google_routes.config_status().setup_url
+        == "jts9.local/assistant/transit/"
+    )
 
 
 def test_default_mode_falls_back_to_transit_when_invalid():
@@ -236,4 +242,4 @@ async def test_google_api_key_rejection_is_user_facing():
 
     assert out["ok"] is False
     assert "rejected the API key" in out["error"]
-    assert "jts3.local/transit" in out["error"]
+    assert "jts3.local/assistant/transit/" in out["error"]

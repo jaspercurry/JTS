@@ -62,7 +62,7 @@ def test_availability_hidden_with_nudge_when_no_key(tmp_path):
     block = kp.availability(environ={}, keys_path=missing).to_dict()
     assert block["available"] is False
     assert block["provider"] == "openai"
-    assert "/voice" in block["nudge"]
+    assert "/assistant/voice/" in block["nudge"]
     # No model id leaked when unavailable.
     assert "model" not in block
 

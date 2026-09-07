@@ -122,7 +122,7 @@ def _warn_if_tuning_model_unpriced(model: str, overrides: dict[str, dict]) -> No
         note=(
             "no rate available for the tuning model; its paid calls record "
             "$0 and the daily spend cap cannot bound tuning spend until a "
-            "rate is set at /voice"
+            "rate is set at /assistant/voice/"
         ),
         level=logging.WARNING,
     )

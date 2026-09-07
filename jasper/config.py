@@ -440,8 +440,8 @@ class Config:
         if not provider:
             raise VoiceProviderNotConfigured(
                 "JASPER_VOICE_PROVIDER is not set — visit "
-                "http://jts.local/voice (or your speaker's hostname) "
-                "and pick a provider. The wizard will write "
+                "http://jts.local/assistant/voice/ (or your speaker's "
+                "hostname) and pick a provider. The wizard will write "
                 "/var/lib/jasper/voice_provider.env and restart "
                 "jasper-voice.",
             )
@@ -786,7 +786,7 @@ class Config:
             google_redirect_uri=resolved_google_redirect_uri(),
             google_accounts_path=google_registry_path(),
             google_setup_url=_env(
-                "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",
+                "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/assistant/google/",
             ),
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
@@ -953,5 +953,5 @@ class Config:
         home_assistant tool is gated on this in `_build_registry`; when
         false, the model never sees the tool and handles smart-home
         requests conversationally ("smart-home control isn't set up
-        yet — visit jts.local/ha")."""
+        yet — visit jts.local/assistant/ha/")."""
         return bool(self.ha_url and self.ha_token)

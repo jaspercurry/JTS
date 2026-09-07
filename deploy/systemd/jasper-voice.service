@@ -94,10 +94,10 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # token cache.
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Voice provider SELECTION (JASPER_VOICE_PROVIDER + per-provider model /
-# voice) written by the wizard at https://jts.local/voice. Sourced AFTER
-# /etc/jasper/jasper.env so wizard-written values override operator
-# defaults. Optional via the leading `-`. The API keys themselves are
-# NOT here anymore — see voice_keys.env below.
+# voice) written by the wizard at https://jts.local/assistant/voice/.
+# Sourced AFTER /etc/jasper/jasper.env so wizard-written values override
+# operator defaults. Optional via the leading `-`. The API keys
+# themselves are NOT here anymore — see voice_keys.env below.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # The GEMINI / OPENAI / XAI API keys, split out of
 # voice_provider.env into the group-`jasper-secrets` dir so only
@@ -106,8 +106,8 @@ EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # group (below). Optional via the leading `-`.
 EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # Google OAuth client ID/SECRET written by the wizard at
-# http://jts.local/google. Calendar + Gmail tools register only
-# when this file's CLIENT_ID/SECRET are set AND at least one
+# http://jts.local/assistant/google/. Calendar + Gmail tools register
+# only when this file's CLIENT_ID/SECRET are set AND at least one
 # household member has linked an account. Optional via leading `-`.
 # Lives in the group-`jasper-secrets` dir alongside
 # the OAuth token tree (/var/lib/jasper-secrets/google/).

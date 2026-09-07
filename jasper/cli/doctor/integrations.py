@@ -103,7 +103,7 @@ def check_google_routes(cfg: Config) -> CheckResult:
 
     label = "Google Routes"
     status = google_routes.config_status(os.environ)
-    setup_url = f"http://{cfg.hostname}/transit"
+    setup_url = f"http://{cfg.hostname}/assistant/transit/"
     if not status.api_key_present and not status.origin_present:
         return CheckResult(
             label,
@@ -154,7 +154,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     import asyncio as _asyncio
 
     label = "Home Assistant"
-    setup_url = f"http://{cfg.hostname}/ha"
+    setup_url = f"http://{cfg.hostname}/assistant/ha/"
     if not cfg.ha_enabled:
         return CheckResult(
             label, "ok",
@@ -216,7 +216,7 @@ def check_citibike(cfg: Config) -> CheckResult:
         retires stations; the user has to re-pick at /assistant/transit/.
     """
     label = "Citi Bike"
-    setup_url = f"http://{cfg.hostname}/transit"
+    setup_url = f"http://{cfg.hostname}/assistant/transit/"
     # Transit config does not ride typed Config fields: read the wizard's
     # SSOT env directly, with the same parser the provider uses.
     from ...citibike import parse_saved_stations

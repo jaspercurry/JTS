@@ -109,8 +109,9 @@ class TuningAvailability:
 
 # The one place the "no key" copy lives.
 NO_KEY_NUDGE = (
-    "Add an OpenAI key at /voice to enable the tuning assistant — it "
-    "explains what your room is doing and can suggest bounded tweaks."
+    "Add an OpenAI key at /assistant/voice/ to enable the tuning "
+    "assistant — it explains what your room is doing and can suggest "
+    "bounded tweaks."
 )
 
 

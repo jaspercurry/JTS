@@ -246,7 +246,8 @@ def check_provider_importable() -> CheckResult:
     if not state.configured:
         return CheckResult(
             "voice provider imports", "ok",
-            "no provider configured — pick one in the /voice wizard",
+            "no provider configured — pick one in the /assistant/voice/ "
+            "wizard",
             reason=REASON_PROVIDER_IMPORTS_NOT_CONFIGURED,
         )
 
@@ -292,8 +293,8 @@ def check_provider_importable() -> CheckResult:
         f"{state.provider} is the active provider but its code will not "
         f"import: {failure}. jasper-voice cannot start with this provider "
         f"selected — re-run the installer (bash scripts/deploy-to-pi.sh) to "
-        f"rebuild the venv, or select a provider that loads in the /voice "
-        f"wizard.",
+        f"rebuild the venv, or select a provider that loads in the "
+        f"/assistant/voice/ wizard.",
         reason=REASON_PROVIDER_IMPORTS_FAILED,
     )
 
@@ -561,7 +562,8 @@ def check_pricing() -> CheckResult:
             return CheckResult(
                 "voice model pricing", "warn",
                 f"active model {model!r} has no rate — cost reads $0 and the "
-                "spend cap can't bound it until you set one at /voice "
+                "spend cap can't bound it until you set one at "
+                "/assistant/voice/ "
                 f"({len(defaults)} models priced as of {as_of})",
                 reason=REASON_PRICING_MODEL_UNPRICED,
             )

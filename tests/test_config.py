@@ -317,7 +317,7 @@ def test_google_setup_url_defaults_to_hostname(monkeypatch):
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
     monkeypatch.delenv("JASPER_GOOGLE_SETUP_URL", raising=False)
     cfg = Config.from_env()
-    assert cfg.google_setup_url == "http://jts3.local/google"
+    assert cfg.google_setup_url == "http://jts3.local/assistant/google/"
 
 
 @pytest.mark.parametrize(

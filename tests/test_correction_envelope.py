@@ -264,7 +264,8 @@ def test_tuning_llm_block_offered_on_review_shape_pinned(monkeypatch):
     monkeypatch.setattr(
         kp, "availability",
         lambda **_: kp.TuningAvailability(
-            available=False, model="", nudge="Add an OpenAI key at /voice …",
+            available=False, model="",
+            nudge="Add an OpenAI key at /assistant/voice/ …",
         ),
     )
     env = envelope.build_envelope(_FakeSession(SessionState.READY))

@@ -1765,7 +1765,8 @@ def _require_tuning_key() -> None:
 
     if not tuning_llm_available():
         raise TuningSetupUnavailable(
-            "the tuning assistant needs an OpenAI key — add one at /voice"
+            "the tuning assistant needs an OpenAI key — add one at "
+            "/assistant/voice/"
         )
 
 
