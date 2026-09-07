@@ -383,23 +383,52 @@ _STREAMBOX_TIER_FNS = (
     "install_streambox_nginx_site",
 )
 
-#: Steps every tier runs, whatever else the table gains or loses.
+#: Every step name the table carries, split by the profiles that reach it, in
+#: execution order. These two are the membership pins: a row that silently
+#: stops running falls out of the profile's executed list, and a row deleted
+#: outright falls out of the table, so both directions are red. Their union is
+#: asserted against the table itself, so the pins cannot drift from it either.
 _ON_EVERY_PROFILE = (
     "build_user",
+    "build_swap",
     "service_users",
+    "park_build_units",
+    "deps",
+    "alsa",
+    "camilladsp",
     "renderers",
+    "headless_boot",
+    "usb_role",
+    "wifi_airplay",
+    "jasper",
     "secrets_perms",
     "intsecrets_perms",
-    "wifi_guardian",
-    "retired_topology_state",
+    "mic_cal_sign",
+    "output_hw_state",
+    "outputd_config",
+    "outputd_statefile",
+    "crossover_statefile",
+    "fanin",
+    "outputd",
+    "ring_platform",
+    "avahi_control",
+    "peering_template",
     "systemd_units",
+    "retired_topology_state",
+    "wifi_guardian",
+    "memory_resilience",
+    "cgroup_memory",
+    "journald",
     "control_polkit",
     "web_polkit",
-    "control_env_modes",
+    "web_writable_dirs",
+    "correction_tls",
     "nginx_site",
+    "control_env_modes",
     "build_manifest",
     "doctor",
 )
+_FULL_ONLY_STEPS = ("camillagui", "audio_cues")
 
 #: (earlier, later) orderings the install depends on, each with the failure
 #: it prevents.
@@ -472,17 +501,23 @@ def test_dry_run_renders_exactly_the_steps_the_install_runs(profile):
     assert len(set(plan)) == len(plan), plan
 
 
-def test_every_row_is_well_formed_and_reaches_exactly_one_of_the_two_plans():
-    """Whole-list drift guard. A row whose `profiles` token is mistyped runs
-    on neither profile and so falls out of the union; a row that lost a field
-    fails the unpack; a wholesale deletion falls under the floor."""
+def test_every_row_is_well_formed_and_named_by_exactly_one_membership_pin():
+    """Whole-list drift guard. A row that lost a field fails the unpack; a row
+    whose `profiles` token is mistyped runs on neither profile; a deleted row
+    drops below the floor and out of the pin it was named by."""
     rows = _step_rows()
-    assert len(rows) >= 40, rows
+    # 44 rows, 40 distinct names: `deps`, `jasper`, `systemd_units` and
+    # `nginx_site` each have one row per tier.
+    assert len(rows) >= 44, rows
     assert {profiles for _, profiles, _, _ in rows} <= {"both", "full", "streambox"}
     assert all(size > 0 for _, _, _, size in rows), rows
-    assert set(_plan_steps("full")) | set(_plan_steps("streambox")) == {
-        name for name, _, _, _ in rows
-    }
+
+    names = {name for name, _, _, _ in rows}
+    assert not set(_ON_EVERY_PROFILE) & set(_FULL_ONLY_STEPS)
+    assert set(_ON_EVERY_PROFILE) | set(_FULL_ONLY_STEPS) == names
+    # ...and the split is the one the plans actually render.
+    assert set(_plan_steps("full")) == names
+    assert set(_plan_steps("streambox")) == set(_ON_EVERY_PROFILE)
 
 
 @pytest.mark.parametrize(
@@ -506,6 +541,7 @@ def test_required_step_order_holds_on_both_profiles(profile):
     assert set(_ON_EVERY_PROFILE) <= set(steps), sorted(
         set(_ON_EVERY_PROFILE) - set(steps)
     )
+    assert (set(_FULL_ONLY_STEPS) <= set(steps)) is (profile == "full"), steps
     for earlier, later in _REQUIRED_ORDER:
         assert steps.index(earlier) < steps.index(later), (earlier, later, steps)
     # ADR-0172: the manifest is the last mutation and the doctor after it is

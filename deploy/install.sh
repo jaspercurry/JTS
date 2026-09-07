@@ -101,7 +101,6 @@ jasper_install_log() {
     logger -t jasper-install -- "$*" 2>/dev/null || true
 }
 
-# The STEPS row main() is currently on, read by record_install_outcome below.
 INSTALL_CURRENT_STEP=""
 
 # The installer's failure record, called from install_exit_cleanup's
@@ -112,7 +111,7 @@ record_install_outcome() {
     if [[ "${rc}" == "0" ]]; then
         return 0
     fi
-    local line="event=install.failed rc=${rc} step=${INSTALL_CURRENT_STEP:-prologue}"
+    local line="event=install.failed rc=${rc} step=${INSTALL_CURRENT_STEP}"
     jasper_install_log "${line}"
     echo "  ${line}"
 }
@@ -1770,7 +1769,7 @@ run_doctor_summary_advisory() {
 
 # The INSTALL_STEPS rows that run on `$1`, in order: the one owner of the match.
 install_steps_for_profile() {
-    local row profiles
+    local row profiles _
     for row in "${INSTALL_STEPS[@]}"; do
         IFS='|' read -r _ profiles _ _ <<<"${row}"
         case "${profiles}" in both|"$1") printf '%s\n' "${row}" ;; esac
@@ -1779,7 +1778,8 @@ install_steps_for_profile() {
 
 # --dry-run: the rows main() would run, in order, and nothing else.
 print_install_plan() {
-    local name phrase
+    local name phrase rows _
+    rows="$(install_steps_for_profile "$1")"
     cat <<EOF
 ==> JTS install plan (dry run) - profile: $1
 Nothing below is executed. Ahead of the table main() reports the hardware tier
@@ -1794,7 +1794,7 @@ Run for real: sudo JASPER_INSTALL_PROFILE=$1 JASPER_HOSTNAME=<hostname>.local ba
 EOF
     while IFS='|' read -r name _ _ phrase; do
         printf '  %s: %s\n' "${name}" "${phrase}"
-    done <<<"$(install_steps_for_profile "$1")"
+    done <<<"${rows}"
 }
 
 main() {
@@ -1845,14 +1845,16 @@ main() {
     persist_install_profile "${install_profile}"
 
     # Rows on fd 3, so each step keeps the script's own stdin (apt, a build).
-    local row name fn phrase
+    # Assigned first: `set -e` does not check a substitution in a redirection.
+    local rows row name fn phrase _
+    rows="$(install_steps_for_profile "${install_profile}")"
     while IFS= read -r row <&3; do
         IFS='|' read -r name _ fn phrase <<<"${row}"
         INSTALL_CURRENT_STEP="${name}"
         jasper_install_log "event=install.step profile=${install_profile} step=${name} fn=${fn}"
         echo "==> ${name}: ${phrase}"
         "${fn}"
-    done 3<<<"$(install_steps_for_profile "${install_profile}")"
+    done 3<<<"${rows}"
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests
