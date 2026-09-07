@@ -85,7 +85,7 @@ def _enable(force: bool) -> int:
 
 
 def _show() -> int:
-    # _stored_token() resolves "" for absent/empty/unreadable. An
+    # The token read resolves "" for absent/empty/unreadable, so an
     # unreadable file (exists but no permission) is indistinguishable
     # from absent here; tell the operator to use sudo for the secret.
     path = control_token.TOKEN_FILE
@@ -99,7 +99,7 @@ def _show() -> int:
             return 1
         print("disabled (no token file; mutations are open on the trusted LAN)")
         return 0
-    print(control_token._stored_token())
+    print(control_token.current_token())
     return 0
 
 

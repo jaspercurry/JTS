@@ -650,9 +650,9 @@ def recompose_active_baseline_for_bass_extension(
         build_sound_filter_slots,
     )
     from jasper.sound.settings import (
-        SETTINGS_PATH,
         SoundSettings,
         output_trim_db,
+        resolve_settings_path,
     )
 
     def strict_json_mapping(path: Path, *, label: str) -> Mapping[str, object]:
@@ -676,10 +676,7 @@ def recompose_active_baseline_for_bass_extension(
         preference_profile_path
         or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH)
     )
-    settings_path = Path(
-        sound_settings_path
-        or os.environ.get("JASPER_SOUND_SETTINGS_PATH", SETTINGS_PATH)
-    )
+    settings_path = resolve_settings_path(sound_settings_path)
     preference = SoundProfile.from_mapping(
         strict_json_mapping(preference_path, label="sound preference profile")
     )
