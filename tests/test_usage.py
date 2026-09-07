@@ -147,10 +147,11 @@ def test_record_background_usage_records_model_specific_cost(tmp_path: Path):
     expected = (1_000 * 0.75 + 100 * 4.50) / 1_000_000
     assert cost == pytest.approx(expected)
     assert store.spend_last_24h_usd() == pytest.approx(expected)
-    [row] = store._conn.execute(
-        "SELECT provider, input_tokens, output_tokens FROM sessions"
-    ).fetchall()
-    assert row == ("openai", 1_000, 100)
+    with sqlite3.connect(str(db)) as conn:
+        rows = conn.execute(
+            "SELECT provider, input_tokens, output_tokens FROM sessions"
+        ).fetchall()
+    assert rows == [("openai", 1_000, 100)]
 
 
 def test_close_session_requires_explicit_session_id(tmp_path: Path):
