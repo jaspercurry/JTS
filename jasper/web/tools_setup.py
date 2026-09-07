@@ -816,7 +816,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_proxy_json(self, json.dumps({
                     "restarted": False, "reason": "no_provider",
                     "message": "Saved. Choose a voice provider at "
-                               "/voice/ to start the assistant.",
+                               "/assistant/voice/ to start the assistant.",
                 }).encode(), status=200)
                 return
             if bonded_follower_active():

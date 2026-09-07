@@ -228,7 +228,7 @@ def check_tool_catalog() -> CheckResult:
         return CheckResult(
             label, "skipped",
             "not configured (skipped — jasper-voice writes the catalog only "
-            "once a voice provider is set at http://jts.local/voice/)",
+            "once a voice provider is set at http://jts.local/assistant/voice/)",
             reason=REASON_TOOL_CATALOG_NOT_CONFIGURED,
         )
     s = summary()

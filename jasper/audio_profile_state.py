@@ -10,7 +10,7 @@ systemd, write env files, or touch the XVF chip: the one probe it owns
 observed facts, and it turns them into the shared vocabulary that status
 surfaces can show consistently.
 
-Why this exists: `/aec`, `/wake/`, `jasper-doctor`, corpus mode, and
+Why this exists: `/aec`, `/assistant/wake/`, `jasper-doctor`, corpus mode, and
 future onboarding all need to distinguish operator intent from runtime
 truth. That classification should not live in one HTTP handler.
 """

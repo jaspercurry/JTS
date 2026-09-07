@@ -530,8 +530,9 @@ class Config:
             grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
             # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
             # (e.g. "hey_jarvis", "alexa") or an absolute path to a
-            # .onnx file under /var/lib/jasper/wake/. The /wake/ wizard
-            # writes /var/lib/jasper/wake_model.env to set it; the
+            # .onnx file under /var/lib/jasper/wake/. The
+            # /assistant/wake/ wizard writes
+            # /var/lib/jasper/wake_model.env to set it; the
             # curated picker rows + install-time download list live in
             # jasper/wake_models.py. The compiled-in fallback below is
             # "hey_jarvis" because it's the openWakeWord-bundled model
@@ -637,7 +638,7 @@ class Config:
             # Paid/provider TTS calibration is explicit opt-in. Passive
             # live-response measurement still learns profiles after real
             # replies; automatic seed calls should only run when an
-            # operator or the /voice/ "Save and Test" flow intentionally asks.
+            # operator or the /assistant/voice/ "Save and Test" flow intentionally asks.
             assistant_loudness_auto_seed=_env_bool(
                 "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
                 False,

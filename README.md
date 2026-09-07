@@ -140,8 +140,8 @@ forwards the selected hardware-AEC chip beam over that carrier.
 
 Management surfaces are stdlib HTTP wizards behind nginx, socket-activated
 so they cost nothing resident between admin sessions. `deploy/nginx-jasper.conf`
-is the authoritative route list; it covers setup (`/voice/`, `/tools/`,
-`/sources/`, `/wake/`, `/wifi/`, `/transit/`, `/ha/`, `/weather/`,
+is the authoritative route list; it covers setup (`/assistant/voice/`, `/tools/`,
+`/sources/`, `/assistant/wake/`, `/wifi/`, `/transit/`, `/ha/`, `/weather/`,
 `/speaker/`, `/spotify/`, `/bluetooth/`), sound (`/sound/eq/`,
 `/sound/setup/`, `/sound/pair/`, `/sound/room/`,
 `/sound/speaker/crossover/`, `/sound/bass/`),
@@ -230,7 +230,7 @@ microphones.
 
 The chip's beamforming, noise suppression, and AGC run either way; the rule
 is not to double-process, so chip-AEC profiles do not also arm software
-raw/DTLN wake legs. `/wake/` exposes the household-level profile choice
+raw/DTLN wake legs. `/assistant/wake/` exposes the household-level profile choice
 (`auto`, `xvf_chip_aec`, `xvf_software_aec3`, `direct_mic`) and keeps the
 per-leg toggles as advanced custom controls. Changing either runs
 `jasper-aec-reconcile`, which restarts the affected services and updates

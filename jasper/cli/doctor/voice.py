@@ -129,7 +129,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
             "voice provider key", "warn",
             f"{state.detail}, but this process's environment names "
             f"{env_provider!r} — no key checked. Pick a provider at "
-            f"http://jts.local/voice/ so every surface agrees.",
+            f"http://jts.local/assistant/voice/ so every surface agrees.",
             reason=REASON_PROVIDER_NOT_CONFIGURED,
         )
 
@@ -152,7 +152,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
         return CheckResult(
             env_name, "fail",
             f"not set; required because {state.provider} is the active "
-            f"provider. Paste at http://jts.local/voice/ "
+            f"provider. Paste at http://jts.local/assistant/voice/ "
             f"or add to /etc/jasper/jasper.env.{drift}",
             reason=REASON_PROVIDER_KEY_MISSING,
         )

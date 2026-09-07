@@ -737,7 +737,7 @@ def test_streambox_spotify_uses_intsecrets_compartment():
     assert int_dir in rwpaths
 
 
-# The one env file the streambox web unit may omit: /wake/ is a WAKE_DETECTION
+# The one env file the streambox web unit may omit: /assistant/wake/ is a WAKE_DETECTION
 # wizard and this board class never gets that capability.
 STREAMBOX_EXEMPT_ENVFILES = {"/var/lib/jasper/wake_model.env"}
 

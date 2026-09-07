@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the voice-provider config wizard at /voice/.
+"""Tests for the voice-provider config wizard at /assistant/voice/.
 
 The wizard's risky bits are:
   1. Save logic — what gets written, what gets dropped, when does the

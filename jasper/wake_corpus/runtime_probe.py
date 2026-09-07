@@ -415,7 +415,7 @@ def read_aec_intent() -> AecIntent:
 def mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
     """Cheap mic identity snapshot for corpus metadata.
 
-    This mirrors the `/wake/` status probe: no streaming audio, no chip
+    This mirrors the `/assistant/wake/` status probe: no streaming audio, no chip
     writes, just the XVF USB/card facts already used for profile truth.
     """
     try:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free tests for the /wake/ wizard (jasper.web.wake_setup).
+"""Hardware-free tests for the /assistant/wake/ wizard (jasper.web.wake_setup).
 
 Covers the canonical-design migration (app.css link, .app-header, CSRF
 surfaces, ES-module script, no legacy chrome) and the preserved

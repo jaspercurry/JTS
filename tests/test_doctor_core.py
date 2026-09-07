@@ -707,7 +707,7 @@ def test_core_flag_reaches_the_harness_and_keeps_json(
 
 
 def test_core_scope_does_not_build_the_voice_config(monkeypatch, capsys):
-    """A full box that has not been through /voice/ has no provider, so
+    """A full box that has not been through /assistant/voice/ has no provider, so
     `Config.from_env()` raises — and every --core check is `needs_cfg=False`,
     so the deploy subset must never build it (ADR-0233 rule 5)."""
 

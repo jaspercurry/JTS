@@ -117,7 +117,7 @@ EnvironmentFile=-/var/lib/jasper-secrets/google_credentials.env
 # Maps API key, not a Google account token.
 EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
 # Wake-word selection (JASPER_WAKE_MODEL) written by the picker at
-# http://jts.local/wake/, or seeded by install.sh on a fresh install
+# http://jts.local/assistant/wake/, or seeded by install.sh on a fresh install
 # to point at /var/lib/jasper/wake/jarvis_v2.onnx. Sourced AFTER
 # /etc/jasper/jasper.env so wizard-written values win. Optional via
 # the leading `-` — daemon falls back to bundled "hey_jarvis" when

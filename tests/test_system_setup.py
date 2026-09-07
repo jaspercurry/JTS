@@ -850,7 +850,7 @@ def test_unknown_route_404(dashboard_server) -> None:
 
 
 def test_aec_card_moved_to_wake(dashboard_server) -> None:
-    """The Wake detection card moved to /wake/. /system/ must no
+    """The Wake detection card moved to /assistant/wake/. /system/ must no
     longer serve the routes that backed it — /aec.json,
     /aec/leg, /aec/threshold all 404 here, and the HTML must not
     reference the old DOM ids the card's JS bound to."""

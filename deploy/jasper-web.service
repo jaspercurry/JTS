@@ -35,20 +35,20 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # token cache.
 EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
 # Optional file written by the voice-provider wizard at
-# /voice/. Same override pattern: wizard values beat operator
+# /assistant/voice/. Same override pattern: wizard values beat operator
 # defaults. Sourced here so the wizard's process can render the
 # current state correctly even on cold boot. This holds
 # only the non-secret selectors now; the API keys are in voice_keys.env.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # The GEMINI/OPENAI/XAI API keys (group `jasper-secrets`).
-# The /voice/ wizard writes + renders them; jasper-web joins the
+# The /assistant/voice/ wizard writes + renders them; jasper-web joins the
 # jasper-secrets group (below) so it can read/replace this file. systemd
 # itself reads EnvironmentFile= as root, so sourcing it always works.
 EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
 # Google Routes API key written by /transit/. This is a billable Maps API
 # key, so it lives in the jasper-secrets compartment rather than transit.env.
 EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
-# Optional file written by the wake-word picker at /wake/ — holds
+# Optional file written by the wake-word picker at /assistant/wake/ — holds
 # JASPER_WAKE_MODEL pointing at either a bundled openWakeWord name
 # or an absolute path under /var/lib/jasper/wake/. The wizard reads
 # this file to render which model is active and writes back here on
@@ -65,12 +65,12 @@ EnvironmentFile=-/var/lib/jasper/weather.env
 EnvironmentFile=-/var/lib/jasper/transit.env
 # Single Python process serves all wizards as separate threads:
 #   /spotify/  →  127.0.0.1:8765
-#   /voice/    →  127.0.0.1:8767
+#   /assistant/voice/    →  127.0.0.1:8767
 #   /google/   →  127.0.0.1:8768
 #   /airplay/  →  127.0.0.1:8771
 #   /sources/  →  127.0.0.1:8773
 #   /speaker/  →  127.0.0.1:8783
-#   /wake/     →  127.0.0.1:8774
+#   /assistant/wake/     →  127.0.0.1:8774
 #   /wifi/     →  127.0.0.1:8775
 #   /transit/  →  127.0.0.1:8777
 #   /ha/       →  127.0.0.1:8778

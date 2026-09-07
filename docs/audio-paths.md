@@ -399,7 +399,7 @@ Python owns only provider source profiles:
 - The persisted profile store is
   `/var/lib/jasper/assistant_loudness_profiles.json`, overridable with
   `JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH`.
-- The `/voice/` wizard's **Save and Test** button synthesizes
+- The `/assistant/voice/` wizard's **Save and Test** button synthesizes
   `"This is me talking normally."` with the active provider's TTS API,
   measures it silently, and stores the profile before restarting
   `jasper-voice`. The handler caps this explicit test at one provider

@@ -351,7 +351,7 @@ def _stage_cli(args: argparse.Namespace) -> int:
     if args.registry == "openwakeword" and result.optional_failures:
         print(
             f"  warning: {result.optional_failures} inactive openWakeWord stock "
-            "asset(s) failed to download; unavailable rows will be disabled in /wake/.",
+            "asset(s) failed to download; unavailable rows will be disabled in /assistant/wake/.",
             file=sys.stderr,
         )
     if required:

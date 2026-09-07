@@ -1075,8 +1075,8 @@ _PAGE_MODULE = {
     "/sound/room/": "correction_room_flow",
     "/sound/bass/": "correction_bass_flow",
     "/sound/measurements/": "correction_measurements",
-    "/voice/": "voice_setup",
-    "/wake/": "wake_setup",
+    "/assistant/voice/": "voice_setup",
+    "/assistant/wake/": "wake_setup",
     "/chat/": "chat_setup",
     "/tools/": "tools_setup",
     "/weather/": "weather_setup",
@@ -1097,8 +1097,8 @@ _PAGE_MODULE = {
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
 _TITLE_ALLOWLIST = {
-    ("/voice/", "Voice"): {"back", "title", "header"},              # C.A2
-    ("/wake/", "Wake word"): {"back"},                              # C.A3
+    ("/assistant/voice/", "Voice"): {"back", "title", "header"},    # C.A2
+    ("/assistant/wake/", "Wake word"): {"back"},                    # C.A3
     ("/tools/", "Tools"): {"back"},                                 # C.A4
     ("/weather/", "Weather"): {"back"},                             # C.A5
     ("/transit/", "Transit"): {"back"},                             # C.A5

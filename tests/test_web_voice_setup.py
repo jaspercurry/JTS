@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /voice/ wizard after its migration to the canonical look.
+"""Tests for the /assistant/voice/ wizard after its migration to the canonical look.
 
 1. The page renders canonical design-system bytes (links /assets/app.css and
    the page-specific /assets/voice/voice.css, carries the shared .app-header,

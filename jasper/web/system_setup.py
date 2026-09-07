@@ -7,7 +7,7 @@
 Read-only(ish) view of what the speaker is doing — RAM/CPU/temp/disk
 with 60-min sparklines, software version, network + renderer state,
 and a few action buttons (restart voice / audio / reboot, run
-diagnostics). Voice spend status and cap settings live on /voice/.
+diagnostics). Voice spend status and cap settings live on /assistant/voice/.
 
 Data comes from jasper-control:
   GET  /system/snapshot     metrics + build (5 s ring buffer)
@@ -22,7 +22,7 @@ Data comes from jasper-control:
   POST /usb-forensics       persistent sampler toggle / capture / USB repair
   POST /system/reboot       full Pi reboot
 
-Wake detection lives on /wake/ — the model picker, the AEC + per-leg
+Wake detection lives on /assistant/wake/ — the model picker, the AEC + per-leg
 toggles, and the sensitivity slider all share that page now since they
 share a restart cycle. /system/ carries no operational AEC controls; its
 Software card only offers the optional enhanced-engine installation.

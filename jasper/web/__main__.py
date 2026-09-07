@@ -13,11 +13,11 @@ from that tier's ``Capability`` grants, never from its name — see
 ``WizardSpec.requires``. nginx routes:
 
   /spotify/  →  127.0.0.1:8765  (jasper.web.spotify_setup)
-  /voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
+  /assistant/voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
   /google/   →  127.0.0.1:8768  (jasper.web.google_setup)
   /airplay/  →  127.0.0.1:8771  (jasper.web.airplay_setup)
   /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
-  /wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
+  /assistant/wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
   /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
   /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)

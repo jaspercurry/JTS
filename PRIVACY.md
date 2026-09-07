@@ -81,7 +81,7 @@ refuses to start and stops if pause is enabled mid-recording, and
 `jasper-wake-enroll` refuses or stops the same way.
 
 Pause is not a hardware-wide microphone mute. If the household has explicitly
-enabled **Use JTS as a computer microphone** on `/wake/`, that independent
+enabled **Use JTS as a computer microphone** on `/assistant/wake/`, that independent
 switch is the sole end-user authority for the USB export and audio continues
 while the voice assistant is paused. The USB microphone preference is off by
 default; when it is on, live room audio leaves the Pi only across the physically

@@ -318,7 +318,7 @@ sudo systemctl restart jasper-voice
 
 `JASPER_VOICE_PROVIDER` is wizard-owned (PR #166) — `jasper-voice`
 refuses to start until you've picked one. Visit
-`http://jts.local/voice/`: paste keys, pick model and voice from
+`http://jts.local/assistant/voice/`: paste keys, pick model and voice from
 curated dropdowns, flip the active provider with a single radio
 group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
 0640 group `jasper`, provider selection only) and
@@ -732,7 +732,7 @@ triggers it). Try the shorter form first:
 
 You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
-visit `http://jts.local/wake/` from any LAN device, or run
+visit `http://jts.local/assistant/wake/` from any LAN device, or run
 `bash scripts/switch-wake-word.sh <key>` from your laptop. The model registry (and how to add one) lives in
 [`jasper/wake_models.py`](jasper/wake_models.py).
 
@@ -860,7 +860,7 @@ To remove the CA from an iPhone (e.g., decommissioning a speaker):
 `install.sh` runs `jasper-aec-reconcile`, which converges the AEC stack
 against the mic it detects and clears stale UDP mic config when the XVF
 is absent. The household control is the profile picker at
-`http://jts.local/wake/`; to make the reconciler look again after a
+`http://jts.local/assistant/wake/`; to make the reconciler look again after a
 firmware flash, `sudo systemctl start jasper-aec-reconcile`. On a managed
 XVF that selection carries intent only: the reconciler arms chip AEC when
 the detected hardware can carry it and falls back to software AEC3 with a
@@ -1186,7 +1186,7 @@ persist them to flash via that command.
 - The active provider lives in `/var/lib/jasper/voice_provider.env`
   (the only place since PR #166): `grep JASPER_VOICE_PROVIDER
   /var/lib/jasper/voice_provider.env`.
-- Daily spend cap might be hit. Visit `http://jts.local/voice/` for the
+- Daily spend cap might be hit. Visit `http://jts.local/assistant/voice/` for the
   spend-cap status/settings; the underlying ledger is
   `/var/lib/jasper/usage.db` if you need to inspect it with sqlite3.
 

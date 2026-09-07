@@ -432,7 +432,7 @@ The wizard restarts `jasper-voice` automatically after each change.
 
 ```
 /etc/jasper/jasper.env                       env vars (paths, etc.)
-/etc/nginx/sites-enabled/jasper.conf         nginx /spotify/ + /voice/
+/etc/nginx/sites-enabled/jasper.conf         nginx /spotify/ + /assistant/voice/
 /etc/systemd/system/jasper-web.service       setup web server (port 8765)
 /etc/systemd/system/jasper-voice.service     voice daemon
 /var/lib/jasper-intsecrets/spotify_credentials.env      SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE
@@ -453,7 +453,7 @@ jasper/web/spotify_setup.py           jasper-web HTTP service (PKCE wizard)
 jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
 jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch
 jasper/tools/spotify.py               spotify_play / spotify_queue (router-aware)
-deploy/nginx-jasper.conf              /spotify/ + /voice/ proxy (HTTP only)
+deploy/nginx-jasper.conf              /spotify/ + /assistant/voice/ proxy (HTTP only)
 deploy/jasper-web.service             systemd unit for jasper-web
 ```
 
