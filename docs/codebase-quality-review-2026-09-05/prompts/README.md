@@ -56,9 +56,9 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | P6 right-sizing #4200 — plan posted 2026-09-06 05:43, still at its gate: paste its kickoff (P1 is done: eight PRs merged, handoff #4279) | P4 observability #4197 — second session driving on the owner's triage; finish rows 15/16, merge or close #4305, post the handoff | **Two sessions.** P12 #4213 (all Phase 3 rows merged; left: H1 and H2 on jts3 with the owner, the #4209 slider on jts.local, the jts4 deploy for HW-3/HW-5, R6, #4317, handoff) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
-| 2 | P7 tests #4201 (execution after P5's moves merge) | P2 round 2 from the handoff #4248 | P11 web UI #4212, once P12 has handed off |
-| 3 | P8 docs #4202 (stale-path pass last) | P5 structure #4199 (moves after P6's deletions merge) | P3 resilience #4195 (P12, P4 and P6 have posted its rows; its measurements need the boxes) |
+| 1 | P6 right-sizing #4200 — running on Opus since 2026-09-07 00:45 (#4326 is its PR 1); P1 is done (handoff #4279) | P2 round 2 from the handoff #4248 — P4 is done (handoff #4327, 12 PRs on 2026-09-06); first dispose of #4305, the stood-down P4 session's leftover PR | **Two sessions.** P12 #4213 (all Phase 3 rows merged; left: H1 and H2 on jts3 with the owner, the #4209 slider on jts.local, the jts4 deploy for HW-3/HW-5, R6, #4317, handoff) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
+| 2 | P7 tests #4201 (execution after P5's moves merge) | P5 structure #4199 (moves after P6's deletions merge) | P11 web UI #4212, once P12 has handed off |
+| 3 | P8 docs #4202 (stale-path pass last) | — | P3 resilience #4195 (P12, P4 and P6 have posted its rows; P4's row 16 waits on its bridge `rms` emitter; its measurements need the boxes) |
 
 James Crane has no Fable credit left, so its lanes run with Opus as the coordinator: P6 (plan
 already written and triaged; mostly Sonnet deletions), then P7 and P8. P3, which touches the
@@ -75,10 +75,10 @@ cue (H2), then replug. jts4: nothing; the P12 session deploys it for HW-3/HW-5. 
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-06 23:00 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
-#4304). P2 done (handoff #4248). P4: one session stood down at 20:21, a second took over on the
-owner's triage and has merged rows 1–14, 17–19, the `audio_graph` deletion (ADR-0245) and most of
-the warn sweep. P9: 24 PRs merged (ADR-0244), the daemon split in progress. P12: every Phase 3 row
+**State on 2026-09-07 01:00 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
+#4304). P2 done (handoff #4248). P4 done (handoff #4327: 12 PRs, `audio_graph` deleted, ADR-0245,
+the class-A rule stated in `doctor_contract.py`; rows 15b/16 wait on P9's `wake_legs_dead` and
+P3's bridge `rms` emitter). P6 running on James Crane as Opus. P9: 24 PRs merged (ADR-0244), the daemon split in progress. P12: every Phase 3 row
 merged (#4242 reopened and merged), H3 and the P1/P2 hardware rows PASS on jts3, HW-6's premise
 does not hold on ring boxes. Deployed: jts3 `60c38f5ab`, jts.local and jts4 `162ab4088`. Three
 ADR-number collisions in one night (0238, and 0240 twice): a lane takes the next free number in its
