@@ -151,7 +151,7 @@ class PeeringDaemon:
                 level=logging.ERROR,
             )
             self._transport = None
-            return
+            raise
 
         # UDS server for voice ↔ peering RPC.
         self._uds_server = await uds.serve(

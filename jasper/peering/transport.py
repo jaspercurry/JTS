@@ -246,22 +246,26 @@ def open_multicast_socket(
         except OSError:
             pass
 
-    sock.bind((bind_addr, port))
+    try:
+        sock.bind((bind_addr, port))
 
-    # Outbound TTL: 1 = single subnet, dies at first router hop.
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
+        # Outbound TTL: 1 = single subnet, dies at first router hop.
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
 
-    # We receive our own multicast (LOOP=1); the daemon ignores its own
-    # messages by sender peer id.
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        # We receive our own multicast (LOOP=1); the daemon ignores its own
+        # messages by sender peer id.
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
 
-    # Join the multicast group on the default outbound interface.
-    # struct mreq: 4 bytes group + 4 bytes interface; INADDR_ANY for
-    # interface = "let the kernel pick the default outbound iface".
-    mreq = struct.pack(
-        "4sl", socket.inet_aton(group), socket.INADDR_ANY,
-    )
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        # Join the multicast group on the default outbound interface.
+        # struct mreq: 4 bytes group + 4 bytes interface; INADDR_ANY for
+        # interface = "let the kernel pick the default outbound iface".
+        mreq = struct.pack(
+            "4sl", socket.inet_aton(group), socket.INADDR_ANY,
+        )
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError:
+        sock.close()
+        raise
 
     return sock
 

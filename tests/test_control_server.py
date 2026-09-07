@@ -16,6 +16,7 @@ own pure functions are tested in ``test_control_state_aggregate.py``.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import re
@@ -42,6 +43,7 @@ from jasper.control.volume_ops import (
     _db_to_percent,
 )
 
+from tests._async_wait import wait_until_sync
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -785,13 +787,14 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
     assert fields["errno"] == str(errno.EADDRINUSE)
 
 
-def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
+@pytest.fixture
+def _peering_env(monkeypatch):
+    """Stub peering config, reset `_peering_thread`/`_peering_loop` around
+    the test, and hand back the modules so the test can install its own
+    FakePeeringDaemon on `peering_daemon_mod.PeeringDaemon`."""
     import jasper.control.server as srv_mod
     import jasper.peering as peering_pkg
     import jasper.peering.daemon as peering_daemon_mod
-
-    started = threading.Event()
-    stopped = threading.Event()
 
     class _Mode:
         value = "on"
@@ -799,6 +802,25 @@ def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
     class _Config:
         enabled = True
         mode = _Mode()
+
+    monkeypatch.setattr(peering_pkg, "load_config", lambda: _Config())
+    with srv_mod._peering_lock:
+        srv_mod._peering_thread = None
+        srv_mod._peering_loop = None
+    try:
+        yield srv_mod, peering_daemon_mod
+    finally:
+        srv_mod.stop_peering_daemon(timeout=1)
+        with srv_mod._peering_lock:
+            srv_mod._peering_thread = None
+            srv_mod._peering_loop = None
+
+
+def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(_peering_env, monkeypatch):
+    srv_mod, peering_daemon_mod = _peering_env
+
+    started = threading.Event()
+    stopped = threading.Event()
 
     class FakePeeringDaemon:
         def __init__(self, cfg):
@@ -810,24 +832,48 @@ def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
         async def stop(self):
             stopped.set()
 
-    monkeypatch.setattr(peering_pkg, "load_config", lambda: _Config())
     monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+
+    srv_mod.start_peering_daemon_if_enabled()
+    assert started.wait(timeout=2)
+    srv_mod.stop_peering_daemon(timeout=2)
+    assert stopped.wait(timeout=2)
     with srv_mod._peering_lock:
-        srv_mod._peering_thread = None
-        srv_mod._peering_loop = None
-    try:
-        srv_mod.start_peering_daemon_if_enabled()
-        assert started.wait(timeout=2)
-        srv_mod.stop_peering_daemon(timeout=2)
-        assert stopped.wait(timeout=2)
-        with srv_mod._peering_lock:
-            assert srv_mod._peering_thread is None
-            assert srv_mod._peering_loop is None
-    finally:
-        srv_mod.stop_peering_daemon(timeout=1)
-        with srv_mod._peering_lock:
-            srv_mod._peering_thread = None
-            srv_mod._peering_loop = None
+        assert srv_mod._peering_thread is None
+        assert srv_mod._peering_loop is None
+
+
+def test_peering_start_failure_clears_thread_and_allows_retry(_peering_env, monkeypatch):
+    """A start() failure clears `_peering_thread` so the next start is a
+    real retry."""
+    srv_mod, peering_daemon_mod = _peering_env
+
+    start_calls: list[int] = []
+    stop_calls: list[int] = []
+
+    class FakePeeringDaemon:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def start(self):
+            start_calls.append(1)
+            raise OSError(errno.ENODEV, "No such device")
+
+        async def stop(self):
+            stop_calls.append(1)
+
+    monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+
+    srv_mod.start_peering_daemon_if_enabled()
+    wait_until_sync(lambda: srv_mod._peering_thread is None)
+    assert start_calls == [1]
+    assert stop_calls == [1]
+
+    srv_mod.start_peering_daemon_if_enabled()
+    wait_until_sync(lambda: len(start_calls) >= 2)
+    assert start_calls == [1, 1]
+    wait_until_sync(lambda: srv_mod._peering_thread is None)
+    assert stop_calls == [1, 1]
 
 
 # ---------------------------------------------------------------------------
