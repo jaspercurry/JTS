@@ -55,7 +55,7 @@ def configured_volume_floor_db() -> float:
     """
     global _SETTINGS_FLOOR_CACHE, _SETTINGS_FLOOR_WARNING_LOGGED
     try:
-        from .sound import settings as sound_settings  # lazy: cycle (settings imports here)
+        from .sound import settings as sound_settings  # lazy: cycle
 
         settings_path = sound_settings.resolve_settings_path(None)
         signature: tuple[str, int | None, int | None]
