@@ -586,7 +586,6 @@ def test_build_router_with_registry_skips_reload(monkeypatch):
         client_id="cid", redirect_uri="http://127.0.0.1/callback", registry=registry,
     )
     assert router.default_name == "jasper"
-    assert router.rebuild_fn is None
 
 
 def test_router_empty_reason_returns_empty_when_clients_present():

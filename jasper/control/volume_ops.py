@@ -99,17 +99,12 @@ def _build_spotify_router_or_none():
     if not client_id:
         return None
     try:
-        from ..accounts import Registry, legacy_cache_path, maybe_migrate_legacy, registry_path
-        from ..spotify_router import build_router
+        from ..accounts import legacy_cache_path, registry_path
+        from ..spotify_router import build_router, load_registry
         accounts_path = registry_path()
         cache_path = legacy_cache_path()
         redirect_uri = resolved_spotify_redirect_uri()
-        registry = Registry.load(accounts_path)
-        maybe_migrate_legacy(
-            registry,
-            cache_path,
-            default_name="default",
-        )
+        registry = load_registry(accounts_path, cache_path)
         fingerprint = (
             client_id,
             redirect_uri,
@@ -134,10 +129,6 @@ def _build_spotify_router_or_none():
                 cached.reason,
             )
             return None
-        # The control daemon doesn't surface revoked-vs-needs-oauth status
-        # to the user, so we use the clients dict only — but the Router
-        # still carries statuses so /state can introspect them if a future
-        # endpoint adds a Spotify health probe.
         router = build_router(
             client_id=client_id, redirect_uri=redirect_uri, registry=registry,
         )
