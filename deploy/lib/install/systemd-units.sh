@@ -1307,6 +1307,14 @@ PY
     fi
 }
 
+restart_jasper_control_and_input() {
+    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
+    systemctl reset-failed jasper-control.service 2>/dev/null || true
+    systemctl restart jasper-control.service || \
+        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
+    systemctl restart jasper-input.service 2>/dev/null || true
+}
+
 start_streambox_runtime_units() {
     local unit
     systemctl enable jasper-camilla.service jasper-fanin.service \
@@ -1357,16 +1365,11 @@ start_streambox_runtime_units() {
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
     systemctl enable --now jasper-journal-review.timer || \
         echo "  (journal-review timer not enabled — non-fatal)"
-    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
-    systemctl reset-failed jasper-control.service 2>/dev/null || true
-    systemctl restart jasper-control.service || \
-        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # Enabling only arms these for the NEXT boot; deploy health checks this
     # boot. Mirrors the full path: restart the bridge so an already-paired
     # remote picks up new code, then let the reconciler publish the mic source
-    # a paired remote needs. Ordered after jasper-control, which is what the
-    # bridge posts key events to.
-    systemctl restart jasper-input.service 2>/dev/null || true
+    # a paired remote needs.
+    restart_jasper_control_and_input
     /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 }
@@ -1681,13 +1684,9 @@ install_systemd_units() {
     for unit in "${WIZARD_UNITS[@]}"; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
-    # StartLimitAction=reboot: a spent burst would reboot the Pi mid-install.
-    systemctl reset-failed jasper-control.service 2>/dev/null || true
-    systemctl restart jasper-control.service || \
-        echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
     # jasper-input is always-on (HID accessory bridge) — restart so any
     # already-plugged-in knob picks up new code without waiting for boot.
-    systemctl restart jasper-input.service 2>/dev/null || true
+    restart_jasper_control_and_input
     # Optional adapter-backed mic sources are profile-gated. Reconcile after
     # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
     # without one never load the BLE decoder at all.

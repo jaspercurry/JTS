@@ -12,7 +12,6 @@
 FANIN_BIN="/opt/jasper/bin/jasper-fanin"
 OUTPUTD_BIN="/opt/jasper/bin/jasper-outputd"
 OUTPUTD_SOURCE_MISSING_ERROR="ERROR: jasper-outputd source missing"
-RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=1200000
 
 rust_build_memtotal_kb() {
     local meminfo="${JASPER_RUST_MEMINFO_FILE:-/proc/meminfo}"

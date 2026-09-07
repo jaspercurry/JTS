@@ -35,9 +35,7 @@
 
 # Per-toolchain RAM budget per compile job, in kB. These ARE the policy —
 # the single place that answers "what -j budget does a C / C++ build get?"
-# Named (not bare literals at the call sites) for the same reason
-# rust-daemons.sh names RUST_LOW_MEMORY_BUILD_THRESHOLD_KB. Calibrated to
-# the worst-case translation unit per toolchain: webrtc's -O3
+# Calibrated to the worst-case translation unit per toolchain: webrtc's -O3
 # audio_processing_impl.cc peaks > 1 GB in cc1plus; a C autotools -O2 TU
 # (shairport-sync/nqptp) peaks a few hundred MB.
 #
@@ -49,6 +47,7 @@
 BUILD_SANDBOX_KB_PER_JOB_CPP=1500000   # C++ -O3 (webrtc-audio-processing)
 # shellcheck disable=SC2034
 BUILD_SANDBOX_KB_PER_JOB_C=400000      # C -O2 autotools (shairport-sync, nqptp)
+RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=1200000
 BUILD_SWAP_CREATED=0
 BUILD_SWAP_PATH_ACTIVE=""
 
@@ -106,7 +105,7 @@ build_swap_required() {
 
     local mem_kb threshold_kb
     mem_kb="$(build_swap_memtotal_kb)"
-    threshold_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB:-1200000}"
+    threshold_kb="${RUST_LOW_MEMORY_BUILD_THRESHOLD_KB}"
     case "${mem_kb}:${threshold_kb}" in
         *[!0-9:]*|":")
             return 1
