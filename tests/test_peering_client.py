@@ -14,6 +14,8 @@ Covers:
     silencing the speaker.
   - `session_started` / `session_ended` fire-and-forget notices, their
     no-op paths, and that errors are swallowed.
+  - the client's RPC read budget outlasts the daemon's own fail-open
+    ARBITRATE timeout (#4332), including against a real, slow daemon.
 
 Full wake-handler integration (`WakeLoop._arbitrate_acquire_drain`) is
 covered by tests/test_voice_daemon_peering.py and by the existing
@@ -23,11 +25,16 @@ audio I/O which can't run on CI.
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 
-from jasper.voice.peering_client import PeeringClient
+from jasper.peering import uds as uds_mod
+from jasper.peering.config import ARBITRATE_RPC_TIMEOUT_SEC
+from jasper.voice.peering_client import DEFAULT_RPC_TIMEOUT_SEC, PeeringClient
+from tests._socket_paths import short_unix_socket_path as _short_socket_path
 
 _SOCKET = "/tmp/jasper-peering-test.sock"
 
@@ -125,3 +132,62 @@ async def test_session_ended_swallows_errors():
         new=AsyncMock(side_effect=OSError("broken pipe")),
     ):
         await client.session_ended("error")  # no raise
+
+
+# ---------- RPC read budget vs the daemon's fail-open timeout (#4332) ----------
+
+
+def test_default_rpc_timeout_outlasts_daemon_fail_open():
+    """The client's read budget must strictly exceed the daemon's own
+    fail-open ARBITRATE timeout. Otherwise `_send`'s readline can
+    expire while the daemon is still arbitrating, and the daemon's
+    real reply — including its own fail-open StartSession/StandDown —
+    is mistaken for silence, so every wake resolves WIN regardless of
+    the actual decision."""
+    assert DEFAULT_RPC_TIMEOUT_SEC > ARBITRATE_RPC_TIMEOUT_SEC
+
+
+@pytest_asyncio.fixture
+async def delayed_lose_server():
+    """A real peering UDS server whose ARBITRATE handler doesn't reply
+    until ARBITRATE_RPC_TIMEOUT_SEC has elapsed, then returns LOSE."""
+    sock_path = _short_socket_path()
+
+    async def arbitrate(_req: dict) -> dict:
+        await asyncio.sleep(ARBITRATE_RPC_TIMEOUT_SEC)
+        return {"result": "LOSE", "epoch": "ep-late"}
+
+    async def notify_started(_epoch: str) -> None:
+        pass
+
+    async def notify_ended(_epoch: str, _reason: str) -> None:
+        pass
+
+    server = await uds_mod.serve(
+        path=sock_path,
+        arbitrate=arbitrate,
+        notify_session_started=notify_started,
+        notify_session_ended=notify_ended,
+    )
+    try:
+        yield sock_path
+    finally:
+        server.close()
+        await server.wait_closed()
+        try:
+            os.unlink(sock_path)
+        except FileNotFoundError:
+            pass
+
+
+async def test_arbitrate_waits_out_a_slow_real_daemon(delayed_lose_server):
+    """Against a real UDS server that takes until ARBITRATE_RPC_TIMEOUT_SEC
+    to reply, the client must still receive the real LOSE rather than
+    timing out first and failing open to WIN. With the old hardcoded
+    0.5 s client budget this would have timed out client-side and
+    returned WIN — silently defeating peering."""
+    client = PeeringClient(enabled=True, socket_path=delayed_lose_server)
+    result = await client.arbitrate(
+        score=0.8, snr_db=None, rms_dbfs=-20.0, can_serve=True,
+    )
+    assert result == "LOSE"
