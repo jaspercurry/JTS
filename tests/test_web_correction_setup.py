@@ -26,6 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.web import correction_setup
+from tests._web_test_helpers import assert_canonical_page
 from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
     wizard_harness_fixture as _wizard_harness_fixture,
@@ -139,9 +140,7 @@ def test_shared_measurement_start_blocker_prioritizes_reserved_start(
 
 def test_render_uses_canonical_shell():
     html = _render()
-    assert html.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in html
-    assert "app-header" in html
+    assert_canonical_page(html)
     assert 'name="jts-csrf"' in html
     assert "tok-correction-123456789012345678901234" in html
 

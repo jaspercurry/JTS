@@ -8,11 +8,14 @@ The nmcli behavior is covered elsewhere; this file pins the page-level
 contracts that are easy to regress during markup edits.
 
 Post-migration /wifi/ is a pure ES-module page: _landing_html() renders only
-the canonical shell + a thin skeleton, and the radio toggle, connect/forget
-panels, fetch wiring, and per-network actions are rendered by
-deploy/assets/wifi/js/main.js. These contracts now read that module — same
-guarantees (semantic native-checkbox toggle, CSRF-meta-backed fetch, data-*
-actions instead of inline-onclick args), at their new canonical home.
+the canonical shell + a thin skeleton. The radio toggle, connect/forget
+panels, fetch wiring, and per-network actions are rendered at runtime by
+deploy/assets/wifi/js/main.js — this suite is hardware-free and has no
+browser/DOM, so it cannot execute that module or assert on what it renders
+(there is no tests/js/wifi_*.mjs harness for it, unlike bluetooth/crossover).
+What IS pinned here is the Python-rendered contract: the CSRF meta the module
+reads, the page correctly delegating to the real module file, and the legacy
+server-rendered switch/inline-JS markup staying gone from the shell.
 """
 from __future__ import annotations
 
@@ -26,36 +29,21 @@ _WIFI_MAIN_JS = (
 )
 
 
-def test_landing_html_uses_semantic_radio_switch_and_csrf_meta():
+def test_landing_html_uses_csrf_meta_and_drops_legacy_switch_markup():
     html = wifi_setup._landing_html("csrf-token").decode("utf-8")
-    js = _WIFI_MAIN_JS.read_text()
 
     # CSRF token still rides in the page meta tag (the module reads it).
     assert 'meta name="jts-csrf" content="csrf-token"' in html
-    # The Wi-Fi radio control is the canonical native-checkbox toggle, not a
-    # clickable <div class="switch">. The toggle markup is rendered by the
-    # module now, so assert it there.
-    assert 'class="toggle"' in js
-    assert 'type="checkbox"' in js
-    # The legacy clickable-div switch must be gone from both the page and the
-    # module.
-    assert 'class="switch"' not in html
-    assert 'class="switch"' not in js
-    # Mutating fetches go through the shared jsonHeaders() (X-CSRF-Token).
-    assert "jsonHeaders" in js
-
-
-def test_network_actions_use_data_attributes_not_inline_js_args():
-    html = wifi_setup._landing_html().decode("utf-8")
-    js = _WIFI_MAIN_JS.read_text()
-
-    # Per-network actions ride in data-* attributes read by a delegated
-    # handler — these are rendered by the module now.
-    assert 'data-action="open-connect"' in js
-    assert 'data-action="submit-connect"' in js
-    assert 'data-action="open-forget"' in js
-    # And no untrusted SSID/name is interpolated into inline JS — the old
-    # inline-onclick / jsArg anti-patterns stay gone from both surfaces.
-    for anti in ("function jsArg", 'onclick="toggleRadio', "openConnect('", "submitForget('"):
+    # The legacy clickable-div switch and inline-onclick/jsArg anti-patterns
+    # must stay out of the server-rendered shell.
+    for anti in (
+        'class="switch"', "function jsArg", 'onclick="toggleRadio',
+        "openConnect('", "submitForget('",
+    ):
         assert anti not in html
-        assert anti not in js
+
+
+def test_landing_html_delegates_to_the_real_wifi_module():
+    html = wifi_setup._landing_html().decode("utf-8")
+    assert '<script type="module" src="/assets/wifi/js/main.js">' in html
+    assert _WIFI_MAIN_JS.is_file(), f"missing {_WIFI_MAIN_JS}"

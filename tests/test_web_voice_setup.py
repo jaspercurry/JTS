@@ -29,7 +29,7 @@ import urllib.request
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import _common, voice_setup
 
-from ._web_test_helpers import FakeHandler
+from ._web_test_helpers import FakeHandler, assert_canonical_page
 
 
 def _render(state: dict | None = None, flash: str = "") -> str:
@@ -45,8 +45,7 @@ def _render(state: dict | None = None, flash: str = "") -> str:
 
 def test_voice_page_is_canonical_document():
     out = _render()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     # The legacy bespoke wrapper is gone.
     assert "max-width: 620px" not in out
     assert "nav-back" not in out
@@ -59,7 +58,7 @@ def test_voice_page_links_page_css():
 
 def test_voice_page_has_shared_app_header():
     out = _render()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Voice provider</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -173,8 +172,7 @@ def test_get_root_renders_canonical_page(tmp_path):
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     for p in PROVIDERS:
         assert p.label in out
 

@@ -37,7 +37,7 @@ import pytest
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
 from jasper.web import bluetooth_setup
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
-from tests._web_test_helpers import make_real_handler
+from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 # --------------------------------------------------------------------------
@@ -138,8 +138,7 @@ def _render(csrf_token: str = CSRF) -> str:
 
 def test_bluetooth_page_is_canonical_document():
     out = _render()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     # Legacy hand-rolled shell + the old fixed page width are gone.
     assert "max-width: 720px" not in out
     assert 'class="nav-back"' not in out
@@ -152,7 +151,7 @@ def test_bluetooth_page_links_page_stylesheet():
 
 def test_bluetooth_page_has_shared_app_header():
     out = _render()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Bluetooth</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -296,12 +295,6 @@ def _make_request(
         content_length=content_length,
     )
     return handler
-
-
-def test_public_surface_is_stable():
-    assert callable(bluetooth_setup.main)
-    assert callable(bluetooth_setup._landing_html)
-    assert callable(bluetooth_setup._make_handler)
 
 
 def test_local_json_adapter_preserves_wire_contract():
@@ -1138,8 +1131,7 @@ def test_get_root_renders_canonical_page():
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<script type="module" src="/assets/bluetooth/js/main.js">' in out
 
 

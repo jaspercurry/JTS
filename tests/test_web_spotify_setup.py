@@ -28,6 +28,8 @@ from io import BytesIO
 
 from jasper.web import spotify_setup
 
+from ._web_test_helpers import assert_canonical_page
+
 
 # ---------------------------------------------------------------------------
 # Render-layer tests (call the page builders directly).
@@ -38,8 +40,7 @@ CSRF = "tok-abcdefghijklmnopqrstuvwx"
 
 def test_setup_wizard_is_canonical_document():
     out = spotify_setup._setup_wizard_html(CSRF).decode()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert "/assets/spotify/spotify.css?v=" in out
     # Legacy 620px body wrapper is gone.
     assert "max-width: 620px" not in out
@@ -47,7 +48,7 @@ def test_setup_wizard_is_canonical_document():
 
 def test_setup_wizard_has_shared_app_header():
     out = spotify_setup._setup_wizard_html(CSRF).decode()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<use href="#icon-back">' in out
 
 
@@ -128,8 +129,7 @@ def test_redirect_uri_page_renders_copy_row_without_inline_js():
         "bounce",
         CSRF,
     ).decode()
-    assert out.startswith("<!doctype html>")
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     # Copy button drives the clipboard via data-* + delegated handler.
     assert 'data-copy-target="redirect-uri"' in out
     assert "onclick=" not in out
@@ -156,8 +156,7 @@ def test_manual_prewarn_page_is_canonical():
         "brittany",
         CSRF,
     ).decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert "prewarn" in out
     assert 'name="csrf_token"' in out
     assert "https://accounts.spotify.com/authorize?x=1" in out
@@ -319,8 +318,7 @@ def test_get_root_unconfigured_renders_setup_wizard():
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     # Unconfigured state shows the create-app wizard.
     assert "Create a Spotify Developer App" in out
 
@@ -361,7 +359,7 @@ def test_get_root_configured_no_accounts_renders_redirect_page(monkeypatch):
     assert h.status == 200
     out = h.wfile.getvalue().decode()
     assert "Add this redirect URL to your Spotify app" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
 
 
 def test_get_unknown_path_404s():

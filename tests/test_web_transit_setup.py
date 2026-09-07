@@ -25,7 +25,7 @@ import pytest
 
 from jasper.web import transit_setup
 
-from ._web_test_helpers import FakeHandler
+from ._web_test_helpers import FakeHandler, assert_canonical_page
 
 # A 43-char token, the shape secrets.token_urlsafe(32) produces.
 TOKEN = "x" * 43
@@ -78,8 +78,7 @@ def _render(
 
 def test_transit_page_is_canonical_document():
     out = _render({})
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     # The old hand-rolled body styling must be gone.
     assert "max-width: 620px" not in out
     assert "1db954" not in out  # no legacy Spotify-green hex
@@ -92,7 +91,7 @@ def test_transit_page_links_page_specific_stylesheet():
 
 def test_transit_page_has_shared_app_header():
     out = _render({})
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Transit</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -283,8 +282,7 @@ def test_get_root_renders_canonical_page(tmp_path):
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
 
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(tmp_path):

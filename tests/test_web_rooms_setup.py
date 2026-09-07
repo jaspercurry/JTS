@@ -43,7 +43,7 @@ from jasper.control import household_credential
 from jasper.control.client import PEER_DETAIL_MAX_CHARS
 from jasper.web import rooms_setup
 
-from ._web_test_helpers import FakeHandler
+from ._web_test_helpers import FakeHandler, assert_canonical_page
 
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -207,8 +207,7 @@ def test_get_root_renders_canonical_document(monkeypatch):
     h = _get("/")
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert h.header_values("Content-Type") == ["text/html; charset=utf-8"]
 
 
@@ -217,7 +216,7 @@ def test_get_root_has_shared_app_header(monkeypatch):
     # label (docs/web-ia.md §2) — /sound/pair/ is canonical.
     _patch_discovery(monkeypatch, speakers=[])
     out = _get("/").wfile.getvalue().decode()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Stereo pair</h1>' in out
     assert '<use href="#icon-back"></use>' in out
 

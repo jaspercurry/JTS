@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 
 from jasper.web import home_assistant_setup as ha
-from tests._web_test_helpers import make_real_handler
+from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +66,7 @@ def test_state_machine_routing():
 def test_all_states_are_canonical_documents():
     for state in (_state_none(), _state_partial(), _state_connected()):
         out = _render(state)
-        assert out.startswith("<!doctype html>")
-        assert "/assets/app.css?v=" in out
+        assert_canonical_page(out)
         assert "/assets/home-assistant/home-assistant.css?v=" in out
         # legacy chrome must be gone
         assert "PAGE" "_STYLE" not in out
@@ -77,7 +76,7 @@ def test_all_states_are_canonical_documents():
 def test_all_states_have_shared_app_header():
     for state in (_state_none(), _state_partial(), _state_connected()):
         out = _render(state)
-        assert 'class="app-header"' in out
+        assert_canonical_page(out)
         assert '<h1 class="app-header__title">Home Assistant</h1>' in out
         assert '<use href="#icon-back">' in out
 
@@ -242,8 +241,7 @@ def test_get_root_renders_canonical_page(monkeypatch):
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
 
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(monkeypatch):
