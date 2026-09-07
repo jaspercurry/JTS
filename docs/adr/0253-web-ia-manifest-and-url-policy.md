@@ -7,10 +7,9 @@
 
 The P11 web-UI program (issue #4212) moved most management pages onto a
 shared manifest, shared front-end primitives, and a small set of hubs, and
-moved several URLs while doing it (#4396, #4397, #4398, #4400, #4404,
-#4407, #4409, #4419, #4422, #4423, #4428). Two URL moves landed under
-different rules — one with no redirect, one with a redirect group — with
-no record of why, and the site map itself has a shape
+moved several URLs while doing it — the P11 PRs on #4212. Two of those
+moves, #4404 and the in-flight #4430, landed under different redirect
+rules with no record of why, and the site map itself has a shape
 (`jasper/web/nav.py`'s `hub_paths()`) that a plan or a new page can
 misread as "every group is a hub." This ADR is the record; the living
 conventions stay in [`docs/web-ia.md`](../web-ia.md), which owns the page
@@ -61,16 +60,18 @@ shell, submit model, and reuse table and is not restated here.
      project) and nothing here can change where it points. No removal
      condition — the external registration is permanent by construction.
 
-4. **Shrink-only allowlists, and proof they reach zero.**
-   `_TITLE_ALLOWLIST` and `_INLINE_STYLE_ALLOWLIST`
-   (`tests/test_web_wizard_conventions.py`) are ratchets: a page's entry
-   comes out the PR that fixes it, and nothing may add an entry without a
-   ledger row. `NO_APP_HEADER_ALLOWLIST`
+4. **Shrink-only allowlists, deleted on zero.** `_TITLE_ALLOWLIST` and
+   `_INLINE_STYLE_ALLOWLIST` (`tests/test_web_wizard_conventions.py`) are
+   ratchets: a page's entry comes out the PR that fixes it, and nothing may
+   add an entry without a ledger row. `NO_APP_HEADER_ALLOWLIST`
    (`tests/test_web_design_system.py`) and `_LEGACY_HIDDEN_CLASS_PAGES`
-   (`tests/test_web_wizard_conventions.py`) were the same shape and now
-   stand empty — the pattern converges rather than tracking debt forever,
-   and an empty allowlist stays in place (not deleted) as the guard that
-   catches the next regression.
+   (`tests/test_web_wizard_conventions.py`) were the same shape, reached
+   zero, and were **deleted outright** — dict, exemption branch, and all —
+   in `50eba81d0` and `3080d3a6a`; the corresponding tests now assert zero
+   offenders with no allowlist in the loop at all. The rule: an allowlist
+   only ever shrinks, and it does not outlive its last entry — once empty
+   it is deleted along with the branch that consulted it, leaving the
+   plain assertion as the permanent guard.
 
 5. **One front-end standard, not a second implementation per page.**
    `dom.js` builders instead of `innerHTML`, `startPolling` (hidden-tab
