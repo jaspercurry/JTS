@@ -1008,6 +1008,7 @@ code = [
   "jasper/flight_recorder.py",
   "jasper/control/debug_control.py",
   "jasper/control/state_aggregate.py",
+  "jasper/control/single_flight.py",
   "jasper/control/system_*.py",
   "jasper/control/ha_probe_child.py",
   "jasper/control/ha_status_cache.py",

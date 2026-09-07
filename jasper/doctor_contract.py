@@ -36,10 +36,7 @@ REASON_SNAPSHOT_UNAVAILABLE = "snapshot_unavailable"
 
 REASON_REFRESH_FAILED = "refresh_failed"
 
-# Where the root jasper-doctor-json.service oneshot writes its report
-# (`--out`) and where jasper-control's /system/diagnostics reads it. One
-# name for both halves: rename it in only one and the route stats a file
-# nothing writes.
+# Must match the `--out` literal in deploy/systemd/jasper-doctor-json.service:30.
 DOCTOR_RESULT_PATH = "/run/jasper-control/doctor-result.json"
 
 
