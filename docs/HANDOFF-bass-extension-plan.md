@@ -327,7 +327,8 @@ jasper/bass_extension/
   __init__.py          # public seam + local durable graph/profile apply intent
   alignment.py         # LT math, biquad response eval, boost calc — pure
   adapters/
-    base.py            # EnclosureAdapter Protocol + ADAPTERS registry
+    __init__.py        # ADAPTERS registry + adapter_for_enclosure
+    base.py            # EnclosureAdapter Protocol + shared contracts
     sealed.py          # 2nd-order fit → LT family
     ported.py          # fb locate + knee fit → HP+shelf family
     passive_radiator.py# ported + PR-notch guard
@@ -525,8 +526,9 @@ multi-radiator in v1), `TUNING_NOT_LOCATED` (ported/PR: no fb),
 ### 6.1 The contract (`jasper/bass_extension/adapters/base.py`)
 
 Small Protocol, three implementations, dict registry keyed by
-`adapter_id`. Pure functions of numpy arrays + dataclasses; no I/O,
-no CamillaDSP knowledge beyond emitting filter *parameter dicts*.
+`adapter_id` (`adapters/__init__.py`). Pure functions of numpy
+arrays + dataclasses; no I/O, no CamillaDSP knowledge beyond
+emitting filter *parameter dicts*.
 
 ```python
 class EnclosureAdapter(Protocol):

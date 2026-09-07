@@ -688,6 +688,7 @@ def test_module_imports_are_pure_and_hardware_free():
         "numpy",
         "jasper.audio_measurement.analysis",
         "jasper.audio_measurement.evidence_identity",
+        "jasper.bass_extension.adapters",
         "jasper.bass_extension.adapters.base",
         "jasper.bass_extension.profile",
         "jasper.bass_extension.targets",

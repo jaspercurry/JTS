@@ -22,6 +22,12 @@ from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
     json_fingerprint,
 )
+from jasper.bass_extension.adapters import (
+    ADAPTERS,
+    PassiveRadiatorPlantFit,
+    PortedPlantFit,
+    SealedPlantFit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,21 +179,15 @@ def _anchor_from_dict(value: Any, index: int) -> AnchorPoint:
     return AnchorPoint(_text(raw["target_id"], f"{name}.target_id"), level, evidence)
 
 
-def _normalise_natural(adapter_id: str, value: Any) -> dict[str, Any]:
-    from jasper.bass_extension.adapters.base import (
-        ADAPTERS,
-        PassiveRadiatorPlantFit,
-        PortedPlantFit,
-        SealedPlantFit,
-    )
+_NATURAL_FIT_CLASSES = {
+    cls.adapter_id: cls for cls in (SealedPlantFit, PortedPlantFit, PassiveRadiatorPlantFit)
+}
 
+
+def _normalise_natural(adapter_id: str, value: Any) -> dict[str, Any]:
     if adapter_id not in ADAPTERS:
         raise ValueError("enclosure.adapter_id is unsupported")
-    if adapter_id == "sealed_v1":
-        return SealedPlantFit.from_dict(value).to_dict()
-    if adapter_id == "ported_v1":
-        return PortedPlantFit.from_dict(value).to_dict()
-    return PassiveRadiatorPlantFit.from_dict(value).to_dict()
+    return _NATURAL_FIT_CLASSES[adapter_id].from_dict(value).to_dict()
 
 
 @dataclass(frozen=True)
@@ -488,7 +488,6 @@ def evaluate_loaded_bass_extension_profile(
         baseline_candidate_fingerprint,
         topology_config_fingerprint,
     )
-    from jasper.bass_extension.adapters.base import ADAPTERS
 
     refusals: list[BassExtensionRefusal] = []
     mismatches: list[str] = []
