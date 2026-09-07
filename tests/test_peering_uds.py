@@ -17,7 +17,7 @@ import pytest
 import pytest_asyncio
 
 from jasper.peering import uds as uds_mod
-from tests._socket_paths import short_unix_socket_path as _short_socket_path
+from tests._peering_uds import peering_uds_server
 
 
 @pytest_asyncio.fixture
@@ -38,28 +38,17 @@ async def server_setup():
     async def notify_ended(epoch: str, reason: str) -> None:
         ended_calls.append((epoch, reason))
 
-    sock_path = _short_socket_path()
-    server = await uds_mod.serve(
-        path=sock_path,
-        arbitrate=arbitrate,
+    async with peering_uds_server(
+        arbitrate,
         notify_session_started=notify_started,
         notify_session_ended=notify_ended,
-    )
-    try:
+    ) as sock_path:
         yield {
-            "server": server,
             "path": sock_path,
             "arbitrate_calls": arbitrate_calls,
             "started_epochs": started_epochs,
             "ended_calls": ended_calls,
         }
-    finally:
-        server.close()
-        await server.wait_closed()
-        try:
-            os.unlink(sock_path)
-        except FileNotFoundError:
-            pass
 
 
 # ---------- Round-trip each command ----------

@@ -25,16 +25,14 @@ audio I/O which can't run on CI.
 from __future__ import annotations
 
 import asyncio
-import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 
-from jasper.peering import uds as uds_mod
 from jasper.peering.config import ARBITRATE_RPC_TIMEOUT_SEC
 from jasper.voice.peering_client import DEFAULT_RPC_TIMEOUT_SEC, PeeringClient
-from tests._socket_paths import short_unix_socket_path as _short_socket_path
+from tests._peering_uds import peering_uds_server
 
 _SOCKET = "/tmp/jasper-peering-test.sock"
 
@@ -151,33 +149,13 @@ def test_default_rpc_timeout_outlasts_daemon_fail_open():
 async def delayed_lose_server():
     """A real peering UDS server whose ARBITRATE handler doesn't reply
     until ARBITRATE_RPC_TIMEOUT_SEC has elapsed, then returns LOSE."""
-    sock_path = _short_socket_path()
 
     async def arbitrate(_req: dict) -> dict:
         await asyncio.sleep(ARBITRATE_RPC_TIMEOUT_SEC)
         return {"result": "LOSE", "epoch": "ep-late"}
 
-    async def notify_started(_epoch: str) -> None:
-        pass
-
-    async def notify_ended(_epoch: str, _reason: str) -> None:
-        pass
-
-    server = await uds_mod.serve(
-        path=sock_path,
-        arbitrate=arbitrate,
-        notify_session_started=notify_started,
-        notify_session_ended=notify_ended,
-    )
-    try:
+    async with peering_uds_server(arbitrate) as sock_path:
         yield sock_path
-    finally:
-        server.close()
-        await server.wait_closed()
-        try:
-            os.unlink(sock_path)
-        except FileNotFoundError:
-            pass
 
 
 async def test_arbitrate_waits_out_a_slow_real_daemon(delayed_lose_server):
