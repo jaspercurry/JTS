@@ -429,6 +429,14 @@ module = [
 ]
 ignore_errors = true
 
+[[tool.mypy.overrides]]
+# `wake_loop_for_tests` (test-only WakeLoop builder) moved out of
+# `jasper.voice_daemon` verbatim, so it inherits that module's day-one
+# baseline exemption above rather than being held to a stricter bar it
+# never met in its original home.
+module = ["tests._wake_loop"]
+ignore_errors = true
+
 # Exhaustive: every top-level child of `jasper` is either on a layer line or an
 # explicit holdout below, so a new module has to be classified rather than
 # drift in unranked. A holdout moves to its layer line in the PR that removes

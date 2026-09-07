@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.voice_daemon import WakeLoop
 from jasper.wake_condition_context import AMBIENT_FLOOR_DBFS
+from tests._wake_loop import wake_loop_for_tests
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def _wakeloop_for_condition(music_dbfs=-30.0):
     ring makes the noise floor None."""
     from collections import deque
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._condition_refreshed_at = 0.0
     wl._current_condition = "quiet"
     wl._capture_ring_on = deque(maxlen=8)

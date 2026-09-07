@@ -18,12 +18,13 @@ import tempfile
 from jasper.control.uds import _voice_socket_command
 from jasper.voice.control_socket import serve
 from jasper.voice_daemon import WakeLoop
+from tests._wake_loop import wake_loop_for_tests
 
 from .test_voice_daemon_manual_start_guard import _SpyCues
 
 
 def _wake_loop() -> tuple[WakeLoop, _SpyCues]:
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     spy = _SpyCues()
     wl._cues = spy
     return wl, spy

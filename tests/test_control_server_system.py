@@ -30,6 +30,7 @@ from jasper.control import aec_endpoints, state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
 from tests._librespot_state import write_librespot_state
+from tests._wake_loop import wake_loop_for_tests
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -1395,9 +1396,8 @@ def test_state_voice_wake_legs_flows_from_session_status(
 
 def test_state_voice_classifies_every_session_status_field():
     from jasper.control import state_aggregate
-    from jasper.voice_daemon import WakeLoop
 
-    status_keys = frozenset(WakeLoop.for_tests().session_status())
+    status_keys = frozenset(wake_loop_for_tests().session_status())
     published = state_aggregate._VOICE_STATUS_PUBLISHED_KEYS
     withheld = state_aggregate._VOICE_STATUS_WITHHELD_KEYS
 

@@ -32,11 +32,12 @@ import pytest
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from tests._async_wait import wait_signalled
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
 def _make_wakeloop():
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
     class _Noop:
         def note_voice_session(self, *_a, **_k):
@@ -61,7 +62,7 @@ def _make_wakeloop():
         def take_paced_sec(self):
             return 0.0
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
@@ -216,9 +217,9 @@ def test_background_task_completion_ends_turn_without_new_mic_frame():
 
 def test_simultaneous_background_task_completion_schedules_one_teardown():
     """Multiple completed bg tasks should coalesce to one _end_turn task."""
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn = object()
     calls = 0

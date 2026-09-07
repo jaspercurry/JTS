@@ -13,7 +13,7 @@ added 2026-05-23. The critical regression these tests pin down:
     `peak_score_dtln_aec` (not corrupt `peak_score_aec_off`).
   - All three legs' offsets + RMSes flow to the wake_events store.
 
-Constructs WakeLoop via `for_tests()` (no real mic, model, or daemon),
+Constructs WakeLoop via `wake_loop_for_tests()` (no real mic, model, or daemon),
 mocks the wake-telemetry store, and inspects the kwargs passed to
 `begin_event`.
 """
@@ -29,6 +29,7 @@ import pytest
 from jasper.voice_daemon import WakeLoop, LegRuntime
 from jasper.wake_legs import by_token
 from tests._log_events import event_fields
+from tests._wake_loop import wake_loop_for_tests
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
@@ -58,7 +59,7 @@ def _make_wake_loop_triple(
     # `await store.begin_event(...)` call resolves without real DB I/O.
     store = MagicMock()
     store.begin_event = AsyncMock()
-    wl = WakeLoop.for_tests(wake_event_store=store)
+    wl = wake_loop_for_tests(wake_event_store=store)
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
     wl._detector = _make_detector()

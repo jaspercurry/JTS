@@ -54,9 +54,9 @@ from jasper.voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_NOT_SET_UP_CUE_SLUG,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
-    WakeLoop,
 )
 from tests._log_events import event_fields, event_records
+from tests._wake_loop import wake_loop_for_tests
 from tests.systemd_unit_helpers import value_for
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -502,7 +502,7 @@ def _shutting_down_daemon(
         )
         marker.write_text(f"reason={code}\n")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
-    wake_loop = WakeLoop.for_tests()
+    wake_loop = wake_loop_for_tests()
     wake_loop._cues = _SpyCues()
     return wake_loop
 
