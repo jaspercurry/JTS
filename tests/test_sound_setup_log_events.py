@@ -13,7 +13,21 @@ import logging
 from collections import Counter
 from pathlib import Path
 
-from jasper.web import sound_setup, volume_floor_tone
+from jasper.web import (
+    sound_active_speaker,
+    sound_profile_apply,
+    sound_setup,
+    volume_floor_tone,
+)
+
+#: The /sound/ page spans four modules; every one of them contributes to the
+#: same household-facing event contract.
+_PAGE_MODULES = (
+    sound_setup,
+    sound_profile_apply,
+    sound_active_speaker,
+    volume_floor_tone,
+)
 
 
 def _sound_event_calls() -> list[ast.Call]:
@@ -23,7 +37,7 @@ def _sound_event_calls() -> list[ast.Call]:
     contract so the split cannot quietly retire them.
     """
     calls: list[ast.Call] = []
-    for module in (sound_setup, volume_floor_tone):
+    for module in _PAGE_MODULES:
         tree = ast.parse(Path(module.__file__).read_text())
         calls.extend(
             sorted(
@@ -52,11 +66,10 @@ def _sound_route_failure_calls() -> list[ast.Call]:
     caller, so each call site contributes one ERROR event under the name in
     its ``event=`` keyword.
     """
-    source = Path(sound_setup.__file__).read_text()
-    tree = ast.parse(source)
     calls = [
         node
-        for node in ast.walk(tree)
+        for module in _PAGE_MODULES
+        for node in ast.walk(ast.parse(Path(module.__file__).read_text()))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "send_route_failure"
@@ -86,7 +99,8 @@ def _dispatch_route_events() -> list[str]:
     """
     return [
         element.elts[1].value
-        for node in ast.walk(ast.parse(Path(sound_setup.__file__).read_text()))
+        for module in _PAGE_MODULES
+        for node in ast.walk(ast.parse(Path(module.__file__).read_text()))
         if isinstance(node, ast.Dict)
         for element in node.values
         if isinstance(element, ast.Tuple)
@@ -144,7 +158,8 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # walker above would silently stop covering it.
     delegated = {
         keyword.value.value
-        for node in ast.walk(ast.parse(Path(sound_setup.__file__).read_text()))
+        for module in _PAGE_MODULES
+        for node in ast.walk(ast.parse(Path(module.__file__).read_text()))
         if isinstance(node, ast.Call)
         for keyword in node.keywords
         if keyword.arg == "log_event_name"
@@ -215,10 +230,12 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # (#3094) to the two siblings that share `trigger_reconcile`. The tuning
     # handoff mint (#2883) adds three: its status, its optional not-ready
     # reason, and the declaration revision the prompt was bound to.
-    signature = "\n".join(wrapped_fields).encode()
+    # Sorted, so the digest names the wrapper set and not which of the page's
+    # modules a call site sits in.
+    signature = "\n".join(sorted(wrapped_fields)).encode()
     assert len(wrapped_fields) == 130
     assert hashlib.sha256(signature).hexdigest() == (
-        "76935a3d2040d4bae94526f39bae7b5f020be28c20c2ed61ed8757679bb7bd82"
+        "96786d4184960a91327c14b8a03eb645043659e234f446a576554f3a960134ca"
     )
 
 
@@ -227,11 +244,11 @@ def test_live_draft_warning_quotes_free_text_and_preserves_format(
     caplog,
 ):
     monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
-    monkeypatch.setattr(sound_setup.time, "monotonic", lambda: 100.0)
-    sound_setup._live_draft_unavailable_log_at.clear()
+    monkeypatch.setattr(sound_profile_apply.time, "monotonic", lambda: 100.0)
+    sound_profile_apply._live_draft_unavailable_log_at.clear()
 
     with caplog.at_level(logging.WARNING, logger=sound_setup.__name__):
-        sound_setup._log_live_draft_unavailable(
+        sound_profile_apply._log_live_draft_unavailable(
             reason='unsafe reason=x "quoted"',
             output_trim_db=2.25,
             room_peq_count=3,
@@ -280,11 +297,11 @@ def test_volume_floor_exception_keeps_error_level_and_traceback(
 
 def test_live_draft_event_uses_json_sink(monkeypatch, caplog):
     monkeypatch.setenv("JASPER_LOG_JSON", "1")
-    monkeypatch.setattr(sound_setup.time, "monotonic", lambda: 200.0)
-    sound_setup._live_draft_unavailable_log_at.clear()
+    monkeypatch.setattr(sound_profile_apply.time, "monotonic", lambda: 200.0)
+    sound_profile_apply._live_draft_unavailable_log_at.clear()
 
     with caplog.at_level(logging.WARNING, logger=sound_setup.__name__):
-        sound_setup._log_live_draft_unavailable(
+        sound_profile_apply._log_live_draft_unavailable(
             reason="unsafe reason=x",
             output_trim_db=3.25,
             room_peq_count=5,
@@ -328,13 +345,13 @@ def test_optional_and_bool_percent_s_fields_keep_legacy_logfmt(
         lambda **_kwargs: _environment_report(),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_path_safety_evidence_path",
         lambda: None,
     )
 
-    with caplog.at_level(logging.INFO, logger=sound_setup.__name__):
-        sound_setup._active_speaker_environment_payload()
+    with caplog.at_level(logging.INFO, logger=sound_active_speaker.__name__):
+        sound_active_speaker._active_speaker_environment_payload()
 
     assert caplog.records[-1].getMessage() == (
         "event=sound.active_speaker_environment status=None load_gate=ready "
@@ -355,13 +372,13 @@ def test_optional_and_bool_percent_s_fields_keep_legacy_text_in_json(
         lambda **_kwargs: _environment_report(),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_path_safety_evidence_path",
         lambda: None,
     )
 
-    with caplog.at_level(logging.INFO, logger=sound_setup.__name__):
-        sound_setup._active_speaker_environment_payload()
+    with caplog.at_level(logging.INFO, logger=sound_active_speaker.__name__):
+        sound_active_speaker._active_speaker_environment_payload()
 
     assert json.loads(caplog.records[-1].getMessage()) == {
         "event": "sound.active_speaker_environment",

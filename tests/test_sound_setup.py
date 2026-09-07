@@ -67,7 +67,12 @@ from jasper.sound.settings import (
     load_sound_settings,
 )
 from jasper.volume_curve import percent_to_db
-from jasper.web import sound_setup, volume_floor_tone
+from jasper.web import (
+    sound_active_speaker,
+    sound_profile_apply,
+    sound_setup,
+    volume_floor_tone,
+)
 
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
@@ -196,12 +201,12 @@ def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
         return {"status": "idle"}
 
     monkeypatch.setattr(
-        sound_setup, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
+        sound_active_speaker, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
     )
     monkeypatch.setattr(
-        sound_setup, "_active_speaker_stop_commission_tone", stop_tone("commission")
+        sound_active_speaker, "_active_speaker_stop_commission_tone", stop_tone("commission")
     )
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", stop_safe)
+    monkeypatch.setattr(sound_active_speaker, "_active_speaker_stop_payload", stop_safe)
     return recorded
 
 
@@ -1040,7 +1045,7 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
 def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path):
     """The live combined-test slider route must pass the route-before-CSRF gate."""
 
-    monkeypatch.setattr(sound_setup, "_SUMMED_TEST_TONE_SESSION", None)
+    monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", None)
     with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
@@ -1148,10 +1153,10 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     marker = tmp_path / "i2s-reboot"
     marker.touch()
     hardware = {"usb_data_role": {"board_topology": "shared_otg_port"}}
-    monkeypatch.setattr(sound_setup, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
-    monkeypatch.setattr(sound_setup, "_output_hardware_dict", lambda: hardware)
+    monkeypatch.setattr(sound_active_speaker, "I2S_HAT_REBOOT_REQUIRED_PATH", str(marker))
+    monkeypatch.setattr(sound_active_speaker, "_output_hardware_dict", lambda: hardware)
 
-    payload = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
+    payload = sound_active_speaker._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
 
     detectable = {p.id for p in dac_all_profiles() if p.hat_products}
     offered = {entry["id"] for entry in payload["profiles"]}
@@ -1167,7 +1172,7 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     assert payload["warnings"] == []
 
     write_hat_eeprom(hat_dir, product="StudioDAC8x")
-    detected = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
+    detected = sound_active_speaker._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
 
     assert detected["detected_profile_id"] == "hifiberry_dac8x_studio"
     assert detected["detected_label"] == next(
@@ -1178,7 +1183,7 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     # A board the reconciler will not manage reports no detection either.
     hardware.clear()
     hardware["usb_data_role"] = {"board_topology": "unsupported"}
-    unsupported = sound_setup._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
+    unsupported = sound_active_speaker._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
     assert unsupported["available"] is False
     assert unsupported["detected_profile_id"] is None
     assert unsupported["detected_label"] == ""
@@ -1188,14 +1193,14 @@ def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path)
     intent = tmp_path / "i2s_hat.env"
     boot_config = tmp_path / "config.txt"
     boot_config.write_text("[all]\ndtoverlay=merus-amp\n", encoding="utf-8")
-    sound_setup.write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
+    sound_active_speaker.write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_output_hardware_dict",
         lambda: {"usb_data_role": {"board_topology": "shared_otg_port"}},
     )
 
-    payload = sound_setup._i2s_hat_payload(
+    payload = sound_active_speaker._i2s_hat_payload(
         intent_path=intent, boot_config_path=boot_config, hat_dir=tmp_path / "hat"
     )
 
@@ -1208,12 +1213,12 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_i2s_hat_payload",
         lambda: {"available": True, "reason": "", "restart_required": True},
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "write_i2s_hat_intent",
         lambda profile_id: calls.append(("write", profile_id)),
     )
@@ -1549,7 +1554,7 @@ _COMMISSION_CODE_MODULES = (
     "jasper/active_speaker/safe_playback.py",
     "jasper/active_speaker/driver_protection.py",
     "jasper/active_speaker/measurement.py",
-    "jasper/web/sound_setup.py",
+    "jasper/web/sound_active_speaker.py",
     # Also in the issue flow, and absent from this list until #2285: the
     # baseline emitter mints two of the four `ring_wire_declaration_invalid`
     # sites, the environment probe contributes the config/ALSA blockers the
@@ -2773,7 +2778,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
         lambda **_kwargs: {"ok": True},
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_output_topology_payload",
         lambda: {"output_topology": {"status": "verified"}},
     )
@@ -2793,17 +2798,17 @@ def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
 ):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_summed_test_tone",
         lambda **_kwargs: pytest.fail("invalid input must not stop audio"),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda **_kwargs: pytest.fail("invalid input must not stop audio"),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_payload",
         lambda: pytest.fail("invalid input must not stop audio"),
     )
@@ -2991,7 +2996,7 @@ def test_driver_research_request_payload_is_target_bound_and_silent(
     from tests.active_speaker_fixtures import mono_output_topology
 
     topology = mono_output_topology(card_id=None)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
 
     payload = sound_setup._active_speaker_driver_research_request_payload({
         "operator_inputs": {
@@ -3281,7 +3286,7 @@ def test_output_topology_payload_does_not_take_mutation_lock(
         str(tmp_path / "output_topology.json"),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "output_topology_mutation",
         lambda: pytest.fail("read-only payload must not take the mutation lock"),
     )
@@ -3515,7 +3520,7 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     from jasper.output_topology import save_output_topology
 
     save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     request = build_driver_research_request(
         topology,
         _operator_inputs(),
@@ -3568,7 +3573,7 @@ def _declared_candidate_box(
     from jasper.output_topology import save_output_topology
 
     save_output_topology(topology)
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     candidate = {
         "between_roles": ["woofer", "tweeter"],
         "frequency_hz": 5500,
@@ -3642,7 +3647,7 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
         == profile["profile_fingerprint"]
     )
     assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
-    reloaded = load_design_draft(topology=sound_setup.load_output_topology())
+    reloaded = load_design_draft(topology=sound_active_speaker.load_output_topology())
     assert reloaded["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
     # And it is still not an audio authorization.
     assert profile["authorizes_playback"] is False
@@ -4021,7 +4026,7 @@ def test_active_speaker_tone_backend_status_is_explicit_lab_only(
         )
     )
 
-    status = sound_setup._active_speaker_tone_backend_status()
+    status = sound_active_speaker._active_speaker_tone_backend_status()
 
     assert status["status"] == "artifact_only"
     assert status["backend"] == "wav_artifact"
@@ -4032,7 +4037,7 @@ def test_active_speaker_tone_backend_status_is_explicit_lab_only(
     assert status["requires_protected_startup"] is True
 
     monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "direct_dac")
-    stale_env_status = sound_setup._active_speaker_tone_backend_status()
+    stale_env_status = sound_active_speaker._active_speaker_tone_backend_status()
     assert stale_env_status["status"] == "blocked"
     assert stale_env_status["backend"] == "direct_dac"
     assert stale_env_status["audio_enabled"] is False
@@ -4045,7 +4050,7 @@ def test_active_speaker_tone_backend_status_is_explicit_lab_only(
     # tone renders to a WAV artifact whatever the knob says.
     monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "aplay")
     monkeypatch.setenv("JASPER_AUDIO_LAB_TEST_PCM", "hw:Active")
-    lab_status = sound_setup._active_speaker_tone_backend_status()
+    lab_status = sound_active_speaker._active_speaker_tone_backend_status()
     assert lab_status["status"] == "blocked"
     assert lab_status["audio_enabled"] is False
     assert lab_status["backend"] == "aplay"
@@ -4285,12 +4290,12 @@ def _stub_confirmed_ramp_ack(monkeypatch) -> None:
         "jasper.active_speaker.commission_ramp.record_ramp_operator_ack", fake_ack
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_commission_tone",
         lambda *, reason: {"status": "stopped", "reason": reason},
     )
     monkeypatch.setattr(
-        sound_setup, "commission_seams", lambda _cam: (object(), None, None)
+        sound_active_speaker, "commission_seams", lambda _cam: (object(), None, None)
     )
 
 
@@ -4687,7 +4692,7 @@ def test_reset_validation_and_empty_write_share_the_topology_transaction(
     save_output_topology(new_topology_draft(), path=topology_path)
     request = sound_setup._output_topology_payload()
     events: list[str] = []
-    original_check = sound_setup._reset_request_hardware
+    original_check = sound_active_speaker._reset_request_hardware
     original_save = OutputTopologyMutation.save
     check_count = 0
 
@@ -4709,7 +4714,7 @@ def test_reset_validation_and_empty_write_share_the_topology_transaction(
         events.append("empty-write")
         return original_save(self, topology)
 
-    monkeypatch.setattr(sound_setup, "_reset_request_hardware", checked)
+    monkeypatch.setattr(sound_active_speaker, "_reset_request_hardware", checked)
     monkeypatch.setattr(OutputTopologyMutation, "save", save_under_same_lock)
     _stub_audio_stops(monkeypatch)
     def clear_under_same_lock():
@@ -4854,7 +4859,7 @@ def test_reset_output_topology_payload_clears_active_setup_state(
     )
     stops = _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_output_topology_payload",
         lambda: {"output_topology": {"status": "draft"}},
     )
@@ -5047,7 +5052,7 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
             "test_source": None,
         }
 
-    monkeypatch.setattr(sound_setup, "load_output_topology", lambda: object())
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: object())
     monkeypatch.setattr(
         "jasper.active_speaker.design_draft.load_design_draft", lambda: {}
     )
@@ -5064,14 +5069,14 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
         fake_apply_baseline_profile,
     )
     monkeypatch.setattr(
-        sound_setup, "_commission_tone_mux_command", fake_mux_command
+        sound_active_speaker, "_commission_tone_mux_command", fake_mux_command
     )
     return apply_calls, mux_commands
 
 
 def _reviewed_candidate(monkeypatch) -> None:
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_baseline_profile_payload",
         lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
     )
@@ -5118,7 +5123,7 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
 
 async def test_active_speaker_finish_stale_candidate_skips_cleanup(monkeypatch):
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_baseline_profile_payload",
         lambda **_kwargs: {
             "candidate_fingerprint": "current-candidate",
@@ -5127,12 +5132,12 @@ async def test_active_speaker_finish_stale_candidate_skips_cleanup(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_summed_test_tone",
         lambda **_kwargs: pytest.fail("stale apply must not stop the summed test"),
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_baseline_profile_apply_payload",
         lambda **_kwargs: pytest.fail("stale apply must not start DSP apply"),
     )
@@ -5151,12 +5156,12 @@ async def test_active_speaker_finish_stale_candidate_skips_cleanup(monkeypatch):
 
 async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_baseline_profile_payload",
         lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
     )
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_stop_summed_test_tone",
         lambda **_kwargs: pytest.fail("refused apply must not stop the summed test"),
     )
@@ -5174,7 +5179,7 @@ async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
         }
 
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_baseline_profile_apply_payload",
         refuse_after_locked_refresh,
     )
@@ -5917,7 +5922,7 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
     reconciled_floors = []
     worker_context = threading.local()
 
-    real_save = sound_setup.save_sound_settings
+    real_save = sound_profile_apply.save_sound_settings
 
     def recording_save(settings):
         real_save(settings)
@@ -5958,10 +5963,10 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
             assert allow_reconcile.wait(timeout=2.0)
         return True
 
-    monkeypatch.setattr(sound_setup, "save_sound_settings", recording_save)
-    monkeypatch.setattr(sound_setup, "_load_profile_config", fake_reemit)
+    monkeypatch.setattr(sound_profile_apply, "save_sound_settings", recording_save)
+    monkeypatch.setattr(sound_profile_apply, "_load_profile_config", fake_reemit)
     monkeypatch.setattr(
-        sound_setup,
+        sound_profile_apply,
         "_reconcile_volume_curve_after_settings",
         fake_reconcile,
     )
@@ -6006,7 +6011,7 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
     )
     assert len(save_snapshots) == 2
     assert emitted[-1]["settings"] == merged.to_dict()
-    assert emitted[-1]["trim"] == sound_setup._output_trim(profile, merged)
+    assert emitted[-1]["trim"] == sound_profile_apply._output_trim(profile, merged)
     assert reconciled_floors[-1] == -30.0
     assert responses[emitted[-1]["worker"]]["sound_settings"] == merged.to_dict()
 
@@ -6051,7 +6056,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
         volume_floor_db=-30.0,
     )
     save_profile(initial_profile, profile_path)
-    sound_setup.save_sound_settings(initial_settings)
+    sound_profile_apply.save_sound_settings(initial_settings)
 
     first_inside_emit = threading.Barrier(2)
     release_first_emit = threading.Event()
@@ -6087,11 +6092,11 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
 
     observed_state_lock = ObservedSoundStateLock()
     monkeypatch.setattr(
-        sound_setup,
+        sound_profile_apply,
         "_sound_state_write_lock",
         observed_state_lock,
     )
-    real_load_sound_settings = sound_setup.load_sound_settings
+    real_load_sound_settings = sound_profile_apply.load_sound_settings
 
     def observed_load_sound_settings(*args, **kwargs):
         if getattr(worker_role, "value", None) in {"first", "second"}:
@@ -6100,7 +6105,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
         return real_load_sound_settings(*args, **kwargs)
 
     monkeypatch.setattr(
-        sound_setup,
+        sound_profile_apply,
         "load_sound_settings",
         observed_load_sound_settings,
     )
@@ -6144,9 +6149,9 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
         reconciled_floors.append(load_sound_settings().volume_floor_db)
         return True
 
-    monkeypatch.setattr(sound_setup, "_load_profile_config", fake_emit)
+    monkeypatch.setattr(sound_profile_apply, "_load_profile_config", fake_emit)
     monkeypatch.setattr(
-        sound_setup,
+        sound_profile_apply,
         "_reconcile_volume_curve_after_settings",
         fake_reconcile,
     )
@@ -6199,7 +6204,7 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
     assert len(live_emits) == 2
     assert live_emits[-1]["profile"] == final_profile.to_dict()
     assert live_emits[-1]["settings"] == final_settings.to_dict()
-    assert live_emits[-1]["trim"] == sound_setup._output_trim(
+    assert live_emits[-1]["trim"] == sound_profile_apply._output_trim(
         final_profile,
         final_settings,
     )
@@ -7046,7 +7051,7 @@ def test_summed_validation_route_conflicts_while_combined_test_active(
     )
     now = time.monotonic()
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_SUMMED_TEST_TONE_SESSION",
         {
             "playback_id": "active-summed-playback",
@@ -7789,7 +7794,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
     monkeypatch.setattr(
-        sound_setup,
+        sound_active_speaker,
         "_active_speaker_baseline_profile_payload",
         lambda *a, **k: {"applied_profile_stands": True},
     )

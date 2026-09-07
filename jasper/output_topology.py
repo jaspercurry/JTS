@@ -1966,7 +1966,7 @@ def declared_hardware_mismatch(
     The ONE implementation of this rule.
     ``deploy/assets/sound-profile/js/main.js``'s ``outputHardwareMismatch()``
     reads this result as ``payload.hardware_mismatch`` (published by
-    ``jasper.web.sound_setup._output_topology_payload``) rather than
+    ``jasper.web.sound_active_speaker._output_topology_payload``) rather than
     recomputing it. ``jasper.control.audio_health`` calls this directly — it
     runs in a different daemon and cannot read the wizard's HTTP response — as
     the "outer conjunct" alongside

@@ -4,7 +4,7 @@
 
 """Pin the single-owner contract for commission-tone orchestration (L4-1).
 
-PR #969 forked the commission-tone helpers between ``jasper/web/sound_setup.py``
+PR #969 forked the commission-tone helpers between the /sound/ page
 and the new ``jasper/active_speaker/web_commissioning.py``; the two copies had
 already begun to drift. The migration is finished by making
 ``web_commissioning`` the single owner and having ``/sound/`` import the helpers
@@ -26,7 +26,7 @@ import pytest
 import jasper.active_speaker.web_commissioning as web_commissioning
 import jasper.mux as mux
 import jasper.web.correction_crossover_backend as correction_backend
-import jasper.web.sound_setup as sound_setup
+import jasper.web.sound_active_speaker as sound_active_speaker
 
 OWNER_MODULE = "jasper.active_speaker.web_commissioning"
 
@@ -135,57 +135,57 @@ def _names_imported_from(source: str, module: str) -> set[str]:
     return imported
 
 
-def test_sound_setup_shares_web_commissioning_tone_helpers():
+def test_sound_page_shares_web_commissioning_tone_helpers():
     """/sound/ must import the helpers from the owner, not re-define them."""
 
     for name in SHARED_COMMISSION_TONE_HELPERS:
         owner_fn = getattr(web_commissioning, name)
-        sound_fn = getattr(sound_setup, name)
+        sound_fn = getattr(sound_active_speaker, name)
         assert sound_fn is owner_fn, (
             f"{name} on /sound/ is not the web_commissioning owner object — "
             "the commission-tone helpers have re-forked (see L4-1)."
         )
 
 
-def test_no_forked_commission_tone_helper_defs_in_sound_setup():
-    """sound_setup must not carry its own copy of any shared helper (textual)."""
+def test_no_forked_commission_tone_helper_defs_on_the_sound_page():
+    """The page must not carry its own copy of any shared helper (textual)."""
 
-    src = sound_setup.__loader__.get_source(sound_setup.__name__)
+    src = sound_active_speaker.__loader__.get_source(sound_active_speaker.__name__)
     assert src is not None
     for name in SHARED_COMMISSION_TONE_HELPERS:
         assert f"def {name}(" not in src, (
-            f"sound_setup re-defines {name}; it must import it from "
+            f"sound_active_speaker re-defines {name}; it must import it from "
             "jasper.active_speaker.web_commissioning instead (L4-1)."
         )
 
 
-def test_no_forked_commission_tone_constants_in_sound_setup():
-    """sound_setup must import the tone constants, not re-declare them (#1950)."""
+def test_no_forked_commission_tone_constants_on_the_sound_page():
+    """The page must import the tone constants, not re-declare them (#1950)."""
 
-    src = sound_setup.__loader__.get_source(sound_setup.__name__)
+    src = sound_active_speaker.__loader__.get_source(sound_active_speaker.__name__)
     assert src is not None
     forked = _forked_constant_bindings(src, SHARED_COMMISSION_TONE_CONSTANTS)
     assert forked == [], (
-        f"sound_setup re-declares {', '.join(forked)}; import them from "
+        f"sound_active_speaker re-declares {', '.join(forked)}; import them from "
         f"{OWNER_MODULE} instead (#1950). A forked "
         "COMMISSION_TONE_DURATION_S can drift above mux.FANIN_TEST_LEASE_SEC "
         "and readmit household music into a live sweep."
     )
 
 
-def test_sound_setup_imports_commission_tone_constants_from_owner():
+def test_sound_page_imports_commission_tone_constants_from_owner():
     """The positive half: each constant is bound by an import from the owner."""
 
-    src = sound_setup.__loader__.get_source(sound_setup.__name__)
+    src = sound_active_speaker.__loader__.get_source(sound_active_speaker.__name__)
     assert src is not None
     imported = _names_imported_from(src, OWNER_MODULE)
     missing = [n for n in SHARED_COMMISSION_TONE_CONSTANTS if n not in imported]
     assert missing == [], (
-        f"sound_setup does not import {', '.join(missing)} from {OWNER_MODULE}; "
+        f"sound_active_speaker does not import {', '.join(missing)} from {OWNER_MODULE}; "
         "the commission-tone constants have a single owner (#1950)."
     )
     for name in SHARED_COMMISSION_TONE_CONSTANTS:
-        assert getattr(sound_setup, name) == getattr(web_commissioning, name)
+        assert getattr(sound_active_speaker, name) == getattr(web_commissioning, name)
 
 
 _FORKED_FIXTURE = '''\
@@ -278,9 +278,9 @@ def test_commissioning_tone_fits_inside_mux_gate_lease():
     """
 
     assert web_commissioning.COMMISSION_TONE_DURATION_S < mux.FANIN_TEST_LEASE_SEC
-    assert sound_setup.COMMISSION_TONE_DURATION_S < mux.FANIN_TEST_LEASE_SEC
+    assert sound_active_speaker.COMMISSION_TONE_DURATION_S < mux.FANIN_TEST_LEASE_SEC
     assert (
-        sound_setup.COMMISSION_TONE_DURATION_S
+        sound_active_speaker.COMMISSION_TONE_DURATION_S
         is web_commissioning.COMMISSION_TONE_DURATION_S
     )
 
@@ -352,7 +352,7 @@ def test_driver_signal_plan_identical_across_surfaces(monkeypatch):
         topology=_Topology(),
         preset=_Preset(),
     )
-    plan_from_sound = sound_setup._commission_tone_signal_plan(**kwargs)
+    plan_from_sound = sound_active_speaker._commission_tone_signal_plan(**kwargs)
     plan_from_web = web_commissioning._commission_tone_signal_plan(**kwargs)
 
     assert plan_from_sound == plan_from_web

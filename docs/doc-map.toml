@@ -493,6 +493,7 @@ code = [
   "jasper/camilla_config_contract.py",
   "jasper/camilla_latency.py",
   "jasper/web/sound_setup.py",
+  "jasper/web/sound_profile_apply.py",
   "jasper/dsp_apply.py",
   # The BlueALSA probe backs the Bluetooth source's volume carrier:
   # volume_coordinator.py and volume_observers.py both import
@@ -722,6 +723,7 @@ code = [
   "jasper/calibration_agent/**",
   "jasper/web/correction_*.py",
   "jasper/web/sound_setup.py",
+  "jasper/web/sound_active_speaker.py",
   "jasper/web/sync_flow.py",
   "jasper/web/pair_flow.py",
   "deploy/assets/correction/js/**",
