@@ -1,4 +1,4 @@
-# ADR-0247: Post-deploy health gates the deploy
+# ADR-0248: Post-deploy health gates the deploy
 
 - **Date:** 2026-09-07
 - **Status:** Accepted

@@ -997,7 +997,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         verdict, not the transient unit's exit code: `systemd-run --wait`
         folds a fired bound, an OOM kill and a bus failure alike into rc
         1, so a run that printed no verdict is named and stays green —
-        while a transport that died is named and is not. See ADR-0247."""
+        while a transport that died is named and is not. See ADR-0248."""
         for verdict, doctor_rc, expect_rc, events in (
             ("ok", "0", 0, []),
             ("fail", "1", 1, ["event=deploy.core_health status=fail rc=1"]),
