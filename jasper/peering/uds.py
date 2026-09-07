@@ -17,10 +17,6 @@ Wire protocol (one line in, one JSON line out):
                        proceed with begin_turn; LOSE means abort.
   SESSION_STARTED <epoch>           → {"result":"ok"}
   SESSION_ENDED <epoch> <reason>    → {"result":"ok"}
-  STATUS                             → {"result":"ok", "state":"...",
-                                         "peers":[...], "mode":"on"}
-  PING                               → {"result":"pong"} — used by
-                                         doctor's liveness check.
 
 The ARBITRATE call accepts a JSON arg of shape:
   {"score":0.87,"snr_db":18.5,"rms_dbfs":-22.3,"can_serve":true}
@@ -52,7 +48,6 @@ READ_TIMEOUT_SEC = 1.0
 ArbitrateFn = Callable[[dict], Awaitable[dict]]
 NotifyStartFn = Callable[[str], Awaitable[None]]
 NotifyEndFn = Callable[[str, str], Awaitable[None]]
-StatusFn = Callable[[], Awaitable[dict]]
 
 
 async def serve(
@@ -61,7 +56,6 @@ async def serve(
     arbitrate: ArbitrateFn,
     notify_session_started: NotifyStartFn,
     notify_session_ended: NotifyEndFn,
-    status: StatusFn,
 ) -> asyncio.AbstractServer:
     """Start a Unix-socket server. Caller is responsible for await
     server.close() / server.wait_closed() at shutdown.
@@ -108,11 +102,6 @@ async def serve(
                     reason = pieces[1] if len(pieces) > 1 else ""
                     await notify_session_ended(epoch, reason)
                     response = {"result": "ok"}
-            elif cmd == "STATUS":
-                response = await status()
-                response["result"] = "ok"
-            elif cmd == "PING":
-                response = {"result": "pong"}
             else:
                 response = {"result": "ERROR", "error": f"unknown command: {cmd}"}
 

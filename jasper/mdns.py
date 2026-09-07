@@ -25,14 +25,10 @@ Fail-soft by construction: `browse_once` never raises. Any failure (no
 zeroconf installed, a multicast error, a single instance failing to
 resolve) degrades to dropping that entry, and a total failure degrades to
 `[]`. The `zeroconf` import is lazy so importing this module stays cheap
-when no browse is performed (mirrors `jasper/peering/discovery.py`).
+when no browse is performed.
 
 Deliberately NOT routed through here (so the boundary's scope is explicit):
 
-  - `jasper/peering/discovery.py` — a *continuous*, event-driven browser
-    (long-lived `AsyncServiceBrowser` reacting to Added/Removed over the
-    speaker's lifetime), not a one-shot point-in-time scan. `browse_once`
-    stands up and tears down a listener per call by design.
   - `jasper/speaker_name_discovery.py` — needs NAMES-ONLY across MULTIPLE
     service types and must INCLUDE instances that don't resolve to an
     address (a name conflict is real even with no A record). `browse_once`
@@ -85,8 +81,7 @@ def browse_once(service_type: str, *, timeout: float = 2.0) -> list[DiscoveredSe
     """
 
     async def _browse() -> list[DiscoveredService]:
-        # Lazy import so module load stays cheap when no browse is done
-        # (mirrors jasper/peering/discovery.py).
+        # Lazy import so module load stays cheap when no browse is done.
         try:
             from zeroconf import IPVersion, ServiceStateChange
             from zeroconf.asyncio import (
@@ -98,7 +93,7 @@ def browse_once(service_type: str, *, timeout: float = 2.0) -> list[DiscoveredSe
             logger.warning("mdns: zeroconf unavailable: %s", e)
             return []
 
-        # IPv4-only — home LAN, matches jasper/peering/discovery.py.
+        # IPv4-only — home LAN.
         aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
         loop = asyncio.get_running_loop()
         names: list[str] = []
@@ -138,8 +133,7 @@ def browse_once(service_type: str, *, timeout: float = 2.0) -> list[DiscoveredSe
                     addresses = []
                 if not addresses:
                     continue
-                # TXT records: bytes → utf-8 with replacement, matching
-                # jasper/peering/discovery.py:_parse_service_info.
+                # TXT records: bytes → utf-8 with replacement.
                 txt: dict[str, str] = {}
                 for k, v in (info.properties or {}).items():
                     try:

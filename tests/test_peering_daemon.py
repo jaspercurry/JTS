@@ -4,8 +4,8 @@
 
 """Integration tests for jasper.peering.daemon.
 
-Exercises the orchestrator end-to-end with mocked transport +
-discovery. Verifies:
+Exercises the orchestrator end-to-end with a mocked transport.
+Verifies:
   - mode=OFF: start() is a clean no-op
   - mode=ON: ARBITRATE returns WIN for a solo wake (no peer reports)
   - mode=ON: ARBITRATE returns LOSE when a peer outbids us
@@ -85,23 +85,6 @@ class _FakeTransport:
                 await result
 
 
-class _FakeDiscovery:
-    """Mock PeerDiscovery that does nothing — discovery isn't on the
-    arbitration hot path; we test it separately."""
-
-    def __init__(self, *, self_peer_id):
-        self.self_peer_id = self_peer_id
-
-    async def start(self, on_event):
-        return None
-
-    async def stop(self):
-        return None
-
-    def peers(self):
-        return []
-
-
 async def _await_pending_epoch(d, timeout: float = 2.0) -> None:
     """Block until the daemon publishes a pending epoch.
 
@@ -117,13 +100,9 @@ async def _await_pending_epoch(d, timeout: float = 2.0) -> None:
 
 @pytest_asyncio.fixture
 async def daemon_setup(monkeypatch):
-    """Start a PeeringDaemon with mocked transport/discovery."""
+    """Start a PeeringDaemon with a mocked transport."""
     transport = _FakeTransport()
     monkeypatch.setattr(daemon_mod, "MulticastTransport", lambda **kw: transport)
-
-    # Stub PeerDiscovery import path.
-    import jasper.peering.discovery as disc_mod
-    monkeypatch.setattr(disc_mod, "PeerDiscovery", _FakeDiscovery)
 
     d = daemon_mod.PeeringDaemon(_cfg(mode=PeeringMode.ON))
     await d.start()
@@ -316,20 +295,6 @@ async def test_session_started_then_ended(daemon_setup):
     )
 
 
-# ---------- STATUS RPC ----------
-
-
-async def test_status_returns_current_state(daemon_setup):
-    d, _ = daemon_setup
-    status = await d._handle_status()
-    assert status["mode"] == "on"
-    assert status["peer_id"] == "alice-uuid"
-    assert status["room"] == "kitchen"
-    assert status["primary"] is False
-    assert status["state"] in ("idle", "suppressed")  # depends on prior tests
-    assert isinstance(status["peers"], list)
-
-
 # ---------- timeout fail-open ----------
 
 
@@ -349,43 +314,6 @@ async def test_arbitrate_timeout_fails_open_as_win(monkeypatch, daemon_setup):
         "score": 0.8, "snr_db": 18.0, "rms_dbfs": -22.0, "can_serve": True,
     })
     assert result["result"] == "WIN"
-
-
-# ---------- stop is clean ----------
-
-
-# ---------- stale-peer pruning ----------
-
-
-async def test_known_peers_prunes_stale_entries(daemon_setup):
-    """A peer that stops sending HELLO for 3 intervals (90 s by
-    default) gets evicted from _known_peers on the next HELLO from
-    any peer. Prevents unbounded dict growth across days of
-    operation."""
-    d, transport = daemon_setup
-    # Pre-populate _known_peers with one fresh + one ancient entry.
-    import time as _time
-    now = _time.monotonic()
-    from jasper.peering.daemon import STALE_PEER_THRESHOLD_SEC
-    d._known_peers["fresh-peer"] = {
-        "room": "kitchen", "primary": False,
-        "address": "10.0.0.1", "last_seen": now,
-    }
-    d._known_peers["ancient-peer"] = {
-        "room": "attic", "primary": False,
-        "address": "10.0.0.99",
-        "last_seen": now - STALE_PEER_THRESHOLD_SEC - 10.0,
-    }
-    # Inject a HELLO from a third peer — triggers prune.
-    from jasper.peering.transport import IncomingHello
-    await transport.inject(IncomingHello(
-        peer_id="newcomer", room="bedroom", primary=False,
-        ts_ns=int(now * 1e9),
-    ))
-    # Ancient is gone; fresh + newcomer remain.
-    assert "ancient-peer" not in d._known_peers
-    assert "fresh-peer" in d._known_peers
-    assert "newcomer" in d._known_peers
 
 
 # ---------- fail-open timeout margin (DA-0020) ----------

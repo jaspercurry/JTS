@@ -13,10 +13,10 @@ wizard-managed values override anything in /etc/jasper/jasper.env.
 
 Two modes only:
   off  — default. Nothing peering-related runs: no Avahi advertise,
-         no zeroconf browse, no multicast socket, no thread. Cost
-         on a single-Pi household: zero.
-  on   — Full peering. Advertise via Avahi, browse for siblings,
-         arbitrate wake events. The user opts in via /sound/pair/.
+         no multicast socket, no thread. Cost on a single-Pi
+         household: zero.
+  on   — Full peering. Advertise via Avahi and arbitrate wake
+         events. The user opts in via /sound/pair/.
 
 We deliberately don't expose an `auto` mode where peering would
 turn itself on if peers appear; one mode flip per setting, easy
@@ -81,12 +81,6 @@ DEFAULT_BREAK_THRESHOLD = 0.85
 # happen on the next wake event — by then peers are already idle.
 DEFAULT_HEARTBEAT_INTERVAL_SEC = 1.0
 DEFAULT_HEARTBEAT_TIMEOUT_SEC = 2.0
-
-# How often to multicast HELLO. Doubles as a multicast-health probe —
-# if a peer's HELLO hasn't arrived in HELLO_INTERVAL * 3 but it's
-# still in mDNS, mark its multicast path broken (future work: unicast
-# fallback). Kept loose to minimize airtime cost.
-HELLO_INTERVAL_SEC = 30.0
 
 
 # ---------- File layout ----------

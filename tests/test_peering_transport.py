@@ -18,29 +18,17 @@ from jasper.peering.transport import (
     IncomingClaim,
     IncomingEnd,
     IncomingHeartbeat,
-    IncomingHello,
     IncomingWake,
     PROTO_VERSION,
     decode,
     encode_claim,
     encode_end,
     encode_heartbeat,
-    encode_hello,
     encode_wake,
 )
 
 
 # ---------- Round-trip every message type ----------
-
-
-def test_hello_roundtrip():
-    raw = encode_hello(peer_id="alice", room="kitchen", primary=False, ts_ns=12345)
-    msg = decode(raw)
-    assert isinstance(msg, IncomingHello)
-    assert msg.peer_id == "alice"
-    assert msg.room == "kitchen"
-    assert msg.primary is False
-    assert msg.ts_ns == 12345
 
 
 def test_wake_roundtrip():
@@ -133,7 +121,9 @@ def test_wrong_proto_returns_none():
     crash. The protocol gets bumped infrequently and an old peer
     refusing to participate is correct."""
     import json
-    raw = json.dumps({"t": "HELLO", "proto": 99, "peer": "alice"}).encode()
+    raw = json.dumps(
+        {"t": "CLAIM", "proto": 99, "peer": "alice", "epoch": "ep-1"},
+    ).encode()
     assert decode(raw) is None
 
 

@@ -7,7 +7,6 @@
 Ties together:
   - the pure state machine (jasper.peering.state)
   - the multicast transport (jasper.peering.transport)
-  - the mDNS browser (jasper.peering.discovery)
   - the UDS server for voice→peering RPC (jasper.peering.uds)
   - the Avahi service-file management (jasper.peering.avahi)
 
@@ -18,7 +17,7 @@ remains pure and unit-testable; this layer is the only place where
 real time / real sockets / real OS calls happen.
 
 When PeeringConfig.mode is OFF, `run()` is a fast no-op — no sockets
-opened, no zeroconf imported, no Avahi file written. The user opts
+opened, no Avahi file written. The user opts
 in via the /sound/pair/ Speakers page, which restarts jasper-control and picks
 up the new config.
 """
@@ -34,7 +33,6 @@ from jasper.log_event import log_event
 from .config import (
     DEFAULT_HEARTBEAT_INTERVAL_SEC,
     DEFAULT_HEARTBEAT_TIMEOUT_SEC,
-    HELLO_INTERVAL_SEC,
     MAX_ARB_WINDOW_MS,
     PEERING_UDS_PATH,
     PeeringConfig,
@@ -66,14 +64,12 @@ from .transport import (
     IncomingClaim,
     IncomingEnd,
     IncomingHeartbeat,
-    IncomingHello,
     IncomingMessage,
     IncomingWake,
     MulticastTransport,
     encode_claim,
     encode_end,
     encode_heartbeat,
-    encode_hello,
     encode_wake,
 )
 
@@ -110,7 +106,6 @@ class PeeringDaemon:
         self._cfg = cfg
         self._sm: Optional[PeeringStateMachine] = None
         self._transport: Optional[MulticastTransport] = None
-        self._discovery = None  # PeerDiscovery, lazy-imported
         self._uds_server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._timers: dict[str, asyncio.TimerHandle] = {}
@@ -120,12 +115,8 @@ class PeeringDaemon:
         # Tracks the in-flight arbitration's epoch so we can correlate
         # the StartSession/StandDown back to the RPC.
         self._pending_epoch: Optional[str] = None
-        self._hello_task: Optional[asyncio.Task] = None
         self._send_tasks: set[asyncio.Task[None]] = set()
-        self._known_peers: dict[str, dict] = {}  # peer_id → {room, primary, address, last_seen}
         self._running = False
-        # Snapshot for STATUS so the wizard can show current state.
-        self._last_decision: Optional[dict] = None
 
     # ---------- public lifecycle ----------
 
@@ -153,7 +144,7 @@ class PeeringDaemon:
         ))
 
         # Install the Avahi service file (best-effort — non-fatal if
-        # the template is missing; we'll still browse + arbitrate).
+        # the template is missing; we'll still arbitrate).
         avahi.render_and_install(
             peer_id=self._cfg.peer_id,
             room=self._cfg.room,
@@ -173,31 +164,12 @@ class PeeringDaemon:
             self._transport = None
             return
 
-        # mDNS browser.
-        from .discovery import PeerDiscovery  # lazy: only when peering is ON
-        self._discovery = PeerDiscovery(self_peer_id=self._cfg.peer_id)
-        try:
-            await self._discovery.start(on_event=self._on_discovery_event)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "peering: could not start zeroconf browser; "
-                "discovery disabled (arbitration still works)",
-            )
-            self._discovery = None
-
         # UDS server for voice ↔ peering RPC.
         self._uds_server = await uds.serve(
             path=PEERING_UDS_PATH,
             arbitrate=self._handle_arbitrate,
             notify_session_started=self._handle_session_started,
             notify_session_ended=self._handle_session_ended,
-            status=self._handle_status,
-        )
-
-        # Periodic HELLO broadcaster — doubles as a multicast-health
-        # probe in the future.
-        self._hello_task = self._loop.create_task(
-            self._hello_loop(), name="peering-hello",
         )
 
         self._running = True
@@ -221,14 +193,6 @@ class PeeringDaemon:
             handle.cancel()
         self._timers.clear()
 
-        if self._hello_task is not None:
-            self._hello_task.cancel()
-            try:
-                await self._hello_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._hello_task = None
-
         if self._send_tasks:
             pending_sends = tuple(self._send_tasks)
             for task in pending_sends:
@@ -242,13 +206,6 @@ class PeeringDaemon:
             except Exception:  # noqa: BLE001
                 pass
             self._uds_server = None
-
-        if self._discovery is not None:
-            try:
-                await self._discovery.stop()
-            except Exception:  # noqa: BLE001
-                logger.exception("peering: discovery stop failed")
-            self._discovery = None
 
         if self._transport is not None:
             try:
@@ -279,15 +236,7 @@ class PeeringDaemon:
             return
         now = self._loop.time()  # type: ignore[union-attr]
 
-        if isinstance(msg, IncomingHello):
-            self._known_peers[msg.peer_id] = {
-                "room": msg.room,
-                "primary": msg.primary,
-                "address": addr,
-                "last_seen": time.monotonic(),
-            }
-            self._prune_stale_peers()
-        elif isinstance(msg, IncomingWake):
+        if isinstance(msg, IncomingWake):
             self._dispatch(PeerWake(epoch=msg.epoch, report=msg.report, now=now))
         elif isinstance(msg, IncomingClaim):
             self._dispatch(PeerClaim(
@@ -302,47 +251,6 @@ class PeeringDaemon:
                 epoch=msg.epoch, peer_id=msg.peer_id,
                 reason=msg.reason, now=now,
             ))
-
-    # ---------- inbound: mDNS discovery ----------
-
-    def _prune_stale_peers(self) -> None:
-        """Drop peers whose HELLO hasn't been seen in 3 intervals.
-
-        Bounds `_known_peers` so a long-running daemon doesn't
-        accumulate state from peers that came + went. Called
-        opportunistically on each HELLO receipt; cheap (a single
-        list comprehension over a small dict).
-        """
-        cutoff = time.monotonic() - STALE_PEER_THRESHOLD_SEC
-        stale = [
-            pid for pid, info in self._known_peers.items()
-            if info.get("last_seen", 0) < cutoff
-        ]
-        for pid in stale:
-            log_event(
-                logger,
-                "peering.peer.evicted",
-                peer=pid,
-                reason="hello_timeout",
-            )
-            del self._known_peers[pid]
-
-    async def _on_discovery_event(self, ev) -> None:
-        # The state machine doesn't currently consume PeerSeen/PeerGone
-        # (it operates purely on multicast WAKE/CLAIM/etc). We track
-        # them here so the STATUS RPC can render a peer list for the
-        # wizard. Future work: use this for the unicast-fallback
-        # health detector.
-        from .discovery import PeerGone, PeerSeen
-        if isinstance(ev, PeerSeen):
-            self._known_peers[ev.peer_id] = {
-                "room": ev.room,
-                "primary": ev.primary,
-                "address": ev.address,
-                "last_seen": time.monotonic(),
-            }
-        elif isinstance(ev, PeerGone):
-            self._known_peers.pop(ev.peer_id, None)
 
     # ---------- inbound: UDS RPC from voice ----------
 
@@ -363,14 +271,6 @@ class PeeringDaemon:
 
         future: asyncio.Future[str] = self._loop.create_future()  # type: ignore[union-attr]
         self._pending_decision = future
-        # Record the snapshot for STATUS rendering.
-        self._last_decision = {
-            "ts": time.time(),
-            "score": score,
-            "snr_db": snr_db,
-            "rms_dbfs": rms_dbfs,
-            "result": "pending",
-        }
 
         # Dispatch the LocalWake — state machine will emit BroadcastWake
         # + ScheduleTimer(arb_window). When the timer fires, the
@@ -397,11 +297,6 @@ class PeeringDaemon:
             decision = "WIN"
 
         epoch = self._pending_epoch or ""
-        self._last_decision = {
-            **self._last_decision,
-            "result": decision,
-            "epoch": epoch,
-        }
         return {"result": decision, "epoch": epoch}
 
     async def _handle_session_started(self, epoch: str) -> None:
@@ -418,22 +313,6 @@ class PeeringDaemon:
             epoch=epoch, reason=reason or "ended",
             now=self._loop.time(),  # type: ignore[union-attr]
         ))
-
-    async def _handle_status(self) -> dict:
-        state = self._sm.state.value if self._sm else "off"
-        peers = [
-            {"peer_id": pid, **info}
-            for pid, info in self._known_peers.items()
-        ]
-        return {
-            "mode": self._cfg.mode.value,
-            "peer_id": self._cfg.peer_id,
-            "room": self._cfg.room,
-            "primary": self._cfg.primary,
-            "state": state,
-            "peers": peers,
-            "last_decision": self._last_decision,
-        }
 
     # ---------- dispatch + action execution ----------
 
@@ -519,27 +398,6 @@ class PeeringDaemon:
             return
         self._dispatch(TimerFired(timer_id=timer_id, now=self._loop.time()))
 
-    # ---------- HELLO broadcaster ----------
-
-    async def _hello_loop(self) -> None:
-        try:
-            while True:
-                # Initial HELLO is sent immediately on start, then every
-                # HELLO_INTERVAL_SEC. Doubles as multicast-health probe.
-                if self._transport is not None:
-                    payload = encode_hello(
-                        peer_id=self._cfg.peer_id,
-                        room=self._cfg.room,
-                        primary=self._cfg.primary,
-                        ts_ns=time.monotonic_ns(),
-                    )
-                    await self._transport.send(payload)
-                await asyncio.sleep(HELLO_INTERVAL_SEC)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            logger.exception("peering: hello loop crashed")
-
 
 def _maybe_float(v) -> float | None:
     if v is None:
@@ -553,20 +411,10 @@ def _maybe_float(v) -> float | None:
 def _sender_peer_id(msg: IncomingMessage) -> str:
     """Extract the sender's peer_id from any IncomingMessage variant.
 
-    HELLO/CLAIM/HEART/END carry it on `.peer_id`; WAKE nests it inside
+    CLAIM/HEART/END carry it on `.peer_id`; WAKE nests it inside
     `.report.peer_id` because the WakeReport already has the field.
     Centralizing the lookup keeps the multicast dispatcher's
     self-loopback filter to one line."""
     if isinstance(msg, IncomingWake):
         return msg.report.peer_id
     return getattr(msg, "peer_id", "")
-
-
-# Stale-peer cleanup tunables. A peer that hasn't sent a HELLO in
-# `STALE_PEER_THRESHOLD_SEC` is assumed gone (crashed Pi, power-cycled,
-# left the network). The threshold is 3× the HELLO interval so a single
-# dropped multicast packet doesn't evict a working peer. Cleanup is
-# triggered on each HELLO receipt rather than on a timer — cheap, and
-# the steady-state HELLO cadence ensures we evict within ~90s of a
-# peer's silence.
-STALE_PEER_THRESHOLD_SEC = HELLO_INTERVAL_SEC * 3

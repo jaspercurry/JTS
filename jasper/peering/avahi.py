@@ -5,9 +5,8 @@
 """Render and install the Avahi service file for `_jasper-peer._udp`.
 
 Avahi (the system mDNS-SD daemon installed on Pi OS by default) is
-the only mDNS responder on the host. python-zeroconf is used purely
-for browse-side callbacks — we never advertise from the Python side
-to avoid the dual-stack conflict
+the only mDNS responder on the host — we never advertise from the
+Python side, which would hit the dual-stack conflict
 (see https://github.com/pyvisa/pyvisa-py/issues/378).
 
 Static template at `/etc/jasper/avahi-templates/jasper-peer.service`
