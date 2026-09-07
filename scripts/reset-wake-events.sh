@@ -14,8 +14,8 @@
 #   2. Archives the current corpus to
 #      /var/lib/jasper/wake-events-archive-<UTC-timestamp>/
 #      (preserves pre-reset data offline so nothing's lost)
-#   3. Recreates an empty /var/lib/jasper/wake-events/ with the
-#      correct permissions (mode 0755, root:root)
+#   3. Recreates an empty /var/lib/jasper/wake-events/ at the mode the
+#      install heal asserts for it (0770 root:jasper)
 #   4. Restarts jasper-voice — schema migration runs on open(),
 #      recreates the SQLite DB
 #   5. Logs `event=wake_events.reset` with the archive path to the
@@ -56,7 +56,7 @@ if [[ -n "$DRY_RUN" ]]; then
 DRY_RUN — would execute on ${PI_USER}@${PI_HOST}:
   sudo systemctl stop jasper-voice
   sudo mv ${LIVE_DIR} ${ARCHIVE_DIR}
-  sudo install -d -m 0755 -o root -g root ${LIVE_DIR}
+  sudo install -d -m 0770 -o root -g jasper ${LIVE_DIR}
   sudo systemctl start jasper-voice
   sudo logger -t jasper "event=wake_events.reset archive=${ARCHIVE_DIR}"
 EOF
@@ -97,10 +97,10 @@ sudo systemctl stop jasper-voice
 # never partially present in two places).
 sudo mv '${LIVE_DIR}' '${ARCHIVE_DIR}'
 
-# Recreate empty live dir with the correct ownership + mode.
-# install.sh uses the same line — matched here so a fresh dir
-# behaves identically to a freshly-installed dir.
-sudo install -d -m 0755 -o root -g root '${LIVE_DIR}'
+# Recreate the empty live dir at the mode heal_shared_state_modes and
+# stage_wake_models both assert for it, so a reset dir behaves
+# identically to a freshly-installed one.
+sudo install -d -m 0770 -o root -g jasper '${LIVE_DIR}'
 
 # Restart the daemon. jasper-voice's WakeEventStore.open() runs
 # the schema migration, populating the empty dir with a fresh

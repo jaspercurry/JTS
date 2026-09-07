@@ -32,6 +32,7 @@ import jasper.location_state as ls
 from jasper.web import _common, weather_setup
 
 from ._web_test_helpers import (
+    assert_canonical_page,
     make_csrf_session,
     post_with_csrf,
     request_with_csrf,
@@ -68,12 +69,6 @@ def _render(weather_state=None, transit_state=None, csrf_token="x" * 43,
     ).decode()
 
 
-def test_render_is_canonical_document():
-    out = _render()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
-
-
 def test_render_links_page_css():
     out = _render()
     assert weather_setup.WEATHER_PAGE_CSS_HREF == "/assets/weather/weather.css"
@@ -82,7 +77,7 @@ def test_render_links_page_css():
 
 def test_render_has_shared_app_header():
     out = _render()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">Weather</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -192,14 +187,6 @@ def test_render_banner_mirrors_flash_severity():
     assert 'class="banner' not in _render(status_msg="")
 
 
-# --- public surface ---------------------------------------------------------
-
-def test_public_surface_is_stable():
-    assert callable(weather_setup._index_html)
-    assert callable(weather_setup.make_server)
-    assert callable(weather_setup._make_handler)
-
-
 # --- routes via a live server (end-to-end, like test_weather_setup.py) ------
 
 @pytest.fixture
@@ -233,8 +220,7 @@ def live_server(tmp_path, monkeypatch):
 def test_get_root_serves_canonical_page(live_server):
     import urllib.request
     body = urllib.request.urlopen(live_server["url"] + "/").read().decode()
-    assert "/assets/app.css?v=" in body
-    assert 'class="app-header"' in body
+    assert_canonical_page(body)
 
 
 def test_get_root_with_tools_return_uses_tool_pack_back_link(live_server):

@@ -10,6 +10,7 @@ for busctl / bluealsa-cli.
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -113,6 +114,28 @@ async def test_selected_source_reads_auto_winner(renderer):
         new=AsyncMock(return_value=(reader, writer)),
     ):
         assert await renderer.selected_source() == "airplay"
+
+
+async def test_selected_source_times_out_on_stalled_connect(renderer):
+    """A wedged mux listener must not hang the connect past its 1s bound.
+
+    VolumeObserver polls selected_source() every tick through a
+    cancellation-only chain (_tick -> _active_source -> here); an
+    unbounded connect would make that loop immortal (#2003)."""
+    async def _hang(*_a, **_kw):
+        await asyncio.Event().wait()
+
+    with patch("asyncio.open_unix_connection", new=_hang):
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        result = await asyncio.wait_for(renderer.selected_source(), timeout=10.0)
+        elapsed = loop.time() - start
+    assert result is None
+    assert elapsed < 3.0, (
+        f"selected_source() took {elapsed:.1f}s against a stalled listener "
+        "-- its connect must raise within its own 1.0s asyncio.timeout "
+        "bound, not the test's outer safety net"
+    )
 
 
 async def test_active_renderers_spotify_playing(renderer):

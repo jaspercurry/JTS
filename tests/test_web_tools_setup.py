@@ -39,7 +39,7 @@ from jasper.tool_state import (
     write_tool_state,
 )
 from jasper.web import tools_setup
-from tests._web_test_helpers import make_real_handler
+from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 CSRF = "x" * 43  # passes _common._is_valid_token (32..128 url-safe chars)
@@ -174,9 +174,8 @@ def test_get_root_renders_canonical_page(tmp_path):
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert "/assets/tools/tools.css?v=" in out
-    assert 'class="app-header"' in out
     assert 'meta name="jts-csrf"' in out
     assert 'href="/tools/guide/"' in out
     assert 'target="_blank" rel="noopener"' in out
@@ -193,9 +192,8 @@ def test_get_tool_detail_renders_canonical_page(tmp_path):
     h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert "/assets/tools/tools.css?v=" in out
-    assert 'class="app-header"' in out
     assert 'href="/tools/"' in out
     assert 'id="tool-detail-data"' in out
     assert '"pack_id": "tool:get_weather"' in out
@@ -243,9 +241,8 @@ def test_get_tool_authoring_guide_renders(tmp_path):
     assert h.status == 200
     out = h.wfile.getvalue().decode()
     assert "Tool authoring guide" in out
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert "/assets/tools/tools.css?v=" in out
-    assert 'class="app-header"' in out
     assert 'meta name="jts-csrf"' in out
     assert "<script" not in out
     assert "CapabilityPack" in out
@@ -930,6 +927,20 @@ def test_catalog_overlays_fresh_disabled_set(tmp_path):
     assert payload["pending"] is True
 
 
-def test_public_surface_is_stable():
-    assert callable(tools_setup.make_server)
-    assert callable(tools_setup._make_handler)
+def test_make_server_binds_a_tuple_target(tmp_path):
+    """make_server((host, 0)) returns a live server bound to an ephemeral
+    port; the tools handler is its RequestHandlerClass. _make_handler is
+    exercised throughout this file already."""
+    server = tools_setup.make_server(
+        ("127.0.0.1", 0),
+        catalog_path=str(tmp_path / "tools.json"),
+        state_path=str(tmp_path / "state.env"),
+        prompt_overrides_path=str(tmp_path / "overrides.json"),
+    )
+    try:
+        assert server.server_address[0] == "127.0.0.1"
+        assert server.server_address[1] != 0
+        assert hasattr(server.RequestHandlerClass, "do_GET")
+        assert hasattr(server.RequestHandlerClass, "do_POST")
+    finally:
+        server.server_close()

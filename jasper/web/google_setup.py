@@ -1062,7 +1062,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 def make_server(
     target,
     *,
-    registry_path: str = "/var/lib/jasper-secrets/google/accounts.json",
+    registry_path: str,
     redirect_uri: str | None = None,
     creds_path: str = CREDS_FILE,
 ) -> ThreadingHTTPServer:

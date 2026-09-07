@@ -165,7 +165,8 @@ async def send_request(
     Mirrors jasper.control.server._voice_socket_command's shape so
     voice_daemon's caller can use the same try/except idiom.
     """
-    reader, writer = await asyncio.open_unix_connection(path)
+    async with asyncio.timeout(1.0):
+        reader, writer = await asyncio.open_unix_connection(path)
     try:
         writer.write((cmd + "\n").encode("ascii"))
         await writer.drain()

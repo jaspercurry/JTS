@@ -14,6 +14,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.lane_fixtures import (
+    fast_lane_selected_tests,
+    lane_env,
+    scratch_lane_repo,
+    write_recording_pytest,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -452,53 +458,13 @@ def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
 def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None:
     """Brand-new files must affect the fast lane before an agent stages them."""
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    (repo / "scripts").mkdir()
-    (repo / "tests").mkdir()
-    shutil.copy2(ROOT / "scripts" / "test-fast", repo / "scripts" / "test-fast")
-    # The lane sources its sibling tool resolver, so the scratch repo has to
-    # carry it too (issue #1836).
-    shutil.copy2(ROOT / "scripts" / "_test_lane.sh", repo / "scripts" / "_test_lane.sh")
-    shutil.copy2(
-        ROOT / "scripts" / "ci-classify.py", repo / "scripts" / "ci-classify.py"
-    )
-
-    pytest_calls = repo / "pytest-calls.jsonl"
-    fake_pytest = repo / "fake-pytest"
-    fake_pytest.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env python3",
-                "import json",
-                "import os",
-                "import sys",
-                "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:",
-                "    f.write(json.dumps(sys.argv[1:]) + '\\n')",
-                "raise SystemExit(5 if '--last-failed' in sys.argv else 0)",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    fake_pytest.chmod(0o755)
-
-    fake_ruff = repo / "fake-ruff"
-    fake_ruff.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
-    fake_ruff.chmod(0o755)
-
+    repo = scratch_lane_repo(tmp_path)
     (repo / "tests" / "test_dependency_groups.py").write_text("", encoding="utf-8")
     (repo / "tests" / "test_new_feature.py").write_text("", encoding="utf-8")
 
-    env = {
-        **os.environ,
-        "PYTEST": str(fake_pytest),
-        "PYTEST_CALLS": str(pytest_calls),
-        "RUFF": str(fake_ruff),
-        "TEST_BASE": "missing-base",
-    }
-    _run(["scripts/test-fast"], cwd=repo, env=env)
+    pytest_calls = repo / "pytest-calls.jsonl"
+    recorder = write_recording_pytest(repo / "recording-pytest")
+    _run(["scripts/test-fast"], cwd=repo, env=lane_env(recorder, pytest_calls))
 
     calls = [
         json.loads(line)
@@ -518,68 +484,16 @@ def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> 
     tests.
     """
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    (repo / "scripts").mkdir()
-    (repo / "tests").mkdir()
-    (repo / "experiments" / "e0-capture").mkdir(parents=True)
-    for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
-        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
-
-    pytest_calls = repo / "pytest-calls.jsonl"
-    fake_pytest = repo / "fake-pytest"
-    fake_pytest.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env python3",
-                "import json",
-                "import os",
-                "import sys",
-                "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:",
-                "    f.write(json.dumps(sys.argv[1:]) + '\\n')",
-                "raise SystemExit(5 if '--last-failed' in sys.argv else 0)",
-                "",
-            ]
+    selected = fast_lane_selected_tests(
+        tmp_path,
+        changed_path="experiments/e0-capture/README.md",
+        routed_tests=(
+            "tests/test_e0_capture_experiment.py",
+            "tests/test_usb_turntable_experiment.py",
         ),
-        encoding="utf-8",
     )
-    fake_pytest.chmod(0o755)
-
-    fake_ruff = repo / "fake-ruff"
-    fake_ruff.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
-    fake_ruff.chmod(0o755)
-
-    (repo / "tests" / "test_e0_capture_experiment.py").write_text("", encoding="utf-8")
-    # A second kit's guard, present but untouched by the change below.
-    (repo / "tests" / "test_usb_turntable_experiment.py").write_text(
-        "", encoding="utf-8"
-    )
-    # Committed first: the lane treats untracked files as changed, so an
-    # uncommitted guard would be selected by the `tests/test_*.py` arm and
-    # prove nothing about this one.
-    _commit_all(repo, "scaffold")
-
-    (repo / "experiments" / "e0-capture" / "README.md").write_text(
-        "kit prose\n", encoding="utf-8"
-    )
-
-    env = {
-        **os.environ,
-        "PYTEST": str(fake_pytest),
-        "PYTEST_CALLS": str(pytest_calls),
-        "RUFF": str(fake_ruff),
-        "TEST_BASE": "missing-base",
-    }
-    _run(["scripts/test-fast"], cwd=repo, env=env)
-
-    calls = [
-        json.loads(line)
-        for line in pytest_calls.read_text(encoding="utf-8").splitlines()
-    ]
-    selected = [arg for call in calls for arg in call if arg.startswith("tests/")]
-    assert "tests/test_e0_capture_experiment.py" in selected, calls
-    assert "tests/test_usb_turntable_experiment.py" not in selected, calls
+    assert "tests/test_e0_capture_experiment.py" in selected
+    assert "tests/test_usb_turntable_experiment.py" not in selected
 
 
 def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -17,16 +18,17 @@ SHIPPED_RING_CONF_D = (
     Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 )
 
+from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
     _outputd_actions,
+    _write_env_actions,
     default_ring_gates,
     reconcile_coupling,
 )
+from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_health import (
-    FANIN_ENV_PATH,
-    OUTPUTD_ENV_PATH,
     persisted_coupling_feeds_ring,
     read_persisted_coupling,
     ring_edge_width_ready,
@@ -38,6 +40,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
 )
+from tests._lock_holder import spawn_lock_holder
 
 
 @pytest.fixture(autouse=True)
@@ -60,10 +63,8 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
 
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
-    )
-    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env))
     # ...and of its /var/lib state. ``resolve_ring_wire`` reads the box's declared
     # ring wire off the SAME jasper.env -> fanin.env chain jasper-fanin resolves,
     # so a real /var/lib/jasper/fanin.env on the host running the suite (a Pi, or
@@ -72,9 +73,7 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     # exercises a real fanin.env passes its own path explicitly.
     fanin_env = tmp_path / "isolated-fanin.env"
     fanin_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
-    )
+    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
     # Keep every main() invocation's entry flock inside the test tmp dir — never
     # the real /run path — so parallel test workers can't contend on one file.
@@ -255,6 +254,73 @@ def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
     )
 
     assert res.ok is False and res.changed is False and calls == []
+
+
+def test_outputd_env_write_waits_out_a_concurrent_bash_holder(tmp_path):
+    """ADR-0235 G8: the per-file lock closes the cross-language race.
+
+    Before this fix, ``_write_env_actions``'s predecessor published through
+    ``atomic_write_text`` serialized only by the process-local
+    ``ENTRY_LOCK_PATH`` — not the per-file ``<dir>/.<basename>.lock`` both the
+    bash writer (``deploy/lib/jasper-env-file.sh``'s ``jasper_env_lock_path``)
+    and ``atomic_io.env_lock_path`` compute. A bash holder publishing between
+    this reconciler's read and its write would have been silently discarded
+    by the blind overwrite. Mirrors test_env_file_lib.py's
+    ``test_env_file_set_waits_out_a_concurrent_holder`` for the bash side.
+    """
+    outputd_env = _write(tmp_path / "outputd.env", "SEED=1\n")
+
+    with spawn_lock_holder(outputd_env, hold_seconds=0.5, write_back="HOLDER=1\n"):
+        new_text, changed = _write_env_actions(
+            outputd_env,
+            lambda _text: (RuntimeEnvAction("set", "WRITER", "2"),),
+        )
+
+    expected = "SEED=1\nHOLDER=1\nWRITER=2\n"
+    assert changed is True
+    assert new_text == expected
+    assert outputd_env.read_text(encoding="utf-8") == expected
+
+
+def test_restore_snapshot_waits_out_a_concurrent_bash_holder(tmp_path):
+    """The rollback write reacquires the per-file lock, same as a real write.
+
+    ``_converge_ring``'s except branch calls ``_restore_snapshot`` after
+    ``_write_env_actions`` already released that lock; an unlocked rollback
+    could race a concurrent bash writer the way the write path used to.
+    """
+    from jasper.fanin.coupling_reconcile import _read_snapshot, _restore_snapshot
+
+    env = _write(tmp_path / "fanin.env", "SEED=1\n")
+    snapshot = _read_snapshot(env)
+
+    with spawn_lock_holder(env, hold_seconds=0.5):
+        start = time.monotonic()
+        _restore_snapshot(snapshot)
+        elapsed = time.monotonic() - start
+
+    assert elapsed >= 0.5
+    assert env.read_text(encoding="utf-8") == "SEED=1\n"
+
+
+def test_outputd_env_write_gives_up_after_the_bound_wait(tmp_path, monkeypatch):
+    """A lock held past the bound raises rather than blocking forever.
+
+    ``advisory_file_lock``'s own default (``LOCK_EX``, no ``LOCK_NB``) blocks
+    forever; ``_write_env_actions`` passes an explicit bound for exactly this
+    reason.
+    """
+    from jasper.fanin import coupling_reconcile as cr
+
+    monkeypatch.setattr(cr, "ENV_FILE_LOCK_TIMEOUT_SECONDS", 0.2)
+    outputd_env = _write(tmp_path / "outputd.env", "SEED=1\n")
+
+    with spawn_lock_holder(outputd_env, hold_seconds=2.0):
+        with pytest.raises(TimeoutError):
+            cr._write_env_actions(
+                outputd_env,
+                lambda _text: (RuntimeEnvAction("set", "WRITER", "2"),),
+            )
 
 
 def test_default_env_paths_are_reconciler_owned_envs():
@@ -838,10 +904,10 @@ def _pin_narrow_ring_wire() -> None:
     own to declare it in. Mirrors ``_declared_wire`` in
     ``tests/test_ring_ioplug_provenance.py``.
     """
-    import jasper.fanin.coupling_reconcile as cr
+    import jasper.env_load as env_load
     from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
 
-    Path(cr.FANIN_ENV_PATH).write_text(
+    Path(env_load.FANIN_ENV_PATH).write_text(
         f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
     )
 
@@ -1174,9 +1240,9 @@ def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, mo
     _stub_ring_ioplug_wire_supported(monkeypatch)
     jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+        "jasper.env_load.BASE_ENV_PATH", str(jasper_env)
     )
-    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env))
 
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")

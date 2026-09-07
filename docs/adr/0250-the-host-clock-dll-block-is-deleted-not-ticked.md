@@ -1,4 +1,4 @@
-# ADR-0247: The host-clock `dll` block is deleted, not ticked
+# ADR-0250: The host-clock `dll` block is deleted, not ticked
 
 - **Date:** 2026-09-07
 - **Status:** Accepted

@@ -1146,6 +1146,7 @@ async def _apply_settings(
         )
         profile = load_profile(profile_path)
         warning: str | None = None
+        blocked: dict[str, str] | None = None
         volume_warning: str | None = None
         apply_result: tuple[Any, Path, SoundProfile] | None = None
         reconciled = False
@@ -1160,8 +1161,20 @@ async def _apply_settings(
                 output_trim_db=_output_trim(profile, settings),
             )
         except (OSError, RuntimeError, ValueError, TypeError) as e:
-            logger.exception("sound settings re-apply failed")
-            warning = f"Saved, but applying to the speaker failed: {e}"
+            refusal = _carrier_refusal(e)
+            if refusal is None:
+                logger.exception("sound settings re-apply failed")
+                warning = f"Saved, but applying to the speaker failed: {e}"
+            else:
+                # The same typed body /apply and /live-draft return, so the
+                # settings card branches on one shape instead of parsing prose.
+                log_event(
+                    logger,
+                    "sound.eq_blocked",
+                    path="/settings",
+                    reason=refusal.reason_code,
+                )
+                blocked = refusal.to_payload()
 
         try:
             reconciled = await _reconcile_volume_curve_after_settings(
@@ -1193,6 +1206,8 @@ async def _apply_settings(
     )
     if warning is not None:
         payload["warning"] = warning
+    if blocked is not None:
+        payload.update(blocked)
     if volume_warning is not None:
         payload["volume_warning"] = volume_warning
     if apply_result is not None:

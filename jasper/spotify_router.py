@@ -713,27 +713,55 @@ class Router:
         return bool(playback and playback.get("is_playing"))
 
 
+def load_registry(
+    accounts_path: str | None = None, cache_path: str | None = None
+) -> Registry:
+    """Registry.load -> maybe_migrate_legacy, the one load-and-migrate step.
+
+    `accounts_path`/`cache_path` default to `registry_path()` /
+    `legacy_cache_path()`, same as `build_router`."""
+    resolved_accounts_path = accounts_path if accounts_path is not None else registry_path()
+    resolved_cache_path = cache_path if cache_path is not None else legacy_cache_path()
+    registry = Registry.load(resolved_accounts_path)
+    maybe_migrate_legacy(registry, resolved_cache_path)
+    return registry
+
+
 def build_router(
     *,
     client_id: str,
     redirect_uri: str,
     accounts_path: str | None = None,
     cache_path: str | None = None,
+    registry: Registry | None = None,
     with_rebuild: bool = False,
 ) -> Router:
-    """Registry.load -> maybe_migrate_legacy -> build_clients -> Router.
-    `with_rebuild=True` wires the same chain as the returned Router's
-    `rebuild_fn`, so it can recover an empty result later via
-    `refresh_if_empty()`."""
-    resolved_accounts_path = accounts_path if accounts_path is not None else registry_path()
-    resolved_cache_path = cache_path if cache_path is not None else legacy_cache_path()
+    """load_registry -> build_clients -> Router.
+
+    Pass an already-loaded `registry` (e.g. a caller that must inspect
+    it for its own cache-fingerprint check before deciding to rebuild)
+    to build straight from it and skip the redundant load. Callers that
+    must not trigger legacy-cache migration use `build_clients()`
+    directly. `with_rebuild=True` wires a fresh `load_registry` ->
+    `build_clients` chain as the returned Router's `rebuild_fn`, using
+    `accounts_path` (defaulting to `registry.path` when a `registry`
+    was supplied, else `registry_path()`) so a later `refresh_if_empty()`
+    reloads the same accounts file the initial build used."""
 
     def _do_build() -> BuildResult:
-        registry = Registry.load(resolved_accounts_path)
-        maybe_migrate_legacy(registry, resolved_cache_path)
-        return build_clients(registry, client_id=client_id, redirect_uri=redirect_uri)
+        resolved_accounts_path = (
+            accounts_path
+            if accounts_path is not None
+            else registry.path if registry is not None else None
+        )
+        reg = load_registry(resolved_accounts_path, cache_path)
+        return build_clients(reg, client_id=client_id, redirect_uri=redirect_uri)
 
-    result = _do_build()
+    result = (
+        build_clients(registry, client_id=client_id, redirect_uri=redirect_uri)
+        if registry is not None
+        else _do_build()
+    )
     return Router(
         clients=result.clients,
         default_name=result.default_name,

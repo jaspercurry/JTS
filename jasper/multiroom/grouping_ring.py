@@ -39,7 +39,7 @@ through machinery that is not about it.
 from __future__ import annotations
 
 from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
-from jasper.ring_assets import ring_writer_lock_path
+from jasper.ring_assets import RING_SHM_DIR, ring_writer_lock_path
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/62-jts-ring-grouping.conf`` defines —
 #: one string for snapclient's ``--soundcard`` and for CamillaDSP's capture
@@ -47,10 +47,10 @@ from jasper.ring_assets import ring_writer_lock_path
 GROUPING_RING_PCM = "jts_ring_grouping"
 
 #: The SHM ring file that PCM's ``path`` names, under the shared
-#: ``/dev/shm/jts-ring`` directory the ring platform's tmpfiles entry creates.
+#: ``RING_SHM_DIR`` directory the ring platform's tmpfiles entry creates.
 #: ONE name for both roles: a box is a leader or a follower, never both, so the
 #: role-dependent naming the coupling's content hop uses buys nothing here.
-GROUPING_RING_FILE = "/dev/shm/jts-ring/grouping.ring"
+GROUPING_RING_FILE = f"{RING_SHM_DIR}/grouping.ring"
 
 #: Where the installer places that conf.d block
 #: (``deploy/lib/install/ring-platform.sh``'s ``install_jts_ring_conf_assets``).

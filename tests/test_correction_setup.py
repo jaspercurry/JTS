@@ -1088,7 +1088,7 @@ def test_local_capture_binds_realized_input_before_level_matching():
     assert action_fn.index("ep === '/autolevel/start'") < action_fn.index(
         "ep === '/upload-noise'"
     )
-    assert "wizardNextBtn.classList.add('hidden')" in action_fn
+    assert "wizardNextBtn.hidden = true" in action_fn
     upload_branch = action_fn.split("ep === '/upload-noise'", 1)[1].split(
         "} else if", 1
     )[0]
@@ -1525,6 +1525,27 @@ def test_e2e_get_index_serves_html():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_get_serves_the_speaker_timing_page_on_the_manifest_label():
+    """This daemon also serves the page nginx mounts at /sound/pair/sync/:
+    manifest label as <title> and header, back to the parent
+    (docs/web-ia.md §2). The public path is pinned in
+    test_landing_page_html.py; the daemon's own route stays /sync, the
+    sibling of /crossover and /bass on this backend."""
+    server, base = _start_server()
+    try:
+        resp = urllib.request.urlopen(f"{base}/sync", timeout=5)
+        assert resp.status == 200
+        body = resp.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "<title>Speaker timing</title>" in body
+    assert '<h1 class="app-header__title">Speaker timing</h1>' in body
+    assert 'href="/sound/pair/"' in body
+    assert "/assets/sync/sync.css?v=" in body
 
 
 def test_e2e_bonded_follower_rejects_correction_mutation(monkeypatch):

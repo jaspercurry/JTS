@@ -6454,6 +6454,9 @@ async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
 async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
     tmp_path: Path, monkeypatch
 ):
+    # Without a saved layout the re-apply refuses before it ever reaches the
+    # failing reload, and a refusal is a typed body, not this warning.
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     settings_path = tmp_path / "sound_settings.json"
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
@@ -6474,6 +6477,39 @@ async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
     assert "warning" in payload
     # Settings persist despite the re-apply failure (no revert, no silent loss).
     assert load_sound_settings(settings_path).headroom_trim_db == 6.0
+
+
+async def test_apply_settings_returns_the_typed_refusal_not_a_prose_warning(
+    tmp_path: Path, monkeypatch
+):
+    """A graph that cannot host EQ is a typed outcome on /settings too.
+
+    The setting is saved; only the re-emit is refused. The body carries the
+    same status/reason_code the /apply and /live-draft refusals return, so the
+    settings card branches on one shape instead of parsing a warning string.
+    """
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    settings_path = tmp_path / "sound_settings.json"
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = tmp_path / "custom.yml"
+    current.write_text("# handmade\n")
+    fake = FakeCamilla(str(current))
+
+    payload = await sound_setup._apply_settings(
+        {"match_loudness": True},
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "lib.json",
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["reason_code"] == "unknown_config"
+    assert "warning" not in payload
+    assert load_sound_settings(settings_path).match_loudness is True
 
 
 async def test_audition_profile_loads_draft_without_persisting(

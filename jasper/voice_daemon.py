@@ -29,6 +29,7 @@ from .wake_events import (
     CAPTURE_POST_SEC,
 )
 from .cues import AudioCueManager
+from .cues.registry import NO_ROOM_MIC_CUE_SLUG
 from .vad import SpeechVAD
 from .wake_legs import LegSpec, wake_input_legs
 from .wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
@@ -139,16 +140,6 @@ async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
 # refractory only needs to cover that dmix tail: 0.2 s is ~2.5x the
 # 85 ms buffer — still a margin, but won't swallow conversational pacing.
 WAKE_REFRACTORY_SEC = 0.2
-
-# Cue for "you asked for a room-mic turn and this speaker has no room mic."
-# Registered in jasper/cues/registry.py; named here so the failure handler and
-# the guard test cannot drift from the registry entry.
-NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
-
-# Cue for "no voice service is configured, so I will never answer a wake."
-# Played by daemon_main.main() before it parks on
-# VOICE_PROVIDER_NOT_CONFIGURED_EXIT; named here for the same reason.
-VOICE_NOT_SET_UP_CUE_SLUG = "voice_not_set_up"
 
 # `_end_turn` reasons the household or the daemon itself chose: whoever
 # muted, shut down or spoke over the turn already knows why it went quiet,

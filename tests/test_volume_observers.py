@@ -51,6 +51,7 @@ class _FakeCoordinator:
         self.observation_initials: list[bool] = []
         self.transitions: list[tuple[Source, Source]] = []
         self.reconcile_calls: int = 0
+        self.reconcile_sources: list[Source | None] = []
         self.observation_revision: str | None = None
         self.accept_observations = True
 
@@ -68,8 +69,9 @@ class _FakeCoordinator:
         self.observation_initials.append(initial)
         return self.accept_observations
 
-    async def maybe_reconcile_camilla(self) -> None:
+    async def maybe_reconcile_camilla(self, source: Source | None = None) -> None:
         self.reconcile_calls += 1
+        self.reconcile_sources.append(source)
 
 
 # ---------- AirPlay reader -------------------------------------------------
@@ -422,7 +424,9 @@ async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
     """Self-healing convergence runs on every tick. The reconciler
     is idempotent and gated internally so it's safe to call
     unconditionally — the observer's job is just to drive the
-    cadence."""
+    cadence. The tick's own resolved source is forwarded so the
+    reconciler does not re-resolve it (one `_active_source()` per
+    tick, not two)."""
     coord = _FakeCoordinator(active=Source.IDLE)
     obs = VolumeObserver(
         coord,
@@ -446,6 +450,7 @@ async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
     await obs._tick()
     await obs._tick()
     assert coord.reconcile_calls == 3
+    assert coord.reconcile_sources == [Source.IDLE, Source.IDLE, Source.IDLE]
 
 
 async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, caplog):
@@ -455,7 +460,7 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
     import logging
 
     class _BrokenCoord(_FakeCoordinator):
-        async def maybe_reconcile_camilla(self) -> None:
+        async def maybe_reconcile_camilla(self, source: Source | None = None) -> None:
             raise RuntimeError("simulated reconciler bug")
 
     coord = _BrokenCoord(active=Source.IDLE)

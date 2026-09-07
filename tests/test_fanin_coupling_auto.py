@@ -66,8 +66,8 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
     """Keep effective-env tests independent of the developer host's /etc state."""
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
-    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.BASE_ENV_PATH", str(jasper_env))
 
 
 # --------------------------------------------------------------------------
@@ -818,7 +818,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n", encoding="utf-8")
     outputd.write_text(_armed_outputd_env(), encoding="utf-8")
     jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
-    monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
     monkeypatch.setattr(

@@ -17,6 +17,7 @@ import shlex
 from dataclasses import dataclass
 
 from .atomic_io import atomic_write_text
+from .env_load import SPEAKER_NAME_ENV_PATH
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"
@@ -25,7 +26,6 @@ ENV_VAR = "JASPER_SPEAKER_NAME"
 # defers to the legacy peering room). Unlike the display name there is no
 # non-empty default: an unset room is a meaningful state, not "JTS".
 ENV_VAR_ROOM = "JASPER_SPEAKER_ROOM"
-STATE_FILE = "/var/lib/jasper/speaker_name.env"
 
 # AirPlay's documented ceiling is 50 characters. JTS uses a shorter
 # cross-renderer limit so Bluetooth / USB / app pickers stay tidy.
@@ -166,7 +166,7 @@ def _state_from_lines(lines: list[str]) -> SpeakerNameState:
     return SpeakerNameState(DEFAULT_SPEAKER_NAME, room, "default")
 
 
-def read_state(path: str = STATE_FILE) -> SpeakerNameState:
+def read_state(path: str = SPEAKER_NAME_ENV_PATH) -> SpeakerNameState:
     """Read the persisted display name + room, defaulting to ``JTS``/no room.
 
     Parses BOTH ``JASPER_SPEAKER_NAME`` and ``JASPER_SPEAKER_ROOM`` from the
@@ -182,7 +182,9 @@ def read_state(path: str = STATE_FILE) -> SpeakerNameState:
         return SpeakerNameState(DEFAULT_SPEAKER_NAME, "", "default")
 
 
-def runtime_name(*, environ: dict[str, str] | None = None, path: str = STATE_FILE) -> str:
+def runtime_name(
+    *, environ: dict[str, str] | None = None, path: str = SPEAKER_NAME_ENV_PATH
+) -> str:
     """Resolve the name for runtime code.
 
     Systemd services source ``speaker_name.env`` into the environment on
@@ -194,7 +196,9 @@ def runtime_name(*, environ: dict[str, str] | None = None, path: str = STATE_FIL
     return read_state(path).name
 
 
-def runtime_room(*, environ: dict[str, str] | None = None, path: str = STATE_FILE) -> str:
+def runtime_room(
+    *, environ: dict[str, str] | None = None, path: str = SPEAKER_NAME_ENV_PATH
+) -> str:
     """Resolve the room label for runtime code, or "" when unset.
 
     Same precedence shape as ``runtime_name``: the env var
@@ -228,7 +232,7 @@ _PRESERVE_ROOM = object()
 def write_state(
     name: str,
     room: object = _PRESERVE_ROOM,
-    path: str = STATE_FILE,
+    path: str = SPEAKER_NAME_ENV_PATH,
     *,
     mode: int = 0o644,
 ) -> str:

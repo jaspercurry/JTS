@@ -6,8 +6,10 @@
 // `https://<hostname>/balance/` link ("Balance automatically with a
 // microphone") — a capture design ADR-0188 parked. On the self-signed origin
 // that link fails hard (ERR_CERT_AUTHORITY_INVALID). The `/balance/` page is
-// gone entirely now (#4031); this still pins that the card never builds an
-// anchor at all: only the manual slider/reset controls.
+// gone entirely now (#4031). What the rule forbids is an anchor that leaves
+// the origin the household is already on (#2632) — not an anchor as such: the
+// bonded face links this page's own child, /sound/pair/sync/, by a relative
+// href. Pinned structurally, on the anchors' href attributes.
 //
 // Loads main.js as a real ES module (dom.js/grouping-view.js/
 // pair-balance-controller.js run for real; only the network-touching
@@ -88,7 +90,15 @@ function collectAnchors(node, out) {
   return out;
 }
 
-const anchors = collectAnchors(refs.bondCard.el, []);
-assert.deepEqual(anchors, [], "bond card must render no <a> elements");
+const hrefs = collectAnchors(refs.bondCard.el, []).map(
+  (a) => a.getAttribute("href"),
+);
+assert.deepEqual(hrefs, ["sync/"], "bond card links only its timing child");
+for (const href of hrefs) {
+  assert.ok(
+    !/^([a-z][a-z0-9+.-]*:|\/\/)/i.test(href),
+    `bond card anchor must stay on this origin, got ${href}`,
+  );
+}
 
 console.log(JSON.stringify({ ok: true }));

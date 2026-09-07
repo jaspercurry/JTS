@@ -2940,7 +2940,7 @@ def test_ring_reemit_refuses_a_typod_wire_instead_of_raising(
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.env_load.FANIN_ENV_PATH", str(fanin_env)
     )
 
     ring_yaml, issues = recompose_applied_baseline_yaml(

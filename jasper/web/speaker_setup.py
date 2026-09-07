@@ -39,6 +39,7 @@ from ..speaker_name import (
     write_state,
 )
 from ..atomic_io import atomic_write_text
+from ..env_load import SPEAKER_NAME_ENV_PATH
 from ..identity import resolve_hostname
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
@@ -62,7 +63,6 @@ from ._service_state import unit_active as _unit_active
 
 logger = logging.getLogger(__name__)
 
-SPEAKER_NAME_FILE = "/var/lib/jasper/speaker_name.env"
 BLUEZ_MAIN_CONF = "/etc/bluetooth/main.conf"
 
 RESTART_UNITS = [
@@ -529,7 +529,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def make_server(target, *, state_path: str = SPEAKER_NAME_FILE) -> ThreadingHTTPServer:
+def make_server(target, *, state_path: str = SPEAKER_NAME_ENV_PATH) -> ThreadingHTTPServer:
     from . import _systemd
 
     cfg = {"state_path": state_path}

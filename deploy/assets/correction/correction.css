@@ -26,10 +26,11 @@
 .correction-stack > * { margin-top: 1.25rem; }
 .correction-stack > *:first-child { margin-top: 0; }
 
-.hidden { display: none !important; }
-
 .page-sub { color: var(--muted); margin: 0 0 0.5rem; font-size: 0.95rem; }
 .hint { color: var(--muted); font-size: 0.9rem; }
+.hint--flush { margin: 0; }
+.hint--mt-sm { margin-top: 0.3em; }
+.hint--mt-md { margin-top: 0.4em; }
 
 .run-defaults-line {
   display: flex;
@@ -68,6 +69,7 @@
 }
 .correction-stack .mic-row label,
 .correction-stack .chart-controls label { margin: 0; }
+.correction-stack label.field-label--gap { margin-top: 0.6em; }
 
 /* The relocated markup uses bare <select>/<input>/<button> (not .field
    wrappers). app.css scopes its input theming to `.field input` etc., so
@@ -197,6 +199,7 @@
   padding: 0.9rem 1rem;
   margin: 1rem 0;
 }
+.mic-panel > h2:first-child { margin-top: 0; }
 .mic-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
 .mic-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; }
 .mic-row label { flex: 1 1 180px; }
@@ -299,6 +302,7 @@
   background: color-mix(in oklab, var(--status-warn) 12%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 40%, transparent);
 }
+.note-box__lead { margin: 0; font-weight: 600; }
 
 /* ---- Read-only report metric grid ------------------------------------- */
 .metric-grid {
@@ -345,6 +349,16 @@
   border-radius: var(--radius-sm);
 }
 canvas#chart { display: block; width: 100%; height: 240px; }
+
+/* Legend swatches — match the exact hex the canvas draws each series in
+   (main.js's drawEnvelopeCurves), so these stay plain colors rather than
+   canonical tokens. */
+.chart-legend-color-measured { color: #d44; }
+.chart-legend-color-target { color: #888; }
+.chart-legend-color-predicted { color: #1db954; }
+.chart-legend-color-filter { color: #2b7bb9; }
+.chart-legend-color-verify { color: #a050d0; }
+.chart-legend-color-regressed { color: #d68200; }
 
 /* The measurement workflow's buttons reuse .btn / .btn--* from app.css;
    the relocated JS toggles `disabled` directly and app.css styles

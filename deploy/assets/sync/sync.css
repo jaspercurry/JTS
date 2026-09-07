@@ -1,0 +1,10 @@
+/* /sound/pair/sync/ — page-specific styling for the speaker-timing walkthrough.
+ *
+ * Only what app.css does not already cover: the card width cap. The action
+ * row is .form-actions and the live status text is .status-line, both owned
+ * by app.css along with .info-card, .btn and every token — do not redeclare
+ * them here.
+ *
+ * Loaded via canonical_page(page_css_href="/assets/sync/sync.css"). */
+
+.sync-card { max-width: 620px; }

@@ -18,12 +18,8 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
-    DEFAULT_BASE_ENV_PATH,
     DEFAULT_CAMILLA2_STATEFILE_PATH,
     DEFAULT_CAMILLA_STATEFILE_PATH,
-    DEFAULT_FANIN_ENV_PATH,
-    DEFAULT_GROUPING_ENV_PATH,
-    DEFAULT_OUTPUTD_ENV_PATH,
     OUTPUTD_LATENCY_KEYS,
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
@@ -44,7 +40,13 @@ from jasper.audio_runtime_overrides import (
     runtime_overrides_path,
     set_runtime_override,
 )
-from jasper.env_load import read_env_file_state
+from jasper.env_load import (
+    BASE_ENV_PATH,
+    FANIN_ENV_PATH,
+    GROUPING_ENV_FILE,
+    OUTPUTD_ENV_PATH,
+    read_env_file_state,
+)
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -53,7 +55,6 @@ from jasper.fanin_coupling import (
 )
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
 
-DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 # Both transports of the ONE active lane: the snd-aloop active PCM and the
 # ACTIVE RING. A graph naming either is an active-lane graph and must pass the
 # same hardware/topology proof before its pairing is enforced.
@@ -147,7 +148,7 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_topology_for_ring_wire(path: str) -> tuple[object | None, str]:
+def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
     """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
 
     An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
@@ -582,10 +583,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the planned audio knobs, provenance, and drift warnings",
     )
     explain.add_argument("--json", action="store_true")
-    explain.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
-    explain.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
-    explain.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
-    explain.add_argument("--grouping-env", default=DEFAULT_GROUPING_ENV_PATH)
+    explain.add_argument("--base-env", default=BASE_ENV_PATH)
+    explain.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
+    explain.add_argument("--fanin-env", default=FANIN_ENV_PATH)
+    explain.add_argument("--grouping-env", default=GROUPING_ENV_FILE)
     explain.add_argument("--overrides", default=runtime_overrides_path())
     explain.add_argument("--output-hardware-state", default=None)
     explain.set_defaults(func=_cmd_explain)
@@ -598,8 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     outputd_floor.add_argument("--profile-id", default="")
-    outputd_floor.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
-    outputd_floor.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
+    outputd_floor.add_argument("--base-env", default=BASE_ENV_PATH)
+    outputd_floor.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
     outputd_floor.add_argument(
         "--overrides",
         default=runtime_overrides_path(),
@@ -622,8 +623,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render_ring_conf.add_argument(
         "--output-topology",
-        default=DEFAULT_OUTPUT_TOPOLOGY_PATH,
-        help="saved output topology the Ring B channel count is resolved from",
+        default=None,
+        help=(
+            "saved output topology the Ring B channel count is resolved "
+            "from (default: JASPER_OUTPUT_TOPOLOGY_PATH, else the SSOT)"
+        ),
     )
     render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
 
@@ -672,9 +676,9 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-outputd-env",
         help="validate reconciler-owned outputd.env before installing it",
     )
-    validate_outputd.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
-    validate_outputd.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
-    validate_outputd.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
+    validate_outputd.add_argument("--base-env", default=BASE_ENV_PATH)
+    validate_outputd.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
+    validate_outputd.add_argument("--fanin-env", default=FANIN_ENV_PATH)
     # The path to NAME in refusals when it differs from the path to READ. The
     # reconciler validates a staged candidate under a temp name that is deleted
     # on exit; unset means the two are the same file.
@@ -689,9 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_outputd.add_argument(
         "--camilla2-statefile", default=DEFAULT_CAMILLA2_STATEFILE_PATH
     )
-    validate_outputd.add_argument(
-        "--output-topology", default=DEFAULT_OUTPUT_TOPOLOGY_PATH
-    )
+    validate_outputd.add_argument("--output-topology", default=None)
     validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
 
     capture_device = sub.add_parser(
@@ -705,7 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
         "route-actions",
         help="emit shell-readable fanin env actions for the audio route",
     )
-    route_actions.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
+    route_actions.add_argument("--base-env", default=BASE_ENV_PATH)
     route_actions.set_defaults(func=_cmd_route_actions)
 
     overrides_list = sub.add_parser(

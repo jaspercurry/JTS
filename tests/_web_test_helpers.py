@@ -320,6 +320,17 @@ def json_post_with_csrf(
     )
 
 
+def assert_canonical_page(html: str) -> None:
+    """A wizard page rendered through ``_common.canonical_page`` +
+    ``canonical_header``: doctype, the cache-busted shared stylesheet link,
+    and the shared ``.app-header`` top bar. Callers keep asserting their own
+    page-specific markers (title, page CSS, body content) alongside this.
+    """
+    assert html.startswith("<!doctype html>")
+    assert "/assets/app.css?v=" in html
+    assert 'class="app-header"' in html
+
+
 def assert_verify_uses_constant_time_compare(monkeypatch, tmp_path, module, file_attr, secret):
     """``module.verify`` must compare through ``hmac.compare_digest``, never ``==``."""
     path = tmp_path / "secret"

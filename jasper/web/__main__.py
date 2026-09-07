@@ -63,6 +63,8 @@ from jasper.install_profile import (
 from jasper.log_event import log_event
 
 from . import _systemd
+from ..accounts import registry_path as spotify_registry_path
+from ..google_creds import registry_path as google_registry_path
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -249,10 +251,7 @@ def _make_spotify_server(target: object) -> object:
 
     return spotify_setup.make_server(
         target,
-        registry_path=os.environ.get(
-            "JASPER_SPOTIFY_ACCOUNTS_PATH",
-            spotify_setup.DEFAULT_REGISTRY_PATH,
-        ),
+        registry_path=spotify_registry_path(),
         bounce_redirect_uri=os.environ.get("JASPER_SPOTIFY_BOUNCE_REDIRECT_URI"),
         manual_redirect_uri=os.environ.get(
             "JASPER_SPOTIFY_MANUAL_REDIRECT_URI",
@@ -276,13 +275,7 @@ def _make_voice_server(target: object) -> object:
 def _make_google_server(target: object) -> object:
     from . import google_setup
 
-    return google_setup.make_server(
-        target,
-        registry_path=os.environ.get(
-            "JASPER_GOOGLE_ACCOUNTS_PATH",
-            "/var/lib/jasper-secrets/google/accounts.json",
-        ),
-    )
+    return google_setup.make_server(target, registry_path=google_registry_path())
 
 
 def _make_airplay_server(target: object) -> object:
@@ -305,12 +298,13 @@ def _make_sources_server(target: object) -> object:
 
 def _make_speaker_server(target: object) -> object:
     from . import speaker_setup
+    from ..env_load import SPEAKER_NAME_ENV_PATH
 
     return speaker_setup.make_server(
         target,
         state_path=os.environ.get(
             "JASPER_SPEAKER_NAME_FILE",
-            speaker_setup.SPEAKER_NAME_FILE,
+            SPEAKER_NAME_ENV_PATH,
         ),
     )
 

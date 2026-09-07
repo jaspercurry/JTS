@@ -341,10 +341,10 @@ def check_content_transport_coherence() -> CheckResult:
     """
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
-        DEFAULT_OUTPUTD_ENV_PATH,
         output_endpoint_evidence_from_statefiles,
     )
     from jasper.env_file import read_value
+    from jasper.env_load import OUTPUTD_ENV_PATH
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -445,7 +445,7 @@ def check_content_transport_coherence() -> CheckResult:
     # single-writer keys of that file, and `outputd_ring_path_for` is contracted
     # on one snapshot of the file being reconciled.
     try:
-        outputd_text = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
+        outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
     except OSError:
         outputd_text = ""
     carried = resolve_outputd_ring_path(

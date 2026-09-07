@@ -10,9 +10,9 @@
 //
 // The CSRF token rides in the <meta name="jts-csrf"> tag that canonical_page()
 // renders into the (no-store) HTML; we read it at call time so the cacheable
-// module never bakes in a secret. Same X-CSRF-Token contract as the inline
-// wizards (jasper.web._common.csrf_fetch_helpers_js / jsonHeaders) — the
-// server's guard_mutating_request() accepts the header just like a hidden form field.
+// module never bakes in a secret. This module is the single owner of the
+// X-CSRF-Token contract every wizard POST rides — the server's
+// guard_mutating_request() accepts the header just like a hidden form field.
 
 function csrfToken() {
   const meta = document.querySelector("meta[name=jts-csrf]");
@@ -171,10 +171,15 @@ async function promptForControlToken() {
 // control_token_required, prompt ONCE for the token, store it, and retry exactly
 // once. A second 403 (wrong token) throws normally so the caller surfaces it —
 // we never loop.
-export async function postJSON(path, body) {
+//
+// `keepalive` lets a teardown POST (a pagehide stop or restore) outlive the
+// page, so a caller on that path does not have to hand-roll a bare fetch. The
+// token retry above is inert on such a request — the page is gone before the
+// prompt's dynamic import can resolve — so those callers swallow the rejection.
+export async function postJSON(path, body, { keepalive = false } = {}) {
   const payload = JSON.stringify(body === undefined ? {} : body);
   const send = () => fetch(path, {
-    method: "POST", headers: jsonHeaders(), body: payload,
+    method: "POST", headers: jsonHeaders(), body: payload, keepalive: !!keepalive,
   });
   try {
     return await parseResponse(await send());

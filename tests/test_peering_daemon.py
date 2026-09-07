@@ -124,9 +124,9 @@ async def daemon_setup(monkeypatch):
 @pytest.mark.parametrize(
     ("interrupt_at", "start_raises", "transport_torn_down"),
     (
-        # The bind itself fails, so start() swallows it and leaves no
+        # The bind itself fails, so start() re-raises and leaves no
         # bound transport for stop() to release.
-        ("multicast_bind", False, False),
+        ("multicast_bind", True, False),
         # The transport is already bound when the UDS listen fails, so
         # start() re-raises and stop() must release the socket rather
         # than leave it holding the fd with its recv task pending.

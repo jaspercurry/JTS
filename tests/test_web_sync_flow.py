@@ -5,9 +5,11 @@
 """Handler-level tests for the acoustic-sync apply path.
 
 The signal/analysis math is covered by test_multiroom_sync_measure.py; this
-file pins the /sync/apply -> /grouping/set wiring, in particular that the
-browser's X-JTS-Token is forwarded so the leader's token-gated /grouping/set
-write isn't 403'd by the mandatory control-token gate (WS1 Phase 2).
+file pins the apply -> /grouping/set wiring, in particular that the browser's
+X-JTS-Token is forwarded so the leader's token-gated /grouping/set write
+isn't 403'd by the mandatory control-token gate. The page shell the correction
+daemon serves under nginx's /sound/pair/sync/ mount is pinned end-to-end in
+test_correction_setup.py.
 """
 from __future__ import annotations
 

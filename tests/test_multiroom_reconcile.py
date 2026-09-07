@@ -3431,11 +3431,9 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
     grouping = tmp_path / "grouping-outputd.env"
     grouping.write_text("", encoding="utf-8")
     monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(base))
+    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd))
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd)
-    )
-    monkeypatch.setattr(
-        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
+        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
     )
 
     period = reconcile_mod.box_outputd_period_frames()
@@ -3482,7 +3480,7 @@ def test_the_merged_env_outputd_starts_with_never_pairs_marker_and_bridge(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
 
     merged = outputd_reconciled_env(str(outputd_env))

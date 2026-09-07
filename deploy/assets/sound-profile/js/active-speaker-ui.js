@@ -554,7 +554,7 @@ export function commissionGateReason(gateId) {
 // recorder exists in this bundle. The measurement lives on the HTTPS
 // /sound/speaker/crossover/ page, so this copy is only a pointer to it. BOTH
 // halves are load-bearing: the full path (the host alone lands nowhere useful)
-// and the destination's own label, which correction_hub.SECTIONS owns.
+// and the destination's own label, which jasper.web.nav's NAV owns.
 // Placement geometry is OWNED by jasper/active_speaker/capture_geometry.py and
 // rendered by the measurement page for the capture kind in play. Do NOT
 // restate a distance or an aim instruction here.

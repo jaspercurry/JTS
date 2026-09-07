@@ -39,7 +39,7 @@ joins neither registry.
 from __future__ import annotations
 
 from jasper.fanin_coupling import RING_SLOT_FRAMES
-from jasper.ring_assets import ring_writer_lock_path
+from jasper.ring_assets import RING_SHM_DIR, ring_writer_lock_path
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf``
 #: defines — one string for the member's snapclient ``--soundcard`` and for
@@ -47,10 +47,10 @@ from jasper.ring_assets import ring_writer_lock_path
 DAC_CONTENT_RING_PCM = "jts_ring_dac_content"
 
 #: The SHM ring file that PCM's ``path`` names, under the shared
-#: ``/dev/shm/jts-ring`` directory the ring platform's tmpfiles entry creates.
+#: ``RING_SHM_DIR`` directory the ring platform's tmpfiles entry creates.
 #: One spelling for both roles — unlike the coupling's content hop, this ring
 #: does not vary with which end of the bond the box is.
-DAC_CONTENT_RING_FILE = "/dev/shm/jts-ring/dac-content.ring"
+DAC_CONTENT_RING_FILE = f"{RING_SHM_DIR}/dac-content.ring"
 
 #: Where the installer places that conf.d block
 #: (``deploy/lib/install/ring-platform.sh``'s ``install_jts_ring_conf_assets``).

@@ -23,3 +23,18 @@ def installer_text() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8") for path in installer_shell_paths()
     )
+
+
+#: `getent`/`chgrp` stand-ins for the install helpers that gate on the shared
+#: `jasper` group: CI has neither the group nor root, so both resolve to the
+#: running user and the real `chmod` decides the modes under assertion.
+JASPER_GROUP_STUBS = r"""
+getent() {
+    if [ "$1" = "passwd" ]; then
+        printf 'jasper-web:x:%s:%s:::\n' "$(id -u)" "$(id -g)"
+    else
+        printf 'jasper:x:%s:\n' "$(id -g)"
+    fi
+}
+chgrp() { :; }
+"""

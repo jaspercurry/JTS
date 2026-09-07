@@ -82,10 +82,11 @@ def check_env_file_secrets() -> CheckResult:
 
 @doctor_check()
 def check_speaker_name() -> CheckResult:
-    from ...speaker_name import STATE_FILE, read_state
+    from ...env_load import SPEAKER_NAME_ENV_PATH
+    from ...speaker_name import read_state
 
     state = read_state()
-    p = Path(STATE_FILE)
+    p = Path(SPEAKER_NAME_ENV_PATH)
     if p.exists() and state.source != "state":
         return CheckResult(
             "speaker name",

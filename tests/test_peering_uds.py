@@ -11,6 +11,7 @@ callbacks).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -140,3 +141,31 @@ async def test_send_request_no_daemon():
     WIN (peering not available = act as if alone)."""
     with pytest.raises(FileNotFoundError):
         await uds_mod.send_request("/nonexistent/path.sock", "ARBITRATE {}")
+
+
+async def test_send_request_times_out_on_stalled_connect(monkeypatch):
+    """A wedged peering listener must not hang send_request's connect past
+    its 1s bound -- PeeringClient bounds the whole RPC exchange with
+    DEFAULT_RPC_TIMEOUT_SEC (ADR-0127/8, wake-arbitration path), but that
+    budget only covered the reply read; a wedged listener could otherwise
+    eat it entirely at connect time."""
+    async def _hang(*_a, **_kw):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(uds_mod.asyncio, "open_unix_connection", _hang)
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            uds_mod.send_request(
+                "/tmp/jasper-test-stalled.sock", "ARBITRATE {}",
+            ),
+            timeout=10.0,
+        )
+    elapsed = loop.time() - start
+    assert elapsed < 3.0, (
+        f"send_request took {elapsed:.1f}s against a stalled listener -- "
+        "its connect must raise within its own 1.0s asyncio.timeout "
+        "bound, not the test's outer safety net"
+    )

@@ -109,9 +109,10 @@ class RendererClient:
         layer when it is available.
         """
         try:
-            reader, writer = await asyncio.open_unix_connection(
-                MUX_CONTROL_SOCKET_PATH
-            )
+            async with asyncio.timeout(1.0):
+                reader, writer = await asyncio.open_unix_connection(
+                    MUX_CONTROL_SOCKET_PATH
+                )
         except (FileNotFoundError, ConnectionRefusedError,
                 asyncio.TimeoutError, OSError) as e:
             logger.debug("mux status unavailable: %s", e)

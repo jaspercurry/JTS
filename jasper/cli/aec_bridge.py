@@ -1065,8 +1065,60 @@ def _aec_loop(  # noqa: PLR0915
                     pass
 
 
+def _park(code: int, reason: str, detail: str) -> int:
+    """Announce the park out loud, log it, and return the exit code systemd
+    holds the unit on.
+
+    ``os.EX_CONFIG`` (78) and ``os.EX_NOINPUT`` (66) are both listed in
+    jasper-aec-bridge.service's ``SuccessExitStatus`` +
+    ``RestartPreventExitStatus``, so a permanent fault parks the unit instead
+    of spending the StartLimitAction=reboot budget ADR-0146 sized for
+    transients. Same split as jasper-voice.service: 78 is "the configuration
+    asks for something this box cannot do", 66 is "the primary microphone
+    would not open", and each speaks the cue that code already means.
+
+    Every park here stops the UDP mic feed jasper-voice's wake legs read, so
+    the box goes deaf until someone acts — non-negotiable 6 owes a cue. The
+    jasper-aec-reconcile hand-off (ADR-0239) covers only the card-removal
+    shape: a stale JASPER_MIC_DEVICE, a PortAudio enumeration failure or any
+    config fault raises with no udev event, nothing writes the
+    voice-input-absent marker, and nothing else would make a sound. A cue that
+    cannot play is logged and never changes the exit code — the fan-in socket
+    the cue writes to is only an ``After=``/``Wants=`` of this unit, so it can
+    legitimately be missing at start.
+    """
+    log_event(
+        logger,
+        "aec_bridge.park",
+        reason=reason,
+        exit_code=code,
+        detail=detail,
+        level=logging.ERROR,
+    )
+    # Imported here, not at module scope: the cue stack costs RAM and import
+    # time the steady-state bridge never needs (ADR-0226).
+    from ..cues.park import play_park_cue
+    from ..cues.registry import (
+        NO_ROOM_MIC_CUE_SLUG,
+        VOICE_NOT_SET_UP_CUE_SLUG,
+    )
+    slug = (
+        NO_ROOM_MIC_CUE_SLUG if code == os.EX_NOINPUT
+        else VOICE_NOT_SET_UP_CUE_SLUG
+    )
+    result = play_park_cue(slug, logger=logger)
+    log_event(
+        logger,
+        "aec_bridge.park_cue",
+        slug=slug,
+        result=result,
+        level=logging.INFO if result == "ok" else logging.WARNING,
+    )
+    return code
+
+
 def main() -> int:
-    configure_logging(fmt="%(asctime)s aec-bridge %(levelname)s %(message)s")
+    configure_logging()
     # Log flight recorder + runtime debug toggle. See
     # jasper/flight_recorder.py.
     from .. import flight_recorder
@@ -1077,8 +1129,7 @@ def main() -> int:
     try:
         config = resolved_reference_source(config)
     except UnsupportedReferenceSource as e:
-        logger.error("%s", e)
-        return 1
+        return _park(os.EX_CONFIG, "unsupported_reference_source", str(e))
     reference_endpoint = (
         f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
     )
@@ -1101,13 +1152,13 @@ def main() -> int:
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
     chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
     if chip_aec_enabled and chip_beam_plan is None:
-        logger.error(
+        return _park(
+            os.EX_CONFIG,
+            "no_validated_chip_beam_plan",
             "chip-AEC requested but no validated chip beam plan is active "
-            "(variant=%s geometry=%s)",
-            os.environ.get("JASPER_XVF_VARIANT", "unknown"),
-            os.environ.get("JASPER_XVF_GEOMETRY", "unknown"),
+            f"(variant={os.environ.get('JASPER_XVF_VARIANT', 'unknown')} "
+            f"geometry={os.environ.get('JASPER_XVF_GEOMETRY', 'unknown')})",
         )
-        return 1
     chip_aec_primary_leg = _chip_aec_primary_leg(chip_beam_plan)
     corpus_xvf_raw0_webrtc_enabled = env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED", "0",
@@ -1147,11 +1198,12 @@ def main() -> int:
     if production_chip_aec_enabled and not os.environ.get(
         "JASPER_OUTPUTD_CHIP_REF_PCM", ""
     ).strip():
-        logger.error(
+        return _park(
+            os.EX_CONFIG,
+            "chip_aec_without_chip_reference",
             "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
             "JASPER_OUTPUTD_CHIP_REF_PCM so outputd feeds XVF USB-IN",
         )
-        return 1
     if corpus_usb_dtln_enabled and not corpus_usb_enabled:
         logger.warning(
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
@@ -1170,14 +1222,21 @@ def main() -> int:
     try:
         validate_mic_device(config)
     except MicDeviceUnavailable as e:
-        logger.error("%s", e)
-        return 1
+        # The only EX_NOINPUT site: the wake mic itself. `_park` speaks for it
+        # — validate_mic_device raises on ANY sd.query_devices failure, and a
+        # card that never moved (a stale device name, a PortAudio hiccup)
+        # fires no udev event, so the jasper-aec-reconcile hand-off ADR-0239
+        # describes covers only part of this fault.
+        return _park(os.EX_NOINPUT, "mic_device_unavailable", str(e))
     if corpus_usb_enabled:
         try:
             validate_usb_mic_device(config)
         except UsbMicUnavailable as e:
-            logger.error("%s", e)
-            return 1
+            # NOT EX_NOINPUT: this is the opt-in wake-corpus capture leg
+            # (JASPER_AEC_CORPUS_USB_ENABLED, written by
+            # jasper/wake_corpus/capture_plan.py), not the wake mic. The
+            # fault is an env flag naming hardware that is not plugged in.
+            return _park(os.EX_CONFIG, "corpus_usb_mic_unavailable", str(e))
 
     engine = None if production_chip_aec_enabled else _select_engine()
 

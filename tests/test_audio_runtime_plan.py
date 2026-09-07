@@ -703,7 +703,7 @@ def test_system_plan_warns_and_uses_process_route_when_base_env_unreadable(
     )
 
 
-def test_the_system_plan_reads_both_of_outputds_env_layers(monkeypatch, tmp_path):
+def test_the_system_plan_reads_both_of_outputds_env_layers(tmp_path):
     """The planner sees a bonded member's marker, which lives in the SECOND file.
 
     Reading `outputd.env` alone left every consumer downstream of
@@ -718,13 +718,11 @@ def test_the_system_plan_reads_both_of_outputds_env_layers(monkeypatch, tmp_path
     grouping_env.write_text(
         "JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8"
     )
-    monkeypatch.setattr(
-        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
-    )
 
     plan = audio_plan.build_audio_runtime_plan_from_system(
         base_env_path=str(tmp_path / "base.env"),
         outputd_env_path=str(outputd_env),
+        outputd_grouping_env_path=str(grouping_env),
         fanin_env_path=str(tmp_path / "fanin.env"),
         grouping_env_path=str(tmp_path / "grouping.env"),
         overrides_path=str(tmp_path / "overrides.json"),

@@ -227,8 +227,8 @@ ALLOWED_VERBS = frozenset(_VERB_ARGV)
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Ordinary broker actions retain the original hard ceiling.  The sole extended
 # shape is a blocking start of exactly the source-intent coordinator: its finite
-# 2693-second systemd bound covers all four sources, bounded owner barriers,
-# failed-unit resets, and fail-closed cleanup; its caller allows 2703 seconds for
+# 2793-second systemd bound covers all four sources, bounded owner barriers,
+# failed-unit resets, and fail-closed cleanup; its caller allows 2803 seconds for
 # PID 1 to return. That pair is jasper.source_intent's
 # RECONCILE_SYSTEMD_TIMEOUT_SECONDS / RECONCILE_BROKER_TIMEOUT_SECONDS, mirrored
 # here rather than imported so this root boundary keeps its lean import surface;
@@ -242,7 +242,7 @@ _EXEC_TIMEOUT_CEILING_SEC = 120.0
 # action it precedes is allowed to take.
 _RESET_TIMEOUT_SEC = 5.0
 _SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
-_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2703.0
+_SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC = 2803.0
 _CAMILLA_UNIT = "jasper-camilla.service"
 # jasper-camilla.service Requires= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues
@@ -621,8 +621,8 @@ def request_restart(
             # return at once, whereas a send that TIMED OUT would buy a
             # second full socket deadline on top of the first — settimeout is
             # per-operation — and the source-intent budget has no room for
-            # it: 2703 s + a 5 s margin, doubled, is 5416 s against nginx's
-            # derived proxy_read_timeout of 5600s.
+            # it: 2803 s + a 5 s margin, doubled, is 5616 s against nginx's
+            # derived proxy_read_timeout of 5700s.
             #
             # The honest cost of narrowing: a send failing ENOBUFS under
             # memory pressure could in principle have an answer waiting and

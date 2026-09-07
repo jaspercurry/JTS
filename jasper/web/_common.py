@@ -37,9 +37,9 @@ Every wizard's request handler should look like this:
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
-`{csrf_meta_html(csrf_token)}` in the document and
-`{csrf_fetch_helpers_js()}` in its script, then uses `jsonHeaders()`
-or `csrfHeaders({...})` on state-changing POSTs.
+`{csrf_meta_html(csrf_token)}` in the document and imports
+`deploy/assets/shared/js/http.js`, then uses `jsonHeaders()` or
+`csrfHeaders({...})` on state-changing POSTs.
 
 DO NOT:
 * redirect to `./?msg=Saved…` — that pollutes browser history. Use
@@ -84,6 +84,7 @@ from ..control import control_token
 from ..control.restart_broker import manage_units
 from ..env_load import parse_env_file, read_env_file_or_warn
 from ..identity_state import management_read_allowed, mutating_request_allowed
+from ..install_profile import BUILD_MANIFEST_FILE
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..voice.provider_state import read_active_provider
@@ -159,8 +160,6 @@ def toggle_html(
 # shared primitives live in app.css. This is the seam every migrated
 # wizard reuses.
 
-_ASSET_VERSION_PATH = "/var/lib/jasper/build.txt"
-
 
 def _asset_version() -> str:
     """Current cache-busting token for canonical design assets.
@@ -176,7 +175,7 @@ def _asset_version() -> str:
     verified manifest is written; that long-lived process must notice the
     final atomic manifest replacement. This is one tiny local read per page
     navigation, never part of a wizard's polling/data path."""
-    sha = parse_env_file(_ASSET_VERSION_PATH).get("JASPER_GIT_SHA", "")
+    sha = parse_env_file(str(BUILD_MANIFEST_FILE)).get("JASPER_GIT_SHA", "")
     return sha if sha and sha != "unknown" else "dev"
 
 
@@ -1289,32 +1288,6 @@ def control_token_meta_html() -> str:
     if not token:
         return ""
     return f'<meta name="jts-control-token" content="{html.escape(token)}">'
-
-
-def csrf_fetch_helpers_js() -> str:
-    """JavaScript helpers for fetch()-driven wizard POSTs.
-
-    Pages render `csrf_meta_html()` once, include this snippet in their
-    script, and use:
-
-      * `jsonHeaders()` for JSON-bodied mutating POSTs.
-      * `csrfHeaders({...})` when the POST has a non-JSON content type
-        such as `audio/wav`.
-
-    The helpers tolerate a missing meta tag so static render tests can
-    call page renderers without minting a token."""
-    return """
-function csrfHeaders(headers) {
-  var out = headers || {};
-  var tokenEl = document.querySelector('meta[name=jts-csrf]');
-  var token = tokenEl ? tokenEl.content : '';
-  if (token) out['X-CSRF-Token'] = token;
-  return out;
-}
-function jsonHeaders() {
-  return csrfHeaders({'Content-Type': 'application/json'});
-}
-""".strip()
 
 
 def reject_csrf(handler: BaseHTTPRequestHandler) -> None:

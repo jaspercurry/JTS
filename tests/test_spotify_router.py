@@ -563,6 +563,31 @@ def test_build_router_migrates_legacy_cache_before_building_clients(
     assert router.rebuild_fn is None
 
 
+def test_build_router_with_registry_skips_reload(monkeypatch):
+    """A caller that already loaded (and fingerprinted) its own Registry
+    — e.g. control/volume_ops.py's cache check — passes it straight
+    through; build_router must not re-load it, so the caller gets the
+    same BuildResult it would have derived by hand."""
+    from jasper import accounts as accounts_mod
+    from jasper.spotify_router import BuildResult, build_router
+
+    def fail_load(*a, **k):
+        raise AssertionError("build_router re-loaded a caller-supplied registry")
+
+    monkeypatch.setattr(accounts_mod.Registry, "load", classmethod(fail_load))
+    registry = accounts_mod.Registry(accounts=[], default_name="jasper")
+
+    def fake_build_clients(reg, *, client_id, redirect_uri):
+        assert reg is registry
+        return BuildResult(clients={}, statuses=[], default_name=reg.default_name)
+
+    monkeypatch.setattr("jasper.spotify_router.build_clients", fake_build_clients)
+    router = build_router(
+        client_id="cid", redirect_uri="http://127.0.0.1/callback", registry=registry,
+    )
+    assert router.default_name == "jasper"
+
+
 def test_router_empty_reason_returns_empty_when_clients_present():
     ac = _ac("jasper", title="Hey Jude")
     r = Router(clients={"jasper": ac}, default_name="jasper")

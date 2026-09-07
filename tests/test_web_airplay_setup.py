@@ -17,7 +17,7 @@ import http
 
 from jasper.web import airplay_setup
 
-from ._web_test_helpers import FakeHandler
+from ._web_test_helpers import FakeHandler, assert_canonical_page
 
 
 def _render(mode: str = "synced", flash: str = "") -> str:
@@ -30,8 +30,7 @@ def _render(mode: str = "synced", flash: str = "") -> str:
 
 def test_airplay_page_is_canonical_document():
     out = _render()
-    assert out.startswith("<!doctype html>")
-    assert "/assets/app.css?v=" in out
+    assert_canonical_page(out)
     assert "/assets/airplay/airplay.css?v=" in out
     # Old shell markers must be gone.
     assert "max-width: 620px" not in out
@@ -40,7 +39,7 @@ def test_airplay_page_is_canonical_document():
 
 def test_airplay_page_has_shared_app_header():
     out = _render()
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
     assert '<h1 class="app-header__title">AirPlay sync mode</h1>' in out
     assert '<use href="#icon-back">' in out
 
@@ -111,10 +110,21 @@ def _handler_cls():
     return airplay_setup._make_handler({"state_path": "/tmp/does-not-matter.env"})
 
 
-def test_public_surface_is_stable():
-    assert callable(airplay_setup.make_server)
-    assert callable(airplay_setup._index_html)
-    assert callable(airplay_setup._current_mode)
+def test_make_server_binds_a_tuple_target():
+    """make_server((host, 0)) returns a live server bound to an ephemeral
+    port; the airplay handler is its RequestHandlerClass. _index_html is
+    exercised via _render() above; _current_mode is exercised for real in
+    tests/test_airplay_mode_cli.py."""
+    server = airplay_setup.make_server(
+        ("127.0.0.1", 0), state_path="/tmp/does-not-matter.env",
+    )
+    try:
+        assert server.server_address[0] == "127.0.0.1"
+        assert server.server_address[1] != 0
+        assert hasattr(server.RequestHandlerClass, "do_GET")
+        assert hasattr(server.RequestHandlerClass, "do_POST")
+    finally:
+        server.server_close()
 
 
 def test_mode_refresh_never_starts_disabled_airplay(monkeypatch):
@@ -140,8 +150,7 @@ def test_get_root_renders_canonical_page(monkeypatch):
     handler.do_GET(h)
     assert h.status == 200
     out = h.wfile.getvalue().decode()
-    assert "/assets/app.css?v=" in out
-    assert 'class="app-header"' in out
+    assert_canonical_page(out)
 
 
 def test_post_unknown_route_404s():

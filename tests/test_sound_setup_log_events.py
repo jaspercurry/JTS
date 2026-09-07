@@ -130,7 +130,10 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The route-failure half of the vocabulary is emitted by the shared
     # send_route_failure owner rather than rendered here; the totals span both
     # so converging a call site can never quietly retire its event.
-    assert len(calls) + len(named_failures) + len(dispatch_events) == 99
+    #
+    # The 100th call is /settings reporting a carrier refusal, under the
+    # existing sound.eq_blocked name, so the distinct-name count is unchanged.
+    assert len(calls) + len(named_failures) + len(dispatch_events) == 100
     names = {call.args[1].value for call in calls}
     names |= {_route_failure_event_name(call) for call in named_failures}
     names |= set(dispatch_events)
@@ -171,7 +174,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The reset and re-pin completions are the INFO calls of the topology
     # transaction; each also owns one ERROR branch in the POST dispatcher.
     # The warning count stays fixed.
-    assert levels == {"INFO": 58, "WARNING": 11, "ERROR": 30}
+    assert levels == {"INFO": 59, "WARNING": 11, "ERROR": 30}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():

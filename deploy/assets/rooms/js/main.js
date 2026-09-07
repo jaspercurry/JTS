@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — the /sound/pair/ "Speakers" surface. Directory + wake-response.
+// main.js — the /sound/pair/ "Stereo pair" surface. Directory + wake-response.
 //
 // Fetches /rooms.json on load and re-polls every 7 s. Renders:
 //   * a "this speaker" card — name, hostname, address, Room (with a "Change
@@ -516,6 +516,16 @@ function makeBondCard() {
     h("div.balance-readout", null, balanceValue, balanceTrims, balanceReset),
     balanceStatus);
 
+  // The pair page's own child, /sound/pair/sync/. The href is RELATIVE so it
+  // stays on whatever origin the household is already on: an absolute
+  // https://<hostname> link would land on the self-signed origin and fail
+  // with a cert interstitial (#2632, and #1842 for the /balance/ recurrence).
+  const timingBlock = h("div.bond-timing", null,
+    h("p.info-card__note", null,
+      "Set the timing between the two speakers so they reach your seat "
+      + "together."),
+    h("a.btn.btn--ghost", { href: "sync/" }, "Tune timing"));
+
   const status = h("p.bond-status.info-card__note",
     { "attr:aria-live": "polite" });
   const loadingNote = h("p.info-card__note", null, "Loading speaker grouping…");
@@ -527,6 +537,7 @@ function makeBondCard() {
     dissolveIntro,
     currentSummary,
     balanceBlock,
+    timingBlock,
     dissolveRow,
     status,
   );
@@ -549,6 +560,7 @@ function makeBondCard() {
     currentSummary.style.display = "none";
     dissolveRow.style.display = "none";
     balanceBlock.style.display = "none";
+    timingBlock.style.display = "none";
     title.textContent = "Speaker grouping";
     setEnabled(false);
   }
@@ -562,6 +574,7 @@ function makeBondCard() {
     currentSummary.style.display = bonded ? "" : "none";
     dissolveRow.style.display = bonded ? "" : "none";
     balanceBlock.style.display = bonded ? "" : "none";
+    timingBlock.style.display = bonded ? "" : "none";
     title.textContent = bonded ? "Speaker grouping" : "Create a stereo pair";
   }
 

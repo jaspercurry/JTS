@@ -195,7 +195,7 @@ class VolumeObserver:
         # Self-healing convergence backstop; internally gated and idempotent.
         # See `VolumeCoordinator.maybe_reconcile_camilla` for the gates.
         try:
-            await self._coord.maybe_reconcile_camilla()
+            await self._coord.maybe_reconcile_camilla(source=current_active)
         except Exception as e:  # noqa: BLE001
             # Should never raise (the method swallows internally),
             # but never let a reconcile bug bring down the observer

@@ -16,6 +16,7 @@ own pure functions are tested in ``test_control_state_aggregate.py``.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import re
@@ -42,6 +43,7 @@ from jasper.control.volume_ops import (
     _db_to_percent,
 )
 
+from tests._async_wait import wait_until_sync
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -464,7 +466,7 @@ def test_split_control_helpers_keep_state_at_owner_modules():
     import jasper.control.server as srv_mod
 
     mirrored_names = {
-        "OUTPUTD_BASE_CAMILLA_CONFIG",
+        "BASE_CONFIG_PATH",
         "SOURCE_AVAILABILITY_TTL_SEC",
         "_source_availability_cache",
         "_source_availability_lock",
@@ -742,13 +744,57 @@ def test_sigterm_handler_requests_shutdown_from_helper_thread():
     assert thread_names == ["control-sigterm-shutdown"]
 
 
-def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
+def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
+    monkeypatch, caplog,
+):
+    """A refused listen socket is permanent config, so main() returns the
+    park code the unit holds in RestartPreventExitStatus rather than exiting
+    1 into StartLimitBurst x RestartSec -> StartLimitAction=reboot.
+    See ADR-0251."""
+    import errno
+
+    import jasper.control.server as srv_mod
+    from jasper import flight_recorder
+    from jasper.control import audio_health, system_metrics
+    from tests._log_events import event_fields
+
+    class _NoopSampler:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def service_states_snapshot(self):
+            return {}
+
+    monkeypatch.setattr(flight_recorder, "install", lambda *a, **k: False)
+    monkeypatch.setattr(system_metrics, "SystemSampler", _NoopSampler)
+    monkeypatch.setattr(audio_health, "AudioHealthSampler", _NoopSampler)
+
+    def _refuse(*args, **kwargs):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(srv_mod, "build_server", _refuse)
+
+    with caplog.at_level(logging.ERROR, logger="jasper.control.server"):
+        code = srv_mod.main(["--host", "127.0.0.1", "--port", "8781"])
+
+    assert code == srv_mod.CONTROL_BIND_FAILED_EXIT == 78
+    fields = event_fields(caplog, "control.bind_failed")
+    assert fields["host"] == "127.0.0.1"
+    assert fields["port"] == "8781"
+    assert fields["errno"] == str(errno.EADDRINUSE)
+
+
+@pytest.fixture
+def _peering_env(monkeypatch):
+    """Stub peering config, reset `_peering_thread`/`_peering_loop` around
+    the test, and hand back the modules so the test can install its own
+    FakePeeringDaemon on `peering_daemon_mod.PeeringDaemon`."""
     import jasper.control.server as srv_mod
     import jasper.peering as peering_pkg
     import jasper.peering.daemon as peering_daemon_mod
-
-    started = threading.Event()
-    stopped = threading.Event()
 
     class _Mode:
         value = "on"
@@ -756,6 +802,25 @@ def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
     class _Config:
         enabled = True
         mode = _Mode()
+
+    monkeypatch.setattr(peering_pkg, "load_config", lambda: _Config())
+    with srv_mod._peering_lock:
+        srv_mod._peering_thread = None
+        srv_mod._peering_loop = None
+    try:
+        yield srv_mod, peering_daemon_mod
+    finally:
+        srv_mod.stop_peering_daemon(timeout=1)
+        with srv_mod._peering_lock:
+            srv_mod._peering_thread = None
+            srv_mod._peering_loop = None
+
+
+def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(_peering_env, monkeypatch):
+    srv_mod, peering_daemon_mod = _peering_env
+
+    started = threading.Event()
+    stopped = threading.Event()
 
     class FakePeeringDaemon:
         def __init__(self, cfg):
@@ -767,24 +832,48 @@ def test_stop_peering_daemon_stops_loop_and_runs_daemon_stop(monkeypatch):
         async def stop(self):
             stopped.set()
 
-    monkeypatch.setattr(peering_pkg, "load_config", lambda: _Config())
     monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+
+    srv_mod.start_peering_daemon_if_enabled()
+    assert started.wait(timeout=2)
+    srv_mod.stop_peering_daemon(timeout=2)
+    assert stopped.wait(timeout=2)
     with srv_mod._peering_lock:
-        srv_mod._peering_thread = None
-        srv_mod._peering_loop = None
-    try:
-        srv_mod.start_peering_daemon_if_enabled()
-        assert started.wait(timeout=2)
-        srv_mod.stop_peering_daemon(timeout=2)
-        assert stopped.wait(timeout=2)
-        with srv_mod._peering_lock:
-            assert srv_mod._peering_thread is None
-            assert srv_mod._peering_loop is None
-    finally:
-        srv_mod.stop_peering_daemon(timeout=1)
-        with srv_mod._peering_lock:
-            srv_mod._peering_thread = None
-            srv_mod._peering_loop = None
+        assert srv_mod._peering_thread is None
+        assert srv_mod._peering_loop is None
+
+
+def test_peering_start_failure_clears_thread_and_allows_retry(_peering_env, monkeypatch):
+    """A start() failure clears `_peering_thread` so the next start is a
+    real retry."""
+    srv_mod, peering_daemon_mod = _peering_env
+
+    start_calls: list[int] = []
+    stop_calls: list[int] = []
+
+    class FakePeeringDaemon:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        async def start(self):
+            start_calls.append(1)
+            raise OSError(errno.ENODEV, "No such device")
+
+        async def stop(self):
+            stop_calls.append(1)
+
+    monkeypatch.setattr(peering_daemon_mod, "PeeringDaemon", FakePeeringDaemon)
+
+    srv_mod.start_peering_daemon_if_enabled()
+    wait_until_sync(lambda: srv_mod._peering_thread is None)
+    assert start_calls == [1]
+    assert stop_calls == [1]
+
+    srv_mod.start_peering_daemon_if_enabled()
+    wait_until_sync(lambda: len(start_calls) >= 2)
+    assert start_calls == [1, 1]
+    wait_until_sync(lambda: srv_mod._peering_thread is None)
+    assert stop_calls == [1, 1]
 
 
 # ---------------------------------------------------------------------------

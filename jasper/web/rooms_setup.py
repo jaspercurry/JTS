@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""/sound/pair/ — the "Speakers" surface: directory + wake-response toggle.
+"""/sound/pair/ — the "Stereo pair" surface: directory + wake-response toggle.
 
 Discovery browses the ALWAYS-ON `_jasper-control._tcp` mDNS service
 (advertised unconditionally by deploy/avahi/jasper-control.service) — NOT
@@ -470,7 +470,7 @@ def _render_page(*, csrf_token: str = "") -> bytes:
     # canonical_page emits the CSRF <meta name="jts-csrf"> tag the ES module
     # reads (via http.js jsonHeaders()) for the wake-response POST /peering.
     body = f"""
-{canonical_header("Speakers", back_href="/sound/", back_label="Sound")}
+{canonical_header("Stereo pair", back_href="/sound/", back_label="Sound")}
 <main class="page">
   <div id="app" aria-busy="true">
     <p class="rooms-loading">Looking for speakers on this network…</p>
@@ -479,7 +479,7 @@ def _render_page(*, csrf_token: str = "") -> bytes:
 <script type="module" src="/assets/rooms/js/main.js"></script>
 """
     return canonical_page(
-        "Speakers", body,
+        "Stereo pair", body,
         csrf_token=csrf_token,
         page_css_href=ROOMS_PAGE_CSS_HREF,
     )

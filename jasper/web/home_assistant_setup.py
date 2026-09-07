@@ -64,11 +64,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-# httpx is imported lazily inside `_verify_async` — the only network
-# path that needs it. This wizard module is socket-activated and must
-# import light (same documented convention as
-# jasper/transit/providers/nyc_bus.py); page renders never touch HA.
-
 from .. import home_assistant as _ha_mod
 from ..log_event import log_event
 from ._common import (
@@ -117,13 +112,6 @@ HA_SERVICE_TYPE = "_home-assistant._tcp.local."
 # rarely surfaces new instances — past 5s you're paying latency for
 # nothing.
 DISCOVERY_TIMEOUT_SEC = 4.0
-
-# Validation request timeout (GET /api/). Healthy HA responds in <100ms;
-# 5s gives generous slack for slow Pi hardware or busy networks while
-# still failing fast on dead/unreachable URLs. Kept as plain floats so
-# the httpx.Timeout construction stays inside the lazy-import scope.
-VERIFY_TIMEOUT_SEC = 5.0
-VERIFY_CONNECT_TIMEOUT_SEC = 3.0
 
 # How many recent URLs to keep. Three is enough for a multi-network
 # household ("home", "office", "parents' house") without UI clutter.
@@ -292,101 +280,58 @@ async def _verify_async(
          agents: [{entity_id, name}, ...]}
 
     On success also pulls /api/config (for location_name + version) and
-    /api/states (for the conversation.* agent list). Failures map to
-    user-facing error strings — no stack traces.
+    /api/states (for the conversation.* agent list). Every HA REST
+    detail — headers, TLS, timeouts, the `conversation.` filter — is
+    HAClient's; this function only maps failures to user-facing strings.
     """
-    import httpx  # lazy — see import comment at top of module
-
     url = _normalize_url(url)
     if not url:
         return {"ok": False, "error": "URL is empty or unparseable."}
     if not token.strip():
         return {"ok": False, "error": "Token is empty."}
 
-    headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(
-            timeout=VERIFY_TIMEOUT_SEC, connect=VERIFY_CONNECT_TIMEOUT_SEC,
-        ),
-        headers=headers,
-        verify=verify_ssl,
-    ) as client:
-        try:
-            r = await client.get(url + "/api/")
-        except httpx.ConnectError:
-            return {
-                "ok": False,
-                "error": f"Couldn't reach Home Assistant at {url}. "
-                          "Check the URL and that the speaker can see it on the network.",
-            }
-        except httpx.TimeoutException:
-            return {
-                "ok": False,
-                "error": f"Connection to {url} timed out. "
-                          "Check the URL and that the speaker can see it on the network.",
-            }
-        except httpx.HTTPError as e:
-            return {"ok": False, "error": f"Network error: {e}"}
-
-        if r.status_code == 401:
-            return {
-                "ok": False,
-                "error": "Token wasn't accepted. Make sure you copied the whole "
-                         "token from Home Assistant — they're around 180 characters long.",
-            }
-        if r.status_code != 200:
-            return {
-                "ok": False,
-                "error": f"Unexpected response from Home Assistant: HTTP {r.status_code}.",
-            }
-        try:
-            body = r.json()
-        except ValueError:
-            return {
-                "ok": False,
-                "error": "Home Assistant returned an unexpected response body.",
-            }
-        if body.get("message") != "API running.":
-            return {
-                "ok": False,
-                "error": "URL didn't look like a Home Assistant instance "
-                         "(/api/ returned a different response).",
-            }
-
-        # Connection works. Best-effort fetch of /api/config + /api/states for
-        # the success-state display. Failures here are non-fatal — we only
-        # use them to enrich the success card.
-        instance_name = "Home Assistant"
-        version = ""
-        agents: list[dict[str, str]] = []
-        try:
-            cr = await client.get(url + "/api/config")
-            if cr.status_code == 200:
-                cb = cr.json()
-                instance_name = str(cb.get("location_name") or instance_name)
-                version = str(cb.get("version") or "")
-        except (httpx.HTTPError, ValueError):
-            pass
-        try:
-            sr = await client.get(url + "/api/states")
-            if sr.status_code == 200:
-                for s in sr.json() or []:
-                    eid = str(s.get("entity_id") or "")
-                    if not eid.startswith("conversation."):
-                        continue
-                    attrs = s.get("attributes") or {}
-                    name = str(attrs.get("friendly_name") or eid.split(".", 1)[-1])
-                    agents.append({"entity_id": eid, "name": name})
-        except (httpx.HTTPError, ValueError):
-            pass
+    client = _ha_mod.HAClient(url=url, token=token, verify_ssl=verify_ssl)
+    try:
+        health, cfg, agents = await client.probe(with_agents=True)
+    finally:
+        await client.aclose()
+    if not health.ok:
+        return {"ok": False, "error": _health_error(url, health.outcome)}
 
     return {
         "ok": True,
         "url": url,
-        "instance_name": instance_name,
-        "version": version,
+        "instance_name": str(cfg.get("location_name") or "Home Assistant"),
+        "version": str(cfg.get("version") or ""),
         "agents": agents,
     }
+
+
+def _health_error(url: str, outcome: str) -> str:
+    """User-facing text for a failed `GET /api/` probe, keyed on the
+    outcome bucket alone — HAClient owns which HTTP answer lands in
+    which bucket."""
+    if outcome == _ha_mod.OUTCOME_TIMEOUT:
+        return (
+            f"Connection to {url} timed out. "
+            "Check the URL and that the speaker can see it on the network."
+        )
+    if outcome == _ha_mod.OUTCOME_NETWORK:
+        return (
+            f"Couldn't reach Home Assistant at {url}. "
+            "Check the URL and that the speaker can see it on the network."
+        )
+    return {
+        _ha_mod.OUTCOME_AUTH:
+            "Token wasn't accepted. Make sure you copied the whole "
+            "token from Home Assistant — they're around 180 characters long.",
+        _ha_mod.OUTCOME_NOT_HA:
+            "URL didn't look like a Home Assistant instance "
+            "(/api/ returned a different response).",
+        _ha_mod.OUTCOME_AGENT_ERROR:
+            "Home Assistant answered with a server error. Check its logs, "
+            "then try again.",
+    }.get(outcome, "Home Assistant returned an unexpected response body.")
 
 
 def verify_sync(
@@ -418,7 +363,7 @@ def ready_sync(
     async def _probe() -> bool:
         client = _ha_mod.HAClient(url=url, token=token, verify_ssl=verify_ssl)
         try:
-            return await client.healthcheck()
+            return (await client.probe_health()).ok
         finally:
             await client.aclose()
 

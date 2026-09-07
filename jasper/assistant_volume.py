@@ -28,9 +28,9 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping
 
+from .env_load import VOICE_GROUPING_ENV_FILE
 from .tts_routing import (
     FANIN_TTS_SOCKET,
-    GROUPING_VOICE_ENV_FILE,
     VOICE_TTS_SOCKET_ENV,
     resolve_tts_routing_snapshot,
     resolved_tts_socket_feeds_post_dsp_outputd,
@@ -117,7 +117,7 @@ def _resolved_route_consumes_volume_context(
 def volume_context_publisher_for_runtime(
     env: Mapping[str, str],
     *,
-    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
+    grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
     dynamic_topology: bool = False,
 ) -> VolumeContextPublisher | None:
     """Build a publisher when the active TTS route interprets VolumeContext.

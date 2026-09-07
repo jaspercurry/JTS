@@ -16,13 +16,13 @@ from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
 from jasper.renderer_lanes import (
     RENDERER_LANES,
     RENDERER_RING_PREFIX,
-    RING_SHM_DIR,
     renderer_ring_path,
 )
 from jasper.ring_assets import (
     RING_A_PROGRAM_FILE,
     RING_ACTIVE_CONTENT_FILE,
     RING_B_CONTENT_FILE,
+    RING_SHM_DIR,
 )
 from tests.install_surface import INSTALL_LIB_DIR
 

@@ -57,6 +57,7 @@ from jasper.fanin.status import (
     extract_direct_sample,
     read_fanin_status,
 )
+from jasper.env_load import SOURCE_INTENT_ENV
 from jasper.local_sources import (
     local_source_lifecycle,
     local_source_lifecycles,
@@ -69,7 +70,6 @@ from jasper.logging_setup import configure_logging
 logger = logging.getLogger(__name__)
 
 RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
-SOURCE_INTENT_ENV = "/var/lib/jasper/source_intent.env"
 SOURCE_STATUS_PATH = "/run/jasper-source-intent/status.json"
 
 _INTENT_KEY_PREFIX = "JASPER_SOURCE_INTENT_"
@@ -183,7 +183,7 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
 # pass it actually has to outlast.
 _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
     _ACCESSORY_RECONCILE_UNIT: 65.0,  # target TimeoutStartSec=60
-    _USB_COUPLING_UNIT: 755.0,  # target TimeoutStartSec=750
+    _USB_COUPLING_UNIT: 805.0,  # target TimeoutStartSec=800
 }
 
 

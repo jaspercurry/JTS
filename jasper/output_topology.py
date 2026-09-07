@@ -44,6 +44,7 @@ from .camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_LO,
 )
 from .output_hardware import (
+    DEFAULT_TOPOLOGY_PATH,
     OutputCardFact,
     OutputHardwareState,
     detected_hardware_adoption_precondition,
@@ -60,7 +61,6 @@ CHANNEL_IDENTITY_REPORT_KIND = "jts_output_channel_identity_report"
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_LAYOUT_KIND = "jts_output_layout"
 OUTPUT_TRANSPORT_PLAN_KIND = "jts_output_transport_plan"
-OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
 
 # Active-output route resolution. Owned here, not on the IO-free DAC registry,
@@ -2126,7 +2126,7 @@ def topology_path(path: str | Path | None = None) -> Path:
     return Path(
         path
         or os.environ.get("JASPER_OUTPUT_TOPOLOGY_PATH")
-        or OUTPUT_TOPOLOGY_PATH
+        or DEFAULT_TOPOLOGY_PATH
     )
 
 

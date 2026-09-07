@@ -12,6 +12,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from jasper.atomic_io import env_lock_path
+
 
 @contextmanager
 def spawn_lock_holder(
@@ -36,7 +38,7 @@ def spawn_lock_holder(
     case for a short hold pinning a write-back — is unaffected: terminating
     an already-exited process is a no-op.
     """
-    lock = env_file.parent / f".{env_file.name}.lock"
+    lock = env_lock_path(os.fspath(env_file))
     holding = env_file.parent / f".{env_file.name}.holding"
     script = [
         f'exec 9>>"{lock}"',

@@ -35,7 +35,7 @@ def _chip_rms_log_line(
     reproduces a journal from a build that predates the raw-mic-0 token."""
     raw0_token = "" if raw0 is None else f" raw0={raw0}"
     return (
-        f"2026-09-02 17:00:00,000 aec-bridge INFO "
+        f"2026-09-02 17:00:00,000 INFO jasper.aec_bridge: "
         f"chip_aec rms over 5.0s: ref={ref} near=chip_aec_210:{near} "
         f"primary=chip_aec_150:{primary} "
         f"level_delta={level_delta_db:.1f} dB{raw0_token} "
@@ -1365,9 +1365,9 @@ def test_check_legacy_non_outputd_fallback_skips_status(
 
 def _dtln_loaded_line(size: int = 256) -> str:
     """Synthesize the bridge's successful-load log line in journal
-    `--output=cat` format. Matches jasper/cli/aec_bridge.py:~675."""
+    `--output=cat` format."""
     return (
-        f"2026-05-23 12:47:29,197 aec-bridge INFO "
+        f"2026-05-23 12:47:29,197 INFO jasper.aec_bridge: "
         f"DTLN-aec engine enabled: size={size}, udp out=127.0.0.1:9878"
     )
 
@@ -1375,7 +1375,7 @@ def _dtln_loaded_line(size: int = 256) -> str:
 def _dtln_failed_line(reason: str = "No such file or directory") -> str:
     """Synthesize the bridge's failed-load log line."""
     return (
-        f"2026-05-23 12:47:29,197 aec-bridge WARNING "
+        f"2026-05-23 12:47:29,197 WARNING jasper.aec_bridge: "
         f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {reason}. "
         f"Continuing with AEC3 only."
     )

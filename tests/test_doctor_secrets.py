@@ -27,7 +27,9 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
-from jasper import accounts
+import pytest
+
+from jasper import accounts, google_creds
 from jasper.cli.doctor import _shared, privsep
 from jasper.cli.doctor import secret_compartments as sc
 from jasper.cli.doctor.secret_compartments import COMPARTMENTS
@@ -472,7 +474,11 @@ def test_no_unit_joins_a_compartment_group_without_membership():
 
 
 def test_secret_files_live_under_their_compartment_dir(monkeypatch):
-    for var in ("SPOTIFY_CACHE_PATH", "JASPER_SPOTIFY_ACCOUNTS_PATH"):
+    for var in (
+        "SPOTIFY_CACHE_PATH",
+        "JASPER_SPOTIFY_ACCOUNTS_PATH",
+        "JASPER_GOOGLE_ACCOUNTS_PATH",
+    ):
         monkeypatch.delenv(var, raising=False)
     for comp in COMPARTMENTS:
         prefix = comp.directory.rstrip("/") + "/"
@@ -483,19 +489,44 @@ def test_secret_files_live_under_their_compartment_dir(monkeypatch):
             )
 
 
-def test_audited_paths_follow_the_spotify_env_overrides(tmp_path, monkeypatch):
-    """The Spotify cache + registry paths are env-overridable (jasper.accounts),
-    so the audit must stat the files the box actually uses; a resolver's output
-    is one literal path, never a glob pattern."""
-    cache = str(tmp_path / "cache[1].json")
-    accounts_json = str(tmp_path / "accounts.json")
-    monkeypatch.setenv("SPOTIFY_CACHE_PATH", cache)
-    monkeypatch.setenv("JASPER_SPOTIFY_ACCOUNTS_PATH", accounts_json)
-    d = tmp_path / "jasper-intsecrets"
+@pytest.mark.parametrize(
+    ("group", "overrides", "shadowed_defaults", "expected_globs"),
+    [
+        pytest.param(
+            "jasper-intsecrets",
+            {
+                "SPOTIFY_CACHE_PATH": "cache[1].json",
+                "JASPER_SPOTIFY_ACCOUNTS_PATH": "spotify-accounts.json",
+            },
+            (accounts.LEGACY_CACHE_PATH, accounts.DEFAULT_REGISTRY_PATH),
+            [f"{accounts.DEFAULT_CACHE_DIR}/*.json"],
+            id="spotify",
+        ),
+        pytest.param(
+            "jasper-secrets",
+            {"JASPER_GOOGLE_ACCOUNTS_PATH": "google-accounts.json"},
+            (google_creds.DEFAULT_REGISTRY_PATH,),
+            [f"{google_creds.DEFAULT_TOKEN_DIR}/*.json"],
+            id="google",
+        ),
+    ],
+)
+def test_audited_paths_follow_the_env_overrides(
+    tmp_path, monkeypatch, group, overrides, shadowed_defaults, expected_globs,
+):
+    """The Spotify and Google registry/cache paths are env-overridable, so the
+    audit must stat the files the box actually uses — a registry written under
+    an override lands outside the setgid compartment dir, exactly the exposure
+    this check exists to catch. A resolver's output is one literal path, never
+    a glob pattern."""
+    overridden = {}
+    for var, name in overrides.items():
+        overridden[var] = str(tmp_path / name)
+        monkeypatch.setenv(var, overridden[var])
+    d = tmp_path / group
     dir_st = _mk_dir(d, 0o2770)
     comp = replace(
-        next(c for c in COMPARTMENTS if c.group == "jasper-intsecrets"),
-        directory=str(d),
+        next(c for c in COMPARTMENTS if c.group == group), directory=str(d),
     )
     statted: list[str] = []
     globbed: list[str] = []
@@ -509,15 +540,12 @@ def test_audited_paths_follow_the_spotify_env_overrides(tmp_path, monkeypatch):
         return []
 
     sc._classify_compartment(
-        "secret compartment: jasper-intsecrets", comp, [], [],
-        stat_fn=_stat, glob_fn=_glob,
+        f"secret compartment: {group}", comp, [], [], stat_fn=_stat, glob_fn=_glob,
     )
-    assert {cache, accounts_json} <= set(statted)
-    assert set(statted).isdisjoint(
-        {accounts.LEGACY_CACHE_PATH, accounts.DEFAULT_REGISTRY_PATH}
-    )
+    assert set(overridden.values()) <= set(statted)
+    assert set(statted).isdisjoint(shadowed_defaults)
     # A literal pattern still globs; a resolver's path never does.
-    assert globbed == [f"{accounts.DEFAULT_CACHE_DIR}/*.json"]
+    assert globbed == expected_globs
 
 
 def test_member_units_are_non_root():
