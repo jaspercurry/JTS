@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import pytest
 
@@ -21,45 +20,9 @@ from jasper.research import (
 from jasper.voice.research_announcer import ResearchAnnouncer
 from tests._async_wait import wait_until as _wait_for
 from tests._log_events import event_fields
-from tests._turn_host_fake import FakeTurnHost
+from tests._turn_host_fake import FakeTurnHost, _job, _MarkingScheduler
 
 READY_PROMPT = "Your research is ready — want me to read it now?"
-
-
-def _job(
-    *,
-    id: str = "job12345",
-    status=DONE,
-    result: str | None = "Use induction if you want fast response.",
-    error: str | None = None,
-    created_at: float | None = None,
-    announced: bool = False,
-    read: bool = False,
-) -> ResearchJob:
-    now = created_at if created_at is not None else time.time()
-    return ResearchJob(
-        id=id,
-        query="research cooktops",
-        status=status,
-        result=result,
-        error=error,
-        created_at=now,
-        finished_at=None if status == RUNNING else now,
-        announced=announced,
-        read=read,
-    )
-
-
-class _MarkingScheduler:
-    def __init__(self) -> None:
-        self.announced: list[str] = []
-        self.read: list[str] = []
-
-    def mark_announced(self, job_id: str) -> None:
-        self.announced.append(job_id)
-
-    def mark_read(self, job_id: str) -> None:
-        self.read.append(job_id)
 
 
 class _UnusedClient:
@@ -251,16 +214,7 @@ async def test_research_drain_never_speaks_while_measurement_active():
     """issue #1786: `drain` (distinct from `announce_ready` — this is the
     path the turn teardown uses to flush jobs queued while busy) must also
     honor the flag, mirroring test_research_drain_never_speaks_while_session
-    further below.
-
-    Correction: this test arms the flag BEFORE calling `drain`, so it only
-    exercises the two top-level guards (pre-lock and post-lock) — either
-    one alone already keeps THIS test from hanging, so it does not by
-    itself pin the per-iteration guard inside the for-loop. That guard is
-    the one whose regression actually wedges the daemon (a mid-batch
-    busy-spin with no sleep, for as long as the window stays open) — see
-    test_research_drain_mid_batch_measurement_active_returns_without_hang
-    below, which arms the flag mid-batch instead of before entry."""
+    further below."""
     host = FakeTurnHost(measurement_active=True)
 
     def _must_not_speak(_text: str) -> None:
@@ -292,21 +246,9 @@ async def test_research_drain_mid_batch_measurement_active_returns_without_hang(
     via `_queue_pending`, and the `while` loop reads that refill as "more
     work" and retries immediately.
 
-    Verified empirically while writing this test: wrapping the call in
-    `asyncio.wait_for(..., timeout=...)` (the repo's usual bounded-wait
-    convention, tests/test_async_wait_contract.py) does NOT catch this
-    shape. That spin never awaits anything that actually suspends —
-    `log_event` and `_queue_pending` are both plain sync calls — so the
-    event loop never gets scheduled back to check `wait_for`'s own
-    timeout; only pytest-timeout's OS-signal alarm can preempt a fully
-    synchronous busy loop like this one, and only after the full 300s
-    backstop. So instead this test counts re-queues directly:
-    `_queue_pending` is wrapped to raise a plain, synchronous
-    AssertionError once a job has clearly been handed back with no
-    progress, which propagates immediately with no dependency on event-
-    loop scheduling. `asyncio.wait_for` is kept around it anyway as a
-    second, complementary net for a *different* regression shape (one
-    that hangs on a genuine unresolved await instead of busy-spinning).
+    The re-queue counter (rather than just `asyncio.wait_for`) catches
+    this: a pure-sync busy-spin never awaits anything that suspends, so
+    `wait_for`'s own timeout never gets a chance to run.
     """
     host = FakeTurnHost()
     announcer = ResearchAnnouncer(host=host)

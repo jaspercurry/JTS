@@ -6,15 +6,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 import numpy as np
 import pytest
 
-from jasper.research import DONE, RUNNING, ResearchJob
-from jasper.voice.research_announcer import ResearchWindow
+from jasper.research import ResearchJob
+from jasper.voice.research_announcer import (
+    RESEARCH_READY_CONFIRMATION_TEXT,
+    ResearchWindow,
+)
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 from tests._log_events import event_records
+from tests._turn_host_fake import _job, _MarkingScheduler
 from tests.usage_store_fixtures import FakeUsageStore
 
 def _wake_loop():
@@ -23,42 +26,6 @@ def _wake_loop():
     wl = WakeLoop.for_tests()
     wl._state = State.WAKE
     return wl
-
-
-def _job(
-    *,
-    id: str = "job12345",
-    status=DONE,
-    result: str | None = "Use induction if you want fast response.",
-    error: str | None = None,
-    created_at: float | None = None,
-    announced: bool = False,
-    read: bool = False,
-) -> ResearchJob:
-    now = created_at if created_at is not None else time.time()
-    return ResearchJob(
-        id=id,
-        query="research cooktops",
-        status=status,
-        result=result,
-        error=error,
-        created_at=now,
-        finished_at=None if status == RUNNING else now,
-        announced=announced,
-        read=read,
-    )
-
-
-class _MarkingScheduler:
-    def __init__(self) -> None:
-        self.announced: list[str] = []
-        self.read: list[str] = []
-
-    def mark_announced(self, job_id: str) -> None:
-        self.announced.append(job_id)
-
-    def mark_read(self, job_id: str) -> None:
-        self.read.append(job_id)
 
 
 def _open_window(wl, job: ResearchJob, *, opening_done=None) -> None:
@@ -118,6 +85,43 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert scheduler.read == []
     assert wl._research.window_active is False
     assert not event_records(caplog, "turn.silent_response")
+
+
+async def test_research_announced_in_session_is_spoken_by_end_turn_drain():
+    """Pins `_end_turn_inner`'s trailing `await self._research.drain()`
+    through the real loop, not the announcer directly: a job announced
+    mid-SESSION is held (nothing spoken yet), and only reaches the speaker
+    because teardown drains the announcer after flipping back to WAKE.
+    Stubbing `drain()` to a no-op would leave this red while every
+    announcer-level drain test (which calls `announcer.drain()` directly)
+    stays green."""
+    wl = _wake_loop()
+    _put_in_session(wl)
+    scheduler = _MarkingScheduler()
+    wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
+    spoken: list[str] = []
+
+    async def _play(text: str) -> bool:
+        spoken.append(text)
+        return True
+
+    async def _begin_turn(*, pre_roll: bool, text_context: str | None) -> None:
+        # The confirmation window this opens is not under test here — only
+        # that the drain reaches `_speak` at all.
+        return None
+
+    wl._play_dynamic_text = _play
+    wl._begin_turn = _begin_turn
+
+    await wl.announce_research_ready(_job())
+
+    assert spoken == []
+    assert wl._research.status()["pending_announcements"] == 1
+
+    await wl._end_turn_inner("test")
+
+    assert spoken == [RESEARCH_READY_CONFIRMATION_TEXT]
+    assert wl._research.status()["pending_announcements"] == 0
 
 
 async def test_real_wake_during_confirmation_window_cancels_window_and_wins():

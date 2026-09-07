@@ -10,9 +10,47 @@ booleans and reads back what the announcer asked the loop to do.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
+from jasper.research import DONE, RUNNING, ResearchJob
 from jasper.voice.research_announcer import HostCondition
+
+
+def _job(
+    *,
+    id: str = "job12345",
+    status=DONE,
+    result: str | None = "Use induction if you want fast response.",
+    error: str | None = None,
+    created_at: float | None = None,
+    announced: bool = False,
+    read: bool = False,
+) -> ResearchJob:
+    now = created_at if created_at is not None else time.time()
+    return ResearchJob(
+        id=id,
+        query="research cooktops",
+        status=status,
+        result=result,
+        error=error,
+        created_at=now,
+        finished_at=None if status == RUNNING else now,
+        announced=announced,
+        read=read,
+    )
+
+
+class _MarkingScheduler:
+    def __init__(self) -> None:
+        self.announced: list[str] = []
+        self.read: list[str] = []
+
+    def mark_announced(self, job_id: str) -> None:
+        self.announced.append(job_id)
+
+    def mark_read(self, job_id: str) -> None:
+        self.read.append(job_id)
 
 
 class FakeTurnHost:
