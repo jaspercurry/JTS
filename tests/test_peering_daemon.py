@@ -354,13 +354,13 @@ def test_arbitrate_rpc_timeout_strictly_above_max_arb_window():
     when the arb-window timer fires; a timeout equal to the window max
     (the old hardcoded 0.5 s == 500 ms clamp) could race the real
     decision at the window boundary and fail open with a stale WIN."""
-    from jasper.peering.config import MAX_ARB_WINDOW_MS
+    from jasper.peering.config import ARBITRATE_RPC_MARGIN_SEC, MAX_ARB_WINDOW_MS
 
     assert daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC > MAX_ARB_WINDOW_MS / 1000.0
     # And the margin is the one we intend — a real, non-zero gap.
-    assert daemon_mod.ARBITRATE_RPC_MARGIN_SEC > 0.0
+    assert ARBITRATE_RPC_MARGIN_SEC > 0.0
     assert daemon_mod.ARBITRATE_RPC_TIMEOUT_SEC == (
-        MAX_ARB_WINDOW_MS / 1000.0 + daemon_mod.ARBITRATE_RPC_MARGIN_SEC
+        MAX_ARB_WINDOW_MS / 1000.0 + ARBITRATE_RPC_MARGIN_SEC
     )
 
 

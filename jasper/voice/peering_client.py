@@ -14,7 +14,19 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ..peering.config import ARBITRATE_RPC_TIMEOUT_SEC
+
 logger = logging.getLogger("jasper.voice_daemon")
+
+# The client's read must outlast the daemon's own fail-open RPC timeout
+# (ARBITRATE_RPC_TIMEOUT_SEC): otherwise this readline can expire while
+# the daemon is still arbitrating, and the except-clause below logs
+# "treating as solo" and returns WIN — mistaking the daemon's own
+# eventual reply (including its fail-open StartSession/StandDown) for
+# silence. CLIENT_RPC_MARGIN_SEC is the smallest honest buffer above
+# that budget.
+CLIENT_RPC_MARGIN_SEC = 0.1
+DEFAULT_RPC_TIMEOUT_SEC = ARBITRATE_RPC_TIMEOUT_SEC + CLIENT_RPC_MARGIN_SEC
 
 
 class PeeringClient:
@@ -26,7 +38,7 @@ class PeeringClient:
         self._epoch: str = ""
 
     async def _send(
-        self, cmd: str, *, timeout: float = 0.5,
+        self, cmd: str, *, timeout: float = DEFAULT_RPC_TIMEOUT_SEC,
     ) -> dict | None:
         """Send one command to jasper-control's peering UDS.
 

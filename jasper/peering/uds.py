@@ -12,7 +12,8 @@ and on session lifecycle transitions.
 Wire protocol (one line in, one JSON line out):
 
   ARBITRATE <json>   → {"result":"WIN"|"LOSE","epoch":"<uuid>"}
-                       Long-running: blocks up to (arb_window_ms + 50)
+                       Long-running: blocks up to
+                       jasper.peering.config.ARBITRATE_RPC_TIMEOUT_SEC
                        before resolving. WIN means voice should
                        proceed with begin_turn; LOSE means abort.
   SESSION_STARTED <epoch>           → {"result":"ok"}

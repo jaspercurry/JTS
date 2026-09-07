@@ -61,12 +61,31 @@ DEFAULT_ARB_WINDOW_MS = 150
 # Safe clamp bounds for the arbitration window. A value outside this
 # range is clamped (never rejected — fail-safe). MAX_ARB_WINDOW_MS is
 # the ceiling the fail-open ARBITRATE RPC timeout must stay strictly
-# above (see ARBITRATE_RPC_TIMEOUT_SEC in daemon.py): the timeout has
+# above (see ARBITRATE_RPC_TIMEOUT_SEC below): the timeout has
 # to leave the state machine room to emit StartSession/StandDown even
 # at the widest configured window, or a fail-open WIN could race the
 # real decision at the window boundary.
 MIN_ARB_WINDOW_MS = 50
 MAX_ARB_WINDOW_MS = 500
+
+# Hard timeout for an ARBITRATE RPC. Single owner for both sides of the
+# voice<->peering UDS: jasper.peering.daemon uses it to fail open (WIN)
+# when the state machine hasn't decided in time, and
+# jasper.voice.peering_client.PeeringClient derives its own read budget
+# from it (must outlast this so a daemon reply — including the daemon's
+# own fail-open — is never mistaken for silence). On timeout, voice was
+# going to proceed anyway in single-device mode, so a wedged peering
+# daemon shouldn't silence the speaker (ADR-0128).
+#
+# ARBITRATE_RPC_TIMEOUT_SEC must sit strictly ABOVE MAX_ARB_WINDOW_MS,
+# not merely equal it: the state machine only emits StartSession/
+# StandDown when the arb-window timer fires, so a timeout equal to the
+# window max could fire the fail-open WIN in the same tick as (or ahead
+# of) the real decision — a race between a stale fail-open WIN and the
+# real StartSession/StandDown. The fixed margin guarantees the real
+# decision always wins that race even at the maximum window.
+ARBITRATE_RPC_MARGIN_SEC = 0.15
+ARBITRATE_RPC_TIMEOUT_SEC = MAX_ARB_WINDOW_MS / 1000.0 + ARBITRATE_RPC_MARGIN_SEC
 
 # A locally-detected wake at or above this score breaks an in-flight
 # foreign session (re-enters arbitration). Below this, the local peer
