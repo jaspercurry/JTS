@@ -74,28 +74,10 @@ def _stable_no_bass_graph_authority(monkeypatch):
         classify,
     )
 
-# The page's behaviour was relocated VERBATIM into a static ES module when
-# /sound/room/ migrated to the canonical design system (chrome-only restyle).
-# Render-surface assertions that used to look for inline JS now read the
-# module; the intent (the behaviour ships to the browser) is unchanged.
-_CORRECTION_MODULE = (
-    Path(__file__).resolve().parents[1]
-    / "deploy" / "assets" / "correction" / "js" / "main.js"
-)
-# Sibling modules main.js was cut into (pure move, #4422) — same
-# tests/js/correction_render_harness.mjs list. A presence pin against
-# `_module_js()` must keep seeing code that moves between these files.
-_CORRECTION_SIBLING_MODULES = ("api.js", "capture.js", "format.js", "quality.js")
-
-
-def _module_js() -> str:
-    parts = [_CORRECTION_MODULE.read_text()]
-    parts += [
-        (_CORRECTION_MODULE.parent / name).read_text()
-        for name in _CORRECTION_SIBLING_MODULES
-    ]
-    return "\n".join(parts)
-
+# The page's behaviour ships as a static ES module under
+# deploy/assets/correction/js/. What that module DOES is pinned by
+# tests/js/correction_render_harness.mjs, which evaluates it; the tests here
+# pin only the server-rendered markup the module reaches for.
 
 # ---------- Page render ----------------------------------------------------
 
@@ -105,15 +87,6 @@ def test_render_page_substitutes_hostname():
     assert "acoustic-lab.local" in body
     # The hostname appears in the absolute HTTP dashboard back link.
     assert "__HOSTNAME__" not in body
-
-
-def test_render_page_substitutes_required_sample_rate():
-    body = _module_js()  # behaviour relocated to the static ES module
-    # The constant lands in the JS as a numeric literal — check it shows
-    # up. The JS bails on any other rate. (The migration baked it in as a
-    # literal; the old __REQUIRED_SR__ Python substitution is gone, but the
-    # module's relocation-note comment names it, so don't assert its absence.)
-    assert "var REQUIRED_SR = 48000;" in body
 
 
 def test_render_page_no_unfilled_placeholders():
@@ -129,18 +102,11 @@ def test_render_page_no_unfilled_placeholders():
     assert "__CORRECTION_STRATEGY_OPTIONS__" not in body
 
 
-def test_render_page_embeds_csrf_meta_and_fetch_helpers():
-    # The CSRF meta tag stays in the page (canonical_page renders it); the
-    # fetch helpers moved into the shared ES module, which now IMPORTS
-    # csrfHeaders/jsonHeaders from /assets/shared/js/http.js rather than
-    # inlining them. Assert both surfaces keep the X-CSRF-Token contract.
+def test_render_page_embeds_csrf_meta():
+    # The module reads its token from this tag; the harness pins that every
+    # mutating request carries the header helper's output.
     body = correction_setup._render_page("jts.local", "csrf-token").decode()
     assert 'meta name="jts-csrf" content="csrf-token"' in body
-    js = _module_js()
-    assert 'from "/assets/shared/js/http.js"' in js
-    assert "jsonHeaders" in js and "csrfHeaders" in js
-    assert "headers: jsonHeaders()" in js
-    assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in js
 
 
 def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
@@ -956,19 +922,6 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
         correction_handlers._read_wav_body(Incomplete())
 
 
-def test_render_page_requests_constraints_explicitly():
-    """getUserMedia must request EC/NS/AGC off — Safari will sometimes
-    ignore the constraint, but we have to ASK first. Verify the JS
-    actually sets these. Without this, even a correctly-implemented
-    Safari would give us processed audio."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    assert "echoCancellation: false" in body
-    assert "noiseSuppression: false" in body
-    assert "autoGainControl: false" in body
-    # And the constructor pin for sample rate.
-    assert "sampleRate: REQUIRED_SR" in body
-
-
 def test_render_page_includes_mic_picker_and_calibration_controls():
     # Markup (the picker + model dropdown) stays in the page; the device
     # enumeration + calibration fetch/upload plumbing moved to the module.
@@ -977,26 +930,11 @@ def test_render_page_includes_mic_picker_and_calibration_controls():
     assert 'id="mic-model-select"' in body
     assert "Dayton Audio iMM-6 / iMM-6C" in body
     assert "miniDSP UMIK-1" in body
-    js = _module_js()
-    assert "enumerateDevices" in js
-    assert "audioConstraints.deviceId = {exact: desiredDeviceId}" in js
-    assert "calibration/fetch" in js
-    assert "calibration/upload" in js
-    assert "calibration_id: selectedCalibrationId" in js
-    assert "function invalidateLoadedCalibration()" in js
-    assert "micSerialInput.addEventListener('input'" in js
-    assert "micOrientationSelect.addEventListener('change'" in js
-    assert "calibrationSignSelect.addEventListener('change'" in js
-    assert "calibrationFileInput.addEventListener('change'" in js
 
 
 def test_render_page_includes_browser_audio_path_report():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="browser-audio-report"' in body  # markup stays in the page
-    js = _module_js()  # rendering logic moved to the module
-    assert "function renderBrowserAudioReport(report)" in js
-    assert "renderBrowserAudioLocal(actual, problems)" in js
-    assert "browser_audio_report" in js
 
 
 def test_sanitize_input_device_hashes_browser_ids():
@@ -1028,203 +966,6 @@ def test_sanitize_input_device_hashes_browser_ids():
     assert out["actual_device_id_hash"]
 
 
-def test_render_page_reads_back_settings_for_verify():
-    """After getUserMedia, the JS must call getSettings() and surface
-    a red banner if EC/NS/AGC didn't actually take effect. If this
-    check ever falls out, future phases would silently measure with
-    Safari's processed audio — which is exactly the wrong thing."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    assert ".getSettings()" in body
-    # All three constraint names appear in the verify section.
-    assert "actual.echoCancellation" in body
-    assert "actual.noiseSuppression" in body
-    assert "actual.autoGainControl" in body
-
-
-def test_verify_capture_starts_before_server_sweep_request():
-    """Verification must arm browser capture before POST /verify triggers
-    the server-side sweep. Otherwise the verification recording can miss
-    the first part of playback on real hardware."""
-    body = _module_js()
-    start = body.index("async function startVerify(triggerBtn)")
-    end = body.index("// Centralised button-state policy", start)
-    fn = body[start:end]
-    assert fn.index("postMessage('startCapture')") < fn.index(
-        "await postJson('verify', {})"
-    )
-    assert "captureMode = 'discard'" in fn
-    assert "postMessage('stopCapture')" in fn
-
-
-def test_local_capture_binds_realized_input_before_level_matching():
-    """The server reserves the run before local mic permission. Once the
-    browser knows the realized device, it must bind that identity to the live
-    session before level matching. Noise recording is a later, separate
-    server-owned action."""
-    body = _module_js()
-    start = body.index("async function startMicCapture()")
-    end = body.index("// iOS auto-releases", start)
-    fn = body[start:end]
-    assert fn.index("refreshSessionMechanics()") < fn.index("getUserMedia")
-    assert fn.index(".getSettings()") < fn.index(
-        "postJson('local-capture/setup'"
-    )
-    assert "capturePreSweepNoise()" not in fn
-    assert "session_id: sessionId" in fn
-    assert "input_device: selectedInputDevice" in fn
-    assert "calibration_id: selectedCalibrationId" in fn
-    assert "bindAttempt < 2" in fn
-    assert "postJson('local-capture/setup', bindPayload)" in fn
-    assert "LOCAL_CAPTURE_MEMORY_KEY" in body
-    assert "rememberLocalCapture(actual.deviceId || desiredDeviceId)" in fn
-    assert "if (!localCaptureSetupBound)" in fn
-    assert "actual.deviceId !== desiredDeviceId" in fn
-    assert fn.index("if (!desiredDeviceId && !localCaptureSetupBound)") < fn.index(
-        "postJson('local-capture/setup'"
-    )
-    discovery = fn.split(
-        "if (!desiredDeviceId && !localCaptureSetupBound)", 1
-    )[1].split("if (desiredDeviceId", 1)[0]
-    assert "stopMicStream()" in discovery
-    assert "await populateInputDevices()" in discovery
-
-    start = body.index("async function startMeasurement()")
-    end = body.index("async function continueToNextPosition()", start)
-    start_fn = body[start:end]
-    assert "capturePreSweepNoise()" not in start_fn
-    assert start_fn.index("sessionId = resp.session_id") < start_fn.index(
-        "setRunTransportLocked(true)"
-    )
-
-    assert "rememberLocalCapture(null)" in start_fn
-    assert "localRunOwnerSessionId = sessionId" in start_fn
-
-    action_start = body.index("async function onWizardNextClick()")
-    action_end = body.index("function validateEnvelope", action_start)
-    action_fn = body[action_start:action_end]
-    assert "ep === '/autolevel/start'" in action_fn
-    assert "ep === '/upload-noise'" in action_fn
-    assert action_fn.index("ep === '/autolevel/start'") < action_fn.index(
-        "ep === '/upload-noise'"
-    )
-    assert "wizardNextBtn.hidden = true" in action_fn
-    upload_branch = action_fn.split("ep === '/upload-noise'", 1)[1].split(
-        "} else if", 1
-    )[0]
-    assert "await capturePreSweepNoise()" in upload_branch
-    assert "wizardActionInFlight" in action_fn
-
-
-def test_local_resume_reacquires_mic_before_advancing_capture_states():
-    js = _module_js()
-    next_position = js.split(
-        "async function continueToNextPosition()", 1
-    )[1].split("async function repeatMainSeat()", 1)[0]
-    repeat = js.split(
-        "async function repeatMainSeat()", 1
-    )[1].split("function computeTargetBand", 1)[0]
-    verify = js.split(
-        "async function startVerify(triggerBtn)", 1
-    )[1].split("function applyButtonPolicy", 1)[0]
-
-    for block in (next_position, repeat, verify):
-        assert "await ensureLocalCaptureReady()" in block
-
-
-def test_local_permission_is_requested_only_after_start_setup_action():
-    # The pre-Start local-capture toggle (issue #3069) is gone, so this pins
-    # only the landing init branch now: capture-less installs populate
-    # input devices without ever calling detectMicrophones(), which is what
-    # would trigger a permission prompt before the user reaches Start.
-    js = _module_js()
-    landing = js.split("// Landing never asks for microphone permission.", 1)[1]
-    landing = landing.split("updateMicCalibrationRows();", 1)[0]
-
-    assert "detectMicrophones();" not in landing
-    assert "populateInputDevices();" in landing
-    assert "pollState();" in landing
-
-
-def test_live_status_locks_transport_and_restores_tab_session_identity():
-    js = _module_js()
-    sync = js.split("function syncSessionMechanics(snapshot)", 1)[1]
-    sync = sync.split("async function refreshSessionMechanics", 1)[0]
-    poll = js.split("async function pollState(options)", 1)[1]
-    poll = poll.split("async function onCaptureReady", 1)[0]
-
-    assert "serverSessionId = snapshot.session_id" in sync
-    assert "remembered.session_id === serverSessionId" in sync
-    assert "localRunOwnedByThisTab = !!matchingMemory" in sync
-    assert "localRunOwnerSessionId === serverSessionId" in sync
-    assert "sessionId = localRunOwnedByThisTab ? serverSessionId : null" in sync
-    assert "snapshot.local_capture_setup_bound === true" in sync
-    assert "setRunTransportLocked(liveRun)" in sync
-    assert "syncSessionMechanics(s)" in poll
-
-
-def test_local_capture_resource_failures_clean_up_stream_and_blob_url():
-    js = _module_js()
-    fn = js.split("async function startMicCapture()", 1)[1]
-    fn = fn.split("// iOS auto-releases", 1)[0]
-    worklet = fn.split("await ctx.audioWorklet.addModule(blobUrl)", 1)[1]
-    worklet = worklet.split("var src =", 1)[0]
-
-    assert "stopMicStream()" in worklet
-    assert "URL.revokeObjectURL(blobUrl)" in worklet
-
-
-def test_render_page_does_not_loop_mic_back_to_speaker():
-    """A naive 'src.connect(node); node.connect(ctx.destination)' would
-    play the mic back through the phone speaker. Acceptable on a
-    laptop, terrible on a smart speaker that's the room's TARGET (the
-    feedback loop would be instant and ear-melting). Keep the comment
-    that documents the deliberate omission as a regression pin."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    # node.connect(ctx.destination) MUST NOT appear.
-    assert "node.connect(ctx.destination)" not in body
-    # The anti-feedback comment must be there to flag the omission as
-    # deliberate to a future drive-by editor.
-    assert "feedback loop" in body
-
-
-def test_render_page_serves_audioworklet_inline():
-    """Phase 0 ships an inline AudioWorklet via Blob URL. Important
-    invariant: the worklet pattern (not ScriptProcessorNode) carries
-    into Phase 1 sweep capture, where worklet timing matters. If a
-    future change replaces the worklet with ScriptProcessorNode, the
-    sweep capture refactor breaks."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    assert "AudioWorkletProcessor" in body
-    assert "AudioWorkletNode" in body
-    assert "audioWorklet.addModule" in body
-
-
-def test_render_page_requests_wake_lock():
-    """A 2-minute sweep on iOS Safari without Wake Lock = screen
-    locks mid-measurement = AudioContext suspended = capture lost.
-    Pin the request here so it's not optimized away later."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    assert "wakeLock" in body
-    assert "screen" in body  # request type
-
-
-def test_render_page_treats_undefined_constraints_as_ok():
-    """iOS Safari often returns `undefined` from getSettings() for
-    echoCancellation / noiseSuppression / autoGainControl rather
-    than echoing back the requested value. Undefined ≠ true ⇒ the
-    feature is off (iOS has these off by default for getUserMedia).
-    The page must NOT mark undefined as 'bad' — that was a
-    real first-pass-test bug. Pin the corrected behavior."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    # Helper function exists.
-    assert "isAudioProcessingOff" in body
-    # Only TRUE counts as a problem (not 'truthy', because
-    # undefined is falsy and would otherwise be misclassified).
-    assert "actual.echoCancellation === true" in body
-    assert "actual.noiseSuppression === true" in body
-    assert "actual.autoGainControl === true" in body
-
-
 def test_render_page_includes_autolevel_controls():
     """The leveling step is now AUTOMATIC — server ramps main_volume
     while client watches mic and posts /autolevel/lock when in
@@ -1241,20 +982,6 @@ def test_render_page_includes_autolevel_controls():
     assert 'id="autolevel-lock"' in body
     assert 'id="autolevel-cancel"' in body
     assert "Lock now" in body
-    # JS handlers exist + target the right endpoints (now in the module).
-    js = _module_js()
-    assert "startAutolevel" in js
-    assert "autolevel/start" in js
-    assert "autolevel/lock" in js
-    # Every capture path share Room's fixed acoustic-headroom window;
-    # measured noise remains evidence rather than permission to lock hotter.
-    assert "computeTargetBand" in js
-    assert "ROOM_LEVEL_WINDOW_LOW_DBFS" in js
-    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS" in js
-    # Preflight noise-floor measurement step is present.
-    assert "Measuring room noise" in js
-    assert "You can measure now" not in js
-    assert "no measurement level was locked" in js
 
 
 def test_cancel_measurement_lives_in_always_visible_wizard_chrome():
@@ -1270,26 +997,12 @@ def test_cancel_measurement_lives_in_always_visible_wizard_chrome():
     assert 'id="wizard-chrome" class="wizard-chrome hidden"' not in body
 
 
-def test_report_delete_refreshes_envelope_section_membership():
-    js = _module_js()
-    start = js.index("async function deleteSessionBundle(sessionId)")
-    end = js.index("async function loadSessionReport(sessionId)", start)
-    fn = js[start:end]
-
-    assert fn.index("await loadSessionReports()") < fn.index(
-        "await refreshEnvelope()"
-    )
-
-
 def test_render_page_includes_strategy_without_duplicate_design_audit():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="strategy-select"' in body  # picker markup stays in the page
     assert "Balanced" in body
     assert "Assertive" not in body
     assert 'id="design-report"' not in body
-    js = _module_js()  # the wiring + render moved to the module
-    assert "strategy_choice: strategyChoice" in js
-    assert "renderDesignReport" not in js
 
 
 def test_render_page_keeps_chart_but_removes_duplicate_result_policy():
@@ -1308,19 +1021,6 @@ def test_render_page_keeps_chart_but_removes_duplicate_result_policy():
     ):
         assert f'id="{removed_id}"' not in body
 
-    js = _module_js()
-    for duplicate_policy in (
-        "renderResultsSummary",
-        "renderRuntimeIntegrity",
-        "renderConfidence",
-        "renderDesignReport",
-        "recommendedNextAction",
-        "smoothCurve",
-        "smoothingWidthOctaves",
-    ):
-        assert duplicate_policy not in js
-    assert "drawEnvelopeCurves" in js
-
 
 def test_render_page_includes_read_only_measurement_reports():
     body = correction_setup._render_page("jts.local").decode()
@@ -1330,12 +1030,6 @@ def test_render_page_includes_read_only_measurement_reports():
     assert 'id="measurement-reports"' not in body
     assert 'id="session-history"' in body
     assert 'id="session-report"' in body
-    js = _module_js()
-    assert "loadSessionReports" in js
-    assert "endpoint('session-report') + '?id='" in js
-    assert "session/delete" in js
-    assert "Private raw recordings" in js
-    assert "What looks trustworthy" in js
 
 
 def test_render_page_includes_noise_and_repeat_capture_flow():
@@ -1346,99 +1040,15 @@ def test_render_page_includes_noise_and_repeat_capture_flow():
     # disclosure. test_correction_envelope pins the exact server wording.
     assert "automatically repeats the main-seat measurement once" not in body
     assert 'id="repeat-position"' not in body
-    js = _module_js()  # the capture/upload flow moved to the module
-    assert "block.repeat_disclosure" in js
-    assert "capturePreSweepNoise" in js
-    assert "upload-noise" in js
-    assert "repeat-position" in js
-    assert "awaiting_repeat_capture" in js
-
-
-def test_envelope_shows_result_before_drawing_chart():
-    """The envelope must lay out the result canvas before drawing it."""
-    body = _module_js()
-    start = body.index("function renderEnvelope(env)")
-    end = body.index("function renderTuning(block)", start)
-    router = body[start:end]
-    assert router.index("renderSections(env.sections") < router.index(
-        "drawEnvelopeCurves(env)"
-    )
-    assert "drawChart skipped" in body
-
-
-def test_upload_capture_ack_refreshes_envelope_for_presentation():
-    js = _module_js()
-    start = js.index("async function onCaptureReady(arrayBuffer, kind)")
-    end = js.index("async function applyCorrection", start)
-    upload = js[start:end]
-
-    ack = upload.index("await resp.json()")
-    concurrent = upload.index("await Promise.all([")
-    status = upload.index("pollState({skipEnvelopeRefresh: true})", concurrent)
-    envelope = upload.index("refreshEnvelope()", concurrent)
-    assert ack < concurrent < status
-    assert ack < concurrent < envelope
-    assert "data.measured" not in upload
-    assert "drawChart(data" not in upload
-
-
-def test_render_page_redraws_chart_on_resize():
-    """Phone rotation / external display change should re-render
-    the chart at the new canvas size, not stretch the old bitmap.
-    Pin the resize + orientationchange listeners."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    assert "scheduleChartRedraw" in body
-    assert "orientationchange" in body
-
-
-def test_render_page_autolevel_target_band_clamps():
-    """The preferred local UMIK path reserves the same ESS headroom."""
-    body = _module_js()  # behaviour relocated to the static ES module
-    assert "ROOM_LEVEL_WINDOW_LOW_DBFS = -26" in body
-    assert "ROOM_LEVEL_WINDOW_HIGH_DBFS = -18" in body
-    target = body.split("function computeTargetBand", 1)[1].split(
-        "function autolevelAutoLockEligible", 1
-    )[0]
-    assert "low: ROOM_LEVEL_WINDOW_LOW_DBFS" in target
-    assert "high: ROOM_LEVEL_WINDOW_HIGH_DBFS" in target
-    assert "noiseFloorDb +" not in target
 
 
 def test_render_page_autolevel_requires_ambient_trust_after_tone_start(
     monkeypatch,
 ):
-    """Ambient in the fixed window cannot impersonate the level tone."""
+    """The trust margin the module fails closed without is server-owned."""
     monkeypatch.setenv("JASPER_RAMP_TRUST_MARGIN_DB", "12.5")
     page = correction_setup._render_page("jts.local").decode()
     assert 'data-level-trust-margin-db="12.5"' in page
-
-    body = _module_js()
-    start = body.split("async function startAutolevel", 1)[1].split(
-        "async function cancelAutolevel", 1
-    )[0]
-    assert start.index("await postJson('autolevel/start', {})") < start.index(
-        "watcher = setInterval(watchAutolevelRms, 50)"
-    )
-    assert "autolevelAutoLockEligible(" in start
-    assert "noiseFloorDb + trustMarginDb" in body
-    assert "noiseFloorDb = -50" not in start
-    assert "noiseFloorDb = null" in start
-
-
-def test_render_page_amp_message_is_generic_not_tpa3255():
-    """First pass said 'TPA3255 amp knob' — wrong because (a) users
-    don't know what that is, and (b) they might be on a different
-    amp. Generic 'turn up your amplifier' is the right wording.
-    Pin the wording so a future revision doesn't accidentally
-    reintroduce the brand-specific text."""
-    # The amp wording lives in the autolevel status copy, which moved into
-    # the module; the brand-specific text must not reappear in either surface.
-    body = correction_setup._render_page("jts.local").decode()
-    js = _module_js()
-    combined = (body + js).lower()
-    assert "raise the external amplifier" in combined
-    assert "TPA3255" not in body
-    assert "TPA3255" not in js
 
 
 def test_render_page_placement_advice_says_head_height():
@@ -1452,11 +1062,8 @@ def test_render_page_placement_advice_says_head_height():
 
 
 def test_next_position_is_only_an_envelope_owned_action():
-    body = _module_js()  # behaviour relocated to the static ES module
     html = correction_setup._render_page("jts.local").decode()
     assert 'id="continue-position"' not in html
-    assert "ep === '/next-position'" in body
-    assert "await continueToNextPosition()" in body
 
 
 def test_render_page_certificate_copy_is_one_plain_sentence():
@@ -3874,20 +3481,6 @@ def test_the_apply_path_restore_is_not_gated_on_the_controllers_one_shot_latch()
     correction_handlers._maybe_restore_main_volume(sess, _volume_recording_cam([]))
 
     assert declared == [-20.0]
-
-
-def test_needs_noise_capture_offers_cancel_in_ui():
-    # The stranded-noise-capture dead-end: needs_noise_capture waits on an
-    # automatic browser upload that can fail (denied mic / backgrounded tab),
-    # so the UI must offer Cancel there — pairs with the server-side watchdog.
-    js = _module_js()
-    block = js.split("var cancellableStates = [", 1)[1].split("]", 1)[0]
-    assert "'needs_noise_capture'" in block
-    assert "'preparing', 'sweeping', 'verifying'" in block
-    policy = js.split("function applyButtonPolicy", 1)[1]
-    policy = policy.split("function renderCaptureStatusFromSnapshot", 1)[0]
-    assert "cancellableStates.indexOf(state) !== -1" in policy
-    assert "'Stop measurement'" in policy
 
 
 def test_e2e_reset_while_busy_returns_409(monkeypatch, tmp_path):

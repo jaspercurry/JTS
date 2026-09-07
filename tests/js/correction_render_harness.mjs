@@ -173,11 +173,17 @@ function getOrMake(id) {
 // /envelope through this and asserts the /envelope call count.
 const fetchRoutes = new Map();       // substring -> () => bodyObject
 const fetchCounts = new Map();       // substring -> integer
+const fetchLog = [];                 // {url, method, headers} in call order
 function setFetchRoute(substr, bodyFn) { fetchRoutes.set(substr, bodyFn); }
 function fetchCountFor(substr) { return fetchCounts.get(substr) || 0; }
-function resetFetchCounts() { fetchCounts.clear(); }
+function resetFetchCounts() { fetchCounts.clear(); fetchLog.length = 0; }
 const globalFetch = async (url, init = {}) => {
   const u = String(url || "");
+  fetchLog.push({
+    url: u,
+    method: String(init.method || "GET"),
+    headers: init.headers || null,
+  });
   let body = {};
   let jsonBodyFn = null;
   let ok = true;
@@ -221,14 +227,22 @@ const globalFetch = async (url, init = {}) => {
   };
 };
 
-// AudioContext stub (mic capture path — not exercised by render tests)
+// AudioContext stub (mic capture path). `destination` is the smart speaker's
+// own output: a mic node connected to it is an instant feedback loop, so the
+// capture test records every connect target and asserts this sentinel is
+// never among them.
+const SPEAKER_OUTPUT = { __role: "speaker-output" };
+const micNodeConnections = [];
 class FakeAudioContext {
   constructor() {
     this.state = "running";
     this.sampleRate = 48000;
     this.audioWorklet = { async addModule() {} };
+    this.destination = SPEAKER_OUTPUT;
   }
-  createMediaStreamSource() { return { connect() {} }; }
+  createMediaStreamSource() {
+    return { connect(target) { micNodeConnections.push(target); } };
+  }
   createAnalyser() { return { fftSize: 0, frequencyBinCount: 0, getByteTimeDomainData() {} }; }
   createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
   createMediaStreamDestination() { return { stream: {} }; }
@@ -241,12 +255,6 @@ class FakeAudioWorkletNode {
     this.port = { onmessage: null, postMessage() {} };
   }
 }
-
-// ---- Stub calls that would fail in Node (applied to the entry module only) ----
-const STUB_AUDIO_WORKLET = [
-  /audioCtx\.audioWorklet\.addModule\b/g,
-  "(() => Promise.resolve())",
-];
 
 // Inject a probe hook just before the IIFE closes so tests can call the function
 // directly.  The hook is a function expression assigned to a global, set from
@@ -279,6 +287,7 @@ const PROBE_INJECT = [
     cancelMeasurement,
     resetCorrection,
     resetFromBanner,
+    computeTargetBand,
     autolevelAutoLockEligible,
     // P6 tuning-assistant surfaces (IIFE-local).
     renderTuning,
@@ -288,6 +297,7 @@ const PROBE_INJECT = [
     onTuningPropose,
     renderBrowserAudioReport,
     renderBrowserAudioLocal,
+    renderConstraints,
     renderQuality,
     loadSessionReport,
     // Household-mic prefill / calibration-identity surfaces (issue #1656).
@@ -469,7 +479,7 @@ const runner = buildFunction(
       path: join(siblingDir, name),
       rewrite: index === 0 ? [STRIP_EXPORT, PREPEND_PREAMBLE] : [STRIP_EXPORT],
     })),
-    { path: modulePath, rewrite: [STUB_AUDIO_WORKLET, PROBE_INJECT] },
+    { path: modulePath, rewrite: [PROBE_INJECT] },
   ],
   {
     stripImports: true,
@@ -569,6 +579,7 @@ const {
   cancelMeasurement,
   resetCorrection,
   resetFromBanner,
+  computeTargetBand,
   autolevelAutoLockEligible,
   renderTuning,
   renderTuningProposals,
@@ -577,6 +588,7 @@ const {
   onTuningPropose,
   renderBrowserAudioReport,
   renderBrowserAudioLocal,
+  renderConstraints,
   renderQuality,
   loadSessionReport,
   applyHouseholdMicPrefill,
@@ -742,6 +754,10 @@ function currentPresentation(over) {
   applyButtonPolicy("analyzing", "idle");
   assert(emergency.hidden,
     "CPU-only analysis is not presented as cancellable audio");
+  applyButtonPolicy("needs_noise_capture", "idle");
+  assert(!emergency.hidden && emergency.textContent === "Cancel measurement",
+    "a stranded automatic noise capture still offers a way out",
+    { hidden: emergency.hidden, label: emergency.textContent });
   applyButtonPolicy("awaiting_capture", "idle");
   await cancelMeasurement();
   assert(globalThis.__confirmCalls === 1,
@@ -2394,6 +2410,15 @@ await (async () => {
     "autolevel: missing server trust policy fails closed");
   assert(!autolevelAutoLockEligible(-20, band, null, 10),
     "autolevel: missing measured ambient fails closed");
+
+  const quiet = computeTargetBand(-70);
+  const noisy = computeTargetBand(-30);
+  assert(quiet.low === band.low && quiet.high === band.high,
+    "autolevel: every capture path shares one fixed acoustic-headroom window",
+    {got: quiet});
+  assert(noisy.low === quiet.low && noisy.high === quiet.high,
+    "autolevel: measured noise is evidence, never permission to lock hotter",
+    {got: noisy});
 })();
 
 // 38. resetCorrection is destructive (discards an applied+verified room
@@ -2987,9 +3012,192 @@ await (async () => {
   }
 }
 
+// 45. The capture-settings table is the household's read-back of what the
+//     browser actually granted. iOS Safari reports `undefined` from
+//     getSettings() rather than echoing a constraint back, and undefined
+//     means the feature is off, not that the row is bad — misreading it was
+//     a real first-pass bug.
+{
+  invalidateLoadedCalibration();   // no calibration-identity mismatch in play
+  const granted = {
+    sampleRate: 48000, echoCancellation: false, noiseSuppression: false,
+    autoGainControl: false, channelCount: 1, deviceId: "usb",
+    label: "USB measurement mic",
+  };
+  const verdictFor = (field) => {
+    const row = getOrMake("constraint-rows").children
+      .map((tr) => tr.innerHTML)
+      .find((html) => html.indexOf(`<td>${field}</td>`) === 0);
+    return row === undefined
+      ? "missing"
+      : (row.indexOf('class="ok"') !== -1 ? "ok" : "bad");
+  };
+  const cases = [
+    ["sampleRate", { sampleRate: 48000 }, "ok"],
+    ["sampleRate", { sampleRate: 44100 }, "bad"],
+    ["channelCount", { channelCount: 1 }, "ok"],
+    ["channelCount", { channelCount: 2 }, "bad"],
+  ];
+  for (const flag of ["echoCancellation", "noiseSuppression", "autoGainControl"]) {
+    cases.push([flag, { [flag]: false }, "ok"]);
+    cases.push([flag, { [flag]: undefined }, "ok"]);
+    cases.push([flag, { [flag]: true }, "bad"]);
+  }
+  for (const [field, override, want] of cases) {
+    renderConstraints({ ...granted, ...override }, []);
+    assert(verdictFor(field) === want,
+      `capture read-back grades ${field}=${String(override[field])} as ${want}`,
+      { got: verdictFor(field) });
+  }
+
+  renderConstraints({ ...granted }, []);
+  assert(getOrMake("err-banner").hidden,
+    "a fully honoured capture request raises no banner");
+  renderConstraints({ ...granted }, ["sampleRate is 44100"]);
+  assert(!getOrMake("err-banner").hidden,
+    "an unhonoured capture request blocks with a visible banner");
+}
+
+// 46. What the browser ASKS getUserMedia for: 48 kHz mono with the three
+//     processing features off, and the chosen device pinned with {exact} —
+//     without it Safari silently substitutes the built-in mic, which is how
+//     a UMIK calibration once got applied to iPhone-mic audio. The same walk
+//     pins that nothing on the capture path is ever connected to the
+//     speaker's own output (that would be an instant feedback loop on the
+//     device being measured).
+await (async () => {
+  resetFetchCounts();
+  const runId = "constraint-walk-run";
+  sessionStorageValues.set("jts-room-local-capture-v1", JSON.stringify({
+    session_id: runId, device_id: "usb", calibration_id: null,
+  }));
+  setFetchRoute("/status", () => ({
+    session_id: runId,
+    state: "needs_noise_capture",
+    local_capture_setup_bound: false,
+    autolevel: { status: "idle" },
+  }));
+  setFetchRoute("/local-capture/setup", () => ({ state: "needs_noise_capture" }));
+
+  let asked = null;
+  const track = {
+    label: "USB measurement mic",
+    stop() {},
+    getSettings() {
+      return { sampleRate: 48000, channelCount: 1, deviceId: "usb" };
+    },
+  };
+  fakeWindow.navigator.mediaDevices.getUserMedia = async (constraints) => {
+    asked = constraints;
+    return { getAudioTracks() { return [track]; }, getTracks() { return [track]; } };
+  };
+  getOrMake("input-device-select").value = "usb";
+  micNodeConnections.length = 0;
+
+  const ready = await startMicCapture();
+
+  assert(ready === true,
+    "an explicitly chosen microphone binds the run's capture identity");
+  assert(asked && asked.video === false,
+    "the measurement never requests video", { got: asked });
+  const audio = (asked && asked.audio) || {};
+  assert(audio.echoCancellation === false &&
+      audio.noiseSuppression === false &&
+      audio.autoGainControl === false,
+    "the three processing features are asked to be OFF", { got: audio });
+  assert(audio.sampleRate === 48000 && audio.channelCount === 1,
+    "capture is asked for at the measurement rate, mono", { got: audio });
+  assert(audio.deviceId && audio.deviceId.exact === "usb",
+    "the chosen input device is pinned with {exact}", { got: audio.deviceId });
+  assert(micNodeConnections.length > 0 &&
+      !micNodeConnections.includes(SPEAKER_OUTPUT),
+    "the microphone is never connected to the speaker's own output",
+    { targets: micNodeConnections.length });
+  assert(fetchCountFor("/local-capture/setup") === 1,
+    "a realized microphone identity is bound to the live run exactly once",
+    { got: fetchCountFor("/local-capture/setup") });
+
+  fakeWindow.navigator.mediaDevices.getUserMedia = () =>
+    Promise.reject(new Error("no media"));
+  getOrMake("input-device-select").value = "";
+  sessionStorageValues.delete("jts-room-local-capture-v1");
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await settle();
+  resetEnvelopeBookkeeping();
+})();
+
+// 47. nginx mounts /sound/room/ on the measurement backend's root, so every
+//     flow's URL is that one public prefix plus its path — a request that
+//     drifts off it reaches the page route, not the API. Mutating flows also
+//     have to carry the CSRF header helper's output.
+await (async () => {
+  setFetchRoute("/calibration/fetch", () => ({ calibration_id: "cal-1" }));
+  setFetchRoute("/calibration/upload", () => ({ calibration_id: "cal-2" }));
+  setFetchRoute("/session-report", () => ({ evidence: {}, session_id: "s-1" }));
+  setFetchRoute("/reset", () => ({ state: "idle" }));
+  setFetchRoute("/start", () => ({ session_id: "url-walk" }));
+  seedMicModelOptions("umik1");
+  getOrMake("mic-serial").value = "7000123";
+  getOrMake("calibration-file").files = [
+    { name: "umik.txt", async text() { return "20 0.0\n"; } },
+  ];
+
+  const flows = [
+    ["status poll", () => pollState(), "/sound/room/status"],
+    ["envelope refresh", () => refreshEnvelope(), "/sound/room/envelope"],
+    ["idle entry", () => refreshIdleEntry(), "/sound/room/entry-status"],
+    ["measurement report", () => loadSessionReport("s-1"),
+      "/sound/room/session-report?id=s-1"],
+    ["vendor calibration", async () => {
+      getOrMake("fetch-calibration").click();
+      await settle();
+    }, "/sound/room/calibration/fetch"],
+    ["uploaded calibration", async () => {
+      getOrMake("upload-calibration").click();
+      await settle();
+    }, "/sound/room/calibration/upload"],
+    ["destructive reset", () => resetCorrection(), "/sound/room/reset"],
+    ["wizard forward action", async () => {
+      renderPrimaryAction({ label: "Start measuring", endpoint: "/start" });
+      await onWizardNextClick();
+      await settle();
+    }, "/sound/room/start"],
+  ];
+
+  for (const [label, drive, url] of flows) {
+    resetFetchCounts();
+    await drive();
+    assert(fetchLog.some((request) => request.url === url),
+      `${label} addresses ${url}`,
+      { got: fetchLog.map((request) => request.url) });
+  }
+
+  resetFetchCounts();
+  await resetCorrection();
+  const posts = fetchLog.filter((request) => request.method === "POST");
+  assert(posts.length > 0 && posts.every(
+    (request) => request.headers && request.headers["X-CSRF-Token"]),
+    "a mutating request carries the CSRF header helper's output",
+    { got: posts.map((request) => request.headers) });
+
+  getOrMake("mic-serial").value = "";
+  delete getOrMake("calibration-file").files;
+  invalidateLoadedCalibration();
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await settle();
+  resetEnvelopeBookkeeping();
+})();
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 79 }));
+console.log(JSON.stringify({ ok: true, tests: 82 }));
+// The page polls forever by design (status ticks, the idle envelope refresh,
+// refreshEnvelope's coalesced follow-up), and a refresh already in flight
+// re-arms after the disarm above. End with the assertions, as the failure
+// path above already does, instead of waiting out the page's next tick.
+process.exit(0);

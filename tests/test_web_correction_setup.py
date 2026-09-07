@@ -260,15 +260,6 @@ def test_render_leaves_household_default_copy_to_the_envelope():
     assert "raw room" not in html
 
 
-def test_browser_has_no_screen_visibility_or_forward_action_policy_mirror():
-    js = _module_js()
-    assert "SCREEN_SECTIONS" not in js
-    assert "WIZARD_FORWARD_ACTION_BY_STATE" not in js
-    assert "wizardProvidesForwardAction" not in js
-    assert "showScreenSections" not in js
-    assert "SUPPORTED_ENVELOPE_SCHEMA = 9" in js
-
-
 def test_browser_failure_presentation_matches_server_catalog():
     import json
     import re
