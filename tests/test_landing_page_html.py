@@ -700,6 +700,31 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert not re.search(r"location\s+=?\s*/correction", nginx)
 
 
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_google_oauth_callback_path_is_pinned_outside_the_wizard_prefix(
+    conf_path: Path,
+) -> None:
+    """`/google/callback` is an externally registered URL, not an in-repo one.
+
+    The bounce page at jaspercurry/google-oauth-callback sends the browser to
+    `http://<host>/google/callback`; nothing in this repo can change where it
+    lands. So the path gets its own exact block on the wizard's upstream,
+    independent of whichever prefix the wizard itself is served under.
+    """
+    servers = _nginx_servers(conf_path.read_text(encoding="utf-8"))
+    listeners = set()
+    for ports, locations in servers:
+        callback = locations.get(("=", "/google/callback"))
+        if callback is None:
+            continue
+        assert "proxy_pass http://127.0.0.1:8768/callback;" in callback
+        listeners |= set(ports)
+
+    assert listeners == {80}
+
+
 def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
         nginx = path.read_text(encoding="utf-8")
