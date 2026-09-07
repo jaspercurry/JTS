@@ -21,9 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
-import socket
 import threading
 import time
 from collections import deque
@@ -33,7 +31,7 @@ from typing import Any
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
-from ..platform.status_socket import OUTPUTD_STATUS_SOCKET
+from ..platform.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
 from ..service_units import unit_failed
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
@@ -245,32 +243,9 @@ def _read_local_status(
 ) -> dict[str, Any] | None:
     """Read one local daemon STATUS response, byte/time bounded and fail-soft."""
     try:
-        deadline = time.monotonic() + timeout_sec
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout_sec)
-            sock.connect(socket_path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                sock.settimeout(remaining)
-                chunk = sock.recv(min(8192, max_bytes - total + 1))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    return None
-                chunks.append(chunk)
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError):
+        return read_status_socket(socket_path, timeout=timeout_sec, max_bytes=max_bytes)
+    except (OSError, ValueError):
         return None
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", "replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _read_mux_status(

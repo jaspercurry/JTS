@@ -2,32 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One shared reader for the ``STATUS\\n`` line protocol fan-in and outputd use.
-
-Several callers need "connect to a JTS control socket, send ``STATUS\\n``, read
-the JSON reply to EOF, parse it, and confirm it's an object". This module owns
-that mechanic once; each caller keeps its OWN error policy on top, because they
-genuinely differ:
-
-* doctor and the AEC CLIs want the exception to propagate so they can name the
-  failure in their own report; they use :func:`read_status_socket` inside a
-  try/except of their own;
-* the click/capture harness wants a fail-soft ``None`` per surface (an
-  unreachable daemon is an expected snapshot state) and logs at DEBUG; it uses
-  :func:`read_status_socket_or_none`.
-* ``deploy/bin/jasper-apply-airplay-mode``'s ``ExecStartPre`` heredoc — a
-  shell script, not a Python module, invoking this one via ``python -`` at
-  boot to derive shairport's AirPlay latency offset — also uses
-  :func:`read_status_socket_or_none`. It has no except-block of its own on
-  the shell side, so it depends on every failure mode landing on ``None``
-  rather than an uncaught exception reaching the interpreter's exit code.
-
-Deliberately NOT unifying the ``coupling_reconcile`` / ``audio_validation``
-copies here: those return different shapes (``(dict|None, str)``; a
-``None``-on-``OSError`` variant with its own logging) and have their own
-contract tests, so folding them in is a separate reviewed change, not this
-one's scope.
-"""
+"""Synchronous STATUS transport; callers own limits and failure policy."""
 from __future__ import annotations
 
 import json
@@ -64,13 +39,18 @@ FANIN_STALE_MS = 5000
 OUTPUTD_STALE_MS = 3000
 
 
-def read_status_socket(path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS) -> dict[str, Any]:
+def read_status_socket(
+    path: str,
+    *,
+    timeout: float = DEFAULT_STATUS_TIMEOUT_SECONDS,
+    max_bytes: int = _RESPONSE_MAX_BYTES,
+) -> dict[str, Any]:
     """Connect to a JTS ``STATUS\\n`` control socket and return its JSON reply.
 
     ``timeout`` is a TOTAL deadline across connect, send and every recv, not a
     per-operation one: a daemon dribbling a byte per timeout window must not be
     able to hold a caller open indefinitely. The reply is capped at
-    :data:`_RESPONSE_MAX_BYTES`, and decoded lossily so a stray byte in an
+    ``max_bytes``, and decoded lossily so a stray byte in an
     otherwise well-formed reply does not cost a caller the counters it came for.
 
     Raises the underlying ``OSError`` / ``TimeoutError`` on a connect/read
@@ -102,7 +82,7 @@ def read_status_socket(path: str, *, timeout: float = DEFAULT_STATUS_TIMEOUT_SEC
             if not chunk:
                 break
             received += len(chunk)
-            if received > _RESPONSE_MAX_BYTES:
+            if received > max_bytes:
                 raise OSError("STATUS response exceeds byte limit")
             chunks.append(chunk)
     parsed = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))

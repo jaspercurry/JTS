@@ -283,7 +283,7 @@ def _outputd_status_payload() -> bytes:
 
 
 async def _serve_once(path: str, payload: bytes):
-    """Serve `payload` in 4 KiB chunks, then EOF — a single read cannot win."""
+    """Split even a small response across separate event-loop turns."""
 
     async def handle(reader, writer):
         # A client that refuses an over-cap reply hangs up mid-send, so every
@@ -291,10 +291,11 @@ async def _serve_once(path: str, payload: bytes):
         # handler parks on drain() and Server.wait_closed() never returns.
         try:
             await reader.readline()
-            for start in range(0, len(payload), 4096):
-                writer.write(payload[start : start + 4096])
+            chunk_size = min(4096, max(1, len(payload) // 2))
+            for start in range(0, len(payload), chunk_size):
+                writer.write(payload[start : start + chunk_size])
                 await writer.drain()
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
             writer.write(b"\n")
             await writer.drain()
             writer.write_eof()
@@ -308,11 +309,11 @@ async def _serve_once(path: str, payload: bytes):
     return await asyncio.start_unix_server(handle, path=path)
 
 
+@pytest.mark.parametrize("payload", [b'{"inputs":[]}', _outputd_status_payload()], ids=["small", "outputd"])
 @pytest.mark.parametrize("consumer", ["state", "grouping", "mux"])
 async def test_status_consumers_reassemble_fragmented_json(
-    short_sock_path, tmp_path, monkeypatch, consumer,
+    short_sock_path, tmp_path, monkeypatch, consumer, payload,
 ):
-    payload = _outputd_status_payload()
     monkeypatch.setattr(grouping_supervisor, "OUTPUTD_CONTROL_SOCKET", short_sock_path)
     monkeypatch.setattr(mux, "FANIN_CONTROL_SOCKET", short_sock_path)
     calls = {
@@ -328,20 +329,24 @@ async def test_status_consumers_reassemble_fragmented_json(
         await server.wait_closed()
 
 
-@pytest.mark.parametrize("extra_bytes", [-1, 0, 1])
-async def test_status_byte_limit_never_accepts_a_valid_prefix(monkeypatch, extra_bytes):
-    cap = 16
+@pytest.mark.parametrize("payload, expected", [
+    (b"{}" + b" " * 13, {}),
+    (b"{}" + b" " * 14, {}),
+    (b"{}" + b" " * 15, None),
+    (b"[]", None),
+    (b"?", None),
+    (b"", None),
+])
+async def test_status_limits_and_failure_policy(monkeypatch, payload, expected):
     reader = asyncio.StreamReader()
-    reader.feed_data(b"{}" + b" " * (cap - 2 + extra_bytes))
+    reader.feed_data(payload)
     reader.feed_eof()
     _, writer = _connection(b"")
     monkeypatch.setattr(
         uds.asyncio, "open_unix_connection", AsyncMock(return_value=(reader, writer)),
     )
 
-    assert await uds.local_status_json("/tmp/status.sock", max_bytes=cap) == (
-        {} if extra_bytes <= 0 else None
-    )
+    assert await uds.local_status_json("/tmp/status.sock", max_bytes=16) == expected
     writer.close.assert_called_once()
     writer.wait_closed.assert_not_awaited()
 
@@ -362,7 +367,13 @@ async def test_status_deadline_bounds_every_phase(monkeypatch, phase):
     elif phase == "drain":
         writer.drain.side_effect = stalled
     else:
-        reader.read.side_effect = stalled
+        chunks = iter([b"{}"])
+
+        async def missing_eof(_size):
+            chunk = next(chunks, None)
+            return chunk if chunk is not None else await stalled()
+
+        reader.read.side_effect = missing_eof
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
 
     async with asyncio.timeout(1.0):
@@ -370,6 +381,29 @@ async def test_status_deadline_bounds_every_phase(monkeypatch, phase):
     assert started.is_set()
     assert writer.close.call_count == (0 if phase == "connect" else 1)
     writer.wait_closed.assert_not_awaited()
+
+
+async def test_status_deadline_is_shared_by_connect_send_and_read(monkeypatch):
+    reader, writer = _connection(b"")
+    chunks = iter([b"{}", b""])
+
+    async def connect(_path):
+        await asyncio.sleep(0.03)
+        return reader, writer
+
+    async def drain():
+        await asyncio.sleep(0.03)
+
+    async def read(_size):
+        await asyncio.sleep(0.03)
+        return next(chunks)
+
+    writer.drain.side_effect = drain
+    reader.read = read
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", connect)
+
+    assert await uds.local_status_json("/tmp/status.sock", timeout=0.07) is None
+    writer.close.assert_called_once()
 
 
 async def test_status_cancellation_racing_reply_is_preserved(monkeypatch):
