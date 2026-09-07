@@ -12,9 +12,9 @@
 //
 // Relocated verbatim from the page's old inline <script> when /wifi/ moved onto
 // the canonical design system. Two seams changed, nothing else:
-//   * jsonHeaders() now comes from the shared http.js module (was injected as
-//     csrf_fetch_helpers_js); it reads the CSRF token from the <meta name=
-//     "jts-csrf"> tag and attaches X-CSRF-Token to every mutating POST.
+//   * jsonHeaders() comes from the shared http.js module; it reads the CSRF
+//     token from the <meta name="jts-csrf"> tag and attaches X-CSRF-Token to
+//     every mutating POST.
 //   * jtsConfirm / jtsAlert come from the shared dialog.js module — never
 //     window.confirm/alert, which the
 //     browser can suppress (that silently defeated the radio-kill guard).

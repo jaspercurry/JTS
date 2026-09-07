@@ -41,7 +41,6 @@ for monitoring. Idle exit + cold-start still apply.
 """
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import urllib.parse
@@ -62,7 +61,6 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -208,58 +206,27 @@ def make_server(target, *, control_base: str = DEFAULT_CONTROL_BASE) -> Threadin
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-system-web",
-        description="Status dashboard at /system/ and /system/audio/ for JTS",
-    )
-    parser.add_argument(
-        "--host",
-        default="127.0.0.1",
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=8772,
-    )
-    parser.add_argument(
-        "--control-base",
-        default=os.environ.get(
-            "JASPER_CONTROL_BASE", DEFAULT_CONTROL_BASE,
+    from . import _wizard_cli
+
+    return _wizard_cli.run_wizard_cli(
+        "jasper-system-web",
+        "Status dashboard at /system/ and /system/audio/ for JTS",
+        8772,
+        argv,
+        make_server=make_server,
+        extra=lambda parser: parser.add_argument(
+            "--control-base",
+            default=os.environ.get(
+                "JASPER_CONTROL_BASE", DEFAULT_CONTROL_BASE,
+            ),
+            help="jasper-control HTTP base URL (default 127.0.0.1:8780)",
         ),
-        help="jasper-control HTTP base URL (default 127.0.0.1:8780)",
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-
-    from . import _systemd
-    sockets = _systemd.adopt_systemd_sockets()
-    target = sockets[0] if sockets else (args.host, args.port)
-    server = make_server(target, control_base=args.control_base)
-
-    handler_cls = server.RequestHandlerClass
-    tracker = _systemd.IdleShutdownTracker(
+        start=lambda args, _tracker: {"control_base": args.control_base},
+        detail=lambda args: (
+            f"control={args.control_base}, idle={int(IDLE_SHUTDOWN_SEC)}s"
+        ),
         idle_threshold_sec=IDLE_SHUTDOWN_SEC,
     )
-    _systemd.install_request_idle_bump(handler_cls, tracker)
-    tracker.start()
-
-    if sockets:
-        logger.info(
-            "jasper-system-web adopting systemd fd (control=%s, idle=%ds)",
-            args.control_base, int(IDLE_SHUTDOWN_SEC),
-        )
-    else:
-        logger.info(
-            "jasper-system-web listening on http://%s:%d (control=%s)",
-            args.host, args.port, args.control_base,
-        )
-
-    _systemd.notify_ready()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    _systemd.notify_stopping()
-    return 0
 
 
 if __name__ == "__main__":

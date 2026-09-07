@@ -412,15 +412,6 @@ def test_csrf_meta_html_escapes_token():
     assert "&quot;" in out
 
 
-def test_csrf_fetch_helpers_js_defines_shared_header_helpers():
-    out = _common.csrf_fetch_helpers_js()
-
-    assert "function csrfHeaders(headers)" in out
-    assert "function jsonHeaders()" in out
-    assert "X-CSRF-Token" in out
-    assert "'Content-Type': 'application/json'" in out
-
-
 def test_csrf_field_html_escapes_token_value():
     # Defense-in-depth — secrets.token_urlsafe never produces HTML-active
     # chars, but if the cookie was poisoned by a man-in-the-middle the

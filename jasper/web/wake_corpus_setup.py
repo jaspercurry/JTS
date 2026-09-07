@@ -118,7 +118,7 @@ from jasper.audio_profile_state import MicProbe  # noqa: F401 - re-exported
 # `bridge_session` is imported as a module so the handler's voice/bridge
 # calls stay patchable on it; the env and hardware probe seams live in
 # `jasper.wake_corpus.runtime_probe` and are patched there instead.
-from jasper.wake_corpus import bridge_session
+from jasper.wake_corpus import bridge_session, runtime_probe
 from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     AEC3_SWEEP_LEGS,
     AEC_INIT_UNIT,
@@ -160,7 +160,6 @@ from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     XVF_RAW0_DTLN_LEG,
     _enabled_legs_from_metadata,
     _parse_amixer_bool,
-    _session_aec3_sweep_source,
     _validation_artifact_summary,
     aec_bridge_active,
     bridge_output_status,
@@ -592,7 +591,9 @@ class _Handler(BaseHTTPRequestHandler):
         include_aec3_sweep = bool(body.get("include_aec3_sweep", False))
         try:
             aec3_sweep_source = (
-                _session_aec3_sweep_source(body.get("aec3_sweep_source"))
+                runtime_probe.session_aec3_sweep_source(
+                    body.get("aec3_sweep_source"),
+                )
                 if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
             )
         except Aec3SweepConfigError as e:
