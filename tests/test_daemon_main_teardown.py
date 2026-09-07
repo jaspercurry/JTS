@@ -171,7 +171,7 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     patch("_wake_ready_detail", lambda *a, **k: "test")
     patch("_tts_ready_detail", lambda *a, **k: "test")
     patch("WakeWordDetector", lambda *a, **k: SimpleNamespace())
-    patch("build_ducker", lambda *a, **k: SimpleNamespace())
+    patch("FanInDucker", lambda *a, **k: SimpleNamespace())
     patch("RendererClient", lambda *a, **k: SimpleNamespace())
     patch("VolumePersistence", lambda *a, **k: SimpleNamespace())
     patch("_build_router", lambda _cfg: None)

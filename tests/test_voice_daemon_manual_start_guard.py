@@ -27,6 +27,7 @@ from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
 
 from ._async_wait import wait_signalled
 from ._log_events import event_fields, event_records
+from ._wake_loop import wake_loop_for_tests
 
 
 class _SpyCalls:
@@ -69,9 +70,9 @@ def _make_wake_loop():
     """A WakeLoop with only the attributes manual_session_start reads
     plus spies on the side effects we assert must NOT fire.
     """
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
@@ -280,9 +281,8 @@ async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
 async def test_manual_start_does_not_repeat_begin_owned_cleanup():
     """A failed begin that released its episode is not cleaned twice."""
 
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     cleanup_calls = 0
     cleanup_method = type(wl)._cleanup_after_failed_begin
 
@@ -315,9 +315,8 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
 async def test_manual_start_cleans_prefix_failure_before_turn_inner():
     """An ordinary loudness-prefix failure is centrally cleaned exactly once."""
 
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     cleanup_calls = 0
     inner = _SpyCalls()
     cleanup_method = type(wl)._cleanup_after_failed_begin
@@ -483,10 +482,10 @@ def _ptt_only_wake_loop():
     `_push_to_talk.only` derives True, and the only audio path is the
     remote's loop.
     """
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
     from tests._manual_mics import remote_mic
 
-    wl = WakeLoop.for_tests(
+    wl = wake_loop_for_tests(
         legs=[],
         manual_mics=[remote_mic()],
     )
@@ -631,9 +630,8 @@ async def test_manual_end_is_idempotent_after_input_already_closed():
 
 
 async def test_session_task_watcher_ends_manual_turn_without_extra_frame():
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     ended = asyncio.Event()
 
     async def _end_turn():
@@ -652,9 +650,8 @@ async def test_session_task_watcher_ends_manual_turn_without_extra_frame():
 
 
 async def test_session_task_watcher_ignores_stale_completed_tasks():
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     ended = False
 
     async def _end_turn():

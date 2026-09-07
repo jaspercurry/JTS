@@ -29,7 +29,6 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping
 
 from .tts_routing import (
-    DUCK_TRANSPORT_ENV,
     FANIN_TTS_SOCKET,
     GROUPING_VOICE_ENV_FILE,
     VOICE_TTS_SOCKET_ENV,
@@ -126,13 +125,11 @@ def volume_context_publisher_for_runtime(
     That is the pre-DSP fan-in mix (solo/leader) or the confirmed post-DSP
     outputd mix (a reconciled passive member). Both receive the SAME absolute
     wire message on the socket the route resolved. Routes whose mix stage is
-    ambiguous (a legacy socket-only grouping file) or Camilla-mastered fail
-    closed — publishing pre-DSP compensation into an uncertain stage can create
-    a large level error.
+    ambiguous (a legacy socket-only grouping file) fail closed — publishing
+    pre-DSP compensation into an uncertain stage can create a large level
+    error.
     """
     process_env = dict(env)
-    if process_env.get(DUCK_TRANSPORT_ENV, "fanin").strip().lower() != "fanin":
-        return None
     if dynamic_topology:
         async def publish(context: EffectiveVolumeContext) -> None:
             current, grouping_socket_override = resolve_tts_routing_snapshot(

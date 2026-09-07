@@ -22,12 +22,13 @@ from types import SimpleNamespace
 import pytest
 
 from tests._log_events import event_fields
+from tests._wake_loop import wake_loop_for_tests
 
 
 def _wake_loop_for_mute(tmp_path):
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._mic_muted = False
     wl._state = State.WAKE
     wl._pre_roll = deque([b"pre1", b"pre2"], maxlen=8)
@@ -99,9 +100,8 @@ async def test_session_status_nulls_idle_level_fields_while_mic_not_feeding(
 
 
 async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = None
     wl._assistant_output._warned_cues_unconfigured = False
 
@@ -115,26 +115,24 @@ async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
 
 
 async def test_public_play_cue_reports_playback_failure() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     class _FakeCues:
         async def play(self, _slug: str) -> bool:
             return False
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _FakeCues()
 
     assert await wl.play_cue("cant_connect") == "play_failed"
 
 
 async def test_public_play_cue_reports_busy_when_output_active() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     class _FakeCues:
         async def play(self, _slug: str) -> bool:
             raise AssertionError("busy cue must not play")
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _FakeCues()
     turn = await wl._output_gate.begin_turn()
     try:
@@ -145,7 +143,6 @@ async def test_public_play_cue_reports_busy_when_output_active() -> None:
 
 async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None:
     from jasper.assistant_loudness import tts_envelope_lufs_for_level
-    from jasper.voice_daemon import WakeLoop
 
     events: list[tuple[str, object]] = []
 
@@ -169,7 +166,7 @@ async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None
         def get_listening_level(self) -> int:
             return 92
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "grok"
     wl._cfg.grok_model = "grok-voice-think-fast-1.0"
     wl._cfg.grok_voice = "eve"
@@ -192,7 +189,7 @@ async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None
 
 async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() -> None:
     from jasper.assistant_loudness import tts_envelope_lufs_for_level
-    from jasper.voice_daemon import FanInDucker, WakeLoop
+    from jasper.voice_daemon import FanInDucker
 
     events: list[tuple[str, object]] = []
 
@@ -226,7 +223,7 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
         def get_listening_level(self) -> int:
             return 64
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._cfg.gemini_model = "gemini-3.1-flash-live-preview"
     wl._cfg.gemini_voice = "Aoede"
@@ -252,7 +249,6 @@ async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
     two are one object, not two captured at construction. Rebinding
     wl._cfg must reach the duck depth AssistantOutput reads per call,
     not a stale copy AssistantOutput kept from __init__."""
-    from jasper.voice_daemon import WakeLoop
 
     class _Cues:
         async def prerender_text(self, _text: str) -> bool:
@@ -279,13 +275,13 @@ async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
         def __init__(self, owner: _Owner) -> None:
             self.volume_owner = owner
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     owner = _Owner()
     wl._cues = _Cues()
     wl._ducker = object()  # not a FanInDucker: takes the owner/CueDuck path
     wl._volume_coordinator = _Volume(owner)
 
-    assert wl._cfg.duck_db == 0.0  # for_tests() default, confirms the rebind below moves it
+    assert wl._cfg.duck_db == 0.0  # wake_loop_for_tests() default, confirms the rebind below moves it
     wl._cfg = SimpleNamespace(duck_db=-9.5)
 
     assert await wl._play_dynamic_text("Your timer is up.") is True
@@ -293,7 +289,6 @@ async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
 
 
 async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     events: list[str] = []
     turn_task: asyncio.Task | None = None
@@ -310,7 +305,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
         async def speak_text_guarded(self, _text: str, _should_play) -> bool:
             raise AssertionError("stale dynamic text must not write")
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _Cues()
 
     assert await wl._play_dynamic_text("Your research is ready.") is False
@@ -324,7 +319,6 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
 
 async def test_mute_click_prepares_loudness_context_before_write() -> None:
     from jasper.assistant_loudness import tts_envelope_lufs_for_level
-    from jasper.voice_daemon import WakeLoop
 
     events: list[tuple[str, object]] = []
 
@@ -342,7 +336,7 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
         def get_listening_level(self) -> int:
             return 77
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "openai"
     wl._cfg.openai_model = "gpt-realtime-2"
     wl._cfg.openai_voice = "marin"
@@ -368,7 +362,6 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
 
 async def test_fanin_prepare_carries_absolute_volume_context() -> None:
     from jasper.assistant_volume import EffectiveVolumeContext
-    from jasper.voice_daemon import WakeLoop
 
     prepares = []
 
@@ -383,8 +376,7 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
         async def effective_volume_context(self):
             return EffectiveVolumeContext(-25.0, -25.0, -41.0, False, 123)
 
-    wl = WakeLoop.for_tests()
-    wl._cfg.duck_transport = "fanin"
+    wl = wake_loop_for_tests()
     wl._tts = _Tts()
     wl._volume_coordinator = _Volume()
 
@@ -403,7 +395,6 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
     # post-DSP consumer owns the downstream-is-zero fact; Python does not mutate
     # downstream_db to 0.
     from jasper.assistant_volume import EffectiveVolumeContext
-    from jasper.voice_daemon import WakeLoop
 
     prepares = []
 
@@ -419,8 +410,7 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
             return EffectiveVolumeContext(-30.0, -30.0, -41.0, False, 9)
 
     monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
-    wl = WakeLoop.for_tests()
-    wl._cfg.duck_transport = "fanin"
+    wl = wake_loop_for_tests()
     wl._tts = _Tts()
     wl._volume_coordinator = _Volume()
 
@@ -433,7 +423,6 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
 
 
 async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> None:
-    from jasper.voice_daemon import WakeLoop
 
     prepares = []
 
@@ -453,8 +442,7 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
         "JASPER_TTS_OUTPUTD_SOCKET",
         "/run/jasper-outputd/tts.sock",
     )
-    wl = WakeLoop.for_tests()
-    wl._cfg.duck_transport = "fanin"
+    wl = wake_loop_for_tests()
     wl._tts = _Tts()
     wl._volume_coordinator = _Volume()
 
@@ -464,13 +452,12 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
 
 
 async def test_mute_click_skips_when_output_active() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     class _Tts:
         async def write_segment(self, *_args, **_kwargs) -> None:
             raise AssertionError("mute click must not write during active output")
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._tts = _Tts()
     turn = await wl._output_gate.begin_turn()
     try:
@@ -480,7 +467,6 @@ async def test_mute_click_skips_when_output_active() -> None:
 
 
 async def test_listening_chirp_writes_inside_turn_episode() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     events: list[tuple[bytes, dict]] = []
 
@@ -492,7 +478,7 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
     # `tts_wire_is_wide()`, which reads the box's own fanin.env — absent on a
     # test runner, and an undeclared box is WIDE since #3655. `pcm_wide` below
     # asserts this value, so the test declares it.
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._assistant_output._earcon_wide = False
     wl._tts = _Tts()
     wl._assistant_output._chirp_on_pcm = b"wake"

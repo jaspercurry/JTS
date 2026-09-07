@@ -542,11 +542,11 @@ def test_cushion_decay_held_target_is_single_source_of_truth():
     """The DEFAULT-OFF post-lock cushion decay's held target must be ONE value.
 
     The resampler owns the live held-target gauge; `hold_fill_frames` reads it (so
-    render/trim discipline toward it); the outer host-clock DLL re-pins its
-    setpoint from the SAME gauge each tick (never a duplicated config value); and
-    STATUS surfaces both the live held target and the decay block. If any of these
-    wires drifts, the two controllers can disagree about where the fill sits — the
-    documented two-controller oscillation class this design avoids.
+    render/trim discipline toward it); the host-clock adapter reads the SAME gauge
+    (never a duplicated config value); and STATUS surfaces both the live held
+    target and the decay block. If any of these wires drifts, the two controllers
+    can disagree about where the fill sits — the documented two-controller
+    oscillation class this design avoids.
     """
     resampler_text = _lane_resampler_rs_text()
     host_clock_text = (
@@ -566,11 +566,12 @@ def test_cushion_decay_held_target_is_single_source_of_truth():
     assert "r.tick_decay(decay_l0, decay_commanded_ppm_abs)" in mixer_text, (
         "the mixer must tick the decay once per render period with the DLL signals"
     )
-    # 3. The outer DLL re-pins its setpoint from the SAME live gauge each tick.
+    # 3. The host-clock adapter reads the SAME live gauge (build_obs anchors its
+    #    descent compensation on it), never a duplicated config value.
     assert "pub held_target_frames: Arc<AtomicU64>" in host_clock_text
-    assert "hc.set_target_fill_frames(signals.held_target_frames.load(Ordering::Relaxed)" in (
-        host_clock_text
-    ), "the servo thread must re-pin its setpoint from the live held-target gauge"
+    assert "signals.held_target_frames.load(Ordering::Relaxed)" in host_clock_text, (
+        "build_obs must anchor on the live held-target gauge"
+    )
     # 4. STATUS surfaces the live held target AND the decay block (additive).
     assert '"held_target_frames"' in state_text
     assert '"decay":{' in state_text

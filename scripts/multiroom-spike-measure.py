@@ -223,11 +223,7 @@ def run_software(args):
 def _read_wav_mono(path):
     """Return (samples:list[int], sample_rate). Mixes to mono if stereo."""
     try:
-        return _shared_read_wav_mono(
-            path,
-            supported_sample_widths=(2,),
-            normalize=False,
-        )
+        return _shared_read_wav_mono(path)
     except UnsupportedSampleWidth as exc:
         raise ValueError(
             f"expected 16-bit WAV, got sampwidth={exc.sample_width}",

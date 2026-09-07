@@ -94,27 +94,4 @@ if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
 fi
 
 echo "Switching ${PI_HOST}:JASPER_VOICE_PROVIDER → ${PROVIDER}"
-"${SSH[@]}" "sudo sh -s -- ${PROVIDER} && $(restart_voice_and_verify_cmd)" <<'REMOTE'
-set -eu
-provider="$1"
-env="/var/lib/jasper/voice_provider.env"
-install -d -m 0750 /var/lib/jasper
-tmp="$(mktemp "${env}.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
-
-if [ -f "$env" ]; then
-    grep -v '^JASPER_VOICE_PROVIDER=' "$env" > "$tmp" || true
-fi
-printf 'JASPER_VOICE_PROVIDER=%s\n' "$provider" >> "$tmp"
-# voice_provider.env is the NON-secret SSOT (the API keys live in voice_keys.env), so it
-# must be group-jasper readable (0640) for the non-root jasper-control to fresh-read the
-# active provider for /system/; set explicitly here since systemd's StateDirectory only
-# re-chowns it to <voice|mux>:jasper on the restart below.
-chown root:root "$tmp"
-chgrp jasper "$tmp" 2>/dev/null || true
-chmod 0640 "$tmp"
-mv "$tmp" "$env"
-trap - EXIT
-
-grep '^JASPER_VOICE_PROVIDER=' "$env"
-REMOTE
+"${SSH[@]}" "sudo $(remote_env_file_set_cmd "$PROVIDER_ENV" JASPER_VOICE_PROVIDER "$PROVIDER" 0640 0770) && $(restart_voice_and_verify_cmd)"

@@ -312,8 +312,7 @@ class VolumeCoordinator:
         self._lock = asyncio.Lock()
 
         # Voice-session gate: while True, the source-transition
-        # handler is suppressed because the ducker has temporary
-        # control of camilla. Set/cleared by voice_daemon's WakeLoop
+        # handler is suppressed. Set/cleared by voice_daemon's WakeLoop
         # via `note_voice_session(True/False)`. Only meaningful on
         # the long-lived coordinator owned by jasper-voice; per-
         # request coordinators in jasper-control always read False
@@ -321,8 +320,7 @@ class VolumeCoordinator:
         self._voice_session_active: bool = False
         # A voice session does not necessarily lock Camilla. Current production
         # ducks renderer/program audio inside fan-in, leaving Camilla as a safe
-        # user-volume surface for the final music+TTS mix. The legacy Camilla
-        # ducker is the only transport that sets this flag.
+        # user-volume surface for the final music+TTS mix.
         self._camilla_volume_locked: bool = False
         # Correction-measurement gate for the voice daemon's own 1 Hz
         # reconciler. This is intentionally narrow: it does not turn this
@@ -341,9 +339,9 @@ class VolumeCoordinator:
         self._reconcile_write_lock = asyncio.Lock()
         # Cross-daemon Camilla-ownership signal. jasper-control's per-
         # request coordinators set this to a UDS-probing callable
-        # that asks jasper-voice's `session_status` whether the
-        # selected Ducker owns Camilla. jasper-voice's own coordinator
-        # leaves it None and uses `_camilla_volume_locked` in-process.
+        # that asks jasper-voice's `session_status` whether a duck holder
+        # owns Camilla. jasper-voice's own coordinator leaves it None and
+        # uses `_camilla_volume_locked` in-process.
         self._duck_active_probe: CamillaLockProbe | None = duck_active_probe
         self._volume_context_publisher = volume_context_publisher
         # CamillaDSP's default main-volume ramp is 400 ms. Mux source
@@ -1356,9 +1354,8 @@ class VolumeCoordinator:
         - camilla-master → camilla-master (idle ↔ AirPlay): no
           volume handoff is needed; camilla already carries the level.
 
-        We DON'T fire this mid-voice-session (ducked state — would
-        race with Ducker.restore's additive math). The ducker hooks
-        in via `note_voice_session` so this method can short-circuit.
+        We DON'T fire this mid-voice-session: the ducker hooks in via
+        `note_voice_session` so this method can short-circuit.
         """
         if self._voice_session_active:
             logger.debug(
@@ -1488,14 +1485,11 @@ class VolumeCoordinator:
     ) -> None:
         """Called by voice_daemon's WakeLoop on session start/end.
         While a session is active, this coordinator suppresses source
-        handoffs. It suppresses Camilla writes only when the selected
-        duck transport actually owns Camilla (the legacy Ducker),
-        and `Ducker.restore()` reads back the canonical target via
-        `get_camilla_target_db()` to land at the right value
-        regardless of interleaved listening_level changes during
-        the duck. Affected paths: `apply_active_source_transition`
-        (no-ops mid-session) and `_set_camilla` (defers only while
-        ``camilla_volume_locked``; listening_level still persists)."""
+        handoffs. It suppresses Camilla writes only when the duck
+        transport actually owns Camilla. Affected paths:
+        `apply_active_source_transition` (no-ops mid-session) and
+        `_set_camilla` (defers only while ``camilla_volume_locked``;
+        listening_level still persists)."""
         self._voice_session_active = bool(active)
         self._camilla_volume_locked = bool(
             active and (
@@ -1512,9 +1506,9 @@ class VolumeCoordinator:
 
         The canonical dB value represents user intent. ``downstream_db`` is
         Camilla's actual gain when readable, with the coordinator's safe target
-        as a fail-soft fallback. During the legacy Camilla ducker's exclusive
-        window, use that unducked target rather than publishing the temporary
-        duck attenuation as though it were user intent.
+        as a fail-soft fallback. While a duck holder owns Camilla, use that
+        unducked target rather than publishing the temporary duck attenuation
+        as though it were user intent.
         """
         for _attempt in range(3):
             # The short lock sections serialize this process's mutations. Slow
@@ -1728,14 +1722,14 @@ class VolumeCoordinator:
 
     async def get_camilla_target_db(self) -> float:
         """The absolute camilla.main_volume that should be in effect
-        right now, ignoring any active duck. Used by `Ducker.restore()`
-        to land camilla at the canonical level regardless of what the
+        right now, ignoring any active duck. A duck holder releases against
+        this so the fader lands at the canonical level regardless of what the
         duck delta was or what other writers did during the session.
 
         Refreshes from disk before deriving the effective level: jasper-control
         and jasper-voice each cache listening_level in memory, and a stale
-        in-process value here would make `Ducker.restore()` land camilla tens
-        of dB from the user's actual intent after a duck."""
+        in-process value here would land camilla tens of dB from the user's
+        actual intent after a duck."""
         self._refresh_from_disk()
         effective_level = self._effective_level()
         source = await self._active_source()
@@ -1748,7 +1742,7 @@ class VolumeCoordinator:
         # if the user asked for zero, preserve the mute floor; if we could not
         # push the source's own volume, mux leaves Camilla at a guarded
         # attenuation and records that in persistence. Preserve that
-        # guard through Ducker.restore instead of unmasking a source we
+        # guard through the duck release instead of unmasking a source we
         # already know might be too loud.
         record = self._persistence.load()
         if (
@@ -1770,8 +1764,9 @@ class VolumeCoordinator:
 
         Gates (all must pass for a write to land):
 
-        1. No voice session or correction measurement is active — the Ducker
-           and the ramp own camilla there, and a write would clobber them.
+        1. No voice session or correction measurement is active — the duck
+           holder and the ramp own camilla there, and a write would clobber
+           them.
         2. Active source is camilla-as-master (idle / AirPlay / USBSINK).
            On push-mode sources camilla is pinned at 0 dB by design and
            listening_level lives on the source's own slider.
@@ -2079,8 +2074,7 @@ class VolumeCoordinator:
         """This process's fader owner, for the claim holders that share it.
 
         Handed to a transient-duck holder rather than reached for globally:
-        the owner is instance state, exactly as ``Ducker``'s
-        ``target_db_provider`` already is, so a test never inherits one and a
+        the owner is instance state, so a test never inherits one and a
         second coordinator never silently arbitrates against the first's.
         """
         return self._volume_owner
@@ -2127,7 +2121,7 @@ class VolumeCoordinator:
         is already at/below the requested guard. Returns False when
         Camilla cannot be reached or a ducked value is still too loud
         for a source handoff. With `persist=True`, the target is still
-        saved so Ducker.restore lands safe after the duck.
+        saved so the duck release lands safe.
         """
         camilla_locked = await self._camilla_locked()
         if camilla_locked is True:
@@ -2625,14 +2619,11 @@ class VolumeCoordinator:
         target_mute = self._main_mute_for_level(level)
         # Defer gate #1: in-process Camilla-ownership flag. Set by
         # WakeLoop.note_voice_session on the long-lived coordinator
-        # owned by jasper-voice. Only the legacy Camilla Ducker sets
-        # this flag; Ducker.restore() reads the
-        # canonical target via get_camilla_target_db() on session end
-        # and lands camilla at the user's intent. listening_level is
-        # still updated in self._level by the caller and persisted by
-        # _dispatch's finally block, so the user's intent survives;
-        # main_volume_db is intentionally NOT saved here — it'd
-        # diverge from camilla's actual state until restore.
+        # owned by jasper-voice, and only while the duck transport owns
+        # camilla. listening_level is still updated in self._level by the
+        # caller and persisted by _dispatch's finally block, so the user's
+        # intent survives; main_volume_db is intentionally NOT saved here —
+        # it'd diverge from camilla's actual state until restore.
         if self._camilla_volume_locked:
             mute_ok = await self._set_camilla_main_mute(
                 target_mute,
@@ -2655,10 +2646,9 @@ class VolumeCoordinator:
         # above only fires on jasper-voice's long-lived coordinator.
         # jasper-control builds a fresh VolumeCoordinator per HTTP
         # request whose flag is always False, so it asks jasper-voice
-        # over UDS whether the Ducker is currently engaged. Probe
-        # returning True defers identically to the flag path —
-        # Ducker.restore() will read listening_level off disk on
-        # session end and converge camilla.
+        # over UDS whether a camilla-owning duck is currently engaged.
+        # Probe returning True defers identically to the flag path — the
+        # duck release converges camilla on session end.
         #
         # Fail-open by design: probe returning None (UDS unreachable,
         # voice daemon wedged, timeout) means "unknown" → write

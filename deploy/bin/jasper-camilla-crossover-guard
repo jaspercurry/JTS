@@ -41,7 +41,7 @@
 # structurally unreachable.
 #
 # The three outcomes that repair can produce on a roleful topology, all
-# never-flat (issue #2135 added the third):
+# never-flat:
 #   1. the driver-domain active baseline / all-muted active startup graph;
 #   2. the PARKED graph — a File sink to /dev/null with every output hard
 #      muted, selected when the topology has staged no startup graph yet.
@@ -66,16 +66,6 @@
 # called from jasper/multiroom/reconcile.py's active-leader bake arm, which
 # repoints the statefile at the re-proven driver-domain config immediately
 # before `systemctl enable --now`-ing the unit.
-#
-# The unit is not boot-enabled globally. The grouping reconciler enables it
-# only while a box is a bonded active leader, and disables it again on unbond;
-# this guard therefore runs on a live tweeter-protection path in that mode.
-#
-# FAIL-OPEN EVERYWHERE: any unexpected condition (unreadable statefile,
-# missing base config, runtime contract unavailable, write failure) logs
-# and exits 0 so camilla#2 starts unmodified. The unit invokes it with
-# `ExecStartPre=-` as a second belt: even a missing script cannot block
-# the start.
 
 set -uo pipefail
 
@@ -95,7 +85,6 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 
 log() {
-    # log <outcome> [detail...]
     local outcome="$1"
     shift || true
     echo "event=camilla_crossover_guard.${outcome} ${*}" >&2
@@ -137,15 +126,6 @@ if ! grep -q "filename:.*${SNAPFIFO}" "$config_path"; then
     exit 0
 fi
 
-# REPAIR: ask the active-speaker runtime contract for the only legal
-# persisted graph. For camilla#2 the saved topology is ALWAYS
-# roleful/protected, so the contract returns the DRIVER-DOMAIN baseline
-# (Layer A intact) or the all-muted active startup graph — NEVER flat (the
-# flat branch is gated on `not requires_roleful_graph`). A blocked
-# decision intentionally leaves the statefile untouched: flat stereo is
-# not a safe recovery target once a tweeter/protected role is saved, and
-# camilla#2 fails CLOSED to silence rather than risk full-range to a
-# tweeter.
 camilla_guard_check_playback_pipe_or_repair \
     "$SNAPFIFO" fifo_absent no_reader pipe_healthy pipe_exists_probe_unavailable \
     "$config_path" \

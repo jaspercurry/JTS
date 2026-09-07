@@ -17,8 +17,10 @@ These tests pin the NEW invariants:
    pass through; bogus raises.
 2. A persisted endpoint marker resolves to streambox (auto-migration)
    with NO implicit-tier-change error and NO accept flag.
-3. The streambox dry-run plan includes the audio graph (fanin/outputd/
-   camilla); the full plan includes voice.
+3. ``main()`` and ``--dry-run`` iterate one ``INSTALL_STEPS`` table: the
+   plan renders exactly the steps the run executes, each profile reaches
+   its own tier functions, the required orderings hold, and a failing
+   step aborts the install with a journal record naming it.
 4. install.sh has NO endpoint install functions, and the deleted endpoint
    artifacts do not exist.
 5. A bonded follower parks the brain (cross-referenced with the multiroom
@@ -33,6 +35,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -69,6 +72,108 @@ def _run_install_helper(script: str) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=5,
     )
+
+
+#: Functions the step driver below must NOT stub out: main() and the rest of
+#: its control flow (the row iterator, the truthiness helpers), the EXIT trap
+#: plus the two helpers it records a failure through, the journal wrapper the
+#: STEPS loop emits through, and the advisory doctor wrapper (inert once the
+#: doctor it calls is stubbed, and itself under test below). Everything else
+#: install.sh defines becomes a no-op, so one run makes the profile's executed
+#: step list observable.
+_KEEP_REAL = (
+    "main",
+    "install_steps_for_profile",
+    "install_exit_cleanup",
+    "_call_if_defined",
+    "record_install_outcome",
+    "jasper_install_log",
+    "run_doctor_summary_advisory",
+    "_is_truthy",
+    "_is_falsey_or_empty",
+)
+
+
+def _run_main(
+    profile: str, *, extra: str = ""
+) -> subprocess.CompletedProcess[str]:
+    """Run main() for `profile` with every install step neutered.
+
+    `logger` is a shell function here, so the loop's journal line lands on
+    stdout while the real EXIT trap runs; the /run/jasper-install markers are
+    redirected at their own seam so no run can touch the host's.
+    """
+    script = "\n".join(
+        [
+            f"source {shlex.quote(str(INSTALL_SH))}",
+            "for f in $(declare -F | awk '{print $3}'); do",
+            f'    case "${{f}}" in {"|".join(_KEEP_REAL)}) continue ;; esac',
+            '    eval "${f}() { :; }"',
+            "done",
+            """logger() { printf 'JOURNAL %s\\n' "$*"; }""",
+            f"resolve_install_profile() {{ printf '%s\\n' {profile}; }}",
+            "install_profile_legacy_marker_migrating() { return 1; }",
+            extra,
+            "main",
+        ]
+    )
+    env = os.environ.copy()
+    env.pop("JASPER_INSTALL_DRY_RUN", None)
+    with tempfile.TemporaryDirectory() as run_dir:
+        env["JTS_REBOOT_REQUIRED_MARKER"] = f"{run_dir}/reboot_required"
+        return subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+        )
+
+
+def _journal(stdout: str, field: str) -> list[str]:
+    """`field=` values of the STEPS loop's journal lines, in execution order."""
+    found = []
+    for line in stdout.splitlines():
+        if not line.startswith("JOURNAL "):
+            continue
+        match = re.search(rf"\b{field}=(\S+)", line)
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def _executed(profile: str) -> tuple[list[str], list[str]]:
+    """(step names, step functions) main() runs on `profile`, in order."""
+    result = _run_main(profile)
+    assert result.returncode == 0, result.stderr
+    return _journal(result.stdout, "step"), _journal(result.stdout, "fn")
+
+
+def _step_rows() -> list[tuple[str, str, str, int]]:
+    """Every INSTALL_STEPS row as (name, profiles, fn, phrase length), read by
+    EXECUTING the table in bash rather than parsing install.sh's text."""
+    result = _run_install_helper(
+        'for row in "${INSTALL_STEPS[@]}"; do '
+        """IFS='|' read -r name profiles fn phrase <<<"${row}"; """
+        'printf "%s %s %s %s\\n" "${name}" "${profiles}" "${fn}" "${#phrase}"; '
+        "done"
+    )
+    assert result.returncode == 0, result.stderr
+    rows = [line.split() for line in result.stdout.splitlines()]
+    # A row missing a field loses a token here, so this is the malformed-row
+    # check as well as the unpack.
+    assert all(len(row) == 4 for row in rows), rows
+    return [(name, profiles, fn, int(size)) for name, profiles, fn, size in rows]
+
+
+def _plan_steps(profile: str) -> list[str]:
+    """Step names `--dry-run` renders for `profile`, in order."""
+    result = _run_install_plan(profile=profile)
+    assert result.returncode == 0, result.stderr
+    return [
+        match.group(1)
+        for match in (
+            re.match(r"^  ([a-z0-9_]+): \S", line)
+            for line in result.stdout.splitlines()
+        )
+        if match
+    ]
 
 
 # ---------- (1) normalize maps endpoint/satellite -> streambox ----------
@@ -210,7 +315,9 @@ def test_endpoint_dry_run_produces_streambox_plan():
     assert streambox.returncode == 0, streambox.stderr
     assert endpoint.stdout == streambox.stdout
     assert satellite.stdout == streambox.stdout
-    assert endpoint.stdout.startswith("==> JTS streambox install plan (dry run)\n")
+    # ...and that is a different plan from the full tier's, so the equality
+    # above is not satisfied by every profile rendering the same thing.
+    assert streambox.stdout != _run_install_plan(profile="full").stdout
 
 
 def test_legacy_marker_migration_logs_observable_line(tmp_path: Path):
@@ -256,55 +363,226 @@ def test_genuine_full_to_streambox_change_still_errors(tmp_path: Path):
     assert "install profile mismatch" in r.stderr
 
 
-# ---------- (3) streambox plan has audio graph; full plan has voice ------
+# ---------- (3) one STEPS table: the plan renders what main() runs -------
+
+#: The tier-owned step functions. Every other row runs on `both`, so a row
+#: that lost its profile field would show up as the other tier's function
+#: executing here.
+_FULL_TIER_FNS = (
+    "install_deps",
+    "install_jasper",
+    "install_systemd_units",
+    "install_nginx_site",
+    "install_camillagui",
+    "regenerate_audio_cues",
+)
+_STREAMBOX_TIER_FNS = (
+    "install_streambox_deps",
+    "install_streambox_jasper",
+    "install_streambox_systemd_units",
+    "install_streambox_nginx_site",
+)
+
+#: Every step name the table carries, split by the profiles that reach it, in
+#: execution order. These two are the membership pins: a row that silently
+#: stops running falls out of the profile's executed list, and a row deleted
+#: outright falls out of the table, so both directions are red. Their union is
+#: asserted against the table itself, so the pins cannot drift from it either.
+_ON_EVERY_PROFILE = (
+    "build_user",
+    "build_swap",
+    "service_users",
+    "park_build_units",
+    "deps",
+    "alsa",
+    "camilladsp",
+    "renderers",
+    "headless_boot",
+    "usb_role",
+    "wifi_airplay",
+    "jasper",
+    "secrets_perms",
+    "intsecrets_perms",
+    "mic_cal_sign",
+    "output_hw_state",
+    "outputd_config",
+    "outputd_statefile",
+    "crossover_statefile",
+    "fanin",
+    "outputd",
+    "ring_platform",
+    "avahi_control",
+    "peering_template",
+    "systemd_units",
+    "retired_topology_state",
+    "wifi_guardian",
+    "memory_resilience",
+    "cgroup_memory",
+    "journald",
+    "control_polkit",
+    "web_polkit",
+    "web_writable_dirs",
+    "correction_tls",
+    "nginx_site",
+    "control_env_modes",
+    "build_manifest",
+    "doctor",
+)
+_FULL_ONLY_STEPS = ("camillagui", "audio_cues")
+
+#: (earlier, later) orderings the install depends on, each with the failure
+#: it prevents.
+_REQUIRED_ORDER = (
+    # A host without the 'pi' build user stops at second zero rather than
+    # fifteen minutes into apt.
+    ("build_user", "deps"),
+    # Above service_users each compartment re-assert is a silent no-op (its
+    # opening `getent group ... || return 0`); above the tier's python step
+    # the ownership half still runs but there is no seeded jasper.env to
+    # sweep an operator-placed key out of; below the unit install the daemons
+    # that read the compartments are already running.
+    ("service_users", "secrets_perms"),
+    ("jasper", "secrets_perms"),
+    ("secrets_perms", "systemd_units"),
+    ("service_users", "intsecrets_perms"),
+    ("jasper", "intsecrets_perms"),
+    ("intsecrets_perms", "systemd_units"),
+    # The outputd readiness probe inside the unit install is non-fatal
+    # (tests/test_install_outputd_ready_nonfatal.py) precisely because the
+    # operator's recovery surface -- the web UI and the doctor -- is wired
+    # after it.
+    ("systemd_units", "nginx_site"),
+    ("systemd_units", "doctor"),
+    # `nginx -t` needs the cert files on disk.
+    ("correction_tls", "nginx_site"),
+    # install_alsa exports DONGLE_CARD, which the unit install consumes as
+    # APPLE_DONGLE_SERVICE_CARD.
+    ("alsa", "systemd_units"),
+    # jasper-control renders its advert from the template and reads peer_id at
+    # startup, so both exist before the unit install restarts it.
+    ("avahi_control", "systemd_units"),
+    ("peering_template", "systemd_units"),
+    # Fresh-flat startup needs output_hardware.json before the base graph is
+    # rendered and before runtime-safe-graph writes outputd-statefile.yml.
+    ("jasper", "output_hw_state"),
+    ("output_hw_state", "outputd_config"),
+    ("outputd_config", "outputd_statefile"),
+    # #2135: the parked graph's `camilladsp --check` preflight silently no-ops
+    # when /opt/camilladsp/camilladsp is not on disk yet, so the binary lands
+    # before either statefile seed, and camilla#2's seed follows outputd's.
+    ("camilladsp", "outputd_statefile"),
+    ("outputd_statefile", "crossover_statefile"),
+    # The low-memory park must precede the builds it makes room for.
+    ("park_build_units", "jasper"),
+    ("park_build_units", "fanin"),
+    # ADR-0100: the ring is this box's only transport, so its ioplug and
+    # conf.d drop-ins are staged before the units that open it start.
+    ("ring_platform", "systemd_units"),
+    # ADR-0172: reaching the manifest proves every build step succeeded.
+    ("outputd", "build_manifest"),
+)
 
 
-def test_full_install_plan_is_unchanged_when_profile_is_unset():
+def test_an_unset_profile_plans_the_same_install_as_explicit_full():
     unset = _run_install_plan()
     explicit_full = _run_install_plan(profile="full")
 
     assert unset.returncode == 0, unset.stderr
     assert explicit_full.returncode == 0, explicit_full.stderr
     assert unset.stdout == explicit_full.stdout
-    assert unset.stdout.startswith("==> JTS install plan (dry run)\n")
 
 
-def test_streambox_plan_includes_audio_graph_not_voice_brain():
-    result = _run_install_plan(profile="streambox")
+@pytest.mark.parametrize("profile", ["full", "streambox"])
+def test_dry_run_renders_exactly_the_steps_the_install_runs(profile):
+    """One table drives both: --dry-run iterates INSTALL_STEPS and so does
+    main(), so the plan cannot drift from the run."""
+    plan = _plan_steps(profile)
+    assert plan == _executed(profile)[0]
+    assert len(set(plan)) == len(plan), plan
+
+
+def test_every_row_is_well_formed_and_named_by_exactly_one_membership_pin():
+    """Whole-list drift guard. A row that lost a field fails the unpack; a row
+    whose `profiles` token is mistyped runs on neither profile; a deleted row
+    drops below the floor and out of the pin it was named by."""
+    rows = _step_rows()
+    # 44 rows, 40 distinct names: `deps`, `jasper`, `systemd_units` and
+    # `nginx_site` each have one row per tier.
+    assert len(rows) >= 44, rows
+    assert {profiles for _, profiles, _, _ in rows} <= {"both", "full", "streambox"}
+    assert all(size > 0 for _, _, _, size in rows), rows
+
+    names = {name for name, _, _, _ in rows}
+    assert not set(_ON_EVERY_PROFILE) & set(_FULL_ONLY_STEPS)
+    assert set(_ON_EVERY_PROFILE) | set(_FULL_ONLY_STEPS) == names
+    # ...and the split is the one the plans actually render.
+    assert set(_plan_steps("full")) == names
+    assert set(_plan_steps("streambox")) == set(_ON_EVERY_PROFILE)
+
+
+@pytest.mark.parametrize(
+    ("profile", "tier_fns", "other_tier_fns"),
+    [
+        ("full", _FULL_TIER_FNS, _STREAMBOX_TIER_FNS),
+        ("streambox", _STREAMBOX_TIER_FNS, _FULL_TIER_FNS),
+    ],
+)
+def test_each_profile_runs_its_own_tier_functions_only(
+    profile, tier_fns, other_tier_fns
+):
+    fns = set(_executed(profile)[1])
+    assert set(tier_fns) <= fns, sorted(set(tier_fns) - fns)
+    assert not fns & set(other_tier_fns), sorted(fns & set(other_tier_fns))
+
+
+@pytest.mark.parametrize("profile", ["full", "streambox"])
+def test_required_step_order_holds_on_both_profiles(profile):
+    steps = _executed(profile)[0]
+    assert set(_ON_EVERY_PROFILE) <= set(steps), sorted(
+        set(_ON_EVERY_PROFILE) - set(steps)
+    )
+    assert (set(_FULL_ONLY_STEPS) <= set(steps)) is (profile == "full"), steps
+    for earlier, later in _REQUIRED_ORDER:
+        assert steps.index(earlier) < steps.index(later), (earlier, later, steps)
+    # ADR-0172: the manifest is the last mutation and the doctor after it is
+    # read-only, so nothing mutating may be appended past either.
+    assert steps[-2:] == ["build_manifest", "doctor"], steps
+
+
+@pytest.mark.parametrize("profile", ["full", "streambox"])
+def test_a_failing_step_aborts_the_install_and_is_recorded(profile):
+    """`set -e` stops the loop at the failing row, and the EXIT trap names
+    that row in the journal so the next operator does not have to re-read the
+    transcript. journald is persistent, so the record outlives the reboot."""
+    result = _run_main(profile, extra="install_camilladsp() { return 7; }")
+
+    assert result.returncode == 7, result.stderr
+    fns = _journal(result.stdout, "fn")
+    assert fns[-1] == "install_camilladsp", fns
+    assert "install_renderers" not in fns, fns
+    assert _journal(result.stdout, "event")[-1] == "install.failed"
+    assert _journal(result.stdout, "rc") == ["7"]
+    assert _journal(result.stdout, "step")[-1] == "camilladsp"
+
+
+def test_a_clean_run_records_no_failure(profile="full"):
+    result = _run_main(profile)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.startswith("==> JTS streambox install plan (dry run)\n")
-    for expected in [
-        "Resolve JASPER_INSTALL_PROFILE=streambox",
-        "jasper-fanin Rust daemon",
-        "jasper-outputd daemon",
-        "CamillaDSP:",
-        "AirPlay, Spotify Connect, Bluetooth, and USB Audio Input",
-        "wake-word, local microphone, or AEC",  # listed as out-of-scope
-        # The assistant IS in scope, owned by the accessory reconciler.
-        # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
-        "jasper-accessory-reconcile starts and stops jasper-voice",
-    ]:
-        assert expected in result.stdout, expected
-    for forbidden in [
-        "openWakeWord ONNX assets",
-        "jasper-aec3",
-    ]:
-        assert forbidden not in result.stdout, forbidden
+    assert "install.failed" not in result.stdout
 
 
-def test_full_plan_includes_voice_and_audio_graph():
-    result = _run_install_plan(profile="full")
+@pytest.mark.parametrize("profile", ["full", "streambox"])
+def test_a_failed_core_doctor_does_not_abort_either_install_profile(profile):
+    """Removal condition: expect a non-zero rc here once run_doctor_summary
+    stops being wrapped by run_doctor_summary_advisory (ADR-0242)."""
+    result = _run_main(
+        profile,
+        extra="run_doctor_summary() { return 1; }",
+    )
 
-    assert result.returncode == 0, result.stderr
-    for expected in [
-        "CamillaDSP:",
-        "jasper-fanin Rust daemon",
-        "jasper-outputd daemon",
-        "voice_provider_ids",  # voice brain wiring present in full plan
-        "openWakeWord ONNX assets",
-    ]:
-        assert expected in result.stdout, expected
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert _journal(result.stdout, "step")[-1] == "doctor"
 
 
 def _distribution_name(requirement: str) -> str:
@@ -361,13 +639,6 @@ def test_installer_has_no_endpoint_install_functions():
 def test_deleted_endpoint_artifacts_do_not_exist():
     assert not (REPO_ROOT / "deploy" / "nginx-jasper-endpoint.conf").exists()
     assert not (REPO_ROOT / "scripts" / "bringup-endpoint.sh").exists()
-
-
-def test_main_dispatch_has_no_endpoint_branch():
-    text = INSTALL_SH.read_text()
-    assert '"${install_profile}" == "endpoint"' not in text
-    # Only full + streambox dispatch branches remain.
-    assert '"${install_profile}" == "streambox"' in text
 
 
 def test_deploy_script_accepts_full_and_streambox_only():

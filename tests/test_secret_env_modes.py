@@ -151,12 +151,8 @@ def test_install_widens_secret_env_on_upgrade():
         "wifi_guardian.env (PSK) must NOT be group-widened — jasper-control "
         "derives the SSID without the PSK"
     )
-
-    sh = (ROOT / "deploy/install.sh").read_text(encoding="utf-8")
-    # Called in BOTH main() profiles (full + streambox).
-    assert sh.count("widen_control_secret_env_modes") >= 2, (
-        "widen_control_secret_env_modes must be called in both main() paths"
-    )
+    # That it RUNS on both profiles is pinned by _ON_EVERY_PROFILE in
+    # test_install_profile_tiers.
 
 
 def test_widen_control_secret_env_modes_skips_symlinks(tmp_path: Path):

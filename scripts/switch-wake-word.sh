@@ -81,7 +81,4 @@ if [[ "$BUNDLED" == "0" ]]; then
 fi
 
 echo "Switching ${PI_HOST}:JASPER_WAKE_MODEL → ${MODEL}"
-$SSH "sudo install -d -m 0750 /var/lib/jasper && \
-      printf 'JASPER_WAKE_MODEL=%s\n' '${MODEL}' | sudo tee /var/lib/jasper/wake_model.env >/dev/null && \
-      sudo chmod 0644 /var/lib/jasper/wake_model.env && \
-      $(restart_voice_and_verify_cmd)"
+$SSH "sudo $(remote_env_file_set_cmd /var/lib/jasper/wake_model.env JASPER_WAKE_MODEL "$MODEL" 0644 0770) && $(restart_voice_and_verify_cmd)"

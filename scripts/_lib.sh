@@ -187,6 +187,16 @@ restart_voice_and_verify_cmd() {
         "$(shell_quote "$JASPER_VOICE_JOURNAL_NOISE_RE")"
 }
 
+# remote_env_file_set_cmd FILE KEY VALUE FILE_MODE DIR_MODE
+# Print the remote command that upserts KEY into FILE via the installed
+# jasper-env-file.sh lib (locked, atomic) — the one laptop-side Pi env-file
+# write. Every argument crosses ssh quoted (never string-interpolated); the
+# caller prepends its own sudo (plain or -n).
+remote_env_file_set_cmd() {
+    printf "bash -c '. /usr/local/lib/jasper/jasper-env-file.sh && jasper_env_file_set \"\$@\"' _ %s" \
+        "$(quote_args "$@")"
+}
+
 normalize_speaker_hostname() {
     local host="${1%.}"
     if [[ -z "$host" ]] || is_ipv4_host "$host"; then

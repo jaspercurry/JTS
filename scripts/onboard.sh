@@ -455,7 +455,7 @@ echo
 # refactor of _lib.sh doesn't surprise either side.
 if ! PI_HOST="$HOST" PI_USER="$PI_USER" JASPER_HOSTNAME="$SPEAKER_HOSTNAME" bash "${SCRIPT_DIR}/deploy-to-pi.sh"; then
     echo
-    echo "onboard: deploy-to-pi.sh exited non-zero — see output above" >&2
+    echo "onboard: the deploy's install or a post-deploy check failed — see above" >&2
     echo "         re-run after fixing; install.sh is idempotent" >&2
     log_event install fail "deploy_to_pi_nonzero"
     exit 1

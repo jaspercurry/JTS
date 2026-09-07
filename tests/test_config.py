@@ -47,7 +47,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_OPENAI_REASONING_EFFORT", "JASPER_OPENAI_NOISE_REDUCTION",
         "JASPER_GROK_MODEL", "JASPER_GROK_VOICE",
         "JASPER_WAKE_MODEL",
-        "JASPER_DUCK_DB", "JASPER_DUCK_TRANSPORT",
+        "JASPER_DUCK_DB",
         "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
         "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_MANUAL_MIC_SOURCES",
@@ -77,7 +77,6 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.grok_voice == catalog.default_voice_id("grok")
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -25.0
-    assert cfg.duck_transport == "fanin"
     assert cfg.response_stall_timeout_sec == 120
     # Idle context reset is opt-in (0 = disabled). Per-provider so the
     # cost/race tradeoffs can be tuned separately.
@@ -347,7 +346,6 @@ def test_google_setup_url_defaults_to_hostname(monkeypatch):
         ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", "150", "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT"),
         ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", "-1", "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT"),
         ("JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", "200", "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT"),
-        ("JASPER_DUCK_TRANSPORT", "sidechain", "JASPER_DUCK_TRANSPORT"),
     ],
 )
 def test_invalid_env_values_raise(monkeypatch, name, value, expected):
@@ -364,24 +362,6 @@ def test_tts_outputd_socket_env(monkeypatch):
     assert cfg.tts_outputd_socket == "/tmp/jasper-outputd.sock"
 
 
-def test_duck_transport_env_accepts_fanin(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv("JASPER_DUCK_TRANSPORT", "fanin")
-
-    cfg = Config.from_env()
-
-    assert cfg.duck_transport == "fanin"
-
-
-def test_fanin_tts_socket_requires_fanin_duck_transport(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "x")
-    monkeypatch.setenv(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET)
-    monkeypatch.setenv("JASPER_DUCK_TRANSPORT", "camilla")
-
-    with pytest.raises(RuntimeError, match="JASPER_DUCK_TRANSPORT=fanin"):
-        Config.from_env()
-
-
 def test_spend_cap_safety_multiplier_below_one_raises(monkeypatch):
     """A safety multiplier < 1.0 would weaken the cap — reject it loudly
     at startup so a typo (or 0, which would otherwise silently disable
@@ -395,7 +375,7 @@ def test_spend_cap_safety_multiplier_below_one_raises(monkeypatch):
 
 def test_active_voice_model_resolves_for_active_provider(monkeypatch):
     """The model jasper-voice runs, following the provider its own
-    environment names (_active_model)."""
+    environment names (active_model)."""
     # Provider defaults to gemini via the module autouse fixture.
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview")

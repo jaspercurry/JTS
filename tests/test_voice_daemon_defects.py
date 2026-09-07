@@ -13,9 +13,10 @@ import weakref
 import pytest
 
 from jasper.audio_io import InputDeviceUnavailable
-from jasper.voice_daemon import State, WakeLoop, idle_watchdog
+from jasper.voice_daemon import State, idle_watchdog
 
 from ._log_events import event_fields
+from ._wake_loop import wake_loop_for_tests
 
 
 async def test_fire_and_forget_task_survives_gc_until_done():
@@ -25,7 +26,7 @@ async def test_fire_and_forget_task_survives_gc_until_done():
     asyncio's weak task reference let it disappear mid-flight, the daemon
     would keep routing mic frames into the acquire buffer indefinitely.
     """
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._fire_and_forget = set()
 
     started = asyncio.Event()
@@ -56,7 +57,7 @@ async def test_fire_and_forget_task_survives_gc_until_done():
 
 
 async def test_fire_and_forget_shutdown_cancels_and_awaits_tasks():
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._fire_and_forget = set()
 
     started = asyncio.Event()
@@ -79,7 +80,7 @@ async def test_fire_and_forget_shutdown_cancels_and_awaits_tasks():
 
 
 async def test_run_shutdown_stops_wake_legs_before_sweeping_fire_and_forget():
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._fire_and_forget = set()
     wl._heartbeat = None
     wl._state = State.WAKE
@@ -131,7 +132,7 @@ async def test_run_parks_instead_of_crashing_on_the_impossible_no_mic_state():
     does: no legs at all (`_mic` stays None) and no manual mics
     (`_push_to_talk.only` derives False, not True).
     """
-    wl = WakeLoop.for_tests(legs=[])
+    wl = wake_loop_for_tests(legs=[])
     assert wl._mic is None
     assert wl._push_to_talk.only is False
 
@@ -239,7 +240,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
     async def _drive(
         *, paused: bool, conn_paused: bool = False, cue: str | None = None,
     ) -> tuple[list[str], int]:
-        wl = WakeLoop.for_tests()
+        wl = wake_loop_for_tests()
         played: list[str] = []
         nudges = 0
 
@@ -315,7 +316,7 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
 
 
 async def test_turn_open_failure_releases_output_gate_before_cue():
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     played: list[tuple[str, str | None]] = []
 
     async def _win(**_kwargs) -> str:
@@ -363,7 +364,7 @@ def test_session_status_surfaces_usage_tracking_degraded():
     """session_status() exposes the UsageStore write-health so /state.voice (and
     the spend-cap UI) can show that spend recording is degraded — the S1 signal.
     Defaults False; reflects the store's write_degraded."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     assert wl.session_status()["usage_tracking_degraded"] is False
 
     class _DegradedStore:
@@ -382,7 +383,7 @@ def test_session_status_surfaces_usage_tracking_degraded():
 def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
     from jasper.voice_daemon import FanInDucker
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     ducker = FanInDucker("/tmp/unused.sock", -25.0)
     ducker._ducked = True
     wl._ducker = ducker

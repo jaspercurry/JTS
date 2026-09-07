@@ -71,7 +71,7 @@ _T = TypeVar("_T")
 # owns that fact and is not constructible from here (it needs persistence and
 # the renderer backend), so a process that has one registers it. Per process
 # rather than per controller: graph swaps run on ad-hoc `primary_controller()`
-# instances no coordinator ever sees. Same callable `Ducker` already takes.
+# instances no coordinator ever sees.
 CanonicalTargetDbProvider = Callable[[], Awaitable[float]]
 
 _canonical_target_db_provider: CanonicalTargetDbProvider | None = None
@@ -201,7 +201,7 @@ class CamillaUnavailable(Exception):
     and the reconnect retry fail. Public methods accept ``best_effort=
     True`` to convert this into a None return / no-op so callers that
     should keep working through a camilla restart blip (cue playback,
-    Ducker, volume coordinator dispatch) don't have to scatter
+    volume coordinator dispatch) don't have to scatter
     try/except CamillaUnavailable boilerplate.
     """
 
@@ -1188,92 +1188,3 @@ class CueDuck:
         if claim is None:
             return
         await self._owner.release(claim)
-
-
-class Ducker:
-    """Voice-session ducking as a transient-duck claim on the volume owner.
-
-    `duck()` takes `duck_db` of attenuation off whatever level is in effect;
-    `restore()` gives exactly that back.
-
-    Why the restore re-declares the household level first: anything could have
-    happened during the ducked window — crucially, the remote / voice tools /
-    external slider observers could have changed `listening_level`, and they do
-    it from ANOTHER daemon, so this process's copy is stale until it re-reads.
-    An additive give-back that ignored that wedged camilla at
-    `pre_duck_value + delta`. Real symptom: remote twist during a voice turn →
-    restore overshoots by the duck delta → camilla pinned out-of-range positive
-    → sustained clipping when the next source connects. Handing the fresh level
-    to `release` makes the outcome independent of any interleaved write, and
-    keeps it to ONE fader move rather than a dip and a recovery.
-    """
-
-    def __init__(
-        self,
-        owner: "VolumeOwner",
-        duck_db: float,
-        target_db_provider: Callable[[], Awaitable[float]],
-    ) -> None:
-        self._owner = owner
-        self._duck_db = duck_db
-        self._target_db_provider = target_db_provider
-        self._claim: "VolumeClaimHandle | None" = None
-
-    @property
-    def is_ducked(self) -> bool:
-        """True iff this Ducker holds a claim on the main fader. Read by
-        WakeLoop.session_status() so jasper-control can authoritatively
-        gate its own camilla writes during a voice session."""
-        return self._claim is not None
-
-    @property
-    def locks_camilla_volume(self) -> bool:
-        """This transport temporarily owns Camilla's main volume."""
-        return True
-
-    async def duck(self) -> None:
-        if self._claim is not None:
-            return
-        # Best-effort: if camilla is restarting (Restart=always brings it
-        # back in ~2s), skip the attenuation rather than raise into the
-        # voice loop. Music isn't playing through camilla anyway when
-        # camilla is down, so there's nothing to duck. The claim is REFUSED
-        # rather than held when the write was skipped — that way restore()
-        # short-circuits cleanly and the next duck() retries when camilla is
-        # back.
-        from .volume_owner import VolumeClaimRefused
-
-        try:
-            self._claim = await self._owner.acquire_duck(self._duck_db)
-        except VolumeClaimRefused:
-            return
-        landed = self._owner.target_db()
-        log_event(
-            logger,
-            "camilla.duck",
-            on="true",
-            new_db="" if landed is None else f"{landed:.1f}",
-            duck_db=f"{self._duck_db:.1f}",
-        )
-
-    async def restore(self) -> None:
-        claim = self._claim
-        if claim is None:
-            return
-        target_db: float | None = None
-        try:
-            target_db = await self._target_db_provider()
-        finally:
-            # Release even when the provider raised. Today's code cleared the
-            # latch in a finally but never gave the attenuation back, so a
-            # broken provider left the speaker quiet with nothing tracking it.
-            # ``None`` leaves the standing level as it was and still hands this
-            # duck's own depth back.
-            self._claim = None
-            await self._owner.release(claim, household_level_db=target_db)
-        log_event(
-            logger,
-            "camilla.duck",
-            on="false",
-            target_db=f"{target_db:.1f}",
-        )

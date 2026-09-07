@@ -502,7 +502,7 @@ async def test_a_foreign_write_landing_mid_release_is_repaired_not_skipped():
     """A release's two reads are NOT one question asked twice.
 
     They are separated by a round-trip, and the fader is shared across
-    daemons. ``Ducker.restore`` clears the duck-active flag BEFORE awaiting
+    daemons. A duck holder clears the duck-active flag BEFORE awaiting
     ``release``, so jasper-control's probe
     (``control.volume_ops._make_duck_active_probe``) stops deferring and its
     own CamillaDSP write can land while the give-back read is in flight.

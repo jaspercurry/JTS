@@ -136,6 +136,7 @@ if [[ -z "$MODEL" || "$MODEL" == *$'\n'* || ! "$MODEL" =~ ^[A-Za-z0-9._/-]+$ ]];
 fi
 
 echo "Switching ${PI_HOST}:JASPER_GEMINI_MODEL → ${MODEL}"
+"${SSH[@]}" "sudo $(remote_env_file_set_cmd "$PROVIDER_ENV" JASPER_GEMINI_MODEL "$MODEL" 0640 0770)"
 "${SSH[@]}" "sudo sh -s -- ${MODEL} ${OPERATOR_ENV} ${PROVIDER_ENV} /proc $(shell_quote "$JASPER_VOICE_JOURNAL_NOISE_RE")" <<'REMOTE'
 set -eu
 model="$1"
@@ -144,25 +145,6 @@ provider_env="$3"
 proc_root="${4:-/proc}"
 filter="$5"
 expected="JASPER_GEMINI_MODEL=${model}"
-
-# The wizard-owned provider file is sourced after jasper.env, so it is the
-# effective non-secret selector owner. Preserve every unrelated selector and
-# replace this one atomically with the same root:jasper/0640 posture as the
-# provider switcher and voice wizard.
-state_dir="$(dirname "$provider_env")"
-install -d -m 0770 "$state_dir"
-chown root:jasper "$state_dir"
-chmod 0770 "$state_dir"
-tmp="$(mktemp "${provider_env}.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
-if [ -f "$provider_env" ]; then
-    awk '!/^JASPER_GEMINI_MODEL=/' "$provider_env" > "$tmp"
-fi
-printf '%s\n' "$expected" >> "$tmp"
-chown root:jasper "$tmp"
-chmod 0640 "$tmp"
-mv "$tmp" "$provider_env"
-trap - EXIT
 
 effective_file_value="$({
     grep -h '^JASPER_GEMINI_MODEL=' "$operator_env" "$provider_env" 2>/dev/null \

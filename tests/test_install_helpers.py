@@ -367,8 +367,6 @@ def test_speaker_name_seed_runs_once_before_shared_renderer_consumers():
         'bash "${REPO_DIR}/deploy/configure-bluez.sh"'
     )
 
-    main = _INSTALL_SH.read_text(encoding="utf-8")
-    assert sum(line.strip() == "install_renderers" for line in main.splitlines()) == 2
     runtime = (_INSTALL_LIB_DIR / "python-runtime.sh").read_text(
         encoding="utf-8",
     )
@@ -1250,9 +1248,9 @@ def test_install_enables_wifi_recover_timer_with_now():
 
 
 
-def test_install_dry_run_exits_before_root_and_lists_major_surfaces():
+def test_install_dry_run_exits_before_the_root_check():
     """The install plan is contributor-facing safety gear: it must run
-    without sudo and summarize the installer blast radius."""
+    without sudo. What it renders is pinned in test_install_profile_tiers."""
     result = subprocess.run(
         ["bash", str(_INSTALL_SH), "--dry-run"],
         capture_output=True,
@@ -1261,22 +1259,7 @@ def test_install_dry_run_exits_before_root_and_lists_major_surfaces():
     )
 
     assert result.returncode == 0
-    assert result.stdout.startswith("==> JTS install plan (dry run)\n")
     assert "this script must be run as root" not in result.stderr
-    for expected in [
-        "JTS install plan (dry run)",
-        "No host changes are made in this mode",
-        "apt-get update",
-        "CamillaDSP:",
-        "Raspotify/librespot deb:",
-        "openWakeWord ONNX assets",
-        "cargo build --release --locked",
-        "/var/lib/jasper/build.txt",
-        "WiFi guardian recovery",
-        "Reload udev and systemd",
-        "python3 scripts/check-provenance.py",
-    ]:
-        assert expected in result.stdout
 
 
 def test_install_dry_run_env_alias_and_plan_flag_match():
@@ -1647,14 +1630,6 @@ def test_require_build_user_fails_fast_with_remediation(tmp_path):
     assert "before any packages or services were modified" in result.stderr
 
 
-def test_main_preflights_build_user_before_mutation():
-    """require_build_user must run in main() before install_deps (the
-    first host-mutating step)."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    main_body = text[text.index("\nmain() {"):]
-    assert main_body.index("require_build_user") < main_body.index("install_deps")
-
-
 # ----------------------------------------------------------------------
 # Pi-generated pip constraints (deploy/constraints-pi.pins)
 # ----------------------------------------------------------------------
@@ -1993,44 +1968,6 @@ def test_aec3_rebuild_cache_migrates_legacy_marker_once():
     assert "jasper_aec3_import_probe" in python_runtime
 
 
-def test_build_manifest_is_the_final_main_mutation():
-    """In both main() paths the manifest is written immediately before the
-    (non-mutating) run_doctor_summary, after the build steps, and nothing
-    mutating runs after it — so reaching it means every build/install step
-    succeeded under set -e (the load-bearing invariant behind ADR-0172)."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-    # Adjacency: write_build_manifest directly precedes run_doctor_summary
-    # in both the full and streambox paths (whitespace-tolerant).
-    adjacency = re.findall(r"write_build_manifest\n\s*run_doctor_summary", text)
-    assert len(adjacency) == 2, adjacency
-
-    # Bounded main() body (def line to its column-0 closing brace), so the
-    # file's trailing `if main "$@"` guard isn't counted.
-    match = re.search(r"\nmain\(\) \{\n(.*?)\n\}", text, re.DOTALL)
-    assert match is not None, "could not locate main() body"
-    body = match.group(1)
-    # The Rust final-output owner (a required, OOM-capable build) is built
-    # before the manifest is stamped.
-    assert body.index("build_install_jasper_outputd") < body.index(
-        "write_build_manifest"
-    )
-    # run_doctor_summary is the TERMINAL step: nothing mutating follows the
-    # manifest stamp. On its own line only the advisory swallow may trail it;
-    # after that line, only branch-closing tokens (return 0 / fi / comments /
-    # whitespace).
-    tail = body[body.rindex("run_doctor_summary") + len("run_doctor_summary"):]
-    call_line, _, rest = tail.partition("\n")
-    assert call_line.split("#", 1)[0].strip() == "|| true", call_line
-    leftover = [
-        ln.strip()
-        for ln in rest.splitlines()
-        if ln.strip()
-        and not ln.strip().startswith("#")
-        and ln.strip() not in {"return 0", "fi"}
-    ]
-    assert not leftover, f"unexpected steps after run_doctor_summary: {leftover}"
-
-
 def test_landing_page_app_css_version_uses_resolved_build_sha():
     """Now that build.txt is written last, the landing-page cache-bust must
     resolve the SHA directly (deploy env → git → prior manifest), not read
@@ -2296,7 +2233,8 @@ def test_build_swap_setup_and_cleanup_use_high_priority_swap(tmp_path):
 
 
 def test_low_memory_build_parks_runtime_units_before_python_and_rust_builds():
-    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
+    """The park's own contents; its position in the run is pinned by
+    _REQUIRED_ORDER in test_install_profile_tiers."""
     systemd_units = (_INSTALL_LIB_DIR / "systemd-units.sh").read_text(
         encoding="utf-8"
     )
@@ -2304,16 +2242,6 @@ def test_low_memory_build_parks_runtime_units_before_python_and_rust_builds():
     assert "jasper-control.service" in systemd_units
     assert "jasper-system-web.service" in systemd_units
     assert "jasper-fanin.service" in systemd_units
-    main_body = re.search(r"\nmain\(\) \{\n(.*?)\n\}", install_sh, re.DOTALL)
-    assert main_body is not None
-    assert (
-        main_body.group(1).index("park_low_memory_build_units")
-        < main_body.group(1).index("install_jasper")
-    )
-    assert (
-        main_body.group(1).index("park_low_memory_build_units")
-        < main_body.group(1).index("build_install_jasper_fanin")
-    )
 
 
 def _systemd_run_stub(tmp_path: Path, rc: int) -> tuple[dict[str, str], Path]:
@@ -2343,24 +2271,6 @@ def test_run_doctor_summary_bounds_the_core_doctor_and_returns_its_code(tmp_path
     assert "--core" in argv
     assert "MemoryMax=96M" in argv
     assert "RuntimeMaxSec=60" in argv  # not TimeoutStartSec; See ADR-0242.
-
-
-@pytest.mark.parametrize("profile", ["streambox", "full"])
-def test_a_failed_core_doctor_does_not_abort_either_install_profile(tmp_path, profile):
-    """Removal condition: expect a non-zero rc here once the swallow at both
-    run_doctor_summary call sites goes (ADR-0242)."""
-    env, _ = _systemd_run_stub(tmp_path, 1)
-    # Neuter every install step so only main()'s control flow, the profile
-    # branch and run_doctor_summary run for real.
-    r = _run_contained_build(
-        "for f in $(declare -F | awk '{print $3}'); do "
-        'case "$f" in main|run_doctor_summary|_is_truthy|_is_falsey_or_empty) '
-        'continue ;; esac; eval "${f}() { :; }"; done; '
-        f"resolve_install_profile() {{ printf '%s\\n' {profile}; }}; main",
-        extra_env=env,
-    )
-
-    assert r.returncode == 0, r.stderr + r.stdout
 
 
 # --- run_contained_build: graceful degradation, no double-run ----------
@@ -3256,18 +3166,6 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
     assert run.returncode == 5, run.stderr
 
 
-def test_both_install_paths_trap_the_unparking_handler():
-    """The recovery is worthless if only one profile arms it."""
-    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
-    assert "trap cleanup_build_swap EXIT" not in install_sh, (
-        "install.sh must trap the combined handler so an aborted install "
-        "unparks; the swap-only trap leaves the speaker dead"
-    )
-    assert install_sh.count("trap install_exit_cleanup EXIT") == 2, (
-        "both the streambox and full install paths need the unparking trap"
-    )
-
-
 def test_low_memory_park_reuses_the_shared_core_graph_park_list():
     """Phase one's names have one owner.
 
@@ -3312,11 +3210,9 @@ def test_install_removes_the_retired_audio_topology_state():
     )[0]
     assert 'rm -f "${STATE_DIR}/audio_topology.env"' in body
 
-    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
-    # Both profiles, because a box only carries the ghost file if it predates
-    # the switch's retirement, and that is true on either profile.
-    assert install_sh.count("\n        remove_retired_audio_topology_state") == 1
-    assert install_sh.count("\n    remove_retired_audio_topology_state") == 1
+    # That it actually RUNS, on both profiles (a box only carries the ghost
+    # file if it predates the retirement, which is true on either tier), is
+    # pinned by _ON_EVERY_PROFILE in test_install_profile_tiers.
 
     # The doctor's side of the pair: the remedy still names re-running the
     # installer, which the step above is what makes true.

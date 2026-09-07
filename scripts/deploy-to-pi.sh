@@ -602,14 +602,60 @@ EOF
     exit 1
 }
 
+# 90 s is systemd's DefaultTimeoutStartSec: past it a Type=notify start has
+# already failed on its own. Goes when the reconcile's voice restart stops
+# being --no-block, or when the doctor waits for pending jobs. See ADR-0247.
+wait_for_units_settled() {
+    local waited settled=yes rc=0 body
+    remote_body body 'w=0; s=3' \
+        'while :; do j=$(systemctl list-jobs --no-legend) || exit 2; [ -n "$j" ] || break; [ "$w" -lt 90 ] || { echo "$w"; exit 1; }; sleep "$s"; w=$(( w + s )); done' \
+        'echo "$w"'
+    waited="$(ssh_remote "$(remote_sh jts-settle "$body")" 2>/dev/null \
+| tr -dc '0-9')" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) settled=no ;;
+        *) settled=unknown ;;
+    esac
+    [[ "${waited:-0}" == "0" && "$settled" == "yes" ]] || \
+        echo "  event=deploy.settle_wait seconds=${waited:-0} settled=${settled}"
+}
+
 # Same bound as install.sh's run_doctor_summary. See ADR-0242.
 gate_core_health() {
-    echo "==> Post-deploy core health (jasper-doctor --core; advisory)"
-    local rc=0
+    echo "==> Post-deploy core health (jasper-doctor --core)"
+    local rc=0 tmp line verdict=""
+    wait_for_units_settled
+    # tee to a file, not a capture: the rows stay on stdout, where an
+    # attended sudo prompt also rides.
+    tmp="$(mktemp "${TMPDIR:-/tmp}/jts-core-health.XXXXXX")" || return 1
     run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
--p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" || rc=$?
-    [[ "${rc}" == "0" ]] || echo "  event=deploy.core_health rc=${rc}"
-    return "${rc}"
+-p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" \
+| tee "$tmp" || rc=$?
+    while IFS= read -r line; do
+        case "$line" in "event=deploy.health "*) verdict="$line" ;; esac
+    done < "$tmp"
+    rm -f "$tmp"
+    # --wait folds timeout, oom-kill and a bus failure alike into rc 1, so
+    # only the doctor's own line is a verdict. See ADR-0247.
+    case "$verdict" in
+        *" status=fail"*)
+            echo "  event=deploy.core_health status=fail rc=${rc}"
+            echo "─────────────────────────────────────────────────────────────" >&2
+            echo " DEPLOY VERIFICATION FAILED: the post-deploy core doctor"  >&2
+            echo " reported a failing row on ${PI_HOST}."                    >&2
+            echo " Diagnose on the Pi:"                                      >&2
+            echo "   sudo /opt/jasper/.venv/bin/jasper-doctor --core"        >&2
+            echo "─────────────────────────────────────────────────────────────" >&2
+            return 1 ;;
+        *" status=ok"*) return 0 ;;
+    esac
+    if [[ "$rc" == "255" ]]; then
+        echo "  event=deploy.core_health status=unreachable rc=${rc}"
+        return "$rc"
+    fi
+    echo "  event=deploy.core_health status=no_verdict rc=${rc}"
+    return 0
 }
 
 # The install must outlive this ssh session (#4190): it runs as a
@@ -1099,7 +1145,8 @@ fi
 verify_manifest_advanced "$BUILD_MANIFEST"
 HEALTH_START_EPOCH="$(ssh_remote 'date +%s' 2>/dev/null | tr -dc '0-9')" || true
 [[ -z "${HEALTH_START_EPOCH:-}" ]] && HEALTH_START_EPOCH=0
-gate_core_health || true  # advisory; removal condition in ADR-0242
+HEALTH_RC=0
+gate_core_health || HEALTH_RC=$?
 if [[ "${HEALTH_START_EPOCH}" != "0" ]]; then
     report_oom_collateral "$HEALTH_START_EPOCH"
 fi
@@ -1115,6 +1162,11 @@ if [[ "$OOM_PRODUCTION_HIT" == "1" ]]; then
     echo "   journalctl -k --since @${DEPLOY_START_EPOCH} --no-pager | grep -Ei 'oom|killed process'" >&2
     echo "─────────────────────────────────────────────────────────────" >&2
     exit 1
+fi
+if [[ "$HEALTH_RC" != "0" ]]; then
+    finish_airplay_health_maintenance
+    trap 'cleanup_remote_facts' EXIT
+    exit "$HEALTH_RC"
 fi
 
 finish_airplay_health_maintenance

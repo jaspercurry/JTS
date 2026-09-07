@@ -24,10 +24,10 @@
 //! # Two controllers in cascade
 //!
 //! With the feature enabled, the fan-in `lane_resampler` (fast inner loop) and
-//! this pitch DLL (slow outer loop) both discipline the same audio chain: the
+//! this pitch servo (slow outer loop) both discipline the same audio chain: the
 //! inner loop absorbs residual + jitter, the outer loop removes the standing
-//! rate offset at its source (the host). The separation is in the numbers,
-//! derived from the actual inner-loop constants:
+//! rate offset at its source (the host). The inner loop's constants below are
+//! what the outer law's gain was chosen against:
 //!
 //! ## Inner loop
 //!
@@ -43,36 +43,32 @@
 //!
 //! ## Outer loop (this module)
 //!
-//! `Dll::new(DllConfig { period: 4800, rate: 48000, initial_bw: BW_MIN,
-//! bw_retune_period: 0, max_error: 0, max_resync: 0 })` ticked at exactly 1 Hz.
-//! With adaptive retune DISABLED (`bw_retune_period = 0`) the bandwidth is fixed
-//! at `BW_MIN = 0.016 Hz` in the DLL's own timescale, and the *effective*
-//! bandwidth referred to wall-clock ticks is
-//! `bw · (period / rate) / T_tick = 0.016 × (4800 / 48000) / 1 s = 0.0016 Hz`.
-//! That is **10× below the inner loop's locked floor and 80× below its
-//! acquiring maximum — ≥10× separation in EVERY inner
-//! state.** The slow settle is deliberate: PipeWire's docs warn UAC2 pitch
-//! oscillates at a normal DLL bandwidth, and Windows `usbaudio2.sys` reacts with
-//! a ~163 ppm deadband, so a wide/fast outer loop would ring against the host.
+//! A pure-integral law ([`CORRECTION_INTEGRAL_GAIN`]) ticked once per
+//! [`TICK_INTERVAL_MS`], deliberately NOT a DLL — ADR-0109 owns that decision
+//! and the limit cycle it was reproduced against, and that constant carries the
+//! plant analysis and the measured stability margin. The slow settle is
+//! deliberate: PipeWire's docs warn UAC2 pitch oscillates at a normal DLL
+//! bandwidth, and Windows `usbaudio2.sys` reacts with a ~163 ppm deadband, so a
+//! wide/fast outer loop would ring against the host.
 //!
 //! ## Feed-forward so the slow loop does not rail the 3-period ring
 //!
-//! At 0.0016 Hz the DLL alone would take ~100 s to correct a standing offset —
-//! long enough for the tiny 3×256-frame gadget ring to rail. So the probe's
-//! neutral baseline phase measures the raw host rate offset and, on entering
-//! `L0_LOCKED`, seeds the commanded bias with `-baseline_slope` (feed-forward).
-//! Coarse correction is immediate; the 0.0016 Hz DLL only trims the residual.
+//! The slow trim alone would take far longer to null a standing offset than the
+//! tiny 3×256-frame gadget ring can absorb, so the probe's neutral baseline
+//! phase measures the raw host rate offset and, on entering `L0_LOCKED`, seeds
+//! the commanded bias with `-baseline_slope` (feed-forward). Coarse correction
+//! is immediate; the integral trim only removes the residual.
 //!
 //! ## The falsifier
 //!
 //! `fill_variance` (EW variance of the gadget fill) and `fill_slope_ppm` are
 //! published every MEASURED tick so a soak can DETECT a cascade limit-cycle: a
 //! two-controller oscillation shows up as periodic fill variance. If a soak
-//! ever shows one, widen the separation or disable — the mechanism ships
-//! default-OFF for exactly this reason.
+//! ever shows one, lower [`CORRECTION_INTEGRAL_GAIN`] or disable — the
+//! mechanism ships default-OFF for exactly this reason.
 //!
 //! A tick with [`Obs::steady`] false is NOT measured, so `fill_frames`,
-//! `fill_slope_ppm`, `fill_variance`, `correction_ppm` and `dll.*` hold their
+//! `fill_slope_ppm`, `fill_variance` and `correction_ppm` hold their
 //! previous values — a soak reading them as live would mistake a hold for a
 //! flat trace. The status fragment's `hold` object tells the two apart; it
 //! counts only while a session is active, since an idle lane is not playing at
@@ -85,7 +81,8 @@
 //!   ~163 ppm reaction deadband and IGNORES commanded values outside roughly
 //!   nominal ±1 sample/interval, so the steady-state commanded bias MUST stay
 //!   inside a ±1000 ppm validity window (enforced by [`MAX_BIAS_PPM`]).
-//! - Both react slowly ⇒ the low outer-loop bandwidth above.
+//! - Both react slowly ⇒ the deliberately slow outer loop above (one tick per
+//!   [`TICK_INTERVAL_MS`], gain [`CORRECTION_INTEGRAL_GAIN`]).
 //!
 //! The host OS or the playing application can change between sessions (a Mac
 //! unplugged and a Windows box plugged in; an app that opens the endpoint in a
@@ -93,9 +90,7 @@
 //! `(host_connected && playing)` edge rather than trusted once at boot.
 //!
 //! Prior art: Pavel Hofman's `gaudio_ctl` demonstrates the gadget-side pitch
-//! actuator; the DLL is JTS's own `jasper_clock` (a PipeWire `spa_dll` port).
-
-use jasper_clock::{Dll, DllConfig, BW_MIN};
+//! actuator.
 
 // ---- Pinned non-env constants (tests assert these) -------------------------
 
@@ -104,8 +99,8 @@ use jasper_clock::{Dll, DllConfig, BW_MIN};
 /// 750000..1005000 with 1_000_000 the identity point.
 pub const PITCH_NEUTRAL: i64 = 1_000_000;
 
-/// Servo clamp: the total commanded bias (feed-forward + DLL trim) never leaves
-/// ±this ppm. This is the Windows validity window, INTENTIONALLY tighter than
+/// Servo clamp: the total commanded bias (feed-forward + integral trim) never
+/// leaves ±this ppm. This is the Windows validity window, INTENTIONALLY tighter than
 /// the hardware ctl range (750000..1005000 around neutral 1_000_000, i.e.
 /// −250000 ppm to +5000 ppm) — a value outside ±1000 ppm is silently ignored
 /// by `usbaudio2.sys`, so commanding it would be worse than useless.
@@ -216,15 +211,10 @@ pub const CORRECTION_PROBE_STEP_SECS: u64 = 15;
 /// baseline is genuinely near a rail.
 pub const CORRECTION_PROBE_FLIP_DEADBAND_PPM: f64 = 150.0;
 
-// The outer DLL's loop timescale. `period / rate` is the DLL's per-update
-// timescale in seconds; with a 1 s tick and this period/rate the effective
-// bandwidth is `BW_MIN × (period/rate) / T_tick = 0.016 × 0.1 / 1 = 0.0016
-// Hz`. The DLL itself is not ticked by the live control law (see
-// `ObsMode::Correction`'s pure-integral outer law below); it remains
-// instantiated for `dll_locked`/`dll_err_frames` diagnostics and as the
-// control-theory contrast documented on `CORRECTION_INTEGRAL_GAIN`.
-const OUTER_DLL_PERIOD: f64 = 4800.0;
-const OUTER_DLL_RATE: f64 = 48000.0;
+// The ladder's nominal frame rate, in Hz: it scales its per-tick frame count as
+// `rate × Δt`. 48 kHz is the shipped fan-in rate (`JASPER_FANIN_SAMPLE_RATE`'s
+// default); the ladder does not read that knob.
+const NOMINAL_RATE_HZ: f64 = 48000.0;
 
 /// Which observable the probe and the L0 servo run on — a TYPED, per-daemon
 /// choice, never inferred from the data. Carried on [`HostClockConfig`] so each
@@ -265,18 +255,17 @@ impl ObsMode {
     }
 }
 
-/// Ladder state — the lock authority. `dll.locked` is diagnostic only (it is
-/// expected false under the 256-frame ring quantization); THIS enum decides
-/// whether the speaker trusts the host to follow the feedback.
+/// Ladder state — the lock authority: THIS enum decides whether the speaker
+/// trusts the host to follow the feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ladder {
-    /// Feature off, or no session yet. Pitch neutral, no DLL, no probe.
+    /// Feature off, or no session yet. Pitch neutral, no servo, no probe.
     Disabled,
     /// A session started; running the compliance probe (await-lock → baseline →
     /// step) before trusting the host. The await-lock phase holds neutral until
     /// the lane leaves its warmup ramp so the baseline measures clock drift.
     Probing,
-    /// Probe passed; the DLL is actively steering the host, clamped.
+    /// Probe passed; the servo is actively steering the host, clamped.
     L0Locked,
     /// Locked but the raw demand is unusually high (sustained). Warn only.
     L1Warn,
@@ -462,9 +451,6 @@ pub struct HostClockConfig {
     /// one-time startup neutralize runs) — every consuming daemon resolves this
     /// from its own literal-`enabled` gate.
     pub enabled: bool,
-    /// Gadget fill setpoint in frames. Fan-in derives it from its resampler's
-    /// held target.
-    pub target_fill_frames: f64,
     /// Probe step magnitude in ppm. Default 300 (inside ±1000 with margin).
     pub probe_ppm: f64,
     /// Which observable the probe + L0 servo run on (see [`ObsMode`]). Fan-in
@@ -480,14 +466,13 @@ pub struct HostClockConfig {
 impl HostClockConfig {
     /// A hard-disabled config with default tunables, for the given daemon
     /// `log_prefix` — the crate's inert/neutralize-only shape for a mode where
-    /// the audio loop that feeds the DLL never runs. The startup + exit pitch
+    /// the audio loop that feeds the servo never runs. The startup + exit pitch
     /// neutralize still run against this config — both are unconditional and
     /// never leave the host slaved — so a crashed predecessor is still healed.
     /// Never fails.
     pub fn disabled(log_prefix: &'static str) -> Self {
         Self {
             enabled: false,
-            target_fill_frames: 384.0,
             probe_ppm: 300.0,
             // A disabled ladder never probes or servos, so the observable mode
             // is moot; nothing pins this value.
@@ -692,14 +677,13 @@ impl SlopeEstimator {
 }
 
 /// The full host-clock ladder + servo. Pure logic: `tick(obs, now_ms)` returns
-/// the actions to perform. Owns the outer DLL, the slope estimator, the probe
-/// state, the lifetime counters, and the last-written-command bookkeeping the
+/// the actions to perform. Owns the slope estimator, the probe state, the
+/// lifetime counters, and the last-written-command bookkeeping the
 /// write-suppression needs.
 pub struct HostClock {
     cfg: HostClockConfig,
 
     // Loop / servo.
-    dll: Dll,
     slope: SlopeEstimator,
     /// The feed-forward bias seeded on L0 entry from the measured baseline
     /// slope; the outer trim (the pure integral below) trims the residual
@@ -707,9 +691,8 @@ pub struct HostClock {
     feed_forward_ppm: f64,
     /// The pure-integral outer-loop accumulator, in ppm
     /// ([`CORRECTION_INTEGRAL_GAIN`]): steps each locked tick by
-    /// `−Ki · correction_mean`; the DLL is not ticked. Reset to 0 on every L0
-    /// entry and every session/probe boundary alongside `feed_forward_ppm` and
-    /// the DLL.
+    /// `−Ki · correction_mean`. Reset to 0 on every L0 entry and every
+    /// session/probe boundary alongside `feed_forward_ppm`.
     correction_trim_ppm: f64,
     /// Last commanded (clamped) bias — what telemetry reports and what the
     /// suppression epsilon compares against for the NEXT command.
@@ -770,9 +753,6 @@ pub struct HostClock {
     // Lifetime counters + last transition token.
     demotions: u64,
     transitions: u64,
-    /// Lifetime count of DLL anti-windup resets (diagnostic; not in the wire
-    /// contract — surfaced only via the accessor for tests / future telemetry).
-    anti_windup_events: u64,
     last_transition_reason: &'static str,
 
     // Whether the one-time startup neutralize has been emitted.
@@ -803,25 +783,14 @@ pub const MAX_PROBE_ATTEMPTS: u32 = 2;
 pub const PROBE_RETRY_SETTLE_SECS: u64 = 10;
 
 impl HostClock {
-    /// Build the ladder from validated config. The DLL is created with adaptive
-    /// retune DISABLED and the resync/slew clamps OFF so its bandwidth — and
-    /// hence the cascade separation — is a fixed, testable number (module docs).
+    /// Build the ladder from validated config.
     pub fn new(cfg: HostClockConfig) -> Self {
-        let dll = Dll::new(DllConfig {
-            period: OUTER_DLL_PERIOD,
-            rate: OUTER_DLL_RATE,
-            initial_bw: BW_MIN,
-            bw_retune_period: 0, // fixed bandwidth ⇒ deterministic 0.0016 Hz
-            max_error: 0.0,      // no slew clamp: the SERVO clamp (±1000 ppm) bounds output
-            max_resync: 0.0,     // no hard-jump: fill excursions are the whole signal
-        });
         // The slope EW alpha: track over ~a handful of ticks so the probe
         // measures within its phase windows but a single jittery tick can't
         // flip a verdict. 0.3 ≈ 3-tick memory.
         let slope = SlopeEstimator::new(0.3);
         Self {
             cfg,
-            dll,
             slope,
             feed_forward_ppm: 0.0,
             correction_trim_ppm: 0.0,
@@ -853,7 +822,6 @@ impl HostClock {
             fallback_reason: FallbackReason::None,
             demotions: 0,
             transitions: 0,
-            anti_windup_events: 0,
             last_transition_reason: "startup",
             startup_neutralized: false,
         }
@@ -868,35 +836,8 @@ impl HostClock {
         self.commanded_ppm
     }
 
-    /// Update the fill setpoint the locked loop disciplines toward. Fan-in
-    /// combo mode — the sole live caller — shares it with the inner
-    /// resampler's LIVE held target, which the DEFAULT-OFF post-lock cushion
-    /// decay lowers over time, so the servo thread re-pins it each tick from
-    /// the resampler's held-target gauge. Single source of truth: the
-    /// resampler owns the value; the ladder
-    /// only ever reads it. No effect on the ladder state — the next `tick_locked`
-    /// simply sees the new `error = fill − target` (a bounded step the DLL
-    /// already handles), so a slowly-descending setpoint is a gentle ramp, not a
-    /// re-acquisition. `NaN`/non-finite is ignored (keeps the last good value).
-    pub fn set_target_fill_frames(&mut self, target_fill_frames: f64) {
-        if target_fill_frames.is_finite() {
-            self.cfg.target_fill_frames = target_fill_frames;
-        }
-    }
-
-    /// The fill setpoint the locked loop currently disciplines toward (for tests
-    /// / telemetry). Tracks `set_target_fill_frames`.
-    pub fn target_fill_frames(&self) -> f64 {
-        self.cfg.target_fill_frames
-    }
     pub fn fill_variance(&self) -> f64 {
         self.slope.fill_variance()
-    }
-    pub fn dll_err_frames(&self) -> f64 {
-        self.dll.error_mean()
-    }
-    pub fn dll_locked(&self) -> bool {
-        self.dll.is_locked()
     }
     pub fn probe_result(&self) -> ProbeResult {
         self.probe_result
@@ -960,10 +901,6 @@ impl HostClock {
             self.enter_actuator_fallback("pitch_write_failed", &mut ignored_actions);
         }
     }
-    /// Lifetime count of outer-DLL anti-windup resets (diagnostic).
-    pub fn anti_windup_events(&self) -> u64 {
-        self.anti_windup_events
-    }
 
     /// The one-time startup neutralize action. Emitted ONCE, unconditionally
     /// (even when the feature is disabled) so a crashed predecessor that left a
@@ -1022,7 +959,7 @@ impl HostClock {
             None => TICK_INTERVAL_MS,
         };
         self.last_tick_ms = Some(now_ms);
-        let frames_per_tick = OUTER_DLL_RATE * (dt_ms as f64) / 1000.0;
+        let frames_per_tick = NOMINAL_RATE_HZ * (dt_ms as f64) / 1000.0;
 
         if !self.cfg.enabled {
             // Inert. The startup neutralize already ran; nothing to command.
@@ -1173,7 +1110,6 @@ impl HostClock {
         self.probe_step_obs_ppm = 0.0;
         self.probe_step_ppm = 0.0;
         self.slope.rearm();
-        self.dll.reset();
         self.feed_forward_ppm = 0.0;
         self.correction_trim_ppm = 0.0;
         // Command neutral for the baseline measurement (forced write).
@@ -1233,7 +1169,6 @@ impl HostClock {
         self.correction_trim_ppm = 0.0;
         self.l1_high_ticks = 0;
         self.l2_evidence_ticks = 0;
-        self.dll.reset();
         self.slope.rearm();
         self.transition_to(Ladder::L2Fallback, transition_reason);
         self.command(0.0, true, actions);
@@ -1437,7 +1372,6 @@ impl HostClock {
             // baseline observable (resampler consuming faster ⇒ positive
             // correction ppm), and must be commanded SLOWER ⇒ negative bias.
             self.feed_forward_ppm = clamp_bias(-self.probe_baseline_obs_ppm);
-            self.dll.reset();
             // The integral trim starts from 0 on L0 entry — the feed-forward
             // carries the DC crystal cancel and the integrator only trims the
             // residual around it.
@@ -1464,7 +1398,6 @@ impl HostClock {
             self.probe_started_ms = self.last_tick_ms.unwrap_or(0);
             self.lock_since_ms = None;
             self.slope.rearm();
-            self.dll.reset();
             self.feed_forward_ppm = 0.0;
             self.correction_trim_ppm = 0.0;
             self.command(0.0, true, actions);
@@ -1544,8 +1477,7 @@ impl HostClock {
         let anti_windup_threshold = self.cfg.probe_ppm / 2.0;
         let trim_ppm = {
             // Pure-integral outer law: `trim += −Ki · err` (negative feedback — a
-            // positive correction error commands the host slower). The DLL is
-            // intentionally not ticked.
+            // positive correction error commands the host slower).
             //
             // Anti-windup by CONDITIONAL INTEGRATION: a pure integrator has no
             // hidden `z2+z3` to reset, and the ±MAX_BIAS_PPM clamp is applied to
@@ -1558,7 +1490,7 @@ impl HostClock {
             // Steps that move the total back toward zero always apply, so the
             // integrator unwinds immediately when the error reverses. Gated on a
             // non-trivial error (probe_ppm/2) so ordinary near-target jitter
-            // doesn't count as a windup event.
+            // doesn't wind the integrator down a rail.
             let step = -CORRECTION_INTEGRAL_GAIN * err;
             let candidate = self.correction_trim_ppm + step;
             let total_raw = self.feed_forward_ppm + candidate;
@@ -1566,11 +1498,9 @@ impl HostClock {
                 && total_raw.abs() > MAX_BIAS_PPM
                 && err.abs() >= anti_windup_threshold
                 && total_raw.signum() == step.signum();
-            if railed_further {
-                self.anti_windup_events = self.anti_windup_events.saturating_add(1);
-                // Hold the integrator (do not accumulate further into the rail);
-                // the output clamp below still bounds the command.
-            } else if candidate.is_finite() {
+            // Holding the integrator on `railed_further` is the anti-windup;
+            // the output clamp below still bounds the command either way.
+            if !railed_further && candidate.is_finite() {
                 self.correction_trim_ppm = candidate;
             }
             self.correction_trim_ppm
@@ -1689,7 +1619,6 @@ impl HostClock {
         self.transition_to(Ladder::Probing, reason);
         self.probe_phase = ProbePhase::AwaitLock;
         self.lock_since_ms = None;
-        self.dll.reset();
         self.slope.rearm();
         self.command(0.0, true, actions);
         // The rising edge on the next (session) tick will begin_probe again.
@@ -1762,8 +1691,7 @@ impl HostClock {
     }
 
     /// Render the `host_clock` block for `state.json`. Byte-exact shape pinned
-    /// by `tests::host_clock_fragment_shape_is_stable` and its Python twin,
-    /// `tests/test_fanin_host_clock_contract.py`.
+    /// by `tests::host_clock_fragment_shape_is_stable`.
     pub fn status_fragment(&self) -> String {
         let ratio = match self.response_ratio {
             Some(r) => format!("{r:.4}"),
@@ -1803,7 +1731,6 @@ impl HostClock {
                 "\"fill_variance\":{:.2},",
                 "\"correction_ppm\":{:.2},",
                 "\"hold\":{{\"active\":{},\"ticks\":{},\"reason\":{}}},",
-                "\"dll\":{{\"err_frames\":{:.2},\"locked\":{}}},",
                 "\"actuator\":{{\"ready\":{},\"capture_generation\":{},\"control_generation\":{},\"refreshes\":{},\"open_failures\":{},\"write_failures\":{},\"readback_ctl_value\":{}}},",
                 "\"probe\":{{\"phase\":{},\"attempt\":{},\"max_attempts\":{},\"last_attempt_result\":\"{}\",\"last_attempt_response_ratio\":{},\"final_result\":\"{}\",\"final_response_ratio\":{},\"last_result\":\"{}\",\"response_ratio\":{},\"retries\":{},\"waiting_for_lock\":{}}},",
                 "\"demotions\":{},",
@@ -1827,8 +1754,6 @@ impl HostClock {
             } else {
                 "null"
             },
-            self.dll_err_frames(),
-            json_bool(self.dll_locked()),
             json_bool(self.control_status.ready()),
             self.control_status.capture_generation,
             control_generation,
@@ -2045,7 +1970,6 @@ mod tests {
     fn enabled_cfg() -> HostClockConfig {
         HostClockConfig {
             enabled: true,
-            target_fill_frames: 384.0,
             probe_ppm: 300.0,
             obs_mode: ObsMode::Correction,
             log_prefix: "fanin",
@@ -2926,21 +2850,6 @@ mod tests {
         assert_eq!(ObsMode::Correction.as_str(), "correction");
     }
 
-    // ---- Live setpoint (fan-in cushion-decay single source of truth) -------
-
-    #[test]
-    fn set_target_fill_frames_updates_the_locked_setpoint() {
-        let mut hc = HostClock::new(enabled_cfg());
-        assert_eq!(hc.target_fill_frames(), 384.0);
-        hc.set_target_fill_frames(320.0);
-        assert_eq!(hc.target_fill_frames(), 320.0);
-        // Non-finite is ignored (no NaN poisoning the error term).
-        hc.set_target_fill_frames(f64::NAN);
-        assert_eq!(hc.target_fill_frames(), 320.0);
-        hc.set_target_fill_frames(f64::INFINITY);
-        assert_eq!(hc.target_fill_frames(), 320.0);
-    }
-
     // ---- Pinned constants --------------------------------------------------
 
     #[test]
@@ -3286,10 +3195,9 @@ mod tests {
 
     /// The beyond-authority rail and its fail-bias corollary, in one composition
     /// test against the real `HostClock::tick` / `SlopeEstimator` probe pipeline
-    /// (the CORRECTION-mode observable is `SlopeEstimator::correction_mean_ppm`;
-    /// the `Dll` is `reset` but not ticked during probing, so it does not
-    /// discriminate here). Model a host whose excess rate is +600 ppm — BEYOND the
-    /// lane resampler's ±500 ppm inner authority — so the observed correction
+    /// (the CORRECTION-mode observable is `SlopeEstimator::correction_mean_ppm`).
+    /// Model a host whose excess rate is +600 ppm — BEYOND the lane resampler's
+    /// ±500 ppm inner authority — so the observed correction
     /// CLIPS at +500 under neutral pitch (the AwaitLock command). The observed
     /// correction is `excess + applied_pitch` clamped to ±500: at +600 it rails at
     /// +500 (baseline); a COMPLIANT host commanded −300 (the away-from-rail step,
@@ -3638,14 +3546,12 @@ mod tests {
         );
     }
 
-    // ---- state.json fragment (byte-exact twin fixture) ---------------------
+    // ---- state.json fragment (byte-exact fixture) --------------------------
 
-    /// BYTE-EXACT contract pin. The disabled default fragment must match this
-    /// string verbatim. Its Python twin,
-    /// `tests/test_fanin_host_clock_contract.py`, greps this identical literal
-    /// out of this source, so the expected value MUST stay a RAW string literal
-    /// (`r#"..."#`): the bare (unescaped) `"` bytes then appear contiguously in
-    /// the source, exactly matching the Python side's bare-quote fixture.
+    /// BYTE-EXACT contract pin, and the ONLY one on this wire shape:
+    /// `tests/test_fanin_host_clock_contract.py` asserts that this function
+    /// still exists but never reads the literal, so a removed, renamed or
+    /// reordered key is caught here and nowhere else.
     #[test]
     fn host_clock_fragment_shape_is_stable() {
         let mut cfg = enabled_cfg();
@@ -3654,7 +3560,7 @@ mod tests {
         let fragment = hc.status_fragment();
         assert_eq!(
             fragment,
-            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"hold":{"active":false,"ticks":0,"reason":null},"dll":{"err_frames":0.00,"locked":false},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
+            r#"{"enabled":false,"ladder":"disabled","fallback_reason":null,"obs_mode":"correction","pitch_ppm_commanded":0.0,"fill_frames":0,"fill_slope_ppm":0.00,"fill_variance":0.00,"correction_ppm":0.00,"hold":{"active":false,"ticks":0,"reason":null},"actuator":{"ready":false,"capture_generation":0,"control_generation":null,"refreshes":0,"open_failures":0,"write_failures":0,"readback_ctl_value":null},"probe":{"phase":null,"attempt":1,"max_attempts":2,"last_attempt_result":"none","last_attempt_response_ratio":null,"final_result":"none","final_response_ratio":null,"last_result":"none","response_ratio":null,"retries":0,"waiting_for_lock":false},"demotions":0,"transitions":0,"last_transition_reason":"startup"}"#
         );
         // And it parses as valid JSON.
         let parsed: serde_json::Value = serde_json::from_str(&fragment).unwrap();

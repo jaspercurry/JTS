@@ -136,9 +136,6 @@ def test_install_sh_installs_the_rule():
         "install.sh must define + call install_jasper_web_polkit"
     )
     assert "49-jasper-web.rules" in sh
-    # Called in BOTH profiles (full + streambox), like the control rule, so a
-    # future streambox web drop finds the grant already present. Def + 2 calls.
-    assert sh.count("install_jasper_web_polkit") >= 3, (
-        "install_jasper_web_polkit must be defined and called in both the full "
-        "and streambox main() paths"
-    )
+    # That it RUNS on both profiles, like the control rule, so a future
+    # streambox web drop finds the grant already present, is pinned by
+    # _ON_EVERY_PROFILE in test_install_profile_tiers.

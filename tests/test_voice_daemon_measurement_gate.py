@@ -33,6 +33,7 @@ import pytest
 from jasper.audio_io import TtsPlayout
 from jasper.timers import Timer
 from tests._log_events import event_fields
+from tests._wake_loop import wake_loop_for_tests
 
 
 def _timer(*, id: str = "t1", label: str | None = "pasta") -> Timer:
@@ -47,9 +48,8 @@ class _RefusingCues:
 
 
 async def test_play_cue_refuses_during_measurement(caplog) -> None:
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _RefusingCues()
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
@@ -65,7 +65,6 @@ async def test_play_cue_refuses_during_measurement(caplog) -> None:
 
 
 async def test_play_cue_plays_normally_when_not_measuring() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     played: list[str] = []
 
@@ -74,7 +73,7 @@ async def test_play_cue_plays_normally_when_not_measuring() -> None:
             played.append(slug)
             return True
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _Cues()
 
     assert await wl.play_cue("cant_connect") == "ok"
@@ -85,9 +84,8 @@ async def test_play_cue_plays_normally_when_not_measuring() -> None:
 async def test_play_supervisor_cue_refuses_during_measurement(
     caplog, output_busy: bool,
 ) -> None:
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _RefusingCues()
     if output_busy:
         assert await wl._output_gate.begin_if_idle("admin") is not None
@@ -103,7 +101,6 @@ async def test_play_supervisor_cue_refuses_during_measurement(
 
 
 async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     played: list[str] = []
 
@@ -112,7 +109,7 @@ async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
             played.append(slug)
             return True
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _Cues()
 
     assert await wl.play_supervisor_cue("cant_connect") == "ok"
@@ -120,7 +117,6 @@ async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
 
 
 async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
-    from jasper.voice_daemon import WakeLoop
 
     class _Cues:
         async def prerender_text(self, _text: str) -> bool:
@@ -131,7 +127,7 @@ async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
                 "timer must not speak during a measurement window"
             )
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _Cues()
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
@@ -145,7 +141,6 @@ async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
 
 
 async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     spoken: list[str] = []
 
@@ -153,7 +148,7 @@ async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
         spoken.append(text)
         return True
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._play_dynamic_text = _play
 
     await wl.announce_timer(_timer())
@@ -164,7 +159,6 @@ async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
 async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
     """A timer past its early check is still stopped at atomic admission."""
 
-    from jasper.voice_daemon import WakeLoop
 
     prerender_started = asyncio.Event()
     finish_prerender = asyncio.Event()
@@ -179,7 +173,7 @@ async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
         async def speak_text(self, text: str) -> None:
             spoke.append(text)
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cues = _Cues()
     announce = asyncio.create_task(wl.announce_timer(_timer()))
     await asyncio.wait_for(prerender_started.wait(), timeout=1.0)
@@ -194,10 +188,9 @@ async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
 
 
 async def test_measurement_pause_blocks_mute_click_admission() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     writes: list[bytes] = []
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
 
     async def write_segment(pcm, **_kwargs):
         writes.append(pcm)
@@ -244,13 +237,12 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
     bounded drain, so neither an earlier check nor the drain can stop its
     audio — only the emission seam can. Zeroing the drain bound makes the
     ordering exact (episode acquired, then pause, then emit) with no wait."""
-    from jasper.voice_daemon import WakeLoop
 
     monkeypatch.setattr(
         "jasper.voice.measurement_hold.MEASUREMENT_INFLIGHT_DRAIN_SEC", 0.0,
     )
     tts = _RecordingTts()
-    wl = WakeLoop.for_tests(tts=tts)
+    wl = wake_loop_for_tests(tts=tts)
     await wl._begin_turn_output_episode()
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
@@ -265,10 +257,9 @@ async def test_wake_in_flight_when_pause_lands_cannot_emit(
 
 
 async def test_emission_proceeds_once_the_window_closes() -> None:
-    from jasper.voice_daemon import WakeLoop
 
     tts = _RecordingTts()
-    wl = WakeLoop.for_tests(tts=tts)
+    wl = wake_loop_for_tests(tts=tts)
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     await wl.measurement_hold.resume()
