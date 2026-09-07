@@ -94,24 +94,6 @@ def test_a_scrub_failure_fails_closed_for_the_traceback_too(monkeypatch, capsys)
     assert "Traceback" not in err
 
 
-def test_a_tagged_process_is_redacted_too(capsys):
-    """``tag=`` swaps the format string but must not bypass the filter.
-
-    This is what the four aec/usb-mic CLIs use instead of a hand-rolled
-    ``fmt=``; their journals still go through the one redacting handler.
-    """
-    with bare_root_logger():
-        configure_logging(tag="aec-init")
-        logging.getLogger("jasper.x").warning(
-            "provider ready OPENAI_API_KEY=sk-live-abc123456789 loaded"
-        )
-
-    err = capsys.readouterr().err
-    assert "sk-live-abc123456789" not in err
-    assert "<redacted>" in err
-    assert "aec-init" in err
-
-
 def test_a_logger_outside_jasper_is_redacted_too(capsys):
     """The filter is on the handler, not on the ``jasper`` logger.
 

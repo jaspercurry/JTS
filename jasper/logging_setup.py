@@ -108,22 +108,9 @@ REDACTING_FILTER = RedactingFilter()
 
 
 def configure_logging(
-    *,
-    level: int | str = logging.INFO,
-    fmt: str = LOG_FORMAT,
-    tag: str | None = None,
+    *, level: int | str = logging.INFO, fmt: str = LOG_FORMAT,
 ) -> None:
-    """Install this process's journal handler, redacting everything on it.
-
-    ``tag`` replaces ``%(name)s`` with a fixed label for a CLI whose whole
-    run is one process under one name — journalctl already scopes by unit,
-    so the per-record logger name is noise there. Mutually exclusive with
-    ``fmt``.
-    """
-    if tag is not None:
-        if fmt != LOG_FORMAT:
-            raise TypeError("configure_logging: pass fmt or tag, not both")
-        fmt = f"%(asctime)s %(levelname)s {tag}: %(message)s"
+    """Install this process's journal handler, redacting everything on it."""
 
     root = logging.getLogger()
     before = set(root.handlers)

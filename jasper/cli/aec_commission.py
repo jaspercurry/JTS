@@ -915,7 +915,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    configure_logging(tag="aec-commission")
+    configure_logging()
     # `prepare_volume`/`restore_volume` write the main fader through
     # `camilla.declare_main_volume_db`, which declares through the process
     # owner. Registered AFTER the `--emit-class-entry` early exit: that
