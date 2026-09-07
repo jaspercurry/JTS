@@ -31,6 +31,7 @@ import pytest
 from jasper.research import DONE, ResearchJob
 from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
+from jasper.voice.research_announcer import ResearchWindow
 from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG, State, WakeLoop
 
 from tests._live_turn_fake import FakeLiveTurn, silent_frame
@@ -154,7 +155,7 @@ async def _failed_begin_opener(
     turn: FakeLiveTurn,
     opener_done: asyncio.Event,
 ) -> None:
-    """`_open_confirmation_window`'s opener dying mid-begin, through the
+    """The confirmation window's opener dying mid-begin, through the
     REAL `_begin_turn`: its `finally` runs `_cleanup_after_failed_begin`
     inside the `_await_output_cleanup_owned` task wrapper, which is where
     the window between reading ownership and acting on it lives."""
@@ -212,10 +213,10 @@ async def _drive_cancel_timeout(
     """The NN-6 collision on real code: a confirmation-window opener holding
     the turn output episode, the wake that cancels it timing out, and the
     cue that must still be heard taking the gate from under it."""
-    import jasper.voice_daemon as voice_daemon_module
+    import jasper.voice.research_announcer as research_announcer_module
 
     monkeypatch.setattr(
-        voice_daemon_module,
+        research_announcer_module,
         "RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC",
         0.01,
     )
@@ -247,8 +248,8 @@ async def _drive_cancel_timeout(
         # Armed only now: `_end_turn_inner` reads the confirmation window at
         # its top, and the window's own dismissal bookkeeping is another
         # test's subject.
-        wl._research_window_active = True
-        wl._research_window_job = ResearchJob(
+        wl._research._window = ResearchWindow.OPEN
+        wl._research._window_job = ResearchJob(
             id="job-cancel-timeout",
             query="q",
             status=DONE,
@@ -259,11 +260,10 @@ async def _drive_cancel_timeout(
             announced=False,
             read=False,
         )
-        wl._research_window_decided = False
-        wl._research_window_cancelled_by_wake = False
-        # Never set: the opener never observes the cancellation, forcing the
-        # `asyncio.wait_for` in `_handle_wake_frame` to time out.
-        wl._research_window_opening_done = asyncio.Event()
+        # Never set: the opener never observes the cancellation, forcing
+        # `ResearchAnnouncer.cancel_for_wake`'s `asyncio.wait_for` to time
+        # out.
+        wl._research._window_opening_done = asyncio.Event()
         wl._legs["on"].detector.score_frame = lambda _frame: 0.95
         await wl._handle_wake_frame(silent_frame(), leg="on")
         allow_release.set()
