@@ -607,7 +607,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     keeps the HTML static and cache-friendly)."""
     pair_note = (
         '<div class="info-card info-card--accent" id="pair-note" '
-        'style="display:none" role="note">This speaker is part of a '
+        'hidden role="note">This speaker is part of a '
         "stereo pair — music plays through the pair leader, so local "
         "sources are parked. Unpair on "
         '<a href="/sound/pair/">the Speakers page</a> to use them again.'
@@ -615,7 +615,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     )
     state_error = (
         '<div class="info-card info-card--danger" id="sources-state-error" '
-        'style="display:none" role="alert">Source settings could not be read. '
+        'hidden role="alert">Source settings could not be read. '
         "Controls are paused to avoid showing a false state. Run jasper-doctor "
         "or re-run install.sh, then retry.</div>"
     )
@@ -624,14 +624,14 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             name="AirPlay", input_id="t-airplay",
             unavailable_html=(
                 '<div class="source-note warn" id="airplay-unavailable-note" '
-                'style="display:none">AirPlay is not installed on this speaker. '
+                'hidden>AirPlay is not installed on this speaker. '
                 "Re-run install.sh to set up the local renderer stack.</div>"
             ),
         ),
         _source_row(
             name="Bluetooth", input_id="t-bluetooth",
             note_html=(
-                '<div class="source-note warn" id="bt-note" style="display:none">'
+                '<div class="source-note warn" id="bt-note" hidden>'
                 "Bluetooth adapter not available on this device.</div>"
             ),
         ),
@@ -639,7 +639,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             name="Spotify Connect", input_id="t-spotify_connect",
             unavailable_html=(
                 '<div class="source-note warn" '
-                'id="spotify_connect-unavailable-note" style="display:none">'
+                'id="spotify_connect-unavailable-note" hidden>'
                 "Spotify Connect is not installed on this speaker. Re-run "
                 "install.sh to set up the local renderer stack.</div>"
             ),
@@ -660,13 +660,13 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
             ),
             unavailable_html=(
                 '<div class="source-note warn" id="usbsink-unavailable-note" '
-                'style="display:none">USB gadget support is unavailable for '
+                'hidden>USB gadget support is unavailable for '
                 "the current hardware configuration.</div>"
             ),
         ),
     ])
     body = f"""
-{canonical_header("Music sources")}
+{canonical_header("Playback sources")}
 <main class="page">
   {canonical_banner(status_msg)}
   <p class="form-hint">Turn each playback source on or off. Every choice
@@ -685,7 +685,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
 <script type="module" src="/assets/sources/js/main.js"></script>
 """
     return canonical_page(
-        "Music sources", body, csrf_token=csrf_token, page_css=_PAGE_CSS,
+        "Playback sources", body, csrf_token=csrf_token, page_css=_PAGE_CSS,
     )
 
 

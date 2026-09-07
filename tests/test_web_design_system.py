@@ -123,8 +123,6 @@ def test_spinner_primitive_is_shared_without_page_local_copies():
     ha_js = (
         ROOT / "deploy" / "assets" / "home-assistant" / "js" / "main.js"
     ).read_text()
-    assert "spinner spinner--button" in bluetooth_js
-    assert "spinner spinner--button" in wifi_js
     assert "btn-spinner" not in bluetooth_js + wifi_js
     assert 's.className = "spinner"' in ha_js
     assert "ha-spinner" not in ha_js

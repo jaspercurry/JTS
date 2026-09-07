@@ -767,7 +767,7 @@ def _management_html(
 </details>
 """
     return _spotify_page(
-        "Spotify accounts on this speaker", body,
+        "Spotify accounts", body,
         csrf_token=csrf_token, status_msg=status_msg, back_href=back_href,
     )
 

@@ -181,7 +181,7 @@ def _intentional_source_off(
         return CheckResult(
             label,
             "ok",
-            "intentionally off in Music sources (/sources/)",
+            "intentionally off in Playback sources (/sources/)",
             reason=REASON_SOURCE_OFF,
         )
     return None

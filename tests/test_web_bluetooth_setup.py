@@ -152,7 +152,7 @@ def test_bluetooth_page_links_page_stylesheet():
 def test_bluetooth_page_has_shared_app_header():
     out = _render()
     assert_canonical_page(out)
-    assert '<h1 class="app-header__title">Bluetooth</h1>' in out
+    assert '<h1 class="app-header__title">Bluetooth devices</h1>' in out
     assert '<use href="#icon-back">' in out
 
 
@@ -200,7 +200,7 @@ def test_bluetooth_title_is_escaped_once():
     # canonical_page / canonical_header own escaping; the title is static here,
     # but assert the document <title> is present and singular.
     out = _render()
-    assert "<title>Bluetooth</title>" in out
+    assert "<title>Bluetooth devices</title>" in out
 
 
 # --------------------------------------------------------------------------

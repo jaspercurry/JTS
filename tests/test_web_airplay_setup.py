@@ -40,7 +40,7 @@ def test_airplay_page_is_canonical_document():
 def test_airplay_page_has_shared_app_header():
     out = _render()
     assert_canonical_page(out)
-    assert '<h1 class="app-header__title">AirPlay sync mode</h1>' in out
+    assert '<h1 class="app-header__title">AirPlay sync</h1>' in out
     assert '<use href="#icon-back">' in out
 
 
