@@ -8,10 +8,6 @@
 #
 # Runs as ExecStartPre= on jasper-camilla.service (the CORE music
 # daemon, whose bounded OnFailure recovery handler can park the graph).
-# A dead Snapcast PLAYBACK pipe is repaired by re-pointing the statefile
-# to the packaged base config BEFORE camilla launches, so the failing
-# starts never happen. The guarded BONDED pipe config sends playback File to
-# the snapserver FIFO.
 #
 # Why ExecStartPre and not only OnFailure=: preventing a known dead-pipe start
 # preserves the pipe evidence and avoids spending the bounded recovery budget.
@@ -24,20 +20,6 @@
 #     jasper-camilla-recover path repeatedly as operators retry the graph.
 #   - FIFO present, NO reader -> camilladsp blocks in open(2) and the
 #     blocked open is not interrupted by SIGTERM (alive-but-silent).
-#
-# Repair target: the packaged base config (always installed,
-# volume_limit-safe, identity EQ). Camilla then starts SOLO-SAFE —
-# degraded (no room correction) but PLAYING and recoverable:
-# grouping.env stays bonded, so the next jasper-grouping-reconcile run
-# re-applies the bond when snapserver is healthy again, and the
-# doctor's `grouping: leader pipe` check + /state runtime health show
-# the degraded state in the meantime. Self-healing in both directions.
-#
-# FAIL-OPEN EVERYWHERE: this runs in the start path of the speaker's
-# entire music chain. Any unexpected condition (unreadable statefile,
-# missing base config, write failure) logs and exits 0 so camilla
-# starts unmodified. The unit invokes it with `ExecStartPre=-` as a
-# second belt: even a missing script cannot block camilla.
 #
 # Pure bash, no Python import cost (<5 ms in the solo steady state:
 # one statefile read + one grep). Mirrors jasper-wifi-guardian's
@@ -57,7 +39,6 @@ SNAPFIFO="${JASPER_GROUPING_SNAPFIFO:-/run/jasper-snapserver/snapfifo}"
 PROBE_TIMEOUT="${JASPER_PIPE_GUARD_PROBE_TIMEOUT:-0.5}"
 
 log() {
-    # log <outcome> [detail...]
     local outcome="$1"
     shift || true
     echo "event=camilla_pipe_guard.${outcome} ${*}" >&2
@@ -92,7 +73,6 @@ config_path=$(
 [ -n "$config_path" ] || { log skip reason=no_config_path; exit 0; }
 [ -r "$config_path" ] || { log skip reason=config_unreadable "path=$config_path"; exit 0; }
 
-# Pipe-shaped = the config's playback block has a filename.
 playback_filename=$(
     awk '
         /^[[:space:]]*playback:[[:space:]]*$/ { in_play = 1; next }
