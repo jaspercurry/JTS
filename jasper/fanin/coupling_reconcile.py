@@ -66,8 +66,14 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
+    RING_WIRE_FORMAT,
+    RING_WIRE_FORMAT_ENV_VAR,
+    RING_WIRE_FORMAT_WIDE,
+    assistant_wire_is_wide,
+    read_declared_ring_wire_format,
     resolve_outputd_ring_path,
     resolve_outputd_ring_slots,
+    resolve_ring_wire_format,
 )
 from jasper.log_event import log_event
 
@@ -255,15 +261,6 @@ def _assistant_width_token(env_path: str | Path) -> str:
     the coupling from the caller's file and the format from a module constant
     would make the predicate only accidentally coherent.
     """
-    from jasper.fanin_coupling import (
-        RING_WIRE_FORMAT,
-        RING_WIRE_FORMAT_ENV_VAR,
-        RING_WIRE_FORMAT_WIDE,
-        assistant_wire_is_wide,
-        read_declared_ring_wire_format,
-        resolve_ring_wire_format,
-    )
-
     try:
         try:
             text = Path(env_path).read_text(encoding="utf-8")

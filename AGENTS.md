@@ -81,9 +81,9 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 - **Duplication:** before writing a helper, constant vocabulary, or module,
   grep for the existing one and extend or consume it. Two implementations of
   one concern in reach: converge them or open an issue — never add a third.
-- **Imports:** function-local imports are hoisted by default; one needs a
-  reason token — `# lazy: cycle` (breaks a cycle), `# lazy: import-cost` (heavy
-  dep), or `# lazy: optional` (`try/except ImportError`); grimp counts it.
+- **Imports:** hoist function-local imports unless a trailing `# lazy` comment
+  names the reason: a real cycle, import cost, an optional dependency, or a
+  boundary a test pins.
 - **Config:** no new `JASPER_*` knob unless the owner asked for the toggle or
   hardware genuinely varies. Pattern choice (typed `Config` vs plugin
   self-parse vs reconciler-owned env) per
