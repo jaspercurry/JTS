@@ -808,12 +808,12 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     `InputDeviceUnavailable` and the daemon exits before it ever sees the
     remote. See ADR-0217.
     """
-    from jasper.voice.push_to_talk import ManualMicRuntime
     from jasper.voice_daemon import (
         WakeLoop,
         _configured_wake_legs,
         _UNSET,
     )
+    from tests._manual_mics import remote_mic
 
     plan = _configured_wake_legs(
         _wake_leg_cfg(), wake_detection_supported=wake_detection_supported,
@@ -822,7 +822,7 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
 
     wl = WakeLoop.for_tests(
         legs=_UNSET if plan else [],
-        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[remote_mic()],
     )
     assert wl._push_to_talk.only is expected_ptt_only
 
@@ -871,7 +871,7 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
     constructing `SpeechVAD` is what pulls openwakeword + onnxruntime into
     a 415 MB box's resident set."""
     from jasper import voice_daemon as vd
-    from jasper.voice.push_to_talk import ManualMicRuntime
+    from tests._manual_mics import remote_mic
 
     built: list[object] = []
 
@@ -889,7 +889,7 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
 
     wl = vd.WakeLoop.for_tests(
         legs=[] if ptt_only else vd._UNSET,
-        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[remote_mic()],
         vad=None,
     )
 
@@ -955,11 +955,11 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
     flags did not already gate, so it is the first thing a held button
     would hit on a speaker that has no model to reset."""
     from jasper import voice_daemon as vd
-    from jasper.voice.push_to_talk import ManualMicRuntime
+    from tests._manual_mics import remote_mic
 
     wl = vd.WakeLoop.for_tests(
         legs=[],
-        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        manual_mics=[remote_mic()],
         vad=None,
     )
     wl._push_to_talk.active_source = "wiim_remote_2"

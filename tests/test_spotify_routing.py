@@ -7,7 +7,7 @@ from __future__ import annotations
 from jasper.spotify_routing import (
     _find_librespot_id,
     _match_track,
-    _normalise,
+    normalise,
     stop_renderers,
 )
 
@@ -21,11 +21,11 @@ def _spotify(title: str, artist: str, is_playing: bool = True) -> dict:
 
 
 def test_normalise_strips_articles_and_punctuation():
-    assert _normalise("The Beatles") == _normalise("Beatles")
-    assert _normalise("Hey Jude") == _normalise("HEY JUDE!")
-    assert _normalise("Float On") == _normalise("Float  On")
-    assert _normalise("") == ""
-    assert _normalise("A Hard Day's Night") == _normalise("Hard Day s Night")
+    assert normalise("The Beatles") == normalise("Beatles")
+    assert normalise("Hey Jude") == normalise("HEY JUDE!")
+    assert normalise("Float On") == normalise("Float  On")
+    assert normalise("") == ""
+    assert normalise("A Hard Day's Night") == normalise("Hard Day s Night")
 
 
 def test_match_track_exact_match():

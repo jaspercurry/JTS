@@ -1775,7 +1775,7 @@ def _drive_grouping_shape(monkeypatch, *, box_is_active: bool, flat_allowed: boo
         raising=False,
     )
     monkeypatch.setattr(
-        mr, "_output_topology_state", lambda: (box_is_active, flat_allowed)
+        mr, "output_topology_state", lambda: (box_is_active, flat_allowed)
     )
 
 
