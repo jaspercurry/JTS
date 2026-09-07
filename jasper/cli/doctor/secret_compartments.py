@@ -49,6 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ...accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
+from ...google_creds import DEFAULT_TOKEN_DIR as GOOGLE_DEFAULT_TOKEN_DIR
 from ...google_creds import registry_path as google_registry_path
 from . import privsep
 from ._registry import doctor_check
@@ -124,7 +125,7 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             # Billable Google Routes API key written by /transit/.
             "/var/lib/jasper-secrets/google_routes.env",
             google_registry_path,
-            "/var/lib/jasper-secrets/google/tokens/*.json",
+            f"{GOOGLE_DEFAULT_TOKEN_DIR}/*.json",
         ),
     ),
     SecretCompartment(
