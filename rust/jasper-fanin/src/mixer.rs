@@ -3073,7 +3073,7 @@ mod tests {
         assert!(!lane_mix_contributes(-2, 2, "usbsink", true));
         // Mute wins even over the always-pass correction lane, so the primitive
         // is total (mux only ever mutes usbsink, but the rule is not lane-special).
-        assert!(!lane_mix_contributes(3, 3, "correction", true));
+        assert!(!lane_mix_contributes(-2, 3, "correction", true));
     }
 
     #[test]

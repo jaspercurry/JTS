@@ -351,7 +351,7 @@ impl StateServer {
     /// Idempotent: re-issuing the same state is a no-op store; the transition is
     /// logged ONCE (only when the flag actually flips), so mux's per-tick
     /// reassertion of the mute produces no steady-state journal spam. Mirrors the
-    /// SELECT/AUTO/NONE idiom (a control write to a shared atomic; the work loop
+    /// SELECT/NONE idiom (a control write to a shared atomic; the work loop
     /// owns the audio effect). Unknown label → an error object; the mute state is
     /// unchanged. Returns the STATUS snapshot on success.
     fn mute_input_json(&self, label: &str, muted: bool) -> String {
@@ -384,7 +384,7 @@ impl StateServer {
     /// `Release` store and then briefly polls the lane's `trimmed_frames`
     /// counter for the work loop to consume the flag and publish the delta —
     /// reporting the frames ACTUALLY dropped from the resampler ring, not just
-    /// "the request was queued." Mirrors the SELECT/AUTO/NONE split (control
+    /// "the request was queued." Mirrors the SELECT/NONE split (control
     /// sets a shared atomic; the work loop does the state-owning work).
     ///
     /// Reply is a plain-text line: `OK trimmed=<frames_dropped>` (summed across
@@ -600,10 +600,10 @@ impl StateServer {
         // changes the input list under us.
         buf.push_str(r#""selection_mode":"#);
         let selected = self.selected_input_index.load(Ordering::Relaxed);
-        if selected == -2 {
-            buf.push_str(r#""none""#);
-        } else {
+        if selected >= 0 {
             buf.push_str(r#""select""#);
+        } else {
+            buf.push_str(r#""none""#);
         }
         buf.push(',');
 
@@ -1799,11 +1799,6 @@ mod tests {
         assert!(server
             .snapshot_json()
             .contains(r#""selection_mode":"select""#));
-        server.selected_input_index.store(-2, Ordering::Relaxed);
-        assert!(server.snapshot_json().contains(r#""selected_input":null"#));
-        assert!(server
-            .snapshot_json()
-            .contains(r#""selection_mode":"none""#));
     }
 
     #[test]
