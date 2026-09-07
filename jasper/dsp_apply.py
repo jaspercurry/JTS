@@ -38,7 +38,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.atomic_io import advisory_file_lock_async, atomic_write_text
+from jasper.atomic_io import (
+    advisory_file_lock_async,
+    atomic_write_json,
+    atomic_write_text,
+)
 from jasper.json_fields import sha256_file, utc_now_iso
 from jasper.log_event import log_event
 
@@ -306,13 +310,6 @@ def _state_path(path: str | Path | None = None) -> Path:
     )
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    os.replace(tmp, path)
-
-
 def record_dsp_apply_state(
     state: DspApplyState,
     *,
@@ -326,7 +323,7 @@ def record_dsp_apply_state(
 
     path = _state_path(state_path)
     try:
-        _atomic_write_json(path, state.to_dict())
+        atomic_write_json(path, state.to_dict())
     except (OSError, TypeError) as e:
         log_event(
             logger,

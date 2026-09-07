@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from jasper.atomic_io import atomic_write_text
 from jasper.env_load import BASE_ENV_PATH, parse_env_file
 from jasper.json_fields import sha256_file
 
@@ -108,8 +109,8 @@ def download_model_file(
                         f"hash mismatch after download: got {got}, "
                         f"expected {expected_sha256}",
                     )
+            os.chmod(tmp_path, 0o644)
             os.replace(tmp_path, dest_path)
-            os.chmod(dest_path, 0o644)
             return
         except (
             OSError,
@@ -270,12 +271,7 @@ def seed_default_wake_model_env(
     if not os.path.exists(entry.model):
         _log(log, f"  skipping wake_model.env seed: default file missing ({entry.model})")
         return
-    os.makedirs(os.path.dirname(WAKE_MODEL_FILE), exist_ok=True)
-    tmp = WAKE_MODEL_FILE + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    with os.fdopen(fd, "w") as f:
-        f.write(f"JASPER_WAKE_MODEL={entry.model}\n")
-    os.replace(tmp, WAKE_MODEL_FILE)
+    atomic_write_text(WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n")
     _log(log, f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")
 
 

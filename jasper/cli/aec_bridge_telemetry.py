@@ -22,6 +22,7 @@ import threading
 import time
 
 from jasper.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
+from jasper.atomic_io import atomic_write_text
 from jasper import wake_legs
 from jasper.usb_mic import (
     USB_MIC_HEADER_STRUCT,
@@ -324,10 +325,9 @@ class _BridgeStats:
 
     def write_snapshot(self, path: Path = BRIDGE_STATS_PATH) -> None:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(json.dumps(self.snapshot(), sort_keys=True))
-            tmp.replace(path)
+            atomic_write_text(
+                path, json.dumps(self.snapshot(), sort_keys=True)
+            )
         except OSError as e:
             logger.debug("bridge stats snapshot write failed: %s", e)
 
