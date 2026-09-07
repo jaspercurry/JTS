@@ -932,8 +932,7 @@ class CamillaController:
         wrong edit — but this call mutates nothing, and the live-graph boundary
         (``runtime_contract.classify_active_bass_extension_graph``) invokes it
         from *inside* that lock on live paths — among them
-        ``commissioning_apply._apply_measured_candidate_owned`` (the candidate
-        apply) and ``multiroom.follower_config``'s
+        ``multiroom.follower_config``'s
         ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``.
         Those are examples, not an exhaustive set.
 

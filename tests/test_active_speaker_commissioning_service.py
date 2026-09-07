@@ -35,7 +35,6 @@ from jasper.active_speaker.commissioning_run import CommissioningRunStore
 from jasper.active_speaker.commissioning_service import (
     CommissioningCaptureService,
     CommissioningServiceError,
-    commissioning_runtime_port,
 )
 from jasper.active_speaker.driver_safety import (
     build_driver_safety_profile,
@@ -566,46 +565,6 @@ def test_candidate_refusal_is_persisted_blocked_and_not_retried(
         harness.service.publish_candidate()
     assert repeated.value.code == "candidate_not_measured"
     assert calls == 1
-
-
-async def test_runtime_port_uses_strict_camilla_readback_and_apply() -> None:
-    calls: list[tuple[object, ...]] = []
-
-    class Camilla:
-        async def get_active_config_raw(self, *, best_effort: bool):
-            calls.append(("read_graph", best_effort))
-            return "graph"
-
-        async def set_active_config_raw(self, raw: str, *, best_effort: bool):
-            calls.append(("apply_graph", raw, best_effort))
-            return True
-
-        async def get_config_file_path(self, *, best_effort: bool):
-            calls.append(("read_path", best_effort))
-            return "/etc/camilladsp/current.yml"
-
-        async def get_volume_db(self, *, best_effort: bool):
-            calls.append(("read_volume", best_effort))
-            return -32.0
-
-        async def set_volume_db(self, value: float, *, best_effort: bool):
-            calls.append(("set_volume", value, best_effort))
-            return True
-
-    port = commissioning_runtime_port(Camilla())
-
-    assert await port.read_active_raw() == "graph"
-    assert await port.apply_active_raw("candidate") is True
-    assert await port.read_config_path() == "/etc/camilladsp/current.yml"
-    assert await port.read_listening_volume_db() == -32.0
-    assert await port.set_listening_volume_db(-48.0) is True
-    assert calls == [
-        ("read_graph", False),
-        ("apply_graph", "candidate", False),
-        ("read_path", False),
-        ("read_volume", False),
-        ("set_volume", -48.0, False),
-    ]
 
 
 def test_stale_run_generation_cannot_reuse_geometry_or_capture_authority(

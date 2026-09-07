@@ -7,9 +7,9 @@
 The durable host already owns operation order, graphs, admission, analysis,
 restore, and lifecycle progress.  This module supplies only the product state
 needed to construct that host: the exact current run/plan, an explicit signed
-geometry attestation for every region, the calibrated fixed-axis placement,
-and a CamillaDSP runtime port.  Browser and capture adapters never choose a
-region, polarity, delay coordinate, graph, attempt, or capture ordinal.
+geometry attestation for every region, and the calibrated fixed-axis placement.
+Browser and capture adapters never choose a region, polarity, delay coordinate,
+graph, attempt, or capture ordinal.
 """
 
 from __future__ import annotations
@@ -821,110 +821,6 @@ class CommissioningCaptureService:
         )
         return self._candidate_review(candidate, artifact)
 
-    async def apply_candidate(
-        self,
-        *,
-        expected_candidate_fingerprint: str,
-        runtime_port: Any,
-        load_config_path: Callable[[str], Any],
-    ) -> dict[str, Any]:
-        """Apply only the exact reviewed candidate through the Active owner."""
-
-        from .commissioning_apply import apply_measured_candidate
-        from .commissioning_runtime import CommissioningRuntimePort
-        from .crossover_preview import load_crossover_preview
-        from .design_draft import load_design_draft
-        from .measurement import load_measurement_state
-
-        if not isinstance(runtime_port, CommissioningRuntimePort):
-            raise TypeError("runtime_port must be CommissioningRuntimePort")
-        expected = expected_candidate_fingerprint.strip()
-        if not expected:
-            raise CommissioningServiceError(
-                "candidate_review_required",
-                "the reviewed candidate fingerprint is required",
-            )
-        current = self._current()
-        lifecycle = self.run_store.lifecycle_state(self.run)
-        if lifecycle == "rolled_back":
-            candidate, artifact = self._reopen_candidate(
-                current, require_transition=False
-            )
-        elif lifecycle in {"candidate_ready", "applied_unverified"}:
-            candidate, artifact = self._reopen_candidate(
-                current,
-                require_transition=lifecycle == "candidate_ready",
-            )
-        else:
-            raise CommissioningServiceError(
-                "candidate_not_ready",
-                f"candidate apply requires candidate_ready, not {lifecycle}",
-            )
-        if candidate.fingerprint != expected:
-            raise CommissioningServiceError(
-                "candidate_review_stale",
-                "the candidate changed after review; refresh before applying",
-            )
-        if lifecycle == "rolled_back" and not self.run_store.transition(
-            self.run,
-            CommissioningTransition(
-                from_state="rolled_back",
-                to_state="candidate_ready",
-                evidence_kind="candidate_artifact",
-                evidence_fingerprint=artifact.fingerprint,
-            ),
-        ):
-            raise CommissioningServiceError(
-                "run_generation_stale", "candidate retry lost run ownership"
-            )
-        target_plan = self._required_target_plan(current)
-        safety = evaluate_driver_safety_profile(
-            current.authority.safety_profile,
-            current.authority.topology,
-        )
-        if not safety.confirmed_and_current or safety.profile_fingerprint is None:
-            raise CommissioningServiceError(
-                "authority_stale", "driver safety authority is no longer current"
-            )
-        topology = current.authority.topology
-        draft = load_design_draft(topology=topology)
-        preview = load_crossover_preview(current_design_draft=draft)
-        measurements = load_measurement_state(topology)
-
-        def verify_current() -> None:
-            refreshed = self._current()
-            reopened, _ = self._reopen_candidate(
-                refreshed,
-                require_transition=(
-                    self.run_store.lifecycle_state(self.run) == "candidate_ready"
-                ),
-            )
-            if (
-                refreshed != current
-                or reopened != candidate
-                or self._required_target_plan(refreshed) != target_plan
-            ):
-                raise CommissioningServiceError(
-                    "candidate_review_stale",
-                    "candidate authority changed before writer-lock admission",
-                )
-
-        return await apply_measured_candidate(
-            run=self.run,
-            run_store=self.run_store,
-            store=self.evidence_store,
-            candidate=candidate,
-            target_plan=target_plan,
-            safety_profile_fingerprint=safety.profile_fingerprint,
-            topology=topology,
-            design_draft=draft,
-            crossover_preview=preview,
-            measurements=measurements,
-            runtime_port=runtime_port,
-            load_config_path=load_config_path,
-            verify_current=verify_current,
-        )
-
     def attest_geometry(
         self,
         *,
@@ -1294,24 +1190,3 @@ class CommissioningCaptureService:
             region_inputs=inputs,
             load_current_authority=self.load_current_authority,
         )
-
-
-def commissioning_runtime_port(camilla: Any) -> Any:
-    """Adapt one Camilla controller to the existing exact runtime port."""
-
-    from .commissioning_runtime import CommissioningRuntimePort
-
-    return CommissioningRuntimePort(
-        read_active_raw=lambda: camilla.get_active_config_raw(best_effort=False),
-        apply_active_raw=lambda raw: camilla.set_active_config_raw(
-            raw, best_effort=False
-        ),
-        read_config_path=lambda: camilla.get_config_file_path(best_effort=False),
-        read_listening_volume_db=lambda: camilla.get_volume_db(best_effort=False),
-        set_listening_volume_db=lambda db: camilla.set_volume_db(
-            db, best_effort=False
-        ),
-        canonicalize_raw=lambda raw: camilla.normalize_config_raw(
-            raw, best_effort=False
-        ),
-    )
