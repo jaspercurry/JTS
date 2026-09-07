@@ -43,7 +43,6 @@ URL surface (after nginx strips the /voice/ prefix):
 """
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import logging
@@ -119,12 +118,10 @@ from ._common import (
     SECRET_ENV_MODE,
     value_for_env as _value_for,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
-DISCOVERY_CACHE_FILE = DEFAULT_CACHE_PATH
 
 # Page-specific stylesheet served static from /assets/ (the same path as
 # app.css + the fonts). Only the visuals app.css doesn't already cover
@@ -1725,7 +1722,7 @@ def make_server(
     *,
     state_path: str = PROVIDER_FILE,
     keys_path: str = KEYS_FILE,
-    discovery_cache_path: str = DISCOVERY_CACHE_FILE,
+    discovery_cache_path: str = DEFAULT_CACHE_PATH,
     discovery_http_client: Any | None = None,
     pricing_path: str | None = None,
     assistant_loudness_profile_path: str | None = None,
@@ -1757,51 +1754,3 @@ def make_server(
         "loudness_seed_fn": loudness_seed_fn or ensure_seed_profile,
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-voice-web",
-        description="Voice provider configuration UI for the Jasper smart speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_VOICE_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_VOICE_WEB_PORT", "8767")),
-    )
-    parser.add_argument(
-        "--state", default=os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE),
-    )
-    parser.add_argument(
-        "--keys", default=os.environ.get("JASPER_VOICE_KEYS_FILE", KEYS_FILE),
-    )
-    parser.add_argument(
-        "--discovery-cache",
-        default=os.environ.get(
-            "JASPER_VOICE_MODEL_DISCOVERY_FILE",
-            DISCOVERY_CACHE_FILE,
-        ),
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    server = make_server(
-        (args.host, args.port),
-        state_path=args.state,
-        keys_path=args.keys,
-        discovery_cache_path=args.discovery_cache,
-    )
-    logger.info(
-        "jasper-voice-web listening on http://%s:%d (state=%s discovery_cache=%s)",
-        args.host, args.port, args.state, args.discovery_cache,
-    )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

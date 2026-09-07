@@ -46,7 +46,6 @@ CSRF-verified:
 """
 from __future__ import annotations
 
-import argparse
 import asyncio  # noqa: F401 — kept so tests can patch rooms_setup.asyncio.run
 import concurrent.futures
 import http.client
@@ -54,7 +53,6 @@ import ipaddress
 import json
 import logging
 import math
-import os
 import re
 import socket
 import threading
@@ -97,7 +95,6 @@ from ._common import (
     send_json_response,
     write_env_file,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1766,26 +1763,3 @@ def make_server(target) -> ThreadingHTTPServer:
     activation — see jasper/web/__main__.py)."""
     from ._systemd import make_http_server
     return make_http_server(target, _make_handler())
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Direct CLI entrypoint — used for dev/testing outside systemd."""
-    p = argparse.ArgumentParser(description="JTS rooms (multi-room directory) wizard")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_ROOMS_WEB_PORT", "8785")),
-    )
-    args = p.parse_args(argv)
-    configure_logging()
-    server = make_server((args.host, args.port))
-    logger.info("rooms wizard listening on http://%s:%d/", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

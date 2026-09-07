@@ -76,7 +76,6 @@ reads as a coherent wake page rather than leaking the AEC internals.
 """
 from __future__ import annotations
 
-import argparse
 import html
 import importlib.util
 import json
@@ -114,7 +113,6 @@ from ._common import (
     guard_read_request,
     guard_mutating_request,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1069,45 +1067,3 @@ def make_server(
     from . import _systemd
     cfg = {"state_path": state_path, "control_base": control_base}
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-wake-web",
-        description="Wake-word picker UI for the Jasper smart speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_WAKE_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_WAKE_WEB_PORT", "8774")),
-    )
-    parser.add_argument(
-        "--state", default=os.environ.get("JASPER_WAKE_MODEL_FILE", WAKE_MODEL_FILE),
-    )
-    parser.add_argument(
-        "--control-base",
-        default=os.environ.get("JASPER_CONTROL_BASE", DEFAULT_CONTROL_BASE),
-        help="jasper-control HTTP base URL (default 127.0.0.1:8780)",
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    server = make_server(
-        (args.host, args.port),
-        state_path=args.state,
-        control_base=args.control_base,
-    )
-    logger.info(
-        "jasper-wake-web listening on http://%s:%d (state=%s)",
-        args.host, args.port, args.state,
-    )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

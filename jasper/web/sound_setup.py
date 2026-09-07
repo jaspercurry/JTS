@@ -18,7 +18,6 @@ lives in the backend and is untouched here.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import html
 import json
@@ -58,7 +57,6 @@ from jasper.audio_hardware.i2s_hat import (
 from jasper.dsp_apply import same_config_file
 from jasper.json_fields import finite_float as _finite
 from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
 from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
@@ -5475,52 +5473,3 @@ def make_server(
             ),
         ),
     )
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-sound-web",
-        description="Sound curve and preference-EQ wizard",
-    )
-    parser.add_argument(
-        "--host",
-        default=os.environ.get("JASPER_SOUND_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.environ.get("JASPER_SOUND_WEB_PORT", "8784")),
-    )
-    parser.add_argument(
-        "--profile-path",
-        default=os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH),
-    )
-    parser.add_argument(
-        "--library-path",
-        default=os.environ.get(
-            "JASPER_SOUND_PROFILE_LIBRARY_PATH",
-            PROFILE_LIBRARY_PATH,
-        ),
-    )
-    parser.add_argument(
-        "--config-dir",
-        default=os.environ.get("JASPER_SOUND_CONFIG_DIR", DEFAULT_CONFIG_DIR),
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    server = make_server(
-        (args.host, args.port),
-        profile_path=args.profile_path,
-        library_path=args.library_path,
-        config_dir=args.config_dir,
-    )
-    logger.info("jasper-sound-web listening on http://%s:%d", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

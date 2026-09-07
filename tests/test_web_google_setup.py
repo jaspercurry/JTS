@@ -51,15 +51,6 @@ REDIRECT = "https://jaspercurry.github.io/google-oauth-callback/?host=jts.local"
 # ---------------------------------------------------------------------------
 
 
-def test_public_surface_present():
-    assert callable(google_setup.make_server)
-    assert callable(google_setup.main)
-    # State renderers used by the handler's _render_index.
-    assert callable(google_setup._setup_wizard_html)
-    assert callable(google_setup._redirect_uri_page_html)
-    assert callable(google_setup._management_html)
-
-
 # ---------------------------------------------------------------------------
 # Canonical render — shared assertions
 # ---------------------------------------------------------------------------

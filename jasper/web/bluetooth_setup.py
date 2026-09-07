@@ -31,7 +31,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import re
 import subprocess
 import threading
@@ -1308,11 +1307,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--host",
-        default=os.environ.get("JASPER_BLUETOOTH_WEB_HOST", "127.0.0.1"),
+        default="127.0.0.1",
     )
     parser.add_argument(
         "--port", type=int,
-        default=int(os.environ.get("JASPER_BLUETOOTH_WEB_PORT", "8769")),
+        default=8769,
     )
     args = parser.parse_args(argv)
 

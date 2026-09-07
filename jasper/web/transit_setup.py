@@ -54,7 +54,6 @@ URL surface (after nginx strips /transit/):
 """
 from __future__ import annotations
 
-import argparse
 import html
 import logging
 import os
@@ -93,7 +92,6 @@ from ._common import (
     value_for_env as _value_for,
     write_env_file,
 )
-from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -1652,44 +1650,3 @@ def make_server(
         "weather_path": weather_path,
     }
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-transit-web",
-        description="Transit configuration UI for the Jasper smart speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_TRANSIT_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_TRANSIT_WEB_PORT", "8777")),
-    )
-    parser.add_argument(
-        "--state", default=os.environ.get("JASPER_TRANSIT_FILE", TRANSIT_FILE),
-    )
-    parser.add_argument(
-        "--routes-secrets",
-        default=os.environ.get("JASPER_GOOGLE_ROUTES_FILE", GOOGLE_ROUTES_SECRET_FILE),
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    server = make_server(
-        (args.host, args.port),
-        state_path=args.state,
-        routes_secret_path=args.routes_secrets,
-    )
-    logger.info(
-        "jasper-transit-web listening on http://%s:%d (state=%s)",
-        args.host, args.port, args.state,
-    )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

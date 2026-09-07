@@ -277,12 +277,6 @@ def _bound_handler(tmp_path, fake: FakeHandler):
     return inst
 
 
-def test_public_surface_is_stable():
-    assert callable(transit_setup.make_server)
-    assert callable(transit_setup.main)
-    assert callable(transit_setup._index_html)
-
-
 def test_get_root_renders_canonical_page(tmp_path):
     handler = _handler_cls(tmp_path)
     h = FakeHandler("/")

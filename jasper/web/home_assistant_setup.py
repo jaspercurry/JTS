@@ -55,12 +55,10 @@ URL surface (after nginx strips /ha/):
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import html
 import json
 import logging
-import os
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -95,7 +93,6 @@ from ._common import (
     write_env_file,
     SECRET_ENV_MODE,
 )
-from ..logging_setup import configure_logging
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
 # (.page, .info-card, .deflist, .badge, .field/.form-actions/.form-hint,
@@ -1324,33 +1321,3 @@ def make_server(target, *, state_path: str = HA_ENV_FILE) -> ThreadingHTTPServer
     from . import _systemd
     cfg = {"state_path": state_path}
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-homeassistant-web",
-        description="Home Assistant connection wizard for the JTS speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_HA_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_HA_WEB_PORT", "8778")),
-    )
-    parser.add_argument(
-        "--state", default=os.environ.get("JASPER_HA_FILE", HA_ENV_FILE),
-    )
-    args = parser.parse_args(argv)
-    configure_logging()
-    server = make_server((args.host, args.port), state_path=args.state)
-    logger.info("jasper-homeassistant-web listening on http://%s:%d", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

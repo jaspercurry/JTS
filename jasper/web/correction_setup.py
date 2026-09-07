@@ -5053,11 +5053,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--host",
-        default=os.environ.get("JASPER_CORRECTION_WEB_HOST", "127.0.0.1"),
+        default="127.0.0.1",
     )
     parser.add_argument(
         "--port", type=int,
-        default=int(os.environ.get("JASPER_CORRECTION_WEB_PORT", "8770")),
+        default=8770,
     )
     parser.add_argument(
         "--hostname",

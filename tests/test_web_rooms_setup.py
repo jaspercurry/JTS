@@ -1100,14 +1100,6 @@ def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
 # ----------------------------------------------------------------------
 
 
-def test_public_surface_is_stable():
-    assert callable(rooms_setup.make_server)
-    assert callable(rooms_setup.main)
-    assert callable(rooms_setup._make_handler)
-    assert callable(rooms_setup._build_rooms_payload)
-    assert callable(rooms_setup._discover_speakers)
-
-
 def test_make_server_binds_a_tuple_target():
     """make_server((host, port)) returns a live server bound to an ephemeral
     port; the rooms handler is its RequestHandlerClass."""
@@ -1125,16 +1117,6 @@ def test_make_server_binds_a_tuple_target():
 # ----------------------------------------------------------------------
 # Wiring contract — the names/paths/ports other agents + tests depend on.
 # ----------------------------------------------------------------------
-
-
-def test_default_port_and_env_var_are_pinned():
-    # Honored exactly by deploy/jasper-web.socket, nginx, and __main__.py.
-    import argparse
-
-    p = argparse.ArgumentParser()
-    p.add_argument("--port", type=int,
-                   default=int(__import__("os").environ.get("JASPER_ROOMS_WEB_PORT", "8785")))
-    assert p.parse_args([]).port == 8785
 
 
 def test_wizard_registered_in_main_with_correct_route_env_port():

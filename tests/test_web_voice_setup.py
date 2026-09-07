@@ -167,13 +167,6 @@ def _handler_cls(tmp_path):
     })
 
 
-def test_public_surface_is_stable():
-    assert callable(voice_setup.make_server)
-    assert callable(voice_setup.main)
-    assert callable(voice_setup._index_html)
-    assert callable(voice_setup._make_handler)
-
-
 def test_get_root_renders_canonical_page(tmp_path):
     handler = _handler_cls(tmp_path)
     h = FakeHandler("/")
