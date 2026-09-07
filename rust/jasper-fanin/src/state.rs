@@ -11,7 +11,6 @@
 //!
 //!   `STATUS\n`  → responds with a JSON snapshot, closes connection.
 //!   `SELECT <label>\n` → pass only one renderer lane to the sum.
-//!   `AUTO\n`    → return to summing all active lanes.
 //!   `NONE\n`    → pass no renderer lanes (correction/test still passes).
 //!   `MUTE <label>\n` / `UNMUTE <label>\n` → drop / restore one lane's
 //!     contribution to the sum WITHOUT gating its capture telemetry
@@ -275,13 +274,6 @@ impl StateServer {
     fn response_for_command(&self, command: &str) -> String {
         match command {
             "STATUS" => self.snapshot_json(),
-            "AUTO" => {
-                let previous = self.selected_input_index.swap(-1, Ordering::Relaxed);
-                if previous != -1 {
-                    info!("event=fanin.source_select selected=auto");
-                }
-                self.snapshot_json()
-            }
             "NONE" => {
                 let previous = self.selected_input_index.swap(-2, Ordering::Relaxed);
                 if previous != -2 {
@@ -602,16 +594,13 @@ impl StateServer {
         );
         buf.push(',');
 
-        // selected_input: null in auto mode, otherwise the selected
-        // label. NONE also renders null; selection_mode distinguishes
-        // it from auto. Invalid values should not happen (only SELECT
-        // can set non-negative indices), but render null if a future
-        // version changes the input list under us.
+        // selected_input: null under NONE, otherwise the selected label.
+        // Invalid values should not happen (only SELECT can set
+        // non-negative indices), but render null if a future version
+        // changes the input list under us.
         buf.push_str(r#""selection_mode":"#);
         let selected = self.selected_input_index.load(Ordering::Relaxed);
-        if selected == -1 {
-            buf.push_str(r#""auto""#);
-        } else if selected == -2 {
+        if selected == -2 {
             buf.push_str(r#""none""#);
         } else {
             buf.push_str(r#""select""#);
@@ -1445,7 +1434,7 @@ mod tests {
                 last_stall_ms: Arc::new(AtomicU64::new(1500)),
                 clockless_paces: Arc::new(AtomicU64::new(7)),
             },
-            selected_input_index: Arc::new(AtomicI32::new(-1)),
+            selected_input_index: Arc::new(AtomicI32::new(-2)),
             heartbeat: Arc::new(Heartbeat::new()),
             sample_rate: 48000,
             period_frames: 256,
@@ -1802,7 +1791,7 @@ mod tests {
         assert!(server.snapshot_json().contains(r#""selected_input":null"#));
         assert!(server
             .snapshot_json()
-            .contains(r#""selection_mode":"auto""#));
+            .contains(r#""selection_mode":"none""#));
         server.selected_input_index.store(1, Ordering::Relaxed);
         assert!(server
             .snapshot_json()
@@ -1841,7 +1830,7 @@ mod tests {
     fn select_input_json_rejects_unknown_label() {
         let server = make_test_server();
         let j = server.select_input_json("bluetooth");
-        assert_eq!(server.selected_input_index.load(Ordering::Relaxed), -1);
+        assert_eq!(server.selected_input_index.load(Ordering::Relaxed), -2);
         assert!(j.contains(r#""error":"unknown input label""#));
     }
 

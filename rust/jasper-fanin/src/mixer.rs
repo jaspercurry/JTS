@@ -756,11 +756,11 @@ pub struct Mixer {
     /// (`jasper.control.airplay_health`, the AirPlay latency derivation) read
     /// them through their absent/zero shape on a ring box.
     pub output_delay_frames: Arc<AtomicU64>,
-    /// Selected input index. -1 means auto/mix all active inputs;
-    /// -2 means pass no renderer lanes; non-negative means pass only
-    /// that source's lane. The correction/test lane is always mixed so
-    /// diagnostics keep working even if the household selected a
-    /// renderer manually or mux temporarily selected NONE.
+    /// Selected input index. -2 means pass no renderer lanes;
+    /// non-negative means pass only that source's lane. The
+    /// correction/test lane is always mixed so diagnostics keep working
+    /// even if the household selected a renderer manually or mux
+    /// temporarily selected NONE.
     selected_input_index: Arc<AtomicI32>,
     /// Channel for forwarding xrun events to the off-thread log writer. Sending
     /// on this unbounded channel is non-blocking and only fails when the
@@ -2232,7 +2232,7 @@ impl ProgramWidth {
 }
 
 fn input_selected(selected_input: i32, input_index: usize, label: &str) -> bool {
-    selected_input == -1 || selected_input == input_index as i32 || label == MEASUREMENT_LANE
+    selected_input == input_index as i32 || label == MEASUREMENT_LANE
 }
 
 /// Pure per-lane MIX-contribution decision: a lane's freshly-read samples are
@@ -3055,9 +3055,6 @@ mod tests {
 
     #[test]
     fn lane_mix_contributes_selection_only_when_unmuted() {
-        // AUTO (-1): every lane contributes when unmuted.
-        assert!(lane_mix_contributes(-1, 0, "usbsink", false));
-        assert!(lane_mix_contributes(-1, 2, "usbsink", false));
         // Single-select: only the selected index contributes.
         assert!(lane_mix_contributes(2, 2, "usbsink", false));
         assert!(!lane_mix_contributes(2, 0, "spotify", false));
@@ -3070,14 +3067,13 @@ mod tests {
     #[test]
     fn lane_mix_contributes_mute_overrides_selection() {
         // A muted lane never contributes, no matter how it is selected — this is
-        // the arbitration primitive: even an AUTO-summed or explicitly-selected
-        // USB lane is silenced when mux mutes it.
-        assert!(!lane_mix_contributes(-1, 2, "usbsink", true));
+        // the arbitration primitive: even an explicitly-selected USB lane is
+        // silenced when mux mutes it.
         assert!(!lane_mix_contributes(2, 2, "usbsink", true));
         assert!(!lane_mix_contributes(-2, 2, "usbsink", true));
         // Mute wins even over the always-pass correction lane, so the primitive
         // is total (mux only ever mutes usbsink, but the rule is not lane-special).
-        assert!(!lane_mix_contributes(-1, 3, "correction", true));
+        assert!(!lane_mix_contributes(3, 3, "correction", true));
     }
 
     #[test]
@@ -3089,10 +3085,10 @@ mod tests {
         // perturbing the level/liveness mux reads. Calling it twice with the same
         // inputs yields the same answer with nothing observable changed.
         assert_eq!(
-            lane_mix_contributes(-1, 2, "usbsink", true),
-            lane_mix_contributes(-1, 2, "usbsink", true),
+            lane_mix_contributes(2, 2, "usbsink", true),
+            lane_mix_contributes(2, 2, "usbsink", true),
         );
-        assert!(lane_mix_contributes(-1, 2, "usbsink", false));
+        assert!(lane_mix_contributes(2, 2, "usbsink", false));
     }
 
     // ---- USB DIRECT pure helpers -----------------------------------------
@@ -3568,8 +3564,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_input_passes_auto_selected_and_correction() {
-        assert!(input_selected(-1, 0, "spotify"));
+    fn selected_input_passes_selected_and_correction() {
         assert!(input_selected(1, 1, "airplay"));
         assert!(!input_selected(1, 0, "spotify"));
         assert!(input_selected(1, 4, "correction"));
