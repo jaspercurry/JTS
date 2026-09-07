@@ -56,7 +56,7 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | P6 right-sizing #4200 — running on Opus (#4326, #4329 merged; 3A #4333 and 3B1 #4338 open). **Last lane on this account:** about a sixth of the weekly budget was left at 04:00 UTC, so P6 keeps a resume ledger on #4200 and a Dip session finishes it if the budget runs out | P2 round 2 (#4194; the 11-row plan triaged at comment 5564510021, the merge word; executing waves A → B → C) **and** P5 structure #4199 (plan triaged at comment 5564738513; #4335 and #4337 open; account unconfirmed, assumed Dip) | **Two sessions.** P11 web UI #4212 (the P12 session rolled on at 03:39 UTC; P12 is done, handoff #4324) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
+| 1 | P6 right-sizing #4200 — running on Opus (#4326, #4329 merged; 3A #4333 and 3B1 #4338 open). **Last lane on this account:** about a sixth of the weekly budget was left at 04:00 UTC, so P6 keeps a resume ledger on #4200 and a Dip session finishes it if the budget runs out | P2 round 2 (#4194; the 11-row plan triaged at comment 5564510021, the merge word; executing waves A → B → C) **and** P5 structure #4199 (executing; #4335 and #4337 merged; account unconfirmed, assumed Dip) | **Two sessions.** P11 web UI #4212 (plan triaged at 05:20 UTC, executing W1; the P12 session rolled on, P12 done, handoff #4324) **and** P9 #4208 (running: the D rows; B1–B6 wait for the ten turns on jts.local) |
 | 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | P3 resilience #4195 (P12, P4 and P6 have posted its rows; P4's row 16 waits on its bridge `rms` emitter; its measurements need the boxes) |
 | 3 | — | P8 docs #4202 (stale-path pass last; whichever of Dip or Space Hater frees first) | — |
 
@@ -75,13 +75,14 @@ cue (H2), then replug. jts4: nothing. Read ADR-0244 (the
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-07 04:00 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
+**State on 2026-09-07 05:20 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
 #4304). P2 round two executing on Dip (11 rows; HW-6 dropped; row 11 — the `first-party-runtime.sh`
 seam and the airplay-mode push design — approved to land last; its box rows go to #4027 for the
 Space Hater sessions, none needs the owner). P4 done (handoff #4327: 12 PRs, `audio_graph` deleted, ADR-0245,
 the class-A rule stated in `doctor_contract.py`; rows 15b/16 wait on P9's `wake_legs_dead` and
-P3's bridge `rms` emitter). P6 running on James Crane as Opus (two PRs merged, two open). P5 running (plan on #4199, triaged;
-#4335 and #4337 open). P9: 24 PRs merged (ADR-0244), the daemon split in
+P3's bridge `rms` emitter). P6 running on James Crane as Opus (two PRs merged, two open). P5 executing (plan on #4199 triaged; #4335 and #4337 merged; #4343 open). P11
+planned and triaged (#4212 comment 5564925492; W1 first; the landing/hub eyeball is the owner's in
+the morning). P9: 24 PRs merged (ADR-0244), the daemon split in
 progress; P4's `wake_legs_dead` ask answered (#4331). P12 done (handoff #4324: 21 PRs; H3 and the
 P1/P2 hardware rows PASS; HW-5 re-takes once P2's row 4 lands; H1, H2 and the #4209 slider still
 owner-owed, recipes on #4324). Deployed: all three boxes `e39461ebb`. Overnight mode in effect since 03:39 UTC. Three
@@ -95,8 +96,8 @@ PR in that plan, sensitive tier included, once `/code-review`, `/simplify` and (
 demands it) `/adversarial-review` have no open blockers. No lane waits for a per-PR word; four
 lanes stalled on that on the first night.
 
-**Overnight mode.** When the owner is away, the coordinator session runs the lanes on an hourly
-Routine. The channel is each lane's own issue, nothing else. Once an hour an Opus subagent reads
+**Overnight mode.** When the owner is away, the coordinator session runs the lanes on a
+half-hourly check. The channel is each lane's own issue, nothing else. On each check that finds `main` or an issue moved, an Opus subagent reads
 `main`, the open PRs, #4027 and the newest comments on every active lane issue; the coordinator then
 posts only where a lane waits. A comment starting **Coordinator (overnight)** is the owner's word for
 the night: plan-gate triage, the merge word, the answer to every open call and, after a handoff, the
