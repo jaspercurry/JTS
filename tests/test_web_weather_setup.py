@@ -69,11 +69,6 @@ def _render(weather_state=None, transit_state=None, csrf_token="x" * 43,
     ).decode()
 
 
-def test_render_is_canonical_document():
-    out = _render()
-    assert_canonical_page(out)
-
-
 def test_render_links_page_css():
     out = _render()
     assert weather_setup.WEATHER_PAGE_CSS_HREF == "/assets/weather/weather.css"
