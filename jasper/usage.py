@@ -39,7 +39,7 @@ that like active conversation time. A schema discriminator tags old
 connection-uptime rows as legacy so they no longer false-trip the cap after
 upgrade. The spend queries fold active intervals in at the flat rate, so
 Grok's cost shows up in spend-cap status and counts against the cap. See
-``BillableActivityMeter`` and ``UsageStore._time_billed_spend_by_provider``.
+``BillableActivityMeter`` and ``UsageStore._time_billed_spend``.
 
 Display vs. circuit-breaker: the stored ``cost_usd`` is a best-effort
 TRUE estimate (provider list rates). The spend cap stays conservative
@@ -782,14 +782,12 @@ class UsageStore:
             (_BILLABLE_ACTIVITY_KIND,),
         )
 
-    def _time_billed_spend_by_provider(
-        self, since: datetime, until: datetime,
-    ) -> dict[str, float]:
-        """Billable realtime-activity cost per provider over ``[since, until]``.
+    def _time_billed_spend(self, since: datetime, until: datetime) -> float:
+        """Billable realtime-activity cost over ``[since, until]``.
         Open intervals (closed_at IS NULL) are billed up to ``until``.
-        Returns ``{}`` when no intervals overlap the window."""
+        Returns ``0.0`` when no intervals overlap the window."""
         if not self._connection_intervals_have_kind:
-            return {}
+            return 0.0
         cur = self._conn.execute(
             "SELECT provider, opened_at, closed_at, rate_per_hour_usd "
             "FROM connection_intervals "
@@ -797,8 +795,8 @@ class UsageStore:
             "AND opened_at <= ? AND (closed_at IS NULL OR closed_at >= ?)",
             (_BILLABLE_ACTIVITY_KIND, until.isoformat(), since.isoformat()),
         )
-        out: dict[str, float] = {}
-        for provider, opened_at, closed_at, rate in cur.fetchall():
+        total = 0.0
+        for _provider, opened_at, closed_at, rate in cur.fetchall():
             if not rate:
                 continue
             try:
@@ -811,13 +809,8 @@ class UsageStore:
                 continue
             secs = (end - start).total_seconds()
             if secs > 0:
-                out[provider] = (
-                    out.get(provider, 0.0) + secs / 3600.0 * float(rate)
-                )
-        return out
-
-    def _time_billed_spend(self, since: datetime, until: datetime) -> float:
-        return sum(self._time_billed_spend_by_provider(since, until).values())
+                total += secs / 3600.0 * float(rate)
+        return total
 
     def spend_last_24h_usd(self) -> float:
         now = datetime.now(timezone.utc)

@@ -35,7 +35,7 @@ connection (gated on the bundled ``flat_per_hour_usd > 0`` rate for the
 active model), and this class inherits the ``set_billable_activity_meter``
 plumbing from ``OpenAIRealtimeConnection``. The recorded intervals fold
 into the daily spend cap via
-``UsageStore._time_billed_spend_by_provider`` — so the cap constrains
+``UsageStore._time_billed_spend`` — so the cap constrains
 Grok the same as token-billed providers. See ``jasper.usage`` and
 ``jasper.voice.daemon_main._make_connection``."""
 from __future__ import annotations

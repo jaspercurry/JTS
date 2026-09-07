@@ -484,10 +484,6 @@ class CitiBikeClient:
     def ebike_only(self) -> bool:
         return self._ebike_only
 
-    @property
-    def saved_stations(self) -> tuple[tuple[str, str], ...]:
-        return self._saved
-
     def get_status(
         self, *, station_filter: str = "",
     ) -> list[StationStatus]:

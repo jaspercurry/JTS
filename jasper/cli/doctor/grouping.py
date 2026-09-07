@@ -649,7 +649,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
 
     None means no authority answered: the grouping file exists but cannot be
     read, or systemctl was unreadable AND the file carried nothing. The
-    fail-soft reader ``parse_env_file`` is deliberately not used here — it
+    fail-soft reader ``env_load.parse_env_file`` is deliberately not used here — it
     collapses an unreadable file into ``{}``, which is the same false green
     as #2387 wearing a different hat, and a doctor that cannot read its
     authority must say so.

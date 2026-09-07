@@ -27,15 +27,19 @@ restart/rollback; this module only owns the text transform.
 
 from __future__ import annotations
 
+# A parsed line is either a real assignment ``(key, value)`` or a line we
+# preserve verbatim -- comment / blank / malformed -- carried as ``(raw, None)``.
+ParsedLine = tuple[str, str | None]
 
-def parse_env_lines(text: str) -> "list[tuple[str, str | None]]":
+
+def parse_env_lines(text: str) -> list[ParsedLine]:
     """Parse env-file text into ordered ``(key, value)`` / ``(raw_line, None)``.
 
     Assignments become ``(key, value)`` with the key stripped; everything else
     (comments, blanks, lines with no ``=``) is carried verbatim as
     ``(raw_line, None)`` so a rewrite preserves the operator's file exactly.
     """
-    out: list[tuple[str, str | None]] = []
+    out: list[ParsedLine] = []
     for raw in text.splitlines():
         stripped = raw.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
@@ -46,7 +50,7 @@ def parse_env_lines(text: str) -> "list[tuple[str, str | None]]":
     return out
 
 
-def _render(lines: "list[tuple[str, str | None]]") -> str:
+def _render(lines: list[ParsedLine]) -> str:
     return "\n".join(k if v is None else f"{k}={v}" for k, v in lines)
 
 
@@ -73,7 +77,7 @@ def upsert(text: str, key: str, value: str) -> tuple[str, bool]:
     ``changed`` is True; the result always ends in a single trailing newline.
     """
     lines = parse_env_lines(text)
-    new_lines: list[tuple[str, str | None]] = []
+    new_lines: list[ParsedLine] = []
     found = False
     changed = False
     for k, v in lines:
@@ -111,7 +115,7 @@ def remove(text: str, key: str) -> tuple[str, bool]:
     the empty string.
     """
     lines = parse_env_lines(text)
-    new_lines: list[tuple[str, str | None]] = []
+    new_lines: list[ParsedLine] = []
     changed = False
     for k, v in lines:
         if v is not None and k == key:
