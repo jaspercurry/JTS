@@ -190,7 +190,7 @@ def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
 
     Idempotent: subsequent calls return the same UUID. First call on a
     fresh install creates the file (mode 0644, owned by whoever is
-    running — typically root via jasper-control's systemd unit).
+    running).
 
     A peer_id is just a UUID4 string. We don't use the MAC address
     because the user might re-image the SD card on the same Pi and
@@ -211,7 +211,7 @@ def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
 
     new_id = str(uuid.uuid4())
     try:
-        atomic_write_text(path, new_id + "\n", mode=0o644)
+        atomic_write_text(path, new_id + "\n")
     except OSError as e:
         logger.warning("could not write %s (%s); peer_id is ephemeral", path, e)
     return new_id

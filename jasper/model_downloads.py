@@ -109,8 +109,8 @@ def download_model_file(
                         f"hash mismatch after download: got {got}, "
                         f"expected {expected_sha256}",
                     )
+            os.chmod(tmp_path, 0o644)
             os.replace(tmp_path, dest_path)
-            os.chmod(dest_path, 0o644)
             return
         except (
             OSError,
@@ -271,9 +271,7 @@ def seed_default_wake_model_env(
     if not os.path.exists(entry.model):
         _log(log, f"  skipping wake_model.env seed: default file missing ({entry.model})")
         return
-    atomic_write_text(
-        WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n", mode=0o644
-    )
+    atomic_write_text(WAKE_MODEL_FILE, f"JASPER_WAKE_MODEL={entry.model}\n")
     _log(log, f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")
 
 

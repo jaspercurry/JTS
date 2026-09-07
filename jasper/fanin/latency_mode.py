@@ -108,7 +108,6 @@ def write_requested_mode(
         dst,
         "# Written by JTS /system USB latency control.\n"
         f"{STATE_ENV_KEY}={canonical}\n",
-        mode=0o644,
     )
     return canonical
 

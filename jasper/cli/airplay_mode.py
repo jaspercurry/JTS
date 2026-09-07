@@ -57,7 +57,7 @@ def _write_mode(mode: str) -> None:
         value = "no"
     else:
         raise ValueError(f"unknown mode {mode!r}")
-    atomic_write_text(MODE_ENV_FILE, f"{ENV_VAR}={value}\n", mode=0o644)
+    atomic_write_text(MODE_ENV_FILE, f"{ENV_VAR}={value}\n")
 
 
 def _apply_and_restart() -> int:

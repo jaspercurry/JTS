@@ -11,10 +11,14 @@ so no wider-permission window is ever visible). New code should call
 ``atomic_write_text`` instead of re-rolling the pattern.
 
 This test detects the hand-rolled shape — an actual *call* to
-``tempfile.mkstemp`` / ``tempfile.NamedTemporaryFile`` plus a call to
-anything named ``replace``/``rename`` (``os.replace``, ``os.rename``,
-``Path.replace``, ``Path.rename``, ...) in the same module (AST-based,
-so comments and docstrings mentioning the pattern don't count) — and
+``tempfile.mkstemp`` / ``tempfile.NamedTemporaryFile`` plus a publish
+call in the same module (AST-based, so comments and docstrings
+mentioning the pattern don't count): ``os.replace``/``os.rename``
+always count; any other receiver's ``.replace``/``.rename`` call
+(``Path.replace``, ``Path.rename``, ...) counts only when it takes
+exactly one positional argument and no keywords, which is the rename
+shape but excludes ``str.replace``, ``bytes.replace``, and
+``datetime.replace`` calls that merely share the method name — and
 asserts the offender set EXACTLY matches the allowlist below.
 
 - Added a new hand-rolled writer? The test fails: use
@@ -45,13 +49,9 @@ _ALLOWLIST = {
     # chmod) — an exact fit for atomic_write_text(mode=...). Sits in the
     # measurement program's zone, so its own agent migrates it.
     "jasper/correction/replay_artifacts.py",
-    # Detected only once the rename-half check widened to any receiver
-    # (Path.replace, not os.replace). Sits in the tuning zone
-    # (active_speaker/); its own agent migrates it.
+    # Plain burn-down candidates (Path.replace hand-rolls). Both sit in
+    # the parked tuning zone; that program's own agent migrates them.
     "jasper/active_speaker/commissioning_admission.py",
-    # Same widened-detection case as commissioning_admission.py above.
-    # Sits in the tuning zone (audio_measurement/); its own agent
-    # migrates it.
     "jasper/audio_measurement/playback.py",
 }
 
@@ -67,10 +67,15 @@ def _calls_tempfile_and_rename(tree: ast.AST) -> bool:
         )
         if name in ("mkstemp", "NamedTemporaryFile"):
             has_tmp = True
-        # Any receiver: os.replace/os.rename and Path.replace/Path.rename
-        # are both the hand-rolled publish step this ratchet burns down.
         if isinstance(func, ast.Attribute) and func.attr in ("replace", "rename"):
-            has_rename = True
+            is_os_call = isinstance(func.value, ast.Name) and func.value.id == "os"
+            # os.replace/os.rename are always the publish step. Any other
+            # receiver's .replace()/.rename() (Path, ...) counts only in
+            # the single-positional-arg, no-keywords rename shape — this
+            # excludes str.replace(old, new) and dt.replace(field=...).
+            takes_target_only = len(node.args) == 1 and not node.keywords
+            if is_os_call or takes_target_only:
+                has_rename = True
     return has_tmp and has_rename
 
 
