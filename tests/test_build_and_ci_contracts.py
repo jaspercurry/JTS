@@ -582,6 +582,115 @@ def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> 
     assert "tests/test_usb_turntable_experiment.py" not in selected, calls
 
 
+def _shell_files_the_fast_lane_must_route() -> list[Path]:
+    """Every shell file scripts/test-fast's changed-file mapping covers."""
+
+    files = set(ROOT.glob("scripts/*.sh")) | set(ROOT.glob("deploy/**/*.sh"))
+    files |= {p for p in (ROOT / "deploy" / "bin").glob("*") if p.is_file()}
+    return sorted(f for f in files if f.is_file())
+
+
+def test_fast_lane_selects_every_test_that_names_a_shell_file_by_path(
+    tmp_path: Path,
+) -> None:
+    """A changed shell file must select every test that names its own path.
+
+    Derived, not hand-listed (issue #4194, #4248): a scripts/deploy-to-pi.sh
+    change used to select nothing, and a deploy/lib/jasper-env-file.sh change
+    missed the reconciler suites that source it (tests/test_aec_reconcile.py,
+    tests/test_audio_hardware_reconcile.py) because only that one lib had a
+    hand-written pin. This runs the real lane against a copy of the real
+    tests/ tree, once per shell file under scripts/ and deploy/, and checks
+    that every test file whose CONTENT names the file's path is a subset of
+    what the lane actually selects -- no expected-selection list is written
+    by hand.
+    """
+
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    shutil.copytree(ROOT / "tests", repo / "tests")
+    for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
+        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
+    _init_git_repo(repo)
+
+    fake_pytest = repo / "fake-pytest"
+    fake_pytest.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import sys",
+                "raise SystemExit(5 if '--last-failed' in sys.argv else 0)",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_pytest.chmod(0o755)
+    fake_ruff = repo / "fake-ruff"
+    fake_ruff.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
+    fake_ruff.chmod(0o755)
+    # Committed so each iteration's single injected file is the ONLY thing
+    # the lane sees as changed -- left uncommitted, every copied test file
+    # would read as untracked and the tests/test_*.py arm would select the
+    # entire suite, making the subset check trivially true for every file.
+    _commit_all(repo, "baseline")
+
+    env = {
+        **os.environ,
+        "PYTEST": str(fake_pytest),
+        "RUFF": str(fake_ruff),
+        "TEST_BASE": "missing-base",
+    }
+    real_test_files = [str(p) for p in sorted((ROOT / "tests").glob("test_*.py"))]
+
+    violations: dict[str, list[str]] = {}
+    for shell_file in _shell_files_the_fast_lane_must_route():
+        relpath = shell_file.relative_to(ROOT).as_posix()
+        grep = subprocess.run(
+            ["grep", "-l", "-F", "--", relpath, *real_test_files],
+            capture_output=True,
+            text=True,
+        )
+        expected = {f"tests/{Path(line).name}" for line in grep.stdout.splitlines()}
+        if not expected:
+            continue  # nothing names this file by path -- no floor to check
+
+        # A few targets (scripts/_test_lane.sh) are also harness dependencies
+        # copied in above; truncating one would break every later iteration's
+        # own invocation of the lane. Append instead of overwriting when the
+        # path already exists, and restore via git rather than deleting.
+        target = repo / relpath
+        pre_existing = target.exists()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write("\n# routing-guard probe\n")
+        try:
+            result = _run(["bash", "scripts/test-fast"], cwd=repo, env=env)
+        finally:
+            if pre_existing:
+                _run(["git", "checkout", "--", relpath], cwd=repo)
+            else:
+                target.unlink()
+
+        selected: set[str] = set()
+        in_selection_block = False
+        for line in result.splitlines():
+            if line.strip() == "==> pytest changed-file selection":
+                in_selection_block = True
+                continue
+            if not in_selection_block:
+                continue
+            if line.startswith("==>"):
+                break
+            selected.add(line.strip())
+
+        missing = sorted(expected - selected)
+        if missing:
+            violations[relpath] = missing
+
+    assert not violations, violations
+
+
 def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:
     """Keep the visible `rust` job while avoiding unrelated apt/Cargo work."""
 

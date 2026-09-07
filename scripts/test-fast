@@ -154,6 +154,59 @@ add_globbed_tests() {
   [[ "${matched}" == true ]]
 }
 
+# A bare basename shared with enough unrelated prose that the COUNT itself is
+# the signal (issue #4194, #4248): deploy/install.sh's basename alone turns up
+# in ~85 of this repo's ~905 test files, most just narrating the install
+# script in passing, while every other shell file's real referrers top out
+# under 35. A ratio (matches / total tests/test_*.py) looks more portable but
+# isn't: a small sandbox repo has few enough test files that even one real,
+# legitimate match crosses any reasonable ratio, misfiring on exactly the
+# case tests/test_test_lane_tool_resolution.py pins. Fixed, and revisit if
+# this repo's test count changes by an order of magnitude.
+shell_generic_basename_threshold=40
+
+# add_shell_reference_tests <changed-shell-path>
+#
+# scripts/*.sh, deploy/**/*.sh and deploy/bin/* are reached by subprocess, so
+# no import graph routes a change to the tests that exercise it the way the
+# jasper/*.py arms' package layout does. Select every test whose CONTENT
+# names this file, by bare basename or (once the basename is too generic,
+# see the threshold above) by its unique relative path. Returns failure with
+# nothing added when no test names the file at all, so callers can chain
+# their own fallback.
+add_shell_reference_tests() {
+  local changed="$1"
+  local base="${changed##*/}"
+  local matches
+  matches="$(grep -l -F -- "${base}" tests/test_*.py 2>/dev/null || true)"
+  local match_count
+  match_count="$(printf '%s\n' "${matches}" | awk 'NF' | wc -l | tr -d ' ')"
+  if (( match_count > shell_generic_basename_threshold )); then
+    matches="$(grep -l -F -- "${changed}" tests/test_*.py 2>/dev/null || true)"
+  fi
+  local found=false
+  local shell_test
+  while IFS= read -r shell_test; do
+    [[ -n "${shell_test}" ]] || continue
+    add_test_if_present "${shell_test}"
+    found=true
+  done <<< "${matches}"
+  [[ "${found}" == true ]]
+}
+
+# add_shell_fallback_tests
+#
+# The safety net for a shell file no test names at all (a handful of
+# genuinely untested operator scripts today, e.g.
+# deploy/lib/install/model-staging.sh): run every test that names ANY shell
+# script rather than selecting nothing for this changed file.
+add_shell_fallback_tests() {
+  local shell_test
+  while IFS= read -r shell_test; do
+    add_test_if_present "${shell_test}"
+  done < <(grep -lE '\.sh\b' tests/test_*.py 2>/dev/null || true)
+}
+
 while IFS= read -r changed; do
   case "${changed}" in
     tests/test_*.py)
@@ -208,6 +261,12 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_web_wifi_setup.py"
       add_test_if_present "tests/test_voice_setup.py"
       add_test_if_present "tests/test_web_transit_setup.py"
+      # On top of the curated redaction-surface tests above: whatever else
+      # names this script by path/basename (issue #4194, #4248), e.g.
+      # scripts/fetch-pi-logs.sh's own tests/test_journal_review_fingerprint_contract.py.
+      case "${changed}" in
+        *.sh) add_shell_reference_tests "${changed}" || true ;;
+      esac
       ;;
     jasper/*/*.py)
       # issue #3142: a module nested one directory deeper than the top-level
@@ -243,6 +302,12 @@ while IFS= read -r changed; do
       # nothing else routes the lanes' own guards — so editing the lanes ran
       # everything except the tests written for them (issue #1836).
       add_test_if_present "tests/test_test_lane_tool_resolution.py"
+      # On top of the above: whatever else names this file by path/basename
+      # (issue #4194, #4248), e.g. scripts/_test_lane.sh's own harness tests
+      # in tests/test_build_and_ci_contracts.py.
+      case "${changed}" in
+        *.sh) add_shell_reference_tests "${changed}" || true ;;
+      esac
       ;;
     deploy/assets/*/js/*.js|tests/js/*.mjs)
       add_test_if_present "tests/test_dialog_helper.py"
@@ -262,40 +327,40 @@ while IFS= read -r changed; do
       # About half are pinned by a test named for the script minus its
       # `jasper-` prefix; the rest are pinned by contract tests named for the
       # SUBJECT instead (e.g. jasper-apply-airplay-mode is covered by
-      # tests/test_airplay_render.py). The glob below runs unconditionally after the convention
-      # checks; the `grep` fallback runs only when no convention candidate matched, so a
-      # convention hit skips grep and the glob is what still catches a pattern-named test like
-      # tests/test_aec_reconcile_rule_pins.py (issue #3846). Grep itself is the fallback,
-      # not the rule, because the reconcile scripts are named in ~28 files each, several
-      # of them slow.
+      # tests/test_airplay_render.py) -- add_shell_reference_tests' grep
+      # catches both (it matches on a test's CONTENT, not its name). The
+      # glob still runs unconditionally alongside it: it is what catches a
+      # pattern-named test whose content never repeats the script's own
+      # basename, like tests/test_wifi_guardian_persistence.py for
+      # jasper-wifi-guardian (issue #3846).
       script="${changed##*/}"
       script_module="${script#jasper-}"
       script_module="${script_module//-/_}"
-      script_matched=false
+      bin_matched=false
       for candidate in \
         "tests/test_${script_module}.py" \
         "tests/test_${script_module}_script.py"; do
         if [[ -f "${candidate}" ]]; then
           add_test_if_present "${candidate}"
-          script_matched=true
+          bin_matched=true
         fi
       done
-      add_globbed_tests "test_${script_module}_*.py" >/dev/null || true
-      if [[ "${script_matched}" != true ]]; then
-        while IFS= read -r script_test; do
-          add_test_if_present "${script_test}"
-        done < <(grep -l -- "${script}" tests/test_*.py 2>/dev/null || true)
+      add_globbed_tests "test_${script_module}_*.py" && bin_matched=true
+      add_shell_reference_tests "${changed}" && bin_matched=true
+      if [[ "${bin_matched}" != true ]]; then
+        add_shell_fallback_tests
       fi
       ;;
-    deploy/lib/jasper-env-file.sh)
-      # Shared bash libs are reached by subprocess, so no import graph routes
-      # them. Named exactly, not globbed: every sibling under deploy/lib/ has
-      # its own pins (e.g. jasper-alsa-card.sh -> tests/test_alsa_card_lib.py)
-      # and deploy/lib/install/* rides the always-on test_deploy_wiring_guards
-      # scanner below — a `deploy/lib/*` glob would swallow both.
-      add_test_if_present "tests/test_env_file_lib.py"
-      # test_wifi_guardian_script.py exercises jasper_env_file_get end to end.
-      add_test_if_present "tests/test_wifi_guardian_script.py"
+    scripts/*.sh|deploy/*.sh)
+      # Shared bash libs (deploy/lib/**) and laptop-side scripts
+      # (scripts/*.sh, deploy/install.sh, deploy/configure-bluez.sh, ...) are
+      # reached by subprocess too, so the same derivation applies (issue
+      # #4194, #4248): a scripts/deploy-to-pi.sh change selected nothing
+      # here, and a deploy/lib/jasper-env-file.sh change missed the
+      # reconciler suites that source it (deploy/bin/jasper-aec-reconcile,
+      # deploy/bin/jasper-audio-hardware-reconcile) because this arm used to
+      # hand-list only that one lib's two known pins.
+      add_shell_reference_tests "${changed}" || add_shell_fallback_tests
       ;;
     deploy/systemd/jasper-wifi-guardian*)
       # The guardian's unit pins live in the script's test file, which the
