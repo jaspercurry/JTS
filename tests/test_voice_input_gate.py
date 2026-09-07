@@ -258,7 +258,7 @@ def test_published_verdict_reaches_the_leg_planner(monkeypatch) -> None:
     Renaming the key on either side breaks this even though both sides would
     still be internally consistent — which is the drift this pins.
     """
-    from jasper.voice_daemon import _configured_wake_legs
+    from jasper.voice_daemon import configured_wake_legs
 
     cfg = _config_with(
         monkeypatch,
@@ -267,7 +267,7 @@ def test_published_verdict_reaches_the_leg_planner(monkeypatch) -> None:
             "JASPER_MANUAL_MIC_SOURCES": "wiim_remote_2=udp:9892",
         },
     )
-    assert _configured_wake_legs(cfg) == []
+    assert configured_wake_legs(cfg) == []
 
     # Control: the SAME config with the local half resolved present keeps the
     # primary leg, so the empty plan above is the published verdict's doing
@@ -279,7 +279,7 @@ def test_published_verdict_reaches_the_leg_planner(monkeypatch) -> None:
             "JASPER_MANUAL_MIC_SOURCES": "wiim_remote_2=udp:9892",
         },
     )
-    assert [s.token for s, _ in _configured_wake_legs(cfg_with_mic)] == ["on"]
+    assert [s.token for s, _ in configured_wake_legs(cfg_with_mic)] == ["on"]
 
 
 def test_voice_parked_no_mic_reads_marker(tmp_path, monkeypatch) -> None:

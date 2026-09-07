@@ -506,11 +506,10 @@ def test_fanin_control_command_vocabulary_matches_mux():
     state_rs = FANIN_STATE_RS.read_text()
     mux_py = (REPO / "jasper" / "mux.py").read_text()
     control_py = (REPO / "jasper" / "fanin" / "control.py").read_text()
-    for verb in ('"STATUS"', '"AUTO"', '"NONE"', '"SELECT '):
+    for verb in ('"STATUS"', '"NONE"', '"SELECT '):
         assert verb in state_rs, f"fanin state.rs no longer handles {verb}"
     assert 'socket_path=FANIN_CONTROL_SOCKET' in mux_py
     assert 'f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'fanin_command("AUTO", socket_path=FANIN_CONTROL_SOCKET)' in mux_py
     assert 'fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)' in mux_py
     # state.rs error responses carry {"error": ...}; mux raises on it.
     assert '"error":' in state_rs

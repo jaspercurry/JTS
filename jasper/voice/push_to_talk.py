@@ -27,14 +27,14 @@ logger = logging.getLogger("jasper.voice_daemon")
 # Head-room a push-to-talk turn must leave the model to start answering
 # after the button closes the user's input.
 #
-# `_idle_watchdog`'s pre-response timer is anchored at TURN OPEN, not at
+# `idle_watchdog`'s pre-response timer is anchored at TURN OPEN, not at
 # end-of-input, so the hold and the model's first-chunk latency share one
 # `JASPER_IDLE_TIMEOUT_SEC` envelope. Its own docstring puts that latency
 # at "3-5 s, sometimes longer" for Live API providers; 6 s covers the
 # documented range with margin. Whatever the hold cap ends up being, it
 # must fire this far below `idle_timeout_sec` or the watchdog reaps the
 # turn before the model can speak — and the teardown cancels
-# `_play_responses` BEFORE calling `end_input`, so the user gets no
+# `play_responses` BEFORE calling `end_input`, so the user gets no
 # answer at all rather than a short one.
 PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC = 6.0
 
@@ -131,14 +131,14 @@ class PushToTalk:
     def input_cap_sec(self, idle_timeout_sec: float) -> float:
         """How long a held button may hold the user's input open.
 
-        Not simply ``HARD_RECORDING_CAP_SEC``. ``_idle_watchdog``'s
+        Not simply ``HARD_RECORDING_CAP_SEC``. ``idle_watchdog``'s
         pre-response timer is anchored at turn open and fires at
         ``JASPER_IDLE_TIMEOUT_SEC`` (default 20 s) when no model chunk has
         arrived — and none can while input is still open, because
         ``last_activity_at()`` tracks *model* activity and stays at the
         turn-start value. So the 30 s cap is unreachable at the shipped
         default: the watchdog wins by ~10 s, and because ``_end_turn`` cancels
-        ``_play_responses`` before it calls ``end_input``, the user gets no
+        ``play_responses`` before it calls ``end_input``, the user gets no
         answer at all rather than a truncated one.
 
         Deriving the cap from the same ``idle_timeout_sec`` the watchdog uses
@@ -228,8 +228,8 @@ class PushToTalk:
         What replaces them is ``input_cap_sec``, and something must:
         a button held but never released (wedged under a cushion, a
         release event the accessory never sends) would otherwise hold the
-        duck, the LLM session, and the mic open until ``_idle_watchdog``
-        reaps the turn — and that teardown cancels ``_play_responses``
+        duck, the LLM session, and the mic open until ``idle_watchdog``
+        reaps the turn — and that teardown cancels ``play_responses``
         before asking the model anything, so the user hears nothing.
         Closing input at the cap turns that into an answer to what was
         said so far.
@@ -239,7 +239,7 @@ class PushToTalk:
         instead — BLE drop mid-hold, adapter killed — the cap never runs. The
         source's ``frames()`` is an untimed queue read
         (``UdpMicCapture.frames``) and the primary mic loop does not feed a
-        button turn, so ``_idle_watchdog`` reaps it; ``_end_turn`` still
+        button turn, so ``idle_watchdog`` reaps it; ``_end_turn`` still
         finalises it through the ``_manual_endpoint_this_turn`` term in its
         ``end_input()`` gate, and the operator gets
         ``event=turn.silent_response reason=hold_timeout`` rather than the

@@ -141,10 +141,10 @@ def test_at_the_shipped_default_the_hold_cap_beats_the_idle_watchdog():
     it does not hold at every `idle_timeout_sec`, and the two degraded
     bands below are where it stops holding.
 
-    `_idle_watchdog`'s pre-response timer is anchored at turn OPEN and
+    `idle_watchdog`'s pre-response timer is anchored at turn OPEN and
     fires at `JASPER_IDLE_TIMEOUT_SEC` when no model chunk has arrived —
     and none can while input is open, because `last_activity_at()` tracks
-    *model* activity. `_end_turn` then cancels `_play_responses` BEFORE
+    *model* activity. `_end_turn` then cancels `play_responses` BEFORE
     calling `end_input`, so losing this race means the user gets no answer
     at all. The hold cap must close input early enough that the model can
     still start speaking inside the same window.

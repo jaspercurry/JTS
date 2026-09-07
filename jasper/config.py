@@ -253,7 +253,7 @@ class Config:
     # True/False when it resolved local-microphone presence, None when it
     # deliberately did not (a custom JASPER_MIC_DEVICE) or never ran. Only an
     # explicit False lets the leg planner drop the primary wake leg — see
-    # `_configured_wake_legs`.
+    # `configured_wake_legs`.
     local_mic_present: bool | None
     manual_mic_sources: MappingProxyType[str, str]
     mic_device_raw: str
