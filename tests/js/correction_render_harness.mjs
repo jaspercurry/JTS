@@ -60,6 +60,8 @@ function makeClassList(initial) {
 function makeEl(id) {
   const el = {
     id,
+    nodeType: 1,
+    hidden: false,
     textContent: "",
     _innerHTML: "",
     value: "",
@@ -282,6 +284,7 @@ source = source.replace(
     onTuningInterpret,
     onTuningPropose,
     renderBrowserAudioReport,
+    renderBrowserAudioLocal,
     renderQuality,
     loadSessionReport,
     // Household-mic prefill / calibration-identity surfaces (issue #1656).
@@ -429,7 +432,7 @@ configureSelect("strategy-select", [
   ["safe", "Safe"],
   ["balanced", "Balanced"],
 ], "balanced");
-getOrMake("measurement-options").classList.add("hidden");
+getOrMake("measurement-options").hidden = true;
 // Real markup (jasper/web/correction_setup.py) starts every envelope
 // section and the wizard's own reset button hidden. Mirror that here so an
 // isolated renderCurrentCorrection() call — before any renderSections() /
@@ -438,7 +441,7 @@ getOrMake("measurement-options").classList.add("hidden");
 // (renderCurrentCorrection defers the banner's own reset button whenever
 // the wizard's reset button is visible in its section).
 ["measurement-review", "apply-status", "result-proof", "reset-correction"]
-  .forEach((id) => getOrMake(id).classList.add("hidden"));
+  .forEach((id) => { getOrMake(id).hidden = true; });
 
 // Inject stubs for the named imports (csrfHeaders, jsonHeaders, etc.)
 const preamble = `
@@ -558,6 +561,7 @@ const {
   onTuningInterpret,
   onTuningPropose,
   renderBrowserAudioReport,
+  renderBrowserAudioLocal,
   renderQuality,
   loadSessionReport,
   applyHouseholdMicPrefill,
@@ -630,7 +634,7 @@ function currentPresentation(over) {
       !label().textContent.includes("{applied_at}"),
     "browser localizes only the server timestamp placeholder",
     {got: label().textContent});
-  assert(!resetBtn().classList.contains("hidden"),
+  assert(!resetBtn().hidden,
     "server presentation enables reset");
 }
 
@@ -643,13 +647,13 @@ function currentPresentation(over) {
   }));
   assert(banner().className === "custom" &&
       label().textContent === "Advanced DSP config is active." &&
-      !resetBtn().classList.contains("hidden"),
+      !resetBtn().hidden,
     "custom presentation is entirely server-owned");
 
   renderCurrentCorrection(currentPresentation());
   assert(banner().className === "flat" &&
       label().textContent === "No JTS room correction is applied." &&
-      resetBtn().classList.contains("hidden"),
+      resetBtn().hidden,
     "flat presentation is entirely server-owned");
 }
 
@@ -673,7 +677,7 @@ function currentPresentation(over) {
     assert(banner().className === "flat" &&
         label().textContent ===
           "The current correction could not be checked. Try again." &&
-        resetBtn().classList.contains("hidden"),
+        resetBtn().hidden,
       "invalid current-correction presentation fails closed", {index});
   });
 }
@@ -682,20 +686,20 @@ function currentPresentation(over) {
 //      visibility remains owned by renderSections, so an omitted banner stays
 //      hidden even when its independent status request completes later.
 {
-  banner().classList.add("hidden");
+  banner().hidden = true;
   renderCurrentCorrection(currentPresentation({
     tone: "applied",
     message_template: "Correction applied {applied_at}",
     applied_at_epoch: 1718000000,
     reset_allowed: true,
   }));
-  assert(banner().classList.contains("hidden"),
+  assert(banner().hidden,
     "current-correction refresh must preserve envelope-owned hidden state",
     { got: banner().className });
   assert(banner().classList.contains("applied"),
     "current-correction refresh still updates its tone class",
     { got: banner().className });
-  banner().classList.remove("hidden");
+  banner().hidden = false;
 }
 
 // 11c. The shell-level emergency action remains available while sweep audio
@@ -707,7 +711,7 @@ function currentPresentation(over) {
   resetFetchCounts();
   globalThis.__confirmCalls = 0;
   applyButtonPolicy("sweeping", "idle");
-  assert(!emergency.classList.contains("hidden"),
+  assert(!emergency.hidden,
     "sweeping exposes the persistent emergency Stop outside the envelope");
   assert(emergency.textContent === "Stop measurement",
     "audio-producing phases use explicit Stop language",
@@ -721,7 +725,7 @@ function currentPresentation(over) {
 
   resetFetchCounts();
   applyButtonPolicy("analyzing", "idle");
-  assert(emergency.classList.contains("hidden"),
+  assert(emergency.hidden,
     "CPU-only analysis is not presented as cancellable audio");
   applyButtonPolicy("awaiting_capture", "idle");
   await cancelMeasurement();
@@ -746,14 +750,14 @@ function currentPresentation(over) {
 
   setWizardActionInFlight(true);
   renderPrimaryAction(nextAction);
-  assert(nextBtn.classList.contains("hidden") && nextBtn.disabled,
+  assert(nextBtn.hidden && nextBtn.disabled,
     "sanity check: an in-flight action gates the primary CTA");
 
   await cancelMeasurement();
   assert(fetchCountFor("/reset") === 1, "Cancel still dispatches reset");
 
   renderPrimaryAction(nextAction);
-  assert(!nextBtn.classList.contains("hidden") && !nextBtn.disabled,
+  assert(!nextBtn.hidden && !nextBtn.disabled,
     "cancel success clears the stale in-flight latch so the CTA is not stranded");
 }
 
@@ -1008,7 +1012,7 @@ function nudgeRows() {
   }));
   assert(wizVerdict().textContent === "Playing a test sweep. Keep the room quiet.",
     "verdict_text is rendered verbatim", { got: wizVerdict().textContent });
-  assert(!wizChrome().classList.contains("hidden"),
+  assert(!wizChrome().hidden,
     "wizard chrome is revealed once an envelope renders");
 }
 
@@ -1054,14 +1058,14 @@ function nudgeRows() {
   const t0 = rows[0].children.find((c) => c.className === "wizard-nudge__text");
   assert(t0 && t0.textContent.indexOf("approximate") !== -1,
     "nudge text is rendered as a sentence", { got: t0 && t0.textContent });
-  assert(!wizNudges().classList.contains("hidden"),
+  assert(!wizNudges().hidden,
     "nudge container is visible when nudges exist");
 }
 
 // 22. No nudges -> container hidden, no rows.
 {
   renderNudges([]);
-  assert(wizNudges().classList.contains("hidden"),
+  assert(wizNudges().hidden,
     "empty nudges hide the container");
   assert(nudgeRows().length === 0, "no nudge rows when empty");
 }
@@ -1084,13 +1088,13 @@ function nudgeRows() {
     "endpoint is stashed on a data-* attribute (no inline handler interp)",
     { got: wizNext().getAttribute("data-endpoint") });
   assert(wizNext().disabled === false, "primary action is live");
-  assert(!wizNext().classList.contains("hidden"), "primary action is shown");
+  assert(!wizNext().hidden, "primary action is shown");
 }
 
 // 25. next_action === null -> button hidden (browser-driven / terminal step).
 {
   renderPrimaryAction(null);
-  assert(wizNext().classList.contains("hidden"),
+  assert(wizNext().hidden,
     "null next_action hides the primary action");
   assert(wizNext().getAttribute("data-endpoint") === null,
     "null next_action clears the stashed endpoint");
@@ -1112,7 +1116,7 @@ function nudgeRows() {
   }));
   assert(wizNext().disabled === false,
     "primary action stays LIVE even with warn nudges present (never gated)");
-  assert(!wizNext().classList.contains("hidden"),
+  assert(!wizNext().hidden,
     "primary action stays visible with warn nudges present");
   assert(nudgeRows().length === 2,
     "both warn nudges are shown alongside the live action", { got: nudgeRows().length });
@@ -1131,13 +1135,13 @@ function nudgeRows() {
   const renderedOrder = getOrMake("envelope-sections").children.map((node) => node.id);
   assert(renderedOrder.slice(-3).join(",") === ordered.join(","),
     "section roots render in the exact server order", { got: renderedOrder });
-  assert(!getOrMake("placement").classList.contains("hidden") &&
-    !getOrMake("measurement-review").classList.contains("hidden") &&
-    !getOrMake("reports").classList.contains("hidden"),
+  assert(!getOrMake("placement").hidden &&
+    !getOrMake("measurement-review").hidden &&
+    !getOrMake("reports").hidden,
     "listed sections are visible");
-  assert(getOrMake("run-defaults").classList.contains("hidden"),
+  assert(getOrMake("run-defaults").hidden,
     "omitted sections are hidden");
-  assert(!resultSectionEl().classList.contains("hidden"),
+  assert(!resultSectionEl().hidden,
     "review with an envelope measured curve shows the chart");
   assert(resultSectionEl().parentNode === getOrMake("measurement-review"),
     "review owns the neutral evidence subtree");
@@ -1145,7 +1149,7 @@ function nudgeRows() {
   renderSections(["result-proof"], {});
   assert(resultSectionEl().parentNode === getOrMake("result-proof"),
     "result owns the same neutral evidence subtree");
-  assert(resultSectionEl().classList.contains("hidden"),
+  assert(resultSectionEl().hidden,
     "no measured curve keeps the evidence frame hidden");
 }
 
@@ -1210,7 +1214,7 @@ await (async () => {
   assert(getRunTransportLocked() === true,
     "active status locks transport/default mutation controls");
   assert(getOrMake("change-run-defaults").disabled === true &&
-      getOrMake("measurement-options").classList.contains("hidden") &&
+      getOrMake("measurement-options").hidden &&
       getOrMake("change-run-defaults").getAttribute("aria-expanded") === "false",
     "active status closes and disables the run-defaults edit control");
   setFetchRoute("/status", () => ({ state: "idle" }));
@@ -1372,7 +1376,7 @@ await (async () => {
 
   setMeasurementOptionsOpen(false);
   getOrMake("change-run-defaults").click();
-  assert(!getOrMake("measurement-options").classList.contains("hidden") &&
+  assert(!getOrMake("measurement-options").hidden &&
     getOrMake("change-run-defaults").getAttribute("aria-expanded") === "true",
   "run defaults: Change opens one bounded panel and updates ARIA");
 
@@ -1573,9 +1577,9 @@ await (async () => {
     "failed evidence is disclosed as a nudge", { got: nudgeRows().length });
   assert(nudgeRows()[0].className.indexOf("warn") !== -1,
     "failed evidence keeps warn weight, the strongest nudge tone");
-  assert(!wizNext().classList.contains("hidden") && wizNext().disabled === false,
+  assert(!wizNext().hidden && wizNext().disabled === false,
     "failed evidence no longer withholds Apply");
-  assert(!getOrMake("tuning-actions").classList.contains("hidden"),
+  assert(!getOrMake("tuning-actions").hidden,
     "failed evidence no longer suppresses tuning actions");
 }
 
@@ -1583,7 +1587,7 @@ await (async () => {
 //      recovery link. It clears the stale defaults/Start from a ready entry.
 {
   renderEnvelope(makeEnvelope());
-  assert(!wizNext().classList.contains("hidden"),
+  assert(!wizNext().hidden,
     "ready entry initially offers Start");
 
   const rawActiveDetail = "historical B2b candidate says ready";
@@ -1603,9 +1607,9 @@ await (async () => {
     blocker,
   }));
 
-  assert(wizNext().classList.contains("hidden"),
+  assert(wizNext().hidden,
     "blocked entry retires stale Start");
-  assert(getOrMake("run-defaults").classList.contains("hidden"),
+  assert(getOrMake("run-defaults").hidden,
     "blocked entry retires ready defaults");
   assert(getOrMake("readiness-blocker-message").textContent === blocker.text,
     "blocked entry renders the typed homeowner sentence");
@@ -1632,8 +1636,8 @@ await (async () => {
   assert(getOrMake("readiness-blocker-action").href === "/sound/room/",
     "retryable readiness failure exposes one bounded reload action");
   renderEnvelope(makeEnvelope());
-  assert(getOrMake("readiness-blocker-action").classList.contains("hidden") &&
-      !wizNext().classList.contains("hidden"),
+  assert(getOrMake("readiness-blocker-action").hidden &&
+      !wizNext().hidden,
     "fresh ready envelope clears retry blocker and restores Start");
 }
 
@@ -1664,7 +1668,7 @@ await (async () => {
   assert(wizVerdict().textContent === typed &&
       wizVerdict().textContent.indexOf(raw) < 0,
     "typed Start refusal survives the immediate ready-envelope refresh");
-  assert(!wizNext().classList.contains("hidden"),
+  assert(!wizNext().hidden,
     "retryable Start refusal keeps the retry action available");
 
   setFetchRoute("/start", () => ({session_id: "run-1"}));
@@ -1719,7 +1723,7 @@ await (async () => {
   });
   validateEnvelope(failed);
   renderEnvelope(failed);
-  assert(!wizNext().classList.contains("hidden") &&
+  assert(!wizNext().hidden &&
       wizNext().getAttribute("data-endpoint") === "/reset",
     "failed session exposes the server-owned Start over action");
 
@@ -1759,14 +1763,14 @@ await (async () => {
     sections: ["run-defaults", "placement", "capture-setup"],
     next_action: { label: "Allow microphone", endpoint: "/local-capture/setup" },
   }));
-  assert(wizNext().classList.contains("hidden") && wizNext().disabled,
+  assert(wizNext().hidden && wizNext().disabled,
     "single-flight latch suppresses an action resurrected by active polling");
   renderEnvelope(makeEnvelope({
     screen: "level", state: "needs_noise_capture",
     sections: ["placement", "level-check"],
     next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
   }));
-  assert(wizNext().classList.contains("hidden"),
+  assert(wizNext().hidden,
     "single-flight latch spans permission, level preflight, and capture phases");
   setWizardActionInFlight(false);
   renderEnvelope(makeEnvelope({
@@ -1775,7 +1779,7 @@ await (async () => {
     next_action: { label: "Check measurement level", endpoint: "/autolevel/start" },
   }));
   assert(wizNext().getAttribute("data-endpoint") === "/autolevel/start" &&
-    !wizNext().classList.contains("hidden"),
+    !wizNext().hidden,
     "releasing single-flight permits the latest server action");
 }
 
@@ -1826,8 +1830,8 @@ await (async () => {
     });
   assert(wizNext().getAttribute("data-endpoint") === "/verify",
     "the coalesced follow-up renders the newest primary action");
-  assert(!getOrMake("apply-status").classList.contains("hidden") &&
-    getOrMake("measurement-review").classList.contains("hidden"),
+  assert(!getOrMake("apply-status").hidden &&
+    getOrMake("measurement-review").hidden,
     "the coalesced follow-up renders the newest section paint");
   setFetchRoute("/envelope", () => makeEnvelope());
   resetEnvelopeBookkeeping();
@@ -1887,8 +1891,8 @@ await (async () => {
   }));
 
   await refreshEnvelope();
-  assert(aborts === 1 && wizNext().classList.contains("hidden") &&
-      getOrMake("measurement-review").classList.contains("hidden"),
+  assert(aborts === 1 && wizNext().hidden &&
+      getOrMake("measurement-review").hidden,
     "hung envelope read aborts and retires stale presentation policy");
   await new Promise((resolve) => setTimeout(resolve, 1650));
   assert(fetchCountFor("/envelope") === 2 && aborts === 2,
@@ -1951,14 +1955,14 @@ await (async () => {
   readinessChanged = true;
   await new Promise((resolve) => setTimeout(resolve, 95));
   assert(entryReads >= 2 && envelopeReads === 2 &&
-      wizNext().classList.contains("hidden") &&
-      !getOrMake("readiness-blocker").classList.contains("hidden"),
+      wizNext().hidden &&
+      !getOrMake("readiness-blocker").hidden,
     "idle entry refresh withdraws Start once without repeated full scans", {
       entryReads, envelopeReads,
     });
   assert(label().textContent === "Custom DSP graph is active." &&
       banner().className === "custom" &&
-      !resetBtn().classList.contains("hidden"),
+      !resetBtn().hidden,
     "idle entry refresh updates the current-correction banner with readiness");
 
   setIdleEnvelopeRefreshMs(10000);
@@ -1999,7 +2003,7 @@ await (async () => {
   await pollState();
   await new Promise((resolve) => setTimeout(resolve, 1650));
   assert(attempts === 3 && fetchCountFor("/entry-status") >= 1 &&
-      !getOrMake("run-defaults").classList.contains("hidden"),
+      !getOrMake("run-defaults").hidden,
     "active-to-idle transition recovers after the fast retry is spent", {
       attempts, entryReads: fetchCountFor("/entry-status"),
     });
@@ -2028,7 +2032,7 @@ await (async () => {
   }));
 
   await refreshIdleEntry();
-  assert(aborts === 1 && wizNext().classList.contains("hidden") &&
+  assert(aborts === 1 && wizNext().hidden &&
       label().textContent ===
         "The current correction could not be checked. Try again.",
     "stalled idle entry read aborts and retires stale entry authority");
@@ -2069,8 +2073,8 @@ await (async () => {
   moved = true;
   await new Promise((resolve) => setTimeout(resolve, 65));
   assert(fetchCountFor("/envelope") === 2 &&
-      !getOrMake("position-capture").classList.contains("hidden") &&
-      wizNext().classList.contains("hidden"),
+      !getOrMake("position-capture").hidden &&
+      wizNext().hidden,
     "idle probe repaints a Room run started in another tab", {
       envelopeReads: fetchCountFor("/envelope"),
     });
@@ -2105,7 +2109,7 @@ await (async () => {
   assert(wizNext().getAttribute("data-endpoint") === "/apply",
     "phase 1: wizard shows Apply at ready",
     { got: wizNext().getAttribute("data-endpoint") });
-  assert(!getOrMake("measurement-review").classList.contains("hidden"),
+  assert(!getOrMake("measurement-review").hidden,
     "phase 1: review section is visible");
 
   // Phase 2: session advances, but an old server returns schema v5.
@@ -2117,10 +2121,10 @@ await (async () => {
   }));
   await pollState();
   await settle();
-  assert(wizNext().classList.contains("hidden"),
+  assert(wizNext().hidden,
     "phase 2: malformed envelope retires the stale Apply action");
-  assert(getOrMake("measurement-review").classList.contains("hidden") &&
-    getOrMake("apply-status").classList.contains("hidden"),
+  assert(getOrMake("measurement-review").hidden &&
+    getOrMake("apply-status").hidden,
     "phase 2: malformed envelope hides both stale and untrusted sections");
   assert(wizVerdict().textContent.indexOf("could not refresh") !== -1,
     "phase 2: malformed envelope shows one generic recovery message");
@@ -2135,12 +2139,12 @@ await (async () => {
   for (let i = 0; i < 30 && !recovered; i++) {
     await new Promise((r) => setTimeout(r, 100));
     recovered = wizNext().getAttribute("data-endpoint") === "/verify" &&
-      !wizNext().classList.contains("hidden");
+      !wizNext().hidden;
   }
   assert(recovered,
     "phase 3: the one bounded retry recovers the wizard action after a " +
     "transient envelope blip");
-  assert(!getOrMake("apply-status").classList.contains("hidden"),
+  assert(!getOrMake("apply-status").hidden,
     "phase 3: recovered envelope reveals the new server-owned section");
 
   setFetchRoute("/status", () => ({ state: "idle" }));
@@ -2169,36 +2173,36 @@ function tuningProposalsEl() { return getOrMake("tuning-proposals"); }
 {
   renderSections(["current-correction"], {});
   renderTuning({ offered: true, available: true, provider: "openai" });
-  assert(tuningPanelEl().classList.contains("hidden"),
+  assert(tuningPanelEl().hidden,
     "tuning: offered content cannot reveal an omitted section");
 
   renderSections(["tuning"], {});
   renderTuning(null);
-  assert(!tuningPanelEl().classList.contains("hidden"),
+  assert(!tuningPanelEl().hidden,
     "tuning: section membership remains exactly what the server supplied");
-  assert(tuningNudgeEl().classList.contains("hidden") &&
-    tuningActionsEl().classList.contains("hidden"),
+  assert(tuningNudgeEl().hidden &&
+    tuningActionsEl().hidden,
     "tuning: a missing block clears both internal affordances");
 
   renderTuning({ offered: false, available: true, provider: "openai" });
-  assert(tuningNudgeEl().classList.contains("hidden") &&
-    tuningActionsEl().classList.contains("hidden"),
+  assert(tuningNudgeEl().hidden &&
+    tuningActionsEl().hidden,
     "tuning: not offered clears both internal affordances");
 
   renderTuning({ offered: true, available: false, provider: "openai", nudge: "Add an OpenAI key at /voice" });
-  assert(!tuningPanelEl().classList.contains("hidden"),
+  assert(!tuningPanelEl().hidden,
     "tuning: offered-but-unavailable reveals the panel");
-  assert(!tuningNudgeEl().classList.contains("hidden"),
+  assert(!tuningNudgeEl().hidden,
     "tuning: offered-but-unavailable shows the nudge");
-  assert(tuningActionsEl().classList.contains("hidden"),
+  assert(tuningActionsEl().hidden,
     "tuning: offered-but-unavailable hides the action buttons");
   assert(tuningNudgeEl().textContent.indexOf("/voice") >= 0,
     "tuning: the no-key nudge points at /voice");
 
   renderTuning({ offered: true, available: true, provider: "openai", model: "gpt-5.4" });
-  assert(!tuningActionsEl().classList.contains("hidden"),
+  assert(!tuningActionsEl().hidden,
     "tuning: available shows the two per-tap actions");
-  assert(tuningNudgeEl().classList.contains("hidden"),
+  assert(tuningNudgeEl().hidden,
     "tuning: available hides the nudge");
 }
 
@@ -2462,10 +2466,10 @@ await (async () => {
   });
 
   const wizardReset = getOrMake("reset-correction");
-  assert(!wizardReset.classList.contains("hidden") &&
-    !getOrMake("result-proof").classList.contains("hidden"),
+  assert(!wizardReset.hidden &&
+    !getOrMake("result-proof").hidden,
     "Done screen: the wizard's reset button is visible in result-proof");
-  assert(resetBtn().classList.contains("hidden"),
+  assert(resetBtn().hidden,
     "Done screen: the banner's reset button defers to the wizard's");
   assert(label().textContent.startsWith("Room correction on"),
     "Done screen: the banner's status copy still renders (only its reset hides)");
@@ -2486,9 +2490,9 @@ await (async () => {
     reset_allowed: true,
   }));
 
-  assert(!resetBtn().classList.contains("hidden"),
+  assert(!resetBtn().hidden,
     "idle with an applied correction: the banner reset is visible");
-  assert(getOrMake("reset-correction").classList.contains("hidden"),
+  assert(getOrMake("reset-correction").hidden,
     "idle with an applied correction: the wizard reset stays hidden (no host section)");
 }
 
@@ -2506,10 +2510,10 @@ await (async () => {
   applyButtonPolicy("applied", "idle");
   renderSections(["apply-status"], {});
 
-  assert(!getOrMake("reset-correction").classList.contains("hidden") &&
-    !getOrMake("apply-status").classList.contains("hidden"),
+  assert(!getOrMake("reset-correction").hidden &&
+    !getOrMake("apply-status").hidden,
     "apply-status: the wizard reset is visible");
-  assert(getOrMake("current-correction").classList.contains("hidden"),
+  assert(getOrMake("current-correction").hidden,
     "apply-status: the banner section itself is not rendered, so it cannot overlap");
 }
 
@@ -2521,9 +2525,9 @@ await (async () => {
 {
   const wizardReset = getOrMake("reset-correction");
   getOrMake("measurement-review").appendChild(wizardReset);
-  wizardReset.classList.remove("hidden");
-  getOrMake("measurement-review").classList.add("hidden");
-  getOrMake("apply-status").classList.remove("hidden");
+  wizardReset.hidden = false;
+  getOrMake("measurement-review").hidden = true;
+  getOrMake("apply-status").hidden = false;
 
   renderCurrentCorrection(currentPresentation({
     tone: "applied",
@@ -2532,8 +2536,26 @@ await (async () => {
     reset_allowed: true,
   }));
 
-  assert(!resetBtn().classList.contains("hidden"),
+  assert(!resetBtn().hidden,
     "button inside a hidden section: banner reset remains visible even with another host section shown");
+
+  // The walk ends at `document`, whose own `hidden` is the Page Visibility
+  // flag — a backgrounded tab must not read as "the wizard reset is gone"
+  // and grow a second reset affordance behind the household's back.
+  getOrMake("apply-status").appendChild(wizardReset);
+  fakeDocument.body.appendChild(getOrMake("apply-status"));
+  fakeDocument.body.parentNode = fakeDocument;
+  fakeDocument.hidden = true;
+  renderCurrentCorrection(currentPresentation({
+    tone: "applied",
+    message_template: "Room correction on — 5 adjustments applied {applied_at}",
+    applied_at_epoch: 1718000000,
+    reset_allowed: true,
+  }));
+  assert(resetBtn().hidden,
+    "a backgrounded tab (document.hidden) does not resurrect the banner reset");
+  fakeDocument.hidden = false;
+  fakeDocument.body.parentNode = null;
 }
 
 // ---- Household-mic prefill + calibration-identity honesty (issue #1656) ---
@@ -2600,12 +2622,12 @@ function seedHouseholdMicData(overrides) {
 {
   seedMicModelOptions("");
   seedHouseholdMicData();
-  getOrMake("household-mic-banner").classList.add("hidden");
+  getOrMake("household-mic-banner").hidden = true;
   applyHouseholdMicPrefill();
   assert(getOrMake("mic-model-select").value === "minidsp_umik2",
     "prefill pre-selects the remembered model",
     { got: getOrMake("mic-model-select").value });
-  assert(!getOrMake("household-mic-banner").classList.contains("hidden"),
+  assert(!getOrMake("household-mic-banner").hidden,
     "prefill shows the remembered-mic banner");
   assert(getOrMake("household-mic-banner-text").textContent.indexOf(
     "miniDSP UMIK-2") !== -1,
@@ -2624,7 +2646,7 @@ function seedHouseholdMicData(overrides) {
   assert(getOrMake("mic-model-select").value === "dayton_imm6",
     "a detected different mic overrides the stale household prefill",
     { got: getOrMake("mic-model-select").value });
-  assert(getOrMake("household-mic-banner").classList.contains("hidden"),
+  assert(getOrMake("household-mic-banner").hidden,
     "the stale 'remembered' banner is retired once the model switches");
   assert(getOrMake("calibration-status").className.indexOf("bad") !== -1 &&
       getOrMake("calibration-status").textContent.indexOf(
@@ -2643,7 +2665,7 @@ function seedHouseholdMicData(overrides) {
   maybeInferCalibrationModel("UMIK-2 (2752:002b)");
   assert(getOrMake("mic-model-select").value === "minidsp_umik2",
     "a matching device label leaves the prefilled model untouched");
-  assert(!getOrMake("household-mic-banner").classList.contains("hidden"),
+  assert(!getOrMake("household-mic-banner").hidden,
     "the remembered-mic banner survives a matching device label");
 }
 
@@ -2666,11 +2688,11 @@ function seedHouseholdMicData(overrides) {
   seedMicModelOptions("");
   seedHouseholdMicData();
   applyHouseholdMicPrefill();
-  assert(!getOrMake("household-mic-banner").classList.contains("hidden"),
+  assert(!getOrMake("household-mic-banner").hidden,
     "sanity: banner starts visible");
   getOrMake("mic-serial").value = "810-9999";
   invalidateLoadedCalibration();
-  assert(getOrMake("household-mic-banner").classList.contains("hidden"),
+  assert(getOrMake("household-mic-banner").hidden,
     "editing the serial in place retires the stale banner");
 }
 
@@ -2932,9 +2954,27 @@ await (async () => {
     { got: getOrMake("calibration-status").textContent });
 }
 
+// 44. #browser-audio-report is authored `hidden` in the server markup
+//     (jasper/web/correction_room_flow.py), so a render that only retones the
+//     card leaves the household with an invisible verdict. Both writers must
+//     reveal it.
+{
+  const card = getOrMake("browser-audio-report");
+  for (const render of [
+    () => renderBrowserAudioReport({ level: "fail" }),
+    () => renderBrowserAudioLocal({ channelCount: 1 }, []),
+  ]) {
+    card.hidden = true;
+    render();
+    assert(card.hidden === false,
+      "rendering a browser-audio report reveals the card",
+      { got: card.hidden, html: card.innerHTML.slice(0, 60) });
+  }
+}
+
 resetEnvelopeBookkeeping();
 if (failures) {
   console.error(`\n${failures} correction render test failure(s).`);
   process.exit(1);
 }
-console.log(JSON.stringify({ ok: true, tests: 78 }));
+console.log(JSON.stringify({ ok: true, tests: 79 }));

@@ -693,7 +693,7 @@ def test_the_handoff_page_is_the_one_the_household_actually_opens():
     """
     from jasper.web.nav import entry
 
-    assert cli.CROSSOVER_PAGE_PATH == entry("/sound/speaker/crossover/").path
+    assert entry(cli.CROSSOVER_PAGE_PATH).label == "Active speaker"
 
 
 @pytest.mark.parametrize(

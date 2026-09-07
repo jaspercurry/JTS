@@ -312,8 +312,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function hideEl(el, hidden) {
     if (!el) return;
-    if (hidden) el.hidden = true;
-    else el.hidden = false;
+    el.hidden = !!hidden;
   }
 
   function setRunTransportLocked(locked) {
@@ -787,6 +786,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     }
     var level = problems.length ? 'fail' : (issues.length ? 'warn' : 'ok');
     browserAudioReport.className = 'browser-audio-card ' + level;
+    browserAudioReport.hidden = false;
     browserAudioReport.innerHTML =
       '<strong>Browser audio path: ' +
       (level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
@@ -801,6 +801,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!report) return;
     var level = report.level || (report.failed ? 'fail' : 'warn');
     browserAudioReport.className = 'browser-audio-card ' + level;
+    browserAudioReport.hidden = false;
     browserAudioReport.innerHTML =
       '<strong>Browser audio path: ' +
       escapeText(level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
@@ -1195,7 +1196,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // One reset affordance visible at a time. resetBtn (#reset-correction) is
   // the wizard-flow control renderSections() re-homes into whichever of
   // measurement-review / apply-status / result-proof is the live section;
-  // applyButtonPolicy() owns its own hidden class on top of that. When both
+  // applyButtonPolicy() owns its own hidden flag on top of that. When both
   // agree it is on-screen, the user's attention is already on the wizard
   // section that hosts it, so the persistent status banner defers to it —
   // the banner stays the reset home for every other state (e.g. idle with
@@ -1206,7 +1207,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // Walk the button's own ancestor chain instead.
   function isWizardResetVisible() {
     for (var node = resetBtn; node; node = node.parentNode || null) {
-      if (node.hidden) return false;
+      if (node.nodeType === 1 && node.hidden) return false;
     }
     return true;
   }
@@ -3098,8 +3099,6 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     } else if (state === 'applied' || state === 'verified') {
       resetBtn.hidden = false;
     }
-    // resetBtn's own hidden class just settled — re-derive whether the
-    // banner's reset control should defer to it (see syncCurrentCorrectionReset).
     syncCurrentCorrectionReset();
   }
 
