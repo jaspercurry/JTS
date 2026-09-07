@@ -177,12 +177,14 @@ Copy is design. The rules most often broken:
 
 ## 12. Visual-craft review lenses
 
-[`.claude/commands/adversarial-review.md`](../.claude/commands/adversarial-review.md)
-owns *when* these apply — it names the paths in its JTS checklist, so the
-trigger has one home and cannot drift from this list. This section owns *what*
-to look at. Same one gate, same severity ladder — **Blocker / Should-fix / Nit,
-to a 0/0 bar**; there is no second review command. Look at the whole rendered
-screen before reading a line of CSS. Then:
+These lenses apply wherever `/code-review` looks at a page diff — every
+management page, as each page is touched (§1), with the owner triaging
+findings rather than a zero-findings bar. This section owns *what* to look
+at. [`.claude/commands/adversarial-review.md`](../.claude/commands/adversarial-review.md)
+names no pages: it is scoped to AGENTS.md's non-negotiable tier (hearing
+clamps, hardware caps, secrets, deploy) and carries no visual-craft
+checklist, so it never gates these lenses. Look at the whole rendered screen
+before reading a line of CSS. Then:
 
 1. **Hierarchy** — squint. If three things compete, nothing is primary.
 2. **Type** — every size on §3's ladder; hierarchy from case/weight/colour.
