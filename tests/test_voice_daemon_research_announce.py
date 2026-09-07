@@ -446,7 +446,7 @@ def test_record_research_delivery_clears_stale_pending_job():
     def _record(user_text, assistant_text, **_kwargs):
         recorded.append((user_text, assistant_text))
 
-    wl._record_conversation_turn = _record
+    wl._conversation_capture.record = _record
 
     wl.record_research_delivery(job, job.result, "yes")
 

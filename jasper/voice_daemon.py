@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import socket
@@ -59,14 +58,7 @@ from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
-from .conversation_history import (
-    ConversationSettings,
-    ConversationStore,
-    ConversationTurn,
-    make_turn_id,
-    prune_for_settings,
-    read_settings as read_conversation_settings,
-)
+from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
 from .timers import Timer, announcement_text
 from .research import DONE, FAILED, RESEARCH_EMPTY_RESULT_TEXT, ResearchJob, ResearchScheduler
@@ -75,6 +67,7 @@ from .usage import (
     UsageStore,
 )
 from .voice.session import LiveConnection, LiveTurn
+from .voice.conversation_capture import ConversationCapture
 from .voice.earcons import (
     _generate_listening_chirp,
     _generate_mute_click,
@@ -928,11 +921,9 @@ class WakeLoop:
         self._content_activity = content_activity
         self._usage_store = usage_store
         self._spend_cap = spend_cap
-        self._conversation_store = conversation_store
-        self._conversation_store_path = (
-            conversation_store.db_path if conversation_store is not None else None
+        self._conversation_capture = ConversationCapture(
+            store=conversation_store, voice_provider=cfg.voice_provider,
         )
-        self._conversation_turn_seq = 0
         self._research_scheduler: ResearchScheduler | None = None
         self._research_provider_id: str | None = None
         self._research_model: str | None = None
@@ -1189,7 +1180,14 @@ class WakeLoop:
 
     @classmethod
     def for_tests(
-        cls, *, legs=_UNSET, manual_mics=None, tts=None, vad=_UNSET, **overrides,
+        cls,
+        *,
+        legs=_UNSET,
+        manual_mics=None,
+        tts=None,
+        vad=_UNSET,
+        conversation_store: ConversationStore | None = None,
+        **overrides,
     ):
         """Build a fully-shaped WakeLoop without opening hardware.
 
@@ -1199,13 +1197,14 @@ class WakeLoop:
 
         ``**overrides`` are applied by ``setattr`` AFTER construction, so
         they cannot reach a decision ``__init__`` makes from its
-        arguments. ``legs``, ``manual_mics``, ``tts`` and ``vad`` are
-        constructor-time knobs, so a test can build the shape a
-        push-to-talk-only speaker actually has — no wake legs plus a
-        manual mic source — and exercise the real derivation rather than a
-        value poked in afterwards. Pass ``legs=[]`` to mean "none";
-        omitting it keeps the default primary leg. Pass ``vad=None`` to
-        let ``__init__`` make its own VAD decision.
+        arguments. ``legs``, ``manual_mics``, ``tts``, ``vad`` and
+        ``conversation_store`` are constructor-time knobs, so a test can
+        build the shape a push-to-talk-only speaker actually has — no
+        wake legs plus a manual mic source — and exercise the real
+        derivation rather than a value poked in afterwards. Pass
+        ``legs=[]`` to mean "none"; omitting it keeps the default primary
+        leg. Pass ``vad=None`` to let ``__init__`` make its own VAD
+        decision.
         """
 
         class _TestMic:
@@ -1361,16 +1360,12 @@ class WakeLoop:
             ] if legs is _UNSET else legs,
             manual_mics=manual_mics,
             vad=_TestVad() if vad is _UNSET else vad,
+            conversation_store=conversation_store,
             initial_mic_muted=False,
             barge_in_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
         )
         for key, value in overrides.items():
             setattr(self, key if key.startswith("_") else f"_{key}", value)
-        if "conversation_store" in overrides or "_conversation_store" in overrides:
-            store = self._conversation_store
-            self._conversation_store_path = (
-                store.db_path if store is not None else None
-            )
         return self
 
     def _create_fire_and_forget_task(
@@ -1859,10 +1854,12 @@ class WakeLoop:
             and self._research_window_job.id == job.id
         ):
             self._research_window_decided = True
-        self._record_conversation_turn(
+        self._conversation_capture.record(
             job.query,
             assistant_text,
             data_json={"kind": "research", "job_id": job.id},
+            session_id=self._session_id,
+            mic_muted=self._mic_muted,
         )
         self._clear_pending_research(job.id)
 
@@ -1897,107 +1894,8 @@ class WakeLoop:
         if read:
             self.record_research_delivery(job, job.result, "yes")
 
-    def _conversation_store_for_settings(
-        self,
-        settings: ConversationSettings,
-    ) -> ConversationStore | None:
-        if not settings.capture_enabled:
-            return None
-        store = self._conversation_store
-        if (
-            store is not None
-            and self._conversation_store_path == settings.db_path
-            and store.available
-        ):
-            return store
-        if store is not None:
-            store.close()
-            self._conversation_store = None
-            self._conversation_store_path = None
-        store = ConversationStore(settings.db_path)
-        self._conversation_store = store
-        self._conversation_store_path = settings.db_path
-        return store if store.available else None
-
     def close_conversation_store(self) -> None:
-        store = self._conversation_store
-        self._conversation_store = None
-        self._conversation_store_path = None
-        if store is None:
-            return
-        store.close()
-
-    def _record_conversation_turn(
-        self,
-        user_text: str | None,
-        assistant_text: str | None,
-        *,
-        data_json: dict | None = None,
-        provider: str | None = None,
-    ) -> None:
-        """Persist one conversation-history row.
-
-        The single write path for ordinary wake turns and feature-fed
-        entries such as research delivery. Fail-soft by design: capture
-        must never block turn teardown or a proactive announcement.
-        """
-        if self._mic_muted:
-            return
-        if user_text is None and assistant_text is None and data_json is None:
-            return
-        try:
-            settings = read_conversation_settings()
-        except (OSError, TypeError, ValueError) as e:
-            logger.warning(
-                "conversation capture: settings unavailable (%s: %s)",
-                type(e).__name__,
-                e,
-            )
-            return
-        if not settings.capture_enabled:
-            return
-        store = self._conversation_store_for_settings(settings)
-        if store is None:
-            logger.debug("conversation capture: skipped (store unavailable)")
-            return
-        data_text: str | None = None
-        if isinstance(data_json, dict):
-            try:
-                data_text = json.dumps(data_json, separators=(",", ":"))
-            except (TypeError, ValueError) as e:
-                logger.warning(
-                    "conversation capture: data_json encode failed (%s: %s)",
-                    type(e).__name__,
-                    e,
-                )
-                data_text = None
-        if user_text is None and assistant_text is None and data_text is None:
-            return
-
-        ts_utc = _conversation_ts_utc()
-        self._conversation_turn_seq = (
-            (self._conversation_turn_seq % 999) + 1
-        )
-        session_id = self._session_id
-        turn = ConversationTurn(
-            id=make_turn_id(ts_utc, self._conversation_turn_seq),
-            ts_utc=ts_utc,
-            provider=provider or self._cfg.voice_provider,
-            user_text=user_text,
-            assistant_text=assistant_text,
-            tool_calls_json=None,
-            data_json=data_text,
-            session_id=session_id,
-        )
-        if store.add(turn):
-            try:
-                prune_for_settings(store, settings, anchor_ts_utc=ts_utc)
-            except (OSError, RuntimeError, ValueError) as e:
-                logger.warning(
-                    "conversation capture: retention prune failed (%s: %s)",
-                    type(e).__name__,
-                    e,
-                )
+        self._conversation_capture.close()
 
     async def _play_dynamic_text(self, text: str) -> bool:
         """Speak arbitrary `text` through the cue manager, with
@@ -4761,10 +4659,12 @@ class WakeLoop:
                     )
                     capture = None
                 if capture is not None:
-                    self._record_conversation_turn(
+                    self._conversation_capture.record(
                         capture.user_text,
                         capture.assistant_text,
                         data_json=capture.data,
+                        session_id=self._session_id,
+                        mic_muted=self._mic_muted,
                     )
             # Per-turn no-answer detection, gated on whether the wake loop
             # explicitly ended input (silence detector, hard cap, or manual
@@ -4992,15 +4892,6 @@ class WakeLoop:
 def _active_model(*args, **kwargs):
     from .voice.daemon_main import _active_model as impl
     return impl(*args, **kwargs)
-
-
-def _conversation_ts_utc() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
 
 
 async def run() -> None:
