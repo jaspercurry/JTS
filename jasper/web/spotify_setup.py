@@ -1310,11 +1310,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
     # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) because Handler is defined here
-    # and every route body closes over `cfg`. Each entry is either the
-    # existing route-body method itself (called with the handler as its
-    # explicit `self`) or a thin adapter for the one method whose
-    # signature doesn't already match.
+    # closure (rather than module-level) because the entries reference
+    # `Handler`, which is defined here.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)

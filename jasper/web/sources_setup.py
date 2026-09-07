@@ -697,23 +697,23 @@ def _get_index(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
-def _get_state(handler: Any) -> None:
+def _get_state(handler: BaseHTTPRequestHandler) -> None:
     try:
-        handler._send_json(_gather_state())
+        send_json_response(handler, _gather_state())
     except Exception as e:  # noqa: BLE001
         logger.exception("/state failed")
-        handler._send_json({"error": str(e)}, status=502)
+        send_json_response(handler, {"error": str(e)}, status=502)
 
 
-def _post_set(handler: Any, body: dict[str, Any]) -> None:
+def _post_set(handler: BaseHTTPRequestHandler, body: dict[str, Any]) -> None:
     source = str(body.get("source") or "")
     if source not in VALID_SOURCES:
-        handler._send_json({"error": f"unknown source {source!r}"}, status=400)
+        send_json_response(handler, {"error": f"unknown source {source!r}"}, status=400)
         return
     enabled_value = body.get("enabled")
     if not isinstance(enabled_value, bool):
-        handler._send_json(
-            {"error": "enabled must be true or false"}, status=400,
+        send_json_response(
+            handler, {"error": "enabled must be true or false"}, status=400,
         )
         return
     enabled = enabled_value
@@ -721,7 +721,8 @@ def _post_set(handler: Any, body: dict[str, Any]) -> None:
         # The pair owns its input surface while bonded. Keep a follower
         # from accumulating hidden member-local desired changes that
         # would surprise the household on unpair.
-        handler._send_json(
+        send_json_response(
+            handler,
             {"error": "sources are managed by the stereo "
                       "pair while this speaker is a "
                       "follower — unpair on /sound/pair/ to "
@@ -751,9 +752,9 @@ def _post_set(handler: Any, body: dict[str, Any]) -> None:
             else:
                 payload["desired"] = durable_desired
                 payload["intentRecorded"] = durable_desired is enabled
-            handler._send_json(payload, status=502)
+            send_json_response(handler, payload, status=502)
         else:
-            handler._send_json({"error": str(e), "state": state}, status=502)
+            send_json_response(handler, {"error": str(e), "state": state}, status=502)
         return
     log_event(
         logger,
@@ -769,12 +770,13 @@ def _post_set(handler: Any, body: dict[str, Any]) -> None:
         state = _gather_state()
     except Exception as e:  # noqa: BLE001
         logger.exception("/set readback failed")
-        handler._send_json(
+        send_json_response(
+            handler,
             {"error": str(e), "desired": enabled, "intentRecorded": True},
             status=502,
         )
         return
-    handler._send_json(state)
+    send_json_response(handler, state)
 
 
 # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
@@ -790,9 +792,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
-            send_json_response(self, payload, status=status)
 
         def _read_json(self) -> dict[str, Any]:
             try:

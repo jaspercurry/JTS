@@ -675,10 +675,8 @@ def _make_handler(*, idle_hold=_systemd.no_hold) -> type[BaseHTTPRequestHandler]
     }
 
     def _post_action(handler: BaseHTTPRequestHandler) -> None:
-        # All seven mutating paths share this one body — same shape as
-        # the old branch it replaces (a single if/elif chain gated by
-        # shared validation), just re-deriving `path` since it is no
-        # longer a local already in scope.
+        # All seven mutating paths share this one body; `path` is
+        # re-derived since it is no longer a local already in scope.
         path = handler.path.split("?", 1)[0].rstrip("/") or "/"
         body = handler._read_json()
         if path in {"/power", "/discoverable"} and not isinstance(

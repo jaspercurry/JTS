@@ -189,7 +189,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
     # (exact path -> handler callable). The tables stay local to this
     # closure (rather than module-level) so the handlers can close over
-    # `cfg`, same as this function has always done.
+    # `cfg`.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         send_html_response(handler, _index_html(
