@@ -649,10 +649,10 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
 
     None means no authority answered: the grouping file exists but cannot be
     read, or systemctl was unreadable AND the file carried nothing. The
-    fail-soft readers (``parse_env_file``, ``resolved_tts_routing_env``) are
-    deliberately not used here — they collapse an unreadable file into ``{}``,
-    which is the same false green as #2387 wearing a different hat, and a
-    doctor that cannot read its authority must say so.
+    fail-soft reader ``parse_env_file`` is deliberately not used here — it
+    collapses an unreadable file into ``{}``, which is the same false green
+    as #2387 wearing a different hat, and a doctor that cannot read its
+    authority must say so.
     """
     from ...env_load import read_env_file_state
     from ...multiroom.reconcile import VOICE_GROUPING_ENV_FILE

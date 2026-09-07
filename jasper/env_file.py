@@ -27,10 +27,6 @@ restart/rollback; this module only owns the text transform.
 
 from __future__ import annotations
 
-# A parsed line is either a real assignment ``(key, value)`` or a line we
-# preserve verbatim — comment / blank / malformed — carried as ``(raw, None)``.
-ParsedLine = "tuple[str, str | None]"
-
 
 def parse_env_lines(text: str) -> "list[tuple[str, str | None]]":
     """Parse env-file text into ordered ``(key, value)`` / ``(raw_line, None)``.
