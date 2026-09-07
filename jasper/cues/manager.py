@@ -273,7 +273,7 @@ class AudioCueManager:
         # it on the next restart.
         path = self.expected_path(cue)
         if not os.path.isfile(path):
-            stale = self._find_any_cached(cue)
+            stale = self.find_any_cached(cue)
             if stale is None and cue.fallback is not None:
                 log_event(
                     logger, "cue.play_fallback", slug=slug, fallback=cue.fallback,
@@ -450,9 +450,10 @@ class AudioCueManager:
         logger.debug("cue speak_text full text: %r", text)
         return True
 
-    # --- internals ---
-
-    def _find_any_cached(self, cue: CueDef) -> str | None:
+    def find_any_cached(self, cue: CueDef) -> str | None:
+        """A cached WAV for `cue`'s slug at any hash, if one exists — the
+        same stale-cache lookup `play()` performs when the current-hash
+        file is missing."""
         if not os.path.isdir(self._sounds_dir):
             return None
         prefix = f"{cue.slug}-"
@@ -460,6 +461,8 @@ class AudioCueManager:
             if entry.startswith(prefix) and entry.endswith(".wav"):
                 return os.path.join(self._sounds_dir, entry)
         return None
+
+    # --- internals ---
 
     def _read_wav_pcm(self, path: str) -> "tuple[bytes, float]":
         """Strip the WAV header, return (raw PCM bytes, duration in

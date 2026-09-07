@@ -2153,25 +2153,37 @@ class WakeLoop:
         if deferred_cancel:
             raise asyncio.CancelledError
 
+    def _leg_task_dead(self, task: "asyncio.Task[None]") -> bool:
+        """A leg or manual-mic consumer task that exited on its own — not
+        via cancellation, and not by returning cleanly because
+        `_stop_event` was set (the leg loop's normal shutdown path, not a
+        death). Shared by `_on_leg_task_done`'s wake.leg_died log, which
+        fires for legs and manual mics alike, and `session_status`'s
+        `wake_legs_dead`, which only iterates `_leg_tasks` — manual-mic
+        tasks never appear there.
+        """
+        if not task.done() or task.cancelled():
+            return False
+        return not (task.exception() is None and self._stop_event.is_set())
+
     def _on_leg_task_done(
         self, name: str, task: "asyncio.Task[None]",
     ) -> None:
         """Log a leg/manual-mic consumer loop dying unexpectedly.
 
-        Cancellation (shutdown) is not a death. No restart, no cue — just
-        the event, so a leg going deaf is visible in the journal instead
-        of surfacing only as asyncio's silent "exception never retrieved"
-        warning at task GC. An `asyncio.TaskGroup` would cancel every
-        sibling leg the instant one fails; a dead leg must not take the
-        others down, so each task is tracked and reaped independently
-        instead.
+        Cancellation (shutdown) is not a death, and neither is returning
+        cleanly once `_stop_event` is set — `_leg_task_dead` is the one
+        place that rule lives. No restart, no cue — just the event, so a
+        leg going deaf is visible in the journal instead of surfacing only
+        as asyncio's silent "exception never retrieved" warning at task
+        GC. An `asyncio.TaskGroup` would cancel every sibling leg the
+        instant one fails; a dead leg must not take the others down, so
+        each task is tracked and reaped independently instead.
         """
-        if task.cancelled():
+        if not self._leg_task_dead(task):
             return
         exc = task.exception()
         if exc is None:
-            if self._stop_event.is_set():
-                return
             log_event(
                 logger, "wake.leg_died", leg=name, exc_type="none",
                 level=logging.WARNING,
@@ -3917,6 +3929,10 @@ class WakeLoop:
             or leg not in self._leg_tasks
             or not self._leg_tasks[leg].done()
         ]
+        _wake_legs_dead = [
+            leg for leg, task in self._leg_tasks.items()
+            if self._leg_task_dead(task)
+        ]
         # Neither gate feeds _maybe_refresh_condition (see the dispatch
         # sites in run() / _manual_mic_loop / _wake_leg_loop), so the level
         # fields below go stale, not just missing, while either is set.
@@ -3984,6 +4000,7 @@ class WakeLoop:
                 self._input_last_above_floor_at if mic_feeding else None
             ),
             "wake_legs": _wake_legs,
+            "wake_legs_dead": _wake_legs_dead,
             # Per-pack tool-registration outcomes (registered / skipped /
             # failed), same motivation as wake_legs: a tool family that
             # silently failed to build (event=tool_pack.build_failed) is
