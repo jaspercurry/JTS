@@ -56,6 +56,16 @@ mypy_bin="$(resolve_lane_tool test-merge mypy MYPY)" || exit 1
 echo "==> mypy (lenient baseline; config from pyproject.toml)"
 "${mypy_bin}"
 
+lint_imports_bin="$(resolve_lane_tool test-merge lint-imports LINT_IMPORTS)" || exit 1
+
+# Resolved here rather than beside pytest/mypy above so a mypy failure still
+# ends the lane at mypy. Bare invocation like mypy: the layers and their
+# members come from pyproject.toml's [tool.importlinter]. grimp counts
+# function-local imports, so a deferred import cannot evade the contract --
+# which is why no source-scanning pytest is added alongside it.
+echo "==> lint-imports (layers contract from pyproject.toml)"
+"${lint_imports_bin}"
+
 export JASPER_VOICE_PROVIDER="${JASPER_VOICE_PROVIDER:-gemini}"
 
 _lane_output_tmp="$(mktemp "${TMPDIR:-/tmp}/jts-test-merge-output.XXXXXX")"

@@ -132,6 +132,9 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.8",
     "ruff>=0.16.1",
+    # A grimp bump can change which chains the layer contract reports, which
+    # moves its baseline of conformant members. Pin to a minor.
+    "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
     "mypy>=2.3.0,<2.4",
@@ -147,6 +150,9 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.8",
     "ruff>=0.16.1",
+    # A grimp bump can change which chains the layer contract reports, which
+    # moves its baseline of conformant members. Pin to a minor.
+    "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
     "mypy>=2.3.0,<2.4",
@@ -426,3 +432,23 @@ module = [
     "jasper.xvf.xvf_host",
 ]
 ignore_errors = true
+
+# A layer line lists only modules whose whole subtree reaches no higher layer;
+# grimp counts function-local imports, so a deferred import cannot evade this.
+# Ratchet: add a name to its layer line once it conforms. Never ignore_imports.
+[tool.importlinter]
+root_packages = ["jasper"]
+
+[[tool.importlinter.contracts]]
+name = "JTS layers"
+type = "layers"
+containers = ["jasper"]
+broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
+layers = [
+  "cli : web",
+  "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_fusion : wake_models : weather",
+  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : enhanced_aec : route_latency : volume_diagnostics",
+  "aec_engines : avahi_service : bluealsa_probe : mdns : mics : speaker_name : speaker_name_discovery : usb_network : usbgadget : wifi_guardian_persistence : wifi_scan_repair : xvf",
+  "airplay_mode : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
+  "_oom_adj : atomic_io : backoff : busctl : doctor_contract : env_file : json_fields : log_event : memory_policy : os_fault : percentiles : secret_redaction : service_units : transition_log : watchdog",
+]
