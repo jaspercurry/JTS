@@ -22,7 +22,7 @@ from jasper.aec_sweep import (
     NS_ENABLED_ENV,
     NS_LEVEL_ENV,
 )
-from jasper.cli.aec_bridge_telemetry import logger
+from jasper.aec.bridge_telemetry import logger
 
 # 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
 # requirement (160 samples); the binding splits 320 → 2×160 internally per

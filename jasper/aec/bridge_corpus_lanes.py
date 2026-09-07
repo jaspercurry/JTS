@@ -40,13 +40,13 @@ from jasper.cli.aec_bridge import (
     env_bool,
     logger,
 )
-from jasper.cli.aec_bridge_engines import (
+from jasper.aec.bridge_engines import (
     Aec3Engine,
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
     EngineSelector,
 )
-from jasper.cli.aec_bridge_telemetry import LegEmitter
+from jasper.aec.bridge_telemetry import LegEmitter
 
 
 @dataclass(frozen=True, eq=False)

@@ -5,8 +5,8 @@
 """The stats identity every AEC-bridge suite stamps its `_BridgeStats` with."""
 from __future__ import annotations
 
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_telemetry import StatsIdentity
+from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.aec.bridge_telemetry import StatsIdentity
 
 IDENTITY = StatsIdentity(
     sample_rate_hz=SAMPLE_RATE,

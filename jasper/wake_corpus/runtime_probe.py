@@ -39,17 +39,17 @@ from jasper.audio_profile_state import (
     parse_env_bool,
 )
 from jasper.chip_aec.policy import effective_chip_aec_dac_gate
-from jasper.cli.aec_bridge_config import (
+from jasper.aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     PLAN_ENV_VARS,
     REF_SOURCE_ENV,
 )
-from jasper.cli.aec_bridge_engines import (
+from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )
-from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.mics.xvf3800 import (

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `jasper.cli.aec_bridge_config`.
+"""Unit tests for `jasper.aec.bridge_config`.
 
 `BridgeConfig.from_env` is the bridge's only env-reading surface, and the
 two device-presence validators and the ref_source/usb_mic_source resolvers
@@ -15,8 +15,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jasper.cli import aec_bridge, aec_bridge_config
-from jasper.cli.aec_bridge_config import (
+from jasper.cli import aec_bridge
+from jasper.aec import bridge_config
+from jasper.aec.bridge_config import (
     BridgeConfig,
     MicDeviceUnavailable,
     resolve_usb_mic_source,
@@ -140,7 +141,7 @@ def test_capture_latency_parses_from_env(monkeypatch, configured, expected):
 def test_capture_latency_invalid_values_fall_back_to_default(monkeypatch, configured):
     monkeypatch.setenv("JASPER_AEC_CAPTURE_LATENCY", configured)
     event = MagicMock()
-    monkeypatch.setattr(aec_bridge_config, "log_event", event)
+    monkeypatch.setattr(bridge_config, "log_event", event)
     test_logger = MagicMock()
 
     config = BridgeConfig.from_env(logger_=test_logger)
@@ -151,5 +152,5 @@ def test_capture_latency_invalid_values_fall_back_to_default(monkeypatch, config
         "aec.capture_latency_invalid",
         value=configured,
         fallback="default",
-        level=aec_bridge_config.logging.WARNING,
+        level=bridge_config.logging.WARNING,
     )

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pins for `jasper.cli.aec_bridge_reference`.
+"""Pins for `jasper.aec.bridge_reference`.
 
 The far-end reference is what AEC3 subtracts from the mic. These pin the
 transport around the conversion — the queue publish that must drop rather
@@ -18,13 +18,13 @@ from queue import Full, Queue
 import numpy as np
 import pytest
 
-from jasper.cli import aec_bridge_reference
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
-from jasper.cli.aec_bridge_reference import (
+from jasper.aec import bridge_reference
+from jasper.aec.bridge_engines import FRAME_SAMPLES
+from jasper.aec.bridge_reference import (
     ReferenceFrameBatch,
     enqueue_reference_frames,
 )
-from jasper.cli.aec_bridge_telemetry import DropLogDebouncer, _BridgeStats
+from jasper.aec.bridge_telemetry import DropLogDebouncer, _BridgeStats
 from tests._aec_bridge_helpers import IDENTITY
 
 
@@ -35,16 +35,16 @@ class _AlwaysFullQ:
 
 @pytest.fixture(autouse=True)
 def _reset_ref_clip_counters():
-    aec_bridge_reference.reset_ref_clip_counters()
+    bridge_reference.reset_ref_clip_counters()
     yield
-    aec_bridge_reference.reset_ref_clip_counters()
+    bridge_reference.reset_ref_clip_counters()
 
 
 def test_reference_enqueue_counts_and_debounces_full_queue(
     monkeypatch,
     caplog,
 ):
-    monkeypatch.setattr(aec_bridge_reference.time, "monotonic", lambda: 10.0)
+    monkeypatch.setattr(bridge_reference.time, "monotonic", lambda: 10.0)
     caplog.set_level(logging.WARNING, logger="jasper.aec_bridge")
     stats = _BridgeStats(IDENTITY)
     frame = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
@@ -66,7 +66,7 @@ def test_reference_enqueue_counts_and_debounces_full_queue(
     assert snapshot["counters"]["queue_drops"]["ref"] == 3
     assert snapshot["reference_input"]["frames_enqueued"] == 0
     assert snapshot["reference_input"]["last_frame_age_ms"] is None
-    assert aec_bridge_reference.ref_clip_percent() == pytest.approx(
+    assert bridge_reference.ref_clip_percent() == pytest.approx(
         100.0 * 4 / (3 * FRAME_SAMPLES)
     )
     assert "ref queue full, dropped 3 frames in last 1.0s" in caplog.text
@@ -75,7 +75,7 @@ def test_reference_enqueue_counts_and_debounces_full_queue(
 def test_reference_input_age_advances_and_new_input_resets(monkeypatch):
     clock = 100.0
     monkeypatch.setattr(
-        aec_bridge_reference.time, "monotonic", lambda: clock,
+        bridge_reference.time, "monotonic", lambda: clock,
     )
     stats = _BridgeStats(IDENTITY)
     stats.reset(

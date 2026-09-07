@@ -15,8 +15,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jasper.cli.aec_bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
-from jasper.cli.aec_bridge_reference import (
+from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
+from jasper.aec.bridge_reference import (
     REF_CHANNELS,
     REF_RATE,
     ReferenceFrameConverter,

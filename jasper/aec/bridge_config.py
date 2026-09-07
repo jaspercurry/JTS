@@ -31,7 +31,7 @@ from jasper.aec_sweep import (
 )
 from jasper import wake_legs
 from jasper.log_event import log_event
-from jasper.cli.aec_bridge_telemetry import (
+from jasper.aec.bridge_telemetry import (
     BRIDGE_STATS_PATH,
     BRIDGE_STATS_PATH_ENV,
     logger,

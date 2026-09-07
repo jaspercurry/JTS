@@ -27,7 +27,7 @@ from .chip_aec.health import (
 from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
-from .cli.aec_bridge_engines import DTLN_ENABLED_ENV
+from .aec.bridge_engines import DTLN_ENABLED_ENV
 from .mics import xvf3800
 from .mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,

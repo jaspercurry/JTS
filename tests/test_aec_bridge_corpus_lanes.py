@@ -6,7 +6,7 @@
 
 `PINNED_LANES` was captured from the four `_build_*_paths` helpers as they
 stood in `jasper.cli.aec_bridge` before they moved into
-`jasper.cli.aec_bridge_corpus_lanes`, driven in that module's original
+`jasper.aec.bridge_corpus_lanes`, driven in that module's original
 `_aec_loop` order. Every leg, UDP port, frame size, engine label and
 registration position must survive the move unchanged.
 """
@@ -18,7 +18,8 @@ from queue import Queue
 
 import pytest
 
-from jasper.cli import aec_bridge, aec_bridge_corpus_lanes
+from jasper.cli import aec_bridge
+from jasper.aec import bridge_corpus_lanes
 
 # name -> (env overlay, build flags)
 SCENARIOS: dict[str, tuple[dict[str, str], dict[str, bool]]] = {
@@ -260,7 +261,7 @@ def test_corpus_lane_set_matches_pin(scenario, monkeypatch, tmp_path):
 
     emitters: dict[str, aec_bridge.LegEmitter] = {}
     try:
-        lanes = aec_bridge_corpus_lanes.build_corpus_lanes(
+        lanes = bridge_corpus_lanes.build_corpus_lanes(
             emitters,
             aec_bridge.BridgeConfig.from_env(),
             select_engine=_select_stub,
