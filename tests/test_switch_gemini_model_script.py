@@ -297,15 +297,17 @@ def test_alias_resolves_from_catalog_before_env_mutation(
     result, calls = _run(script_repo, [alias])
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert "checkout-user@checkout.invalid" in calls[0]
     canonical_alias = alias if "." in alias else {"3": "3.1", "2": "2.5"}[alias]
     assert f"/opt/jasper/.venv/bin/python - {canonical_alias}" in calls[0]
-    assert "sudo sh -s --" in calls[1]
+    assert "jasper_env_file_set" in calls[1]
     assert "/var/lib/jasper/voice_provider.env" in calls[1]
     assert "sed -i" not in calls[1]
     assert selected in calls[1]
     assert not_selected not in calls[1]
+    assert "sudo sh -s --" in calls[2]
+    assert selected in calls[2]
 
 
 def test_show_current_preserves_single_read_only_query(
@@ -326,38 +328,32 @@ def test_show_current_preserves_single_read_only_query(
 
 
 @pytest.mark.parametrize(
-    ("runtime_model", "ownership_fails", "filter_fails", "expected_status"),
+    ("runtime_model", "expected_status"),
     (
-        ("catalog-3.1.test", False, False, 0),
-        ("runtime-stale.test", False, False, 1),
-        ("catalog-3.1.test", True, False, 7),
-        ("catalog-3.1.test", False, True, 9),
+        ("catalog-3.1.test", 0),
+        ("runtime-stale.test", 1),
     ),
 )
-def test_remote_switch_overrides_later_file_and_checks_restarted_environment(
+def test_remote_switch_verifies_effective_value_and_restarted_environment(
     tmp_path: Path,
     runtime_model: str,
-    ownership_fails: bool,
-    filter_fails: bool,
     expected_status: int,
 ) -> None:
+    """The heredoc no longer writes provider_env — remote_env_file_set_cmd
+    does, in a preceding ssh call (pinned in test_pi_script_shared_defaults.py
+    and, for the write mechanics themselves, test_env_file_lib.py). This only
+    exercises what remains: the effective-value check plus the restart and
+    live-environment verification."""
     selected = "catalog-3.1.test"
-    tmp_path.chmod(0o770)
     operator_env = tmp_path / "jasper.env"
     provider_env = tmp_path / "voice_provider.env"
-    operator_env.write_text(
-        "JASPER_GEMINI_MODEL=operator-old\n",
-        encoding="utf-8",
-    )
+    operator_env.write_text("JASPER_GEMINI_MODEL=operator-old\n", encoding="utf-8")
     original_provider = (
         "JASPER_VOICE_PROVIDER=gemini\n"
-        "JASPER_GEMINI_MODEL=wizard-old\n"
+        f"JASPER_GEMINI_MODEL={selected}\n"
         "JASPER_GEMINI_VOICE=Aoede\n"
     )
-    provider_env.write_text(
-        original_provider,
-        encoding="utf-8",
-    )
+    provider_env.write_text(original_provider, encoding="utf-8")
 
     fake_bin = tmp_path / "remote-bin"
     fake_bin.mkdir()
@@ -377,10 +373,6 @@ def test_remote_switch_overrides_later_file_and_checks_restarted_environment(
             """
         ),
     )
-    chown_status = 7 if ownership_fails else 0
-    _write_executable(fake_bin / "chown", f"#!/bin/sh\nexit {chown_status}\n")
-    if filter_fails:
-        _write_executable(fake_bin / "awk", "#!/bin/sh\nexit 9\n")
     for command in ("sleep", "journalctl"):
         _write_executable(fake_bin / command, "#!/bin/sh\nexit 0\n")
 
@@ -417,30 +409,8 @@ def test_remote_switch_overrides_later_file_and_checks_restarted_environment(
     )
 
     assert result.returncode == expected_status, result.stdout + result.stderr
-    assert tmp_path.stat().st_mode & 0o777 == 0o770
-    provider_lines = provider_env.read_text(encoding="utf-8").splitlines()
-    if ownership_fails or filter_fails:
-        assert provider_env.read_text(encoding="utf-8") == original_provider
-        assert provider_lines == [
-            "JASPER_VOICE_PROVIDER=gemini",
-            "JASPER_GEMINI_MODEL=wizard-old",
-            "JASPER_GEMINI_VOICE=Aoede",
-        ]
-        assert not systemctl_log.exists()
-        return
-    assert provider_lines == [
-        "JASPER_VOICE_PROVIDER=gemini",
-        "JASPER_GEMINI_VOICE=Aoede",
-        f"JASPER_GEMINI_MODEL={selected}",
-    ]
-    effective_lines = [
-        line
-        for path in (operator_env, provider_env)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.startswith("JASPER_GEMINI_MODEL=")
-    ]
-    assert effective_lines[-1] == f"JASPER_GEMINI_MODEL={selected}"
-    assert provider_env.stat().st_mode & 0o777 == 0o640
+    # Read-only now: the heredoc must not touch provider_env at all.
+    assert provider_env.read_text(encoding="utf-8") == original_provider
     assert systemctl_log.read_text(encoding="utf-8").splitlines() == [
         "restart jasper-voice",
         "is-active jasper-voice",
