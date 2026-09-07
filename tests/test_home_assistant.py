@@ -8,15 +8,15 @@ Uses httpx.MockTransport (the same pattern as tests/test_bus.py) so the
 test suite is fully hermetic and matches the repo convention.
 
 Coverage:
-  - the six outcome buckets (ok / network / timeout / auth /
-    agent_error / intent_miss / parse_error)
+  - the outcome buckets (ok / network / timeout / auth / agent_error /
+    intent_miss / parse_error / not_ha)
   - response shape parsing (action_done, query_answer, error, ssml)
   - conversation_id lifecycle: reuse within TTL, drop on
     continue_conversation=False, drop on TTL expiry, accept HA's
     rotation
   - agent_id / language pass-through in the request body
   - URL normalization (trailing slash, /api suffix)
-  - healthcheck (GET /api/), config (GET /api/config), list_agents
+  - probe_health (GET /api/), config (GET /api/config), list_agents
     (GET /api/states with conversation.* filter)
   - the no_valid_targets-with-speech case (success=True because the
     text is non-empty, per the multi-speaker-benign convention)
@@ -671,7 +671,7 @@ async def test_language_pass_through():
     assert captured[0]["language"] == "es"
 
 
-# ---- healthcheck / config / list_agents ------------------------------------
+# ---- probe_health / config / list_agents -----------------------------------
 
 @pytest.mark.parametrize(
     "responder, expected_outcome, expected_status",
@@ -680,10 +680,16 @@ async def test_language_pass_through():
          OUTCOME_OK, 200),
         (lambda r: httpx.Response(401, text="Unauthorized"),
          OUTCOME_AUTH, 401),
+        (lambda r: httpx.Response(403, text="Forbidden"),
+         OUTCOME_AUTH, 403),
         (lambda r: httpx.Response(503, text="unavailable"),
-         OUTCOME_PARSE_ERROR, 503),
+         OUTCOME_AGENT_ERROR, 503),
+        (lambda r: httpx.Response(404, text="not found"),
+         OUTCOME_NOT_HA, 404),
         (lambda r: httpx.Response(200, json={"message": "Something else"}),
          OUTCOME_NOT_HA, 200),
+        (lambda r: httpx.Response(200, json=["not", "a", "dict"]),
+         OUTCOME_PARSE_ERROR, 200),
         (lambda r: httpx.Response(200, text="<html>not json</html>"),
          OUTCOME_PARSE_ERROR, 200),
         (_raise(httpx.ConnectError("Connection refused")),
@@ -707,19 +713,6 @@ async def test_probe_health_names_the_failure_mode(
 
     assert probe.outcome == expected_outcome
     assert probe.status == expected_status
-    assert probe.ok is (expected_outcome == OUTCOME_OK)
-
-
-@pytest.mark.parametrize("status, expected", [(200, True), (401, False)])
-async def test_healthcheck_is_the_boolean_form_of_probe_health(status, expected):
-    def handler(request):
-        return httpx.Response(status, json={"message": "API running."})
-
-    client = _client_with(handler)
-    try:
-        assert await client.healthcheck() is expected
-    finally:
-        await client.aclose()
 
 
 async def test_config_returns_dict_on_success():

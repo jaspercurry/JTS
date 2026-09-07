@@ -292,15 +292,11 @@ async def _verify_async(
 
     client = _ha_mod.HAClient(url=url, token=token, verify_ssl=verify_ssl)
     try:
-        health = await client.probe_health()
-        if not health.ok:
-            return {"ok": False, "error": _health_error(url, health)}
-        # Best-effort enrichment of the success card; failures are
-        # non-fatal and surface as the defaults below.
-        cfg = await client.config() or {}
-        agents = await client.list_agents()
+        health, cfg, agents = await client.probe(with_agents=True)
     finally:
         await client.aclose()
+    if not health.ok:
+        return {"ok": False, "error": _health_error(url, health.outcome)}
 
     return {
         "ok": True,
@@ -311,31 +307,31 @@ async def _verify_async(
     }
 
 
-def _health_error(url: str, health: _ha_mod.HealthProbe) -> str:
-    """User-facing text for a failed `GET /api/` probe."""
-    if health.outcome == _ha_mod.OUTCOME_TIMEOUT:
+def _health_error(url: str, outcome: str) -> str:
+    """User-facing text for a failed `GET /api/` probe, keyed on the
+    outcome bucket alone — HAClient owns which HTTP answer lands in
+    which bucket."""
+    if outcome == _ha_mod.OUTCOME_TIMEOUT:
         return (
             f"Connection to {url} timed out. "
             "Check the URL and that the speaker can see it on the network."
         )
-    if health.outcome == _ha_mod.OUTCOME_NETWORK:
+    if outcome == _ha_mod.OUTCOME_NETWORK:
         return (
             f"Couldn't reach Home Assistant at {url}. "
             "Check the URL and that the speaker can see it on the network."
         )
-    if health.outcome == _ha_mod.OUTCOME_AUTH:
-        return (
+    return {
+        _ha_mod.OUTCOME_AUTH:
             "Token wasn't accepted. Make sure you copied the whole "
-            "token from Home Assistant — they're around 180 characters long."
-        )
-    if health.outcome == _ha_mod.OUTCOME_NOT_HA:
-        return (
+            "token from Home Assistant — they're around 180 characters long.",
+        _ha_mod.OUTCOME_NOT_HA:
             "URL didn't look like a Home Assistant instance "
-            "(/api/ returned a different response)."
-        )
-    if health.status is not None and health.status != 200:
-        return f"Unexpected response from Home Assistant: HTTP {health.status}."
-    return "Home Assistant returned an unexpected response body."
+            "(/api/ returned a different response).",
+        _ha_mod.OUTCOME_AGENT_ERROR:
+            "Home Assistant answered with a server error. Check its logs, "
+            "then try again.",
+    }.get(outcome, "Home Assistant returned an unexpected response body.")
 
 
 def verify_sync(
@@ -367,7 +363,7 @@ def ready_sync(
     async def _probe() -> bool:
         client = _ha_mod.HAClient(url=url, token=token, verify_ssl=verify_ssl)
         try:
-            return await client.healthcheck()
+            return (await client.probe_health()).ok
         finally:
             await client.aclose()
 

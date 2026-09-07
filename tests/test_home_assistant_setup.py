@@ -609,28 +609,36 @@ def test_verify_endpoint_lists_conversation_agents(wizard_server, monkeypatch):
     MockTransport, so a regression in the entity filter or the
     friendly_name fallback fails here instead of shipping green.
     """
-    def handler(request):
-        if request.url.path == "/api/":
-            return httpx.Response(200, json={"message": "API running."})
-        if request.url.path == "/api/config":
-            return httpx.Response(200, json={
-                "location_name": "Chez Jasper", "version": "2026.5.1",
-            })
-        if request.url.path == "/api/states":
-            return httpx.Response(200, json=[
-                {"entity_id": "conversation.home_assistant",
-                 "attributes": {"friendly_name": "Home Assistant"}},
-                {"entity_id": "conversation.no_name", "attributes": {}},
-                {"entity_id": "light.bedroom",
-                 "attributes": {"friendly_name": "Bedroom"}},
-            ])
-        raise AssertionError(request.url.path)
+    bodies = {
+        "/api/": {"message": "API running."},
+        "/api/config": {"location_name": "Chez Jasper", "version": "2026.5.1"},
+        "/api/states": [
+            {"entity_id": "conversation.home_assistant",
+             "attributes": {"friendly_name": "Home Assistant"}},
+            {"entity_id": "conversation.no_name", "attributes": {}},
+            {"entity_id": "light.bedroom",
+             "attributes": {"friendly_name": "Bedroom"}},
+        ],
+    }
+    unexpected: list[str] = []
 
-    real_async_client = httpx.AsyncClient
+    def handler(request):
+        # An AssertionError here is swallowed by verify_sync's blanket
+        # except, so unexpected paths are collected and asserted below.
+        assert request.url.host == "homeassistant.local"
+        assert request.headers["Authorization"] == "Bearer good-token"
+        if request.url.path not in bodies:
+            unexpected.append(request.url.path)
+            return httpx.Response(404)
+        return httpx.Response(200, json=bodies[request.url.path])
+
+    # Narrow seam: only the HAClient the wizard builds is mocked, not
+    # every httpx.AsyncClient in the process.
+    real_ha_client = ha_setup._ha_mod.HAClient
     monkeypatch.setattr(
-        httpx, "AsyncClient",
-        lambda **kw: real_async_client(
-            **{**kw, "transport": httpx.MockTransport(handler)}
+        ha_setup._ha_mod, "HAClient",
+        lambda **kw: real_ha_client(
+            **kw, http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         ),
     )
     monkeypatch.setattr(ha_setup, "verify_sync", _REAL_VERIFY_SYNC)
@@ -655,12 +663,13 @@ def test_verify_endpoint_lists_conversation_agents(wizard_server, monkeypatch):
         {"entity_id": "conversation.home_assistant", "name": "Home Assistant"},
         {"entity_id": "conversation.no_name", "name": "no_name"},
     ]
+    assert unexpected == []
 
 
 def test_ready_endpoint_returns_yes_when_ha_reachable(wizard_server, monkeypatch):
     """POST /ready is the cheap-poll variant used by the connected-state
     JS during the post-save restart window. One HA call (GET /api/)
-    via HAClient.healthcheck, not three. Returns {ok: bool}."""
+    via HAClient.probe_health, not three. Returns {ok: bool}."""
     # Stub the whole probe — ready_sync's one HA call is HAClient's.
     monkeypatch.setattr(
         ha_setup, "ready_sync",
