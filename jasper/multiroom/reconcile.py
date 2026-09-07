@@ -681,7 +681,7 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
 # ============================================================
 
 
-def _output_topology_state() -> tuple[bool | None, bool]:
+def output_topology_state() -> tuple[bool | None, bool]:
     """Return ACTIVE classification and permission for direct flat output.
 
     ``None`` preserves load/parse uncertainty for hardware-sensitive callers;
@@ -729,9 +729,9 @@ def is_active_speaker_box() -> bool:
     checked here — a box that declares active groups but is not yet commissioned
     still takes the active path, where the follower apply fail-closes rather than
     silently degrading to a full-range dumb follower. Boolean consumers fail-soft
-    unknown to ``False``; the reconciler reads :func:`_output_topology_state`
+    unknown to ``False``; the reconciler reads :func:`output_topology_state`
     directly and blocks graph transitions on unknown."""
-    return _output_topology_state()[0] is True
+    return output_topology_state()[0] is True
 
 
 def box_outputd_period_frames() -> int | None:
@@ -1648,7 +1648,7 @@ def main(argv: list[str] | None = None) -> int:
     # An ACTIVE (multi-driver) follower relocates Layer A onto its own CamillaDSP
     # in the bonded path; a DUMB (single-DAC) follower uses outputd's dac_content
     # ChannelPick. The saved topology decides which path this reconcile takes.
-    active_box_state, flat_output_allowed = _output_topology_state()
+    active_box_state, flat_output_allowed = output_topology_state()
     box_is_active = active_box_state is True
     active_follower = active and cfg.role == "follower" and box_is_active
     # An ACTIVE leader is brains + endpoint: camilla#1 bakes the program domain

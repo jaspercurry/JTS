@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 
 from jasper.fanin_coupling import (
@@ -1221,8 +1222,6 @@ def ring_stall_verdict(
     alarming on it would fire on every unarmed box. The alarm is specifically
     "audio is flowing IN and not OUT".
     """
-    import time
-
     header = read_ring_header(path)
     if not header.valid:
         return RingStallVerdict(present=False, detail="no coherent ring header")
@@ -1398,9 +1397,6 @@ def ring_flow_state(
     this device" into "I am not allowed to look" would let a permission problem
     read as an idle speaker.
     """
-    import os
-    import time
-
     header = read_ring_header(path)
     if not header.valid:
         if not os.path.exists(path):

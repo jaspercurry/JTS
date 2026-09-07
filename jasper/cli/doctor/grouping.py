@@ -119,7 +119,7 @@ def _compute_grouping_runtime(cfg: object) -> dict:
     from ...multiroom.leader_config import active_leader_pipe_path
     from ...multiroom.reconcile import plan
     from ...multiroom.snapcast_rpc import read_stream_clients
-    from ...multiroom.state import _self_client_name, derive_grouping_runtime
+    from ...multiroom.state import derive_grouping_runtime, self_client_name
 
     units = [it.unit for it in plan(cfg).intents]
     states = {u: _unit_active_word(u) for u in units}
@@ -143,7 +143,7 @@ def _compute_grouping_runtime(cfg: object) -> dict:
         cfg, states,
         leader_tap_path=active_leader_pipe_path(),
         stream_clients=stream_clients,
-        self_name=_self_client_name(),
+        self_name=self_client_name(),
         want_stream=SNAP_STREAM_ID,
         local_outputd_status=evidence.outputd_status().payload,
     )
@@ -691,9 +691,9 @@ def check_grouping_channel_pick() -> CheckResult:
         LANE_REFUSED_PERIOD,
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
         OUTPUTD_GROUPING_ENV_FILE,
-        _output_topology_state,
         box_outputd_period_frames,
         member_lane_decision,
+        output_topology_state,
     )
 
     label = "grouping: channel pick"
@@ -706,7 +706,7 @@ def check_grouping_channel_pick() -> CheckResult:
 
     # The reconciler's OWN rule, asked with the reconciler's own inputs, so this
     # check can never expect a lane the writer would not have armed.
-    active_box_state, flat_output_allowed = _output_topology_state()
+    active_box_state, flat_output_allowed = output_topology_state()
     if active_box_state is None:
         # The reconciler took its own `active_speaker_topology_unknown` branch
         # and never asked the lane rule at all, so reporting "the topology does

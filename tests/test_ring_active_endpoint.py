@@ -3013,7 +3013,7 @@ def test_the_first_arm_of_a_box_already_on_the_stereo_ring_clears_the_validator(
     refusal had just killed.
 
     Neither half could move first: the path is DERIVED from the marker
-    (``_outputd_ring_path_for``) and the marker was gated on the path. This
+    (``outputd_ring_path_for``) and the marker was gated on the path. This
     asserts the loop is open — the candidate validates, so the marker lands —
     and then that the very next pass of the path's own writer converges the pair.
     """
@@ -3082,7 +3082,7 @@ def test_a_crossed_ring_pair_over_a_graph_off_the_active_ring_still_fails(
 def test_the_unarmed_ring_path_projection_never_carries_the_active_file_forward():
     """The DISARM direction of the same pair, which used to be sticky.
 
-    ``_outputd_ring_path_for`` is the pair's only derivation, and the biconditional
+    ``outputd_ring_path_for`` is the pair's only derivation, and the biconditional
     it serves runs both ways: the active ring file may be read only by an armed
     endpoint, exactly as an armed endpoint may read only that file. Preserving
     whatever the key held on the unarmed side meant a box whose marker was

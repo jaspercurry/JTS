@@ -630,7 +630,7 @@ def _grouping_ring_signal(flow: RingFlowState) -> dict[str, Any]:
     }
 
 
-def _self_client_name() -> str:
+def self_client_name() -> str:
     """This speaker's snapcast client name (snapclient reports the bare
     hostname). Total: any failure resolves to "" (the own-client check
     is then skipped rather than wrong)."""
@@ -757,7 +757,7 @@ def read_grouping_state(
         snapshot["runtime"] = derive_grouping_runtime(
             cfg, states, leader_tap_path=tap,
             stream_clients=stream_clients,
-            self_name=_self_client_name(),
+            self_name=self_client_name(),
             want_stream=SNAP_STREAM_ID,
             local_outputd_status=local_outputd_status,
         )
