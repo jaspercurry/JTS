@@ -1065,6 +1065,28 @@ def _aec_loop(  # noqa: PLR0915
                     pass
 
 
+def _park(code: int, reason: str, detail: str) -> int:
+    """Log one park event and return the exit code systemd holds the unit on.
+
+    ``os.EX_CONFIG`` (78) and ``os.EX_NOINPUT`` (66) are both listed in
+    jasper-aec-bridge.service's ``SuccessExitStatus`` +
+    ``RestartPreventExitStatus``, so a permanent fault parks the unit instead
+    of spending the StartLimitAction=reboot budget ADR-0146 sized for
+    transients. Same split as jasper-voice.service: 78 is "the configuration
+    asks for something this box cannot do", 66 is "the primary microphone
+    would not open".
+    """
+    log_event(
+        logger,
+        "aec_bridge.park",
+        reason=reason,
+        exit_code=code,
+        detail=detail,
+        level=logging.ERROR,
+    )
+    return code
+
+
 def main() -> int:
     configure_logging(fmt="%(asctime)s aec-bridge %(levelname)s %(message)s")
     # Log flight recorder + runtime debug toggle. See
@@ -1077,8 +1099,7 @@ def main() -> int:
     try:
         config = resolved_reference_source(config)
     except UnsupportedReferenceSource as e:
-        logger.error("%s", e)
-        return 1
+        return _park(os.EX_CONFIG, "unsupported_reference_source", str(e))
     reference_endpoint = (
         f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
     )
@@ -1101,13 +1122,13 @@ def main() -> int:
     chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
     chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
     if chip_aec_enabled and chip_beam_plan is None:
-        logger.error(
+        return _park(
+            os.EX_CONFIG,
+            "no_validated_chip_beam_plan",
             "chip-AEC requested but no validated chip beam plan is active "
-            "(variant=%s geometry=%s)",
-            os.environ.get("JASPER_XVF_VARIANT", "unknown"),
-            os.environ.get("JASPER_XVF_GEOMETRY", "unknown"),
+            f"(variant={os.environ.get('JASPER_XVF_VARIANT', 'unknown')} "
+            f"geometry={os.environ.get('JASPER_XVF_GEOMETRY', 'unknown')})",
         )
-        return 1
     chip_aec_primary_leg = _chip_aec_primary_leg(chip_beam_plan)
     corpus_xvf_raw0_webrtc_enabled = env_bool(
         "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED", "0",
@@ -1147,11 +1168,12 @@ def main() -> int:
     if production_chip_aec_enabled and not os.environ.get(
         "JASPER_OUTPUTD_CHIP_REF_PCM", ""
     ).strip():
-        logger.error(
+        return _park(
+            os.EX_CONFIG,
+            "chip_aec_without_chip_reference",
             "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
             "JASPER_OUTPUTD_CHIP_REF_PCM so outputd feeds XVF USB-IN",
         )
-        return 1
     if corpus_usb_dtln_enabled and not corpus_usb_enabled:
         logger.warning(
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
@@ -1170,14 +1192,23 @@ def main() -> int:
     try:
         validate_mic_device(config)
     except MicDeviceUnavailable as e:
-        logger.error("%s", e)
-        return 1
+        # The only EX_NOINPUT site: the wake mic itself. The same
+        # `SUBSYSTEM=="sound" KERNEL=="controlC*"` add|remove that took the
+        # card away starts jasper-aec-reconcile
+        # (deploy/udev/99-jasper-aec-reconcile.rules), which marks
+        # voice-input-absent and stops jasper-voice, and voice's clean-stop
+        # path plays the no_room_microphone cue (ADR-0239). NN-6 is met by
+        # that hand-off, not by this process.
+        return _park(os.EX_NOINPUT, "mic_device_unavailable", str(e))
     if corpus_usb_enabled:
         try:
             validate_usb_mic_device(config)
         except UsbMicUnavailable as e:
-            logger.error("%s", e)
-            return 1
+            # NOT EX_NOINPUT: this is the opt-in wake-corpus capture leg
+            # (JASPER_AEC_CORPUS_USB_ENABLED, written by
+            # jasper/wake_corpus/capture_plan.py), not the wake mic. The
+            # fault is an env flag naming hardware that is not plugged in.
+            return _park(os.EX_CONFIG, "corpus_usb_mic_unavailable", str(e))
 
     engine = None if production_chip_aec_enabled else _select_engine()
 

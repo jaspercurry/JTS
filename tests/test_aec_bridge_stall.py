@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 import logging
+import os
 from queue import Empty
 import struct
 from types import SimpleNamespace
@@ -52,6 +53,7 @@ from jasper.cli.aec_bridge import (
 from jasper.cli.aec_bridge_config import OUT_HOST
 from jasper.cli.aec_bridge_engines import FRAME_SAMPLES
 from jasper.cli.aec_bridge_telemetry import OUT_FRAME_BYTES, _BridgeStats
+from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
 
 
@@ -219,8 +221,145 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
     engine_cls = MagicMock()
     monkeypatch.setattr(aec_bridge_engines, "Aec3V1Engine", engine_cls)
 
-    assert aec_bridge.main() == 1
+    assert aec_bridge.main() == os.EX_NOINPUT
     engine_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# main()'s exit contract: a permanent fault parks, a transient restarts.
+#
+# jasper-aec-bridge.service carries RestartSec=2 / StartLimitBurst=4 /
+# StartLimitAction=reboot, so a fault systemd counts as a failure reboots the
+# box in ~8 s and comes back to the same fault. The five permanent faults exit
+# on codes the unit lists in SuccessExitStatus + RestartPreventExitStatus
+# (66 78) so the unit parks instead; BridgeStalled is transient and keeps 1.
+# ---------------------------------------------------------------------------
+
+_MIC_DEVICE = "test-array"
+_USB_MIC_DEVICE = "test-usb-mic"
+
+
+def _arm_main(monkeypatch, tmp_path, *, mic_ok=True, usb_ok=True):
+    """Env + PortAudio stub that carry `main()` to the guard under test.
+
+    Every toggle main() branches on is pinned here, so a shape below names
+    only the one it flips and the caller's ambient environment cannot decide
+    which guard fires.
+    """
+    monkeypatch.setenv(
+        "JASPER_AEC_BRIDGE_STATS_PATH", str(tmp_path / "aec_bridge_stats.json")
+    )
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", aec_bridge.REF_SOURCE)
+    monkeypatch.setenv("JASPER_AEC_MIC_DEVICE", _MIC_DEVICE)
+    monkeypatch.setenv("JASPER_AEC_USB_MIC_DEVICE", _USB_MIC_DEVICE)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "0")
+    monkeypatch.setenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", "0")
+    monkeypatch.setenv("JASPER_AEC_CORPUS_USB_ENABLED", "0")
+    monkeypatch.setenv("JASPER_OUTPUTD_CHIP_REF_PCM", "hw:Array,0")
+    present = {_MIC_DEVICE: mic_ok, _USB_MIC_DEVICE: usb_ok}
+
+    def _query_devices(device, kind):
+        if not present.get(device, True):
+            raise ValueError(f"no input device matching {device!r}")
+        return {"name": device}
+
+    sd_mod = MagicMock()
+    sd_mod.query_devices.side_effect = _query_devices
+    stub_sounddevice(monkeypatch, sd_mod)
+
+
+def _shape_bad_ref_source(monkeypatch, tmp_path):
+    _arm_main(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "chip_ref_tee")
+
+
+def _shape_no_beam_plan(monkeypatch, tmp_path):
+    _arm_main(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    monkeypatch.setattr(aec_bridge, "_chip_beam_plan", lambda: None)
+
+
+def _shape_chip_aec_without_reference(monkeypatch, tmp_path):
+    _arm_main(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    monkeypatch.setenv("JASPER_OUTPUTD_CHIP_REF_PCM", "")
+    monkeypatch.setattr(
+        aec_bridge,
+        "_chip_beam_plan",
+        lambda: aec_bridge._mic_profile.SQUARE_FIXED_150_210_PLAN,
+    )
+
+
+def _shape_mic_absent(monkeypatch, tmp_path):
+    _arm_main(monkeypatch, tmp_path, mic_ok=False)
+
+
+def _shape_corpus_usb_absent(monkeypatch, tmp_path):
+    _arm_main(monkeypatch, tmp_path, usb_ok=False)
+    monkeypatch.setenv("JASPER_AEC_CORPUS_USB_ENABLED", "1")
+
+
+@pytest.mark.parametrize(
+    "shape,expected_code,expected_reason",
+    [
+        (_shape_bad_ref_source, os.EX_CONFIG, "unsupported_reference_source"),
+        (_shape_no_beam_plan, os.EX_CONFIG, "no_validated_chip_beam_plan"),
+        (
+            _shape_chip_aec_without_reference,
+            os.EX_CONFIG,
+            "chip_aec_without_chip_reference",
+        ),
+        (_shape_mic_absent, os.EX_NOINPUT, "mic_device_unavailable"),
+        (
+            _shape_corpus_usb_absent,
+            os.EX_CONFIG,
+            "corpus_usb_mic_unavailable",
+        ),
+    ],
+    ids=lambda value: getattr(value, "__name__", value),
+)
+def test_permanent_faults_park_on_a_code_the_unit_holds(
+    shape, expected_code, expected_reason, monkeypatch, tmp_path, caplog
+):
+    """Each permanent fault exits 78 (config) or 66 (the wake mic won't open).
+
+    66 is reserved for the primary mic because that is the one fault
+    jasper-aec-reconcile hands off: the udev rule that saw the sound card go
+    starts it, it marks voice-input-absent, and jasper-voice plays the
+    mic-loss cue on the stop that follows (ADR-0239, non-negotiable 6). The
+    corpus USB leg is an opt-in capture flag, not the wake mic, so its absence
+    is a configuration fault.
+    """
+    shape(monkeypatch, tmp_path)
+
+    with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
+        assert aec_bridge.main() == expected_code
+
+    fields = event_fields(caplog, "aec_bridge.park")
+    assert fields["reason"] == expected_reason
+    assert fields["exit_code"] == str(expected_code)
+
+
+def test_a_stalled_loop_still_exits_1_so_systemd_restarts_the_bridge(
+    monkeypatch, tmp_path
+):
+    """The contrast the park codes rest on.
+
+    A stall is transient — a fresh process usually reopens the mic fine — so
+    it must stay outside SuccessExitStatus and keep feeding Restart=on-failure.
+    """
+    _arm_main(monkeypatch, tmp_path)
+    monkeypatch.setattr(aec_bridge, "_select_engine", lambda: MagicMock())
+    monkeypatch.setattr(aec_bridge, "Heartbeat", lambda **kw: MagicMock())
+    for name in ("outputd_ref_udp_thread", "mic_thread", "_bridge_stats_writer"):
+        monkeypatch.setattr(aec_bridge, name, lambda *a, **kw: None)
+
+    def _stalled(*a, **kw):
+        raise BridgeStalled("mic queue empty for 30 s")
+
+    monkeypatch.setattr(aec_bridge, "_aec_loop", _stalled)
+
+    assert aec_bridge.main() == 1
 
 
 # ---------------------------------------------------------------------------

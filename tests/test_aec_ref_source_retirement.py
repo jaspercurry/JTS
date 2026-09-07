@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import os
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -303,9 +304,9 @@ def _arm_chip_aec(monkeypatch, tmp_path, *, chip_ref_pcm: str) -> None:
     monkeypatch.setenv(
         "JASPER_AEC_BRIDGE_STATS_PATH", str(tmp_path / "aec_bridge_stats.json")
     )
-    # A validated beam plan is checked BEFORE this guard and exits 1 with its
-    # own message; stub it so a missing plan cannot masquerade as this guard
-    # firing.
+    # A validated beam plan is checked BEFORE this guard and parks on the
+    # same EX_CONFIG with its own reason; stub it so a missing plan cannot
+    # masquerade as this guard firing.
     monkeypatch.setattr(
         aec_bridge,
         "_chip_beam_plan",
@@ -328,7 +329,7 @@ def test_chip_aec_refuses_to_start_without_a_chip_reference_producer(
     stub_sounddevice(monkeypatch, sd_mod)
 
     with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
-        assert aec_bridge.main() == 1
+        assert aec_bridge.main() == os.EX_CONFIG
 
     assert "JASPER_OUTPUTD_CHIP_REF_PCM" in caplog.text
     # Failed at THIS guard, not incidentally at a later one: the guard sits
@@ -341,15 +342,16 @@ def test_the_chip_reference_guard_lets_a_configured_producer_through(
 ):
     """Positive control for the test above.
 
-    Without this, deleting the guard's `return 1` would still leave the
-    negative test green for the wrong reason — `main()` exits 1 on the
-    missing mic a few lines later either way. Here the guard is satisfied,
-    so reaching mic validation proves it passed rather than short-circuited.
+    Without this, deleting the guard's park would still leave the negative
+    test green for the wrong reason — `main()` exits on the missing mic a few
+    lines later either way. Here the guard is satisfied, so reaching mic
+    validation proves it passed rather than short-circuited, and the DIFFERENT
+    exit code (66, not 78) is what says which guard fired.
     """
     _arm_chip_aec(monkeypatch, tmp_path, chip_ref_pcm="hw:Array,0")
     sd_mod = MagicMock()
     sd_mod.query_devices.side_effect = ValueError("no such device")
     stub_sounddevice(monkeypatch, sd_mod)
 
-    assert aec_bridge.main() == 1
+    assert aec_bridge.main() == os.EX_NOINPUT
     sd_mod.query_devices.assert_called_once()

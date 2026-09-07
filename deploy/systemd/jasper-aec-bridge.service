@@ -100,6 +100,20 @@ ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
 # on the explicit `BridgeStalled` exit (code 1, raised by `_aec_loop`
 # when the mic queue stays empty for JASPER_AEC_STALL_RESTART_SEC).
 Restart=on-failure
+# Two exit codes mean "intentionally idle, not a crash" — park the unit
+# cleanly (treated as success, no auto-restart) so a permanent fault cannot
+# spend the StartLimitAction=reboot budget above, which ADR-0146 sized for
+# transients. Copies jasper-voice.service, and the split is the same:
+#   78 (EX_CONFIG)  — JASPER_AEC_REF_SOURCE names a source this bridge cannot
+#                     read; chip-AEC armed with no validated beam plan or no
+#                     JASPER_OUTPUTD_CHIP_REF_PCM; the opt-in wake-corpus USB
+#                     leg naming a mic that is not plugged in.
+#   66 (EX_NOINPUT) — the wake mic itself would not open. The udev rule that
+#                     saw the card go starts jasper-aec-reconcile, which marks
+#                     voice-input-absent and stops jasper-voice; voice plays
+#                     the mic-loss cue on that stop (ADR-0239).
+SuccessExitStatus=66 78
+RestartPreventExitStatus=66 78
 RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
