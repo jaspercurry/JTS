@@ -19,6 +19,7 @@ from ...audio_quality import (
     read_state as _read_audio_quality_state,
 )
 from ...doctor_contract import (
+    DOCTOR_RESULT_PATH,
     REASON_SNAPSHOT_PENDING,
     REASON_SNAPSHOT_UNAVAILABLE,
 )
@@ -210,7 +211,9 @@ class SystemRoutes(ControlHandlerMixin):
             "airplay_health": airplay_health,
             "audio_health": audio_health,
             "active_speaker_output_safety": (
-                _server._active_speaker_output_safety_snapshot(airplay_health)
+                state_aggregate.active_speaker_output_safety_snapshot(
+                    airplay_health,
+                )
             ),
             "outputd": outputd_status,
             "audio_quality": _safe_audio_quality_state(),
@@ -235,7 +238,7 @@ class SystemRoutes(ControlHandlerMixin):
     # dashboard never waits on a live run.
     def _get_system_diagnostics(self) -> None:
         body, read_error = _server._read_diagnostics_snapshot(
-            _server._DIAGNOSTICS_RESULT_PATH,
+            DOCTOR_RESULT_PATH,
             ttl_seconds=_server._DIAGNOSTICS_CACHE_TTL_SECONDS,
         )
         if body is None:

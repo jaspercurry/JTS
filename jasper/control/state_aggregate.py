@@ -284,6 +284,50 @@ def _active_speaker_parked_snapshot() -> dict[str, Any]:
     return {"parked": True, "detail": parked_muted_exits(topology)}
 
 
+def _active_speaker_level_match_provisional(
+    setup: dict[str, Any] | None,
+) -> bool | None:
+    """Whether the APPLIED active-speaker baseline's per-driver level match is a
+    datasheet estimate rather than a phone measurement.
+
+    Read from the readiness snapshot (`setup`) the caller already computed via
+    `read_active_speaker_setup_status`, so `active_speaker_baseline_profile.json`
+    has one reader here. The `status == "applied"` gate is load-bearing: the
+    candidate only carries that status when it returns the persisted applied
+    profile verbatim (see `build_baseline_profile_candidate`), so `provisional`
+    then equals the on-disk value. Fail-soft: None when there is no applied
+    active baseline (passive speaker, unreadable topology, or a superseded /
+    not-yet-applied profile).
+    """
+    if not isinstance(setup, dict):
+        return None
+    profile = setup.get("baseline_profile")
+    if not isinstance(profile, dict) or profile.get("status") != "applied":
+        return None
+    return bool(profile.get("provisional"))
+
+
+def active_speaker_output_safety_snapshot(
+    airplay_health: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the landing-page speaker-output safety state."""
+
+    current = airplay_health.get("current") if isinstance(airplay_health, dict) else {}
+    camilla = current.get("camilla") if isinstance(current, dict) else {}
+    raw_path = camilla.get("config_path") if isinstance(camilla, dict) else None
+    config_path = str(raw_path or "")
+    setup = read_active_speaker_setup_status(
+        active_config_path=config_path or None,
+    )
+    return {
+        **setup,
+        # Back-compat alias for the landing page's field name.
+        "safety_muted": not bool(setup.get("volume_allowed")),
+        "level_match_provisional": _active_speaker_level_match_provisional(setup),
+        "source": "active_speaker.setup_status",
+    }
+
+
 def _disk_snapshot(path: str = "/") -> dict[str, Any] | None:
     """Root-filesystem fullness for /state.resilience — fail-soft.
 
