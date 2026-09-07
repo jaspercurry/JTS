@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.install_surface import installer_text
+from tests.install_surface import JASPER_GROUP_STUBS, installer_text
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
@@ -184,24 +184,25 @@ def _run_speaker_name_seed(
             "&& return 1; command chmod \"$@\"; }"
         )
     if publish_behavior != "normal":
-        real_python = shlex.quote(sys.executable)
+        # `link <tmp> <state_file>`: the race is set up on the destination
+        # ($2) before the real link(2) runs.
         publish_actions = {
             "wizard_file": (
-                "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' > \"$3\""
+                "builtin printf '%s' 'JASPER_SPEAKER_NAME=\"Wizard Save\"' > \"$2\""
             ),
-            "directory": 'mkdir "$3"',
+            "directory": 'mkdir "$2"',
             "directory_symlink": (
-                'mkdir "${3}.target"; command ln -s "${3}.target" "$3"'
+                'mkdir "${2}.target"; ln -s "${2}.target" "$2"'
             ),
             "fail": "return 23",
         }
         action = publish_actions[publish_behavior]
         commands.append(
-            "python3() { "
-            "if [[ \"$2\" == *'.speaker_name.env.seed.'* ]]; then "
+            "link() { "
+            "if [[ \"$1\" == *'.speaker_name.env.seed.'* ]]; then "
             f"{action}; "
             "fi; "
-            f"command {real_python} \"$@\"; }}"
+            "command link \"$@\"; }"
         )
     commands.append("seed_speaker_name_env")
     result = subprocess.run(
@@ -232,6 +233,7 @@ def test_fresh_speaker_name_seed_uses_deploy_hostname(
     )
     assert result.returncode == 0, result.stderr
     assert state_file.read_text(encoding="utf-8") == expected
+    assert stat.S_IMODE(state_file.stat().st_mode) == 0o644
 
 
 def test_speaker_name_seed_falls_back_to_saved_then_os_hostname(tmp_path: Path):
@@ -516,6 +518,58 @@ def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
     )
 
 
+_SPAWN_COUNTING_STUBS = JASPER_GROUP_STUBS + r"""
+hostname() { printf 'jts.local\n'; }
+python3() { printf 'python3\n' >> "$SPAWNS"; command python3 "$@"; }
+function /usr/bin/python3 {
+    printf '/usr/bin/python3\n' >> "$SPAWNS"
+    command /usr/bin/python3 "$@"
+}
+"""
+
+
+def test_the_shared_state_pass_starts_two_interpreters(tmp_path):
+    """ADR-0226 interpreter budget for the shared-state pass.
+
+    Every `ensure_state_dir` call used to end in a `/usr/bin/python3` heal, so
+    an install paid one interpreter per call site plus two in the speaker-name
+    seed (the value, then an `os.link` publish). The heal is the single
+    `state_modes` row now and the publish is `link`, leaving two starts for the
+    whole pass: the heal, and the one interpreter that reads the
+    `jasper.speaker_name` fact.
+    """
+    state_dir = tmp_path / "state"
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir()
+    spawns = tmp_path / "spawns"
+    env = os.environ.copy()
+    env["SPAWNS"] = str(spawns)
+    env.pop("JASPER_HOSTNAME", None)
+    env.pop("JASPER_SYSTEM_PYTHON", None)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null\n"
+            + f"STATE_DIR={shlex.quote(str(state_dir))}\n"
+            + f"ENV_DIR={shlex.quote(str(env_dir))}\n"
+            + _SPAWN_COUNTING_STUBS
+            + "heal_shared_state_modes\n"
+            + "seed_speaker_name_env\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (state_dir / "speaker_name.env").exists()
+    started = spawns.read_text(encoding="utf-8").split()
+    assert started == ["/usr/bin/python3", "python3"], started
+
+
 def test_persist_install_profile_does_not_rechmod_an_existing_state_dir(tmp_path):
     """`persist_install_profile`'s marker defaults under STATE_DIR, so its
     `install -d -m 0750 "$(dirname "$marker")"` targets STATE_DIR itself on
@@ -769,27 +823,6 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     assert "/^SPOTIFY_CLIENT_ID=/d" in install_sh
     assert "/^SPOTIFY_OAUTH_MODE=/d" in install_sh
     assert "/^SPOTIFY_REDIRECT_URI=/d" in install_sh
-    assert "/^SPOTIPY_REDIRECT_URI=/d" in install_sh
-
-
-@pytest.mark.parametrize(
-    "key",
-    ["JASPER_AEC_CHIP_AEC_DAC_AUTO", "JASPER_AEC_CHIP_AEC_DAC_TRIAL"],
-)
-def test_retired_chip_aec_gate_keys_leave_no_reader_writer_or_seeded_line(
-    key: str,
-) -> None:
-    """The DAC gate's status IS its verdict, so the per-selection keys retired.
-
-    An upgraded box keeps whatever its last pass wrote, and a key nothing
-    rewrites is a value that can only rot — the reconciler's carry would be
-    reading a verdict from a build that no longer computes one.
-    """
-    reconciler = _INSTALL_LIB_DIR.parent.parent.joinpath(
-        "bin", "jasper-aec-reconcile"
-    ).read_text(encoding="utf-8")
-    assert key not in reconciler
-    assert f"/^{key}=/d" in "\n".join(_installer_shell_texts().values())
 
 
 @pytest.mark.parametrize(

@@ -239,17 +239,4 @@ create_jasper_service_users() {
         fi
     fi
     echo "  Service users ready: jasper-voice, jasper-mux, jasper-input, jasper-usbmic, jasper-control, jasper-web, jasper-recon (group: jasper; secrets: jasper-secrets = voice+web; intsecrets: jasper-intsecrets = voice+control+mux+web; ring writers: jts-ring = pi + jasper-web + shairport-sync, plus jasper-control as a header READER; bluealsa-aplay and the remaining root correction-lane identities write rings as root)"
-
-    # The /var/lib/jasper directory itself is widened to root:jasper 0770 by the
-    # group-aware ensure_state_dir() (env-migrations.sh), which runs on every
-    # install and now that the `jasper` group exists. Here we only widen a
-    # pre-existing speaker_volume.json (upgrade path) so the now-non-root
-    # voice/mux can read+write it before any daemon rewrites it. Owner stays
-    # root (rollback-safe); the file carries no secret. Other state keeps its
-    # owner-only modes — the dropped daemons read config via systemd
-    # EnvironmentFile injection (root reads it pre-drop), never off disk.
-    if [[ -f "${STATE_DIR}/speaker_volume.json" ]]; then
-        chgrp jasper "${STATE_DIR}/speaker_volume.json" 2>/dev/null || true
-        chmod 0660 "${STATE_DIR}/speaker_volume.json" 2>/dev/null || true
-    fi
 }

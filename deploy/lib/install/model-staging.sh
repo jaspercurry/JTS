@@ -27,11 +27,11 @@ print(pathlib.Path(spec.origin).resolve().parent / "resources" / "models")'
 stage_wake_models() {
     ensure_state_dir
     install -d -m 0755 -o root -g root /var/lib/jasper/wake
-    # Wake-event telemetry directory.
-    # Holds wake-events.sqlite3 + per-event WAVs. jasper-voice (running
-    # as root via the service unit) creates files mode 0644; future
-    # /wake-review/ web UI reads via the standard nginx proxy.
-    install -d -m 0755 -o root -g root /var/lib/jasper/wake-events
+    # Wake-event telemetry: wake-events.sqlite3 + per-event WAVs, written by
+    # jasper-voice (User=jasper-voice, Group=jasper, UMask=0007 -> 0660) and
+    # read by the other jasper-group daemons. 0770 group `jasper` is the mode
+    # heal_shared_state_modes asserts here; the two must not disagree.
+    install -d -m 0770 -o root -g jasper /var/lib/jasper/wake-events
     if ! "${INSTALL_DIR}/.venv/bin/python" -m jasper.model_downloads \
             stage --registry wake --optional \
             --optional-timeout 30 --optional-retries 2; then

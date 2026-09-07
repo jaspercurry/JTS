@@ -1737,6 +1737,9 @@ INSTALL_STEPS=(
     # startup, so both land before the unit install restarts it.
     "avahi_control|both|install_avahi_jasper_control|install the Avahi service template for jasper-control"
     "peering_template|both|install_peering_template|seed peer_id and the peering advert template"
+    # After every step that creates state, before the unit install restarts the
+    # daemons that read /var/lib/jasper as group `jasper`.
+    "state_modes|both|heal_shared_state_modes|heal the group modes on shared state files an upgrade left behind"
     "systemd_units|full|install_systemd_units|install, enable and start the full-tier systemd units"
     "systemd_units|streambox|install_streambox_systemd_units|install, enable and start the streambox systemd units"
     "retired_topology_state|both|remove_retired_audio_topology_state|remove the retired dmix/fanin topology switch state"

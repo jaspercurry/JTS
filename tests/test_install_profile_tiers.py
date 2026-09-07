@@ -413,6 +413,7 @@ _ON_EVERY_PROFILE = (
     "ring_platform",
     "avahi_control",
     "peering_template",
+    "state_modes",
     "systemd_units",
     "retired_topology_state",
     "wifi_guardian",
@@ -436,6 +437,11 @@ _REQUIRED_ORDER = (
     # A host without the 'pi' build user stops at second zero rather than
     # fifteen minutes into apt.
     ("build_user", "deps"),
+    # The shared-state heal resolves the `jasper` gid and the jasper-web uid,
+    # and must land before the unit install restarts jasper-control and runs
+    # the reconcilers, which read /var/lib/jasper as group `jasper`.
+    ("service_users", "state_modes"),
+    ("state_modes", "systemd_units"),
     # Above service_users each compartment re-assert is a silent no-op (its
     # opening `getent group ... || return 0`); above the tier's python step
     # the ownership half still runs but there is no seeded jasper.env to
@@ -506,9 +512,9 @@ def test_every_row_is_well_formed_and_named_by_exactly_one_membership_pin():
     whose `profiles` token is mistyped runs on neither profile; a deleted row
     drops below the floor and out of the pin it was named by."""
     rows = _step_rows()
-    # 44 rows, 40 distinct names: `deps`, `jasper`, `systemd_units` and
+    # 45 rows, 41 distinct names: `deps`, `jasper`, `systemd_units` and
     # `nginx_site` each have one row per tier.
-    assert len(rows) >= 44, rows
+    assert len(rows) >= 45, rows
     assert {profiles for _, profiles, _, _ in rows} <= {"both", "full", "streambox"}
     assert all(size > 0 for _, _, _, size in rows), rows
 
