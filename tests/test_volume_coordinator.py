@@ -1924,17 +1924,30 @@ async def test_which_drift_the_reconciler_corrects(
         assert cam.mute_calls == []
 
 
-async def test_observer_tick_resolves_active_source_once(tmp_path):
+@pytest.mark.parametrize(
+    ("active", "expected_source"),
+    [
+        pytest.param({}, Source.IDLE, id="idle"),
+        # Push-mode source: `_tick` awaits `_read_spotify_percent()`
+        # between resolving `current_active` and calling
+        # `maybe_reconcile_camilla(source=...)`, unlike the idle
+        # branch — the pass-through must survive that intervening await.
+        pytest.param({"spotactive": True}, Source.SPOTIFY, id="spotify"),
+    ],
+)
+async def test_observer_tick_resolves_active_source_once(
+    tmp_path, active, expected_source,
+):
     """VolumeObserver._tick forwards its own resolved source into
     maybe_reconcile_camilla instead of letting the reconciler re-resolve
-    it — one `active_renderers()` fork per tick at idle, not two.
+    it — one `active_renderers()` fork per tick, not two.
 
     Uses the dead-band case (no drift to correct) so the reconciler never
     reaches its in-lock re-read, which deliberately re-resolves fresh for
-    correctness and is unrelated to this idle-tick fork count.
+    correctness and is unrelated to this fork count.
     """
     coord, _, _ = _real_coord(
-        tmp_path, active={}, db=percent_to_db(70) - 0.3, level=70,
+        tmp_path, active=active, db=percent_to_db(70) - 0.3, level=70,
         mark_user_change=True,
     )
     backend = coord._backend
@@ -1944,6 +1957,7 @@ async def test_observer_tick_resolves_active_source_once(tmp_path):
 
     await obs._tick()
 
+    assert obs._last_active_source == expected_source
     assert backend.active_renderers_calls == 1
 
 
