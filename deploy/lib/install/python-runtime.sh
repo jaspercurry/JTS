@@ -75,6 +75,7 @@ PY
     return 1
 }
 
+# Delete this function and both its calls once every box's JASPER_INSTALL_AT in /var/lib/jasper/build.txt is past the release that retired the ESP32 accessory stack.
 retire_esp32_accessory_python_packages() {
     # Editable installs add/update requirements but pip does not prune
     # dependencies that disappear from pyproject.toml. Remove the retired

@@ -23,8 +23,11 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests.install_surface import JASPER_GROUP_STUBS
+
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
+MODEL_STAGING = ROOT / "deploy" / "lib" / "install" / "model-staging.sh"
 
 # getent stubbed to succeed so the `getent group jasper` guard passes; chgrp is a
 # no-op (no such group on CI) — the file MODE is what we assert, and chmod runs
@@ -37,26 +40,17 @@ chgrp() { :; }
 # Same stubs plus a `getent passwd jasper-web` that resolves to the test user,
 # so the owner-moving `w:` specs actually chown (a non-root process may chown a
 # file it already owns to itself, which is enough to exercise the path).
-_STUBS_WITH_WEB_USER = r"""
-getent() {
-    if [ "$1" = "passwd" ]; then
-        printf 'jasper-web:x:%s:%s:::\n' "$(id -u)" "$(id -g)"
-    else
-        printf 'jasper:x:%s:\n' "$(id -g)"
-    fi
-}
-chgrp() { :; }
-"""
+_STUBS_WITH_WEB_USER = JASPER_GROUP_STUBS
 
 
-def _extract(name: str) -> str:
+def _extract(name: str, lib: Path = LIB) -> str:
     out = subprocess.run(
-        ["bash", "-c", rf"sed -n '/^{name}()/,/^}}/p' '{LIB}'"],
+        ["bash", "-c", rf"sed -n '/^{name}()/,/^}}/p' '{lib}'"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert f"{name}()" in out, f"could not extract {name} from {LIB}"
+    assert f"{name}()" in out, f"could not extract {name} from {lib}"
     return out
 
 
@@ -158,6 +152,56 @@ def test_heal_leaves_owner_alone_when_the_web_user_does_not_exist(tmp_path):
     _run_heal(tmp_path)  # stubs resolve no `jasper-web` passwd entry
 
     assert _mode(tuning_db) == 0o644
+
+
+# `install -d` for real, minus the -o/-g an unprivileged runner cannot honour,
+# with the staging helper's hard-coded /var/lib/jasper redirected into tmp.
+_INSTALL_REDIRECT_STUB = r"""
+ensure_state_dir() { :; }
+install() {
+    local -a args=()
+    while (( $# )); do
+        case "$1" in
+            -o|-g) shift 2 ;;
+            /var/lib/jasper*) args+=("${STATE_DIR}${1#/var/lib/jasper}"); shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    command install "${args[@]}"
+}
+"""
+
+
+def test_a_later_creator_does_not_re_mode_what_the_heal_repaired(tmp_path):
+    """The heal is ONE install step, so every creator that runs after it must
+    agree with the allowlist. `stage_wake_models` re-runs `install -d` over an
+    existing /var/lib/jasper/wake-events on every full install; a mode that
+    disagreed with the allowlist's `d:0770` left the wake-event WAVs and
+    sqlite world-readable and the non-owner group members unable to write the
+    directory, and no doctor check covers a directory mode."""
+    wake_events = tmp_path / "wake-events"
+    wake_events.mkdir()
+    wake_events.chmod(0o700)  # what a pre-heal box carries
+    venv_python = tmp_path / "opt" / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    venv_python.chmod(0o755)
+
+    script = (
+        "set -euo pipefail\n"
+        + _STUBS_WITH_WEB_USER
+        + _INSTALL_REDIRECT_STUB
+        + _extract("heal_shared_state_modes")
+        + _extract("stage_wake_models", MODEL_STAGING)
+        + f'\nSTATE_DIR="{tmp_path}"\nINSTALL_DIR="{tmp_path}/opt"\n'
+        + "heal_shared_state_modes\nstage_wake_models\n"
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=10,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert _mode(wake_events) == 0o770
 
 
 def test_heal_never_touches_the_wifi_psk(tmp_path):

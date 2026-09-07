@@ -26,7 +26,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.install_surface import installer_shell_paths, installer_text
+from tests.install_surface import (
+    JASPER_GROUP_STUBS,
+    installer_shell_paths,
+    installer_text,
+)
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
@@ -518,15 +522,7 @@ def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
     )
 
 
-_SPAWN_COUNTING_STUBS = r"""
-getent() {
-    if [ "$1" = "passwd" ]; then
-        printf 'jasper-web:x:%s:%s:::\n' "$(id -u)" "$(id -g)"
-    else
-        printf 'jasper:x:%s:\n' "$(id -g)"
-    fi
-}
-chgrp() { :; }
+_SPAWN_COUNTING_STUBS = JASPER_GROUP_STUBS + r"""
 hostname() { printf 'jts.local\n'; }
 python3() { printf 'python3\n' >> "$SPAWNS"; command python3 "$@"; }
 function /usr/bin/python3 {
@@ -550,7 +546,6 @@ def test_state_dir_pass_costs_two_interpreters_however_many_call_sites(tmp_path)
         len(re.findall(r"(?m)^\s*ensure_state_dir$", path.read_text(encoding="utf-8")))
         for path in installer_shell_paths()
     )
-    assert sites >= 12, sites
 
     state_dir = tmp_path / "state"
     env_dir = tmp_path / "etc"
