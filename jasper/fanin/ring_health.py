@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.env_file import read_value
+from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
@@ -36,11 +37,6 @@ from jasper.fanin_coupling import (
     coupling_value_removed,
     resolve_coupling,
 )
-
-
-FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
-JASPER_ENV_PATH = "/etc/jasper/jasper.env"
-OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 
 
 @dataclass(frozen=True)
@@ -265,7 +261,7 @@ def _effective_env_value(
     raw = read_value(later_text, key)
     if raw is not None:
         return raw, later_path
-    return read_value(_read_snapshot(JASPER_ENV_PATH).text, key), JASPER_ENV_PATH
+    return read_value(_read_snapshot(BASE_ENV_PATH).text, key), BASE_ENV_PATH
 
 
 def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:

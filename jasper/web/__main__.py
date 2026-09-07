@@ -305,12 +305,13 @@ def _make_sources_server(target: object) -> object:
 
 def _make_speaker_server(target: object) -> object:
     from . import speaker_setup
+    from ..env_load import SPEAKER_NAME_ENV_PATH
 
     return speaker_setup.make_server(
         target,
         state_path=os.environ.get(
             "JASPER_SPEAKER_NAME_FILE",
-            speaker_setup.SPEAKER_NAME_FILE,
+            SPEAKER_NAME_ENV_PATH,
         ),
     )
 

@@ -82,13 +82,12 @@ from jasper.fanin_coupling import (
 )
 from jasper.log_event import log_event
 
+from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_health import (
     _anchor_is_all_muted,
     _EnvSnapshot,
     _read_snapshot,
     _staged_anchor_identity,
-    FANIN_ENV_PATH,
-    OUTPUTD_ENV_PATH,
     read_loaded_camilla_graph,
     resolve_effective_fanin_ring_slots,
     resolve_effective_fanin_wire_format,
@@ -99,11 +98,10 @@ from jasper.fanin.ring_health import (
     ring_wire_caps_ready,
 )
 
-# Nothing below reads these two; jasper/fanin/converge and jasper/fanin_coupling
-# BIND them on this module, so moving one is a behaviour change, not a rename.
+# Nothing below reads this; jasper/fanin/converge BINDs it on this module, so
+# moving it is a behaviour change, not a rename.
 from jasper.fanin.ring_health import (
     graph_at_active_ring_endpoint as graph_at_active_ring_endpoint,
-    JASPER_ENV_PATH as JASPER_ENV_PATH,
 )
 from jasper.logging_setup import configure_logging
 

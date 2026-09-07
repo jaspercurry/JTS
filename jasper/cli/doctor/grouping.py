@@ -654,8 +654,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
     as #2387 wearing a different hat, and a doctor that cannot read its
     authority must say so.
     """
-    from ...env_load import read_env_file_state
-    from ...multiroom.reconcile import VOICE_GROUPING_ENV_FILE
+    from ...env_load import VOICE_GROUPING_ENV_FILE, read_env_file_state
 
     unit_env: dict[str, str] | None = None
     error = ""
@@ -682,6 +681,7 @@ def check_grouping_channel_pick() -> CheckResult:
     is gone). A missing or drifted env is SILENT (the speaker plays the
     full stereo program — the wrong channel), so this drift check is the
     only way a wrong-channel member is visible."""
+    from ...env_load import OUTPUTD_GROUPING_ENV_FILE
     from ...fanin_coupling import dac_content_lane_marker_armed
     from ...multiroom.config import is_active_member
     from ...multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
@@ -690,7 +690,6 @@ def check_grouping_channel_pick() -> CheckResult:
         LANE_REFUSED_FLAT_OUTPUT_DENIED,
         LANE_REFUSED_PERIOD,
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_GROUPING_ENV_FILE,
         box_outputd_period_frames,
         member_lane_decision,
         output_topology_state,
@@ -815,12 +814,9 @@ def check_grouping_tts_lane() -> CheckResult:
     (Replaces ``check_grouping_tts_interim``, the standing bonded warn
     that existed while TTS still mixed in fanin pre-stream — Increment 5
     PR-2 closed that gap.)"""
+    from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
-    from ...multiroom.reconcile import (
-        OUTPUTD_GROUPING_ENV_FILE,
-        VOICE_GROUPING_ENV_FILE,
-        is_active_speaker_box,
-    )
+    from ...multiroom.reconcile import is_active_speaker_box
     from ...multiroom.tts_route import (
         VOICE_PARK_ENV,
         expected_grouping_tts_route,

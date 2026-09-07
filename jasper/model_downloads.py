@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.env_load import parse_env_file
+from jasper.env_load import BASE_ENV_PATH, parse_env_file
 from jasper.json_fields import sha256_file
 
 
@@ -282,7 +282,7 @@ def seed_default_wake_model_env(
 def active_wake_model(
     *,
     env: Mapping[str, str] = os.environ,
-    jasper_env_path: str = "/etc/jasper/jasper.env",
+    jasper_env_path: str = BASE_ENV_PATH,
     wake_env_path: str = "/var/lib/jasper/wake_model.env",
 ) -> str:
     model = env.get("JASPER_WAKE_MODEL", "").strip()

@@ -432,10 +432,13 @@ def _solo_tts_lane(monkeypatch, voice_env_path):
     limited to the unit's inline `Environment=` directive — all it can ever
     report, since it never reads `EnvironmentFile=` layers."""
     import jasper.multiroom.config as mr_config
-    import jasper.multiroom.reconcile as mr_reconcile
+
+    # Imported BEFORE the patch below: it copies env_load's constant at import
+    # time, so importing it inside the patched window would bake in the tmp path.
+    import jasper.multiroom.reconcile  # noqa: F401
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: _grouping_cfg())
-    monkeypatch.setattr(mr_reconcile, "VOICE_GROUPING_ENV_FILE", str(voice_env_path))
+    monkeypatch.setattr("jasper.env_load.VOICE_GROUPING_ENV_FILE", str(voice_env_path))
     _evidence.evidence.seed(
         "prop:Environment:jasper-voice",
         [f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"],

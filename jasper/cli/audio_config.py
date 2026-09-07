@@ -18,12 +18,8 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
-    DEFAULT_BASE_ENV_PATH,
     DEFAULT_CAMILLA2_STATEFILE_PATH,
     DEFAULT_CAMILLA_STATEFILE_PATH,
-    DEFAULT_FANIN_ENV_PATH,
-    DEFAULT_GROUPING_ENV_PATH,
-    DEFAULT_OUTPUTD_ENV_PATH,
     OUTPUTD_LATENCY_KEYS,
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
@@ -44,7 +40,13 @@ from jasper.audio_runtime_overrides import (
     runtime_overrides_path,
     set_runtime_override,
 )
-from jasper.env_load import read_env_file_state
+from jasper.env_load import (
+    BASE_ENV_PATH,
+    FANIN_ENV_PATH,
+    GROUPING_ENV_FILE,
+    OUTPUTD_ENV_PATH,
+    read_env_file_state,
+)
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -582,10 +584,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the planned audio knobs, provenance, and drift warnings",
     )
     explain.add_argument("--json", action="store_true")
-    explain.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
-    explain.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
-    explain.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
-    explain.add_argument("--grouping-env", default=DEFAULT_GROUPING_ENV_PATH)
+    explain.add_argument("--base-env", default=BASE_ENV_PATH)
+    explain.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
+    explain.add_argument("--fanin-env", default=FANIN_ENV_PATH)
+    explain.add_argument("--grouping-env", default=GROUPING_ENV_FILE)
     explain.add_argument("--overrides", default=runtime_overrides_path())
     explain.add_argument("--output-hardware-state", default=None)
     explain.set_defaults(func=_cmd_explain)
@@ -598,8 +600,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     outputd_floor.add_argument("--profile-id", default="")
-    outputd_floor.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
-    outputd_floor.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
+    outputd_floor.add_argument("--base-env", default=BASE_ENV_PATH)
+    outputd_floor.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
     outputd_floor.add_argument(
         "--overrides",
         default=runtime_overrides_path(),
@@ -672,9 +674,9 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-outputd-env",
         help="validate reconciler-owned outputd.env before installing it",
     )
-    validate_outputd.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
-    validate_outputd.add_argument("--outputd-env", default=DEFAULT_OUTPUTD_ENV_PATH)
-    validate_outputd.add_argument("--fanin-env", default=DEFAULT_FANIN_ENV_PATH)
+    validate_outputd.add_argument("--base-env", default=BASE_ENV_PATH)
+    validate_outputd.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
+    validate_outputd.add_argument("--fanin-env", default=FANIN_ENV_PATH)
     # The path to NAME in refusals when it differs from the path to READ. The
     # reconciler validates a staged candidate under a temp name that is deleted
     # on exit; unset means the two are the same file.
@@ -705,7 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
         "route-actions",
         help="emit shell-readable fanin env actions for the audio route",
     )
-    route_actions.add_argument("--base-env", default=DEFAULT_BASE_ENV_PATH)
+    route_actions.add_argument("--base-env", default=BASE_ENV_PATH)
     route_actions.set_defaults(func=_cmd_route_actions)
 
     overrides_list = sub.add_parser(

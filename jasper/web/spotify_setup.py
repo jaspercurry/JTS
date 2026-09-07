@@ -79,6 +79,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..env_load import SPOTIFY_CREDENTIALS_ENV_PATH
 from ..accounts import (
     Account,
     Registry,
@@ -133,13 +134,6 @@ from ._common import (
 SPOTIFY_PAGE_CSS_HREF = "/assets/spotify/spotify.css"
 
 logger = logging.getLogger(__name__)
-
-# Persisted CLIENT_ID + OAUTH_MODE. Separate from /etc/jasper/jasper.env
-# so the web service can write to it without /etc being RW (systemd's
-# ProtectSystem=full keeps /etc read-only). jasper-web reads it in
-# process; jasper-voice, jasper-control, and jasper-mux source it via
-# optional EnvironmentFile so a restart picks up the values written here.
-CREDS_FILE = "/var/lib/jasper-intsecrets/spotify_credentials.env"
 
 # Spotify Developer App ID format: 32 lowercase hex characters.
 _CLIENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -205,11 +199,13 @@ def _new_nonce() -> str:
     return secrets.token_urlsafe(16)
 
 
-def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
+def _read_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> dict[str, str]:
     return read_env_file(path)
 
 
-def _write_creds_file(client_id: str, mode: str, path: str = CREDS_FILE) -> None:
+def _write_creds_file(
+    client_id: str, mode: str, path: str = SPOTIFY_CREDENTIALS_ENV_PATH
+) -> None:
     # WS1 Phase 4b: 0640 group jasper-intsecrets. `mode` here is the OAuth mode.
     write_env_file(path, {
         "SPOTIFY_CLIENT_ID": client_id,
@@ -217,7 +213,7 @@ def _write_creds_file(client_id: str, mode: str, path: str = CREDS_FILE) -> None
     }, mode=SECRET_ENV_MODE)
 
 
-def _delete_creds_file(path: str = CREDS_FILE) -> None:
+def _delete_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> None:
     delete_env_file(path)
 
 

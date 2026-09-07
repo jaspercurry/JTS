@@ -90,6 +90,7 @@ from dataclasses import dataclass
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.correction_lane import CORRECTION_SUBSTREAM
+from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH
 from jasper.log_event import log_event
 
 _LOG = logging.getLogger(__name__)
@@ -626,8 +627,8 @@ def arm_refusal_reason(
 #: Mirrors the unit; `tests/test_renderer_ring_lanes.py` pins it against the
 #: unit's own `EnvironmentFile=` lines.
 FANIN_ENV_CHAIN = (
-    "/etc/jasper/jasper.env",
-    "/var/lib/jasper/fanin.env",
+    BASE_ENV_PATH,
+    FANIN_ENV_PATH,
     RENDERER_LANES_ENV,
 )
 

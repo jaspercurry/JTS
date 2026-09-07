@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping
 
 from .atomic_io import locked_update_env_file, read_regular_bytes_nofollow
 from .env_file import read_value
+from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source
 from .speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
@@ -33,7 +34,6 @@ INTENT_KEY = "JASPER_USB_MIC"
 USB_MIC_LEG_KEY = "JASPER_USB_MIC_LEG"
 USB_MIC_PRIMARY_LEG = "primary"
 USB_MIC_RAW_XVF_LEG = "raw0"
-SOURCE_INTENT_PATH = "/var/lib/jasper/source_intent.env"
 GADGET_PATH = "/sys/kernel/config/usb_gadget/jts-usb-audio"
 RELAY_STATUS_PATH = "/run/jasper-usbmic/status.json"
 USBGADGET_UNIT = "jasper-usbgadget.service"
@@ -261,7 +261,7 @@ def build_usb_mic_status(
     aec_status: Mapping[str, Any],
     *,
     intent_path: str | os.PathLike[str] = INTENT_PATH,
-    source_intent_path: str | os.PathLike[str] = SOURCE_INTENT_PATH,
+    source_intent_path: str | os.PathLike[str] = SOURCE_INTENT_ENV,
     gadget_path: str | os.PathLike[str] = GADGET_PATH,
     relay_status_path: str | os.PathLike[str] = RELAY_STATUS_PATH,
     systemd_active: Callable[[str], bool] = _systemd_active,

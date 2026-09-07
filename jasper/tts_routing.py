@@ -10,6 +10,8 @@ temporarily point voice at ``jasper-outputd`` for member-local playout.
 """
 from collections.abc import Mapping
 
+from jasper.env_load import VOICE_GROUPING_ENV_FILE
+
 FANIN_TTS_SOCKET_ENV = "JASPER_FANIN_TTS_SOCKET"
 FANIN_TTS_SOCKET = "/run/jasper-fanin/tts.sock"
 
@@ -28,13 +30,12 @@ VOICE_TTS_SOCKET_ENV = "JASPER_TTS_OUTPUTD_SOCKET"
 TTS_MIX_STAGE_ENV = "JASPER_TTS_MIX_STAGE"
 TTS_MIX_STAGE_PRE_DSP = "pre_dsp"
 TTS_MIX_STAGE_POST_DSP = "post_dsp"
-GROUPING_VOICE_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 
 
 def resolve_tts_routing_snapshot(
     env: Mapping[str, str],
     *,
-    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
+    grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
 ) -> tuple[dict[str, str], bool]:
     """Read one coherent route snapshot plus legacy-file provenance."""
     resolved = dict(env)
@@ -89,7 +90,7 @@ def resolved_tts_socket_feeds_post_dsp_outputd(
 def tts_socket_feeds_pre_dsp_fanin(
     env: Mapping[str, str],
     *,
-    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
+    grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
 ) -> bool:
     """Whether voice's resolved TTS socket feeds the pre-DSP fan-in.
 
@@ -117,7 +118,7 @@ def tts_socket_feeds_pre_dsp_fanin(
 def tts_socket_feeds_post_dsp_outputd(
     env: Mapping[str, str],
     *,
-    grouping_env_path: str | None = GROUPING_VOICE_ENV_FILE,
+    grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
 ) -> bool:
     """Whether voice's resolved TTS socket feeds the post-DSP outputd mixer.
 

@@ -204,10 +204,10 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
 
     fanin_env = tmp_path / "fanin.env"
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.env_load.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(tmp_path / "jasper.env")
+        "jasper.env_load.BASE_ENV_PATH", str(tmp_path / "jasper.env")
     )
 
     assert fc.read_declared_ring_wire_format() == RING_WIRE_FORMAT_WIDE, (

@@ -60,7 +60,8 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from ..multiroom.config import GROUPING_ENV_FILE, GroupingConfig
+from ..env_load import GROUPING_ENV_FILE
+from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..local_sources import local_source_audio_refresh_units
 from ..transit.state import read_state as read_transit_state
