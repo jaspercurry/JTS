@@ -604,7 +604,7 @@ EOF
 
 # 90 s is systemd's DefaultTimeoutStartSec: past it a Type=notify start has
 # already failed on its own. Goes when the reconcile's voice restart stops
-# being --no-block, or when the doctor waits for pending jobs. See ADR-0247.
+# being --no-block, or when the doctor waits for pending jobs. See ADR-0248.
 wait_for_units_settled() {
     local waited settled=yes rc=0 body
     remote_body body 'w=0; s=3' \
@@ -637,7 +637,7 @@ gate_core_health() {
     done < "$tmp"
     rm -f "$tmp"
     # --wait folds timeout, oom-kill and a bus failure alike into rc 1, so
-    # only the doctor's own line is a verdict. See ADR-0247.
+    # only the doctor's own line is a verdict. See ADR-0248.
     case "$verdict" in
         *" status=fail"*)
             echo "  event=deploy.core_health status=fail rc=${rc}"
