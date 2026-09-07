@@ -119,9 +119,8 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/source_intent.env.request.lock"
         "f:0660:${STATE_DIR}/source_intent.env.reconcile.lock"
         "d:0770:${STATE_DIR}/wake-events"
-        # The wizard units that used to run as root now run as jasper-web,
-        # so state they created root-owned has to move with them. An
-        # unreadable measurement file reads as "no measurements".
+        # A root wizard incarnation created this; the de-rooted unit must
+        # still be able to read it.
         "f:0640:${STATE_DIR}/active_speaker_measurements.json"
         # The Layer-A SSOT older root atomic writers published root:root 0640;
         # jasper-control reads it group `jasper` for the aggregate /state.

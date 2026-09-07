@@ -32,7 +32,7 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
 
-from .handlers import REGISTRY, pick
+from .handlers import pick
 from .models import (
     BluetoothActionResult,
     BluetoothDevice,
@@ -679,12 +679,11 @@ class BluetoothEngine:
             message=result.message,
             level=logging.INFO if result.ok else logging.WARNING,
         )
-        if result.ok:
-            if not await self._reconcile_accessories("bluetooth-forget"):
-                return BluetoothActionResult(
-                    True,
-                    f"{result.message}; optional accessory refresh will retry at boot",
-                )
+        if result.ok and not await self._reconcile_accessories("bluetooth-forget"):
+            return BluetoothActionResult(
+                True,
+                f"{result.message}; optional accessory refresh will retry at boot",
+            )
         return result
 
     # ---------- internals ----------
@@ -801,4 +800,4 @@ def _device_action_error(err: DBusError) -> BluetoothActionResult:
     return BluetoothActionResult(False, message, code)
 
 
-__all__ = ["BluetoothEngine", "REGISTRY"]
+__all__ = ["BluetoothEngine"]

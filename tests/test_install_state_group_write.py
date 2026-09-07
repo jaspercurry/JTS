@@ -130,7 +130,7 @@ def test_heal_makes_shared_dbs_group_writable(tmp_path):
 
 
 def test_heal_repairs_state_the_de_rooted_wizard_units_left_behind(tmp_path):
-    """jasper-{bluetooth,correction}-web dropped from root to jasper-web, so the
+    """jasper-correction-web dropped from root to jasper-web, so the
     state their root incarnation created must move with them: readable for the
     files a writer atomically replaces, and OWNED for the SQLite ledger it
     modifies in place ("attempt to write a readonly database" otherwise)."""

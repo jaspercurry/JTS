@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from types import SimpleNamespace
 
 import pytest
 from dbus_next.errors import DBusError
@@ -230,14 +229,6 @@ def _wire_fakes(engine: BluetoothEngine) -> BluetoothEngine:
     device = _wiim_device()
     setattr(engine, "_bus", _FakeBus(device))
     setattr(engine, "_observer", _FakeObserver(device))
-    setattr(
-        engine,
-        "_roles",
-        SimpleNamespace(
-            set=lambda *_args: None,
-            remove=lambda *_args: None,
-        ),
-    )
     return engine
 
 
@@ -285,14 +276,6 @@ def _shared_bus_engine(
     bus = _FakeScanBus(adapter, device=device)
     setattr(engine, "_bus", bus)
     setattr(engine, "_observer", _FakeObserver(device))
-    setattr(
-        engine,
-        "_roles",
-        SimpleNamespace(
-            set=lambda *_args: None,
-            remove=lambda *_args: None,
-        ),
-    )
     return engine, bus, reasons
 
 

@@ -554,8 +554,7 @@ def check_correction_web_readable_inputs() -> CheckResult:
 
 @doctor_check()
 def check_bluetooth_web_readable_inputs() -> CheckResult:
-    """jasper-bluetooth-web must be able to read the device role map (an
-    unreadable one is republished EMPTY) and the shared source intent."""
+    """jasper-bluetooth-web must be able to read the shared source intent."""
     return _check_daemon("jasper-bluetooth-web")
 
 

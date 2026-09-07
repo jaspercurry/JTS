@@ -18,6 +18,7 @@ Module layout:
                     systemd entrypoint for the always-on default agent
   - engine.py       long-lived discovery owner, pair state machine, status events
   - scan.py         live ObjectManager observer + event stream
+  - availability.py adapter path, control-plane unit, shared rfkill read
   - avrcp.py        AVRCP transport controls (play/pause/next/etc.) for
                     connected A2DP-sink devices
   - handlers/       per-class behaviour (HID / A2DP-sink / default —

@@ -26,7 +26,6 @@ from .base import StatusEvent
 
 class A2DPSinkHandler:
     id = "a2dp_sink"
-    label = "Audio source"
 
     def applies_to(self, device: BluetoothDevice) -> bool:
         uu = " ".join(device.uuids).lower()

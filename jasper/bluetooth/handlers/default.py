@@ -18,7 +18,6 @@ from .base import StatusEvent
 
 class DefaultHandler:
     id = "default"
-    label = "Generic"
 
     def applies_to(self, device: BluetoothDevice) -> bool:
         return True
