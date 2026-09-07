@@ -77,10 +77,10 @@ echo "==> Renaming ${PI_HOST} → ${NEW_FQDN}"
 
 # Preflight: current target answers, with passwordless sudo (the same
 # posture deploy-to-pi.sh requires — see BRINGUP.md Phase 2.5).
-if ! remote_sudo "true && test -r /usr/local/lib/jasper/jasper-env-file.sh" >/dev/null 2>&1; then
-    echo "rename-speaker: cannot reach ${SSH_TARGET} with passwordless sudo" >&2
-    exit 1
-fi
+remote_sudo "true" >/dev/null 2>&1 \
+    || { echo "rename-speaker: cannot reach ${SSH_TARGET} with passwordless sudo" >&2; exit 1; }
+remote_sudo "test -r /usr/local/lib/jasper/jasper-env-file.sh" >/dev/null 2>&1 \
+    || { echo "rename-speaker: ${SSH_TARGET} is missing the shared env-file lib — run bash scripts/deploy-to-pi.sh first" >&2; exit 1; }
 
 OLD_BASE="$(remote "hostname" | tr -d '[:space:]')"
 if [[ "$OLD_BASE" == "$NEW_BASE" ]]; then

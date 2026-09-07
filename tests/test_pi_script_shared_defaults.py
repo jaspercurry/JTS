@@ -31,26 +31,14 @@ SCRIPT_NAMES = (
 )
 ROBUST_SCRIPT_DIR = 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
 LIB_SOURCE = '. "${SCRIPT_DIR}/_lib.sh"'
-# Default argv per script; _run_script's only consumer. Also carries
-# rename-speaker.sh, which is not a SCRIPT_NAMES member (see script_repo).
 INVOCATIONS = {
-    "switch-gemini-model.sh": ["3.1"],
-    "switch-voice-provider.sh": ["gemini"],
-    "switch-wake-word.sh": ["jarvis_v2"],
-    "tail-pi-logs.sh": ["jasper-voice"],
-    "verify-ref-no-silence-bug.sh": [],
-    "wake-rate-test.sh": ["1"],
-    "rename-speaker.sh": ["jts4", "--no-deploy"],
-}
-# Expected exit status for a default invocation — only meaningful for
-# SCRIPT_NAMES members, which the blanket targeting tests below check.
-EXPECTED_STATUS = {
-    "switch-gemini-model.sh": 0,
-    "switch-voice-provider.sh": 0,
-    "switch-wake-word.sh": 0,
-    "tail-pi-logs.sh": 0,
-    "verify-ref-no-silence-bug.sh": 1,
-    "wake-rate-test.sh": 23,
+    "switch-gemini-model.sh": (["3.1"], 0),
+    "switch-voice-provider.sh": (["gemini"], 0),
+    "switch-wake-word.sh": (["jarvis_v2"], 0),
+    "tail-pi-logs.sh": (["jasper-voice"], 0),
+    "verify-ref-no-silence-bug.sh": ([], 1),
+    "wake-rate-test.sh": (["1"], 23),
+    "rename-speaker.sh": (["jts4", "--no-deploy"], 0),
 }
 
 
@@ -63,12 +51,19 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _lib_function_output(function_call: str) -> str:
-    """Run one _lib.sh function call in isolation; PI_HOST/PI_USER satisfy
-    its own target resolution so sourcing it doesn't refuse first."""
+def _env_without_target() -> dict[str, str]:
+    """A copy of the current environment with the laptop target-resolution
+    vars removed, so a test controls targeting explicitly."""
     env = os.environ.copy()
     for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
         env.pop(key, None)
+    return env
+
+
+def _lib_function_output(function_call: str) -> str:
+    """Run one _lib.sh function call in isolation; PI_HOST/PI_USER satisfy
+    its own target resolution so sourcing it doesn't refuse first."""
+    env = _env_without_target()
     env.update({"PI_HOST": "explicit.invalid", "PI_USER": "operator"})
     result = subprocess.run(
         ["bash", "-c", f'source "{ROOT / "scripts" / "_lib.sh"}"\n{function_call}'],
@@ -168,9 +163,7 @@ def _run_script(
         (repo / ".env.local").write_text(env_local, encoding="utf-8")
     log.unlink(missing_ok=True)
 
-    env = os.environ.copy()
-    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
-        env.pop(key, None)
+    env = _env_without_target()
     env.update(inherited)
     env.update(
         {
@@ -183,11 +176,12 @@ def _run_script(
     if name == "verify-ref-no-silence-bug.sh":
         env["FAKE_SSH_FAIL"] = "1"
 
+    default_args, _expected_status = INVOCATIONS[name]
     result = subprocess.run(
         [
             "bash",
             str(repo / "scripts" / name),
-            *(INVOCATIONS[name] if args is None else args),
+            *(default_args if args is None else args),
         ],
         cwd=repo.parent / "foreign-cwd",
         env=env,
@@ -251,7 +245,7 @@ def test_explicit_environment_target_works_from_any_cwd(
         inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
     )
 
-    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
+    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
     assert "operator@explicit.invalid" in calls
 
 
@@ -268,7 +262,7 @@ def test_explicit_environment_target_outranks_checkout_env_local(
         inherited={"PI_HOST": "inherited.invalid", "PI_USER": "inherited-user"},
     )
 
-    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
+    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
     assert "inherited-user@inherited.invalid" in calls
     assert "checkout-user@checkout.invalid" not in calls
 
@@ -285,7 +279,7 @@ def test_checkout_env_local_target_is_the_shared_default(
         inherited={},
     )
 
-    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
+    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
     assert "checkout-user@checkout.invalid" in calls
 
 
@@ -301,7 +295,7 @@ def test_jasper_hostname_compatibility_fallback_comes_from_shared_owner(
         inherited={"JASPER_HOSTNAME": "legacy.invalid"},
     )
 
-    assert result.returncode == EXPECTED_STATUS[name], result.stdout + result.stderr
+    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
     assert "pi@legacy.invalid" in calls
 
 
@@ -332,8 +326,7 @@ def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
     applies (scripts/_pi_target.py's per-field override)."""
     repo, _fake_bin, _log = script_repo
     monkeypatch.setattr(_pi_target, "LIB_SH", repo / "scripts" / "_lib.sh")
-    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
-        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(os, "environ", _env_without_target())
 
     assert _pi_target.resolve_pi_target(host_override="192.168.1.5") == (
         "192.168.1.5", "pi")
@@ -367,9 +360,7 @@ def test_help_needs_no_target_but_the_action_still_refuses(
     (repo / "scripts").mkdir(parents=True)
     for name in ("_lib.sh", script):
         shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
-    env = os.environ.copy()
-    for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
-        env.pop(key, None)
+    env = _env_without_target()
 
     def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
