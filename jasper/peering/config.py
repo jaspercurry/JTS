@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
 
+from jasper.atomic_io import atomic_write_text
 from jasper.env_load import read_env_file_or_warn
 
 logger = logging.getLogger(__name__)
@@ -210,12 +211,7 @@ def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
 
     new_id = str(uuid.uuid4())
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-        with os.fdopen(fd, "w") as f:
-            f.write(new_id + "\n")
-        os.replace(tmp, path)
+        atomic_write_text(path, new_id + "\n", mode=0o644)
     except OSError as e:
         logger.warning("could not write %s (%s); peer_id is ephemeral", path, e)
     return new_id

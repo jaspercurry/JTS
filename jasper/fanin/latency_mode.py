@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from jasper.atomic_io import atomic_write_text
+
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"
 VALID_MODES = ("low", "medium", "high")
@@ -102,15 +104,12 @@ def write_requested_mode(
 ) -> str:
     canonical = normalize_mode(mode)
     dst = _state_path(path)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".tmp")
-    tmp.write_text(
+    atomic_write_text(
+        dst,
         "# Written by JTS /system USB latency control.\n"
         f"{STATE_ENV_KEY}={canonical}\n",
-        encoding="utf-8",
+        mode=0o644,
     )
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, dst)
     return canonical
 
 

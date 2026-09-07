@@ -23,7 +23,6 @@ write atomically and converge.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 
@@ -32,6 +31,7 @@ from jasper.airplay_mode import (
     MODE_ENV_FILE,
     mode_from_env,
 )
+from jasper.atomic_io import atomic_write_text
 from jasper.env_file import parse_env_mapping
 
 SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # 30s start + 5s stop + client margin
@@ -57,12 +57,7 @@ def _write_mode(mode: str) -> None:
         value = "no"
     else:
         raise ValueError(f"unknown mode {mode!r}")
-    os.makedirs(os.path.dirname(MODE_ENV_FILE), exist_ok=True)
-    tmp = MODE_ENV_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(f"{ENV_VAR}={value}\n")
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, MODE_ENV_FILE)
+    atomic_write_text(MODE_ENV_FILE, f"{ENV_VAR}={value}\n", mode=0o644)
 
 
 def _apply_and_restart() -> int:
