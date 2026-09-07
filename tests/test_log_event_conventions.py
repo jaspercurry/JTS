@@ -400,12 +400,17 @@ def test_deferred_entries_are_active_zone_only():
 
 def test_sound_setup_migration_has_no_exemption_or_backdoor_prefix():
     """The completed sound-page migration stays enforced without a re-deferral."""
-    rel_path = "jasper/web/sound_setup.py"
+    rel_paths = (
+        "jasper/web/sound_setup.py",
+        "jasper/web/sound_profile_apply.py",
+        "jasper/web/sound_active_speaker.py",
+    )
 
-    assert _violations_in(ROOT / rel_path) == []
-    assert rel_path not in DEFERRED_ACTIVE_ZONE
-    assert rel_path not in ALLOWLIST
-    assert not any(rel_path.startswith(prefix) for prefix in _ACTIVE_ZONE_PREFIXES)
+    for rel_path in rel_paths:
+        assert _violations_in(ROOT / rel_path) == []
+        assert rel_path not in DEFERRED_ACTIVE_ZONE
+        assert rel_path not in ALLOWLIST
+        assert not any(rel_path.startswith(prefix) for prefix in _ACTIVE_ZONE_PREFIXES)
 
 
 def test_event_names_are_domain_action():

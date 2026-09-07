@@ -247,7 +247,7 @@ def test_live_draft_warning_quotes_free_text_and_preserves_format(
     monkeypatch.setattr(sound_profile_apply.time, "monotonic", lambda: 100.0)
     sound_profile_apply._live_draft_unavailable_log_at.clear()
 
-    with caplog.at_level(logging.WARNING, logger=sound_setup.__name__):
+    with caplog.at_level(logging.WARNING, logger=sound_profile_apply.__name__):
         sound_profile_apply._log_live_draft_unavailable(
             reason='unsafe reason=x "quoted"',
             output_trim_db=2.25,
@@ -300,7 +300,7 @@ def test_live_draft_event_uses_json_sink(monkeypatch, caplog):
     monkeypatch.setattr(sound_profile_apply.time, "monotonic", lambda: 200.0)
     sound_profile_apply._live_draft_unavailable_log_at.clear()
 
-    with caplog.at_level(logging.WARNING, logger=sound_setup.__name__):
+    with caplog.at_level(logging.WARNING, logger=sound_profile_apply.__name__):
         sound_profile_apply._log_live_draft_unavailable(
             reason="unsafe reason=x",
             output_trim_db=3.25,
