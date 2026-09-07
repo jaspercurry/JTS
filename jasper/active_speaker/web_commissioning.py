@@ -1223,10 +1223,8 @@ async def _play_summed_commission_tone(
         # ``asyncio.create_subprocess_exec`` and awaits it, so the shared
         # correction loop stays responsive (status polls, SSE progress, the
         # safe-playback TTL deadman) for the whole stimulus instead of being
-        # blocked by a synchronous ``subprocess.run``. Same command/device/
-        # WAV pattern as the capture-sweep path above, but a tighter
-        # ``duration_s + 1.0`` deadman bound (capture-sweep above uses
-        # ``duration_s + 5.0``); ``play_wav`` raises ``SweepPlaybackError``
+        # blocked by a synchronous ``subprocess.run``. Playback has a
+        # ``duration_s + 1.0`` bound; ``play_wav`` raises ``SweepPlaybackError``
         # (a ``RuntimeError``) on non-zero exit or timeout, caught below.
         # Resolved ONCE for this operation: the spawn and the payload
         # reporting it use the same transport answer.

@@ -713,8 +713,7 @@ class CrossoverLevelLease:
                 accepted = sum(
                     1 for result in results if result.get("accepted") is True
                 )
-                displayed = dict(targets.get(str(target_id)) or {})
-                displayed.update({
+                targets[str(target_id)] = {
                     "comparison_set_id": (
                         self._durable_repeat_progress.get("comparison") or {}
                     ).get("comparison_set_id"),
@@ -731,8 +730,7 @@ class CrossoverLevelLease:
                         and accepted < DEFAULT_REPEAT_TARGET
                     ),
                     "status": entry.get("status"),
-                })
-                targets[str(target_id)] = displayed
+                }
 
             return {
                 "targets": targets,
