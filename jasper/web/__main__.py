@@ -280,7 +280,7 @@ def _make_google_server(target: object) -> object:
         target,
         registry_path=os.environ.get(
             "JASPER_GOOGLE_ACCOUNTS_PATH",
-            "/var/lib/jasper-secrets/google/accounts.json",
+            google_setup.DEFAULT_REGISTRY_PATH,
         ),
     )
 
