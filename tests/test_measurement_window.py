@@ -1225,6 +1225,32 @@ async def test_voice_uds_command_answers_cancellation_racing_the_reply(monkeypat
     assert task.cancelled()
 
 
+async def test_voice_uds_command_times_out_on_stalled_connect(monkeypatch):
+    """A wedged voice-daemon listener must not hang _voice_uds_command's
+    connect past its 1s bound -- it gates _check_no_active_voice_session,
+    which measurement_window() calls before opening a window."""
+    async def _hang(*_a, **_kw):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(coordinator.asyncio, "open_unix_connection", _hang)
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            coordinator._voice_uds_command(
+                "/tmp/jasper-test-stalled.sock", "STATUS",
+            ),
+            timeout=10.0,
+        )
+    elapsed = loop.time() - start
+    assert elapsed < 3.0, (
+        f"_voice_uds_command took {elapsed:.1f}s against a stalled "
+        "listener -- its connect must raise within its own 1.0s "
+        "asyncio.timeout bound, not the test's outer safety net"
+    )
+
+
 def test_every_deferred_relative_import_resolves():
     """The jasper-control reads are deferred, so nothing executes them here.
 
