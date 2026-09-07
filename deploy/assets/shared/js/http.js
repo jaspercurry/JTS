@@ -10,9 +10,9 @@
 //
 // The CSRF token rides in the <meta name="jts-csrf"> tag that canonical_page()
 // renders into the (no-store) HTML; we read it at call time so the cacheable
-// module never bakes in a secret. Same X-CSRF-Token contract as the inline
-// wizards (jasper.web._common.csrf_fetch_helpers_js / jsonHeaders) — the
-// server's guard_mutating_request() accepts the header just like a hidden form field.
+// module never bakes in a secret. This module is the single owner of the
+// X-CSRF-Token contract every wizard POST rides — the server's
+// guard_mutating_request() accepts the header just like a hidden form field.
 
 function csrfToken() {
   const meta = document.querySelector("meta[name=jts-csrf]");
