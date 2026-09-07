@@ -32,7 +32,7 @@ from jasper.airplay_mode import (
     MODE_ENV_FILE,
     mode_from_env,
 )
-from jasper.env_load import parse_env_text
+from jasper.env_file import parse_env_mapping
 
 SHAIRPORT_RESTART_TIMEOUT_SEC = 36.0  # 30s start + 5s stop + client margin
 
@@ -44,7 +44,7 @@ def _read_mode() -> str:
     (caller surfaces a clean message)."""
     try:
         with open(MODE_ENV_FILE) as f:
-            return mode_from_env(parse_env_text(f.read()))
+            return mode_from_env(parse_env_mapping(f.read()))
     except FileNotFoundError:
         return mode_from_env({})
 

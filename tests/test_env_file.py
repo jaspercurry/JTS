@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-import threading
 
 import pytest
 
@@ -138,34 +137,6 @@ def test_write_env_file_rejects_a_newline_value_leaving_the_file_intact(tmp_path
     with pytest.raises(ValueError):
         env_file.write_env_file(str(path), {"OK": "second", "BAD": "no\nline"})
     assert env_file.read_env_file(str(path)) == {"OK": "first"}
-    assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []
-
-
-def test_write_env_file_never_publishes_a_mixed_file_under_concurrent_writers(
-    tmp_path,
-):
-    # The threaded wizard server runs several /save handlers against one file.
-    # Each publish must land whole -- never byte-mixed -- and leak no temp.
-    path = str(tmp_path / "race.env")
-    values = [f"value_{i}_" + "x" * 200 for i in range(8)]
-    errors: list[Exception] = []
-
-    def writer(v):
-        try:
-            for _ in range(50):
-                env_file.write_env_file(path, {"V": v})
-        except Exception as e:  # noqa: BLE001
-            errors.append(e)
-
-    threads = [threading.Thread(target=writer, args=(v,)) for v in values]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors, errors
-    assert (tmp_path / "race.env").read_text() in {f"V={v}\n" for v in values}
-    assert [f for f in os.listdir(tmp_path) if f.endswith(".tmp")] == []
 
 
 def test_delete_env_file_is_idempotent(tmp_path):

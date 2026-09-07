@@ -17,7 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ...env_load import parse_env_text
+from ...env_file import parse_env_mapping
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -635,7 +635,7 @@ def check_grouping_leader_pipe() -> CheckResult:
 
 def _parse_env_file(text: str) -> dict[str, str]:
     """Parse reconciler-written env text through the canonical parser."""
-    return parse_env_text(text)
+    return parse_env_mapping(text)
 
 
 def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:

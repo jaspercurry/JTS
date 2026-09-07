@@ -5,11 +5,10 @@
 """Shared helpers for the JTS web setup pages.
 
 Every wizard under `jasper/web/` (Spotify, voice, transit, wake, …)
-shares the look, the systemd-style env-file atomics, the
-`systemctl restart jasper-voice` shell-out, and the request-response
-plumbing for navigation hygiene (flash cookies, CSRF tokens, no-store
-caching). What's NOT shared: per-wizard route handlers, page layouts,
-form bodies.
+shares the look, the `systemctl restart jasper-voice` shell-out, and
+the request-response plumbing for navigation hygiene (flash cookies,
+CSRF tokens, no-store caching). What's NOT shared: per-wizard route
+handlers, page layouts, form bodies.
 
 ## Conventions for new wizards
 

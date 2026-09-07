@@ -200,7 +200,7 @@ def test_last_jasper_hostname_assignment_wins(tmp_path):
 
 def test_quoted_jasper_hostname_matches_python_parser(tmp_path):
     """A hand-edited `JASPER_HOSTNAME="x.local"` must parse to the same
-    hostname jasper.env_load.parse_env_text sees — quotes kept on the
+    hostname jasper.env_file.parse_env_mapping sees — quotes kept on the
     bash side would flag drift forever and pollute the allowlist."""
     proc, identity = _run(
         tmp_path,

@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 
+from jasper import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import _common, weather_setup
 
@@ -66,7 +67,7 @@ def test_seed_transit_from_weather_only_when_transit_missing(tmp_path):
         weather_state,
         transit_path=str(transit_path),
     ) is True
-    fields = _common.read_env_file(str(transit_path))
+    fields = env_file.read_env_file(str(transit_path))
     assert fields["JASPER_TRANSIT_LAT"] == "40.653"
     assert fields["JASPER_TRANSIT_LON"] == "-74.007"
     assert fields["JASPER_TRANSIT_DISPLAY_NAME"] == "Sunset Park, Brooklyn"
@@ -80,7 +81,7 @@ def test_seed_transit_from_weather_only_when_transit_missing(tmp_path):
         weather_state,
         transit_path=str(transit_path),
     ) is False
-    assert _common.read_env_file(str(transit_path))["JASPER_TRANSIT_LAT"] == "1.000"
+    assert env_file.read_env_file(str(transit_path))["JASPER_TRANSIT_LAT"] == "1.000"
 
 
 def test_weather_handler_save_writes_env_and_restarts(monkeypatch, tmp_path):
@@ -124,8 +125,8 @@ def test_weather_handler_save_writes_env_and_restarts(monkeypatch, tmp_path):
         srv.server_close()
         thread.join(timeout=2)
 
-    fields = _common.read_env_file(str(state_path))
+    fields = env_file.read_env_file(str(state_path))
     assert fields[weather_setup.DISPLAY_NAME_ENV] == "Paris, France"
     assert fields[weather_setup.UNITS_ENV] == "celsius"
     assert restart_calls == [1]
-    assert _common.read_env_file(str(transit_path))["JASPER_TRANSIT_DISPLAY_NAME"] == "Paris, France"
+    assert env_file.read_env_file(str(transit_path))["JASPER_TRANSIT_DISPLAY_NAME"] == "Paris, France"

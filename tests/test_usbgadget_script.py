@@ -626,7 +626,7 @@ def test_converge_reads_the_kill_switch_from_the_env_file_it_did_not_inherit(
 
 
 def test_env_file_kill_switch_is_read_the_way_the_python_parser_reads_it(tmp_path):
-    """One key, parsed as jasper.env_load.parse_env_text parses it: comments
+    """One key, parsed as jasper.env_file.parse_env_mapping parses it: comments
     skipped, quotes stripped, surrounding whitespace trimmed, last wins. An
     inherited assignment still beats the file, and an unreadable or keyless file
     falls back to the default-on network rather than dropping it."""

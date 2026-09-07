@@ -146,20 +146,35 @@ def remove(text: str, key: str) -> tuple[str, bool]:
     return (body + "\n" if body else ""), changed
 
 
+def read_env_file_text(
+    path: str | os.PathLike[str],
+) -> tuple[str | None, OSError | UnicodeError | None]:
+    """Read ``path`` as UTF-8 text, distinguishing missing from unreadable.
+
+    Returns ``(text, None)`` when the file is read successfully, ``(None,
+    None)`` when it does not exist, or ``(None, exc)`` when it exists but
+    can't be read or decoded — the exception a caller that must tell those
+    two apart (:func:`jasper.env_load.read_env_file_state`) reports.
+    """
+    try:
+        return Path(path).read_text(encoding="utf-8"), None
+    except FileNotFoundError:
+        return None, None
+    except (OSError, UnicodeError) as e:
+        return None, e
+
+
 def read_env_file(path: str | os.PathLike[str]) -> dict[str, str]:
     """The assignments in the file at ``path``, or ``{}`` when it has none.
 
-    Fail-soft: a missing file resolves silently to ``{}``, so a reader outside
-    a secret compartment's group gets an empty mapping rather than a
-    traceback. An existing-but-unreadable file is a provisioning fault, so it
-    is logged before resolving the same way.
+    Fail-soft: a missing file resolves silently to ``{}``. An
+    existing-but-unreadable file is a provisioning fault, so it is logged
+    before resolving the same way.
     """
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    except (OSError, UnicodeError) as e:
-        logger.warning("could not read %s: %s", path, e)
+    text, err = read_env_file_text(path)
+    if text is None:
+        if err is not None:
+            logger.warning("could not read %s: %s", path, err)
         return {}
     return parse_env_mapping(text)
 

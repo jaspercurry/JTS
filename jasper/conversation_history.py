@@ -420,13 +420,12 @@ def write_settings(
     environment: `/chat/`, `/state`, doctor, and jasper-voice all read this
     file fresh so a browser toggle takes effect without a restart.
     """
-    from .atomic_io import atomic_write_text
-    from .env_load import read_env_file_state
+    from . import env_file
 
     base_env = dict(os.environ if environ is None else environ)
     settings_path = path or base_env.get(SETTINGS_PATH_ENV) or DEFAULT_SETTINGS_PATH
     current = read_settings(path=settings_path, environ=base_env)
-    values = dict(read_env_file_state(settings_path).values)
+    values = dict(env_file.read_env_file(settings_path))
 
     values[CAPTURE_ALIAS_ENV] = "1" if capture_enabled else "0"
     # Keep a single capture flag in the wizard-owned file. read_settings()
@@ -434,15 +433,7 @@ def write_settings(
     values.pop(CAPTURE_ENABLED_ENV, None)
     values[DB_PATH_ENV] = current.db_path
 
-    parent = os.path.dirname(settings_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    lines: list[str] = []
-    for key, value in values.items():
-        if "\n" in value or "\r" in value:
-            raise ValueError(f"env value for {key} contains newline")
-        lines.append(f"{key}={value}\n")
-    atomic_write_text(settings_path, "".join(lines), mode=SETTINGS_FILE_MODE)
+    env_file.write_env_file(settings_path, values, mode=SETTINGS_FILE_MODE)
     return read_settings(path=settings_path, environ=base_env)
 
 

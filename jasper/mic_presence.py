@@ -65,7 +65,7 @@ from pathlib import Path
 
 from jasper.accessories.mic_env import read_accessory_mic_sources
 from jasper.atomic_io import read_json_mapping
-from jasper.env_load import parse_env_text
+from jasper.env_file import parse_env_mapping
 from jasper.voice.input_presence import (
     voice_input_absent_marker_lines,
     voice_parked_no_mic,
@@ -256,7 +256,7 @@ def _marker_fields() -> tuple[str, str]:
     carries no ``detail=`` of its own, the unrecognised token becomes the
     detail instead, so an older build's free-form reason still displays.
     """
-    fields = parse_env_text("\n".join(voice_input_absent_marker_lines()))
+    fields = parse_env_mapping("\n".join(voice_input_absent_marker_lines()))
     code = fields.get("reason", "")
     detail = fields.get("detail", "")
     if code and code not in MIC_ABSENT_REASONS and not detail:
