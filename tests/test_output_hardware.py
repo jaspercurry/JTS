@@ -882,28 +882,18 @@ def test_classify_more_than_two_apple_dacs_is_not_auto_promoted() -> None:
 def test_topology_path_resolves_identically_to_the_topology_module(
     monkeypatch,
 ) -> None:
-    """Two modules spell the same topology path; the park needs them equal.
+    """Two resolvers read one topology path; the park needs them equal.
 
-    `output_hardware` keeps its own literal on purpose — importing
-    `output_topology` for a constant would cost the import-cheapness this
-    module advertises, and that trade is the right one. What the trade buys is
-    a drift risk that nothing pinned until the park arm existed:
     `_read_topology_hardware` reads the file through one resolver while
     `_saved_topology_requires_roleful_graph` classifies it through the other,
     so a divergence would not raise — the rolefulness lookup would simply find
     no topology, report "not roleful", and the box would quietly stop parking.
-
-    Asserting the resolvers rather than only the literals also pins the env-var
-    name, which is the other half of "these two name one file".
+    The constant is shared now; the env-var seam is what can still drift.
     """
 
     from jasper import output_topology
 
     monkeypatch.delenv("JASPER_OUTPUT_TOPOLOGY_PATH", raising=False)
-    assert (
-        output_hardware.DEFAULT_TOPOLOGY_PATH
-        == output_topology.OUTPUT_TOPOLOGY_PATH
-    )
     assert output_hardware._topology_path() == output_topology.topology_path()
 
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", "/tmp/jts-elsewhere.json")

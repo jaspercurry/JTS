@@ -84,6 +84,7 @@ from ..control import control_token
 from ..control.restart_broker import manage_units
 from ..env_load import parse_env_file, read_env_file_or_warn
 from ..identity_state import management_read_allowed, mutating_request_allowed
+from ..install_profile import BUILD_MANIFEST_FILE
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..voice.provider_state import read_active_provider
@@ -159,8 +160,6 @@ def toggle_html(
 # shared primitives live in app.css. This is the seam every migrated
 # wizard reuses.
 
-_ASSET_VERSION_PATH = "/var/lib/jasper/build.txt"
-
 
 def _asset_version() -> str:
     """Current cache-busting token for canonical design assets.
@@ -176,7 +175,7 @@ def _asset_version() -> str:
     verified manifest is written; that long-lived process must notice the
     final atomic manifest replacement. This is one tiny local read per page
     navigation, never part of a wizard's polling/data path."""
-    sha = parse_env_file(_ASSET_VERSION_PATH).get("JASPER_GIT_SHA", "")
+    sha = parse_env_file(str(BUILD_MANIFEST_FILE)).get("JASPER_GIT_SHA", "")
     return sha if sha and sha != "unknown" else "dev"
 
 

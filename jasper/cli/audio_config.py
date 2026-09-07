@@ -55,7 +55,6 @@ from jasper.fanin_coupling import (
 )
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
 
-DEFAULT_OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
 # Both transports of the ONE active lane: the snd-aloop active PCM and the
 # ACTIVE RING. A graph naming either is an active-lane graph and must pass the
 # same hardware/topology proof before its pairing is enforced.
@@ -149,7 +148,7 @@ def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_topology_for_ring_wire(path: str) -> tuple[object | None, str]:
+def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
     """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
 
     An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
@@ -624,8 +623,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     render_ring_conf.add_argument(
         "--output-topology",
-        default=DEFAULT_OUTPUT_TOPOLOGY_PATH,
-        help="saved output topology the Ring B channel count is resolved from",
+        default=None,
+        help=(
+            "saved output topology the Ring B channel count is resolved "
+            "from (default: JASPER_OUTPUT_TOPOLOGY_PATH, else the SSOT)"
+        ),
     )
     render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
 
@@ -691,9 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate_outputd.add_argument(
         "--camilla2-statefile", default=DEFAULT_CAMILLA2_STATEFILE_PATH
     )
-    validate_outputd.add_argument(
-        "--output-topology", default=DEFAULT_OUTPUT_TOPOLOGY_PATH
-    )
+    validate_outputd.add_argument("--output-topology", default=None)
     validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
 
     capture_device = sub.add_parser(

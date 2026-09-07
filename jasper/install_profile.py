@@ -61,6 +61,10 @@ DEFAULT_INSTALL_PROFILE = "full"
 FULL_INSTALL_PROFILE = "full"
 STREAMBOX_INSTALL_PROFILE = "streambox"
 INSTALL_PROFILE_FILE = Path("/var/lib/jasper/install_profile")
+#: install.sh writes this from the last row of the INSTALL_STEPS table reached
+#: only after every build/install/migration step completed, so its mtime is
+#: the deploy time and its JASPER_GIT_SHA the deployed build.
+BUILD_MANIFEST_FILE = Path("/var/lib/jasper/build.txt")
 VALID_INSTALL_PROFILES = frozenset({
     FULL_INSTALL_PROFILE,
     STREAMBOX_INSTALL_PROFILE,

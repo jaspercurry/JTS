@@ -53,6 +53,7 @@ from .chip_aec.policy import (
 )
 from .control import client as control
 from .env_load import env_file_path, parse_env_file
+from .install_profile import BUILD_MANIFEST_FILE
 from .log_event import log_event
 from .output_hardware import published_dac_id
 from .route_latency.status_socket import (
@@ -75,7 +76,6 @@ CHIP_AEC_SUPPORTED_DAC_IDS = APPROVED_DAC_IDS
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
-DEFAULT_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
 DEFAULT_BRIDGE_STATS_PATH = Path("/run/jasper/aec_bridge_stats.json")
 DEFAULT_OUTPUTD_STATUS_SOCKET = Path(OUTPUTD_STATUS_SOCKET)
 DEFAULT_CHIP_WAKE_LEGS = ("on",)
@@ -685,7 +685,7 @@ def current_artifact_filter_kwargs(
 
 def _runtime_identity_check(system_env: Mapping[str, str]) -> dict[str, JsonValue]:
     build_env = parse_env_file(
-        str(_env_path("JASPER_BUILD_MANIFEST", DEFAULT_BUILD_MANIFEST_PATH)),
+        str(_env_path("JASPER_BUILD_MANIFEST", BUILD_MANIFEST_FILE)),
     )
     observed = {
         "system_hostname": socket.gethostname(),

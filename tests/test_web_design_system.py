@@ -274,7 +274,7 @@ def test_canonical_page_observes_manifest_replacement_in_warm_process(
     """A wizard activated mid-deploy must not keep the prior asset URL."""
     manifest = tmp_path / "build.txt"
     manifest.write_text("JASPER_GIT_SHA=old123\n")
-    monkeypatch.setattr(_common, "_ASSET_VERSION_PATH", str(manifest))
+    monkeypatch.setattr(_common, "BUILD_MANIFEST_FILE", manifest)
 
     first = _common.canonical_page(
         "Status", "", page_css_href="/assets/system-status/system.css",

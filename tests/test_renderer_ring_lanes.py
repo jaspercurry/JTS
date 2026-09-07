@@ -203,7 +203,7 @@ def test_the_ring_directory_and_prefix_match_the_rust_mirror():
     """fan-in DERIVES the ring path in Rust; this module derives it in Python;
     the conf.d spells it literally. All three must agree or fan-in reads a ring
     nothing writes — a silent source with a healthy-looking daemon."""
-    assert _rust_const("RING_SHM_DIR") == rl.RING_SHM_DIR
+    assert _rust_const("RING_SHM_DIR") == ring_assets.RING_SHM_DIR
     assert _rust_const("RENDERER_RING_PREFIX") == rl.RENDERER_RING_PREFIX
 
 
