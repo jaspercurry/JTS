@@ -22,6 +22,7 @@ from ._shared import (
     _run,
     _systemctl_unavailable_result,
 )
+from ... import identity_state
 from ...active_speaker.environment import (
     camilla_statefile_path,
     read_camilla_statefile_config_path,
@@ -608,10 +609,6 @@ def check_correction_cert_hostname() -> CheckResult:
     later rename (operator or Avahi collision) leaves the SAN stale and the one
     HTTPS wizard shows a browser warning. The effective name comes from
     /var/lib/jasper/identity.env; the fix is a redeploy."""
-    import subprocess
-
-    from ... import identity_state
-
     label = "correction cert ↔ hostname"
     cert_path = Path("/etc/nginx/ssl/jts.local.crt")
     if not cert_path.is_file():
