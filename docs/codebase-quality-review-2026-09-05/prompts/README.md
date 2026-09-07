@@ -56,7 +56,7 @@ and the lane on Space Hater answers on the asking lane's issue. There is no sepa
 
 | Order | James Crane (remote) | Dip (remote) | Space Hater (local, hardware) |
 |---|---|---|---|
-| 1 | **P6 done** (handoff #4387: 14 PRs, net −4,246). Nothing queued; the account's weekly budget is nearly spent | P2 round 2 (#4194: wave A on `main` bar row 8; wave B running; first the ADR-0248 renumber; row 12 = the Cargo workspace, offered) **and** P5 structure #4199 (executing; five PRs open; finishes #4354 as the resolver reshape; confirmed on Dip, the same environment as the coordinator) | **Two sessions.** P11 web UI #4212 (W1 in flight: #4351, #4328, D.8, tests) **and** P3 resilience #4195 (P9 done, handoff #4385; jts3/jts4 deployed and read clean; 28-row plan triaged 14:30 UTC; waves 1–4) |
+| 1 | **P6 done** (handoff #4387). Account idle | P2 round 2 (#4194: wave B landing — #4403, #4368, #4392; row 6, wave C and the Cargo workspace go to the handoff) **and** P5 (#4199: 12 rows on `main` incl. #4354; six PRs rebasing, then the handoff) | **P11 paused** (#4212 note 5573398816: W1 + C.S3/C.S4/C.S5 on `main`; W2 deploy-and-eyeball owed) **and P3 done** (handoff #4416: P0 + wave 1 on `main`; jts4 `37e9557a5`, idle forks 4.8 → 2.4/s) |
 | 2 | — | P7 tests #4201 (after P2 round 2; execution after P5's moves merge) | — |
 | 3 | — | P8 docs #4202 (stale-path pass last) | — |
 
@@ -75,19 +75,16 @@ cue (H2), then replug. jts4: nothing. Read ADR-0244 (the
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-07 14:30 UTC.** Done: P1 (#4279), P4 (#4327), P12 (#4324), P9 (#4385), P6 (#4387;
-#4354 finished by P5 as the resolver reshape). Running: P2 round two (wave A on `main`; wave B held
-behind the ADR fix), P5 (nine PRs open, rebased), P11 (W1 in flight), P3 (plan triaged; P0 #4391 open).
-Since the review's baseline `2bc95106d` (2026-09-05 10:57 UTC): 220 PRs merged; code lines
-`jasper/` +1.9k, `rust/` −0.4k, `deploy/` +0.4k, `scripts/` −1.0k, `tests/` +10.4k — the tree is not
-smaller yet; deletions (P6 −4.2k, P9's daemon split, P2's install table) are offset by what P4, P12
-and P1 added and by tests. **ADR numbers:** two lanes collided at 0247, then both hopped to 0248;
-P6's #4402 moves its file to 0250 and P2's 0248 stays. From now a lane reserves its number on the ADR
-ledger issue before opening the PR (highest reserved + 1; on a tie the later comment yields), never
-from the directory listing. Hardware: jts3 and jts4 on `d4cb8b49d`, clean (health gate proven,
-`host_clock` 15 keys); jts.local on `162ab4088` for the owner's word. The coordinator's hourly check
-is a Routine (`send_later`, re-armed each tick); GitHub's authenticated API quota is shared by every
-session and ran out once at 14:00 UTC, so the check reads with the unauthenticated REST API.
+**State on 2026-09-07 17:15 UTC (paused).** Done: P1 (#4279), P4 (#4327), P12 (#4324), P9 (#4385),
+P6 (#4387), P3 (#4416). Paused with a handoff note: P11 (#4212, 5573398816). Landing their cut: P2
+(wave B) and P5 (six PRs), each followed by a handoff issue. Not started: P7, P8. ADR ledger #4405 in
+use (0248 health gate, 0250 host-clock, 0251 control park, 0252 P2's staging tree); the 0249 copy was
+deleted. Hardware: jts4 `37e9557a5`, jts3 `d4cb8b49d`, jts.local `162ab4088` (the owner's word).
+Since the review's baseline `2bc95106d` (2026-09-05 10:57 UTC) about 245 PRs have merged; code lines
+at 14:30 were `jasper/` +1.9k, `rust/` −0.4k, `deploy/` +0.4k, `scripts/` −1.0k, `tests/` +10.4k —
+the tree is not smaller yet; the shrinking rows are the deferred ones. The coordinator's hourly check
+is a Routine that reads with the unauthenticated REST API (the authenticated quota is shared by every
+session and ran out once at 14:00 UTC).
 
 **Duplicates (owner's rule, 2026-09-07).** No duplicate code stays because it is untested; untested is
 the reason to converge, not to keep. A duplicate found in scope is converged this round by the lane
