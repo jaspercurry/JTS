@@ -21,6 +21,7 @@ import logging
 
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_records
+from tests._wake_loop import wake_loop_for_tests
 
 
 class _SpyTurn:
@@ -65,9 +66,9 @@ class _FixedVad:
 
 def _playback_loop(*, score: float, active: bool, ref_ok: bool = True):
     """A WakeLoop parked mid-playback (``_input_ended`` set)."""
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn = _SpyTurn()
     wl._vad = _FixedVad(score)
@@ -204,13 +205,12 @@ def test_flag_on_threshold_respected():
 def test_resolve_disables_barge_in_without_aec_reference(monkeypatch, tmp_path, caplog):
     """Barge-in requested on a profile with no AEC reference is hard-
     disabled for the turn and WARNs once — the self-interrupt guard."""
-    from jasper.voice_daemon import WakeLoop
 
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_BARGE_IN_GEMINI=1\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._cfg.mic_device = "Array"
     wl._barge_in_reference_available = False
@@ -231,13 +231,12 @@ def test_resolve_disables_barge_in_without_aec_reference(monkeypatch, tmp_path, 
 def test_resolve_enables_barge_in_with_reference(monkeypatch, tmp_path):
     """Flag on + AEC reference present => barge-in active for the turn,
     read fresh from the SSOT file."""
-    from jasper.voice_daemon import WakeLoop
 
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_BARGE_IN_GEMINI=on\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True
 
@@ -249,13 +248,12 @@ def test_resolve_enables_barge_in_with_reference(monkeypatch, tmp_path):
 def test_resolve_defaults_off(monkeypatch, tmp_path):
     """No flag in the SSOT file => barge-in stays OFF even with a valid
     provider and a reference present."""
-    from jasper.voice_daemon import WakeLoop
 
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_VOICE_PROVIDER=gemini\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True
 

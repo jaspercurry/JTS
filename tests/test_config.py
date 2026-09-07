@@ -395,7 +395,7 @@ def test_spend_cap_safety_multiplier_below_one_raises(monkeypatch):
 
 def test_active_voice_model_resolves_for_active_provider(monkeypatch):
     """The model jasper-voice runs, following the provider its own
-    environment names (_active_model)."""
+    environment names (active_model)."""
     # Provider defaults to gemini via the module autouse fixture.
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview")

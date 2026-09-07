@@ -22,17 +22,17 @@ from jasper.conversation_history import (
 )
 from jasper.research import DONE, ResearchJob
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
 def _wake_loop(tmp_path, monkeypatch, *, capture: bool = True):
-    from jasper.voice_daemon import WakeLoop
 
     db_path = tmp_path / "conversation_history.db"
     monkeypatch.setenv(CAPTURE_ALIAS_ENV, "1" if capture else "0")
     monkeypatch.setenv(DB_PATH_ENV, str(db_path))
     store = ConversationStore(str(db_path))
-    wl = WakeLoop.for_tests(conversation_store=store)
+    wl = wake_loop_for_tests(conversation_store=store)
     return wl, store
 
 

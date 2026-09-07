@@ -36,6 +36,7 @@ from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG, State, WakeLoop
 
 from tests._live_turn_fake import FakeLiveTurn, silent_frame
 from tests._log_events import event_field_maps
+from tests._wake_loop import wake_loop_for_tests
 
 _Trigger = Callable[[pytest.MonkeyPatch], Awaitable[list[str]]]
 
@@ -220,7 +221,7 @@ async def _drive_cancel_timeout(
         "RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC",
         0.01,
     )
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.WAKE
     timeline: list[str] = []
     wl._ducker = _OrderedDucker(timeline)
@@ -283,7 +284,7 @@ async def _never_recovers(_timeout: float) -> bool:
 
 async def _trigger_spend_cap(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(a) The spend cap is reached: refused before any turn opens."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     played, rec = _cue_recorder()
     wl._peering.arbitrate = _win
     wl._play_cue = rec
@@ -299,7 +300,7 @@ async def _trigger_spend_cap(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 async def _trigger_connection_paused(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(b) The live connection is still paused after the bounded wait."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     played, rec = _cue_recorder()
     wl._peering.arbitrate = _win
     wl._play_cue = rec
@@ -324,7 +325,7 @@ async def _trigger_idle_init_connection(
     connection = BaseLiveConnection(model="test-model", voice="test-voice")
     assert connection.is_paused() is True
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     played, rec = _cue_recorder()
     wl._connection = connection
     wl._peering.arbitrate = _win
@@ -343,7 +344,7 @@ async def _trigger_idle_init_connection(
 
 async def _trigger_manual_busy(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(d) manual_session_start while a session is already open."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._state = State.SESSION
     result = await wl.manual_session_start()
     assert result == "BUSY"
@@ -377,7 +378,7 @@ def _prepare_teardown(
 async def _trigger_hold_timeout(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(e) A held push-to-talk button: the idle watchdog reaped the turn
     before the model was ever asked to answer."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     _prepare_teardown(
         wl, bytes_sent=4096, chunks_received=0,
         input_ended=False, manual=True,
@@ -390,7 +391,7 @@ async def _trigger_hold_timeout(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
 async def _trigger_no_audio_sent(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(e) A turn that opened and closed with zero bytes ever sent — the
     idle watchdog reaping a wake that fired on noise."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     _prepare_teardown(
         wl, bytes_sent=0, chunks_received=0,
         input_ended=False, manual=False,
@@ -407,7 +408,7 @@ async def _trigger_no_audio_sent_suppressed(
     daemon chose. `mic_muted` is in `NO_ANSWER_CUE_SUPPRESSED_REASONS`, so
     it names itself in the record and is neither counted nor spoken about —
     the shape its `input_ended` sibling already emits."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     _prepare_teardown(
         wl, bytes_sent=0, chunks_received=0,
         input_ended=False, manual=False,
@@ -422,7 +423,7 @@ async def _trigger_recording_timeout(
 ) -> list[str]:
     """(e) A wake turn whose silence detector never tripped: the idle
     watchdog ended it before the wake loop asked for a response."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     _prepare_teardown(
         wl, bytes_sent=4096, chunks_received=0,
         input_ended=False, manual=False,
@@ -435,7 +436,7 @@ async def _trigger_recording_timeout(
 async def _trigger_input_ended_reason(_monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """(e) The pre-existing `input_ended` diagnosis is unchanged by the two
     new sibling branches above."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     _prepare_teardown(
         wl, bytes_sent=4096, chunks_received=0,
         input_ended=True, manual=False, user_speech=True,
@@ -584,7 +585,7 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
     """`_end_turn_inner` losing output ownership after it has begun and
     before it has written anything: the research cancel timeout's handover,
     landing inside the peering notify."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     timeline: list[str] = []
     wl._ducker = _OrderedDucker(timeline)
     _record_output_writes(wl, timeline)

@@ -26,6 +26,8 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from tests._wake_loop import wake_loop_for_tests
+
 
 # Strip ambient JASPER_* env vars so Config.from_env() loads
 # deterministically regardless of the developer's shell.
@@ -80,7 +82,6 @@ def _make_wake_loop(peering_enabled: bool):
     cfg. Only the peering attrs and a few common ones matter for the
     methods under test."""
     from jasper.config import Config
-    from jasper.voice_daemon import WakeLoop
 
     if peering_enabled:
         os.environ["JASPER_PEERING"] = "on"
@@ -89,7 +90,7 @@ def _make_wake_loop(peering_enabled: bool):
     # Use the test constructor to skip hardware while still getting a
     # fully-shaped WakeLoop. We only test methods that touch cfg + a
     # couple of attrs.
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg = cfg
     wl._turn = None
     return wl

@@ -27,6 +27,7 @@ import pytest
 from jasper.voice.session import TurnUsage
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_field_maps, event_fields, event_records
+from tests._wake_loop import _UNSET, wake_loop_for_tests
 
 
 class _SpyTurn:
@@ -65,9 +66,9 @@ def _session_loop(*, manual: bool, elapsed: float = 1.0, idle_timeout: int = 20)
     back-dating ``_turn_started_at_loop`` on the running loop's clock —
     the same clock ``_handle_session_frame`` reads.
     """
-    from jasper.voice_daemon import State, WakeLoop
+    from jasper.voice_daemon import State
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.idle_timeout_sec = idle_timeout
     wl._state = State.SESSION
     wl._turn = _SpyTurn()
@@ -227,9 +228,8 @@ async def test_hold_cap_fires_once_then_frames_are_dropped():
 def test_endpointer_label_prefers_push_to_talk():
     """The button owns both turn boundaries, so it names the endpointer
     whenever it is the source of the turn's audio."""
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
 
     wl._manual_endpoint_this_turn = False
     assert wl._endpointer_label() == "silero_aec"
@@ -240,9 +240,8 @@ def test_endpointer_label_prefers_push_to_talk():
 
 def test_session_status_reports_the_endpointer():
     """The daemon's own decision, on its own STATUS surface."""
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._manual_endpoint_this_turn = True
 
     assert wl.session_status()["endpointer"] == "push_to_talk"
@@ -262,12 +261,11 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     set is the evidence; a stale opposite value is seeded first so a
     no-op would fail.
     """
-    from jasper.voice_daemon import WakeLoop
 
     async def _noop(*_a, **_k) -> None:
         return None
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     # Collaborators `for_tests` does not stub, filled in only so the
     # coroutine reaches its documented explosion point rather than an
     # incidental AttributeError on the way there.
@@ -294,9 +292,8 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
     `_user_speech_seen` for the live silence detector. A button turn runs
     neither, so scoring those frames would cost a Silero pass each and
     change nothing."""
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
     wl._acquire_buffer.extend(silent_frame() for _ in range(4))
@@ -311,9 +308,8 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
 
 async def test_acquire_drain_still_scores_on_a_wake_turn():
     """Mutation of the guard above."""
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
     wl._acquire_buffer.extend(silent_frame() for _ in range(4))
@@ -335,9 +331,8 @@ def test_corpus_label_never_records_a_button_turn_as_a_no_speech_abort():
     it is reachable at all: inline, its push-to-talk arm sat behind a
     wake-event id that a button turn never has).
     """
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
 
     wl._manual_endpoint_this_turn = True
     assert wl._corpus_endpointer_label(user_speech_seen=False) == "push_to_talk"
@@ -410,9 +405,8 @@ class _SpyCues:
 def _teardown_loop():
     """A WakeLoop a caller can tear turns down on, with a cue manager so
     every failure cue the teardown plays is observable."""
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     # Only read by the no-audio diagnostics below; `for_tests`' cfg stub
     # does not carry it because nothing else in that seam reaches them.
     wl._cfg.active_voice_model = "test-model"
@@ -700,13 +694,12 @@ def test_barge_in_refused_on_a_button_turn_and_says_why(
     nothing. `_barge_in_reference_available` was computed from
     cfg.mic_device, which is not the stream a button turn scores — so the
     self-interrupt guard has not cleared that audio."""
-    from jasper.voice_daemon import WakeLoop
 
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_BARGE_IN_GEMINI=1\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True  # would otherwise enable
     wl._manual_endpoint_this_turn = True
@@ -729,13 +722,12 @@ def test_barge_in_refused_on_a_button_turn_and_says_why(
 
 def test_barge_in_still_enabled_on_a_wake_turn(monkeypatch, tmp_path):
     """Mutation of the guard above."""
-    from jasper.voice_daemon import WakeLoop
 
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_BARGE_IN_GEMINI=1\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True
     wl._manual_endpoint_this_turn = False
@@ -751,13 +743,12 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
     """Two distinct facts, two latches. On a speaker with both a room mic
     and a remote, a button turn's refusal must not swallow the
     no-reference WARN a later wake turn owes the operator."""
-    from jasper.voice_daemon import WakeLoop
 
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_BARGE_IN_GEMINI=1\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._cfg.mic_device = "Array"
     wl._barge_in_reference_available = False
@@ -808,11 +799,7 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     `InputDeviceUnavailable` and the daemon exits before it ever sees the
     remote. See ADR-0217.
     """
-    from jasper.voice_daemon import (
-        WakeLoop,
-        configured_wake_legs,
-        _UNSET,
-    )
+    from jasper.voice_daemon import configured_wake_legs
     from tests._manual_mics import remote_mic
 
     plan = configured_wake_legs(
@@ -820,7 +807,7 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     )
     assert [spec.token for spec, _device in plan] == expected_tokens
 
-    wl = WakeLoop.for_tests(
+    wl = wake_loop_for_tests(
         legs=_UNSET if plan else [],
         manual_mics=[remote_mic()],
     )
@@ -887,8 +874,8 @@ def test_silero_is_built_only_where_a_turn_can_ever_read_it(
 
     monkeypatch.setattr(vd, "SpeechVAD", _CountingVad)
 
-    wl = vd.WakeLoop.for_tests(
-        legs=[] if ptt_only else vd._UNSET,
+    wl = wake_loop_for_tests(
+        legs=[] if ptt_only else _UNSET,
         manual_mics=[remote_mic()],
         vad=None,
     )
@@ -954,10 +941,9 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
     """`_begin_turn`'s LSTM reset was the ONE `_vad` site the push-to-talk
     flags did not already gate, so it is the first thing a held button
     would hit on a speaker that has no model to reset."""
-    from jasper import voice_daemon as vd
     from tests._manual_mics import remote_mic
 
-    wl = vd.WakeLoop.for_tests(
+    wl = wake_loop_for_tests(
         legs=[],
         manual_mics=[remote_mic()],
         vad=None,
