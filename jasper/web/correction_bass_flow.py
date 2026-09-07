@@ -21,21 +21,19 @@ from http import HTTPStatus
 from typing import Any
 
 from ._common import canonical_header, canonical_page
-from .correction_hub import section_tabs
 
 logger = logging.getLogger(__name__)
 
 
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
     header = canonical_header(
-        "Correction",
-        back_href=f"http://{html.escape(hostname, quote=True)}/",
+        "Bass",
+        back_href=f"http://{html.escape(hostname, quote=True)}/sound/",
+        back_label="Sound",
     )
     body = f"""
 {header}
 <main class="page correction-measurement bass-page">
-  {section_tabs("bass")}
-
   <section class="info-card info-card--accent">
     <h2 class="section__title">Bass management</h2>
     <p class="form-hint">
@@ -72,7 +70,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 <script type="module" src="/assets/correction/js/bass/main.js"></script>
 """
     return canonical_page(
-        "Bass management — JTS speaker",
+        "Bass",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/correction/crossover.css",

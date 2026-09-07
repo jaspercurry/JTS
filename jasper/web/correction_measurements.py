@@ -19,7 +19,6 @@ from jasper.active_speaker.measurement_archive import (
 )
 
 from ._common import canonical_header, canonical_page
-from .correction_hub import section_tabs
 
 CATALOG_SCHEMA = "jts_frequency_catalog/1"
 
@@ -34,11 +33,14 @@ class MeasurementViewRequestError(ValueError):
 
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
     escaped_host = html.escape(hostname, quote=True)
+    header = canonical_header(
+        "Measurements",
+        back_href=f"http://{escaped_host}/sound/",
+        back_label="Sound",
+    )
     body = f"""
-{canonical_header("Measurements", back_href=f"http://{escaped_host}/")}
+{header}
 <main class="page measurements-page">
-  {section_tabs("measurements")}
-
   <section class="info-card info-card--accent">
     <p class="eyebrow">Saved measurements</p>
     <h2 class="section__title">Frequency response</h2>
@@ -63,7 +65,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 <script type="module" src="/assets/correction/js/measurements.js"></script>
 """
     return canonical_page(
-        "Measurements — JTS speaker",
+        "Measurements",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/correction/measurements.css",

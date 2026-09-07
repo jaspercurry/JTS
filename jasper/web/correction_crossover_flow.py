@@ -13,22 +13,19 @@ from typing import Any, Mapping
 
 from ..log_event import log_event
 from ._common import canonical_header, canonical_page
-from .correction_hub import section_tabs
 
 logger = logging.getLogger(__name__)
 
 
 def render_page(hostname: str, csrf_token: str = "") -> bytes:
     header = canonical_header(
-        "Correction",
+        "Active speaker",
         back_href=f"http://{html.escape(hostname, quote=True)}/sound/",
         back_label="Sound",
     )
     body = f"""
 {header}
 <main class="page correction-measurement crossover-page" data-required-sr="48000">
-  {section_tabs("crossover")}
-
   <section class="info-card info-card--accent">
     <p class="eyebrow">Speaker layer</p>
     <h2 class="section__title">Calibrate the active crossover</h2>
@@ -112,9 +109,8 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 """
     return canonical_page(
         # User-facing browser-tab title only (#1670 rename) — the route,
-        # slug, section_tabs key, and every internal identifier stay
-        # "crossover".
-        "Active speaker measurement — JTS speaker",
+        # slug, and every internal identifier stay "crossover".
+        "Active speaker",
         body,
         csrf_token=csrf_token,
         page_css_href="/assets/correction/crossover.css",

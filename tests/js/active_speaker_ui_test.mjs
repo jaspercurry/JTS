@@ -224,7 +224,7 @@ assert.ok(/explicitly apply/i.test(NEARFIELD_LEVEL_MATCH_GUIDANCE));
 // plain HTTP, so it has no getUserMedia and no recorder in this bundle; the
 // capture lives on the HTTPS /sound/speaker/crossover/ page. BOTH halves are
 // pinned: the typeable path (the host alone lands nowhere useful) and the
-// destination's label, which correction_hub.SECTIONS owns.
+// destination's label, which jasper.web.nav's NAV owns.
 assert.ok(
   NEARFIELD_LEVEL_MATCH_GUIDANCE.includes("jts.local/sound/speaker/crossover"),
 );

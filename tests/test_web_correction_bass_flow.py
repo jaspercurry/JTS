@@ -19,10 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_render_page_is_a_canonical_page_with_the_bass_module():
     html = flow.render_page("jts.local", "tok123").decode()
-    # Canonical page shell (CSRF meta, app.css) and the bass section-tab active.
+    # Canonical page shell (CSRF meta, app.css).
     assert 'name="jts-csrf"' in html
     assert '/assets/app.css' in html
-    assert 'aria-current="page" href="/sound/bass/"' in html
     assert "Bass management" in html
     # The static ES module is loaded (no inline script behaviour on the page).
     assert '<script type="module" src="/assets/correction/js/bass/main.js">' in html

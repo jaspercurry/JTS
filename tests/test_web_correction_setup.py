@@ -152,15 +152,6 @@ def test_render_links_page_css_and_module():
     assert 'type="module"' in html
 
 
-def test_render_has_correction_measurement_tabs():
-    html = _render()
-    assert 'aria-label="Speaker correction"' in html
-    assert 'href="/sound/room/"' in html
-    assert 'href="/sound/speaker/crossover/"' in html
-    assert 'href="/sound/bass/"' in html
-    assert 'aria-current="page" href="/sound/room/"' in html
-
-
 def test_render_has_no_inline_script_iife():
     """The page behaviour was relocated into the ES module; the legacy
     inline <script> IIFE must be gone (gating: no inline JS on a migrated
@@ -214,7 +205,7 @@ def test_render_keeps_only_plain_local_certificate_warning():
     assert "/jts-root-ca.crt" not in html
     assert "Certificate Trust Settings" not in html
     assert "mkcert" not in html
-    assert 'id="readiness-blocker-action" class="btn hidden" href=""' in html
+    assert 'id="readiness-blocker-action" class="btn" hidden href=""' in html
     assert 'id="readiness-blocker-action" class="btn" href="/sound/"' not in html
 
 
@@ -240,7 +231,7 @@ def test_render_leaves_household_default_copy_to_the_envelope():
     )
     assert "automatically repeats the main-seat measurement once" not in html
     assert html.index('id="repeat-main-position-disclosure"') < html.index(
-        'id="measurement-options" class="hidden"'
+        'id="measurement-options" hidden'
     )
     assert "house-curve tilt" not in html
     assert "PEQ policy" not in html

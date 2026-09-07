@@ -1088,7 +1088,7 @@ def test_local_capture_binds_realized_input_before_level_matching():
     assert action_fn.index("ep === '/autolevel/start'") < action_fn.index(
         "ep === '/upload-noise'"
     )
-    assert "wizardNextBtn.classList.add('hidden')" in action_fn
+    assert "wizardNextBtn.hidden = true" in action_fn
     upload_branch = action_fn.split("ep === '/upload-noise'", 1)[1].split(
         "} else if", 1
     )[0]
