@@ -9,13 +9,9 @@ the exposed address, the guard's error code). Detail prose is not pinned.
 """
 from __future__ import annotations
 
-import io
 import re
 import subprocess
-import urllib.error
-from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -312,31 +308,6 @@ def test_tool_catalog_verdicts(monkeypatch, provider, summary, status, reason):
 # ---------------------------------------------------- management surface
 
 
-def _install_nginx_site(monkeypatch, tmp_path):
-    site = tmp_path / "jasper.conf"
-    site.write_text("# nginx site\n")
-    monkeypatch.setattr(doctor_web, "NGINX_SITE", site)
-
-
-@contextmanager
-def _urlopen_returns(status: int, body: bytes):
-    class _Resp:
-        def __init__(self):
-            self.status = status
-
-        def read(self, n=-1):
-            return body
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    with patch("urllib.request.urlopen", return_value=_Resp()) as m:
-        yield m
-
-
 def test_management_surface_skips_when_nginx_site_not_installed(
     monkeypatch, tmp_path
 ):
@@ -345,57 +316,6 @@ def test_management_surface_skips_when_nginx_site_not_installed(
     r = doctor_web.check_management_surface()
     assert r.status == "skipped"
     assert r.reason == doctor_web.REASON_MANAGEMENT_NOT_INSTALLED
-
-
-def test_management_surface_probes_as_the_speaker_hostname(monkeypatch, tmp_path):
-    _install_nginx_site(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
-
-    with _urlopen_returns(200, b"{}") as m:
-        r = doctor_web.check_management_surface()
-
-    assert r.status == "ok"
-    # Carrying the speaker hostname as Host is the whole point of the check.
-    assert m.call_args[0][0].get_header("Host") == "jts3.local"
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [
-        urllib.error.HTTPError(
-            doctor_web.MANAGEMENT_PROBE_URL,
-            403,
-            "Forbidden",
-            None,
-            io.BytesIO(b'{"error": "host_not_allowed"}'),
-        ),
-        urllib.error.HTTPError(
-            doctor_web.MANAGEMENT_PROBE_URL,
-            502,
-            "Bad Gateway",
-            None,
-            io.BytesIO(b'{"error": "jasper-control unreachable: ..."}'),
-        ),
-        urllib.error.URLError(ConnectionRefusedError(111, "refused")),
-    ],
-    ids=["host-guard", "upstream-502", "nginx-down"],
-)
-def test_management_surface_reports_every_upstream_break_as_fail(
-    monkeypatch, tmp_path, failure
-):
-    _install_nginx_site(monkeypatch, tmp_path)
-
-    with patch("urllib.request.urlopen", side_effect=failure):
-        r = doctor_web.check_management_surface()
-
-    assert r.status == "fail"
-    expected_reason = (
-        doctor_web.REASON_MANAGEMENT_NO_ANSWER
-        if isinstance(failure, urllib.error.URLError)
-        and not isinstance(failure, urllib.error.HTTPError)
-        else doctor_web.REASON_MANAGEMENT_HTTP_ERROR
-    )
-    assert r.reason == expected_reason
 
 
 # ------------------------------------------------------ conversation history

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from ...control import control_token
@@ -129,22 +131,25 @@ MANAGEMENT_502_HINT = (
 )
 
 
+def _read_management_response(url: str, host: str) -> tuple[int, str]:
+    """Read nginx through the management host guard; bound time and body size."""
+    req = urllib.request.Request(url, headers={"Host": host})
+    try:
+        with urllib.request.urlopen(req, timeout=6.0) as resp:
+            status = resp.status
+            body = resp.read(512)
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        body = exc.read(512) if exc.fp else b""
+    return status, body.decode("utf-8", "replace").strip()[:120]
+
+
 @doctor_check(core=True)
 def check_management_surface() -> CheckResult:
-    """The management UI must answer through nginx under the speaker's
-    real hostname.
+    """Probe nginx → system wizard → control under the speaker's hostname.
 
-    Probes /system/data.json on loopback nginx with the resolved speaker
-    hostname as `Host` — the exact path a browser takes (nginx →
-    socket-activated system wizard → jasper-control behind its
-    management-host guard), so any break in that chain (guard rejection,
-    wizard socket misbind, control down) fails here. A 502 is the one status
-    two of those hops share, so that branch names both candidates and hands
-    the wizard one to :func:`check_wizard_socket_start_limits` rather than
-    attributing it to jasper-control alone (#2465)."""
-    import urllib.error
-    import urllib.request
-
+    Both upstream hops can return 502; MANAGEMENT_502_HINT names both.
+    """
     label = "management surface (/system/)"
     if not NGINX_SITE.exists():
         return CheckResult(
@@ -152,15 +157,9 @@ def check_management_surface() -> CheckResult:
             reason=REASON_MANAGEMENT_NOT_INSTALLED,
         )
     host = resolve_hostname()
-    req = urllib.request.Request(MANAGEMENT_PROBE_URL, headers={"Host": host})
     try:
-        with urllib.request.urlopen(req, timeout=6.0) as resp:
-            status = resp.status
-            body = resp.read(512)
-    except urllib.error.HTTPError as e:
-        status = e.code
-        body = e.read(512) if e.fp else b""
-    except (urllib.error.URLError, OSError) as e:
+        status, detail = _read_management_response(MANAGEMENT_PROBE_URL, host)
+    except OSError as e:
         return CheckResult(
             label, "fail",
             f"no answer from nginx on 127.0.0.1 for Host: {host} ({e}) — "
@@ -171,7 +170,6 @@ def check_management_surface() -> CheckResult:
         return CheckResult(
             label, "ok", f"200 via nginx as Host: {host}",
         )
-    detail = body.decode("utf-8", "replace").strip()[:120]
     if status == 403:
         hint = (
             " — the management-host guard rejected the request; check "
