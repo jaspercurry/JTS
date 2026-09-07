@@ -69,6 +69,46 @@ def _nginx_location_block(nginx: str, location: str) -> str:
     return match.group(0)
 
 
+_LOCATION_RX = re.compile(
+    r"(?m)^    location +(?:(?P<mod>=|\^~|~\*?) +)?(?P<path>\S+) *\{"
+)
+
+
+def _nginx_servers(conf: str) -> list[tuple[frozenset[int], dict]]:
+    """Every top-level `server {}`: its listener ports and its locations.
+
+    Locations are keyed `(modifier, path)` — `("=", "/sound/pair/sync")` for
+    an exact block — and carry their brace-balanced body, so a caller reads
+    structure rather than slicing the file on comment text or line order.
+    """
+    servers = []
+    for chunk in conf.split("\nserver {")[1:]:
+        body = chunk[: chunk.index("\n}")]
+        ports = frozenset(
+            int(m.group(1))
+            for m in re.finditer(r"(?m)^    listen +(?:\[::\]:)?(\d+)", body)
+        )
+        locations = {}
+        for m in _LOCATION_RX.finditer(body):
+            start = body.index("{", m.start())
+            depth, end = 0, start
+            while True:
+                depth += {"{": 1, "}": -1}.get(body[end], 0)
+                if depth == 0:
+                    break
+                end += 1
+            locations[(m.group("mod") or "", m.group("path"))] = body[start + 1 : end]
+        servers.append((ports, locations))
+    return servers
+
+
+def _proxy_upstream(block: str) -> str:
+    """The `host:port` a location proxies to, without its mapped path."""
+    match = re.search(r"proxy_pass +https?://([^/;\s]+)", block)
+    assert match is not None, f"no proxy_pass in block: {block!r}"
+    return match.group(1)
+
+
 def _assert_strong_no_cache(block: str) -> None:
     assert (
         'add_header Cache-Control "no-store, no-cache, max-age=0, must-revalidate" always;'
@@ -707,23 +747,52 @@ def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
     )
 
 
-def test_nginx_serves_sync_measurement_over_https() -> None:
-    nginx = _NGINX_PATH.read_text(encoding="utf-8")
-    https_block = nginx[nginx.index("listen 443") :]
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_speaker_timing_is_mounted_on_both_listeners(conf_path: Path) -> None:
+    """`/sound/pair/sync/` rides both listeners in both profiles, on the same
+    correction backend as `/sound/room/` (docs/UX-AUDIT-2026-09-03.md §2).
 
-    assert "location = /sync { return 308 /sync/; }" in https_block
-    assert "location /sync/" in https_block
-    sync_block = https_block[
-        https_block.index("location /sync/") :
-        https_block.index("# Static assets for the canonical look")
+    Mic capture needs the HTTPS origin, but a page mounted only there 404s on
+    the plain-HTTP journey and invites a redirect into the self-signed origin
+    (issue #2632) — so it is mounted on both, exactly as `/sound/room/` is.
+    """
+    servers = _nginx_servers(conf_path.read_text(encoding="utf-8"))
+    listeners = set()
+    for ports, locations in servers:
+        room = locations.get(("", "/sound/room/"))
+        if room is None:
+            continue
+        sync = locations.get(("", "/sound/pair/sync/"))
+        assert sync is not None, f"no /sound/pair/sync/ on listeners {set(ports)}"
+        assert _proxy_upstream(sync) == _proxy_upstream(room)
+        assert "proxy_pass http://127.0.0.1:8770/sync/;" in sync
+        # A short mono marker capture, deliberately below the correction cap.
+        assert "client_max_body_size 2m;" in sync
+        assert "proxy_buffering off;" in sync
+        assert "proxy_read_timeout 600s;" in sync
+        assert "return 302" not in sync
+        exact = locations[("=", "/sound/pair/sync")]
+        assert exact.strip() == "return 308 /sound/pair/sync/;"
+        listeners |= set(ports)
+
+    assert listeners == {80, 443}
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_no_conf_still_mounts_the_old_sync_path(conf_path: Path) -> None:
+    """The move is a move: no redirect and no compat block left behind."""
+    stale = [
+        (mod, path)
+        for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8"))
+        for mod, path in locations
+        if path == "/sync" or path.startswith("/sync/")
     ]
-    assert "proxy_pass http://127.0.0.1:8770;" in sync_block
-    assert "client_max_body_size 2m;" in sync_block
-    assert "proxy_buffering off;" in sync_block
-    assert "proxy_read_timeout 600s;" in sync_block
-    assert https_block.index("location /sync/") < https_block.index(
-        "return 302 http://$host$request_uri;"
-    )
+
+    assert stale == []
 
 
 def test_install_stamps_app_css_cache_bust_version() -> None:

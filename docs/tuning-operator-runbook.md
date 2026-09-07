@@ -179,10 +179,9 @@ never a hard-coded `jts.local`. `scripts/run-crossover-round.py` resolves
 **The measurement surfaces are HTTPS, and there are several.** `getUserMedia`
 needs a secure context, so nginx's 443 block serves the whole measurement
 family: `/sound/room/`, `/sound/speaker/crossover/`, `/sound/bass/`,
-`/sound/measurements/` and `/sync/` — the last one **HTTPS-only** (port 80
-404s them). Plain `http://` still serves the ordinary wizards. `install.sh`
-provisions the private CA; a device has to trust it once before any of this
-works. nginx strips its own prefix, so a public path reaches the backend
+`/sound/measurements/` and `/sound/pair/sync/`. Plain `http://` serves the
+same paths, and the ordinary wizards. `install.sh` provisions the private
+CA; a device has to trust it once before any of this works. nginx strips its own prefix, so a public path reaches the backend
 route under it:
 
 ```

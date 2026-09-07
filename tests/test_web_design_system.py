@@ -552,7 +552,7 @@ def test_design_language_doc_is_reachable_and_dated():
 
 # ---------------------------------------------------------------- #
 # docs/UX-AUDIT-2026-09-03.md §5.2 — every page shell renders        #
-# `.app-header` (recurrence: /balance/ [deleted], /sync/).           #
+# `.app-header` (recurrence: /balance/ [deleted], /sync/ [moved]).   #
 # ---------------------------------------------------------------- #
 
 # A "page" is a *_setup.py/*_flow.py module that owns a page shell (it calls
@@ -568,16 +568,11 @@ _PAGE_SHELL_MODULES = tuple(
     if "canonical_page(" in p.read_text()
 )
 
-# Shrink-only: a page listed here is missing `.app-header` today. Remove its
-# entry in the same PR that gives the page a header — the test below fails
-# on a stale entry (page fixed, allowlist not updated) exactly as it fails
-# on a brand-new regression.
-NO_APP_HEADER_ALLOWLIST = {
-    "sync_flow.py": (
-        "no header at all today; folds into /sound/pair/sync/ with its own "
-        "canonical_header (C.S4)"
-    ),
-}
+# Shrink-only, and empty: every page shell renders `.app-header`. An entry
+# here says a page is missing one today; the test below fails on a stale
+# entry (page fixed, allowlist not updated) exactly as on a new regression.
+# Delete this allowlist once §5.2 has no ledger row left to retire.
+NO_APP_HEADER_ALLOWLIST: dict[str, str] = {}
 
 
 def _renders_app_header(path: Path) -> bool:

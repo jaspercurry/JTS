@@ -213,12 +213,12 @@ def test_get_root_renders_canonical_document(monkeypatch):
 
 
 def test_get_root_has_shared_app_header(monkeypatch):
-    # The combined directory + wake-response surface is titled "Speakers"
-    # ("my other speakers" is one household concern) — /sound/pair/ is canonical.
+    # The combined directory + wake-response surface carries its manifest
+    # label (docs/web-ia.md §2) — /sound/pair/ is canonical.
     _patch_discovery(monkeypatch, speakers=[])
     out = _get("/").wfile.getvalue().decode()
     assert 'class="app-header"' in out
-    assert '<h1 class="app-header__title">Speakers</h1>' in out
+    assert '<h1 class="app-header__title">Stereo pair</h1>' in out
     assert '<use href="#icon-back"></use>' in out
 
 

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stereo-pair acoustic sync flow (`/sync/*`).
+"""Stereo-pair acoustic sync flow (`/sound/pair/sync/`).
 
 Handler layer only. The signal generation and analysis live in
 ``jasper.multiroom.sync_measure``; this module owns the measurement
@@ -26,6 +26,8 @@ from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
 from ._common import (
+    canonical_header,
+    canonical_page,
     close_awaitable,
     reset_session_locked,
     terminate_async_process,
@@ -467,16 +469,10 @@ def handle_stop() -> tuple[dict, int]:
     return {"ok": True}, HTTPStatus.OK
 
 
-_PAGE_CSS = """
-.sync-card { max-width: 620px; }
-.sync-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
-.sync-status { min-height: 1.4em; margin: 0.8rem 0; font-weight: 600; }
-"""
-
-_PAGE_BODY = """
+_PAGE_BODY = f"""
+{canonical_header("Speaker timing", back_href="/sound/pair/",
+                  back_label="Stereo pair")}
 <main class="page">
-  <p class="eyebrow">Stereo pair</p>
-  <h1>Measure sync</h1>
   <section class="info-card sync-card">
     <p>This page measures left/right arrival timing at the listening
     position. It plays a short marker through the bonded pair, records
@@ -497,11 +493,9 @@ _PAGE_BODY = """
 
 
 def render_page(csrf_token: str) -> bytes:
-    from ._common import canonical_page
-
     return canonical_page(
-        "Measure sync",
+        "Speaker timing",
         _PAGE_BODY,
         csrf_token=csrf_token,
-        page_css=_PAGE_CSS,
+        page_css_href="/assets/sync/sync.css",
     )

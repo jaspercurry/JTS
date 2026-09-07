@@ -52,6 +52,9 @@ NAV: tuple[NavRow, ...] = (
     NavRow("Sound", "Stereo pair", "/sound/pair/", "/sound/",
            ("content_dsp", "pair_management"), "peers", "",
            "Group speakers · Wake response"),
+    NavRow("Sound", "Speaker timing", "/sound/pair/sync/", "/sound/pair/",
+           ("content_dsp", "pair_management"), "wave", "",
+           "Left/right arrival timing"),
     NavRow("Sound", "Room correction", "/sound/room/", "/sound/", ("content_dsp",),
            "wave", "", "Microphone measurement"),
     NavRow("Sound", "Bass", "/sound/bass/", "/sound/", ("content_dsp",),
@@ -101,8 +104,13 @@ def children(parent: str) -> tuple[NavRow, ...]:
 
 
 def hub_paths() -> tuple[str, ...]:
-    """Every path rows hang under other than the landing: the hub pages."""
-    return tuple(dict.fromkeys(row.parent for row in NAV if row.parent != "/"))
+    """The landing rows that are themselves parents: the static hub pages.
+
+    Being a parent is not enough — a page one level down keeps its own
+    daemon when it gains a child.
+    """
+    parents = {row.parent for row in NAV}
+    return tuple(r.path for r in NAV if r.parent == "/" and r.path in parents)
 
 
 def _gate_attr(gates: tuple[str, ...]) -> str:
