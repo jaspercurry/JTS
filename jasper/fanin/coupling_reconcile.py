@@ -469,12 +469,12 @@ def _daemon_op_ceiling_sec(
 
 # Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
 # the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
-# 10 s), and up to three :data:`ENV_FILE_LOCK_TIMEOUT_SECONDS` per-file env
-# lock waits (10 s each: the combo write in ``reconcile_auto``, the fanin and
-# outputd writes in ``_converge_ring``) — the in-process figures
+# 10 s), and five :data:`ENV_FILE_LOCK_TIMEOUT_SECONDS` waits (10 s each: the
+# combo write, the fanin and outputd writes, and both ``_restore_snapshot``
+# calls on the failure path) — the in-process figures
 # jasper-fanin-coupling-auto.service's own tally carries, which no broker
 # multiplier touches.
-_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 69.0
+_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 89.0
 
 
 def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
@@ -814,7 +814,7 @@ def reconcile_coupling(
         return result
     if result.changed and result.ok:
         # FIRE-AND-FORGET: the re-bake outruns any wait this side could justify
-        # (TimeoutStartSec=6466) and killing the client would not cancel the
+        # (TimeoutStartSec=6546) and killing the client would not cancel the
         # queued job. `ok` is "systemd ACCEPTED the job" — logged because a
         # drifted unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
