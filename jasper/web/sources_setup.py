@@ -689,6 +689,103 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     )
 
 
+def _get_index(handler: BaseHTTPRequestHandler) -> None:
+    ctx = begin_request(handler)
+    send_html_response(
+        handler,
+        _index_html(ctx["csrf_token"], status_msg=ctx["flash"]),
+    )
+
+
+def _get_state(handler: Any) -> None:
+    try:
+        handler._send_json(_gather_state())
+    except Exception as e:  # noqa: BLE001
+        logger.exception("/state failed")
+        handler._send_json({"error": str(e)}, status=502)
+
+
+def _post_set(handler: Any, body: dict[str, Any]) -> None:
+    source = str(body.get("source") or "")
+    if source not in VALID_SOURCES:
+        handler._send_json({"error": f"unknown source {source!r}"}, status=400)
+        return
+    enabled_value = body.get("enabled")
+    if not isinstance(enabled_value, bool):
+        handler._send_json(
+            {"error": "enabled must be true or false"}, status=400,
+        )
+        return
+    enabled = enabled_value
+    if bonded_follower_active():
+        # The pair owns its input surface while bonded. Keep a follower
+        # from accumulating hidden member-local desired changes that
+        # would surprise the household on unpair.
+        handler._send_json(
+            {"error": "sources are managed by the stereo "
+                      "pair while this speaker is a "
+                      "follower — unpair on /sound/pair/ to "
+                      "change local sources"},
+            status=409,
+        )
+        return
+    try:
+        _apply(source, enabled)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("toggle %s -> %s failed", source, enabled)
+        # The intent write happens before reconciliation. If apply
+        # fails, read it back so the client keeps the user's durable
+        # choice checked and shows runtime degradation instead of
+        # falsely rolling intent back to the old observed state.
+        try:
+            state = _gather_state()
+        except (OSError, RuntimeError, ValueError):
+            logger.exception("failed toggle state readback")
+            payload: dict[str, Any] = {"error": str(e)}
+            try:
+                durable_desired = source_intent_enabled(
+                    SOURCE_BY_WIZARD_KEY[source],
+                )
+            except (OSError, RuntimeError, ValueError):
+                logger.exception("failed isolated intent readback")
+            else:
+                payload["desired"] = durable_desired
+                payload["intentRecorded"] = durable_desired is enabled
+            handler._send_json(payload, status=502)
+        else:
+            handler._send_json({"error": str(e), "state": state}, status=502)
+        return
+    log_event(
+        logger,
+        "sources.set",
+        source=source,
+        enabled=enabled,
+        client=handler.address_string(),
+    )
+    # Read-back the state we just applied so the client UI reconciles
+    # against truth (in case systemctl no-op'd or DBus rejected the
+    # property write).
+    try:
+        state = _gather_state()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("/set readback failed")
+        handler._send_json(
+            {"error": str(e), "desired": enabled, "intentRecorded": True},
+            status=502,
+        )
+        return
+    handler._send_json(state)
+
+
+# do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+# (exact path -> handler callable) — module-level (not class attributes)
+# since no per-server state is captured here. ORDERING IS LOAD-BEARING:
+# each method looks up the route first, so an unknown path 404s before
+# the read/CSRF guard runs.
+_GET_ROUTES = {"/": _get_index, "/state": _get_state}
+_POST_ROUTES = {"/set": _post_set}
+
+
 def _make_handler() -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -705,114 +802,25 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(
-                    self,
-                    _index_html(ctx["csrf_token"], status_msg=ctx["flash"]),
-                )
+            handler_fn = _GET_ROUTES.get(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if path == "/state":
-                if not guard_read_request(self):
-                    return
-                try:
-                    self._send_json(_gather_state())
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/state failed")
-                    self._send_json({"error": str(e)}, status=502)
+            if not guard_read_request(self):
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path == "/set":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                body = self._read_json()
-                source = str(body.get("source") or "")
-                if source not in VALID_SOURCES:
-                    self._send_json(
-                        {"error": f"unknown source {source!r}"}, status=400,
-                    )
-                    return
-                enabled_value = body.get("enabled")
-                if not isinstance(enabled_value, bool):
-                    self._send_json(
-                        {"error": "enabled must be true or false"}, status=400,
-                    )
-                    return
-                enabled = enabled_value
-                if bonded_follower_active():
-                    # The pair owns its input surface while bonded. Keep a
-                    # follower from accumulating hidden member-local desired
-                    # changes that would surprise the household on unpair.
-                    self._send_json(
-                        {"error": "sources are managed by the stereo "
-                                  "pair while this speaker is a "
-                                  "follower — unpair on /sound/pair/ to "
-                                  "change local sources"},
-                        status=409,
-                    )
-                    return
-                try:
-                    _apply(source, enabled)
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("toggle %s -> %s failed", source, enabled)
-                    # The intent write happens before reconciliation. If apply
-                    # fails, read it back so the client keeps the user's durable
-                    # choice checked and shows runtime degradation instead of
-                    # falsely rolling intent back to the old observed state.
-                    try:
-                        state = _gather_state()
-                    except (OSError, RuntimeError, ValueError):
-                        logger.exception("failed toggle state readback")
-                        payload: dict[str, Any] = {"error": str(e)}
-                        try:
-                            durable_desired = source_intent_enabled(
-                                SOURCE_BY_WIZARD_KEY[source],
-                            )
-                        except (OSError, RuntimeError, ValueError):
-                            logger.exception("failed isolated intent readback")
-                        else:
-                            payload["desired"] = durable_desired
-                            payload["intentRecorded"] = (
-                                durable_desired is enabled
-                            )
-                        self._send_json(payload, status=502)
-                    else:
-                        self._send_json(
-                            {"error": str(e), "state": state}, status=502,
-                        )
-                    return
-                log_event(
-                    logger,
-                    "sources.set",
-                    source=source,
-                    enabled=enabled,
-                    client=self.address_string(),
-                )
-                # Read-back the state we just applied so the client UI
-                # reconciles against truth (in case systemctl no-op'd
-                # or DBus rejected the property write).
-                try:
-                    state = _gather_state()
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/set readback failed")
-                    self._send_json(
-                        {
-                            "error": str(e),
-                            "desired": enabled,
-                            "intentRecorded": True,
-                        },
-                        status=502,
-                    )
-                    return
-                self._send_json(state)
+            handler_fn = _POST_ROUTES.get(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            if not guard_mutating_request(self):
+                reject_csrf(self)
+                return
+            body = self._read_json()
+            handler_fn(self, body)
 
     return Handler
 
