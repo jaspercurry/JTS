@@ -74,7 +74,7 @@ def blocking_measurement_phase() -> str | None:
     measurement flow holds (or is about to hold) the measurement window. Lazy
     imports avoid an import cycle (those modules consult us back).
     """
-    from .correction_setup import active_correction_phase
+    from .correction_capture import active_correction_phase
     from .sync_flow import active_phase as _sync_phase
 
     sync = _sync_phase()

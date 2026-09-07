@@ -20,7 +20,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.web import correction_setup, correction_tuning
+from jasper.web import (
+    correction_capture,
+    correction_handlers,
+    correction_tuning,
+)
 from .correction_session_fixtures import make_measurement_session
 
 
@@ -90,8 +94,8 @@ def test_interpret_without_key_conflicts(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: False,
     )
-    with pytest.raises(correction_setup.RequestConflict):
-        correction_setup._handle_interpret(_FakeHandler())
+    with pytest.raises(correction_capture.RequestConflict):
+        correction_handlers._handle_interpret(_FakeHandler())
 
 
 def test_propose_without_key_conflicts(monkeypatch):
@@ -99,8 +103,8 @@ def test_propose_without_key_conflicts(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: False,
     )
-    with pytest.raises(correction_setup.RequestConflict):
-        correction_setup._handle_propose(_FakeHandler())
+    with pytest.raises(correction_capture.RequestConflict):
+        correction_handlers._handle_propose(_FakeHandler())
 
 
 # --- interpret / propose passthrough ----------------------------------
@@ -110,7 +114,7 @@ def test_interpret_delegates_to_advisor(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", _fake_session)
     captured = {}
 
     def fake_interpret(session, **kwargs):
@@ -121,7 +125,7 @@ def test_interpret_delegates_to_advisor(monkeypatch):
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret", fake_interpret
     )
-    out = correction_setup._handle_interpret(_FakeHandler(b'{"message":"hi"}'))
+    out = correction_handlers._handle_interpret(_FakeHandler(b'{"message":"hi"}'))
     assert out["explanation"] == "ok"
     assert captured["called"] is True
     assert captured["kwargs"]["user_message"] == "hi"
@@ -145,8 +149,8 @@ def test_interpret_rejects_non_string_message(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    with pytest.raises(correction_setup.BadRequest):
-        correction_setup._handle_interpret(_FakeHandler(b'{"message":123}'))
+    with pytest.raises(correction_capture.BadRequest):
+        correction_handlers._handle_interpret(_FakeHandler(b'{"message":123}'))
 
 
 def test_paid_call_min_interval_gate(monkeypatch):
@@ -157,7 +161,7 @@ def test_paid_call_min_interval_gate(monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", _fake_session)
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret",
         lambda session, **kwargs: {"kind": "jts_correction_interpret"},
@@ -167,15 +171,15 @@ def test_paid_call_min_interval_gate(monkeypatch):
         lambda session, **kwargs: {"kind": "jts_correction_proposal_review"},
     )
     # First paid call passes and stamps the gate...
-    correction_setup._handle_interpret(_FakeHandler())
+    correction_handlers._handle_interpret(_FakeHandler())
     # ...an immediate second paid call (either handler) is refused honestly.
-    with pytest.raises(correction_setup.RequestConflict, match="paid call"):
-        correction_setup._handle_interpret(_FakeHandler())
-    with pytest.raises(correction_setup.RequestConflict, match="paid call"):
-        correction_setup._handle_propose(_FakeHandler())
+    with pytest.raises(correction_capture.RequestConflict, match="paid call"):
+        correction_handlers._handle_interpret(_FakeHandler())
+    with pytest.raises(correction_capture.RequestConflict, match="paid call"):
+        correction_handlers._handle_propose(_FakeHandler())
     # Once the window has passed, calls flow again.
     correction_tuning._tuning_last_paid_call[0] = 0.0
-    out = correction_setup._handle_propose(_FakeHandler())
+    out = correction_handlers._handle_propose(_FakeHandler())
     assert out["kind"] == "jts_correction_proposal_review"
 
 
@@ -320,51 +324,51 @@ def test_paid_adapter_translates_backend_provider_error(
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", _fake_session)
 
     def fail_provider(*_args, **_kwargs):
         raise model_client.AdvisorModelError("provider refused")
 
     monkeypatch.setattr(correction_advisor, advisor_name, fail_provider)
-    with pytest.raises(correction_setup.BadRequest, match="provider refused"):
-        getattr(correction_setup, handler_name)(_FakeHandler())
+    with pytest.raises(correction_capture.BadRequest, match="provider refused"):
+        getattr(correction_handlers, handler_name)(_FakeHandler())
 
 
 # --- /propose/apply: the safety core ----------------------------------
 
 def test_propose_apply_requires_confirm():
-    with pytest.raises(correction_setup.BadRequest):
-        correction_setup._handle_propose_apply(
+    with pytest.raises(correction_capture.BadRequest):
+        correction_handlers._handle_propose_apply(
             _FakeHandler(b'{"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}')
         )
 
 
 def test_propose_apply_requires_peqs():
-    with pytest.raises(correction_setup.BadRequest):
-        correction_setup._handle_propose_apply(_FakeHandler(b'{"confirm":true}'))
+    with pytest.raises(correction_capture.BadRequest):
+        correction_handlers._handle_propose_apply(_FakeHandler(b'{"confirm":true}'))
 
 
 def test_propose_apply_conflicts_when_not_ready(monkeypatch):
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session",
+        correction_capture, "_get_or_create_session",
         lambda: _fake_session("applied"),
     )
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
-    with pytest.raises(correction_setup.RequestConflict):
-        correction_setup._handle_propose_apply(_FakeHandler(body))
+    with pytest.raises(correction_capture.RequestConflict):
+        correction_handlers._handle_propose_apply(_FakeHandler(body))
 
 
 def test_propose_apply_rejects_out_of_bounds_without_applying(monkeypatch):
     sess = _fake_session("ready")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     applied = {"called": False}
     monkeypatch.setattr(
-        correction_setup, "_handle_apply",
+        correction_handlers, "_handle_apply",
         lambda h: applied.__setitem__("called", True),
     )
     # 5000 Hz is outside the correction band -> re-validation fails.
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":5000,"q":3,"gain_db":-7}]}'
-    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_handlers._handle_propose_apply(_FakeHandler(body))
     assert out["applied"] is False
     assert out["failure"]["code"] == "tuning_proposal_rejected"
     assert "re-validation" in out["reason"]
@@ -383,21 +387,21 @@ def test_propose_apply_applies_a_regressing_set_with_the_prediction_disclosed(
     **Mutation guard.** Restoring the veto returns before ``_handle_apply``
     and fails the ``called`` assertion."""
     sess = _fake_session("ready")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     applied = {"called": False}
 
     def fake_apply(h):
         applied["called"] = True
         return {"session_id": "x", "state": "applied", "config_path": None}
 
-    monkeypatch.setattr(correction_setup, "_handle_apply", fake_apply)
+    monkeypatch.setattr(correction_handlers, "_handle_apply", fake_apply)
     body = (
         b'{"confirm":true,"correction_peqs":['
         b'{"freq_hz":62,"q":1.0,"gain_db":-10},'
         b'{"freq_hz":50,"q":1.0,"gain_db":-10},'
         b'{"freq_hz":80,"q":1.0,"gain_db":-10}]}'
     )
-    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_handlers._handle_propose_apply(_FakeHandler(body))
     assert applied["called"] is True
     assert out["applied"] is True
     assert "failure" not in out
@@ -408,7 +412,7 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
     from jasper.correction.session import PEQJSON
 
     sess = _fake_session("ready")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
         correction_tuning,
         "interpret",
@@ -430,9 +434,9 @@ def test_propose_apply_good_cut_routes_through_apply(monkeypatch):
         applied["peqs"] = list(sess.peqs)
         return {"session_id": sess.session_id, "state": "applied", "config_path": "/x.yml"}
 
-    monkeypatch.setattr(correction_setup, "_handle_apply", fake_apply)
+    monkeypatch.setattr(correction_handlers, "_handle_apply", fake_apply)
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
-    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_handlers._handle_propose_apply(_FakeHandler(body))
     assert out["applied"] is True
     assert out["state"] == "applied"
     # session.peqs was populated with the proposed filter as a PEQJSON.
@@ -463,9 +467,9 @@ def test_propose_apply_proceeds_despite_failed_measurement_evidence(monkeypatch)
             "message": "raw runtime diagnostic",
         }],
     }
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup, "_handle_apply",
+        correction_handlers, "_handle_apply",
         lambda handler: {
             "session_id": sess.session_id, "state": "applied",
             "config_path": "/x.yml",
@@ -473,7 +477,7 @@ def test_propose_apply_proceeds_despite_failed_measurement_evidence(monkeypatch)
     )
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
 
-    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_handlers._handle_propose_apply(_FakeHandler(body))
 
     assert out["applied"] is True
     assert out["simulation"]["predicted_curve"] is not None
@@ -538,20 +542,20 @@ def test_propose_apply_reports_honest_failure_when_reload_rejected(
 
     sess = _real_ready_session(tmp_path)
     cam = _RejectingCam()
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
 
     async def admitted_authority(_cam, _expected):
         return NO_BASS_EXTENSION_PROFILE_SUMMARY
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_assert_room_authority_current",
         admitted_authority,
     )
 
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
-    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_handlers._handle_propose_apply(_FakeHandler(body))
 
     # CamillaDSP genuinely rejected a real emitted candidate config...
     assert cam.load_attempts, "the real apply path never reached CamillaDSP"
@@ -574,16 +578,16 @@ def test_propose_apply_applies_without_a_target_curve(monkeypatch):
     returns before ``_handle_apply`` and fails the ``applied`` assertion."""
     sess = _fake_session("ready")
     sess.target_curve = None  # nothing to measure the prediction against
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup, "_handle_apply",
+        correction_handlers, "_handle_apply",
         lambda handler: {
             "session_id": sess.session_id, "state": "applied",
             "config_path": "/x.yml",
         },
     )
     body = b'{"confirm":true,"correction_peqs":[{"freq_hz":62,"q":3,"gain_db":-7}]}'
-    out = correction_setup._handle_propose_apply(_FakeHandler(body))
+    out = correction_handlers._handle_propose_apply(_FakeHandler(body))
     assert out["applied"] is True
     assert out["simulation"]["predicted_rms_delta_db"] is None
     # The rest of the disclosure still lands.
@@ -606,7 +610,7 @@ def _tuning_ledger_env(tmp_path, monkeypatch):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", _fake_session)
     return usage_db
 
 
@@ -627,7 +631,7 @@ def test_interpret_records_row_with_provider_model_and_cost(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 1000, "output_tokens": 1000}),
     )
-    out = correction_setup._handle_interpret(_FakeHandler())
+    out = correction_handlers._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"
 
     from jasper.usage import UsageStore, tuning_usage_db_path
@@ -662,7 +666,7 @@ def test_record_never_opens_main_usage_db_read_write(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 500, "output_tokens": 500}),
     )
-    correction_setup._handle_interpret(_FakeHandler())
+    correction_handlers._handle_interpret(_FakeHandler())
 
     from jasper.usage import tuning_usage_db_path
 
@@ -694,13 +698,13 @@ def test_record_is_fail_soft_on_unwritable_dir(monkeypatch, tmp_path, caplog):
         "jasper.calibration_agent.key_provisioning.tuning_llm_available",
         lambda **_: True,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", _fake_session)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", _fake_session)
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
     )
     with caplog.at_level("WARNING"):
-        out = correction_setup._handle_interpret(_FakeHandler())
+        out = correction_handlers._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"  # user got their answer
     assert any("tuning_spend.record_failed" in r.message for r in caplog.records)
 
@@ -717,7 +721,7 @@ def test_created_tuning_db_is_0644_under_restrictive_umask(
     )
     old = os.umask(0o077)
     try:
-        correction_setup._handle_interpret(_FakeHandler())
+        correction_handlers._handle_interpret(_FakeHandler())
     finally:
         os.umask(old)
 
@@ -800,7 +804,7 @@ def test_preexisting_0600_ledger_healed_to_0644_on_next_record(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
     )
-    correction_setup._handle_interpret(_FakeHandler())
+    correction_handlers._handle_interpret(_FakeHandler())
     assert oct(os.stat(tuning_db).st_mode & 0o777) == "0o644"
 
 
@@ -846,7 +850,7 @@ def test_cap_exceeded_refuses_both_handlers(
     monkeypatch.setattr(
         "jasper.calibration_agent.correction_advisor.propose", _boom
     )
-    handler = getattr(correction_setup, handler_name)
+    handler = getattr(correction_handlers, handler_name)
     with pytest.raises(correction_tuning.SpendCapExceeded, match="rollover"):
         handler(_FakeHandler())
     assert called["advisor"] is False  # refused BEFORE any paid call
@@ -861,7 +865,7 @@ def test_cap_under_limit_proceeds(monkeypatch, _tuning_ledger_env):
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
     )
-    out = correction_setup._handle_interpret(_FakeHandler())
+    out = correction_handlers._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"
 
 
@@ -875,7 +879,7 @@ def test_cap_zero_means_disabled_allows(monkeypatch, _tuning_ledger_env):
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
     )
-    out = correction_setup._handle_interpret(_FakeHandler())
+    out = correction_handlers._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"
 
 
@@ -923,7 +927,7 @@ def test_wizard_file_cap_wins_over_process_env(
         "jasper.calibration_agent.correction_advisor.interpret", _boom
     )
     with pytest.raises(correction_tuning.SpendCapExceeded):
-        correction_setup._handle_interpret(_FakeHandler())
+        correction_handlers._handle_interpret(_FakeHandler())
     assert called["advisor"] is False
 
 
@@ -963,7 +967,7 @@ def test_wizard_file_cap_zero_disables_and_call_proceeds(
         "jasper.calibration_agent.correction_advisor.interpret",
         _advisor_returning({"input_tokens": 100, "output_tokens": 100}),
     )
-    out = correction_setup._handle_interpret(_FakeHandler())
+    out = correction_handlers._handle_interpret(_FakeHandler())
     assert out["explanation"] == "ok"
 
 
@@ -984,9 +988,9 @@ def test_unpriced_tuning_model_records_zero_and_warns_once(
         _advisor_returning({"input_tokens": 1000, "output_tokens": 1000}),
     )
     with caplog.at_level("WARNING"):
-        correction_setup._handle_interpret(_FakeHandler())
+        correction_handlers._handle_interpret(_FakeHandler())
         correction_tuning._tuning_last_paid_call[0] = 0.0  # re-arm min-interval
-        correction_setup._handle_interpret(_FakeHandler())
+        correction_handlers._handle_interpret(_FakeHandler())
 
     from jasper.usage import UsageStore, tuning_usage_db_path
 

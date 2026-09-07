@@ -38,7 +38,12 @@ import pytest
 
 from pathlib import Path
 
-from jasper.web import correction_setup, correction_tuning
+from jasper.web import (
+    correction_capture,
+    correction_handlers,
+    correction_setup,
+    correction_tuning,
+)
 from jasper.web._systemd import no_hold
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -64,7 +69,7 @@ def _stable_no_bass_graph_authority(monkeypatch):
         )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_classify_live_bass_extension_graph",
         classify,
     )
@@ -142,10 +147,10 @@ def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
         cleanup_started.set()
         await asyncio.to_thread(release_cleanup.wait)
 
-    correction_setup._set_capture_slot(None)
+    correction_capture._set_capture_slot(None)
     try:
-        correction_setup._run_capture(
-            correction_setup.CaptureKind(
+        correction_capture._run_capture(
+            correction_capture.CaptureKind(
                 label="crossover_sweep:driver",
                 open=open_capture,
                 run_and_consume=run_and_consume,
@@ -153,17 +158,17 @@ def test_capture_stop_holds_slot_until_owner_cleanup_is_terminal():
             ),
             idle_hold=no_hold,
         )
-        response = correction_setup._request_capture_stop("crossover_sweep:")
+        response = correction_capture._request_capture_stop("crossover_sweep:")
         assert response["status"] == "stopping"
         assert stop_event.is_set()
         assert cleanup_started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-        assert correction_setup._get_capture_slot()["status"] == "stopping"
-        assert not correction_setup._begin_capture_slot("crossover_sweep:summed")
+        assert correction_capture._get_capture_slot()["status"] == "stopping"
+        assert not correction_capture._begin_capture_slot("crossover_sweep:summed")
         release_cleanup.set()
         wait_until_sync(
-            lambda: correction_setup._get_capture_slot()["status"] == "stopped"
+            lambda: correction_capture._get_capture_slot()["status"] == "stopped"
         )
-        assert correction_setup._get_capture_slot()["status"] == "stopped"
+        assert correction_capture._get_capture_slot()["status"] == "stopped"
     finally:
         release_cleanup.set()
 
@@ -207,7 +212,7 @@ def test_the_capture_spawn_seam_has_no_silent_idle_hold_default():
     lets the next call site inherit it silently. Required keyword-only means a
     site that forgets fails at the call, not on a household's speaker.
     """
-    param = inspect.signature(correction_setup._run_capture).parameters["idle_hold"]
+    param = inspect.signature(correction_capture._run_capture).parameters["idle_hold"]
     assert param.kind is inspect.Parameter.KEYWORD_ONLY
     assert param.default is inspect.Parameter.empty, (
         "idle_hold must stay required — pass _systemd.no_hold to opt out "
@@ -237,10 +242,10 @@ def test_capture_holds_the_idle_exit_for_the_whole_background_session():
         runner_entered.set()
         await asyncio.to_thread(release_runner.wait)
 
-    correction_setup._set_capture_slot(None)
+    correction_capture._set_capture_slot(None)
     try:
-        correction_setup._run_capture(
-            correction_setup.CaptureKind(
+        correction_capture._run_capture(
+            correction_capture.CaptureKind(
                 label="crossover_v2:session",
                 open=open_capture,
                 run_and_consume=run_and_consume,
@@ -255,12 +260,12 @@ def test_capture_holds_the_idle_exit_for_the_whole_background_session():
 
         release_runner.set()
         wait_until_sync(
-            lambda: correction_setup._get_capture_slot()["status"] == "complete"
+            lambda: correction_capture._get_capture_slot()["status"] == "complete"
         )
-        assert correction_setup._get_capture_slot()["status"] == "complete"
+        assert correction_capture._get_capture_slot()["status"] == "complete"
     finally:
         release_runner.set()
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
     wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0, "the completed session released its hold"
@@ -286,10 +291,10 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails():
     async def run_and_consume(_pi_session):
         raise RuntimeError("the measurement link timed out")
 
-    correction_setup._set_capture_slot(None)
+    correction_capture._set_capture_slot(None)
     try:
-        correction_setup._run_capture(
-            correction_setup.CaptureKind(
+        correction_capture._run_capture(
+            correction_capture.CaptureKind(
                 label="crossover_v2:verify",
                 open=open_capture,
                 run_and_consume=run_and_consume,
@@ -297,10 +302,10 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails():
             idle_hold=idle_hold,
         )
         wait_until_sync(
-            lambda: correction_setup._get_capture_slot()["status"] == "failed"
+            lambda: correction_capture._get_capture_slot()["status"] == "failed"
         )
     finally:
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
     wait_until_sync(lambda: not idle_hold.active)
     assert idle_hold.active == 0
@@ -329,11 +334,11 @@ def test_capture_drops_the_idle_hold_when_the_runner_never_spawns(
     monkeypatch.setattr(
         correction_setup.asyncio, "run_coroutine_threadsafe", _refuse,
     )
-    correction_setup._set_capture_slot(None)
+    correction_capture._set_capture_slot(None)
     try:
         with pytest.raises(RuntimeError, match="event loop is closed"):
-            correction_setup._run_capture(
-                correction_setup.CaptureKind(
+            correction_capture._run_capture(
+                correction_capture.CaptureKind(
                     label="crossover_v2:session",
                     open=open_capture,
                     run_and_consume=run_and_consume,
@@ -341,7 +346,7 @@ def test_capture_drops_the_idle_hold_when_the_runner_never_spawns(
                 idle_hold=idle_hold,
             )
     finally:
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
     assert idle_hold.active == 0
     assert idle_hold.labels == [
@@ -393,13 +398,13 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
 
-    monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
-    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_capture, "_read_json_body", lambda _h: {})
+    monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
-    monkeypatch.setattr(correction_setup, "_run_capture", _fake_run_capture)
+    monkeypatch.setattr(correction_capture, "_run_capture", _fake_run_capture)
 
-    correction_setup._handle_crossover_v2_capture(
+    correction_handlers._handle_crossover_v2_capture(
         None, verify_only=False, idle_hold=idle_hold,
     )
 
@@ -475,13 +480,13 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
         seen["kind"] = kind
         return {"status": "awaiting_capture"}
 
-    monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
-    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_capture, "_read_json_body", lambda _h: {})
+    monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
-    monkeypatch.setattr(correction_setup, "_run_capture", _fake_run_capture)
+    monkeypatch.setattr(correction_capture, "_run_capture", _fake_run_capture)
 
-    correction_setup._handle_crossover_v2_capture(None, verify_only=verify_only)
+    correction_handlers._handle_crossover_v2_capture(None, verify_only=verify_only)
 
     assert seen["verify_only"] is verify_only
     assert seen["kind"].label == expected_label
@@ -492,19 +497,19 @@ def test_capture_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
     kind = "crossover_sweep:driver"
 
-    correction_setup._set_capture_slot(None)
+    correction_capture._set_capture_slot(None)
     try:
-        assert correction_setup._begin_capture_slot(
+        assert correction_capture._begin_capture_slot(
             kind,
             request_stop=stopped.set,
         )
-        response = correction_setup._request_capture_stop("crossover_sweep:")
+        response = correction_capture._request_capture_stop("crossover_sweep:")
         assert response["status"] == "stopping"
         assert stopped.is_set()
-        waiting = correction_setup._publish_capture_waiting(kind)
+        waiting = correction_capture._publish_capture_waiting(kind)
         assert waiting["status"] == "stopping"
     finally:
-        correction_setup._set_capture_slot(None)
+        correction_capture._set_capture_slot(None)
 
 
 def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_copy():
@@ -530,7 +535,7 @@ def test_capture_failure_message_sanitizes_local_seam_oserror_to_internal_error_
     exc = CrossoverV2LocalSeamError(
         "[Errno 30] Read-only file system: '/etc/camilladsp/.dsp_apply.lock'"
     )
-    message = correction_setup._capture_failure_message(exc)
+    message = correction_capture._capture_failure_message(exc)
     assert message == REASON_REGISTRY[REASON_INTERNAL_ERROR].message
     assert "Errno" not in message
     assert "/etc/camilladsp" not in message
@@ -553,7 +558,7 @@ def test_run_async_timeout_waits_for_coroutine_cleanup():
 
     def invoke():
         try:
-            correction_setup._run_async(operation(), timeout=0.05)
+            correction_capture._run_async(operation(), timeout=0.05)
         except concurrent.futures.TimeoutError:
             pass
         except (OSError, RuntimeError, ValueError) as exc:
@@ -586,12 +591,12 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
             await asyncio.to_thread(release_cleanup.wait)
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S",
         0.01,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "log_event",
         lambda _logger, event, **_fields: (
             drain_alarm.set()
@@ -602,7 +607,7 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
 
     def invoke():
         try:
-            correction_setup._run_async(operation(), timeout=0.01)
+            correction_capture._run_async(operation(), timeout=0.01)
         except concurrent.futures.TimeoutError:
             pass
         finally:
@@ -660,8 +665,8 @@ def test_read_json_body_rejects_invalid_content_length():
         headers = {"Content-Length": "not-a-number"}
         rfile = io.BytesIO()
 
-    with pytest.raises(correction_setup.BadRequest, match="Content-Length"):
-        correction_setup._read_json_body(Handler())
+    with pytest.raises(correction_capture.BadRequest, match="Content-Length"):
+        correction_capture._read_json_body(Handler())
 
 
 def test_local_capture_setup_rejects_a_stale_session_before_binding(monkeypatch):
@@ -679,10 +684,10 @@ def test_local_capture_setup_rejects_a_stale_session_before_binding(monkeypatch)
         session_id="current-run",
         state=SessionState.NEEDS_NOISE_CAPTURE,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_setup.RequestConflict, match="no longer current"):
-        correction_setup._handle_local_capture_setup(handler)
+    with pytest.raises(correction_capture.RequestConflict, match="no longer current"):
+        correction_handlers._handle_local_capture_setup(handler)
 
 
 def test_local_capture_setup_sanitizes_and_binds_current_session(monkeypatch):
@@ -717,9 +722,9 @@ def test_local_capture_setup_sanitizes_and_binds_current_session(monkeypatch):
             return {"level": "ok", "failed": False}
 
     sess = Session()
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    result = correction_setup._handle_local_capture_setup(handler)
+    result = correction_handlers._handle_local_capture_setup(handler)
 
     assert result["state"] == "needs_noise_capture"
     assert result["browser_audio_report"] == {"level": "ok", "failed": False}
@@ -738,10 +743,10 @@ def test_local_noise_upload_rejects_unbound_setup_before_reading_body(monkeypatc
         local_capture_setup_bound=False,
         state=SessionState.NEEDS_NOISE_CAPTURE,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_setup.RequestConflict, match="bind the local"):
-        correction_setup._handle_upload_noise(handler)
+    with pytest.raises(correction_capture.RequestConflict, match="bind the local"):
+        correction_handlers._handle_upload_noise(handler)
 
     assert handler.rfile.tell() == 0
 
@@ -767,10 +772,10 @@ def test_local_noise_upload_requires_completed_level_lock_before_body(
         autolevel=AutolevelData(status=AutolevelStatus(status)),
         autolevel_run_in_progress=False,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_setup.RequestConflict, match="lock the measurement"):
-        correction_setup._handle_upload_noise(handler)
+    with pytest.raises(correction_capture.RequestConflict, match="lock the measurement"):
+        correction_handlers._handle_upload_noise(handler)
 
     assert handler.rfile.tell() == 0
 
@@ -809,25 +814,25 @@ def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
             events.append("noise-accepted")
 
     sess = Session()
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_read_wav_body",
         lambda _handler: events.append("body-read") or b"WAVE",
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_run_async",
         lambda coro, timeout: asyncio.run(coro),
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_schedule_measurement_sweep",
         lambda *_args, **_kwargs: events.append("sweep-scheduled"),
     )
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
 
-    correction_setup._handle_upload_noise(SimpleNamespace())
+    correction_handlers._handle_upload_noise(SimpleNamespace())
 
     assert events == [
         "resume-on-loop",
@@ -846,10 +851,10 @@ def test_local_autolevel_rejects_unbound_setup_before_audio_side_effects(
         local_capture_setup_bound=False,
         state=SessionState.NEEDS_NOISE_CAPTURE,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_setup.RequestConflict, match="must be complete"):
-        correction_setup._handle_autolevel_start(SimpleNamespace())
+    with pytest.raises(correction_capture.RequestConflict, match="must be complete"):
+        correction_handlers._handle_autolevel_start(SimpleNamespace())
 
 
 def test_local_autolevel_rejects_stale_restart_after_lock(monkeypatch):
@@ -864,14 +869,14 @@ def test_local_autolevel_rejects_stale_restart_after_lock(monkeypatch):
         state=SessionState.NEEDS_NOISE_CAPTURE,
         autolevel=AutolevelData(status=AutolevelStatus.LOCKED),
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_setup.RequestConflict, match="already locked"):
-        correction_setup._handle_autolevel_start(SimpleNamespace())
+    with pytest.raises(correction_capture.RequestConflict, match="already locked"):
+        correction_handlers._handle_autolevel_start(SimpleNamespace())
 
 
 def test_autolevel_start_reserves_run_before_outer_orchestration():
-    source = inspect.getsource(correction_setup._handle_autolevel_start)
+    source = inspect.getsource(correction_handlers._handle_autolevel_start)
 
     assert source.index("reserve_autolevel_run()") < source.index(
         "asyncio.run_coroutine_threadsafe"
@@ -904,7 +909,7 @@ def test_autolevel_retry_waits_for_a_new_run_identity(prior_status):
     timer = threading.Timer(0.05, lambda: setattr(sess, "autolevel", current))
     timer.start()
     try:
-        result = correction_setup._wait_for_new_autolevel_run(
+        result = correction_handlers._wait_for_new_autolevel_run(
             sess,
             previous,
             future,
@@ -922,8 +927,8 @@ def test_read_wav_body_rejects_invalid_content_length():
         headers = {"Content-Length": "not-a-number"}
         rfile = io.BytesIO()
 
-    with pytest.raises(correction_setup.BadRequest, match="Content-Length"):
-        correction_setup._read_wav_body(Handler())
+    with pytest.raises(correction_capture.BadRequest, match="Content-Length"):
+        correction_handlers._read_wav_body(Handler())
 
 
 def test_read_wav_body_rejects_large_or_incomplete_body():
@@ -931,15 +936,15 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
         headers = {"Content-Length": "5"}
         rfile = io.BytesIO(b"12345")
 
-    with pytest.raises(correction_setup.BadRequest, match="too large"):
-        correction_setup._read_wav_body(TooLarge(), max_bytes=4)
+    with pytest.raises(correction_capture.BadRequest, match="too large"):
+        correction_handlers._read_wav_body(TooLarge(), max_bytes=4)
 
     class Incomplete:
         headers = {"Content-Length": "5"}
         rfile = io.BytesIO(b"123")
 
-    with pytest.raises(correction_setup.BadRequest, match="incomplete"):
-        correction_setup._read_wav_body(Incomplete())
+    with pytest.raises(correction_capture.BadRequest, match="incomplete"):
+        correction_handlers._read_wav_body(Incomplete())
 
 
 def test_render_page_requests_constraints_explicitly():
@@ -1000,7 +1005,7 @@ def test_sanitize_input_device_hashes_browser_ids():
         "auto_gain_control": False,
         "ignored": "drop me",
     }
-    out = correction_setup._sanitize_input_device(raw)
+    out = correction_capture._sanitize_input_device(raw)
     assert out["label"] == "USB measurement mic"
     assert out["sample_rate"] == 48000.0
     assert out["channel_count"] == 1.0
@@ -1577,7 +1582,7 @@ def test_e2e_start_safety_refusal_returns_422(monkeypatch):
     def fake_start(handler):
         raise CorrectionRuntimeSafetyError("flat sweep is unsafe")
 
-    monkeypatch.setattr(correction_setup, "_handle_start", fake_start)
+    monkeypatch.setattr(correction_handlers, "_handle_start", fake_start)
     server, base = _start_server()
     try:
         e = request_with_csrf(
@@ -1641,8 +1646,8 @@ def test_e2e_apply_reaches_the_dsp_despite_failed_measurement_evidence(monkeypat
         reached.append("camilla")
         raise RuntimeError("stop here — the DSP itself is not this test's subject")
 
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(correction_setup, "_camilla", _reached_dsp)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_camilla", _reached_dsp)
     server, base = _start_server()
     try:
         request_with_csrf(
@@ -1673,7 +1678,7 @@ def test_e2e_spend_cap_exceeded_returns_429_with_honest_json(monkeypatch, route)
             "available again after the daily rollover"
         )
 
-    monkeypatch.setattr(correction_setup, handler_name, fake)
+    monkeypatch.setattr(correction_handlers, handler_name, fake)
     server, base = _start_server()
     try:
         e = request_with_csrf(
@@ -1726,7 +1731,7 @@ def test_e2e_tuning_provider_error_returns_closed_400(
         lambda **_: True,
     )
     session = object()
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: session)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: session)
     correction_tuning._tuning_last_paid_call[0] = 0.0
 
     def fail_provider(called_session, **_kwargs):
@@ -1990,7 +1995,7 @@ def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, capl
         source="uploaded:lab.txt",
         root=tmp_path / "cal",
     )
-    correction_setup._save_household_mic(first)
+    correction_capture._save_household_mic(first)
     caplog.clear()
 
     second = calibration.store_calibration(
@@ -2001,7 +2006,7 @@ def test_household_mic_replaced_on_a_different_model(tmp_path, monkeypatch, capl
         source="uploaded:lab2.txt",
         root=tmp_path / "cal",
     )
-    correction_setup._save_household_mic(second)
+    correction_capture._save_household_mic(second)
 
     record = read_household_mic(path=household_path)
     assert record is not None
@@ -2035,7 +2040,7 @@ def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, cap
             serial=serial,
             root=tmp_path / "cal",
         )
-        correction_setup._save_household_mic(record, serial=serial)
+        correction_capture._save_household_mic(record, serial=serial)
 
     stored = read_household_mic(path=household_path)
     assert stored is not None
@@ -2073,7 +2078,7 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
         source="uploaded:lab.txt",
         root=tmp_path / "cal",
     )
-    correction_setup._save_household_mic(record)
+    correction_capture._save_household_mic(record)
 
     assert not household_path.exists()
     assert "failed to persist household mic record" in caplog.text
@@ -2327,7 +2332,7 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
     monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_root))
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
 
-    assert correction_setup._default_setup_calibration_for_spec() is None
+    assert correction_capture._default_setup_calibration_for_spec() is None
 
     from jasper.audio_measurement.calibration import store_calibration
     from jasper.correction.household_mic import (
@@ -2349,7 +2354,7 @@ def test_default_setup_calibration_for_spec_present_and_absent(tmp_path, monkeyp
         path=household_path,
     )
 
-    hint = correction_setup._default_setup_calibration_for_spec()
+    hint = correction_capture._default_setup_calibration_for_spec()
     assert hint is not None
     assert hint.mode == "serial"
     assert hint.model == "minidsp_umik2"
@@ -2407,7 +2412,7 @@ def test_default_setup_calibration_for_spec_resolvable_is_a_fresh_check(
 
     monkeypatch.setattr(household_mic, "resolve_household_mic_calibration", flaky_resolve)
 
-    hint = correction_setup._default_setup_calibration_for_spec()
+    hint = correction_capture._default_setup_calibration_for_spec()
     assert hint is not None  # the hint itself still ships
     assert hint.calibration_id == record.calibration_id
     assert hint.resolvable is False  # but the one-tap confirm is not offered
@@ -2502,7 +2507,7 @@ def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
 
     fake = FakeSession()
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: fake,
+        correction_capture, "_get_or_create_session", lambda: fake,
     )
 
     server, base = _start_server()
@@ -2551,23 +2556,23 @@ def test_e2e_local_setup_and_noise_conflicts_are_client_errors(monkeypatch):
         raise FileNotFoundError("unknown microphone calibration")
 
     def unbound_noise(_handler):
-        raise correction_setup.RequestConflict("bind the local microphone first")
+        raise correction_capture.RequestConflict("bind the local microphone first")
 
     def unbound_level(_handler):
-        raise correction_setup.RequestConflict("bind before level matching")
+        raise correction_capture.RequestConflict("bind before level matching")
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_handle_local_capture_setup",
         missing_calibration,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_handle_upload_noise",
         unbound_noise,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_handle_autolevel_start",
         unbound_level,
     )
@@ -2651,34 +2656,34 @@ def _cal(provider):
 def test_calibration_device_mismatch_blocks_vendor_mic_on_builtin():
     for label in ("iPhone Microphone", "iPad Microphone", "MacBook Pro Microphone",
                   "Built-in Microphone", "Default"):
-        msg = correction_setup._calibration_device_mismatch(
+        msg = correction_capture._calibration_device_mismatch(
             _cal("dayton_audio"), {"browser_label": label}
         )
         assert msg is not None, label
         assert "USB" in msg
     # miniDSP is also an external-only provider
-    assert correction_setup._calibration_device_mismatch(
+    assert correction_capture._calibration_device_mismatch(
         _cal("minidsp"), {"browser_label": "iPhone Microphone"}
     ) is not None
 
 
 def test_calibration_device_mismatch_allows_real_usb_mic():
     for label in ("iMM-6C", "USB Audio Device", "UMIK-1", "Microphone 2"):
-        assert correction_setup._calibration_device_mismatch(
+        assert correction_capture._calibration_device_mismatch(
             _cal("dayton_audio"), {"browser_label": label}
         ) is None, label
 
 
 def test_calibration_device_mismatch_ignores_manual_and_absent():
     # Manual "other" upload: we can't assume it isn't a phone curve — don't gate.
-    assert correction_setup._calibration_device_mismatch(
+    assert correction_capture._calibration_device_mismatch(
         _cal("other"), {"browser_label": "iPhone Microphone"}
     ) is None
     # No calibration / no device → nothing to check.
-    assert correction_setup._calibration_device_mismatch(
+    assert correction_capture._calibration_device_mismatch(
         None, {"browser_label": "iPhone Microphone"}
     ) is None
-    assert correction_setup._calibration_device_mismatch(
+    assert correction_capture._calibration_device_mismatch(
         _cal("dayton_audio"), None
     ) is None
 
@@ -2811,7 +2816,7 @@ async def test_ready_reset_restores_exact_pre_measurement_graph():
             return str(measurement)
 
     assert (
-        await correction_setup._resolve_reset_target_async(sess, Cam())
+        await correction_handlers._resolve_reset_target_async(sess, Cam())
         == restore
     )
 
@@ -2876,7 +2881,7 @@ async def test_room_reversal_uses_immutable_running_graph_after_active_overwrite
         async def auto_revert(self, set_cb, *, target_config_path=None):
             return await set_cb(str(target_config_path))
 
-    assert await correction_setup._run_locked_room_reset(
+    assert await correction_handlers._run_locked_room_reset(
         Session(),
         Cam(),
         automatic=automatic,
@@ -2912,7 +2917,7 @@ async def test_room_reversal_does_not_restore_over_new_graph_loaded_at_same_path
         async def get_active_config_raw(self, *, best_effort=False):
             return predecessor.read_text(encoding="utf-8")
 
-    assert await correction_setup._pre_measurement_restore_target(
+    assert await correction_handlers._pre_measurement_restore_target(
         sess,
         Cam(),
     ) is None
@@ -2942,7 +2947,7 @@ async def test_running_graph_snapshot_does_not_mint_authority_for_custom_config(
             return raw
 
     with pytest.raises(CarrierCannotHostEq) as exc_info:
-        await correction_setup._snapshot_running_room_graph(sess, Cam())
+        await correction_handlers._snapshot_running_room_graph(sess, Cam())
 
     assert exc_info.value.reason_code == "unknown_config"
     assert list(tmp_path.glob("sound_snapshot_custom_*.yml")) == []
@@ -3001,12 +3006,12 @@ async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
         ),
     )
 
-    target = await correction_setup._resolve_reset_target_async(sess, Cam())
+    target = await correction_handlers._resolve_reset_target_async(sess, Cam())
 
     assert target.name.startswith("sound_snapshot_resetguard_")
-    assert correction_setup._running_graph_body(
+    assert correction_handlers._running_graph_body(
         target.read_text(encoding="utf-8")
-    ) == correction_setup._running_graph_body(original)
+    ) == correction_handlers._running_graph_body(original)
     assert current.read_text(encoding="utf-8") == original
     rejected = list(tmp_path.glob("sound_reset_resetguard_*.yml"))
     assert len(rejected) == 1
@@ -3052,7 +3057,7 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
         raise RuntimeError("carrier re-emit failed")
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_write_no_room_correction_config",
         reemit_fails,
     )
@@ -3063,7 +3068,7 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
         }
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_snapshot_running_room_graph",
         snapshot_current,
     )
@@ -3087,7 +3092,7 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
             operations.append("auto-revert")
 
     with pytest.raises(RuntimeError, match="no verified no-Room graph"):
-        await correction_setup._run_locked_room_reset(
+        await correction_handlers._run_locked_room_reset(
             Session(),
             Cam(),
             automatic=automatic,
@@ -3114,7 +3119,7 @@ async def test_reset_accepts_verified_no_room_active_fallback(
         raise RuntimeError("carrier re-emit failed")
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_write_no_room_correction_config",
         reemit_fails,
     )
@@ -3125,7 +3130,7 @@ async def test_reset_accepts_verified_no_room_active_fallback(
         }
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_snapshot_running_room_graph",
         snapshot_current,
     )
@@ -3143,7 +3148,7 @@ async def test_reset_accepts_verified_no_room_active_fallback(
             return str(no_room)
 
     assert (
-        await correction_setup._resolve_reset_target_async(sess, Cam())
+        await correction_handlers._resolve_reset_target_async(sess, Cam())
         == no_room
     )
 
@@ -3199,12 +3204,12 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
         return no_room_new_active
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_snapshot_running_room_graph",
         snapshot_current,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_write_no_room_correction_config",
         reemit_current,
     )
@@ -3226,7 +3231,7 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
         async def auto_revert(self, set_cb, *, target_config_path=None):
             return await set_cb(str(target_config_path))
 
-    assert await correction_setup._run_locked_room_reset(
+    assert await correction_handlers._run_locked_room_reset(
         Session(),
         cam,
         automatic=automatic,
@@ -3240,21 +3245,21 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     restored: list[float] = []
     _install_recording_volume_owner(restored)
     sess = _locked_autolevel_session("apply", original=-20.0)
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
+        correction_capture, "_camilla", lambda: _volume_recording_cam(restored)
     )
     async def authority_current(_cam, _expected):
         return None
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_assert_room_authority_current",
         authority_current,
     )
 
     with pytest.raises(RuntimeError):
-        correction_setup._handle_apply(None)
+        correction_handlers._handle_apply(None)
 
     # The apply exception propagated, but the finally still restored volume.
     assert restored == [-20.0]
@@ -3287,7 +3292,7 @@ def test_room_authority_guard_returns_exact_canonical_bass_summary(
             return "running graph"
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_classify_live_bass_extension_graph",
         classify,
     )
@@ -3309,7 +3314,7 @@ def test_room_authority_guard_returns_exact_canonical_bass_summary(
     )
 
     returned = asyncio.run(
-        correction_setup._assert_room_authority_current(Cam(), expected)
+        correction_capture._assert_room_authority_current(Cam(), expected)
     )
 
     assert returned is summary
@@ -3358,13 +3363,13 @@ def test_unreadable_receipt_mid_run_preserves_a_completed_measurement(
         )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_read_room_correction_readiness_with_graph",
         unreadable_with_graph,
     )
 
     returned = asyncio.run(
-        correction_setup._assert_room_authority_current(object(), expected)
+        correction_capture._assert_room_authority_current(object(), expected)
     )
 
     assert returned is summary
@@ -3392,7 +3397,7 @@ def test_unreadable_fail_open_at_writer_boundary_is_disclosed(
 
     # Isolate the process-global disclosure gate from other tests.
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_AUTHORITY_UNCONFIRMED_DISCLOSURE",
         TransitionLog(reminder_sec=3600.0),
     )
@@ -3423,14 +3428,14 @@ def test_unreadable_fail_open_at_writer_boundary_is_disclosed(
         )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_read_room_correction_readiness_with_graph",
         unreadable_with_graph,
     )
 
     with caplog.at_level(logging.WARNING):
         returned = asyncio.run(
-            correction_setup._assert_room_authority_current(object(), expected)
+            correction_capture._assert_room_authority_current(object(), expected)
         )
 
     assert returned is summary  # always proceeds -- the run is never discarded
@@ -3475,8 +3480,8 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
             },
         }
 
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", Session)
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", Session)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
     async def changed_authority_with_graph(cam):
         return await changed_authority(cam), GraphSafety(
             classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -3490,18 +3495,18 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
         )
 
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_read_room_correction_readiness_with_graph",
         changed_authority_with_graph,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_handlers,
         "_maybe_restore_main_volume",
         lambda _sess, _cam: None,
     )
 
     with pytest.raises(RuntimeError, match="authority changed"):
-        correction_setup._handle_apply(None)
+        correction_handlers._handle_apply(None)
 
     assert applied == []
 
@@ -3514,13 +3519,13 @@ def test_reset_restores_listening_volume_when_reset_raises(monkeypatch, tmp_path
         original=-18.0,
         config_dir=tmp_path,
     )
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup, "_camilla", lambda: _volume_recording_cam(restored)
+        correction_capture, "_camilla", lambda: _volume_recording_cam(restored)
     )
 
     with pytest.raises(RuntimeError):
-        correction_setup._handle_reset(None)
+        correction_handlers._handle_reset(None)
 
     assert restored == [-18.0]
 
@@ -3562,17 +3567,17 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(
             order.append("reset")
 
     sess = _FakeSession()
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup, "_camilla", lambda: _volume_recording_cam([])
+        correction_capture, "_camilla", lambda: _volume_recording_cam([])
     )
     async def resolve(*_args):
         order.append("resolve")
         return Path("/tmp/reset.yml")
 
-    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+    monkeypatch.setattr(correction_handlers, "_resolve_reset_target_async", resolve)
 
-    correction_setup._handle_reset(None)
+    correction_handlers._handle_reset(None)
 
     assert order == [
         "intent-and-ramp-quiesced",
@@ -3600,7 +3605,7 @@ async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
         resolved_from.append(current["path"])
         return tmp_path / f"no-room-from-{current['path']}"
 
-    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+    monkeypatch.setattr(correction_handlers, "_resolve_reset_target_async", resolve)
 
     class Session:
         cfg = SimpleNamespace(config_dir=tmp_path)
@@ -3619,7 +3624,7 @@ async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
 
     async with dsp_writer_lock(tmp_path, source="active_apply"):
         reversal = asyncio.create_task(
-            correction_setup._run_locked_room_reset(
+            correction_handlers._run_locked_room_reset(
                 Session(),
                 Cam(),
                 automatic=automatic,
@@ -3656,7 +3661,7 @@ async def test_concurrent_active_writer_cannot_publish_during_room_reversal(
         await allow_resolution.wait()
         return tmp_path / "room-no-room.yml"
 
-    monkeypatch.setattr(correction_setup, "_resolve_reset_target_async", resolve)
+    monkeypatch.setattr(correction_handlers, "_resolve_reset_target_async", resolve)
 
     class Session:
         cfg = SimpleNamespace(config_dir=tmp_path)
@@ -3682,7 +3687,7 @@ async def test_concurrent_active_writer_cannot_publish_during_room_reversal(
             order.append(("active-publish", "active-new.yml"))
 
     reversal = asyncio.create_task(
-        correction_setup._run_locked_room_reset(
+        correction_handlers._run_locked_room_reset(
             Session(),
             Cam(),
             automatic=automatic,
@@ -3733,13 +3738,13 @@ def test_reset_releases_intent_when_audio_quiescence_fails(monkeypatch):
             return True
 
     sess = _FakeSession()
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup, "_camilla", lambda: _volume_recording_cam([])
+        correction_capture, "_camilla", lambda: _volume_recording_cam([])
     )
 
     with pytest.raises(RuntimeError, match="audio cleanup failed"):
-        correction_setup._handle_reset(None)
+        correction_handlers._handle_reset(None)
 
     assert order == ["intent", "stop", "intent-released"]
 
@@ -3764,7 +3769,7 @@ def test_maybe_restore_main_volume_swallows_restore_failure():
         ),
     )
     # Must not raise.
-    correction_setup._maybe_restore_main_volume(sess, _FailingCam())
+    correction_handlers._maybe_restore_main_volume(sess, _FailingCam())
 
 
 def test_maybe_restore_skips_while_measurement_still_active():
@@ -3790,7 +3795,7 @@ def test_maybe_restore_skips_while_measurement_still_active():
                 status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
             ),
         )
-        correction_setup._maybe_restore_main_volume(
+        correction_handlers._maybe_restore_main_volume(
             sess, _volume_recording_cam(restored)
         )
     assert restored == []  # skipped in every active state
@@ -3818,7 +3823,7 @@ def test_maybe_restore_runs_once_the_workflow_has_settled():
                 status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
             ),
         )
-        correction_setup._maybe_restore_main_volume(
+        correction_handlers._maybe_restore_main_volume(
             sess, _volume_recording_cam(restored)
         )
         assert restored == [-20.0], settled
@@ -3857,7 +3862,7 @@ def test_the_apply_path_restore_is_not_gated_on_the_controllers_one_shot_latch()
         ),
     )
 
-    correction_setup._maybe_restore_main_volume(sess, _volume_recording_cam([]))
+    correction_handlers._maybe_restore_main_volume(sess, _volume_recording_cam([]))
 
     assert declared == [-20.0]
 
@@ -3896,7 +3901,7 @@ def test_e2e_reset_while_busy_returns_409(monkeypatch, tmp_path):
             pytest.fail("busy reset must refuse before graph resolution")
 
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: FakeSession(),
+        correction_capture, "_get_or_create_session", lambda: FakeSession(),
     )
 
     server, base = _start_server()
@@ -3918,7 +3923,7 @@ def test_e2e_reset_safety_refusal_returns_422(monkeypatch):
     def fake_reset(handler):
         raise CorrectionRuntimeSafetyError("no legal graph is available")
 
-    monkeypatch.setattr(correction_setup, "_handle_reset", fake_reset)
+    monkeypatch.setattr(correction_handlers, "_handle_reset", fake_reset)
     server, base = _start_server()
     try:
         e = request_with_csrf(
@@ -3958,7 +3963,7 @@ def test_the_level_match_restores_share_one_owner_door():
         VolumeOwner(set_fader_db=_set, get_fader_db=_get)
     )
 
-    door = correction_setup._household_level_door()
+    door = correction_capture._household_level_door()
     assert asyncio.run(door(-19.5)) is True
     assert written == [-19.5]
 
@@ -3971,7 +3976,7 @@ def test_a_level_match_restore_without_an_owner_reports_not_in_effect(caplog):
     from jasper.volume_owner import install_volume_owner
 
     install_volume_owner(None)
-    door = correction_setup._household_level_door()
+    door = correction_capture._household_level_door()
 
     with caplog.at_level(logging.CRITICAL):
         assert asyncio.run(door(-19.5)) is False
@@ -4060,22 +4065,22 @@ def test_the_autolevel_ramp_holds_one_claim_and_moves_it(monkeypatch):
 
     sess = _Sess()
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: sess
+        correction_capture, "_get_or_create_session", lambda: sess
     )
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: _FakeCam())
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: _FakeCam())
 
-    correction_setup._handle_autolevel_start(None)
+    correction_handlers._handle_autolevel_start(None)
 
     # Every write the owner made, in order — and nothing else wrote the fader.
     assert writes == ramp
     # One claim, still held at the locked level for the sweeps that follow.
-    assert correction_setup._AUTOLEVEL_CLAIM is not None
+    assert correction_handlers._AUTOLEVEL_CLAIM is not None
     assert volume_owner().declared_level_db() == ramp[-1]
 
     # ... and the settle-time restore releases it in one write.
     sess.state = SessionState_APPLIED()
-    correction_setup._maybe_restore_main_volume(sess, _FakeCam())
-    assert correction_setup._AUTOLEVEL_CLAIM is None
+    correction_handlers._maybe_restore_main_volume(sess, _FakeCam())
+    assert correction_handlers._AUTOLEVEL_CLAIM is None
     assert writes[-1] == -15.0
 
 
@@ -4122,13 +4127,13 @@ def test_the_level_match_claim_is_taken_once_moved_and_released():
     install_volume_owner(owner)
     asyncio.run(owner.declare_household_level_db(-15.0))
     written.clear()
-    correction_setup._LEVEL_MATCH_CLAIM = None
+    correction_capture._LEVEL_MATCH_CLAIM = None
 
     async def _drive() -> None:
         for db in (-40.0, -39.0, -38.0):
-            assert await correction_setup._assert_level_match_level(db) is True
-        assert await correction_setup._assert_level_match_level(-38.0) is True
-        assert await correction_setup._household_level_door()(-15.0) is True
+            assert await correction_capture._assert_level_match_level(db) is True
+        assert await correction_capture._assert_level_match_level(-38.0) is True
+        assert await correction_capture._household_level_door()(-15.0) is True
 
     asyncio.run(_drive())
 
@@ -4136,7 +4141,7 @@ def test_the_level_match_claim_is_taken_once_moved_and_released():
     # settle reads first, so arbitration is not churn. That is the owner's
     # property, and routing inherits it instead of re-sending the level.
     assert written == [-40.0, -39.0, -38.0, -15.0]
-    assert correction_setup._LEVEL_MATCH_CLAIM is None
+    assert correction_capture._LEVEL_MATCH_CLAIM is None
     assert owner.declared_level_db() == -15.0
 
 
@@ -4161,8 +4166,8 @@ def test_a_refused_level_match_level_is_answered_not_raised():
 
     owner = VolumeOwner(set_fader_db=_set, get_fader_db=_get)
     install_volume_owner(owner)
-    correction_setup._LEVEL_MATCH_CLAIM = None
+    correction_capture._LEVEL_MATCH_CLAIM = None
     asyncio.run(owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -30.0))
 
-    assert asyncio.run(correction_setup._assert_level_match_level(-20.0)) is False
-    assert correction_setup._LEVEL_MATCH_CLAIM is None
+    assert asyncio.run(correction_capture._assert_level_match_level(-20.0)) is False
+    assert correction_capture._LEVEL_MATCH_CLAIM is None

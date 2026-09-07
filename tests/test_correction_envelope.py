@@ -492,17 +492,20 @@ def test_reports_section_never_appears_on_active_screen():
 
 def test_web_handler_never_scans_reports_on_active_poll(monkeypatch):
     from jasper.correction import bundles
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+        correction_handlers,
+    )
 
     sess = _FakeSession(SessionState.AWAITING_CAPTURE)
     sess.cfg = SimpleNamespace(sessions_dir="unused")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("active envelope polled the session store")
 
     monkeypatch.setattr(bundles, "list_bundles", fail_if_called)
-    body = correction_setup._handle_envelope(
+    body = correction_handlers._handle_envelope(
         SimpleNamespace(path="/envelope")
     )
     assert body["screen"] == "sweep"
@@ -510,23 +513,26 @@ def test_web_handler_never_scans_reports_on_active_poll(monkeypatch):
 
 
 def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+        correction_handlers,
+    )
 
     sess = _FakeSession(SessionState.IDLE)
     sess.cfg = SimpleNamespace(sessions_dir="unused")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
         envelope,
         "screen_for_session",
         lambda _sess: envelope.SCREEN_SWEEP,
     )
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_readiness",
         lambda: pytest.fail("the first active observation must not read readiness"),
     )
 
-    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
+    body = correction_handlers._handle_envelope(SimpleNamespace(path="/envelope"))
 
     assert body["screen"] == "idle"
     assert body["next_action"] is None
@@ -535,19 +541,22 @@ def test_web_handler_active_to_idle_race_fails_closed(monkeypatch):
 
 def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
     from jasper.correction import bundles
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+        correction_handlers,
+    )
 
     sess = _FakeSession(SessionState.IDLE)
     sess.cfg = SimpleNamespace(sessions_dir="unused")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: READY_SPEAKER_SETUP,
     )
     monkeypatch.setattr(bundles, "list_bundles", lambda *_args, **_kwargs: [{}])
 
-    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
+    body = correction_handlers._handle_envelope(SimpleNamespace(path="/envelope"))
     assert body["sections"] == [
         "current-correction",
         "run-defaults",
@@ -557,13 +566,16 @@ def test_web_handler_adds_reports_only_when_static_store_has_one(monkeypatch):
 
 def test_web_handler_report_discovery_failure_does_not_block_idle(monkeypatch):
     from jasper.correction import bundles
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+        correction_handlers,
+    )
 
     sess = _FakeSession(SessionState.IDLE)
     sess.cfg = SimpleNamespace(sessions_dir="unavailable")
-    monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_setup,
+        correction_capture,
         "_room_correction_readiness",
         lambda: READY_SPEAKER_SETUP,
     )
@@ -573,7 +585,7 @@ def test_web_handler_report_discovery_failure_does_not_block_idle(monkeypatch):
         lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError()),
     )
 
-    body = correction_setup._handle_envelope(SimpleNamespace(path="/envelope"))
+    body = correction_handlers._handle_envelope(SimpleNamespace(path="/envelope"))
 
     assert body["screen"] == "idle"
     assert body["next_action"]["endpoint"] == "/start"
@@ -1155,7 +1167,9 @@ def test_build_envelope_logged_emits_only_on_presentation_transition(caplog):
 def test_envelope_route_is_registered_and_additive():
     """`/envelope` is a recognized GET route and `/status` is untouched
     (additive — the legacy payload keeps its own handler)."""
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_setup,
+    )
 
     assert correction_setup._GET_ROUTES["/envelope"] == "_get_envelope"
     assert correction_setup._GET_ROUTES["/status"] == "_get_status"
@@ -1171,7 +1185,10 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
     import threading
     import urllib.request
 
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+        correction_setup,
+    )
     from jasper.correction.session import (
         MeasurementSession,
         PEQJSON,
@@ -1197,7 +1214,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         ],
     }
     monkeypatch.setattr(
-        correction_setup, "_get_or_create_session", lambda: sess,
+        correction_capture, "_get_or_create_session", lambda: sess,
     )
 
     server = correction_setup.make_server(

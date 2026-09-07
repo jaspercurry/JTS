@@ -1040,11 +1040,13 @@ def test_room_answers_an_unopenable_receipt_as_a_machine_fault(
     the block still carries each reason's distinct detail and errno+path for
     the doctor, `/state`, and logs (ruling 11).
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     cause = "PermissionError:EACCES:/var/lib/jasper/receipt.json"
     status = _denied_receipt_status(monkeypatch, tmp_path, receipt_reason, cause)
-    readiness = correction_setup._normalize_room_readiness(status)
+    readiness = correction_capture._normalize_room_readiness(status)
 
     assert readiness.allowed is False
     assert readiness.reason == receipt_reason

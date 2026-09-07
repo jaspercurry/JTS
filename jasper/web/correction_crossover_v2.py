@@ -2367,7 +2367,7 @@ def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     """
     from jasper.correction.household_mic import resolve_setup_calibration as resolve
 
-    from .correction_setup import _calibration_root, _household_mic_path
+    from .correction_capture import _calibration_root, _household_mic_path
 
     return resolve(
         setup if isinstance(setup, Mapping) else None,
@@ -2388,7 +2388,7 @@ def default_setup_calibration_for_v2() -> Any | None:
     calibration-picker screen of its own (design: CHECK's own pilot pairs
     solve gain), so nothing carried the household's remembered mic into it.
 
-    Reuses ``correction_setup._default_setup_calibration_for_spec`` — the ONE
+    Reuses ``correction_capture._default_setup_calibration_for_spec`` — the ONE
     household-mic-hint resolver. Threaded into
     ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
     shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``, and
@@ -2396,7 +2396,7 @@ def default_setup_calibration_for_v2() -> Any | None:
     (``correction_crossover_v2_wired._wired_setup_reference``). Fail-soft: any
     resolution miss yields no hint, never blocks session open.
     """
-    from .correction_setup import _default_setup_calibration_for_spec
+    from .correction_capture import _default_setup_calibration_for_spec
 
     try:
         return _default_setup_calibration_for_spec()

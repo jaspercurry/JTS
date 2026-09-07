@@ -1177,15 +1177,17 @@ def test_the_walks_terminal_statuses_are_the_wizards_own_three():
     there without a matching name here would leave the walk reading a finished
     session as live again -- which is exactly the defect this pins.
     """
-    from jasper.web import correction_setup
+    from jasper.web import (
+        correction_capture,
+    )
 
     terminal = set(re.findall(
         r'"status": "([a-z_]+)"',
-        inspect.getsource(correction_setup._run_capture),
+        inspect.getsource(correction_capture._run_capture),
     ))
     assert terminal == set(aw.SESSION_ENDED_STATUSES)
     assert aw.SESSION_ENDED_STATUSES.isdisjoint(
-        correction_setup._CAPTURE_IN_FLIGHT_STATUSES
+        correction_capture._CAPTURE_IN_FLIGHT_STATUSES
     )
 
 
