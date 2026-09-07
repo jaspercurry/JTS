@@ -608,8 +608,8 @@ EOF
 # being --no-block, or when the doctor waits for pending jobs. See ADR-0247.
 wait_for_units_settled() {
     local waited settled=yes rc=0 body
-    remote_body body 'w=0' \
-        'while [ -n "$(systemctl list-jobs --no-legend)" ]; do [ "$w" -lt 90 ] || { echo "$w"; exit 1; }; sleep 3; w=$(( w + 3 )); done' \
+    remote_body body 'w=0; s=3' \
+        'while :; do j=$(systemctl list-jobs --no-legend) || exit 2; [ -n "$j" ] || break; [ "$w" -lt 90 ] || { echo "$w"; exit 1; }; sleep "$s"; w=$(( w + s )); done' \
         'echo "$w"'
     waited="$(ssh_remote "$(remote_sh jts-settle "$body")" 2>/dev/null \
 | tr -dc '0-9')" || rc=$?
@@ -625,21 +625,37 @@ wait_for_units_settled() {
 # Same bound as install.sh's run_doctor_summary. See ADR-0242.
 gate_core_health() {
     echo "==> Post-deploy core health (jasper-doctor --core)"
-    local rc=0 out
+    local rc=0 tmp line verdict=""
     wait_for_units_settled
-    # tee, not a deferred print: an attended sudo prompt rides this channel.
-    out="$(run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
+    # tee to a file, not a capture: the rows stay on stdout, where an
+    # attended sudo prompt also rides.
+    tmp="$(mktemp "${TMPDIR:-/tmp}/jts-core-health.XXXXXX")"
+    run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
 -p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" \
-| tee /dev/stderr)" || rc=$?
+| tee "$tmp" || rc=$?
+    while IFS= read -r line; do
+        case "$line" in "event=deploy.health "*) verdict="$line" ;; esac
+    done < "$tmp"
+    rm -f "$tmp"
     # --wait folds timeout, oom-kill and a bus failure alike into rc 1, so
     # only the doctor's own line is a verdict. See ADR-0247.
-    case "$out" in
-        *"event=deploy.health status=fail"*)
-            echo "  event=deploy.core_health status=fail"
+    case "$verdict" in
+        *" status=fail"*)
+            echo "  event=deploy.core_health status=fail rc=${rc}"
+            echo "─────────────────────────────────────────────────────────────" >&2
+            echo " DEPLOY VERIFICATION FAILED: the post-deploy core doctor"  >&2
+            echo " reported a failing row on ${PI_HOST}."                    >&2
+            echo " Diagnose on the Pi:"                                      >&2
+            echo "   sudo /opt/jasper/.venv/bin/jasper-doctor --core"        >&2
+            echo "─────────────────────────────────────────────────────────────" >&2
             return 1 ;;
-        *"event=deploy.health status=ok"*) return 0 ;;
+        *" status=ok"*) return 0 ;;
     esac
-    echo "  event=deploy.core_health rc=${rc} reason=no_verdict"
+    if [[ "$rc" == "255" ]]; then
+        echo "  event=deploy.core_health status=unreachable rc=${rc}"
+        return "$rc"
+    fi
+    echo "  event=deploy.core_health status=no_verdict rc=${rc}"
     return 0
 }
 

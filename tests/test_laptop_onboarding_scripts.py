@@ -196,6 +196,9 @@ case "$cmd" in
     exit "${FAKE_SETTLE_RC:-0}"
     ;;
   *jasper-doctor*)
+    # The shape a Pi prints: coloured rows, a blank line, then the verdict
+    # line the wrapper parses out.
+    printf '\n  \033[32m\xe2\x9c\x93\033[0m service runtime state    no failed units\n\n'
     if [[ "${FAKE_DOCTOR_VERDICT:-ok}" != none ]]; then
       printf 'event=deploy.health status=%s fail=0 warn=0 rows=12 speaker_silent=false\n' \
         "${FAKE_DOCTOR_VERDICT:-ok}"
@@ -993,19 +996,25 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         """The doctor's own `event=deploy.health status=` line is the
         verdict, not the transient unit's exit code: `systemd-run --wait`
         folds a fired bound, an OOM kill and a bus failure alike into rc
-        1, so a run that printed no verdict is named and stays green.
-        See ADR-0247."""
+        1, so a run that printed no verdict is named and stays green —
+        while a transport that died is named and is not. See ADR-0247."""
         for verdict, doctor_rc, expect_rc, events in (
             ("ok", "0", 0, []),
-            ("fail", "1", 1, ["event=deploy.core_health status=fail"]),
+            ("fail", "1", 1, ["event=deploy.core_health status=fail rc=1"]),
             (
                 "none",
                 "1",
                 0,
-                ["event=deploy.core_health rc=1 reason=no_verdict"],
+                ["event=deploy.core_health status=no_verdict rc=1"],
+            ),
+            (
+                "none",
+                "255",
+                255,
+                ["event=deploy.core_health status=unreachable rc=255"],
             ),
         ):
-            with self.subTest(verdict=verdict):
+            with self.subTest(verdict=verdict, doctor_rc=doctor_rc):
                 fake = FakeRemote(self)
                 result = self.run_deploy(
                     fake,
