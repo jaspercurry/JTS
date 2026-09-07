@@ -926,10 +926,11 @@ def test_modules_do_not_redefine_the_shared_html_escaper():
 # The text-node DOM builder (h() / svg()) is the entire basis of the
 # "untrusted strings never reach innerHTML" safety argument: string children
 # become text nodes, so transcripts, provider names, device labels, etc. are
-# escaped by the DOM. It was copy-pasted across the /assistant/chat/ and /system/ module
-# graphs (and had already drifted — `catch (_)` vs `catch`, divergent comments)
-# before it was promoted to the shared module at /assets/shared/js/dom.js (same
-# shared-by-promotion path as dialog.js / escape.js / http.js). Pages now import
+# escaped by the DOM. It was copy-pasted across the /assistant/chat/ and
+# /system/ module graphs (and had already drifted — `catch (_)` vs `catch`,
+# divergent comments) before it was promoted to the shared module at
+# /assets/shared/js/dom.js (same shared-by-promotion path as dialog.js /
+# escape.js / http.js). Pages now import
 # h/svg from there. This test keeps the duplication from creeping back: no
 # canonical module may re-declare its own h()/svg() builder again — dom.js is
 # the one home for the XSS-safety primitive.
