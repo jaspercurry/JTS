@@ -789,14 +789,14 @@ class UsageStore:
         if not self._connection_intervals_have_kind:
             return 0.0
         cur = self._conn.execute(
-            "SELECT provider, opened_at, closed_at, rate_per_hour_usd "
+            "SELECT opened_at, closed_at, rate_per_hour_usd "
             "FROM connection_intervals "
             "WHERE kind = ? "
             "AND opened_at <= ? AND (closed_at IS NULL OR closed_at >= ?)",
             (_BILLABLE_ACTIVITY_KIND, until.isoformat(), since.isoformat()),
         )
         total = 0.0
-        for _provider, opened_at, closed_at, rate in cur.fetchall():
+        for opened_at, closed_at, rate in cur.fetchall():
             if not rate:
                 continue
             try:
