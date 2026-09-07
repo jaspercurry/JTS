@@ -35,6 +35,7 @@ from jasper.home_assistant import (
     OUTCOME_AUTH,
     OUTCOME_INTENT_MISS,
     OUTCOME_NETWORK,
+    OUTCOME_NOT_HA,
     OUTCOME_OK,
     OUTCOME_PARSE_ERROR,
     OUTCOME_TIMEOUT,
@@ -155,6 +156,13 @@ def _conversation_response(
         "conversation_id": conversation_id,
         "continue_conversation": continue_conversation,
     }
+
+
+def _raise(exc):
+    """Build a MockTransport responder that raises `exc` on every call."""
+    def responder(request):
+        raise exc
+    return responder
 
 
 def _client_with(handler, *, clock: _FakeClock | None = None, **kwargs) -> HAClient:
@@ -665,47 +673,51 @@ async def test_language_pass_through():
 
 # ---- healthcheck / config / list_agents ------------------------------------
 
-async def test_healthcheck_returns_true_on_200_api_running():
+@pytest.mark.parametrize(
+    "responder, expected_outcome, expected_status",
+    [
+        (lambda r: httpx.Response(200, json={"message": "API running."}),
+         OUTCOME_OK, 200),
+        (lambda r: httpx.Response(401, text="Unauthorized"),
+         OUTCOME_AUTH, 401),
+        (lambda r: httpx.Response(503, text="unavailable"),
+         OUTCOME_PARSE_ERROR, 503),
+        (lambda r: httpx.Response(200, json={"message": "Something else"}),
+         OUTCOME_NOT_HA, 200),
+        (lambda r: httpx.Response(200, text="<html>not json</html>"),
+         OUTCOME_PARSE_ERROR, 200),
+        (_raise(httpx.ConnectError("Connection refused")),
+         OUTCOME_NETWORK, None),
+        (_raise(httpx.ConnectTimeout("timed out")),
+         OUTCOME_TIMEOUT, None),
+    ],
+)
+async def test_probe_health_names_the_failure_mode(
+    responder, expected_outcome, expected_status,
+):
     def handler(request):
         assert request.url.path == "/api/"
-        return httpx.Response(200, json={"message": "API running."})
+        return responder(request)
 
     client = _client_with(handler)
     try:
-        assert await client.healthcheck() is True
+        probe = await client.probe_health()
     finally:
         await client.aclose()
 
+    assert probe.outcome == expected_outcome
+    assert probe.status == expected_status
+    assert probe.ok is (expected_outcome == OUTCOME_OK)
 
-async def test_healthcheck_returns_false_on_401():
+
+@pytest.mark.parametrize("status, expected", [(200, True), (401, False)])
+async def test_healthcheck_is_the_boolean_form_of_probe_health(status, expected):
     def handler(request):
-        return httpx.Response(401, text="Unauthorized")
+        return httpx.Response(status, json={"message": "API running."})
 
     client = _client_with(handler)
     try:
-        assert await client.healthcheck() is False
-    finally:
-        await client.aclose()
-
-
-async def test_healthcheck_returns_false_on_unexpected_body():
-    def handler(request):
-        return httpx.Response(200, json={"message": "Something else"})
-
-    client = _client_with(handler)
-    try:
-        assert await client.healthcheck() is False
-    finally:
-        await client.aclose()
-
-
-async def test_healthcheck_returns_false_on_connection_error():
-    def handler(request):
-        raise httpx.ConnectError("Connection refused")
-
-    client = _client_with(handler)
-    try:
-        assert await client.healthcheck() is False
+        assert await client.healthcheck() is expected
     finally:
         await client.aclose()
 

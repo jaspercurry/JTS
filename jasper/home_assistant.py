@@ -144,6 +144,23 @@ OUTCOME_AUTH = "auth"
 OUTCOME_AGENT_ERROR = "agent_error"
 OUTCOME_INTENT_MISS = "intent_miss"
 OUTCOME_PARSE_ERROR = "parse_error"
+# Health-probe only: HA answered 200 with a body that is not its
+# `API running.` sigil, i.e. the URL points at something that is not
+# Home Assistant. `process()` never produces this bucket.
+OUTCOME_NOT_HA = "not_ha"
+
+
+@dataclass(frozen=True)
+class HealthProbe:
+    """Result of `HAClient.probe_health()`. `outcome` is one of the
+    OUTCOME_* constants above; `status` carries the HTTP status when HA
+    answered at all and is None when the request never landed."""
+    outcome: str
+    status: int | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == OUTCOME_OK
 
 
 @dataclass(frozen=True)
@@ -494,11 +511,10 @@ class HAClient:
 
     # ---- Helpers used by the wizard (PR 2) and the doctor ------------------
 
-    async def healthcheck(self) -> bool:
-        """Cheap probe of `GET /api/` — returns True if HA responds 200
-        with the expected body. Used by the wizard's verify step and
-        `jasper-doctor` (skip-if-not-configured). Does NOT touch the
-        conversation endpoint — that would cost money on LLM-backed
+    async def probe_health(self) -> HealthProbe:
+        """`GET /api/` with the failure mode named, so the wizard can
+        tell the household what went wrong. Never raises. Does NOT touch
+        the conversation endpoint — that would cost money on LLM-backed
         HA agents."""
         import httpx  # lazy — see module-level comment
 
@@ -509,15 +525,28 @@ class HAClient:
                 headers=self._headers(),
                 timeout=_health_timeout(),
             )
+        except httpx.TimeoutException as e:
+            logger.debug("ha probe_health: %r", e)
+            return HealthProbe(OUTCOME_TIMEOUT)
         except httpx.HTTPError as e:
-            logger.debug("ha healthcheck: %r", e)
-            return False
+            logger.debug("ha probe_health: %r", e)
+            return HealthProbe(OUTCOME_NETWORK)
+        if resp.status_code == 401:
+            return HealthProbe(OUTCOME_AUTH, 401)
         if resp.status_code != 200:
-            return False
+            return HealthProbe(OUTCOME_PARSE_ERROR, resp.status_code)
         try:
-            return resp.json().get("message") == "API running."
+            body = resp.json()
         except ValueError:
-            return False
+            return HealthProbe(OUTCOME_PARSE_ERROR, 200)
+        if body.get("message") != "API running.":
+            return HealthProbe(OUTCOME_NOT_HA, 200)
+        return HealthProbe(OUTCOME_OK, 200)
+
+    async def healthcheck(self) -> bool:
+        """True when `GET /api/` answers 200 with HA's sigil. Yes/no
+        form of `probe_health()` for callers that only branch."""
+        return (await self.probe_health()).ok
 
     async def config(self) -> dict[str, Any] | None:
         """GET /api/config — used by the wizard to display location_name +

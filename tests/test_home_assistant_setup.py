@@ -16,9 +16,11 @@ What's exercised:
     transitions
   - JSON endpoint shapes (/discover, /verify)
 
-Network calls to HA are mocked by monkeypatching the verify_sync
-function; the mDNS scanner returns [] in tests (no real LAN browse).
-`restart_voice_daemon` is patched so we don't shell out to systemctl.
+Most tests mock HA by monkeypatching verify_sync; the agent-picker pin
+(`test_verify_endpoint_lists_conversation_agents`) instead runs the real
+verify path against an httpx.MockTransport standing in for HA. The mDNS
+scanner returns [] in tests (no real LAN browse). `restart_voice_daemon`
+is patched so we don't shell out to systemctl.
 """
 from __future__ import annotations
 
@@ -28,9 +30,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import httpx
 import pytest
 
 from jasper.web import home_assistant_setup as ha_setup
+
+# Captured before any fixture swaps it out, so the one test that must
+# exercise the real verify path can put it back.
+_REAL_VERIFY_SYNC = ha_setup.verify_sync
 
 
 # ---- URL normalization ----------------------------------------------------
@@ -594,11 +601,42 @@ def test_discover_endpoint_returns_json_list(wizard_server, monkeypatch):
     assert data["instances"][0]["url"] == "http://192.168.1.42:8123"
 
 
-def test_verify_endpoint_uses_persisted_state(wizard_server):
+def test_verify_endpoint_lists_conversation_agents(wizard_server, monkeypatch):
     """POST /verify reads URL+token from the env file (not the request
-    body) — used by the connected-state agent picker and Test button."""
+    body) and returns the conversation agents the picker renders.
+
+    The only test that runs the real verify path end to end: HA is a
+    MockTransport, so a regression in the entity filter or the
+    friendly_name fallback fails here instead of shipping green.
+    """
+    def handler(request):
+        if request.url.path == "/api/":
+            return httpx.Response(200, json={"message": "API running."})
+        if request.url.path == "/api/config":
+            return httpx.Response(200, json={
+                "location_name": "Chez Jasper", "version": "2026.5.1",
+            })
+        if request.url.path == "/api/states":
+            return httpx.Response(200, json=[
+                {"entity_id": "conversation.home_assistant",
+                 "attributes": {"friendly_name": "Home Assistant"}},
+                {"entity_id": "conversation.no_name", "attributes": {}},
+                {"entity_id": "light.bedroom",
+                 "attributes": {"friendly_name": "Bedroom"}},
+            ])
+        raise AssertionError(request.url.path)
+
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kw: real_async_client(
+            **{**kw, "transport": httpx.MockTransport(handler)}
+        ),
+    )
+    monkeypatch.setattr(ha_setup, "verify_sync", _REAL_VERIFY_SYNC)
+
     base_url, _, _ = wizard_server
-    # Connect first
+    # Connect first — /verify takes no body, it reads the env file.
     _post(f"{base_url}/save", {
         "url": "homeassistant.local",
         "token": "good-token",
@@ -608,19 +646,22 @@ def test_verify_endpoint_uses_persisted_state(wizard_server):
     req = urllib.request.Request(f"{base_url}/verify", data=body, method="POST")
     with urllib.request.urlopen(req) as r:
         data = json.loads(r.read())
+
     assert data["ok"] is True
-    assert data["instance_name"] == "Home"
-    assert any(a["entity_id"] == "conversation.home_assistant" for a in data["agents"])
+    assert data["url"] == "http://homeassistant.local:8123"
+    assert data["instance_name"] == "Chez Jasper"
+    assert data["version"] == "2026.5.1"
+    assert data["agents"] == [
+        {"entity_id": "conversation.home_assistant", "name": "Home Assistant"},
+        {"entity_id": "conversation.no_name", "name": "no_name"},
+    ]
 
 
 def test_ready_endpoint_returns_yes_when_ha_reachable(wizard_server, monkeypatch):
     """POST /ready is the cheap-poll variant used by the connected-state
     JS during the post-save restart window. One HA call (GET /api/)
     via HAClient.healthcheck, not three. Returns {ok: bool}."""
-    # Replace the HAClient inside ready_sync with a stub that has a
-    # successful healthcheck. (verify_sync uses its own httpx
-    # AsyncClient; ready_sync goes through HAClient — different mock
-    # surface.)
+    # Stub the whole probe — ready_sync's one HA call is HAClient's.
     monkeypatch.setattr(
         ha_setup, "ready_sync",
         lambda url, token, *, verify_ssl=True: {"ok": True},
