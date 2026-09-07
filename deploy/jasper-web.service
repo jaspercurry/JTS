@@ -106,7 +106,7 @@ RestartSec=2
 #     supplementary group (D-Bus policy grant, not polkit).
 #   * journalctl -k (Wi-Fi scan-suppression diagnostics) — the `systemd-journal`
 #     supplementary group (also fail-soft, so non-load-bearing).
-#   * NL80211 scan-repair (jasper/wifi_scan_repair.py) — intentionally NOT given
+#   * NL80211 scan-repair (jasper/net/wifi_scan_repair.py) — intentionally NOT given
 #     CAP_NET_ADMIN; /wifi/scan asks jasper-control's broker to start the
 #     root-only jasper-wifi-scan-repair.service helper instead.
 #   * systemctl restarts after a wizard save — already routed through

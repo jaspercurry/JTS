@@ -22,11 +22,11 @@ import math
 import os
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .atomic_io import atomic_write_json
+from .json_fields import utc_now_iso
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -221,7 +221,7 @@ def update_profile_from_measurement(
             source_lufs=round(float(source_lufs), 2),
             source_peak_dbfs=round(float(source_peak), 2),
             confidence=round(confidence, 2),
-            updated_at=_now_iso(),
+            updated_at=utc_now_iso(),
             method=method,
         )
         _save_profile_unlocked(profile, path=path)
@@ -522,9 +522,3 @@ def _profile_from_mapping(item: dict[str, Any]) -> AssistantLoudnessProfile | No
     ):
         return None
     return profile
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(
-        timespec="seconds",
-    ).replace("+00:00", "Z")

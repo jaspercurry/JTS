@@ -94,7 +94,7 @@ active_wifi_profile() {
 
 # Only the specific Pi 5 brcmfmac scan-suppression signature triggers the
 # repair. This is intentionally NARROWER than
-# jasper.wifi_scan_repair.text_mentions_scan_suppression (which also matches
+# jasper.net.wifi_scan_repair.text_mentions_scan_suppression (which also matches
 # bare "EAGAIN" / "Resource temporarily unavailable"): that matcher runs on
 # already-scoped scan diagnostics, whereas here we grep the *whole* kernel
 # log, where those generic markers are common noise from unrelated
@@ -114,12 +114,12 @@ run_scan_repair() {
         emit scan_repair_skip "iface=$IFACE reason=install_in_progress"
         return 0
     fi
-    # No system-python fallback: jasper.wifi_scan_repair is only importable
+    # No system-python fallback: jasper.net.wifi_scan_repair is only importable
     # from the /opt/jasper venv, so a bare `python3` would just ImportError.
     # If the venv python is missing, skip the repair honestly (observable
     # event) and let the caller continue.
     if [[ -x "$PYTHON" ]]; then
-        if "$PYTHON" -m jasper.wifi_scan_repair --iface "$IFACE" --json; then
+        if "$PYTHON" -m jasper.net.wifi_scan_repair --iface "$IFACE" --json; then
             emit scan_repair_ok "iface=$IFACE"
         else
             rc=$?

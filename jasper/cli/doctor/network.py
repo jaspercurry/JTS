@@ -31,7 +31,7 @@ from jasper.usb_network import (
     render_dnsmasq,
     render_nmconnection,
 )
-from jasper.wifi_guardian_persistence import (
+from jasper.net.wifi_guardian_persistence import (
     NMCLI_ACTIVE_WIFI_FIELDS,
     active_wifi_connection,
     nm_unescape as _nm_unescape,
@@ -273,7 +273,7 @@ def check_wifi_guardian() -> CheckResult:
 
     # Read the stash via the same module the wizard + tests use. We
     # never log the PSK from doctor; the SSID + key_mgmt are fine.
-    from ...wifi_guardian_persistence import (
+    from ...net.wifi_guardian_persistence import (
         DEFAULT_PATH as _STASH_DEFAULT,
         read_stash,
     )

@@ -297,7 +297,7 @@ def _apply_name(name: str, *, name_changed: bool) -> bool:
         )
 
     try:
-        from ..control_advert import render_control_advert
+        from ..net.control_advert import render_control_advert
 
         ok = render_control_advert(name)
         log_event(

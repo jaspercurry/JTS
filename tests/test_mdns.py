@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.mdns — the ONE one-shot mDNS-SD browse primitive.
+"""Unit tests for jasper.net.mdns — the ONE one-shot mDNS-SD browse primitive.
 
 ``browse_once`` is the shared, fail-soft browse+resolve+parse moved out of
 ``rooms_setup._discover_speakers``. These tests are strictly hardware-free:
@@ -32,13 +32,13 @@ import types
 
 import pytest
 
-from jasper import mdns
-from jasper.mdns import DiscoveredService, browse_once
+from jasper.net import mdns
+from jasper.net.mdns import DiscoveredService, browse_once
 
 
 # ----------------------------------------------------------------------
 # Fakes — a minimal `zeroconf` + `zeroconf.asyncio` surface matching the
-# exact call shape jasper.mdns._browse uses.
+# exact call shape jasper.net.mdns._browse uses.
 # ----------------------------------------------------------------------
 
 

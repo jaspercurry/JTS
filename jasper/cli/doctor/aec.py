@@ -43,6 +43,7 @@ from ...chip_aec.policy import (
     resolve_chip_aec_dac_gate,
 )
 from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
+from ...json_fields import sha256_file
 from ..aec_bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
@@ -58,7 +59,6 @@ from ._shared import (
     _loopback_playback_active,
     _parked_follower_result,
     _run,
-    _sha256_file,
 )
 
 # One snake_case constant per distinct decision branch across the aec-domain
@@ -1725,7 +1725,7 @@ def _check_dtln_model_assets() -> CheckResult | None:
         if not path.is_file() or path.stat().st_size <= 0:
             missing.append(path.name)
             continue
-        if _sha256_file(path) != expected_sha:
+        if sha256_file(path) != expected_sha:
             mismatched.append(path.name)
     if missing:
         return CheckResult(

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import utc_now_iso
 
 from ..mics import xvf3800
 
@@ -87,7 +88,7 @@ def _write_state(
         "state": state,
         "detail": detail,
         "error": error,
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "updated_at": utc_now_iso(),
     }
     if target is not None:
         payload["target"] = target.as_dict()

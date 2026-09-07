@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper import wifi_guardian_persistence
+from jasper.net import wifi_guardian_persistence
 from tests._nmcli_fakes import mock_proc as _mock_proc
 from tests._nmcli_fakes import scripted_nmcli as _scripted_nmcli
 

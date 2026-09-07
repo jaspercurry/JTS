@@ -124,6 +124,39 @@ def test_cross_site_get_healthz_is_allowed(server_with_coordinator):
     assert body == {"ok": True}
 
 
+@pytest.mark.parametrize(
+    "request_",
+    (
+        pytest.param(
+            lambda base, headers: _get(f"{base}/healthz", headers=headers),
+            id="read",
+        ),
+        pytest.param(
+            lambda base, headers: _post(
+                f"{base}/volume/adjust", {"delta_percent": 1}, headers=headers,
+            ),
+            id="mutating",
+        ),
+    ),
+)
+def test_guards_accept_the_name_identity_env_records(
+    server_with_coordinator, monkeypatch, tmp_path, request_,
+):
+    """After an RFC 6762 collision rename the speaker answers only at the
+    name the reconciler wrote to identity.env; both daemon guards must
+    compose the allowlist through jasper.identity_state, not the static
+    rules alone — and still refuse a foreign name."""
+    base, _ = server_with_coordinator
+    identity = tmp_path / "identity.env"
+    identity.write_text("JASPER_IDENTITY_AVAHI_HOSTNAME=kitchen-2.local\n")
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity))
+    status, _body = request_(base, {"Host": "kitchen-2.local"})
+    assert status == 200
+    status, body = request_(base, {"Host": "evil.example"})
+    assert status == 403
+    assert body["error"] == "host_not_allowed"
+
+
 def _access_log_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
     # log_request's access-log line is always logger.info; filter out other
     # levels (e.g. the WARNING http.reject event) rather than asserting on

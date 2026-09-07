@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import subprocess
 import sys
@@ -16,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from jasper import home_assistant
+from jasper.json_fields import json_fingerprint
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -31,12 +31,7 @@ _SIGNATURE_KEYS = (
 
 
 def _env_signature(values: Mapping[str, str]) -> str:
-    payload = json.dumps(
-        {key: values.get(key, "") for key in _SIGNATURE_KEYS},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return json_fingerprint({key: values.get(key, "") for key in _SIGNATURE_KEYS})
 
 
 def _unconfigured_status(values: Mapping[str, str]) -> dict[str, Any] | None:
