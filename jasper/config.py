@@ -18,6 +18,7 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
+from .google_creds import registry_path as google_registry_path
 from .google_oauth import resolved_google_redirect_uri
 from .identity import resolve_hostname
 from .spotify_oauth import resolved_spotify_redirect_uri
@@ -782,13 +783,7 @@ class Config:
             google_client_id=_env("GOOGLE_CLIENT_ID"),
             google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
             google_redirect_uri=resolved_google_redirect_uri(),
-            # The Google OAuth token tree (per-member refresh tokens + Gmail/Calendar
-            # identities) lives outside the shared /var/lib/jasper StateDirectory, in the
-            # group-`jasper-secrets` dir, readable only by jasper-voice + jasper-web.
-            google_accounts_path=_env(
-                "JASPER_GOOGLE_ACCOUNTS_PATH",
-                "/var/lib/jasper-secrets/google/accounts.json",
-            ),
+            google_accounts_path=google_registry_path(),
             google_setup_url=_env(
                 "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",
             ),

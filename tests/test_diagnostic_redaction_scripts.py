@@ -94,7 +94,11 @@ def test_diagnostic_scripts_parse_as_bash():
 def test_secret_file_array_covers_every_compartment_env_file(monkeypatch):
     """fetch-pi-logs.sh and pi-bundle.sh must not silently drift behind the
     doctor's own secret-compartment inventory."""
-    for var in ("SPOTIFY_CACHE_PATH", "JASPER_SPOTIFY_ACCOUNTS_PATH"):
+    for var in (
+        "SPOTIFY_CACHE_PATH",
+        "JASPER_SPOTIFY_ACCOUNTS_PATH",
+        "JASPER_GOOGLE_ACCOUNTS_PATH",
+    ):
         monkeypatch.delenv(var, raising=False)
     array = set(_secret_env_files())
     # Only the KEY=value (`.env`) compartment files share the array's own

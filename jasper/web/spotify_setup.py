@@ -85,7 +85,6 @@ from ..accounts import (
     Registry,
     build_cache_handler,
     default_cache_path_for,
-    DEFAULT_REGISTRY_PATH,
 )
 from ..spotify_router import (
     ACCOUNT_NEEDS_OAUTH,
@@ -1396,7 +1395,7 @@ def _build_cfg(
 def make_server(
     target,
     *,
-    registry_path: str = DEFAULT_REGISTRY_PATH,
+    registry_path: str,
     bounce_redirect_uri: str | None = None,
     manual_redirect_uri: str = DEFAULT_MANUAL_REDIRECT_URI,
 ) -> ThreadingHTTPServer:

@@ -124,6 +124,16 @@ _UNCODIFIED = {
     # (pinned by tests/test_voice_input_gate.py), which is why the guard's
     # deploy/ scan cannot see it.
     "JASPER_ACCESSORY_MIC_ENV_FILE",
+    # Secret-compartment registry path override, read once in
+    # jasper.google_creds.registry_path(). A test/diagnostic seam, never
+    # operator config: a registry written under an override lands outside the
+    # setgid `jasper-secrets` dir and so outside the compartment's guarantees.
+    "JASPER_GOOGLE_ACCOUNTS_PATH",
+    # Secret-compartment registry path override, read once in
+    # jasper.accounts.registry_path(). A test/diagnostic seam, never
+    # operator config: a registry written under an override lands outside the
+    # setgid `jasper-intsecrets` dir and so outside the compartment's guarantees.
+    "JASPER_SPOTIFY_ACCOUNTS_PATH",
     # -- /proc & /sys mount-point / probe-command overrides — pure test
     #    seams for the doctor / hardware probes.
     "JASPER_ASOUND_RENDER_COMMAND",
@@ -216,7 +226,9 @@ def _codified_vars() -> set[str]:
     for surface in _SURFACES:
         path = ROOT / surface
         files = [path] if path.is_file() else sorted(
-            p for p in path.rglob("*") if p.is_file()
+            p
+            for p in path.rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts
         )
         for f in files:
             names.update(_TOKEN_RE.findall(f.read_text(encoding="utf-8", errors="ignore")))
