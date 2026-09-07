@@ -29,6 +29,7 @@ from tests.active_speaker_fixtures import (
     mono_output_topology as _topology,
     passive_stereo_output_topology as _passive_stereo_topology,
 )
+from tests._web_test_helpers import sound_page_js
 
 
 def _step(view: dict, step_id: str) -> dict:
@@ -1483,7 +1484,6 @@ def test_step_labels_match_the_titles_the_page_renders():
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_SOUND_MODULE = _REPO_ROOT / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
 _ACTIVE_SPEAKER_UI_MODULE = (
     _REPO_ROOT / "deploy" / "assets" / "sound-profile" / "js" / "active-speaker-ui.js"
 )
@@ -1501,7 +1501,7 @@ def test_failure_remedies_name_the_card_titles_the_page_actually_renders():
     version of the dead end it was added to fix.
     """
 
-    page = _SOUND_MODULE.read_text()
+    page = sound_page_js()
     rendered = dict(
         re.findall(
             r"renderOutputStepCard\(\s*'([a-z_]+)',\s*'([^']+)',",

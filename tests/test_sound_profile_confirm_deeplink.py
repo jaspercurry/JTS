@@ -32,13 +32,14 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
 )
 
-MAIN_JS = Path("deploy/assets/sound-profile/js/main.js")
+from ._web_test_helpers import sound_page_js
+
 SOUND_CSS = Path("deploy/assets/sound-profile/sound.css")
 ANCHOR_ID = "confirm-safety-limits"
 
 
 def _source() -> str:
-    return MAIN_JS.read_text(encoding="utf-8")
+    return sound_page_js()
 
 
 def test_the_deeplink_href_and_the_dom_id_agree():
@@ -96,7 +97,7 @@ def test_the_callout_reads_the_evaluation_not_the_profiles_self_report():
 
     source = _source()
     state = source[source.index("function driverSafetyReviewState("):]
-    state = state[: state.index("\n  function driverSafetyReviewHint(")]
+    state = state[: state.index("\n  function renderDriverSafetyReviewCallout(")]
     assert "driver_safety_profile_evaluation" in state
     assert "confirmed_and_current !== true" in state
     # 'missing' stays out: no active crossover pair means no declaration to

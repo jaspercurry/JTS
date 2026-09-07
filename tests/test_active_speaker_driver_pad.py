@@ -348,14 +348,14 @@ def test_effective_sensitivity_db_ignores_a_malformed_attenuation():
 # --- #1675 ka-beaming guidance: JS closed-form lockstep pin ------------------
 #
 # kaBeamingOnsetHz(diameterMm) is pure JS (deploy/assets/sound-profile/js/
-# main.js) with no Python production implementation to import against -- the
+# driver-model.js) with no Python production implementation to import against -- the
 # guidance is display-only, client-side. This is a hand-maintained mirror of
 # the SAME closed form, verified against the rig's own anchor (114 mm ->
 # 958 Hz / 1916 Hz). If you change one side, change the other.
 
 
 def _ka_beaming_onset_hz(diameter_mm: float) -> tuple[int, int]:
-    """Mirrors main.js's kaBeamingOnsetHz exactly, including its rounding
+    """Mirrors driver-model.js's kaBeamingOnsetHz exactly, including its rounding
     order: f_ka1 is rounded to an integer FIRST, then f_ka2 = 2 * that
     rounded value (not 2x the raw float) -- see the JS function's own
     docstring for why this order is deliberate."""

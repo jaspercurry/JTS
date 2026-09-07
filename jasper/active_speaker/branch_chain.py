@@ -293,7 +293,7 @@ def beaming_onset_hz(radiating_diameter_mm: float, *, ka: float = BEAMING_KA) ->
     """Frequency at which a piston of this diameter reaches ``ka``. ``f = ka*c / (2*pi*a)``;
     JTS3 woofer's 114 mm diameter gives 957.7 Hz at ka=1. GEOMETRY, not DSP-fixable
     (#1675); pinned to match the browser hint's ka=1 value (``kaBeamingOnsetHz`` in
-    deploy/assets/sound-profile/js/main.js). Non-positive input raises.
+    deploy/assets/sound-profile/js/driver-model.js). Non-positive input raises.
     """
     if not math.isfinite(radiating_diameter_mm) or radiating_diameter_mm <= 0.0:
         raise ValueError(

@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from email.message import Message
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 
@@ -343,3 +344,27 @@ def assert_verify_uses_constant_time_compare(monkeypatch, tmp_path, module, file
     )
     assert module.verify("wrong") is False
     assert calls == [("wrong", secret)]
+
+
+_SOUND_JS_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "deploy" / "assets" / "sound-profile" / "js"
+)
+# active-speaker-ui.js and eq-math.js are pure sibling modules with pins of
+# their own (tests/js/active_speaker_ui_test.mjs, tests/test_sound_peq_response.py)
+# and copy rules of their own; everything else in the directory is the one page
+# program main.js heads.
+_SOUND_PAGE_JS_SIBLINGS = frozenset({"active-speaker-ui.js", "eq-math.js"})
+
+
+def sound_page_js() -> str:
+    """The /sound/ page's own JavaScript, concatenated in filename order.
+
+    The page is one program split across concern modules, so a pin on what it
+    does — or must not do — reads all of them, not just the entry module.
+    """
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(_SOUND_JS_DIR.glob("*.js"))
+        if path.name not in _SOUND_PAGE_JS_SIBLINGS
+    )

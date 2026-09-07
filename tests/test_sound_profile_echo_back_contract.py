@@ -37,9 +37,7 @@ import ast
 import inspect
 import re
 import textwrap
-from pathlib import Path
-
-SOUND_PROFILE_MAIN_JS = Path("deploy/assets/sound-profile/js/main.js")
+from ._web_test_helpers import sound_page_js
 
 _ECHO_FIELDS_FUNCTION = "function driverEchoBackFields() {"
 
@@ -52,10 +50,10 @@ def _echo_back_field_body() -> str:
     empty set and this file would guard nothing.
     """
 
-    source = SOUND_PROFILE_MAIN_JS.read_text(encoding="utf-8")
+    source = sound_page_js()
     start = source.find(_ECHO_FIELDS_FUNCTION)
     assert start != -1, (
-        f"{SOUND_PROFILE_MAIN_JS} no longer declares `{_ECHO_FIELDS_FUNCTION}`. "
+        f"the /sound/ page JS no longer declares `{_ECHO_FIELDS_FUNCTION}`. "
         "If the echo-back field list moved or was renamed, point this contract "
         "at its new home -- do not delete it: it is the only guard that the "
         "panel's raw-provenance shortcut stays inside the server's "
@@ -71,7 +69,7 @@ def _echo_back_field_body() -> str:
             if depth == 0:
                 return source[open_brace : index + 1]
     raise AssertionError(
-        f"unbalanced braces reading driverEchoBackFields from {SOUND_PROFILE_MAIN_JS}"
+        "unbalanced braces reading driverEchoBackFields from the /sound/ page JS"
     )
 
 

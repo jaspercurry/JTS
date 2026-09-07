@@ -9,13 +9,18 @@
 // <meta name=jts-csrf> tag. Module scope is strict mode — the IIFE
 // declares all its state with var/function.
 //
-// FOLLOW-UP (deferred, hardware-gated): unlike /system/'s JS — split into
-// dom/format/charts/components/sections/views/api/actions/main — most render/
-// state/IO logic is still one module. Pure helpers live in sibling modules:
-// eq-math.js for RBJ biquad math and active-speaker-ui.js for active-crossover
-// vocabulary/step policy. The editor's live-draft path still must be exercised
-// on the Pi (band-drag + live-draft → CamillaDSP) before deeper splitting.
-// Do not blind-refactor it.
+// This entry module owns the page's reassigned state, the render and IO paths
+// that write it, and the event wiring. Every helper that reads no reassigned
+// state lives in a sibling concern module imported below — a module cannot
+// assign to an imported binding, so moving a state WRITER out is a rewrite of
+// the state, not a move. The editor's live-draft path (band-drag + live-draft
+// → CamillaDSP) still has to be exercised on a Pi before that rewrite; do not
+// blind-refactor it.
+//
+// jsonHeaders is imported from /assets/shared/js/http.js — the one
+// cross-page owner of the CSRF/JSON plumbing. A conventions guard in
+// tests/test_web_wizard_conventions.py keeps a local re-declaration from
+// creeping back (same shared-by-promotion rule as escape.js / dialog.js).
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { jsonHeaders, postJSON } from "/assets/shared/js/http.js";
@@ -39,7 +44,131 @@ import {
   summedGroupFailureHint,
   SUMMED_TEST_GENERIC_RETRY_HINT
 } from "/assets/sound-profile/js/active-speaker-ui.js";
-import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js";
+import {
+  magnitudeDb,
+  GAINLESS_TYPES
+} from "/assets/sound-profile/js/eq-math.js";
+import {
+  kaBeamingNoteHtml,
+  renderAdvancedDriverSettings,
+  renderBuildNotes,
+  renderComponentSettings,
+  renderCrossoverPreviewRows,
+  renderDriverEchoBack,
+  renderDriverSafetyWarnings,
+  renderIssueList,
+  renderManualCrossoverSettings,
+  renderPreviewIssues,
+  renderSubwooferCrossoverControl,
+  renderWorkingCrossoverRows
+} from "/assets/sound-profile/js/driver-fields.js";
+import {
+  applySafetyBandToSetting,
+  cabinetFromSetting,
+  candidateConfidenceRank,
+  candidateFrequency,
+  crossoverPreviewDisplayStatus,
+  crossoverPreviewReadyCount,
+  crossoverPreviewReadyForProtectedStaging,
+  crossoverPreviewReviewIssues,
+  driverResearchFlowComplete,
+  driverResearchHasPreviewInputs,
+  driverResearchMissingPreviewMessage,
+  driverResearchPrompt,
+  driverResearchPromptReady,
+  driverResearchStepSatisfied,
+  driverResearchTargets,
+  driverSafetyConflicts,
+  driverSafetyNoteRoles,
+  driverSafetyReviewHint,
+  extractDriverResearchJson,
+  ingestCrossoverPreview,
+  invalidateDriverResearchBinding,
+  levelDurationLimitsFromSetting,
+  manualCrossoverDelayValidationError,
+  manualCrossoverVocabularyValidationError,
+  padFromSetting,
+  previewStatusClass,
+  proposeSensitivityTrims,
+  protectionFiltersFromSetting,
+  safetyBandFromSetting,
+  setManualCrossoverField,
+  summarizeDriverResearchPayload,
+  targetModel,
+  workingSetupSummary
+} from "/assets/sound-profile/js/driver-model.js";
+import {
+  H,
+  MAXDB,
+  MINDB,
+  W,
+  advancedSpecs,
+  drawArea,
+  drawPath,
+  freqToSlider,
+  gx,
+  gy,
+  padB,
+  padL,
+  padR,
+  padT,
+  pointsFor,
+  sliderToFreq,
+  specActive,
+  summedDbAt
+} from "/assets/sound-profile/js/eq-curve.js";
+import {
+  clamp,
+  clone,
+  fmtDb,
+  fmtFreq,
+  fmtFreqShort,
+  fmtQ,
+  fmtTrim,
+  ico,
+  manualNumberValue,
+  roleSentenceText,
+  sleepMs
+} from "/assets/sound-profile/js/format.js";
+import {
+  ACTIVE_GAIN_EPSILON_DB,
+  crossoverPreview,
+  crossoverVocabulary,
+  driverResearch,
+  el,
+  followerMode,
+  outputTopology,
+  pageMode
+} from "/assets/sound-profile/js/state.js";
+import {
+  activeCommissionRoles,
+  activeCrossoverPairs,
+  activeOutputGroups,
+  baseOutputDraft,
+  crossChildGroupVerdicts,
+  crossoverSetting,
+  crossoverSettingKey,
+  currentOutputTopology,
+  driverSetting,
+  firstUnusedOutputIndex,
+  hardwareOutputCount,
+  nextSubwooferGroupId,
+  observedOutputHardware,
+  outputAssignedToOtherMap,
+  outputChannel,
+  outputChannelGuardReady,
+  outputClockDomainReport,
+  outputGroups,
+  outputHardware,
+  outputHardwareMismatch,
+  outputHasSubwoofer,
+  outputTemplateKindFromAxes,
+  outputTemplateUnavailableReason,
+  pairRoleKey,
+  physicalOutputLabel,
+  physicalOutputOptions,
+  removeSubwooferFromTopology
+} from "/assets/sound-profile/js/topology.js";
 (function() {
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
@@ -96,7 +225,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
-  var ACTIVE_GAIN_EPSILON_DB = 0.05;
   var activeSpeaker = {
     loading: false, action: '', session: null,
     calibrationLevel: null, measurements: null,
@@ -122,18 +250,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var COMMISSION_RAMP_LISTEN_MS = 900;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   var SUMMED_TEST_STOP_ARM_MS = 250;
-  var outputTopology = {
-    loading: false, saving: false, resetting: false, repinning: false,
-    payload: null, draft: null,
-    identity: null, clockDomain: null, activeRoute: null,
-    observedHardware: null,
-    hardwareAdoption: null,
-    hardwareMismatch: null,
-    hardwareRepin: null,
-    revision: null,
-    identitySaving: '', protectionSaving: '',
-    error: '', dirty: false, touched: false
-  };
   var outputStepOverride = '';
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
@@ -145,25 +261,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   var activeSpeakerSetupOpen = false;
   var driverAdvancedOpen = false;
   var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
-  var driverResearch = {
-    inputs: {
-      full_range: '', woofer: '', mid: '', tweeter: '', subwoofer: '', notes: '',
-      target_models: {}
-    },
-    settings: {drivers: {}, crossovers: {}},
-    importText: '',
-    importedPayload: null,
-    parsed: null,
-    designDraft: null,
-    error: '',
-    dirty: false,
-    safetyDirty: false,
-    editedDriverTargets: {},
-    saving: false,
-    promptCopy: {copied: false, selected: false},
-    researchRequest: null
-  };
-  var crossoverPreview = {payload: null, preparing: false, error: ''};
   var ZERO_DETENT_DB = 0.1;
   var volumeFloorTone = {
     active: false,
@@ -173,79 +270,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     generation: 0,
     savedNotice: false
   };
-  var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
-
-  function el(id) { return document.getElementById(id); }
-  // The crossover filters and slopes this page may OFFER, served on the island
-  // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
-  // (jasper/active_speaker/profile.py's SUPPORTED_CROSSOVER_TYPES /
-  // SUPPORTED_LR_ORDERS, spelled by staging). Deliberately NOT re-stated here:
-  // a literal list would be a second answer to "what can JTS build", and the
-  // editor would go on offering a filter or slope the compiler refuses several
-  // screens later. An island that carries none leaves the pickers empty and
-  // blocks the save with a named reason rather than guessing a vocabulary.
-  function crossoverVocabularyFromIsland(raw) {
-    var island = raw && typeof raw === 'object' ? raw : {};
-    var filterTypes = Array.isArray(island.filter_types) ? island.filter_types : [];
-    var slopes = Array.isArray(island.slopes_db_per_octave) ?
-      island.slopes_db_per_octave : [];
-    return {
-      filterTypes: filterTypes.map(String),
-      slopes: slopes.map(Number).filter(function(value) {
-        return isFinite(value) && value > 0;
-      }),
-      defaultFilterType: island.default_filter_type == null ?
-        '' : String(island.default_filter_type),
-      defaultSlope: Number(island.default_slope_db_per_octave) || null
-    };
-  }
-  // nginx selects one renderer mode on the same backend. EQ owns profiles and
-  // Match Loudness; Setup owns output controls and local commissioning.
-  var pageData = (function() {
-    var node = document.getElementById('sound-page-data');
-    var text = node && node.textContent ? node.textContent.trim() : '';
-    var legacyFollowerIsland = false;
-    // Keep the standalone follower harness compatible with the old island.
-    if (!text) {
-      node = document.getElementById('sound-follower-data');
-      text = node && node.textContent ? node.textContent.trim() : '';
-      legacyFollowerIsland = !!text;
-    }
-    if (!text) {
-      return {mode: 'eq', follower: false, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
-    }
-    try {
-      var parsed = JSON.parse(text);
-      return {
-        mode: parsed.mode === 'setup' || legacyFollowerIsland ? 'setup' : 'eq',
-        follower: parsed.follower === true,
-        crossoverVocabulary: crossoverVocabularyFromIsland(parsed.crossover_vocabulary)
-      };
-    } catch (e) {
-      // Split pages without EQ chrome must stay on the local-setup side if the
-      // tiny island is damaged; attempting EQ would dereference absent tabs.
-      return {mode: 'setup', follower: true, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
-    }
-  })();
-  var pageMode = pageData.mode;
-  var followerMode = pageData.follower;
-  var crossoverVocabulary = pageData.crossoverVocabulary;
-  // jsonHeaders is imported from /assets/shared/js/http.js — the one
-  // cross-page owner of the CSRF/JSON plumbing. A conventions guard in
-  // tests/test_web_wizard_conventions.py keeps a local re-declaration from
-  // creeping back (same shared-by-promotion rule as escape.js / dialog.js).
-  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
-  function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
-  function fmtDb(v) { v = Number(v) || 0; return (v > 0 ? '+' : '') + v.toFixed(1); }
-  function fmtFreq(v) {
-    v = Number(v) || 0;
-    return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + ' kHz' : Math.round(v) + ' Hz';
-  }
-  function fmtFreqShort(v) {
-    v = Number(v) || 0;
-    return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k' : String(Math.round(v));
-  }
-  function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
   function patchActiveSpeaker(patch) {
     activeSpeaker = Object.assign({}, activeSpeaker, patch || {});
     return activeSpeaker;
@@ -261,9 +285,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       });
     }
     return out;
-  }
-  function ico(name, cls) {
-    return '<svg class="' + (cls || 'ico') + '" aria-hidden="true"><use href="#icon-' + name + '"></use></svg>';
   }
   function status(msg, isErr) {
     statusText = msg || '';
@@ -387,29 +408,10 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     return out;
   }
-  function bandType(s) { return s.type || s.biquad_type || 'Peaking'; }
-  function isGainless(s) { return GAINLESS_TYPES.indexOf(bandType(s)) >= 0; }
   // Cut filters (HP/LP) get a tighter Q ceiling — a high-Q cut is a big
   // resonant boost at the corner. Mirrors CUT_MAX_Q in jasper/sound/profile.py.
   function bandQMax(type) {
     return (type === 'Highpass' || type === 'Lowpass') ? limits.cut_max_q : limits.max_q;
-  }
-  // Cut/notch bands are active by virtue of existing; gain-bearing bands
-  // need a non-trivial gain to count (mirrors FilterSpec.active() in Python).
-  function specActive(s) {
-    return isGainless(s) || Math.abs(Number(s.gain_db || 0)) >= ACTIVE_GAIN_EPSILON_DB;
-  }
-  // Real RBJ biquad magnitude (shared eq-math.js, byte-equivalent to the
-  // Python preview). Replaces the old exp() approximation; required for the
-  // cut/notch types, which have no closed-form approximation.
-  function responseDb(spec, freq) {
-    return magnitudeDb(
-      bandType(spec),
-      Number(spec.freq_hz || spec.freq || 1000),
-      Number(spec.gain_db || 0),
-      Number(spec.q || 1),
-      Number(freq) || 0
-    );
   }
   function curveSpecs(profile) { return (curvesById[profile.curve_id] || {}).filters || []; }
   function simpleSpecs(profile) {
@@ -417,18 +419,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return (simpleBands.length ? simpleBands : []).map(function(b) {
       return {type: b.type, freq_hz: b.freq_hz, gain_db: simple[b.field] || 0,
               q: b.type === 'Peaking' ? 1.0 : undefined};
-    });
-  }
-  function advancedSpecs(profile) {
-    return (profile.parametric_bands || []).filter(function(b) { return b && b.enabled !== false; })
-      .map(function(b) { return {type: b.type, freq_hz: b.freq_hz, gain_db: b.gain_db, q: b.q}; });
-  }
-  function pointsFor(specs, freqs, emptyWhenFlat) {
-    specs = specs || [];
-    if (emptyWhenFlat && !specs.some(specActive)) return [];
-    return freqs.map(function(f) {
-      var db = specs.reduce(function(sum, s) { return specActive(s) ? sum + responseDb(s, f) : sum; }, 0);
-      return {freq_hz: f, db: db};
     });
   }
   function previewPayload(profile) {
@@ -442,42 +432,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
   }
 
   // ---- graph rendering ------------------------------------------------
-  var W = 620, H = 200, padL = 38, padR = 12, padT = 12, padB = 26;
-  var MINDB = -12, MAXDB = 12, MINF = Math.log10(20), MAXF = Math.log10(20000);
-  function gx(f) { return padL + (Math.log10(f) - MINF) / (MAXF - MINF) * (W - padL - padR); }
-  function gy(db) { return padT + (MAXDB - db) / (MAXDB - MINDB) * (H - padT - padB); }
-  function pathD(points) {
-    var c = points.map(function(p) { return [gx(p.freq_hz), gy(clamp(p.db, MINDB, MAXDB))]; });
-    var d = 'M' + c[0][0].toFixed(1) + ' ' + c[0][1].toFixed(1);
-    for (var i = 1; i < c.length; i += 1) d += ' L' + c[i][0].toFixed(1) + ' ' + c[i][1].toFixed(1);
-    return d;
-  }
-  function drawPath(points, cls) {
-    if (!points || !points.length) return '';
-    return '<path class="' + cls + '" d="' + pathD(points) + '"></path>';
-  }
-  function drawArea(points) {
-    if (!points || !points.length) return '';
-    return '<path class="area" d="' + pathD(points) +
-      ' L' + gx(20000).toFixed(1) + ' ' + gy(MINDB).toFixed(1) +
-      ' L' + gx(20).toFixed(1) + ' ' + gy(MINDB).toFixed(1) + ' Z"></path>';
-  }
-  // db value of the summed curve at an arbitrary frequency. The preview
-  // points are ascending in freq_hz; interpolate linearly in log-frequency
-  // so a band dot lands exactly ON the drawn curve regardless of filter type.
-  function summedDbAt(points, freq) {
-    if (!points || !points.length) return 0;
-    if (freq <= points[0].freq_hz) return points[0].db;
-    for (var i = 1; i < points.length; i += 1) {
-      if (freq <= points[i].freq_hz) {
-        var p0 = points[i - 1], p1 = points[i];
-        var span = Math.log(p1.freq_hz) - Math.log(p0.freq_hz);
-        var t = span > 0 ? (Math.log(freq) - Math.log(p0.freq_hz)) / span : 0;
-        return p0.db + t * (p1.db - p0.db);
-      }
-    }
-    return points[points.length - 1].db;
-  }
   // One dot per band, sitting on the summed curve. Only the expanded band
   // adds a frequency guide line (+ width shading for Peaking) — no per-band
   // marker lines or component curves clutter the default view.
@@ -698,7 +652,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
     el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
   }
-  function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
   function fmtVolumeFloor(v) {
     v = Number(v);
     if (!isFinite(v)) v = volumeFloorDefault();
@@ -832,20 +785,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</details>' +
     '</section>';
   }
-  function activeCommissionRoles(group) {
-    var seen = {};
-    var order = ['woofer', 'mid', 'tweeter'];
-    (group && Array.isArray(group.channels) ? group.channels : []).forEach(function(ch) {
-      if (ch && ch.role) seen[ch.role] = true;
-    });
-    return order.filter(function(r) { return seen[r]; });
-  }
-  function currentOutputTopology() {
-    return outputTopology.draft || outputTopology.payload || null;
-  }
-  function outputGroups(topology) {
-    return topology && Array.isArray(topology.speaker_groups) ? topology.speaker_groups : [];
-  }
   function identityReportFromTopology(topology) {
     var targets = [];
     outputGroups(topology).forEach(function(group) {
@@ -877,65 +816,8 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       targets: targets
     };
   }
-  function outputHardware(topology) {
-    return topology && topology.hardware ? topology.hardware : null;
-  }
-  function physicalOutputOptions(topology) {
-    var hardware = outputHardware(topology) || {};
-    var outputs = Array.isArray(hardware.outputs) ? hardware.outputs : [];
-    if (outputs.length) {
-      return outputs.map(function(output) {
-        var index = Number(output.index);
-        return {
-          index: index,
-          label: output.human_label || ('Output ' + (index + 1))
-        };
-      }).filter(function(output) {
-        return isFinite(output.index);
-      });
-    }
-    var count = Number(hardware.physical_output_count) || 0;
-    var fallback = [];
-    for (var i = 0; i < count; i += 1) {
-      fallback.push({index: i, label: 'Output ' + (i + 1)});
-    }
-    return fallback;
-  }
-  function physicalOutputLabel(topology, index) {
-    var wanted = Number(index);
-    var options = physicalOutputOptions(topology);
-    for (var i = 0; i < options.length; i += 1) {
-      if (Number(options[i].index) === wanted) return options[i].label;
-    }
-    return isFinite(wanted) ? 'Output ' + (wanted + 1) : 'No output assigned';
-  }
-  function observedOutputHardware() {
-    return outputTopology.observedHardware || null;
-  }
-  function hardwareOutputCount(hardware) {
-    return Number(hardware && hardware.physical_output_count) || 0;
-  }
-  function outputHardwareMismatch(topology) {
-    // The declared-vs-detected comparison is computed once, server-side, in
-    // jasper.output_topology.declared_hardware_mismatch and published as
-    // payload.hardware_mismatch (jasper/web/sound_active_speaker.py's
-    // _output_topology_payload) -- the same rule jasper.control.audio_health's
-    // #2812 setup hint reads, since that detector runs in a different daemon
-    // and cannot see this page's HTTP response. `topology` is accepted but
-    // unused so existing call sites are unchanged.
-    return outputTopology.hardwareMismatch;
-  }
-  function outputEvaluation(topology) {
-    return topology && topology.evaluation ? topology.evaluation : {};
-  }
   function outputIdentityReport() {
     return outputTopology.identity || identityReportFromTopology(currentOutputTopology());
-  }
-  function outputClockDomainReport() {
-    return outputTopology.clockDomain || null;
-  }
-  function outputActiveRoute() {
-    return outputTopology.activeRoute || null;
   }
   function identityTargetFor(groupId, role) {
     var report = outputIdentityReport();
@@ -943,117 +825,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return targets.find(function(target) {
       return target.speaker_group_id === groupId && target.role === role;
     }) || null;
-  }
-  function outputAssignedToOtherMap(topology, groupId, role) {
-    var out = {};
-    outputGroups(topology).forEach(function(group) {
-      (group.channels || []).forEach(function(channel) {
-        if (channel.physical_output_index == null) return;
-        if ((group.id || '') === groupId && (channel.role || '') === role) return;
-        out[String(channel.physical_output_index)] =
-          (group.label || group.id) + ' · ' + humanRole(channel.role);
-      });
-    });
-    return out;
-  }
-  function outputRoleSummary(topology) {
-    var roles = [];
-    outputGroups(topology).forEach(function(group) {
-      (group.channels || []).forEach(function(channel) {
-        var role = channel.role || '';
-        if (role && roles.indexOf(role) < 0) roles.push(role);
-      });
-    });
-    if (!roles.length) roles = ['woofer', 'tweeter'];
-    return roles.sort(function(a, b) {
-      var order = {full_range: 0, woofer: 1, mid: 2, tweeter: 3, subwoofer: 4};
-      return (order[a] || 99) - (order[b] || 99);
-    });
-  }
-  function driverResearchRoles(topology) {
-    var pairs = activeCrossoverPairs(topology);
-    if (!pairs.length) return ['full_range'];
-    var roles = [];
-    pairs.forEach(function(pair) {
-      pair.forEach(function(role) {
-        if (roles.indexOf(role) < 0) roles.push(role);
-      });
-    });
-    var order = {full_range: 0, woofer: 1, mid: 2, tweeter: 3};
-    return roles.sort(function(a, b) {
-      return (order[a] || 99) - (order[b] || 99);
-    });
-  }
-  function driverResearchTargets(topology) {
-    var allowedRoles = driverResearchRoles(topology);
-    var hasActivePairs = activeCrossoverPairs(topology).length > 0;
-    var targets = [];
-    outputGroups(topology).forEach(function(group) {
-      if (!hasActivePairs && group.mode !== 'full_range_passive') return;
-      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
-        var role = String(channel.role || '');
-        if (allowedRoles.indexOf(role) < 0) return;
-        targets.push({
-          target_id: String(group.id || '') + ':' + role,
-          role: role,
-          group_id: String(group.id || ''),
-          group_label: String(group.label || group.id || 'Speaker'),
-          output_index: channel.physical_output_index,
-          output_label: channel.human_output_label ||
-            (channel.physical_output_index == null ? 'Unassigned output' :
-              physicalOutputLabel(topology, channel.physical_output_index)),
-          driver_style: channel.driver_style || null
-        });
-      });
-    });
-    return targets;
-  }
-  function targetModel(target, topology) {
-    var targetModels = driverResearch.inputs.target_models || {};
-    var explicit = String(targetModels[target.target_id] || '').trim();
-    if (explicit) return explicit;
-    var sameRole = driverResearchTargets(topology).filter(function(item) {
-      return item.role === target.role;
-    });
-    return sameRole.length === 1
-      ? String(driverResearch.inputs[target.role] || '').trim()
-      : '';
-  }
-  function assignedOutputIndices(topology) {
-    var used = {};
-    outputGroups(topology).forEach(function(group) {
-      (group.channels || []).forEach(function(channel) {
-        if (channel.physical_output_index != null) {
-          used[String(channel.physical_output_index)] = true;
-        }
-      });
-    });
-    return used;
-  }
-  function firstUnusedOutputIndex(topology) {
-    var hardware = outputHardware(topology) || {};
-    var count = Number(hardware.physical_output_count || 0);
-    var used = assignedOutputIndices(topology);
-    for (var index = 0; index < count; index += 1) {
-      if (!used[String(index)]) return index;
-    }
-    return null;
-  }
-  function outputSubwooferGroup(topology) {
-    return outputGroups(topology).find(function(group) {
-      return group.kind === 'subwoofer' || group.mode === 'subwoofer';
-    }) || null;
-  }
-  function outputHasSubwoofer(topology) {
-    return !!outputSubwooferGroup(topology);
-  }
-  function nextSubwooferGroupId(topology) {
-    var existing = {};
-    outputGroups(topology).forEach(function(group) { existing[group.id] = true; });
-    if (!existing.sub) return 'sub';
-    var i = 2;
-    while (existing['sub_' + i]) i += 1;
-    return 'sub_' + i;
   }
   function addSubwooferToTopology(topology) {
     var next = baseOutputDraft(topology);
@@ -1074,353 +845,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     return next;
   }
-  function removeSubwooferFromTopology(topology) {
-    var next = baseOutputDraft(topology);
-    if (!next) return next;
-    var subIds = {};
-    next.speaker_groups = (next.speaker_groups || []).filter(function(group) {
-      var isSub = group.kind === 'subwoofer' || group.mode === 'subwoofer';
-      if (isSub) subIds[group.id] = true;
-      return !isSub;
-    });
-    next.routing = Object.assign({}, next.routing || {}, {
-      subwoofer_group_ids: (next.routing && next.routing.subwoofer_group_ids || [])
-        .filter(function(id) { return !subIds[id]; })
-    });
-    return next;
-  }
-  function driverResearchRoleLabel(role) {
-    return {
-      woofer: 'Woofer / midbass',
-      mid: 'Midrange',
-      tweeter: 'Tweeter / high-frequency driver',
-      subwoofer: 'Subwoofer'
-    }[role] || humanRole(role);
-  }
-  // Operator-facing catalog of tweeter driver styles. Display-only: the
-  // authoritative table lives in jasper/active_speaker/driver_protection.py
-  // (_STYLE_HIGH_PASS_HZ). Keep the floor_hz values here in sync with it
-  // (tests/test_driver_style_floor_contract.py enforces that).
-  // The `floor_hz` KEY NAME predates #2603 and is now a misnomer worth reading
-  // carefully: since that ruling the figure is not a floor the declaration must
-  // clear. It is the default when a datasheet publishes nothing, the anchor of
-  // the plausibility band, and — since #2874 — the commissioning-tone gate's
-  // FALLBACK for a driver that declares nothing. A published figure BELOW it is
-  // accepted outright, and gates a tone at its own value.
-  // "horn_compression_driver" is a valid style value (same 2000 Hz figure as
-  // compression_driver) but is not offered as a separate option here — one
-  // driver type should not appear twice in the picker.
-  function hfDriverStyles() {
-    return [
-      {value: 'dome_tweeter', label: 'Dome tweeter', floor_hz: 3000},
-      {value: 'amt_tweeter', label: 'AMT tweeter (Air Motion Transformer)', floor_hz: 3000},
-      {value: 'planar_tweeter', label: 'Planar-magnetic tweeter', floor_hz: 3500},
-      {value: 'ribbon_tweeter', label: 'Ribbon tweeter', floor_hz: 5000},
-      {value: 'compression_driver', label: 'Compression driver (horn-loaded)', floor_hz: 2000},
-      {value: 'supertweeter', label: 'Supertweeter', floor_hz: 8000}
-    ];
-  }
-  function hfDriverStyleEntry(style) {
-    return hfDriverStyles().filter(function(item) { return item.value === style; })[0] || null;
-  }
-  function driverStyleLabel(style) {
-    var entry = hfDriverStyleEntry(style);
-    return entry ? entry.label : String(style || '').replace(/_/g, ' ');
-  }
-  // #1665 advanced driver detail: the driver's physical technology, which feeds
-  // jasper.active_speaker.linearization_envelope.compose_envelope's
-  // class_prior_limit() term (a more conservative correction ceiling for a
-  // class known to run out of linear excursion or HF extension sooner).
-  // Distinct from driver_style above (topology-owned; it drives the tweeter's
-  // default minimum crossover, the plausibility band, and the commissioning-
-  // tone gate's fallback — see driver_protection.py): driver_class applies to
-  // every role and is saved on manual_settings.drivers, mirroring DRIVER_CLASSES
-  // in jasper/active_speaker/_common.py.
-  function driverClasses() {
-    return [
-      {value: 'unknown', label: 'Unknown'},
-      {value: 'soft_dome', label: 'Soft dome'},
-      {value: 'metal_dome', label: 'Metal dome'},
-      {value: 'beryllium_diamond_dome', label: 'Beryllium / diamond dome'},
-      {value: 'ribbon_amt', label: 'Ribbon / AMT'},
-      {value: 'compression_horn', label: 'Compression horn'}
-    ];
-  }
-  // A round radiator has a radiating diameter, and that diameter is what the
-  // ka beaming guidance below reads. Horn-loaded and ribbon/AMT drivers do
-  // not: no simple piston diameter describes either, so the wizard asks for
-  // no geometry at all and the guidance stays silent for that driver.
-  // Waveguide identity and nominal coverage belong in this driver's notes as
-  // prose (#2872) -- there is no structured coverage field, because nothing
-  // ever computed from one. See design_draft.py's _normalise_driver_common.
-  function driverClassHasRadiatingDiameter(driverClass) {
-    return driverClass !== 'compression_horn' && driverClass !== 'ribbon_amt';
-  }
-  function driverClassGeometryFieldHtml(targetId, setting) {
-    if (!driverClassHasRadiatingDiameter(setting.driver_class || 'unknown')) return '';
-    return driverSafetyNumberField(targetId, setting, 'radiating_diameter_mm',
-      'Radiating diameter', {min: 1, placeholder: 'mm'});
-  }
-  // #1665: an operator-declared in-line pad (L-pad / series resistor / a
-  // purchased fixed attenuator). A PHYSICAL fact about how the driver is
-  // wired -- distinct from gain_offset_db (a level trim baked into the
-  // crossover filter) -- so it is never AI-researched; only the operator
-  // knows what resistors they actually wired in. Mirrors PAD_KINDS in
-  // jasper/active_speaker/driver_pad.py.
-  function padKinds() {
-    return [
-      {value: 'none', label: 'No pad'},
-      {value: 'l_pad', label: 'L-pad (series + shunt resistor)'},
-      {value: 'series_resistor', label: 'Series resistor only'},
-      {value: 'direct_db', label: 'Known attenuation (dB)'}
-    ];
-  }
-  // #1675 (simple v1): ka-beaming guidance. f_ka1 is the frequency at which
-  // a circular piston of this diameter starts to narrow its directivity
-  // (ka=1, the classic onset heuristic); f_ka2 (ka=2) is where it is
-  // beaming outright -- a geometry limit no EQ curve can correct. f_ka1 is
-  // rounded to an integer FIRST so the displayed "2x" relationship is always
-  // exact (343/(2*pi*r) computed then doubled can differ from the isolated
-  // ka=2 formula by a rounding unit at the last digit; rounding once here
-  // avoids ever showing two numbers whose ratio looks like a bug). Mirrored
-  // in Python by test_ka_beaming_onset_hz_matches_the_js_closed_form in
-  // tests/test_active_speaker_driver_pad.py -- keep the two in lockstep.
-  function kaBeamingOnsetHz(diameterMm) {
-    var d = Number(diameterMm);
-    if (!isFinite(d) || d <= 0) return null;
-    var radiusM = d / 2000;
-    var ka1Hz = Math.round(343 / (2 * Math.PI * radiusM));
-    return {ka1Hz: ka1Hz, ka2Hz: ka1Hz * 2};
-  }
-  function activeCrossoverPairs(topology) {
-    var pairs = [];
-    var seen = {};
-    outputGroups(topology).forEach(function(group) {
-      var groupPairs = group.mode === 'active_3_way'
-        ? [['woofer', 'mid'], ['mid', 'tweeter']]
-        : (group.mode === 'active_2_way' ? [['woofer', 'tweeter']] : []);
-      groupPairs.forEach(function(pair) {
-        var key = pair.join(':');
-        if (!seen[key]) {
-          seen[key] = true;
-          pairs.push(pair);
-        }
-      });
-    });
-    return pairs;
-  }
-  function crossoverSettingKey(pair) {
-    return String(pair[0] || '') + ':' + String(pair[1] || '');
-  }
-  function driverSetting(targetId) {
-    if (!driverResearch.settings.drivers) driverResearch.settings.drivers = {};
-    var drivers = driverResearch.settings.drivers;
-    if (!drivers[targetId]) drivers[targetId] = {};
-    return drivers[targetId];
-  }
-  function crossoverSetting(pair) {
-    if (!driverResearch.settings.crossovers) driverResearch.settings.crossovers = {};
-    var crossovers = driverResearch.settings.crossovers;
-    var key = crossoverSettingKey(pair);
-    if (!crossovers[key]) crossovers[key] = {};
-    return crossovers[key];
-  }
-  function manualNumberValue(raw) {
-    if (raw === '' || raw == null) return null;
-    if (typeof raw === 'boolean') return null;
-    var value = Number(raw);
-    return isFinite(value) ? value : null;
-  }
-  function activeRoleLabel(role) {
-    return {
-      full_range: 'full range',
-      woofer: 'woofer',
-      mid: 'midrange',
-      tweeter: 'tweeter',
-      subwoofer: 'subwoofer'
-    }[role] || String(role || 'driver').replace(/_/g, ' ');
-  }
-  function uniqueRoleLabels(roles) {
-    var seen = {};
-    return (roles || []).map(activeRoleLabel).filter(function(label) {
-      if (!label || seen[label]) return false;
-      seen[label] = true;
-      return true;
-    });
-  }
-  function joinListText(items, options) {
-    options = options || {};
-    if (!items.length) return '';
-    if (items.length === 1) return items[0];
-    if (items.length === 2) return items[0] + (options.two || ' + ') + items[1];
-    return items.slice(0, -1).join(', ') + (options.final || ', ') +
-      items[items.length - 1];
-  }
-  function roleListText(roles, options) {
-    var labels = uniqueRoleLabels(roles);
-    if (!labels.length) return 'drivers';
-    return joinListText(labels, options);
-  }
-  function roleSentenceText(roles) {
-    return roleListText(roles, {two: ' and ', final: ', and '});
-  }
-  function pairRoleKey(pair) {
-    return (pair || []).map(String).sort().join(':');
-  }
-  function candidateMatchesPair(candidate, pair) {
-    return candidate && Array.isArray(candidate.between_roles) &&
-      candidate.between_roles.length === 2 &&
-      pairRoleKey(candidate.between_roles) === pairRoleKey(pair);
-  }
-  function candidateFrequency(candidate) {
-    var frequency = manualNumberValue(candidate && candidate.frequency_hz);
-    return frequency != null && frequency > 0 ? frequency : null;
-  }
-  function designDraftCandidates() {
-    var draftPayload = driverResearch.designDraft || {};
-    var manual = draftPayload.manual_settings || {};
-    var research = draftPayload.driver_research || {};
-    return []
-      .concat(Array.isArray(manual.crossover_candidates) ? manual.crossover_candidates : [])
-      .concat(Array.isArray(research.crossover_candidates) ? research.crossover_candidates : []);
-  }
-  function designDraftDrivers() {
-    var draftPayload = driverResearch.designDraft || {};
-    var manual = draftPayload.manual_settings || {};
-    var research = draftPayload.driver_research || {};
-    return []
-      .concat(Array.isArray(manual.drivers) ? manual.drivers : [])
-      .concat(Array.isArray(research.drivers) ? research.drivers : []);
-  }
-  function draftCrossoverFrequency(pair) {
-    var candidates = designDraftCandidates();
-    for (var i = 0; i < candidates.length; i += 1) {
-      if (candidateMatchesPair(candidates[i], pair)) {
-        var frequency = candidateFrequency(candidates[i]);
-        if (frequency != null) return frequency;
-      }
-    }
-    return null;
-  }
-  function currentCrossoverFrequency(pair) {
-    var crossovers = driverResearch.settings && driverResearch.settings.crossovers || {};
-    var key = crossoverSettingKey(pair);
-    var setting = crossovers[key] || {};
-    if (Object.prototype.hasOwnProperty.call(setting, 'frequency_hz')) {
-      return candidateFrequency(setting);
-    }
-    return draftCrossoverFrequency(pair);
-  }
-  function driverForTarget(target, topology) {
-    var setting = driverResearch.settings && driverResearch.settings.drivers &&
-      driverResearch.settings.drivers[target.target_id] || {};
-    var drivers = designDraftDrivers();
-    var draftDriver = {};
-    for (var i = 0; i < drivers.length; i += 1) {
-      if (drivers[i] && String(drivers[i].target_id || '') === target.target_id) {
-        draftDriver = drivers[i];
-        break;
-      }
-    }
-    if (!draftDriver.target_id) {
-      var sameRoleTargets = driverResearchTargets(topology).filter(function(item) {
-        return item.role === target.role;
-      });
-      if (sameRoleTargets.length === 1) {
-        for (var j = 0; j < drivers.length; j += 1) {
-          if (drivers[j] && !drivers[j].target_id &&
-              String(drivers[j].role || '') === target.role) {
-            draftDriver = drivers[j];
-            break;
-          }
-        }
-      }
-    }
-    return Object.assign({}, draftDriver, setting, {
-      target_id: target.target_id,
-      role: target.role,
-      model: targetModel(target, topology) || setting.model || draftDriver.model || ''
-    });
-  }
-  function driverSafetyNoteRoles(topology) {
-    return driverResearchTargets(topology).filter(function(target) {
-      var driver = driverForTarget(target, topology);
-      return !!(driver.recommended_highpass_hz != null ||
-        driver.recommended_lowpass_hz != null ||
-        driver.do_not_test_below_hz != null ||
-        driver.gain_offset_db != null ||
-        driver.notes);
-    }).map(function(target) { return target.role; });
-  }
-  function workingCrossoverSummary(topology) {
-    var pairs = activeCrossoverPairs(topology);
-    if (!pairs.length) {
-      return {
-        ready: true,
-        text: 'no active crossover point is needed for this layout'
-      };
-    }
-    var entries = [];
-    var missing = [];
-    pairs.forEach(function(pair) {
-      var frequency = currentCrossoverFrequency(pair);
-      if (frequency == null) {
-        missing.push(pair);
-        return;
-      }
-      entries.push({
-        pair: pair,
-        label: activeRoleLabel(pair[0]) + '/' + activeRoleLabel(pair[1]),
-        frequency: frequency
-      });
-    });
-    if (!entries.length) {
-      return {
-        ready: false,
-        text: 'Add crossover points before previewing the active crossover.'
-      };
-    }
-    var text = entries.length === 1 && pairs.length === 1
-      ? 'crossover ' + fmtFreq(entries[0].frequency)
-      : 'Crossovers: ' + entries.map(function(entry) {
-        return entry.label + ' ' + fmtFreq(entry.frequency);
-      }).join(', ');
-    if (missing.length) {
-      text += '. Add the remaining crossover point before previewing the active crossover.';
-    }
-    return {ready: !missing.length, text: text};
-  }
-  function workingSetupSummary(topology) {
-    if (!topology || !outputGroups(topology).length) {
-      return 'Choose a speaker layout to start the working setup. No filters are active yet.';
-    }
-    var roles = outputRoleSummary(topology);
-    var crossover = workingCrossoverSummary(topology);
-    var text = 'Working setup: ' + roleListText(roles);
-    if (crossover.text.indexOf('Crossovers:') === 0 ||
-        crossover.text.charAt(crossover.text.length - 1) === '.') {
-      text += '. ' + crossover.text;
-    } else {
-      text += ', ' + crossover.text + '.';
-    }
-    if (crossover.ready) text += ' No filters are active yet.';
-    return text;
-  }
-  function driverResearchHasPreviewInputs(topology) {
-    if (!topology || !outputGroups(topology).length) return false;
-    var rolesReady = driverResearchTargets(topology).every(function(target) {
-      var driver = driverForTarget(target, topology);
-      return !!(driver.model || driver.sensitivity_db_2v83_1m != null ||
-        driver.nominal_impedance_ohm != null || driver.recommended_highpass_hz != null ||
-        driver.recommended_lowpass_hz != null || driver.do_not_test_below_hz != null ||
-        driver.gain_offset_db != null || driver.notes);
-    });
-    var pairs = activeCrossoverPairs(topology);
-    var crossoversReady = !pairs.length || pairs.every(function(pair) {
-      return currentCrossoverFrequency(pair) != null;
-    });
-    return rolesReady && crossoversReady;
-  }
   function savedDriverResearchHasPreviewInputs() {
     var draft = driverResearch.designDraft || {};
     var summary = draft.summary || {};
@@ -1436,38 +860,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     // role-only stereo data without copying it into target-specific edit rows.
     return driverResearchHasPreviewInputs(topology) ||
       savedDriverResearchHasPreviewInputs();
-  }
-  function driverResearchMissingPreviewMessage(topology) {
-    if (!topology || !outputGroups(topology).length) {
-      return 'Choose and save a speaker layout before previewing the active crossover.';
-    }
-    if (!activeCrossoverPairs(topology).length) {
-      return 'This one-driver layout does not need an active crossover.';
-    }
-    var missingDrivers = driverResearchTargets(topology).filter(function(target) {
-      return !driverForTarget(target, topology).model;
-    });
-    if (missingDrivers.length) {
-      return 'Add driver info for ' + missingDrivers.map(function(target) {
-        return target.group_label + ' ' + activeRoleLabel(target.role);
-      }).join(', ') +
-        ' before previewing the active crossover.';
-    }
-    return 'Add crossover points before previewing the active crossover.';
-  }
-  function driverResearchPromptReady(topology) {
-    if (!topology || !outputGroups(topology).length ||
-        outputTopology.dirty || outputTopology.saving) return false;
-    return driverResearchTargets(topology).every(function(target) {
-      if (!targetModel(target, topology)) return false;
-      if (target.role === 'tweeter') return !!target.driver_style;
-      return !!driverSetting(target.target_id).enclosure_kind;
-    });
-  }
-  function invalidateDriverResearchBinding() {
-    driverResearch.researchRequest = null;
-    driverResearch.promptCopy.copied = false;
-    driverResearch.promptCopy.selected = false;
   }
   function setManualDriverField(targetId, field, value) {
     var setting = driverSetting(targetId);
@@ -1488,15 +880,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
     if (field === 'driver_class' || field === 'pad_kind') render();
   }
-  function setManualCrossoverField(pairKey, field, value) {
-    if (!driverResearch.settings.crossovers[pairKey]) {
-      driverResearch.settings.crossovers[pairKey] = {};
-    }
-    driverResearch.settings.crossovers[pairKey][field] = value;
-    driverResearch.error = '';
-    driverResearch.dirty = true;
-    invalidateDriverResearchBinding();
-  }
   function refreshDriverResearchDerivedUi() {
     var topology = currentOutputTopology();
     var proposal = el('view-body').querySelector('[data-driver-proposal]');
@@ -1505,135 +888,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (footer) footer.innerHTML = driverResearchStepFooterButtonHtml(topology);
     var echo = el('view-body').querySelector('[data-driver-echo]');
     if (echo) echo.innerHTML = renderDriverEchoBack(topology);
-  }
-  // A delay entered without picking which driver it applies to would silently
-  // mis-shape the saved candidate (manualSettingsPayload omits both delay_ms
-  // and delay_target_role rather than guess). Block the save client-side with
-  // a specific hint instead of discarding the entered value.
-  function manualCrossoverDelayValidationError(topology) {
-    var offending = activeCrossoverPairs(topology).filter(function(pair) {
-      var setting = crossoverSetting(pair);
-      if (manualNumberValue(setting.delay_ms) == null) return false;
-      var target = String(setting.delay_target_role || '').trim();
-      return target !== pair[0] && target !== pair[1];
-    });
-    if (!offending.length) return '';
-    var pair = offending[0];
-    return 'Pick which driver is delayed for ' +
-      humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
-  }
-  // The pickers only ever offer what the compiler builds, so an operator
-  // cannot author a refused crossover. A value can still arrive from outside
-  // the pickers — a draft saved before the vocabulary narrowed, or an imported
-  // research packet — and design_draft.py refuses that at the door. Name it
-  // here, with the pair and the offer, instead of letting the operator meet it
-  // as a server error or (before entry-time validation) as a staging blocker
-  // three screens later. Only pairs that will actually be saved are checked:
-  // manualSettingsPayload omits a pair with no frequency.
-  function manualCrossoverVocabularyValidationError(topology) {
-    // Layout first: a passive layout has no crossover to author, so a damaged
-    // island must not block its save over a vocabulary it never uses.
-    var pairs = activeCrossoverPairs(topology);
-    if (!pairs.length) return '';
-    if (!crossoverVocabulary.filterTypes.length || !crossoverVocabulary.slopes.length) {
-      return 'The crossover filter and slope options could not be read. Reload this page before saving.';
-    }
-    var offending = '';
-    pairs.forEach(function(pair) {
-      if (offending) return;
-      var setting = crossoverSetting(pair);
-      if (manualNumberValue(setting.frequency_hz) == null) return;
-      var name = humanRole(pair[0]) + ' / ' + humanRole(pair[1]);
-      var filterType = String(setting.filter_type || crossoverVocabulary.defaultFilterType);
-      if (crossoverVocabulary.filterTypes.indexOf(filterType) < 0) {
-        offending = 'JTS cannot build a ' + filterType + ' crossover for ' + name +
-          '. Pick one of: ' + crossoverVocabulary.filterTypes.join(', ') + '.';
-        return;
-      }
-      var slope = manualNumberValue(setting.slope_db_per_octave);
-      if (slope == null) slope = crossoverVocabulary.defaultSlope;
-      if (crossoverVocabulary.slopes.indexOf(slope) < 0) {
-        offending = 'JTS cannot build a ' + String(slope) + ' dB/oct crossover for ' +
-          name + '. Pick one of: ' + crossoverVocabulary.slopes.join(', ') + ' dB/oct.';
-      }
-    });
-    return offending;
-  }
-  function safetyBandFromSetting(setting, prefix) {
-    var low = manualNumberValue(setting[prefix + '_min_hz']);
-    var high = manualNumberValue(setting[prefix + '_max_hz']);
-    return low != null && high != null ? [low, high] : null;
-  }
-  function protectionFiltersFromSetting(setting) {
-    return ['highpass', 'lowpass'].map(function(kind) {
-      var cutoff = manualNumberValue(setting['required_' + kind + '_cutoff_hz']);
-      var slope = manualNumberValue(
-        setting['required_' + kind + '_min_slope_db_per_octave']
-      );
-      if (cutoff == null && slope == null) return null;
-      return {
-        kind: kind,
-        cutoff_hz: cutoff,
-        minimum_slope_db_per_octave: slope,
-        family_or_equivalent:
-          setting['required_' + kind + '_family_or_equivalent'] ||
-          'equivalent_or_steeper'
-      };
-    }).filter(Boolean);
-  }
-  function cabinetFromSetting(setting) {
-    var out = {};
-    if ((setting.enclosure_kind || '').trim()) {
-      out.enclosure_kind = setting.enclosure_kind;
-    }
-    [
-      'radiator_count',
-      'effective_radiating_diameter_mm',
-      'baffle_width_mm'
-    ].forEach(function(field) {
-      var value = manualNumberValue(setting[field]);
-      if (value != null) out[field] = value;
-    });
-    return out;
-  }
-  // #1665: mirrors cabinetFromSetting above, packing the flat pad_* operator
-  // inputs into the nested shape jasper.active_speaker.driver_pad.normalise_pad
-  // expects. Unlike cabinet, 'none' is omitted rather than always sent -- 'no
-  // pad' and 'field never touched' are the same fact server-side (normalise_pad
-  // returns None for either), so there is no default worth stating explicitly.
-  // Only the fields the chosen kind actually uses are packed: attenuation_db is
-  // NEVER sent for l_pad/series_resistor (it is server-derived, not an input --
-  // see applyDriverSafetyToSetting, which never writes it back into
-  // pad_attenuation_db for those kinds either).
-  function padFromSetting(setting) {
-    var kind = setting.pad_kind || 'none';
-    if (kind === 'none') return null;
-    var out = {kind: kind};
-    if (kind === 'direct_db') {
-      var db = manualNumberValue(setting.pad_attenuation_db);
-      if (db != null) out.attenuation_db = db;
-      return out;
-    }
-    var series = manualNumberValue(setting.pad_series_ohm);
-    if (series != null) out.series_ohm = series;
-    if (kind === 'l_pad') {
-      var shunt = manualNumberValue(setting.pad_shunt_ohm);
-      if (shunt != null) out.shunt_ohm = shunt;
-    }
-    return out;
-  }
-  function levelDurationLimitsFromSetting(setting) {
-    var out = {};
-    [
-      'max_effective_peak_dbfs',
-      'max_sweep_duration_s',
-      'max_repeat_count',
-      'minimum_cooldown_s'
-    ].forEach(function(field) {
-      var value = manualNumberValue(setting[field]);
-      if (value != null) out[field] = value;
-    });
-    return out;
   }
   function manualSettingsPayload(topology) {
     var drivers = driverResearchTargets(topology).map(function(target) {
@@ -1730,42 +984,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return drivers.length || candidates.length
       ? {drivers: drivers, crossover_candidates: candidates}
       : null;
-  }
-  // Mirror jasper/active_speaker/crossover_preview.py:_CONFIDENCE_RANK so the
-  // form selects the same candidate the preview will.
-  var CANDIDATE_CONFIDENCE_RANK = {high: 3, medium: 2, low: 1, unknown: 0};
-  function candidateConfidenceRank(candidate) {
-    return CANDIDATE_CONFIDENCE_RANK[
-      String((candidate && candidate.confidence) || 'unknown')
-    ] || 0;
-  }
-  function proposeSensitivityTrims(driversByRole) {
-    // Propose a starting level trim from the sensitivity gap so a hotter
-    // compression/horn driver is never left at full level relative to the
-    // woofer. The operator reviews/confirms the value; the server enforces the
-    // same fail-safe (baseline_profile.py:_derive_corrections). The pure
-    // sensitivity→trim math lives in sensitivityTrimsFromGap (parity-pinned to
-    // that Python source); here we only collect the inputs and apply the result
-    // to empty fields — never clobbering an operator/research-supplied trim.
-    var sensitivities = {};
-    Object.keys(driversByRole).forEach(function(role) {
-      var sens = manualNumberValue(driversByRole[role].sensitivity_db_2v83_1m);
-      if (sens != null) sensitivities[role] = sens;  // reference = min over ALL
-    });
-    var trims = sensitivityTrimsFromGap(sensitivities);
-    Object.keys(trims).forEach(function(role) {
-      var targetId = driversByRole[role] && driversByRole[role]._target_id;
-      if (!targetId) return;
-      var setting = driverSetting(targetId);
-      if (manualNumberValue(setting.gain_offset_db) != null) return;  // keep explicit
-      setting.gain_offset_db = trims[role];
-      setting.gain_offset_db_provenance = 'sensitivity_estimate';
-    });
-  }
-  function applySafetyBandToSetting(setting, prefix, band) {
-    if (!Array.isArray(band) || band.length !== 2) return;
-    setting[prefix + '_min_hz'] = band[0];
-    setting[prefix + '_max_hz'] = band[1];
   }
   function applyDriverSafetyToSetting(driver, setting) {
     applySafetyBandToSetting(setting, 'hard_excitation', driver.hard_excitation_band_hz);
@@ -1921,114 +1139,11 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     });
     proposeSensitivityTrims(driversByRole);
   }
-  function driverResearchPrompt(topology) {
-    return driverResearchPromptReady(topology)
-      ? 'Copy prepares a versioned prompt bound to the current speaker outputs, components, and build notes.'
-      : 'Add every component model and choose its enclosure or tweeter type before preparing the target-bound research prompt.';
-  }
-  function summarizeDriverResearchPayload(payload) {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      throw new Error('Driver research must be a JSON object.');
-    }
-    if (payload.kind !== 'jts_active_crossover_driver_research') {
-      throw new Error('Driver research kind must be jts_active_crossover_driver_research.');
-    }
-    var schemaVersion = Number(payload.artifact_schema_version);
-    if (schemaVersion !== 1 && schemaVersion !== 2) {
-      throw new Error('Driver research artifact_schema_version must be 1 or 2.');
-    }
-    var drivers = Array.isArray(payload.drivers) ? payload.drivers : [];
-    var candidates = Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [];
-    if (!drivers.length) throw new Error('Driver research must include at least one driver.');
-    drivers.forEach(function(driver, index) {
-      if (!driver || driver.notes == null || driver.notes === '') return;
-      var role = driver.role || 'driver ' + (index + 1);
-      if (typeof driver.notes !== 'string') {
-        throw new Error('Driver research notes for ' + role + ' must be a string.');
-      }
-      var normalized = driver.notes.trim().split(/\s+/).filter(Boolean).join(' ');
-      if (normalized.length > DRIVER_RESEARCH_NOTE_MAX_CHARS) {
-        throw new Error(
-          'Driver research notes for ' + role + ' must be <= ' +
-          DRIVER_RESEARCH_NOTE_MAX_CHARS + ' chars.'
-        );
-      }
-    });
-    // A protection filter with a null cutoff or slope is the one research
-    // answer this flow cannot store: applyDriverSafetyToSetting would write
-    // the halves it has, and protectionFiltersFromSetting then drops the whole
-    // requirement out of the POST with nothing on screen to say so (#2186).
-    // Refuse it here instead -- parseDriverResearchImport surfaces this message
-    // and leaves the paste box intact, so the operator can act on it.
-    // Mirrors the server twin (_positive_float + the both-present check in
-    // driver_safety._normalise_protection_filters) rather than merely testing
-    // for null: '' and 0 are refused there too. Deliberately NOT tighter than
-    // the server -- a numeric STRING is accepted by float() server-side, so it
-    // is accepted here, keeping this guard a subset of what the server refuses.
-    function storableFilterNumber(value) {
-      if (value === null || value === undefined || value === '') return false;
-      var parsed = Number(value);
-      return Number.isFinite(parsed) && parsed > 0;
-    }
-    drivers.forEach(function(driver, index) {
-      if (!driver || !Array.isArray(driver.required_protection_filters)) return;
-      var role = driver.role || 'driver ' + (index + 1);
-      driver.required_protection_filters.forEach(function(filter) {
-        if (!filter || typeof filter !== 'object') return;
-        if (storableFilterNumber(filter.cutoff_hz) &&
-            storableFilterNumber(filter.minimum_slope_db_per_octave)) return;
-        throw new Error(
-          'Driver research declares a ' + (filter.kind || 'protection') +
-          ' filter for ' + role + ' without both a cutoff and a minimum slope. ' +
-          'A required filter whose numbers are unpublished takes a conservative ' +
-          'estimate, not null — ask the assistant again, or type the two numbers ' +
-          'under Advanced.'
-        );
-      });
-    });
-    if (schemaVersion === 2 && !/^[0-9a-f]{64}$/.test(String(payload.request_fingerprint || ''))) {
-      throw new Error('Version 2 driver research must echo the request fingerprint.');
-    }
-    return {
-      schemaVersion: schemaVersion,
-      driverCount: drivers.length,
-      candidateCount: candidates.length,
-      roles: drivers.map(function(driver) { return driver.role || 'unknown'; })
-        .filter(function(role, index, arr) { return arr.indexOf(role) === index; }),
-      unknownCount: drivers.reduce(function(count, driver) {
-        return count + (Array.isArray(driver.unknowns) ? driver.unknowns.length : 0);
-      }, 0),
-      provenanceFieldCount: drivers.reduce(function(count, driver) {
-        return count + Object.keys(driver.field_provenance || {}).length;
-      }, 0),
-      warnings: candidates.reduce(function(out, candidate) {
-        return out.concat(Array.isArray(candidate.warnings) ? candidate.warnings : []);
-      }, []).slice(0, 4)
-    };
-  }
   function driverResearchCanPreparePreview() {
     var draftPayload = driverResearch.designDraft || {};
     var savedStatus = draftPayload.status || '';
     return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
       !driverResearch.dirty && driverResearchPreviewInputsReady(currentOutputTopology());
-  }
-  function crossoverPreviewReadyForProtectedStaging(payload) {
-    payload = payload || {};
-    var permissions = payload.permissions || {};
-    return payload.kind === 'jts_active_speaker_crossover_preview' &&
-      payload.status === 'ready_for_protected_staging' &&
-      permissions.may_prepare_protected_startup_config === true;
-  }
-  function driverResearchStepSatisfied() {
-    var draftPayload = driverResearch.designDraft || {};
-    var savedStatus = draftPayload.status || '';
-    return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
-      !driverResearch.dirty;
-  }
-  function driverResearchFlowComplete(topology) {
-    if (!activeCommissionGroup(topology)) return driverResearchStepSatisfied();
-    return driverResearchStepSatisfied() &&
-      crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload);
   }
   function driverResearchWorkingStatusLabel(status) {
     if (driverResearch.dirty) return 'editing';
@@ -2124,24 +1239,12 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     ingestDesignDraft(payload);
     return payload;
   }
-  function ingestCrossoverPreview(payload) {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
-    crossoverPreview.payload = payload;
-    crossoverPreview.preparing = false;
-    crossoverPreview.error = '';
-  }
   async function fetchCrossoverPreview() {
     var resp = await fetch('./active-speaker/crossover-preview', {cache: 'no-store'});
     var payload = await resp.json();
     if (!resp.ok) throw new Error(payload.error || 'crossover preview failed');
     ingestCrossoverPreview(payload);
     return payload;
-  }
-  function outputChannelGuardReady(channel) {
-    var statusValue = channel && channel.protection_status || 'unknown';
-    return !channel || !channel.protection_required ||
-      statusValue === 'present' ||
-      statusValue === 'software_guard_requested';
   }
   function outputRoleStatusText(group, channel) {
     if (!channel || channel.physical_output_index == null) return 'No DAC output assigned yet.';
@@ -2185,11 +1288,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     if (!report) return false;
     return Number(report.assigned_channel_count || 0) > 0 &&
       Number(report.unverified_channel_count || 0) === 0;
-  }
-  function activeOutputGroups(topology) {
-    return outputGroups(topology).filter(function(group) {
-      return group && (group.mode === 'active_2_way' || group.mode === 'active_3_way');
-    });
   }
   function measurementSummary() {
     return activeSpeaker.measurements && activeSpeaker.measurements.summary || {};
@@ -2402,48 +1500,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         clientFallback: clientFallback
       }));
   }
-  function outputTemplateKindFromAxes(layout, speakerMode) {
-    if (layout !== 'mono' && layout !== 'stereo') return '';
-    if (speakerMode !== 'passive' &&
-        speakerMode !== 'active_2way' &&
-        speakerMode !== 'active_3way') {
-      return '';
-    }
-    return layout + '_' + speakerMode;
-  }
-  function outputTemplateIsActive(template) {
-    return !!(template && template.id && template.id.indexOf('_active_') >= 0);
-  }
-  function outputTemplateActiveOutputNeed(template, hasSubwoofer) {
-    return outputTemplateIsActive(template)
-      ? Number(template.minOutputs || 0) + (hasSubwoofer ? 1 : 0)
-      : 0;
-  }
-  function outputTemplateUnavailableReason(template, topology, hasSubwoofer) {
-    if (!template) return 'Choose a supported speaker layout.';
-    var mismatch = outputHardwareMismatch(topology);
-    if (mismatch) {
-      return mismatch.message + ' Reconnect the saved hardware or refresh after the attached hardware is stable.';
-    }
-    var hardware = outputHardware(topology);
-    var physicalCount = Number(hardware && hardware.physical_output_count) || 0;
-    if (physicalCount < template.minOutputs) {
-      return template.label + ' needs at least ' + template.minOutputs +
-        ' physical output' + (template.minOutputs === 1 ? '.' : 's.');
-    }
-    if (!outputTemplateIsActive(template)) return '';
-    var route = outputActiveRoute() || {};
-    var routeCount = Number(route.transport_channel_count) || 0;
-    var needed = outputTemplateActiveOutputNeed(template, hasSubwoofer);
-    if (routeCount > 0 && needed > routeCount) {
-      return 'This install can test and apply up to ' + routeCount +
-        ' active outputs right now; ' + template.label + ' needs ' + needed + '.';
-    }
-    if (hasSubwoofer && route.subwoofer_supported !== true) {
-      return 'Subwoofer active profiles are not available on this install yet.';
-    }
-    return '';
-  }
   function outputTemplateAxesForTopology(topology) {
     var mainGroups = outputGroups(topology).filter(function(group) {
       return group.kind !== 'subwoofer' && group.mode !== 'subwoofer';
@@ -2610,100 +1666,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '</div>' +
     '</div>';
   }
-  // Crossover (bass-management corner) control for the routed local subwoofer.
-  // Fc persists onto the sub channel's crossover_fc_hz via the same topology save
-  // POST the add/remove button uses (the household saves the draft to apply it).
-  // Slope/filter mirror the emitter's fixed Linkwitz-Riley 24 dB/oct and are shown
-  // read-only so the vocabulary matches the active-crossover card without exposing
-  // a knob the backend ignores.
-  function renderSubwooferCrossoverControl(topology) {
-    var fc = subwooferCrossoverFcHz(topology);
-    return '<div class="driver-settings driver-settings--crossovers">' +
-      '<div class="driver-settings__row driver-settings__row--crossover">' +
-        '<div class="driver-settings__pair">' +
-          '<strong>' + escapeHtml('Subwoofer / mains') + '</strong>' +
-          '<span>Bass-management crossover</span>' +
-        '</div>' +
-        '<label class="driver-research__field">' +
-          '<span>Crossover point</span>' +
-          '<input type="number" inputmode="numeric" min="' + escapeHtml(String(SUB_CROSSOVER_HZ_LO)) +
-            '" max="' + escapeHtml(String(SUB_CROSSOVER_HZ_HI)) + '" step="1" ' +
-            'data-sub-crossover-fc value="' +
-            escapeHtml(fc == null ? '' : String(Math.round(Number(fc)))) +
-            '" placeholder="' + escapeHtml(String(Math.round(DEFAULT_SUB_CROSSOVER_HZ))) + '"></label>' +
-        '<label class="driver-research__field">' +
-          '<span>Slope</span>' +
-          '<input type="text" value="24 dB/oct" readonly aria-readonly="true"></label>' +
-        '<label class="driver-research__field">' +
-          '<span>Filter</span>' +
-          '<input type="text" value="Linkwitz-Riley" readonly aria-readonly="true"></label>' +
-      '</div>' +
-      '<p class="setting-row__hint">' + escapeHtml(
-        'Bass below ' + Math.round(Number(fc)) + ' Hz goes to the subwoofer; the mains get a ' +
-        'matching high-pass at the same point. Save the draft to apply.'
-      ) + '</p>' +
-    '</div>';
-  }
-  // Issue #2191. An 'incomplete' safety profile has two very different causes
-  // and only one of them is a blank field: a band-relationship issue leaves
-  // every declared value present, so "add the missing limits" sends the
-  // operator hunting for an empty box that does not exist. These are the
-  // relationship and policy codes _target_issues (driver_safety.py) can emit
-  // with nothing missing; every other code it emits ends in `_missing`.
-  var SAFETY_RELATIONSHIP_TEXT = {
-    measurement_band_outside_hard_band:
-      'measurement band reaches outside its hard excitation band',
-    highpass_cutoff_outside_hard_band:
-      'high-pass cutoff sits outside its hard excitation band',
-    lowpass_cutoff_outside_hard_band:
-      'low-pass cutoff sits outside its hard excitation band'
-    // `low_limit_implausible_for_style` used to sit here. Since #2874 an
-    // implausible SAVED low limit is not a refusal at all — it is a warning
-    // the server renders itself, because its copy names numbers (the value,
-    // the band it missed, the class anchor) that a code-to-phrase map here
-    // cannot carry. renderDriverSafetyWarnings below shows that server text.
-    //
-    // `max_effective_peak_above_code_policy` used to sit here too. The
-    // 2026-08-23 ruling struck that refusal: a declared level limit is a
-    // published or operator figure and a class default may not overrule it,
-    // so no server produces the code any more.
-  };
-  // Reason codes are `<role>:<code>` (a few are bare). Server text, so read it
-  // as data: only codes this page knows how to phrase produce a sentence.
-  function driverSafetyConflicts(reasons) {
-    var out = [];
-    (reasons || []).forEach(function(raw) {
-      var parts = String(raw).split(':');
-      var code = parts[parts.length - 1];
-      if (!Object.prototype.hasOwnProperty.call(SAFETY_RELATIONSHIP_TEXT, code)) {
-        return;
-      }
-      var text = SAFETY_RELATIONSHIP_TEXT[code];
-      var line = parts.length > 1 ? 'the ' + parts[0] + "'s " + text : text;
-      if (out.indexOf(line) < 0) out.push(line);
-    });
-    return out;
-  }
-  function driverSafetyHasMissing(reasons) {
-    return (reasons || []).some(function(raw) {
-      return /_missing$/.test(String(raw));
-    });
-  }
-  // #2603. A profile confirmed before a driver's low limit had one declared
-  // owner can no longer match its own derivation, so it evaluates 'malformed'
-  // under this name rather than the generic schema-invalid one.
-  var SAFETY_LOW_LIMIT_STALE = 'driver_safety_profile_low_limit_stale';
-  function driverSafetyLowLimitStale(reasons) {
-    return (reasons || []).indexOf(SAFETY_LOW_LIMIT_STALE) >= 0;
-  }
-  // #2870. A profile saved before JTS retired a field is not corrupt — it just
-  // names something this build no longer speaks, and one save rebuilds it.
-  // Named separately so the copy can say that, instead of the generic "JTS
-  // could not read these limits", which reads as damage and names no remedy.
-  var SAFETY_RETIRED_FIELD = 'driver_safety_profile_retired_field';
-  function driverSafetyRetiredField(reasons) {
-    return (reasons || []).indexOf(SAFETY_RETIRED_FIELD) >= 0;
-  }
   function renderDriverResearchSummary(options) {
     options = options || {};
     var saved = driverResearch.designDraft || {};
@@ -2760,767 +1722,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<ul>' + summary.warnings.map(function(warning) {
           return '<li>' + escapeHtml(String(warning)) + '</li>';
         }).join('') + '</ul></div>' : '') +
-    '</div>';
-  }
-  function driverSafetyNumberField(targetId, setting, field, label, options) {
-    options = options || {};
-    var value = setting[field];
-    return '<label class="driver-research__field">' +
-      '<span>' + escapeHtml(label) + '</span>' +
-      '<input type="number" inputmode="decimal" data-manual-driver="' +
-        escapeHtml(targetId) + '" data-manual-field="' + escapeHtml(field) + '" value="' +
-        escapeHtml(value == null ? '' : String(value)) + '"' +
-        (options.min == null ? '' : ' min="' + escapeHtml(String(options.min)) + '"') +
-        (options.max == null ? '' : ' max="' + escapeHtml(String(options.max)) + '"') +
-        (options.step == null ? '' : ' step="' + escapeHtml(String(options.step)) + '"') +
-        ' placeholder="' + escapeHtml(options.placeholder || '') + '">' +
-      '</label>';
-  }
-  function enclosureKinds() {
-    return [
-      {value: 'unknown', label: 'Not sure'},
-      {value: 'sealed', label: 'Sealed enclosure'},
-      {value: 'vented', label: 'Ported / vented enclosure'},
-      {value: 'passive_radiator', label: 'Passive-radiator enclosure'},
-      {value: 'open_baffle', label: 'Open baffle'},
-      {value: 'transmission_line', label: 'Transmission line'}
-    ];
-  }
-  function enclosureFieldHtml(targetId, setting) {
-    var enclosure = setting.enclosure_kind || '';
-    return '<label class="driver-research__field">' +
-      '<span>Enclosure / acoustic loading</span>' +
-      '<select data-manual-driver="' + escapeHtml(targetId) +
-        '" data-manual-field="enclosure_kind">' +
-        '<option value="" disabled' + (enclosure ? '' : ' selected') +
-          '>Choose enclosure / loading</option>' +
-        enclosureKinds().map(function(item) {
-          return '<option value="' + escapeHtml(item.value) + '"' +
-            (enclosure === item.value ? ' selected' : '') + '>' +
-            escapeHtml(item.label) + '</option>';
-        }).join('') +
-      '</select>' +
-    '</label>';
-  }
-  function driverClassFieldHtml(targetId, setting) {
-    return '<label class="driver-research__field">' +
-      '<span>Driver technology class</span>' +
-      '<select data-manual-driver="' + escapeHtml(targetId) +
-        '" data-manual-field="driver_class">' +
-        driverClasses().map(function(item) {
-          return '<option value="' + escapeHtml(item.value) + '"' +
-            ((setting.driver_class || 'unknown') === item.value ? ' selected' : '') +
-            '>' + escapeHtml(item.label) + '</option>';
-        }).join('') +
-      '</select>' +
-    '</label>';
-  }
-  function tweeterStyleFieldHtml(target) {
-    var style = target.driver_style || '';
-    return '<label class="driver-research__field">' +
-      '<span>Tweeter type / loading</span>' +
-      '<select data-driver-style data-save-driver-style data-group-id="' +
-        escapeHtml(target.group_id) + '" data-role="' + escapeHtml(target.role) + '">' +
-        '<option value="" disabled' + (style ? '' : ' selected') +
-          '>Choose tweeter type</option>' +
-        '<option value="unknown"' + (style === 'unknown' ? ' selected' : '') +
-          '>Not sure (conservative default)</option>' +
-        (style && style !== 'unknown' && !hfDriverStyleEntry(style) ?
-          '<option value="' + escapeHtml(style) + '" selected>' +
-            escapeHtml(driverStyleLabel(style)) + '</option>' : '') +
-        hfDriverStyles().map(function(item) {
-          return '<option value="' + escapeHtml(item.value) + '"' +
-            (style === item.value ? ' selected' : '') + '>' +
-            escapeHtml(item.label) + '</option>';
-        }).join('') +
-      '</select>' +
-    '</label>';
-  }
-  function componentInstallationFieldHtml(target, setting) {
-    if (target.role === 'tweeter') {
-      return tweeterStyleFieldHtml(target);
-    }
-    return enclosureFieldHtml(target.target_id, setting);
-  }
-  // #2603: this hint sits exactly where the operator prepares the research
-  // prompt, so it must not still describe the number as a floor the
-  // declaration has to clear. Since the ruling the style figure is the DEFAULT
-  // used when a datasheet publishes nothing — a published figure wins outright,
-  // including a lower one. The un-styled cases name the missing declaration and
-  // the control that fixes it, rather than quoting 5000 Hz as if it were this
-  // driver's own number.
-  function tweeterProtectionHintHtml(target) {
-    if (target.role !== 'tweeter') return '';
-    if (!target.driver_style || target.driver_style === 'unknown') {
-      return '<p class="setting-row__hint driver-research__field--wide">' +
-        (target.driver_style === 'unknown'
-          ? 'Tweeter type is not known, so JTS assumes the cautious 5000 Hz ' +
-            'default. Choose a type above to use your driver type’s own figure.'
-          : 'Tweeter style not set — choose a type above before copying the prompt.') +
-        '</p>';
-    }
-    var entry = hfDriverStyleEntry(target.driver_style);
-    return '<p class="setting-row__hint driver-research__field--wide">' +
-      'Tweeter style: ' + escapeHtml(driverStyleLabel(target.driver_style)) +
-      (entry ? ' — default minimum crossover ' +
-        escapeHtml(String(entry.floor_hz)) +
-        ' Hz, used only when the datasheet publishes none.' : '.') +
-    '</p>';
-  }
-  function renderDriverSafetyLimits(targetId, setting, evidence) {
-    return '<section class="driver-research__advanced-group">' +
-      '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +
-      '<p class="setting-row__hint">Hard limits are never-test-beyond edges. The measurement range must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
-      '<p class="setting-row__hint">Minimum crossover is the one number to enter for a driver’s bottom end — the figure its datasheet publishes. The required high-pass, the never-test-below edge and the measure-from edge are all derived from it, so a value you type into those is replaced on the next save.</p>' +
-      '</div>' +
-      '<div class="driver-research__fields">' +
-        // #2603 decision 8: the driver's low limit is entered ONCE, here, as
-        // the manufacturer's minimum recommended crossover. Until this input
-        // existed the operator's only routes were pasting research or typing
-        // the high-pass cutoff below — which the derivation then overwrote,
-        // so a deliberate edit could vanish with no way to express it. It
-        // leads the panel because everything under it derives from it.
-        driverSafetyNumberField(targetId, setting, 'recommended_highpass_hz', 'Minimum crossover (datasheet)', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'recommended_highpass_slope_db_per_octave', 'Slope the datasheet states', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
-        driverSafetyNumberField(targetId, setting, 'hard_excitation_min_hz', 'Never test below', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff (derived)', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope (derived)', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
-        '<label class="driver-research__field"><span>High-pass family / equivalent</span>' +
-          '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_highpass_family_or_equivalent" value="' + escapeHtml(setting.required_highpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
-        driverSafetyNumberField(targetId, setting, 'required_lowpass_cutoff_hz', 'Required low-pass cutoff', {min: 1, placeholder: 'Hz'}) +
-        driverSafetyNumberField(targetId, setting, 'required_lowpass_min_slope_db_per_octave', 'Minimum low-pass slope', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
-        '<label class="driver-research__field"><span>Low-pass family / equivalent</span>' +
-          '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_lowpass_family_or_equivalent" value="' + escapeHtml(setting.required_lowpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
-        driverSafetyNumberField(targetId, setting, 'max_effective_peak_dbfs', 'Profile peak ceiling', {max: 0, placeholder: 'dBFS'}) +
-        driverSafetyNumberField(targetId, setting, 'max_sweep_duration_s', 'Longest sweep', {min: 0.1, placeholder: 'seconds'}) +
-        driverSafetyNumberField(targetId, setting, 'max_repeat_count', 'Most repeats', {min: 1, max: 16, step: 1, placeholder: 'count'}) +
-        driverSafetyNumberField(targetId, setting, 'minimum_cooldown_s', 'Minimum cooldown', {min: 0, placeholder: 'seconds'}) +
-      '</div>' +
-      '<div><h5 class="setting-row__title">Cabinet geometry</h5>' +
-        '<p class="setting-row__hint">These values refine low-frequency and directivity guidance. Unknown geometry stays explicit.</p></div>' +
-      '<div class="driver-research__fields">' +
-        driverSafetyNumberField(targetId, setting, 'radiator_count', 'Radiator count', {min: 1, max: 16, step: 1, placeholder: '1'}) +
-        driverSafetyNumberField(targetId, setting, 'effective_radiating_diameter_mm', 'Effective radiator diameter', {min: 1, placeholder: 'mm'}) +
-        driverSafetyNumberField(targetId, setting, 'baffle_width_mm', 'Baffle width', {min: 1, placeholder: 'mm'}) +
-      '</div>' +
-      '<section class="driver-research__evidence">' +
-        '<h5 class="setting-row__title">Research evidence</h5>' +
-        ((evidence && evidence.notes) ?
-          '<p class="setting-row__hint"><strong>Summary:</strong> ' +
-            escapeHtml(evidence.notes) + '</p>' : '') +
-        ((evidence && Array.isArray(evidence.unknowns) && evidence.unknowns.length) ?
-          '<p class="setting-row__hint"><strong>Explicit unknowns:</strong> ' +
-            escapeHtml(evidence.unknowns.join('; ')) + '</p>' : '') +
-        ((evidence && evidence.field_provenance &&
-          Object.keys(evidence.field_provenance).length) ?
-          '<div class="driver-research__notes"><p class="setting-row__title">Field provenance</p><ul>' +
-            Object.keys(evidence.field_provenance).map(function(field) {
-              var item = evidence.field_provenance[field] || {};
-              return '<li>' + escapeHtml(field + ': ' + (item.basis || 'basis unknown') +
-                ' [' + (item.confidence || 'unknown') + '] ' +
-                (Array.isArray(item.sources) ? item.sources.join(', ') : '')) + '</li>';
-            }).join('') + '</ul></div>' :
-          (!(evidence && evidence.notes) &&
-            !(evidence && Array.isArray(evidence.unknowns) && evidence.unknowns.length) ?
-            '<p class="setting-row__hint">No research evidence loaded yet.</p>' : '')) +
-      '</section>' +
-      '<p class="setting-row__hint">JTS will refuse low-frequency reconstruction rather than infer a port or passive radiator.</p>' +
-    '</section>';
-  }
-  // #1665: in-line pad readout. v1 is server-computed only, populated from
-  // the persisted record AFTER a save (setting.pad -- see
-  // applyDriverSafetyToSetting's docstring) -- there is no client-side
-  // recomputation of the L-pad formula here, so this can go briefly stale
-  // while the operator edits the fields below and reflects "as of last save"
-  // rather than the in-progress values. A live client-side preview is a
-  // deliberate follow-up, not this slice.
-  function padReadoutHtml(setting) {
-    var pad = setting.pad;
-    if (!pad || pad.attenuation_db == null) return '';
-    var impedance = pad.effective_impedance_ohm != null
-      ? ', ' + pad.effective_impedance_ohm.toFixed(1) + ' ohm effective load'
-      : '';
-    return '<p class="setting-row__hint">Computed on last save: ' +
-      escapeHtml(fmtDb(pad.attenuation_db) + ' dB' + impedance) + '.</p>';
-  }
-  function renderDriverPadSettings(targetId, setting) {
-    var kind = setting.pad_kind || 'none';
-    return '<div class="component-card__pad">' +
-      '<p class="setting-row__title">In-line attenuation</p>' +
-      '<p class="setting-row__hint">Only if you wired a resistor pad in front of this driver to match its level to the others. Leave as No pad if it is wired straight to the amp.</p>' +
-      '<div class="component-card__fields">' +
-        '<label class="driver-research__field">' +
-          '<span>Pad type</span>' +
-          '<select data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="pad_kind">' +
-            padKinds().map(function(item) {
-              return '<option value="' + escapeHtml(item.value) + '"' +
-                (kind === item.value ? ' selected' : '') +
-                '>' + escapeHtml(item.label) + '</option>';
-            }).join('') +
-          '</select>' +
-        '</label>' +
-        (kind === 'l_pad' || kind === 'series_resistor'
-          ? driverSafetyNumberField(targetId, setting, 'pad_series_ohm',
-              'Series resistor', {min: 0.1, step: 0.1, placeholder: 'ohm'})
-          : '') +
-        (kind === 'l_pad'
-          ? driverSafetyNumberField(targetId, setting, 'pad_shunt_ohm',
-              'Shunt resistor', {min: 0.1, step: 0.1, placeholder: 'ohm'})
-          : '') +
-        (kind === 'direct_db'
-          ? driverSafetyNumberField(targetId, setting, 'pad_attenuation_db',
-              'Attenuation', {max: 0, step: 0.1, placeholder: 'dB'})
-          : '') +
-      '</div>' +
-      padReadoutHtml(setting) +
-    '</div>';
-  }
-  function driverEvidenceForTarget(targetId) {
-    var profileTargets = driverResearch.safetyDirty ? [] :
-      (((driverResearch.designDraft || {}).driver_safety_profile || {}).targets || []);
-    var importedEvidence = driverResearch.importedPayload;
-    var importedEvidenceCurrent = importedEvidence &&
-      (Number(importedEvidence.artifact_schema_version || 1) !== 2 ||
-        !!driverResearch.researchRequest);
-    var importedTargets = (importedEvidenceCurrent &&
-      Array.isArray(importedEvidence.drivers))
-      ? importedEvidence.drivers : [];
-    return driverResearch.editedDriverTargets[targetId] ? {} :
-      (profileTargets.find(function(item) {
-        return item && item.target_id === targetId;
-      }) || importedTargets.find(function(item) {
-        return item && item.target_id === targetId;
-      }) || {});
-  }
-  function renderComponentSettings(topology) {
-    var targets = driverResearchTargets(topology);
-    return '<p class="setting-row__hint">Add one card for every independently amplified driver in the saved layout. JTS treats the model and physical loading you choose as authoritative.</p>' +
-      '<div class="component-list">' + targets.map(function(target) {
-      var role = target.role;
-      var targetId = target.target_id;
-      var setting = driverSetting(targetId);
-      return '<section class="component-card">' +
-        '<div class="component-card__head">' +
-          '<div><h4 class="setting-row__title">' +
-            escapeHtml(driverResearchRoleLabel(role)) + '</h4>' +
-            '<p class="setting-row__hint">' +
-              escapeHtml(target.group_label + ' · ' + target.output_label) + '</p></div>' +
-        '</div>' +
-        '<div class="component-card__fields">' +
-          '<label class="driver-research__field driver-research__field--wide">' +
-          '<span>Manufacturer and model</span>' +
-          '<input type="text" data-driver-target="' + escapeHtml(targetId) + '" value="' +
-            escapeHtml(targetModel(target, topology)) + '" placeholder="Manufacturer and model">' +
-          '</label>' +
-          componentInstallationFieldHtml(target, setting) +
-          tweeterProtectionHintHtml(target) +
-        '</div>' +
-        renderDriverPadSettings(targetId, setting) +
-      '</section>';
-    }).join('') + '</div>';
-  }
-  // The guided bullets (ticket 1.6). `&#10;` is a literal newline inside the
-  // quoted attribute, which a textarea placeholder renders as a list -- so the
-  // prompt is a shape the operator can fill in rather than a sentence they
-  // have to decompose. Every line asks for a fact no measurement can recover:
-  // which waveguide the tweeter is on (a grader that does not know reads its
-  // beaming as a defect), what the box is, and why it was built that way.
-  var BUILD_NOTES_PLACEHOLDER = [
-    'For example:',
-    '- Horn or waveguide: kind, size, nominal coverage angle',
-    '- Enclosure: sealed or ported, volume, port tuning',
-    '- Amplifier, wiring, padding, mounting',
-    '- Why you built it this way'
-  ].join('&#10;');
-  // This is the ONE free-text field the page offers, and since #2871 it has
-  // two readers: the research assistant when a prompt is copied, and the
-  // tuning assistant, which reads it out of the evidence packet's quarantined
-  // operator_notes block while grading a measured round. The hint says so, and
-  // says what neither reader will do with it -- the field is exactly where
-  // someone would otherwise try to give an order.
-  function renderBuildNotes() {
-    return '<section class="driver-research__section driver-research__build-notes">' +
-      '<div><h3 class="setting-row__title">Build notes</h3>' +
-        '<p class="setting-row__hint">Optional. Describe what a measurement cannot see. Two assistants read this: the one that researches your drivers, and the one that grades your measurements. Both treat it as information about your build, never as an instruction.</p></div>' +
-      '<label class="driver-research__field driver-research__field--wide">' +
-        '<span>Additional build information</span>' +
-        '<textarea rows="6" maxlength="1000" data-driver-field="notes" ' +
-          'placeholder="' + BUILD_NOTES_PLACEHOLDER + '">' +
-          escapeHtml(driverResearch.inputs.notes || '') + '</textarea>' +
-      '</label>' +
-    '</section>';
-  }
-  function renderAdvancedDriverSettings(topology) {
-    return '<div class="driver-research__advanced-drivers">' +
-      driverResearchTargets(topology).map(function(target) {
-        var targetId = target.target_id;
-        var setting = driverSetting(targetId);
-        return '<section class="driver-research__advanced-driver">' +
-          '<div><h4 class="setting-row__title">' +
-            escapeHtml(target.group_label + ' · ' + driverResearchRoleLabel(target.role)) +
-            '</h4><p class="setting-row__hint">' +
-            escapeHtml(target.output_label) + '</p></div>' +
-          '<div class="driver-research__advanced-group">' +
-            '<p class="setting-row__title">Driver specifications</p>' +
-            '<div class="driver-research__fields">' +
-              '<label class="driver-research__field">' +
-                '<span>Sensitivity</span>' +
-                '<input type="number" inputmode="decimal" data-manual-driver="' +
-                  escapeHtml(targetId) + '" data-manual-field="sensitivity_db_2v83_1m" value="' +
-                  escapeHtml(setting.sensitivity_db_2v83_1m == null ? '' :
-                    String(setting.sensitivity_db_2v83_1m)) + '" placeholder="dB">' +
-              '</label>' +
-              driverSafetyNumberField(targetId, setting, 'nominal_impedance_ohm',
-                'Nominal impedance', {min: 1, step: 0.1, placeholder: 'ohm'}) +
-              driverClassFieldHtml(targetId, setting) +
-              driverClassGeometryFieldHtml(targetId, setting) +
-              '<label class="driver-research__field">' +
-                '<span>Legacy advisory floor (not enforced)</span>' +
-                '<input type="number" inputmode="numeric" min="1" data-manual-driver="' +
-                  escapeHtml(targetId) + '" data-manual-field="do_not_test_below_hz" value="' +
-                  escapeHtml(setting.do_not_test_below_hz == null ? '' :
-                    String(setting.do_not_test_below_hz)) + '" placeholder="Hz">' +
-              '</label>' +
-              '<label class="driver-research__field">' +
-                '<span>Level trim</span>' +
-                '<input type="number" inputmode="decimal" data-manual-driver="' +
-                  escapeHtml(targetId) + '" data-manual-field="gain_offset_db" value="' +
-                  escapeHtml(setting.gain_offset_db == null ? '' :
-                    String(setting.gain_offset_db)) + '" placeholder="dB">' +
-              '</label>' +
-            '</div>' +
-          '</div>' +
-          renderDriverSafetyLimits(targetId, setting,
-            driverEvidenceForTarget(targetId)) +
-        '</section>';
-      }).join('') +
-    '</div>';
-  }
-  // Shared by the two per-region polarity selects below. 'non-inverted' is the
-  // unset default (mirrors SUPPORTED_POLARITY in jasper/active_speaker/profile.py).
-  function manualPolarityFieldHtml(key, field, label, value) {
-    return '<label class="driver-research__field">' +
-      '<span>' + escapeHtml(label) + '</span>' +
-      '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="' + field + '">' +
-        [['non-inverted', 'Normal'], ['inverted', 'Inverted']].map(function(option) {
-          return '<option value="' + escapeHtml(option[0]) + '"' +
-            ((value || 'non-inverted') === option[0] ? ' selected' : '') +
-            '>' + escapeHtml(option[1]) + '</option>';
-        }).join('') +
-      '</select>' +
-    '</label>';
-  }
-  function renderManualCrossoverAlignment(pair, key, setting) {
-    var delayValue = setting.delay_ms == null ? '' : String(setting.delay_ms);
-    return '<section class="driver-research__alignment">' +
-      '<div><h5 class="setting-row__title">Alignment</h5>' +
-        '<p class="setting-row__hint">Review polarity and timing for this crossover region.</p></div>' +
-      '<div class="driver-research__fields">' +
-        manualPolarityFieldHtml(key, 'lower_polarity', humanRole(pair[0]), setting.lower_polarity) +
-        manualPolarityFieldHtml(key, 'upper_polarity', humanRole(pair[1]), setting.upper_polarity) +
-        '<label class="driver-research__field">' +
-          '<span>Delay</span>' +
-          '<input type="number" inputmode="decimal" min="0" max="20" step="0.01" ' +
-            'data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="delay_ms" value="' +
-            escapeHtml(delayValue) + '" placeholder="ms">' +
-        '</label>' +
-        '<label class="driver-research__field">' +
-          '<span>Delayed driver</span>' +
-          '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="delay_target_role">' +
-            [['', 'No delay'], [pair[0], humanRole(pair[0])], [pair[1], humanRole(pair[1])]]
-              .map(function(option) {
-                return '<option value="' + escapeHtml(option[0]) + '"' +
-                  ((setting.delay_target_role || '') === option[0] ? ' selected' : '') +
-                  '>' + escapeHtml(option[1]) + '</option>';
-              }).join('') +
-          '</select>' +
-        '</label>' +
-      '</div>' +
-    '</section>';
-  }
-  // #1675 (simple v1): ka-beaming guidance for the crossover point. Whether
-  // the LOWER-role driver of this pair (the one reproducing UP TO the
-  // chosen Fc from below -- the upper/tweeter role is not evaluated, its
-  // own beaming onset is a separate question from where THIS crossover sits)
-  // is still acting as a small, uniform piston at that frequency, or has
-  // grown acoustically large enough to narrow its directivity (ka=1) or beam
-  // outright (ka=2) -- a geometry limit no EQ curve can correct. Circular-
-  // piston approximation, so only meaningful when the driver has a declared
-  // radiating_diameter_mm (never shown otherwise -- e.g. a horn-loaded or
-  // ribbon/AMT driver, or an undeclared one; see
-  // driverClassHasRadiatingDiameter above). This is the whole of #1675, which
-  // closed 2026-08-08: matching a woofer's beamwidth against a waveguide's
-  // rated coverage was never built, and the structured coverage field that
-  // waited for it is gone (#2872).
-  function kaBeamingNoteHtml(pair, fcRaw, topology) {
-    var target = driverResearchTargets(topology).filter(function(item) {
-      return item.role === pair[0];
-    })[0];
-    var diameterMm = target
-      ? manualNumberValue(driverSetting(target.target_id).radiating_diameter_mm)
-      : null;
-    var ka = diameterMm != null ? kaBeamingOnsetHz(diameterMm) : null;
-    var fc = manualNumberValue(fcRaw);
-    if (!ka || fc == null || fc < ka.ka1Hz) return '';
-    var text = fc < ka.ka2Hz
-      ? humanRole(pair[0]) + ' is starting to narrow (ka≈1–2) by ' + fmtFreq(fc) + '.'
-      : humanRole(pair[0]) + ' is beaming (ka≥2) by ' + fmtFreq(fc) +
-        ' — EQ cannot fix that, only geometry (a smaller or horn-loaded driver) can.';
-    return '<p class="setting-row__hint">' + escapeHtml(text) + '</p>';
-  }
-  // One picker builder for both crossover-vocabulary selects. A stored value
-  // outside the offer gets its own clearly-labelled option, the same way
-  // tweeterStyleFieldHtml carries an off-list driver style: without it the
-  // control would DISPLAY the first offered value while the model still held
-  // the stored one, so no control on the page would contain what is actually
-  // set — and re-picking the value already shown fires no change event, which
-  // leaves the operator no way to clear it. Nothing is coerced;
-  // manualCrossoverVocabularyValidationError still refuses the save.
-  function crossoverOptionsHtml(values, selected, labelFor) {
-    var chosen = selected == null ? '' : String(selected);
-    var offered = values.map(String);
-    var offList = chosen && offered.indexOf(chosen) < 0
-      ? '<option value="' + escapeHtml(chosen) + '" selected>' +
-        escapeHtml((labelFor ? labelFor(selected) : chosen) + ' (not supported)') +
-        '</option>'
-      : '';
-    return offList + values.map(function(value) {
-      var raw = String(value);
-      return '<option value="' + escapeHtml(raw) + '"' +
-        (raw === chosen ? ' selected' : '') + '>' +
-        escapeHtml(labelFor ? labelFor(value) : raw) + '</option>';
-    }).join('');
-  }
-  function renderManualCrossoverSettings(topology) {
-    var pairs = activeCrossoverPairs(topology);
-    if (!pairs.length) {
-      return '<p class="setting-row__hint">This speaker layout does not need an active crossover point.</p>';
-    }
-    return '<div class="driver-settings driver-settings--crossovers">' + pairs.map(function(pair) {
-      var setting = crossoverSetting(pair);
-      var key = crossoverSettingKey(pair);
-      return '<div class="driver-settings__row driver-settings__row--crossover">' +
-        '<div class="driver-settings__pair">' +
-          '<strong>' + escapeHtml(humanRole(pair[0]) + ' / ' + humanRole(pair[1])) + '</strong>' +
-          '<span>Starting crossover</span>' +
-        '</div>' +
-        '<label class="driver-research__field">' +
-          '<span>Crossover point</span>' +
-          '<input type="number" inputmode="numeric" min="1" data-manual-crossover="' + escapeHtml(key) + '" ' +
-            'data-manual-field="frequency_hz" value="' +
-            escapeHtml(setting.frequency_hz == null ? '' : String(setting.frequency_hz)) +
-            '" placeholder="Hz">' +
-        '</label>' +
-        '<div data-ka-note="' + escapeHtml(key) + '">' +
-          kaBeamingNoteHtml(pair, setting.frequency_hz, topology) +
-        '</div>' +
-        '<label class="driver-research__field">' +
-          '<span>Slope</span>' +
-          '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="slope_db_per_octave">' +
-            crossoverOptionsHtml(
-              crossoverVocabulary.slopes,
-              setting.slope_db_per_octave == null ?
-                crossoverVocabulary.defaultSlope : setting.slope_db_per_octave,
-              function(value) { return String(value) + ' dB/oct'; }
-            ) +
-          '</select>' +
-        '</label>' +
-        '<label class="driver-research__field">' +
-          '<span>Filter</span>' +
-          '<select data-manual-crossover="' + escapeHtml(key) + '" data-manual-field="filter_type">' +
-            crossoverOptionsHtml(
-              crossoverVocabulary.filterTypes,
-              setting.filter_type || crossoverVocabulary.defaultFilterType
-            ) +
-          '</select>' +
-        '</label>' +
-        renderManualCrossoverAlignment(pair, key, setting) +
-      '</div>';
-    }).join('') + '</div>';
-  }
-  // --- "Here's what we got — here's what we're running with" (#2195) --------
-  //
-  // The research assistant is now asked for its BEST number rather than a
-  // timid one, declared as published-or-estimated with one citation. That
-  // trade only works if the household can arbitrate, so every value JTS
-  // consumed is echoed back with its badge and its source before anything is
-  // confirmed. This panel replaced a bare tally ("2 of these limits came from
-  // the research reply as estimates"), which told the operator how many
-  // numbers to distrust without saying which.
-  //
-  // Two rules keep it honest:
-  //   * The badge is DERIVED from confidence, which stays the single stored
-  //     writer of published-vs-estimated (there is no `state` key on the
-  //     wire — see driver_safety._normalise_field_provenance).
-  //   * Only "high"/"medium" assert a published figure. Silence is not a
-  //     publication claim, so a value with no provenance entry at all reads
-  //     "estimated" rather than being quietly promoted.
-  function driverProvenanceState(entry) {
-    var confidence = String((entry && entry.confidence) || '');
-    return (confidence === 'high' || confidence === 'medium')
-      ? 'confirmed' : 'estimated';
-  }
-  // One citation, linkified only when it really is a web address. `source` is
-  // a free string by design (a datasheet is often a NAME, not a URL), so the
-  // http(s) test is what decides; everything else renders as escaped text.
-  // Both branches escape — this string came from an LLM reply the operator
-  // pasted, which is untrusted input.
-  function provenanceSourceHtml(entry) {
-    var sources = (entry && Array.isArray(entry.sources)) ? entry.sources : [];
-    var raw = (entry && entry.source) || sources[0] || '';
-    var source = String(raw == null ? '' : raw).trim();
-    if (!source) {
-      return '<span class="driver-echo__source driver-echo__source--empty">' +
-        'no source given</span>';
-    }
-    // target="_blank" because this panel renders BEFORE anything is saved:
-    // following a citation in this tab would navigate away from the pasted
-    // JSON the operator is checking. Same convention as every other external
-    // link in the management UI; rel guards the opener either way.
-    if (/^https?:\/\/[^\s]+$/i.test(source)) {
-      return '<a class="driver-echo__source" href="' + escapeHtml(source) +
-        '" target="_blank" rel="noreferrer noopener">' +
-        escapeHtml(source) + '</a>';
-    }
-    return '<span class="driver-echo__source">' + escapeHtml(source) + '</span>';
-  }
-  // Code-owned protection bounds for one target, straight from the server
-  // (design draft `driver_protection_policy_view`, re-derived on every load
-  // that knows the topology — which the /sound/ endpoint always does). The
-  // page deliberately keeps NO copy of max_auto_level_dbfs: it is policy, and a
-  // second copy here would drift. (The view also carried an absolute
-  // measurement ceiling until 2026-08-20, on the same no-second-copy footing;
-  // that constant is retired and the field is gone from the wire.)
-  function driverProtectionPolicy() {
-    var policy = (driverResearch.designDraft || {}).driver_protection_policy_view;
-    return (policy && typeof policy === 'object') ? policy : null;
-  }
-  function driverProtectionPolicyForTarget(targetId) {
-    var policy = driverProtectionPolicy();
-    var targets = (policy && Array.isArray(policy.targets)) ? policy.targets : [];
-    return targets.filter(function(item) {
-      return item && item.target_id === targetId;
-    })[0] || null;
-  }
-  function echoBandText(setting, prefix) {
-    var low = manualNumberValue(setting[prefix + '_min_hz']);
-    var high = manualNumberValue(setting[prefix + '_max_hz']);
-    if (low == null || high == null) return '';
-    return fmtFreq(low) + ' to ' + fmtFreq(high);
-  }
-  function echoFilterText(setting) {
-    return ['highpass', 'lowpass'].map(function(kind) {
-      var cutoff = manualNumberValue(setting['required_' + kind + '_cutoff_hz']);
-      var slope = manualNumberValue(
-        setting['required_' + kind + '_min_slope_db_per_octave']
-      );
-      if (cutoff == null) return '';
-      return (kind === 'highpass' ? 'high-pass ' : 'low-pass ') + fmtFreq(cutoff) +
-        (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
-    }).filter(Boolean).join('; ');
-  }
-  // Cabinet GEOMETRY only. enclosure_kind is an operator-declared installation
-  // choice the research ask is forbidden to infer, and the import boundary
-  // strips it out of a reply's cabinet before applying it -- so it is not one
-  // of "the values the research reply gave us" and does not belong in a panel
-  // that says it is.
-  function echoCabinetText(setting) {
-    var parts = [];
-    var count = manualNumberValue(setting.radiator_count);
-    var diameter = manualNumberValue(setting.effective_radiating_diameter_mm);
-    var baffle = manualNumberValue(setting.baffle_width_mm);
-    if (count != null) parts.push(count + (count === 1 ? ' radiator' : ' radiators'));
-    if (diameter != null) parts.push(diameter + ' mm effective diameter');
-    if (baffle != null) parts.push(baffle + ' mm baffle');
-    return parts.join(', ');
-  }
-  function echoLevelText(setting) {
-    var parts = [];
-    var peak = manualNumberValue(setting.max_effective_peak_dbfs);
-    var sweep = manualNumberValue(setting.max_sweep_duration_s);
-    var repeats = manualNumberValue(setting.max_repeat_count);
-    var cooldown = manualNumberValue(setting.minimum_cooldown_s);
-    if (peak != null) parts.push(fmtDb(peak) + ' dBFS peak');
-    if (sweep != null) parts.push('sweeps up to ' + sweep + ' s');
-    if (repeats != null) parts.push(repeats + ' repeats');
-    if (cooldown != null) parts.push(cooldown + ' s cooldown');
-    return parts.join(', ');
-  }
-  // Exactly the union of two server-owned sets, in the order they matter to a
-  // household reading the panel:
-  //   * the five keys the research ask requires a source for
-  //     (driver_safety_prompt._PROMPT_PROVENANCE_KEYS), and
-  //   * the five fields _profile_core FREEZES into the confirmed safety profile
-  //     (its `safety_field_names`).
-  // Seven keys, because three overlap. The panel headline states that union as
-  // its completeness claim, so the two must not drift apart: the tripwire is
-  // tests/test_sound_profile_echo_back_contract.py, which also pins every key
-  // here inside _V2_RESEARCH_COMPARABLE_FIELDS.
-  //
-  // Each entry reads the value JTS is actually RUNNING WITH out of the working
-  // setting, not the number in the reply — those are the same until the
-  // operator edits one, and the setting is what gets frozen.
-  function driverEchoBackFields() {
-    return [
-      {
-        key: 'hard_excitation_band_hz',
-        label: 'Never test outside',
-        read: function(setting) { return echoBandText(setting, 'hard_excitation'); }
-      },
-      {
-        // #2603: this row used to echo do_not_test_below_hz, which is retired.
-        // What replaced it is the low limit's OWNER -- the manufacturer's
-        // minimum recommended crossover frequency -- and the slope condition
-        // the manufacturer attaches to it. Both render, because the operator
-        // entered both and a half-echoed declaration is exactly the round-trip
-        // gap this panel exists to close. The commissioning margin JTS derives
-        // from them is deliberately NOT shown: the panel echoes what the reply
-        // said, never what the server computed on top of it.
-        key: 'recommended_highpass_hz',
-        label: 'Minimum crossover',
-        read: function(setting) {
-          var value = manualNumberValue(setting.recommended_highpass_hz);
-          if (value == null) return '';
-          var slope = manualNumberValue(
-            setting.recommended_highpass_slope_db_per_octave
-          );
-          return fmtFreq(value) +
-            (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
-        }
-      },
-      {
-        key: 'required_protection_filters',
-        label: 'Protection filter',
-        read: echoFilterText
-      },
-      {
-        key: 'measurement_band_hz',
-        label: 'Measure inside',
-        read: function(setting) { return echoBandText(setting, 'measurement'); }
-      },
-      {
-        key: 'level_duration_limits',
-        label: 'Test level and duration',
-        read: echoLevelText
-      },
-      {
-        key: 'sensitivity_db_2v83_1m',
-        label: 'Sensitivity',
-        read: function(setting) {
-          var value = manualNumberValue(setting.sensitivity_db_2v83_1m);
-          return value == null ? '' : fmtDb(value) + ' dB';
-        }
-      },
-      {
-        key: 'cabinet',
-        label: 'Cabinet geometry',
-        read: echoCabinetText
-      }
-    ];
-  }
-  // The delegation, disclosed (#2192, folded into #2195). A high-frequency
-  // target that declares NO level limit is read by
-  // resolve_driver_excitation_ceilings as "no driver-specific level intent",
-  // and the measurement level is then DERIVED. Saying nothing here would leave
-  // the household with a level row that never mentions the loudest fact about
-  // it.
-  //
-  // Absence is the ordinary shape since the 2026-08-23 ruling made the field a
-  // published-fact-or-omit key. A stored profile written before that carries
-  // the class ceiling itself, which said the same thing, so both land here.
-  //
-  // The sentence named an absolute dBFS bound until 2026-08-20, when the
-  // provisional -35 dBFS constant behind it was retired: the bound is now this
-  // driver's own sensitivity derivation against its woofer's limit, which the
-  // server's topology-only policy view cannot compute and so no longer sends.
-  // Naming WHAT sets the level is the honest replacement for naming a global
-  // number that no longer exists; no number is quoted here, so there is none
-  // to fabricate or to drift.
-  function driverEchoDelegationText(targetId, setting) {
-    var policy = driverProtectionPolicyForTarget(targetId);
-    if (!policy || policy.role_class !== 'high_frequency') return '';
-    var ceiling = manualNumberValue(policy.max_auto_level_dbfs);
-    var peak = manualNumberValue(setting.max_effective_peak_dbfs);
-    if (peak != null && (ceiling == null || peak !== ceiling)) return '';
-    return 'Test level here is left to JTS. It picks the level once a ' +
-      'protective high-pass is in place, from this driver’s declared ' +
-      'sensitivity against the low-frequency driver’s own limit.';
-  }
-  function driverEchoBackRowsHtml(targetId, driver) {
-    var setting = driverSetting(targetId);
-    var provenance = (driver && driver.field_provenance) || {};
-    var rows = driverEchoBackFields().map(function(field) {
-      if (!driver || driver[field.key] == null) return '';
-      var value = field.read(setting);
-      var entry = provenance[field.key];
-      return '<div class="driver-echo__row">' +
-        '<dt>' + escapeHtml(field.label) + '</dt>' +
-        '<dd>' +
-          '<span class="driver-echo__value">' +
-            escapeHtml(value || 'not set') + '</span>' +
-          '<span class="status-pill' +
-            (driverProvenanceState(entry) === 'confirmed' ?
-              ' status-pill--ready' : '') + '">' +
-            escapeHtml(driverProvenanceState(entry)) + '</span>' +
-          provenanceSourceHtml(entry) +
-        '</dd>' +
-      '</div>';
-    }).filter(Boolean).join('');
-    var delegation = driverEchoDelegationText(targetId, setting);
-    return (rows ? '<dl class="driver-echo__rows">' + rows + '</dl>' : '') +
-      (delegation ? '<p class="setting-row__hint">' +
-        escapeHtml(delegation) + '</p>' : '');
-  }
-  function renderDriverEchoBack(topology) {
-    var payload = driverResearch.importedPayload;
-    if (!payload || !Array.isArray(payload.drivers)) return '';
-    // A v2 packet whose binding a visible edit invalidated is not describing
-    // this speaker any more. Same currency rule driverEvidenceForTarget uses.
-    if (Number(payload.artifact_schema_version || 1) === 2 &&
-        !driverResearch.researchRequest) {
-      return '';
-    }
-    var blocks = driverResearchTargets(topology).map(function(target) {
-      var driver = payload.drivers.filter(function(item) {
-        return item && String(item.target_id || '') === target.target_id;
-      })[0];
-      if (!driver) return '';
-      // Once the operator edits a target's values, the reply's badges stop
-      // describing them. Suppress rather than mislabel -- the same call
-      // driverEvidenceForTarget makes for the Advanced evidence block.
-      if (driverResearch.editedDriverTargets[target.target_id]) {
-        return '<section class="driver-echo__driver">' +
-          '<h4 class="setting-row__title">' +
-            escapeHtml(driverResearchRoleLabel(target.role)) + '</h4>' +
-          '<p class="setting-row__hint">You changed these values, so the ' +
-            'research reply no longer describes them.</p>' +
-        '</section>';
-      }
-      var rows = driverEchoBackRowsHtml(target.target_id, driver);
-      if (!rows) return '';
-      return '<section class="driver-echo__driver">' +
-        '<h4 class="setting-row__title">' +
-          escapeHtml(driverResearchRoleLabel(target.role)) + '</h4>' +
-        rows +
-      '</section>';
-    }).filter(Boolean).join('');
-    if (!blocks) return '';
-    return '<div class="driver-research__panel driver-echo">' +
-      // The completeness claim is scoped to the set driverEchoBackFields
-      // actually renders, and it has to stay that way: an earlier draft said
-      // "every value the research reply gave us" while three frozen fields
-      // went unechoed, which is the one thing a check-before-you-confirm
-      // surface cannot be wrong about.
-      '<div><p class="setting-row__title">3. What JTS is running with</p>' +
-        '<p class="setting-row__hint">Every value the research reply gave us ' +
-        'that JTS asked it to source, or that gets frozen into this ' +
-        'speaker&rsquo;s safety limits. Each one shows whether it was a ' +
-        'published figure or an estimate. Check anything that looks wrong ' +
-        'before you confirm.</p></div>' +
-      blocks +
     '</div>';
   }
   function renderDriverResearchAiHelper(topology) {
@@ -3588,53 +1789,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       reasons: Array.isArray(evaluation.reasons) ? evaluation.reasons : []
     };
   }
-  function driverSafetyReviewHint(state) {
-    if (state.status === 'incomplete') {
-      var conflicts = driverSafetyConflicts(state.reasons);
-      if (!conflicts.length) {
-        return 'Some safety limits are still missing. Add them under Advanced, ' +
-          'then save.';
-      }
-      return (driverSafetyHasMissing(state.reasons) ?
-        'Some safety limits are still missing, and some do not line up: ' :
-        'Nothing is missing, but some safety limits do not line up: ') +
-        joinListText(conflicts, {two: ' and ', final: ', and '}) +
-        '. Fix them under Advanced, then save.';
-    }
-    // #2603. Named before the generic 'stale' text, because the cause is
-    // specific and so is the fix: this profile was written when a driver's
-    // minimum crossover could be declared in two places, and the two no longer
-    // agree. Saving rebuilds it — unless deriving the one number pushed
-    // something else out of range, which the server tells us.
-    if (driverSafetyLowLimitStale(state.reasons)) {
-      var stale = driverSafetyConflicts(state.reasons);
-      if (!stale.length) {
-        return 'These limits were saved before JTS kept one declared ' +
-          'minimum crossover per driver. Review the visible values, then ' +
-          'save them again.';
-      }
-      return 'These limits were saved before JTS kept one declared ' +
-        'minimum crossover per driver, and rebuilding them needs one fix ' +
-        'first: ' + joinListText(stale, {two: ' and ', final: ', and '}) +
-        '. Under Advanced, either enter the minimum crossover the datasheet ' +
-        'publishes for that driver, or move the range that no longer fits.';
-    }
-    // #2870. Before the generic unreadable copy, for the same reason the
-    // stale-low-limit case sits before the generic 'stale' one: the cause is
-    // specific and so is the fix. These limits name a field this build no
-    // longer has, so one save rewrites them in the shape it does.
-    if (driverSafetyRetiredField(state.reasons)) {
-      return 'These limits name a setting JTS no longer uses. Nothing is ' +
-        'wrong with your speaker — review the visible values, then save them ' +
-        'again to rebuild them.';
-    }
-    if (state.status === 'stale') {
-      return 'The outputs changed since these limits were saved. Review the ' +
-        'visible values, then save them again.';
-    }
-    return 'JTS could not read these limits. Review the visible values, then ' +
-      'save them again.';
-  }
   function renderDriverSafetyReviewCallout(topology) {
     var state = driverSafetyReviewState(topology);
     if (!state.needsReview) return '';
@@ -3648,32 +1802,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '<p class="setting-row__hint">' +
           escapeHtml(driverSafetyReviewHint(state)) + '</p>' +
         '</div>' +
-    '</div>';
-  }
-  // Non-blocking disclosures the SERVER phrased (#2874). Unlike a blocking
-  // reason — a bare code this page turns into a sentence via
-  // SAFETY_RELATIONSHIP_TEXT — a warning's copy names the household's own
-  // numbers, so the server sends the sentence and this renders it. Shown
-  // whatever the profile status is: the whole point of a warning is that the
-  // declaration SAVED and is in use, which is exactly when the review callout
-  // above stays quiet.
-  function driverSafetyWarnings() {
-    var profile = (driverResearch.designDraft || {}).driver_safety_profile || {};
-    var issues = Array.isArray(profile.issues) ? profile.issues : [];
-    return issues.filter(function(issue) {
-      return issue && issue.severity === 'warning' && issue.message;
-    });
-  }
-  function renderDriverSafetyWarnings() {
-    var warnings = driverSafetyWarnings();
-    if (!warnings.length) return '';
-    return '<div class="driver-research__section driver-research__confirm">' +
-      '<div><h3 class="setting-row__title">JTS is trusting your declaration</h3>' +
-        warnings.map(function(issue) {
-          return '<p class="setting-row__hint">' +
-            escapeHtml(String(issue.message)) + '</p>';
-        }).join('') +
-      '</div>' +
     '</div>';
   }
   // Deep link from the measurement wizard's profile hard stop. A bare fragment
@@ -3722,114 +1850,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
         '</div>' +
       '</details>' +
     '</div>';
-  }
-  function previewStatusClass(value) {
-    if (value === 'preview ready' || value === 'ready_for_protected_staging') {
-      return ' status-pill--ready';
-    }
-    if (value === 'stale' || value === 'unreadable') return ' status-pill--blocked';
-    return '';
-  }
-  function crossoverPreviewReadyCount(payload) {
-    var summary = payload && payload.summary || {};
-    var ready = Number(summary.ready_crossover_count || 0);
-    if (ready > 0) return ready;
-    var count = 0;
-    (Array.isArray(payload && payload.groups) ? payload.groups : []).forEach(function(group) {
-      (Array.isArray(group.crossovers) ? group.crossovers : []).forEach(function(crossover) {
-        if (crossover.status === 'ready_for_review') count += 1;
-      });
-    });
-    return count;
-  }
-  function crossoverPreviewDisplayStatus(payload) {
-    payload = payload || {};
-    var raw = payload.status || 'not_prepared';
-    if (crossoverPreviewReadyCount(payload) > 0) return 'preview ready';
-    if (raw === 'ready_for_protected_staging') return 'preview ready';
-    if (raw === 'blocked') return 'not ready yet';
-    if (raw === 'stale') return 'needs refresh';
-    if (raw === 'not_applicable') return 'not needed';
-    return 'not prepared';
-  }
-  function crossoverPreviewReviewIssues(issues) {
-    return (Array.isArray(issues) ? issues : []).filter(function(issue) {
-      return issue && issue.severity === 'warning';
-    });
-  }
-  function renderIssueList(issues, maxItems) {
-    issues = Array.isArray(issues) ? issues : [];
-    if (!issues.length) return '';
-    return '<ul class="active-speaker-issues">' + issues.slice(0, maxItems || 5).map(function(issue) {
-      var severity = issue && issue.severity === 'warning' ? 'warning' : 'blocker';
-      return '<li class="active-speaker-issue active-speaker-issue--' + escapeHtml(severity) + '">' +
-        escapeHtml((issue && (issue.message || issue.code)) || 'review required') +
-      '</li>';
-    }).join('') + '</ul>';
-  }
-  function renderPreviewIssues(issues) {
-    return renderIssueList(issues, 5);
-  }
-  // Candidate echo of the working crossover's polarity/delay, kept as a
-  // read-only annotation on the (working) preview row — never merged with
-  // the applied profile's corrections block, which is a separate state
-  // (spec "One model, three states": "must never merge values from those
-  // states implicitly").
-  function crossoverAlignmentDetailText(crossover, roles) {
-    var parts = [];
-    if (crossover.lower_polarity === 'inverted' && roles[0]) {
-      parts.push(humanRole(roles[0]) + ' inverted');
-    }
-    if (crossover.upper_polarity === 'inverted' && roles[1]) {
-      parts.push(humanRole(roles[1]) + ' inverted');
-    }
-    if (crossover.delay_ms != null && crossover.delay_target_role) {
-      parts.push(humanRole(crossover.delay_target_role) + ' delayed ' + String(crossover.delay_ms) + ' ms');
-    }
-    return parts.join(', ');
-  }
-  function renderCrossoverPreviewRows(payload) {
-    var groups = Array.isArray(payload.groups) ? payload.groups : [];
-    var rows = [];
-    groups.forEach(function(group) {
-      (Array.isArray(group.crossovers) ? group.crossovers : []).forEach(function(crossover) {
-        var roles = Array.isArray(crossover.between_roles) ? crossover.between_roles : [];
-        var filter = (Array.isArray(crossover.filters) && crossover.filters[0]) || {};
-        var label = (group.label || group.group_id || 'Speaker') + ': ' + roles.join(' / ');
-        var detail = crossover.proposed_frequency_hz ?
-          fmtFreq(crossover.proposed_frequency_hz) + ', ' +
-          (filter.filter_type || 'filter') + ', ' +
-          String(filter.slope_db_per_octave || 24) + ' dB/oct' :
-          'needs research';
-        var alignment = crossoverAlignmentDetailText(crossover, roles);
-        if (alignment) detail += ', ' + alignment;
-        rows.push('<div><dt>' + escapeHtml(label) + '</dt><dd>' + escapeHtml(detail) + '</dd></div>');
-      });
-    });
-    if (!rows.length) {
-      rows.push('<div><dt>Preview</dt><dd>No active crossover candidate prepared yet.</dd></div>');
-    }
-    return '<dl class="active-speaker-facts output-facts">' + rows.join('') + '</dl>';
-  }
-  function renderWorkingCrossoverRows(topology) {
-    var pairs = activeCrossoverPairs(topology);
-    if (!pairs.length) {
-      return '<dl class="active-speaker-facts output-facts">' +
-        '<div><dt>Proposal</dt><dd>This layout does not need an active crossover.</dd></div>' +
-      '</dl>';
-    }
-    return '<dl class="active-speaker-facts output-facts">' + pairs.map(function(pair) {
-      var setting = crossoverSetting(pair);
-      var frequency = currentCrossoverFrequency(pair);
-      var detail = frequency == null ? 'Waiting for researched or advanced values' :
-        fmtFreq(frequency) + ', ' +
-        (setting.filter_type || crossoverVocabulary.defaultFilterType) + ', ' +
-        String(setting.slope_db_per_octave || crossoverVocabulary.defaultSlope) + ' dB/oct';
-      var alignment = crossoverAlignmentDetailText(setting, pair);
-      if (alignment) detail += ', ' + alignment;
-      return '<div><dt>' + escapeHtml(humanRole(pair[0]) + ' / ' +
-        humanRole(pair[1])) + '</dt><dd>' + escapeHtml(detail) + '</dd></div>';
-    }).join('') + '</dl>';
   }
   function renderCrossoverPreviewCardBody(topology) {
     var payload = crossoverPreview.payload || {};
@@ -4149,19 +2169,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       'data-act="commission-step" data-identity-audition="true" ' +
       'data-role="' + escapeHtml(role) + '"' +
       (disabled ? ' disabled' : '') + '>Play</button>';
-  }
-  // One speaker's drivers landing on two different child DACs of a composite
-  // output device. The backend names it — output_topology.CROSS_CHILD_GROUP_CODE
-  // / cross_child_group_verdicts — at WARNING severity, never as a blocker: the
-  // layout drives every lane, so the cost is fidelity (an uncorrected clock seam
-  // sitting inside a crossover), not damage. JTS therefore discloses it here and
-  // lets the household decide, rather than refusing the save.
-  var CROSS_CHILD_GROUP_CODE = 'speaker_group_spans_child_devices';
-  function crossChildGroupVerdicts(topology) {
-    var warnings = outputEvaluation(topology).warnings;
-    return (Array.isArray(warnings) ? warnings : []).filter(function(issue) {
-      return issue && issue.code === CROSS_CHILD_GROUP_CODE;
-    });
   }
   function renderCrossChildNoticeCard(topology) {
     var verdicts = crossChildGroupVerdicts(topology);
@@ -4839,14 +2846,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       '<div class="range__readout"><span class="range__readout-value" data-readout="' + opts.kind + '">' +
         escapeHtml(opts.format(value)) + '</span></div>' +
     '</div>';
-  }
-  function freqToSlider(freq, min, max) {
-    var lmin = Math.log(min), lmax = Math.log(max);
-    return Math.round((Math.log(clamp(freq, min, max)) - lmin) / (lmax - lmin) * 1000);
-  }
-  function sliderToFreq(pos, min, max) {
-    var lmin = Math.log(min), lmax = Math.log(max);
-    return Math.exp(lmin + clamp(pos, 0, 1000) / 1000 * (lmax - lmin));
   }
   function bandRow(band, index) {
     var open = !allCollapsed && index === activeBand;
@@ -6239,26 +4238,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     setOutputDraft(next);
     status('Tweeter style updated.');
   }
-  function outputChannel(role, index) {
-    var tweeter = role === 'tweeter';
-    return {
-      role: role,
-      physical_output_index: index,
-      identity_verified: false,
-      startup_muted: true,
-      protection_required: tweeter,
-      protection_status: tweeter ? 'required_missing' : 'not_required'
-    };
-  }
-  function baseOutputDraft(source) {
-    var topology = source || currentOutputTopology();
-    if (!topology) return null;
-    var next = clone(topology);
-    next.status = 'draft';
-    delete next.evaluation;
-    if (next.safety) next.safety.sound_tests_allowed = false;
-    return next;
-  }
   function outputTemplateDefinition(kind) {
     return {
       mono_passive: {
@@ -6677,40 +4656,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     }
     await copyPromptField('tuning-handoff-prompt', tuningHandoff,
       'Copied the AI operator prompt.');
-  }
-  // The research prompt asks for one ```json fenced block, and a chat UI's copy
-  // button copies the block's contents — but people also paste the whole reply,
-  // fence markers and surrounding prose included. A raw JSON.parse on that hands
-  // back a V8 message about a character offset, which tells an operator nothing.
-  // Recover the object first: prefer the first fenced block, else the widest
-  // {...} span, and only then parse. Both paste entry points go through here so
-  // the two cannot drift.
-  function extractDriverResearchJson(text) {
-    var raw = String(text == null ? '' : text).trim();
-    // Strictly additive: the untouched paste is tried first, so anything that
-    // parses today still parses to exactly the same value. Only a paste that
-    // already fails reaches the recovery candidates.
-    var candidates = [raw];
-    var fenced = raw.match(/```[^\S\n]*[A-Za-z0-9_-]*[^\S\n]*\n([\s\S]*?)```/);
-    if (fenced) candidates.push(fenced[1].trim());
-    var open = raw.indexOf('{');
-    var close = raw.lastIndexOf('}');
-    if (open !== -1 && close > open) candidates.push(raw.slice(open, close + 1));
-    // Report the LAST candidate's parser message: it comes from the most
-    // recovered text, so it names the junk inside the object rather than
-    // complaining about the fence the operator was told to paste.
-    var lastError = null;
-    for (var i = 0; i < candidates.length; i++) {
-      try {
-        return JSON.parse(candidates[i]);
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    throw new Error(
-      "Couldn't read that as JSON — paste the complete code block the assistant returned. (" +
-      lastError.message + ')'
-    );
   }
   function parseDriverResearchImport() {
     try {
@@ -7217,11 +5162,6 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
       status('Could not update channel identity: ' + e.message, true);
     }
     render();
-  }
-  function sleepMs(ms) {
-    return new Promise(function(resolve) {
-      window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
-    });
   }
   function clearSummedTestArmTimer() {
     if (summedTestRequest.armTimer) {

@@ -36,8 +36,35 @@ function stripKnownImports(input) {
     .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*http\.js["'];\s*/m, "")
     .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "");
+    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "")
+    .replace(
+      new RegExp(
+        '^import\\s+\\{[^}]*\\}\\s+from\\s+["\'][^"\']*sound-profile/js/(?:' +
+          SIBLING_MODULES.join("|").replace(/\./g, "\\.") + ')["\'];\\s*',
+        "gm",
+      ),
+      "",
+    );
 }
+
+// The page's concern modules, in dependency order. They share one scope in the
+// browser only through imports; concatenating them here (exports stripped)
+// reproduces that scope for the harness. Order matters: state.js reads the JSON
+// island at evaluation time, exactly as it does on the page.
+const SIBLING_MODULES = [
+  "state.js",
+  "format.js",
+  "eq-curve.js",
+  "topology.js",
+  "driver-model.js",
+  "driver-fields.js",
+];
+const siblingPreamble = SIBLING_MODULES.map((name) => {
+  const path = new URL(`../../deploy/assets/sound-profile/js/${name}`, import.meta.url);
+  return stripKnownImports(readFileSync(path, "utf8"))
+    .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
+    .replace(/^export\s+/gm, "");
+}).join("\n");
 
 const rawSource = readFileSync(modulePath, "utf8");
 const unknownImportProbe = stripKnownImports(
@@ -700,7 +727,7 @@ function setupHarness(fetchHandler, options = {}) {
 
   new Function(
     escapePreamble + "\n" + httpPreamble + "\n" + eqMathPreamble + "\n" +
-      activeSpeakerUiPreamble + "\n" + source
+      activeSpeakerUiPreamble + "\n" + siblingPreamble + "\n" + source
   )();
 
   const viewBody = elements.get("view-body");
