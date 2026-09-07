@@ -1126,16 +1126,6 @@ def test_make_server_binds_a_tuple_target():
 # ----------------------------------------------------------------------
 
 
-def test_default_port_and_env_var_are_pinned():
-    # Honored exactly by deploy/jasper-web.socket, nginx, and __main__.py.
-    import argparse
-
-    p = argparse.ArgumentParser()
-    p.add_argument("--port", type=int,
-                   default=int(__import__("os").environ.get("JASPER_ROOMS_WEB_PORT", "8785")))
-    assert p.parse_args([]).port == 8785
-
-
 def test_wizard_registered_in_main_with_correct_route_env_port():
     from jasper.web import __main__ as web_main
 
