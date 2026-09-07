@@ -611,7 +611,7 @@ def test_the_duck_rides_the_same_lane_the_assistant_mixes_into(monkeypatch):
     """
     from jasper.camilla import Ducker
     from jasper.voice.daemon_main import build_ducker
-    from jasper.voice_daemon import FanInDucker
+    from jasper.voice.assistant_output import FanInDucker
 
     from .doctor_test_support import _fresh_cfg
 

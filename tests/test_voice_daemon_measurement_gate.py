@@ -274,4 +274,4 @@ async def test_emission_proceeds_once_the_window_closes() -> None:
     await wl.measurement_hold.resume()
     await wl._play_listening_chirp(going_on=True)
 
-    assert tts.segments == [wl._chirp_on_pcm]
+    assert tts.segments == [wl._assistant_output._chirp_on_pcm]

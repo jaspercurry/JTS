@@ -103,7 +103,7 @@ async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
 
     wl = WakeLoop.for_tests()
     wl._cues = None
-    wl._warned_cues_unconfigured = False
+    wl._assistant_output._warned_cues_unconfigured = False
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await wl._play_cue("cant_connect")
@@ -447,11 +447,12 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
     # `tts_wire_is_wide()`, which reads the box's own fanin.env — absent on a
     # test runner, and an undeclared box is WIDE since #3655. `pcm_wide` below
     # asserts this value, so the test declares it.
-    wl = WakeLoop.for_tests(_earcon_wide=False)
+    wl = WakeLoop.for_tests()
+    wl._assistant_output._earcon_wide = False
     wl._tts = _Tts()
-    wl._chirp_on_pcm = b"wake"
+    wl._assistant_output._chirp_on_pcm = b"wake"
     profile = object()
-    wl._chirp_on_profile = profile
+    wl._assistant_output._chirp_on_profile = profile
     turn = await wl._output_gate.begin_turn()
     try:
         await wl._play_listening_chirp(going_on=True)

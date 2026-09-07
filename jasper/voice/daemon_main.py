@@ -64,6 +64,7 @@ from ..usage import (
 )
 from ..vad import SpeechVAD, SpeechVADSetupError
 from ..voice import control_socket as control_socket_mod
+from ..voice.assistant_output import FanInDucker
 from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
@@ -87,7 +88,6 @@ from ..voice_daemon import (
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
     ContentActivityTracker,
-    FanInDucker,
     WakeLoop,
     _LegRuntime,
     _ManualMicRuntime,
@@ -1314,7 +1314,6 @@ async def run() -> None:
             volume_coordinator=volume_coordinator,
             legs=legs,
             cues=cues_manager,
-            camilla=camilla,
             heartbeat=heartbeat,
             wake_event_store=wake_event_store,
             tool_packs=outcomes_to_state(registry.pack_outcomes),
