@@ -4,10 +4,9 @@
 
 """AEC bridge telemetry — the UDP leg emitters and the bridge stats file.
 
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`. The
-capture geometry and reference endpoint the snapshot republishes belong to
-the bridge, so they arrive as a `StatsIdentity`, and each emitter carries the
-`_BridgeStats` it counts into rather than reaching for a module global.
+The capture geometry and reference endpoint the snapshot republishes belong
+to the bridge, so they arrive as a `StatsIdentity`, and each emitter carries
+the `_BridgeStats` it counts into rather than reaching for a module global.
 """
 from __future__ import annotations
 

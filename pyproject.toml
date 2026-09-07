@@ -455,11 +455,8 @@ exhaustive = true
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
-  # Holdout on jasper.usb_mic, not on the old cli back-edge (that one is cut):
-  # jasper/aec/bridge_telemetry.py:26 and jasper/aec/bridge_config.py:39 import
-  # jasper.usb_mic, which reaches both cli and web back up through
-  # jasper/usb_mic.py:29 -> jasper/source_intent.py:45, so no position below
-  # cli conforms. This line goes with usb_mic's own.
+  # aec transitively imports jasper.usb_mic, whose chain reaches cli/web; aec
+  # ranks when usb_mic does.
   "aec",
   "assistant_loudness",
   "assistant_volume",

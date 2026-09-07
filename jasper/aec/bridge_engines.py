@@ -4,11 +4,10 @@
 
 """AEC engines — the WebRTC AEC3 bindings and the selector in front of them.
 
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`. Engine
-configuration arrives as an `overrides` mapping; every knob absent from it
-falls back to the `JASPER_AEC_*` environment variable named at its call site,
-so one process can run the production engine off the environment and corpus
-lanes off explicit overrides at the same time.
+Engine configuration arrives as an `overrides` mapping; every knob absent
+from it falls back to the `JASPER_AEC_*` environment variable named at its
+call site, so one process can run the production engine off the environment
+and corpus lanes off explicit overrides at the same time.
 """
 from __future__ import annotations
 

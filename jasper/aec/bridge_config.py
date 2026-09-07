@@ -10,8 +10,6 @@ resolves to a `BridgeConfig` field here, once, at startup. The two
 device-presence checks main() runs before opening any capture device, and
 the `ref_source` fallback that keeps a parked box's retired env value from
 leaving jasper-voice deaf, sit behind the same surface.
-
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`.
 """
 from __future__ import annotations
 

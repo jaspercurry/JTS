@@ -10,8 +10,6 @@ and the DTLN observation leg all sit behind `JASPER_AEC_CORPUS_*` /
 `JASPER_AEC_DTLN_ENABLED` flags that only `jasper.wake_corpus` sets. Ports come
 from `jasper.wake_legs` via `BridgeConfig`; nothing here is on the production
 wake path.
-
-Imports run one way only: nothing here reads `jasper.cli.aec_bridge`.
 """
 from __future__ import annotations
 

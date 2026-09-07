@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from jasper import atomic_io, enhanced_aec
-from jasper.cli.aec_bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.chip_aec.policy import (
     ACTION_FIX_MIC_PROFILE,
     BLOCKER_DAC,

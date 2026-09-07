@@ -1352,10 +1352,10 @@ def _applied_reference_source(stats: dict | None) -> str | None:
     """The reference source the running bridge APPLIED, or None if unreadable.
 
     The bridge resolves ``JASPER_AEC_REF_SOURCE`` before anything reads it
-    (``aec_bridge_config.resolved_reference_source``) and publishes the resolved
-    value into its stats snapshot, so this is the box's runtime truth where
-    the env file is only its intent — and a box parked by a pre-P7-1
-    reconciler still carries the retired ``alsa`` spelling in
+    (``jasper.aec.bridge_config.resolved_reference_source``) and publishes
+    the resolved value into its stats snapshot, so this is the box's
+    runtime truth where the env file is only its intent — and a box parked
+    by a pre-P7-1 reconciler still carries the retired ``alsa`` spelling in
     /etc/jasper/jasper.env while the bridge converged to ``outputd_udp``.
 
     Reads the schema-v4 ``reference_input.source``, NOT
