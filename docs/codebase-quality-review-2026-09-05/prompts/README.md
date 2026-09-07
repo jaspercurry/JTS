@@ -91,6 +91,11 @@ merge commit, never at draft time. A filename-uniqueness pin already exists
 (`tests/test_docs_linkcheck.py`, since #3897); what it cannot catch is a stale citation of a
 reassigned number, which #4302 fixed by hand — no new machinery for that.
 
+**Duplicates (owner's rule, 2026-09-07).** No duplicate code stays because it is untested; untested is
+the reason to converge, not to keep. A duplicate found in scope is converged this round by the lane
+that owns the file, with one behaviour pin on the real path. An issue records a duplicate; it does
+not park one.
+
 **Merge word (rule change).** The owner's triage at the plan gate is also the merge word for every
 PR in that plan, sensitive tier included, once `/code-review`, `/simplify` and (where the tier
 demands it) `/adversarial-review` have no open blockers. No lane waits for a per-PR word; four
