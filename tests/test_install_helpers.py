@@ -1061,6 +1061,73 @@ def test_a_cut_off_publish_delete_cannot_roll_back_over_the_published_tree(
     ) == "new\n"
 
 
+def test_a_failed_restore_still_recovers_the_other_parked_entries(
+    tmp_path: Path,
+):
+    """The rollback loop used to `return 1` the instant one entry's restore
+    failed, abandoning every `.prev` still to come (ADR-0252 rule 5) — with
+    three parked entries and the first failure hitting the middle one, the
+    entry after it was left stranded in `.staging` even though its own
+    restore would have succeeded. Pin that every OTHER parked entry still
+    lands back on the live tree, the failing one stays parked, `.staging`
+    itself survives, and the function reports failure."""
+    install_dir = tmp_path / "opt/jasper"
+    staging = install_dir / ".staging"
+    staging.mkdir(parents=True)
+    for name in ("aaa", "mmm", "zzz"):
+        prev = staging / f"{name}.prev"
+        prev.mkdir()
+        (prev / "marker").write_text(f"old-{name}\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # Only mmm's restore mv fails; aaa (processed before it) and zzz
+    # (processed after it) go through the real `mv`.
+    (bin_dir / "mv").write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in *mmm.prev*) exit 1 ;; esac\n'
+        f'exec {shutil.which("mv")} "$@"\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "mv").chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            " && ".join(
+                [
+                    f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null",
+                    "set +e",
+                    f"INSTALL_DIR={shlex.quote(str(install_dir))}",
+                    "remove_staged_install_tree",
+                ]
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    # mmm's restore failed: still parked, never landed live.
+    assert staging.joinpath("mmm.prev/marker").exists()
+    assert not install_dir.joinpath("mmm").exists()
+    # aaa and zzz — including the one AFTER the failing entry — recovered.
+    assert install_dir.joinpath("aaa/marker").read_text(
+        encoding="utf-8"
+    ) == "old-aaa\n"
+    assert install_dir.joinpath("zzz/marker").read_text(
+        encoding="utf-8"
+    ) == "old-zzz\n"
+    assert not staging.joinpath("aaa.prev").exists()
+    assert not staging.joinpath("zzz.prev").exists()
+    # A partial failure must not reach the final `rm -rf` of the staging tree.
+    assert staging.exists()
+
+
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     install_root = tmp_path / "opt/jasper"
     pip = install_root / ".venv/bin/pip"

@@ -123,14 +123,7 @@ migrate_mic_device_candidates_seed() {
         -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch$/d'
 }
 
-# The Python tree publishes from a staging path (See ADR-0252). The checkout
-# rsyncs into ${INSTALL_DIR}/.staging — the live tree's own filesystem by
-# construction, so --link-dest makes an unchanged file a second link to the live
-# inode rather than a copy — and each top-level entry is renamed into place from
-# there. The guarantee is per entry: an entry is absent for the instant between
-# its two renames, is otherwise wholly old or wholly new, and any failure rolls
-# the already-published entries back, so a re-deploy or a reboot finds the whole
-# old tree or the whole new one.
+# Renames each staged top-level entry into place, one at a time. See ADR-0252.
 publish_staged_install_tree() {
     # The glob never matches a dotfile, so .deps.txt — and any dot-name the
     # checkout ships at its top level — stays behind in the staging tree.
@@ -138,15 +131,14 @@ publish_staged_install_tree() {
     for staged in "${staging}"/*; do
         [[ -e "${staged}" ]] || continue
         name="${staged##*/}"
-        if [[ -e "${INSTALL_DIR}/${name}" ]]; then
+        if [[ -e "${INSTALL_DIR}/${name}" || -L "${INSTALL_DIR}/${name}" ]]; then
             mv "${INSTALL_DIR}/${name}" "${staged}.prev" || return 1
         fi
         mv "${staged}" "${INSTALL_DIR}/${name}" || return 1
     done
-    # The rollback globs ${INSTALL_DIR}/.staging/*.prev, so renaming the tree
-    # takes it out of that namespace: a delete cut off partway then leaves a
-    # truncated .prev nothing reads, rather than one the rollback would take
-    # for a complete old copy. Its own `rm -rf .done` is hygiene.
+    # Renamed out of the *.prev namespace first: the rollback globs it, so a
+    # delete cut off partway here cannot leave a truncated .prev it would take
+    # for a complete old copy.
     mv "${staging}" "${staging}.done" || return 1
     rm -rf -- "${staging}.done"
 }
@@ -156,19 +148,18 @@ stage_install_tree() {
     install -d -m 0755 "${INSTALL_DIR}/.staging"
 }
 
-# Roll an unfinished publish back, then drop the staging tree. The EXIT trap
-# calls this through _call_if_defined, which disarms errexit: the explicit
-# return is what stops a failed restore from reaching the rm below and deleting
-# a live entry's only copy.
+# The EXIT trap calls this through _call_if_defined, which disarms errexit: the
+# explicit return is what stops a failed restore from reaching the rm below and
+# deleting a live entry's only copy.
 remove_staged_install_tree() {
-    local staging="${INSTALL_DIR}/.staging" prev name restored
+    local staging="${INSTALL_DIR}/.staging" prev name restored failed=0
     rm -rf -- "${staging}.done"
     for prev in "${staging}"/*.prev; do
         [[ -e "${prev}" ]] || continue
         name="${prev##*/}"
         name="${name%.prev}"
         restored=no
-        if [[ ! -e "${INSTALL_DIR}/${name}" ]] \
+        if [[ ! -e "${INSTALL_DIR}/${name}" && ! -L "${INSTALL_DIR}/${name}" ]] \
            || mv "${INSTALL_DIR}/${name}" "${staging}/${name}"; then
             if mv "${prev}" "${INSTALL_DIR}/${name}"; then
                 restored=yes
@@ -176,17 +167,14 @@ remove_staged_install_tree() {
         fi
         jasper_install_log \
             "event=install.staging_rollback entry=${name} restored=${restored}"
-        [[ "${restored}" == yes ]] || return 1
+        [[ "${restored}" == yes ]] || failed=1
     done
+    (( failed == 0 )) || return 1
     rm -rf -- "${staging}"
 }
 
-# Install what the STAGED manifest declares, before anything in the live tree
-# moves: a dependency that will not resolve or build fails the deploy with the
-# box still on its old source and its old venv. This IS the dependency install —
-# the editable install after the publish takes --no-deps — so a manifest that is
-# unreadable, or that does not declare the extra this profile installs, fails
-# here rather than publishing a tree whose dependencies nothing resolved.
+# See ADR-0252. This IS the dependency install — the editable install after
+# the publish takes --no-deps.
 install_staged_dependencies() {
     local extra="$1" staging="${INSTALL_DIR}/.staging"
     shift
@@ -340,8 +328,7 @@ install_jasper() {
     # exclusively (onnxruntime is already in pyproject.toml), so
     # tflite-runtime is never imported at runtime. Pre-install
     # openwakeword without its declared deps, then install its non-tflite
-    # runtime deps explicitly. The subsequent editable install of
-    # jasper-speaker sees openwakeword==0.6.0 already satisfied.
+    # runtime deps explicitly.
     "${INSTALL_DIR}/.venv/bin/pip" install --no-deps openwakeword==0.6.0
     "${INSTALL_DIR}/.venv/bin/pip" install "${pip_constraints[@]}" \
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
