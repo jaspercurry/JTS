@@ -1710,6 +1710,8 @@ INSTALL_STEPS=(
     "build_user|both|require_build_user|require the 'pi' build user the Rust builds run as"
     "build_swap|both|setup_build_swap_if_needed|add temporary high-priority build swap on a low-RAM host"
     "service_users|both|create_jasper_service_users|create the jasper group and the non-root service users"
+    # Before the unit install, whose restarts read /var/lib/jasper as `jasper`.
+    "state_modes|both|heal_shared_state_modes|heal the group modes on shared state files an upgrade left behind"
     "park_build_units|both|park_low_memory_build_units|park audio/runtime daemons before the Rust builds"
     "deps|full|install_deps|apt-get update and the full-tier runtime/build packages"
     "deps|streambox|install_streambox_deps|apt-get update and the streambox renderer/DSP packages"

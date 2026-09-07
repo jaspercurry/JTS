@@ -32,14 +32,11 @@ ensure_state_dir() {
     # write group-shared state here (speaker_volume.json via atomic
     # tempfile+rename, which needs dir write). Owner stays root (rollback-safe);
     # idempotent and a no-op before the group exists (fresh install
-    # before users are created). Called repeatedly across install, so it lives
-    # here rather than as a one-shot — any later `install -d -m 0750` above
-    # would otherwise reset the mode/group.
+    # before users are created).
     if getent group jasper >/dev/null 2>&1; then
         chgrp jasper "${STATE_DIR}" 2>/dev/null || true
         chmod 0770 "${STATE_DIR}" 2>/dev/null || true
     fi
-    heal_shared_state_modes
 }
 
 # Group-writable heal for the shared, multi-writer state files.
@@ -49,10 +46,10 @@ ensure_state_dir() {
 # group-`jasper` yet mode 0644 — group-read-only. Because jasper-voice is the
 # sole StateDirectory=jasper owner, its restart re-chowns the tree to its user;
 # other writers in the same `jasper` group then cannot write a 0644 file they
-# no longer own, and the voice DBs raise
-# "attempt to write a readonly database" — shared state files must land 0660
-# so the non-owner in group jasper can write them. This
-# one-time heal fixes the EXISTING files on upgrade; UMask=0007 keeps new ones
+# no longer own, and the voice DBs raise "attempt to write a readonly database"
+# — shared state files must land 0660 so the non-owner in group jasper can
+# write them. The `state_modes` install step runs this once, before the unit
+# install restarts the daemons that read the tree; UMask=0007 keeps new files
 # correct. It carries the same repair for the wizard units that later dropped
 # from root to jasper-web: state their root incarnation created has to become
 # readable — and, where a writer modifies it in place, owned — by the new uid.

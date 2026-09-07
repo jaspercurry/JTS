@@ -46,8 +46,9 @@ PY
 
     # Publish only after the complete line and final mode are ready.  A failed
     # direct redirection would leave a partial canonical file that every later
-    # deploy correctly preserves.  The hard link is an atomic create-if-absent:
-    # if a wizard save appears after our first check, it remains authoritative.
+    # deploy correctly preserves.  `ln -T` is link(2): an atomic
+    # create-if-absent that never descends into an existing name, so a wizard
+    # save landing after our first check remains authoritative.
     local tmp
     tmp="$(mktemp "${STATE_DIR}/.speaker_name.env.seed.XXXXXX")"
     if ! printf '%s\n' "${env_line}" > "${tmp}"; then
@@ -60,16 +61,7 @@ PY
         echo "  ERROR: could not set fresh speaker-name permissions" >&2
         return 1
     fi
-    if "${JASPER_SYSTEM_PYTHON:-python3}" - "${tmp}" "${state_file}" <<'PY'
-import os
-import sys
-
-try:
-    os.link(sys.argv[1], sys.argv[2])
-except OSError:
-    raise SystemExit(1)
-PY
-    then
+    if ln -T -- "${tmp}" "${state_file}" 2>/dev/null; then
         rm -f -- "${tmp}"
         echo "  speaker name: ${env_line#JASPER_SPEAKER_NAME=}"
         return 0
@@ -377,18 +369,10 @@ PY
         echo
     fi
     sed_inplace "${ENV_DIR}/jasper.env" \
-        -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
-        -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
         -e '/^SPOTIFY_CLIENT_ID=/d' \
         -e '/^SPOTIFY_OAUTH_MODE=/d' \
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
-        -e '/^SPOTIPY_REDIRECT_URI=/d' \
-        -e '/^JASPER_AEC_CHIP_AEC_DAC_AUTO=/d' \
-        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d' \
-        -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
-        -e '/^JASPER_CAPTURE_ORIGIN=/d' \
-        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d' \
-        -e '/^JASPER_CONTROL_PORT=/d'
+        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
     migrate_wake_events_cap_seed
     migrate_mic_device_candidates_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
@@ -491,11 +475,9 @@ EOF
             JASPER_INSTALL_PROFILE streambox 0640 0750
         echo "  streambox env: refreshed streambox defaults"
     fi
-    # Streambox writes its own env rather than seeding from .env.example, so
-    # it does not reach the full profile's retirement list. Drop the same dead
-    # keys here; the token line can hold a real self-hosted secret.
+    # Streambox writes its own env rather than seeding from .env.example, so it
+    # never reaches the full profile's retirement list, and the retired capture
+    # relay's token line can hold a real self-hosted secret.
     sed_inplace "${ENV_DIR}/jasper.env" \
-        -e '/^JASPER_CAPTURE_RELAY_BASE=/d' \
-        -e '/^JASPER_CAPTURE_ORIGIN=/d' \
-        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
+        '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
 }
