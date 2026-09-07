@@ -259,7 +259,7 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
     )
     monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", set_alias)
     monkeypatch.setattr(
-        "jasper.control_advert.render_control_advert",
+        "jasper.net.control_advert.render_control_advert",
         render_advert,
     )
     monkeypatch.setattr(speaker_setup, "_restart_units", restart_units)
@@ -328,7 +328,7 @@ def test_apply_name_room_only_edit_skips_gadget_restart(monkeypatch):
     monkeypatch.setattr(speaker_setup, "_write_bluez_main_conf_name", lambda name: None)
     monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", set_alias)
     monkeypatch.setattr(
-        "jasper.control_advert.render_control_advert", lambda name: True
+        "jasper.net.control_advert.render_control_advert", lambda name: True
     )
     monkeypatch.setattr(speaker_setup, "_restart_units", restart_units)
     monkeypatch.setattr(
@@ -365,7 +365,7 @@ def test_apply_name_skips_consumer_refresh_when_gadget_restart_fails(monkeypatch
     monkeypatch.setattr(speaker_setup, "_write_bluez_main_conf_name", lambda name: None)
     monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", set_alias)
     monkeypatch.setattr(
-        "jasper.control_advert.render_control_advert", lambda name: True
+        "jasper.net.control_advert.render_control_advert", lambda name: True
     )
     monkeypatch.setattr(speaker_setup, "_restart_units", restart_units)
     monkeypatch.setattr(
@@ -416,7 +416,7 @@ def test_apply_name_continues_after_bluez_alias_and_advert_failures(
     )
     monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", fail_alias)
     monkeypatch.setattr(
-        "jasper.control_advert.render_control_advert",
+        "jasper.net.control_advert.render_control_advert",
         fail_advert,
     )
     monkeypatch.setattr(

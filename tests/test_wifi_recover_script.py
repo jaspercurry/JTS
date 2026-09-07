@@ -198,7 +198,7 @@ def test_active_wifi_with_scan_suppression_runs_repair_without_guardian(tmp_path
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_recover.scan_suppressed iface=wlan0 active=Home" in proc.stderr
     assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
-    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+    assert "-m jasper.net.wifi_scan_repair --iface wlan0 --json" in _read(
         paths["python_log"]
     )
     assert _read(paths["guardian_log"]) == ""
@@ -239,7 +239,7 @@ def test_active_wifi_scan_suppression_repairs_even_without_guardian_stash(tmp_pa
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_recover.scan_suppressed iface=wlan0 active=Home" in proc.stderr
     assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
-    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+    assert "-m jasper.net.wifi_scan_repair --iface wlan0 --json" in _read(
         paths["python_log"]
     )
     assert _read(paths["guardian_log"]) == ""
@@ -265,7 +265,7 @@ def test_scan_suppression_runs_bounded_repair_before_guardian(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_recover.scan_suppressed iface=wlan0" in proc.stderr
     assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
-    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+    assert "-m jasper.net.wifi_scan_repair --iface wlan0 --json" in _read(
         paths["python_log"]
     )
     assert "--reason wifi-recover" in _read(paths["guardian_log"])
@@ -315,7 +315,7 @@ def test_no_active_scan_suppression_repairs_even_without_guardian_stash(tmp_path
     assert "event=wifi_recover.scan_suppressed iface=wlan0" in proc.stderr
     assert "event=wifi_recover.scan_repair_ok iface=wlan0" in proc.stderr
     assert "event=wifi_recover.guardian_skip reason=no_stash" in proc.stderr
-    assert "-m jasper.wifi_scan_repair --iface wlan0 --json" in _read(
+    assert "-m jasper.net.wifi_scan_repair --iface wlan0 --json" in _read(
         paths["python_log"]
     )
     assert _read(paths["guardian_log"]) == ""

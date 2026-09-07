@@ -234,7 +234,7 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
     each to {name, host, port, location_name, version, url}.
 
     The browse/resolve/parse mechanics are the shared one-shot primitive
-    `jasper.mdns.browse_once` (lazy zeroconf import, fail-soft → [] on any
+    `jasper.net.mdns.browse_once` (lazy zeroconf import, fail-soft → [] on any
     failure, drops address-less instances). This function keeps the
     HA-specific *policy*: SRV host as `host`, port defaulting to 8123,
     IPv4-preferred `target_host`, base_url construction via `_normalize_url`,
@@ -251,7 +251,7 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
     instance name). Cross-subnet households return [] (mDNS is link-local).
     Synchronous: browse_once runs its own event loop internally."""
     try:
-        from ..mdns import browse_once
+        from ..net.mdns import browse_once
 
         out: list[dict[str, str]] = []
         for svc in browse_once(HA_SERVICE_TYPE, timeout=timeout):

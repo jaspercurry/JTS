@@ -83,7 +83,7 @@ from ..control import client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
 from ..env_load import parse_env_file, read_env_file_or_warn
-from ..http_security import management_read_allowed, mutating_request_allowed
+from ..identity_state import management_read_allowed, mutating_request_allowed
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..voice.provider_state import read_active_provider
@@ -1103,7 +1103,7 @@ def guard_mutating_host(handler: BaseHTTPRequestHandler) -> bool:
     wizards exactly as it can reach the control daemon, so the wizards
     must apply the same allowlist before mutating WiFi PSKs, HA tokens,
     API keys, or triggering reboots. Reuses
-    `jasper.http_security.mutating_request_allowed` — the same allowlist
+    `jasper.identity_state.mutating_request_allowed` — the same allowlist
     the control daemon already runs in production (configured hostname,
     `.local`, RFC1918/ULA/loopback IPs, missing Host for non-browser
     clients). Used by the shared mutating request guard so every wizard

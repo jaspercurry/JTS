@@ -10,7 +10,7 @@
 
   This file is a TEMPLATE — `deploy/install.sh` copies it to
   /etc/jasper/avahi-templates/jasper-control.service. At runtime,
-  jasper/control_advert.py substitutes the speaker's display name
+  jasper/net/control_advert.py substitutes the speaker's display name
   (from jasper/speaker_name.py) into the name= TXT record below and
   writes the rendered XML to /etc/avahi/services/jasper-control.service.
   (The placeholder token is intentionally not written in this comment:

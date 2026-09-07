@@ -12,7 +12,7 @@ speaker's user-facing display name (jasper/speaker_name.py) into a
 name peers see on Spotify / AirPlay / Bluetooth / USB.
 
 The render+guard+atomic-write body is the shared implementation in
-jasper/avahi_service.py (`render_service`); this module owns only the
+jasper/net/avahi_service.py (`render_service`); this module owns only the
 control-advert specifics layered on top, which mirror
 jasper/peering/avahi.py's shape with three deliberate differences:
 
@@ -57,9 +57,9 @@ from __future__ import annotations
 import logging
 
 from . import avahi_service
-from .identity import resolve_hostname
+from ..identity import resolve_hostname
 from .avahi_service import RenderResult
-from .log_event import log_event
+from ..log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _resolve_name(name: str | None) -> str:
             # happy-path value. read_identity() is itself TOTAL; the
             # except stays as defense-in-depth so a read can never break
             # advertising.
-            from .identity import read_identity
+            from ..identity import read_identity
 
             resolved = read_identity().name
         except Exception as e:  # noqa: BLE001 — never let a read break advertising
@@ -123,7 +123,7 @@ def _resolve_peer_id() -> str:
     can never break advertising — same posture as ``_resolve_name``.
     """
     try:
-        from .identity import read_identity
+        from ..identity import read_identity
 
         return (read_identity().peer_id or "").strip()
     except Exception as e:  # noqa: BLE001 — never let a read break advertising
@@ -163,7 +163,7 @@ def render_control_advert(
     retries the render.
 
     The render/guard/atomic-write/reload body is delegated to the shared
-    ``jasper.avahi_service.render_service``, which OWNS the reload: we pass
+    ``jasper.net.avahi_service.render_service``, which OWNS the reload: we pass
     ``reload=reload`` and it reloads avahi-daemon only when it actually wrote
     the file (``RenderResult.WROTE``). The name is a free-form user value, so
     we substitute with ``escape=True`` (load-bearing: an unescaped
