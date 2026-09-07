@@ -502,9 +502,6 @@ def outputd_socket_path(system_env: Mapping[str, str]) -> Path:
 
 
 def query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, Any] | None:
-    # read_status_socket_or_none already returns None (logged at DEBUG) on
-    # OSError/JSONDecodeError/a non-object reply — the exact failure set this
-    # used to catch by hand.
     return read_status_socket_or_none(
         str(socket_path),
         timeout=timeout,

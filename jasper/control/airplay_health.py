@@ -1689,10 +1689,6 @@ class AirPlayHealthSampler:
         socket_path: str = FANIN_STATUS_SOCKET,
         timeout_sec: float = FANIN_TIMEOUT_SEC,
     ) -> dict[str, Any] | None:
-        # read_status_socket_or_none already returns None on any
-        # OSError/JSONDecodeError/non-object reply — the exact failure set
-        # this used to catch by hand (FileNotFoundError/ConnectionRefusedError/
-        # TimeoutError are all OSError subclasses).
         return read_status_socket_or_none(
             socket_path,
             timeout=timeout_sec,
