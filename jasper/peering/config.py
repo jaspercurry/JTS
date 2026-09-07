@@ -13,8 +13,7 @@ wizard-managed values override anything in /etc/jasper/jasper.env.
 
 Two modes only:
   off  — default. Nothing peering-related runs: no Avahi advertise,
-         no multicast socket, no thread. Cost on a single-Pi
-         household: zero.
+         no multicast socket.
   on   — Full peering. Advertise via Avahi and arbitrate wake
          events. The user opts in via /sound/pair/.
 

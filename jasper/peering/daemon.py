@@ -16,10 +16,10 @@ state-machine Actions into actual I/O. The state machine itself
 remains pure and unit-testable; this layer is the only place where
 real time / real sockets / real OS calls happen.
 
-When PeeringConfig.mode is OFF, `run()` is a fast no-op — no sockets
-opened, no Avahi file written. The user opts
-in via the /sound/pair/ Speakers page, which restarts jasper-control and picks
-up the new config.
+When PeeringConfig.mode is OFF, `start()` is a fast no-op — no
+sockets opened, no Avahi file written. The user opts in via the
+/sound/pair/ Speakers page, which restarts jasper-control and picks up
+the new config.
 """
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ from .transport import (
     encode_heartbeat,
     encode_wake,
 )
+from .transport import _maybe_float
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,7 @@ class PeeringDaemon:
 
     # ---------- inbound: multicast ----------
 
-    async def _on_multicast_message(self, msg: IncomingMessage, addr: str) -> None:
+    async def _on_multicast_message(self, msg: IncomingMessage) -> None:
         # Filter our own loopback first (IP_MULTICAST_LOOP=1 makes
         # the kernel echo every send back to us). Every message type
         # carries a sender peer id, just at different attribute paths.
@@ -399,22 +400,8 @@ class PeeringDaemon:
         self._dispatch(TimerFired(timer_id=timer_id, now=self._loop.time()))
 
 
-def _maybe_float(v) -> float | None:
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def _sender_peer_id(msg: IncomingMessage) -> str:
-    """Extract the sender's peer_id from any IncomingMessage variant.
-
-    CLAIM/HEART/END carry it on `.peer_id`; WAKE nests it inside
-    `.report.peer_id` because the WakeReport already has the field.
-    Centralizing the lookup keeps the multicast dispatcher's
-    self-loopback filter to one line."""
+    """WAKE nests the sender in `.report.peer_id`; the rest carry it flat."""
     if isinstance(msg, IncomingWake):
         return msg.report.peer_id
-    return getattr(msg, "peer_id", "")
+    return msg.peer_id

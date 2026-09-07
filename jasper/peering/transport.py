@@ -4,7 +4,7 @@
 
 """Multicast UDP transport for peering messages.
 
-Four message types, one JSON object per UDP datagram, max ~300 bytes.
+One JSON object per UDP datagram, max ~300 bytes.
 Wire schema is documented inline. Malformed packets are silently
 dropped (a buggy neighbor on the same multicast group shouldn't take
 down the fleet).
@@ -289,13 +289,13 @@ class MulticastTransport:
         self._ttl = ttl
         self._sock: Optional[socket.socket] = None
         self._recv_task: Optional[asyncio.Task] = None
-        self._on_message: Optional[Callable[[IncomingMessage, str], Awaitable[None] | None]] = None
+        self._on_message: Optional[Callable[[IncomingMessage], Awaitable[None] | None]] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stopped = asyncio.Event()
 
     async def start(
         self,
-        on_message: Callable[[IncomingMessage, str], Awaitable[None] | None],
+        on_message: Callable[[IncomingMessage], Awaitable[None] | None],
     ) -> None:
         if self._sock is not None:
             raise RuntimeError("MulticastTransport.start() called twice")
@@ -351,7 +351,7 @@ class MulticastTransport:
         assert self._sock is not None and self._loop is not None
         while not self._stopped.is_set():
             try:
-                data, addr = await self._loop.sock_recvfrom(
+                data, _ = await self._loop.sock_recvfrom(
                     self._sock, MAX_DATAGRAM_BYTES,
                 )
             except asyncio.CancelledError:
@@ -366,7 +366,7 @@ class MulticastTransport:
             if msg is None:
                 continue
             try:
-                result = self._on_message(msg, addr[0]) if self._on_message else None
+                result = self._on_message(msg) if self._on_message else None
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:  # noqa: BLE001

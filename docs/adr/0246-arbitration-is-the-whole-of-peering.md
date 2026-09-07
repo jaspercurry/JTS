@@ -42,9 +42,11 @@ commands. What remains is arbitration:
 `WAKE` / `CLAIM` / `HEARTBEAT` / `END` over multicast.
 
 Advertisement stays. The `_jasper-peer._udp` Avahi service file is still
-rendered when peering turns on and removed when it turns off, and
+rendered when peering turns on and removed by `stop()` when it turns off, and
 `jasper-doctor`'s discovery check still browses it with `avahi-browse`. We stop
-browsing, not advertising.
+browsing, not advertising. (`stop()` only reaches the uninstall when `start()`
+completed, so a speaker whose multicast bind failed keeps advertising until the
+next successful start — pre-existing, tracked separately.)
 
 `PROTO_VERSION` stays at 1: dropping a verb is not a wire-version change. A
 HELLO from an older peer now falls through the decoder's existing unknown-type
@@ -62,7 +64,24 @@ drop, which is the correct outcome.
 - The daemon can no longer render a peer list, because it no longer keeps one.
   A surface that wants the household's membership browses `_jasper-peer._udp`
   itself, as the doctor check does.
+- One weak signal does go with HELLO, and it is not the self-test. Broadcasting
+  every 30 s meant a broken multicast *egress* path — no route to the group
+  after a NIC or route change, an AP dropping multicast — surfaced as a
+  recurring `peering: send failed` warning in the journal between wakes.
+  Without it the first symptom is a dropped WAKE inside the arbitration window,
+  where there is no retransmit and every speaker then answers at once. We accept
+  that: AGENTS.md's guard rule is that permanent machinery needs a
+  non-negotiable tie or a recurrence, and there is no recorded incident here —
+  a 30 s broadcast on every peering household to catch a hypothetical is the
+  machinery that rule tells us to demote. If it ever recurs, the fix is
+  observability at the point of failure (a counter or `/state` field on send
+  errors), not a keepalive whose receive side was discarded.
 - If a per-peer multicast-health detector is ever wanted, it starts from
   ADR-0127's symptom description ("peers visible in the directory while no
   arbitration message is ever exchanged") and a design that actually observes
   something, not from a HELLO loop whose output was discarded.
+- `IP_MULTICAST_LOOP = 1` and the daemon's self-loopback filter now have no
+  consumer beyond each other: nothing reads a looped-back datagram. They stay
+  because setting `LOOP = 0` changes live wire behaviour and this change is a
+  deletion, but the pair is a candidate for removal once someone can test it on
+  hardware. The filter is pinned by a behaviour test so it cannot rot silently.

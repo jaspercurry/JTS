@@ -10,7 +10,7 @@ Verifies:
   - mode=ON: ARBITRATE returns WIN for a solo wake (no peer reports)
   - mode=ON: ARBITRATE returns LOSE when a peer outbids us
   - session lifecycle drives correct broadcasts (CLAIM → HEART → END)
-  - Avahi rendering is skipped on mode=OFF and attempted on mode=ON
+  - a datagram we sent ourselves is dropped before dispatch
 
 We monkey-patch the multicast transport so tests don't open real
 sockets. The state machine and dispatch logic run unmodified.
@@ -77,10 +77,10 @@ class _FakeTransport:
     async def send(self, payload: bytes) -> None:
         self.sent.append(payload)
 
-    async def inject(self, msg, addr="127.0.0.1") -> None:
+    async def inject(self, msg) -> None:
         """Simulate an inbound multicast message."""
         if self._on_message is not None:
-            result = self._on_message(msg, addr)
+            result = self._on_message(msg)
             if asyncio.iscoroutine(result):
                 await result
 
@@ -293,6 +293,34 @@ async def test_session_started_then_ended(daemon_setup):
         isinstance(m, IncomingEnd) and m.reason == "user_silence"
         for m in parsed
     )
+
+
+# ---------- self-loopback filter ----------
+
+
+async def test_own_datagram_is_dropped_before_dispatch(daemon_setup):
+    """IP_MULTICAST_LOOP=1 echoes every send back to us. A datagram whose
+    sender is this speaker must not reach the state machine, or a peer
+    would ingest its own WAKE as a foreign report and self-CLAIM.
+
+    Pinned per verb because the sender id sits at a different attribute
+    path for WAKE (nested in the report) than for the flat verbs."""
+    d, transport = daemon_setup
+    own = d._cfg.peer_id
+    before = d._sm.state
+
+    await transport.inject(IncomingWake(
+        epoch="ep-self",
+        report=WakeReport(
+            peer_id=own, score=0.99, snr_db=30.0,
+            rms_dbfs=-10.0, primary=False, can_serve=True,
+        ),
+        ts_ns=0,
+    ))
+    await transport.inject(IncomingClaim(epoch="ep-self", peer_id=own, ts_ns=0))
+
+    assert d._sm.state is before
+    assert d._pending_epoch is None
 
 
 # ---------- timeout fail-open ----------

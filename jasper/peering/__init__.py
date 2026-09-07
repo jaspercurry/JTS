@@ -12,8 +12,8 @@ per-wake JSON message over multicast UDP, deterministically pick one
 winner, and suppress the rest for the duration of that turn.
 
 **Off by default.** A single-Pi household pays nothing: with mode
-`off`, no Avahi service is advertised, no multicast socket is opened,
-no thread is spawned. The user explicitly turns peering on via the
+`off`, no Avahi service is advertised and no multicast socket is
+opened. The user explicitly turns peering on via the
 `/sound/pair/` Speakers page, which writes
 `/var/lib/jasper/peering.env` and restarts `jasper-control`.
 

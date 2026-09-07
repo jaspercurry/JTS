@@ -81,7 +81,7 @@ is enforced at runtime by the pairing agent's window-scoped adapter
 toggling, not by BlueZ `main.conf`; already-paired devices can still
 reconnect without reopening pairing.
 
-The peer-discovery gossip (mDNS/multicast) is unauthenticated LAN
+The peering arbitration gossip (multicast UDP) is unauthenticated LAN
 traffic today; a device on the same LAN can spoof those messages. The
 cross-device multiroom **grouping** control path (`POST /grouping/set`)
 is separately authenticated by a shared **household credential** minted
