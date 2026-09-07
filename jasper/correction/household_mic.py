@@ -25,7 +25,7 @@ The record reaches a measurement two ways, and both start here:
 
 * the capture spec's OPTIONAL ``default_setup`` prefill hint
   (``jasper/active_speaker/crossover_v2/sweep_spec.py``, built by
-  ``correction_setup._default_setup_calibration_for_spec``), whose
+  ``correction_capture._default_setup_calibration_for_spec``), whose
   ``resolvable`` flag is minted fresh at spec-build time — a second,
   independent :func:`resolve_household_mic_calibration` call rather than an
   inference from the hint existing — so a record whose calibration has gone

@@ -214,7 +214,7 @@ def handle_reset(
     is currently applied/loaded are untouched — see
     ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
 
-    The caller (``correction_setup._handle_crossover_reset``) has already
+    The caller (``correction_handlers._handle_crossover_reset``) has already
     requested a stop of any crossover-owned capture before this runs; ``capture``
     here is only the freshest capture snapshot for the response, matching
     :func:`handle_status`/:func:`handle_envelope`.

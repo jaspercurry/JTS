@@ -207,7 +207,7 @@ def classify_program_failure(
     and logged) instead of being erased.
 
     This is the ONE classifier. ``build_v2_run_and_consume``'s cleanup arm and
-    ``jasper.web.correction_setup._capture_failure_message`` both call it, so the
+    ``jasper.web.correction_capture._capture_failure_message`` both call it, so the
     wizard's capture status line and the failure screen can
     never disagree about which refusal happened — the drift that let a raw
     ``"program re-admission refused: program_profile_not_confirmed"`` reach the
@@ -274,7 +274,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     :func:`classify_program_failure` exists to close, defeated by the rewrap
     happening BEFORE any classification: once it is a ``ValueError`` the
     classifier no longer claims it, and
-    ``correction_setup._capture_failure_message`` never sees it either.
+    ``correction_capture._capture_failure_message`` never sees it either.
 
     So classify FIRST and carry the code out. The message comes from the same
     :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY` entry the
@@ -5499,7 +5499,7 @@ def prepare_v2_session(
     ``POST /crossover/v2/session`` (S1a) when false, ``POST
     /crossover/v2/verify`` when true. The flag is the dispatch's own
     discriminator handed one frame down, never re-derived here
-    (``correction_setup._handle_crossover_v2_capture``).
+    (``correction_handlers._handle_crossover_v2_capture``).
 
     **One sequence, and the nine steps along it that fork.** From the
     capture-source resolution onward both stages run the same steps in the same

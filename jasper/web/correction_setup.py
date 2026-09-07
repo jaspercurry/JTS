@@ -734,7 +734,6 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_html(_render_page(
             self.hostname, ctx["csrf_token"], ctx["flash"],
         ))
-        return
 
     def _get_crossover(self) -> None:
         from . import correction_crossover_flow
@@ -744,7 +743,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self.hostname, ctx["csrf_token"],
             )
         )
-        return
 
     def _get_measurements(self) -> None:
         from . import correction_measurements
@@ -754,7 +752,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self.hostname, ctx["csrf_token"],
             )
         )
-        return
 
     def _get_measurements_data(self) -> None:
         from jasper.active_speaker import bundles as active_bundles
@@ -776,7 +773,6 @@ class _Handler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             logger.exception("/measurements/data failed")
             self._send_json({"error": str(exc)}, status=500)
-        return
 
     def _get_crossover_status(self) -> None:
         from . import correction_crossover_flow
@@ -792,7 +788,6 @@ class _Handler(BaseHTTPRequestHandler):
             )
 
         self._serve_json_route("/crossover/status", _crossover_status)
-        return
 
     def _get_crossover_envelope(self) -> None:
         from . import correction_crossover_flow
@@ -807,7 +802,6 @@ class _Handler(BaseHTTPRequestHandler):
             )
 
         self._serve_json_route("/crossover/envelope", _crossover_envelope)
-        return
 
     def _get_bass(self) -> None:
         from . import correction_bass_flow
@@ -817,7 +811,6 @@ class _Handler(BaseHTTPRequestHandler):
                 self.hostname, ctx["csrf_token"],
             )
         )
-        return
 
     def _get_bass_status(self) -> None:
         from . import correction_bass_flow
@@ -825,13 +818,11 @@ class _Handler(BaseHTTPRequestHandler):
             "/bass/status",
             lambda _handler: correction_bass_flow.handle_status(),
         )
-        return
 
     def _get_sync(self) -> None:
         from . import sync_flow
         ctx = begin_request(self)
         self._send_html(sync_flow.render_page(ctx["csrf_token"]))
-        return
 
     def _get_sync_status(self) -> None:
         from . import sync_flow
@@ -840,7 +831,6 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             logger.exception("/sync/status failed")
             self._send_json({"error": str(e)}, status=500)
-        return
 
     def _get_healthz(self) -> None:
         body = b"ok\n"
@@ -849,23 +839,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        return
 
     def _get_status(self) -> None:
         self._serve_json_route("/status", correction_handlers._handle_status)
-        return
 
     def _get_entry_status(self) -> None:
         self._serve_json_route("/entry-status", correction_handlers._handle_entry_status)
-        return
 
     def _get_envelope(self) -> None:
         self._serve_json_route("/envelope", correction_handlers._handle_envelope)
-        return
 
     def _get_sessions(self) -> None:
         self._serve_json_route("/sessions", correction_handlers._handle_sessions)
-        return
 
     def _get_session_report(self) -> None:
         try:
@@ -881,7 +866,6 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             logger.exception("/session-report failed")
             self._send_json({"error": str(e)}, status=500)
-        return
 
     def _get_calibration_models(self) -> None:
         try:
@@ -889,7 +873,6 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             logger.exception("/calibration/models failed")
             self._send_json({"error": str(e)}, status=500)
-        return
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -974,38 +957,30 @@ class _Handler(BaseHTTPRequestHandler):
                 diagnostic=str(e),
                 status=HTTPStatus.CONFLICT,
             )
-        return
 
     def _post_next_position(self) -> None:
         self._send_json(correction_handlers._handle_next_position(self))
-        return
 
     def _post_repeat_position(self) -> None:
         self._send_json(correction_handlers._handle_repeat_position(self))
-        return
 
     def _post_verify(self) -> None:
         self._send_json(correction_handlers._handle_verify(self))
-        return
 
     def _post_test_tone(self) -> None:
         self._send_json(correction_handlers._handle_test_tone(self))
-        return
 
     def _post_autolevel_start(self) -> None:
         try:
             self._send_json(correction_handlers._handle_autolevel_start(self))
         except RequestConflict as e:
             self._send_client_error(str(e), status=409)
-        return
 
     def _post_autolevel_lock(self) -> None:
         self._send_json(correction_handlers._handle_autolevel_lock(self))
-        return
 
     def _post_autolevel_cancel(self) -> None:
         self._send_json(correction_handlers._handle_autolevel_cancel(self))
-        return
 
     def _post_local_capture_setup(self) -> None:
         try:
@@ -1014,7 +989,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_client_error(str(e))
         except RequestConflict as e:
             self._send_client_error(str(e), status=409)
-        return
 
     def _post_upload_capture(self) -> None:
         from jasper.audio_measurement import quality
@@ -1038,7 +1012,6 @@ class _Handler(BaseHTTPRequestHandler):
             }, status=422)
         except ValueError as e:
             self._send_client_error(str(e))
-        return
 
     def _post_upload_noise(self) -> None:
         try:
@@ -1047,7 +1020,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_client_error(str(e))
         except RequestConflict as e:
             self._send_client_error(str(e), status=409)
-        return
 
     def _post_calibration_fetch(self) -> None:
         try:
@@ -1065,14 +1037,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_client_error(str(e), status=502)
             else:
                 raise
-        return
 
     def _post_calibration_upload(self) -> None:
         try:
             self._send_json(correction_handlers._handle_calibration_upload(self))
         except ValueError as e:
             self._send_client_error(str(e))
-        return
 
     def _post_apply(self) -> None:
         from jasper.correction.runtime_safety import (
@@ -1086,7 +1056,6 @@ class _Handler(BaseHTTPRequestHandler):
                 str(e),
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
-        return
 
     def _post_reset(self) -> None:
         # Local import keeps session/numpy off the socket-activated
@@ -1106,7 +1075,6 @@ class _Handler(BaseHTTPRequestHandler):
             # Rejected because a sweep/analysis is mid-flight — a
             # state conflict (409), not a server error (500).
             self._send_client_error(str(e), status=409)
-        return
 
     def _post_session_delete(self) -> None:
         try:
@@ -1117,7 +1085,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_client_error(str(e), status=404)
         except RequestConflict as e:
             self._send_client_error(str(e), status=409)
-        return
 
     def _post_interpret(self) -> None:
         from jasper.correction import failures
@@ -1151,7 +1118,6 @@ class _Handler(BaseHTTPRequestHandler):
                 diagnostic=str(e),
                 status=HTTPStatus.CONFLICT,
             )
-        return
 
     def _post_propose(self) -> None:
         from jasper.correction import failures
@@ -1185,7 +1151,6 @@ class _Handler(BaseHTTPRequestHandler):
                 diagnostic=str(e),
                 status=HTTPStatus.CONFLICT,
             )
-        return
 
     def _post_propose_apply(self) -> None:
         from jasper.correction.runtime_safety import (
@@ -1203,7 +1168,6 @@ class _Handler(BaseHTTPRequestHandler):
                 str(e),
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
-        return
 
 
 def _make_handler_class(

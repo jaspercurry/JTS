@@ -103,7 +103,7 @@ DEFERRED_EXIT_LOG_PERIOD_SEC = 300.0
 # the property that matters — this line is a leak alarm, and one that cried
 # wolf on every Full-tier commission would be worse than none. Escalation is
 # the ONLY behavior change: nothing reaps the process, per
-# `correction_setup._run_async`'s fail-closed invariant (a terminal response
+# `correction_capture._run_async`'s fail-closed invariant (a terminal response
 # must never release measurement ownership while the graph/volume finalizer
 # can still mutate the speaker).
 HOLD_LEAK_WARN_AFTER_SEC = 7200.0
