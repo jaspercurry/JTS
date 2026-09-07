@@ -55,7 +55,10 @@ from .control import client as control
 from .env_load import env_file_path, parse_env_file
 from .log_event import log_event
 from .output_hardware import published_dac_id
-from .route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from .route_latency.status_socket import (
+    OUTPUTD_STATUS_SOCKET,
+    read_status_socket_or_none,
+)
 from .logging_setup import configure_logging
 
 
@@ -499,43 +502,11 @@ def outputd_socket_path(system_env: Mapping[str, str]) -> Path:
 
 
 def query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, Any] | None:
-    sock: socket.socket | None = None
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(str(socket_path))
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError as e:
-        log_event(
-            logger,
-            "audio_validation.outputd_status_unavailable",
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-    try:
-        data = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError as e:
-        log_event(
-            logger,
-            "audio_validation.outputd_status_invalid",
-            error=str(e),
-            level=logging.DEBUG,
-        )
-        return None
-    return data if isinstance(data, dict) else None
+    return read_status_socket_or_none(
+        str(socket_path),
+        timeout=timeout,
+        event="audio_validation.outputd_status_unavailable",
+    )
 
 
 def service_state(unit: str) -> str:

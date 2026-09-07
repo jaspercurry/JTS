@@ -21,23 +21,22 @@ from pathlib import Path
 from types import TracebackType
 
 
-class JsonStatusSocket:
-    """Serve a JSON payload to repeated ``STATUS`` requests on a short path."""
+class _AcceptLoopSocket:
+    """Shared AF_UNIX accept-loop plumbing for the server fixtures below.
 
-    def __init__(
-        self,
-        payload: dict,
-        *,
-        name: str = "status.sock",
-        accept_delay_seconds: float = 0,
-    ) -> None:
+    Binds under a fresh tempdir, runs the accept loop on a background
+    thread, and tears both down on exit. Subclasses supply per-connection
+    behaviour via :meth:`_handle_connection` and may narrow
+    ``_serve_errors`` to the exceptions their own handler can raise.
+    """
+
+    _serve_errors: tuple[type[BaseException], ...] = (OSError,)
+
+    def __init__(self, *, name: str) -> None:
         # Use the process temp root (short on macOS and writable in sandboxed
         # test runs) rather than pytest's deeply nested ``tmp_path``.
         self._tmpdir = tempfile.TemporaryDirectory(prefix="jts-status-")
         self.path = Path(self._tmpdir.name) / name
-        self.payload = payload
-        self.accept_delay_seconds = accept_delay_seconds
-        self.requests: list[bytes] = []
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._errors: list[BaseException] = []
@@ -45,7 +44,7 @@ class JsonStatusSocket:
 
     def __enter__(self) -> Path:
         self._thread.start()
-        assert self._ready.wait(timeout=2), f"status socket did not bind: {self.path}"
+        assert self._ready.wait(timeout=2), f"socket did not bind: {self.path}"
         if self._errors:
             raise self._errors[0]
         return self.path
@@ -68,6 +67,12 @@ class JsonStatusSocket:
         if exc_type is None and self._errors:
             raise self._errors[0]
 
+    def _before_accept_loop(self) -> None:
+        """Hook run once, after bind/listen and before the accept loop."""
+
+    def _handle_connection(self, connection: socket.socket) -> None:
+        raise NotImplementedError
+
     def _serve(self) -> None:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -75,31 +80,79 @@ class JsonStatusSocket:
                 server.listen()
                 server.settimeout(0.1)
                 self._ready.set()
-                if self.accept_delay_seconds:
-                    time.sleep(self.accept_delay_seconds)
+                self._before_accept_loop()
                 while not self._stop.is_set():
                     try:
                         connection, _ = server.accept()
                     except TimeoutError:
                         continue
                     with connection:
-                        request = connection.recv(1024)
-                        if self._stop.is_set() and not request:
-                            continue
-                        self.requests.append(request)
-                        if request != b"STATUS\n":
-                            raise AssertionError(
-                                f"unexpected status request: {request!r}"
-                            )
-                        try:
-                            connection.sendall(
-                                json.dumps(self.payload).encode("utf-8") + b"\n"
-                            )
-                        except BrokenPipeError:
-                            pass
-        except (OSError, AssertionError, TypeError) as error:
+                        self._handle_connection(connection)
+        except self._serve_errors as error:
             self._errors.append(error)
             self._ready.set()
+
+
+class JsonStatusSocket(_AcceptLoopSocket):
+    """Serve a JSON payload to repeated ``STATUS`` requests on a short path."""
+
+    _serve_errors = (OSError, AssertionError, TypeError)
+
+    def __init__(
+        self,
+        payload: dict,
+        *,
+        name: str = "status.sock",
+        accept_delay_seconds: float = 0,
+    ) -> None:
+        super().__init__(name=name)
+        self.payload = payload
+        self.accept_delay_seconds = accept_delay_seconds
+        self.requests: list[bytes] = []
+
+    def _before_accept_loop(self) -> None:
+        if self.accept_delay_seconds:
+            time.sleep(self.accept_delay_seconds)
+
+    def _handle_connection(self, connection: socket.socket) -> None:
+        request = connection.recv(1024)
+        if self._stop.is_set() and not request:
+            return
+        self.requests.append(request)
+        if request != b"STATUS\n":
+            raise AssertionError(f"unexpected status request: {request!r}")
+        try:
+            connection.sendall(json.dumps(self.payload).encode("utf-8") + b"\n")
+        except BrokenPipeError:
+            pass
+
+
+class DribblingStatusSocket(_AcceptLoopSocket):
+    """Accept a ``STATUS`` request and dribble one byte every
+    ``interval_seconds`` forever — never a complete reply, never a close.
+
+    Models a wedged or malicious peer: a per-operation ``settimeout`` (what a
+    hand-rolled reader arms) never fires because each byte arrives inside the
+    window, so only a reader with a TOTAL deadline across the whole read can
+    escape this without an outer test harness forcing it.
+    """
+
+    def __init__(self, *, name: str = "dribble.sock", interval_seconds: float = 0.1) -> None:
+        super().__init__(name=name)
+        self.interval_seconds = interval_seconds
+
+    def _handle_connection(self, connection: socket.socket) -> None:
+        connection.settimeout(1.0)
+        try:
+            connection.recv(1024)
+        except OSError:
+            return
+        while not self._stop.is_set():
+            try:
+                connection.sendall(b"x")
+            except OSError:
+                break
+            time.sleep(self.interval_seconds)
 
 
 class FakeStatusSocket:
