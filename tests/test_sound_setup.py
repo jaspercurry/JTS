@@ -160,12 +160,7 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
 
 
 def _event_record(caplog, event: str):
-    """The ONE ``event=<name> k=v …`` record, plus its fields as a mapping.
-
-    Asserting on fields rather than the whole sentence keeps these pins off
-    log prose, and folding "exactly one record" in here makes that property
-    explicit at every call site.
-    """
+    """The single event record and its fields."""
 
     records = [
         record
@@ -648,8 +643,7 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
     event,
     extra_fields,
 ):
-    """A route whose payload builder raises answers `{"error": …}` at 502 and
-    emits exactly one `result=error` event named for that route."""
+    """A failed route answers 502 and records its exception exactly once."""
     error = OSError("payload builder failed")
 
     def fail(*_args, **_kwargs):
@@ -672,7 +666,11 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload == {"error": str(error)}
-    assert _event_record(caplog, event)[1] == {"result": "error", **extra_fields}
+    record, fields = _event_record(caplog, event)
+    assert fields == {"result": "error", **extra_fields}
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert record.exc_info[1] is error
 
 
 def test_sound_post_does_not_secondary_send_after_response_write_failure(
