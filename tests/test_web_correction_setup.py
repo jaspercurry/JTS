@@ -39,6 +39,10 @@ _CORRECTION_MODULE = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "assets" / "correction" / "js" / "main.js"
 )
+# Sibling modules main.js was cut into (pure move, #4422) — same
+# tests/js/correction_render_harness.mjs list. A presence pin against
+# `_module_js()` must keep seeing code that moves between these files.
+_CORRECTION_SIBLING_MODULES = ("api.js", "capture.js", "format.js", "quality.js")
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +57,12 @@ def _saved_passive_layout(tmp_path, monkeypatch):
 
 
 def _module_js() -> str:
-    return _CORRECTION_MODULE.read_text()
+    parts = [_CORRECTION_MODULE.read_text()]
+    parts += [
+        (_CORRECTION_MODULE.parent / name).read_text()
+        for name in _CORRECTION_SIBLING_MODULES
+    ]
+    return "\n".join(parts)
 
 
 def test_run_async_timeout_cancels_loop_task():

@@ -30,22 +30,22 @@
 //
 //   node tests/js/correction_render_harness.mjs deploy/assets/correction/js/main.js
 
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { buildFunction } from "./_loader.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const modulePath = process.argv[2] || join(root, "deploy/assets/correction/js/main.js");
+const siblingDir = dirname(modulePath);
 
-// The page is one entry module plus the siblings it imports. The runner below
-// evaluates a single Function body, so the siblings are concatenated ahead of
-// the entry with their `export` keywords dropped; the import lines are then
-// stripped from every source alike and the named imports stubbed in `preamble`.
+// The page is one entry module plus the siblings it imports. buildFunction
+// concatenates them into a single Function body: siblings ahead of the
+// entry with their `export` keyword stripped (so their top-level
+// declarations land in the shared scope the entry reads them from), then
+// every source's import lines stripped alike and the named imports stubbed
+// in `preamble`.
 const SIBLING_MODULES = ["api.js", "capture.js", "format.js", "quality.js"];
-let rawSource = SIBLING_MODULES
-  .map((name) => readFileSync(join(dirname(modulePath), name), "utf8").replace(/^export /gm, ""))
-  .concat(readFileSync(modulePath, "utf8"))
-  .join("\n");
+const STRIP_EXPORT = [/^export /gm, ""];
 
 // ---- classList stub ----
 function makeClassList(initial) {
@@ -242,22 +242,16 @@ class FakeAudioWorkletNode {
   }
 }
 
-// ---- Strip imports, stub calls that would fail in Node ----
-let source = rawSource
-  // Strip ES module imports (the IIFE body uses them via injected closures below)
-  .replace(/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n/gm, "")
-  // Stub AudioWorklet loading
-  .replace(
-    /audioCtx\.audioWorklet\.addModule\b/g,
-    "(() => Promise.resolve())",
-  )
-  // Suppress console.error during boot (network calls fire and fail)
-  ;
+// ---- Stub calls that would fail in Node (applied to the entry module only) ----
+const STUB_AUDIO_WORKLET = [
+  /audioCtx\.audioWorklet\.addModule\b/g,
+  "(() => Promise.resolve())",
+];
 
 // Inject a probe hook just before the IIFE closes so tests can call the function
 // directly.  The hook is a function expression assigned to a global, set from
 // inside the IIFE closure so it shares the DOM-variable bindings.
-source = source.replace(
+const PROBE_INJECT = [
   /\}\)\(\);\s*$/,
   `  globalThis.__testProbe = {
     renderCurrentCorrection,
@@ -349,13 +343,7 @@ source = source.replace(
     },
   };
 })();`,
-);
-
-if (/^import\s/m.test(source)) {
-  throw new Error(
-    "unhandled import in main.js — add a strip rule to the correction_render_harness",
-  );
-}
+];
 
 // ---- Build the eval context ----
 const docEl = makeEl("document");
@@ -452,8 +440,11 @@ getOrMake("measurement-options").hidden = true;
 ["measurement-review", "apply-status", "result-proof", "reset-correction"]
   .forEach((id) => { getOrMake(id).hidden = true; });
 
-// Inject stubs for the named imports (csrfHeaders, jsonHeaders, etc.)
-const preamble = `
+// Inject stubs for the named imports (csrfHeaders, jsonHeaders, etc.). Also
+// opens the whole evaluated body in strict mode: the real page is a set of
+// ES modules, which are implicitly strict, but a plain `new Function` body
+// is not unless told to be.
+const preamble = `'use strict';
 const navigator = window.navigator;
 const csrfHeaders = () => ({ 'X-CSRF-Token': 'harness', 'Content-Type': 'application/json' });
 const jsonHeaders = () => ({ 'X-CSRF-Token': 'harness', 'Content-Type': 'application/json' });
@@ -467,13 +458,28 @@ async function jtsAlert(message) {
 }
 function escapeText(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 `;
+const PREPEND_PREAMBLE = [/^/, preamble];
 
-// Evaluate using the Function constructor so DOM globals are in scope
-const runner = new Function(
-  "document", "window", "fetch", "globalThis", "console",
-  "setTimeout", "clearTimeout", "setInterval", "clearInterval",
-  "AudioContext", "AudioWorkletNode", "URL",
-  `${preamble}\n${source}`,
+// Evaluate using the Function constructor so DOM globals are in scope.
+// buildFunction reads and concatenates every source fresh, applying each
+// entry's rewrite before the shared stripImports/guardNoImports pass.
+const runner = buildFunction(
+  [
+    ...SIBLING_MODULES.map((name, index) => ({
+      path: join(siblingDir, name),
+      rewrite: index === 0 ? [STRIP_EXPORT, PREPEND_PREAMBLE] : [STRIP_EXPORT],
+    })),
+    { path: modulePath, rewrite: [STUB_AUDIO_WORKLET, PROBE_INJECT] },
+  ],
+  {
+    stripImports: true,
+    guardNoImports: true,
+    params: [
+      "document", "window", "fetch", "globalThis", "console",
+      "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+      "AudioContext", "AudioWorkletNode", "URL",
+    ],
+  },
 );
 
 const safeConsole = {
