@@ -204,7 +204,7 @@ def test_get_routes_resolve_via_render_and_module() -> None:
     mutating routes the recorder relies on are still referenced by the
     behaviour module (relative paths, not absolute)."""
     html_text = wc._render_index_html("t")
-    assert "<title>Wake-word corpus</title>" in html_text
+    assert "<title>Wake corpus</title>" in html_text
     js = _MODULE_JS.read_text()
     for path in (
         "api/status", "api/clips", "api/sessions",

@@ -207,7 +207,7 @@ def test_combined_web_lazy_wake_corpus_serves_after_first_request(
     try:
         status, body = get("/")
         assert status == 200
-        assert b"Wake-word corpus" in body
+        assert b"Wake corpus" in body
 
         status, body = get("/api/status")
         assert status == 200
