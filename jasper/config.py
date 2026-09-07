@@ -18,7 +18,9 @@ from .assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .speaker_name import runtime_name as _speaker_runtime_name
-from .google_creds import DEFAULT_REGISTRY_PATH
+from .google_creds import (
+    DEFAULT_REGISTRY_PATH as DEFAULT_GOOGLE_REGISTRY_PATH,
+)
 from .google_oauth import resolved_google_redirect_uri
 from .identity import resolve_hostname
 from .spotify_oauth import resolved_spotify_redirect_uri
@@ -788,7 +790,7 @@ class Config:
             # group-`jasper-secrets` dir, readable only by jasper-voice + jasper-web.
             google_accounts_path=_env(
                 "JASPER_GOOGLE_ACCOUNTS_PATH",
-                DEFAULT_REGISTRY_PATH,
+                DEFAULT_GOOGLE_REGISTRY_PATH,
             ),
             google_setup_url=_env(
                 "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/google",
