@@ -683,6 +683,159 @@ def test_streambox_env_refresh_writes_the_profile_through_the_shared_lib(tmp_pat
     assert not list(paths["env"].glob(".JASPER_INSTALL_PROFILE.*"))
 
 
+#: What each profile's rsync ships out of the checkout, by profile. The names
+#: are load-bearing: install_jasper installs three docs by name, and the
+#: streambox rsync names README.md.
+_CHECKOUT_FILES = {
+    "full": (
+        "jasper/__init__.py",
+        "jasper_aec3/__init__.py",
+        "experiments/usb-turntable/jts.py",
+        "docs/tuning-methodology.md",
+        "docs/tuning-operator-runbook.md",
+        "docs/measurement-loop-doctrine.md",
+    ),
+    "streambox": (
+        "jasper/__init__.py",
+        "README.md",
+        "docs/guide.md",
+    ),
+}
+
+
+def _fake_checkout(root: Path, profile: str) -> None:
+    """The files the profile's rsync ships, and the manifest pip resolves."""
+    for name in _CHECKOUT_FILES[profile]:
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("new source\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        "[project]\n"
+        'name = "jasper-speaker"\n'
+        'version = "0.1.0"\n'
+        'dependencies = ["jts-base-dep==1.0"]\n'
+        "\n"
+        "[project.optional-dependencies]\n"
+        'full = ["jts-full-dep==1.0"]\n'
+        'streambox = ["jts-streambox-dep==1.0"]\n',
+        encoding="utf-8",
+    )
+
+
+def _run_profile_install(
+    tmp_path: Path, profile: str, *, pip_rc: int
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run a profile's install function against a scratch root, with a `pip`
+    that exits `pip_rc` on every invocation.
+
+    rsync and the manifest reader run for real; the privileged / host-reaching
+    commands are shadowed by no-op shell functions so the run reaches the step
+    under test. `install` still runs for real under the scratch root (the
+    staging tree is created with it) and no-ops elsewhere. `exec` is shadowed
+    because the enhanced-AEC lock redirects onto a root-only /var/lib path;
+    that failed redirect leaves the lock fd unset, so install.sh's `set -eu`
+    cannot stay armed for the rest of the run — which the step under test does
+    not need: the publish is gated on the dependency install's own status.
+    """
+    repo = tmp_path / "repo"
+    install_dir = tmp_path / "opt/jasper"
+    _fake_checkout(repo, profile)
+    live = install_dir / "jasper"
+    live.mkdir(parents=True)
+    (live / "__init__.py").write_text("old\n", encoding="utf-8")
+    (live / "sentinel.py").write_text("old\n", encoding="utf-8")
+    venv_bin = install_dir / ".venv/bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(sys.executable)
+    pip = venv_bin / "pip"
+    pip.write_text(f"#!/usr/bin/env bash\nexit {pip_rc}\n", encoding="utf-8")
+    pip.chmod(0o755)
+    for name in ("state", "etc"):
+        (tmp_path / name).mkdir()
+
+    root = shlex.quote(str(tmp_path))
+    entry = "install_jasper" if profile == "full" else "install_streambox_jasper"
+    script = f"""
+exec() {{ :; }}
+systemctl() {{ :; }}
+flock() {{ :; }}
+chmod() {{ :; }}
+getent() {{ return 2; }}
+install() {{
+    local dest
+    for dest in "$@"; do :; done
+    case "${{dest}}" in
+        {root}/*) command install "$@" ;;
+        *) return 0 ;;
+    esac
+}}
+source {shlex.quote(str(_INSTALL_SH))} >/dev/null
+set +eu
+REPO_DIR={shlex.quote(str(repo))}
+STATE_DIR={shlex.quote(str(tmp_path / "state"))}
+ENV_DIR={shlex.quote(str(tmp_path / "etc"))}
+INSTALL_DIR={shlex.quote(str(install_dir))}
+{entry} >/dev/null
+"""
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return result, install_dir
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="requires rsync")
+@pytest.mark.parametrize(
+    "profile, extra_dep",
+    [("full", "jts-full-dep"), ("streambox", "jts-streambox-dep")],
+)
+def test_a_failed_dependency_install_leaves_the_live_source_tree_in_place(
+    tmp_path: Path, profile: str, extra_dep: str
+):
+    """The #4123 family: the source rsync used to land in ${INSTALL_DIR}
+    BEFORE pip ran, so a failed dependency install left new source running on
+    old dependencies. The new tree now stages beside the live one and is
+    published only after pip has succeeded."""
+    result, install_dir = _run_profile_install(tmp_path, profile, pip_rc=1)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    live = install_dir / "jasper"
+    assert live.joinpath("sentinel.py").read_text(encoding="utf-8") == "old\n"
+    assert live.joinpath("__init__.py").read_text(encoding="utf-8") == "old\n"
+    staged = install_dir / ".staging"
+    assert (
+        staged.joinpath("jasper/__init__.py").read_text(encoding="utf-8")
+        == "new source\n"
+    )
+    # --delete drops what the checkout no longer ships, from the staged copy
+    # only: the live file the running box is importing keeps its inode.
+    assert not staged.joinpath("jasper/sentinel.py").exists()
+    specs = staged.joinpath(".deps.txt").read_text(encoding="utf-8").split()
+    assert "jts-base-dep==1.0" in specs
+    assert f"{extra_dep}==1.0" in specs
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="requires rsync")
+def test_a_finished_dependency_install_publishes_the_staged_tree(tmp_path: Path):
+    """The other half: once pip is happy the staged tree replaces the live one
+    (a rename onto a live directory would otherwise nest inside it), carries
+    the checkout's deletions through, and leaves no staging tree behind. Run on
+    the streambox profile, whose steps after the publish are hermetic; the
+    publish itself is shared with the full profile."""
+    result, install_dir = _run_profile_install(tmp_path, "streambox", pip_rc=0)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    live = install_dir / "jasper"
+    assert not live.joinpath("jasper").exists()
+    assert not live.joinpath("sentinel.py").exists()
+    for name in _CHECKOUT_FILES["streambox"]:
+        published = install_dir.joinpath(name).read_text(encoding="utf-8")
+        assert published == "new source\n"
+    assert not install_dir.joinpath(".staging").exists()
+
+
 def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     install_root = tmp_path / "opt/jasper"
     pip = install_root / ".venv/bin/pip"

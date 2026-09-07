@@ -234,6 +234,8 @@ install_exit_cleanup() {
     # next (it pulls pages back in; the unpark can strand it), gate last.
     local rc=$?
     _call_if_defined record_install_outcome "${rc}"
+    # The staged source tree is dead weight once a step has aborted.
+    _call_if_defined remove_staged_install_tree
     cleanup_build_swap || true
     # The `|| true` inside _call_if_defined suspends `set -e` for the unpark's
     # ENTIRE body, which is the only reason its three bare `_build_sandbox_log`
