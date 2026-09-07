@@ -81,8 +81,4 @@ if [[ "$BUNDLED" == "0" ]]; then
 fi
 
 echo "Switching ${PI_HOST}:JASPER_WAKE_MODEL → ${MODEL}"
-# 0644: wake_setup.py's and model_downloads.py's mode for this file.
-$SSH "sudo bash -c '. /usr/local/lib/jasper/jasper-env-file.sh && \
-      jasper_env_file_set /var/lib/jasper/wake_model.env JASPER_WAKE_MODEL \"\$1\" 0644 0750' \
-      _ $(shell_quote "$MODEL") && \
-      $(restart_voice_and_verify_cmd)"
+$SSH "sudo $(remote_env_file_set_cmd /var/lib/jasper/wake_model.env JASPER_WAKE_MODEL "$MODEL" 0644 0770) && $(restart_voice_and_verify_cmd)"

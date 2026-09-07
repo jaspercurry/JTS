@@ -113,10 +113,7 @@ sed -i \"s/^127\.0\.1\.1.*/127.0.1.1\t${NEW_BASE}/\" /etc/hosts; \
 else printf \"127.0.1.1\t%s\n\" \"${NEW_BASE}\" >> /etc/hosts; fi'"
 
 echo "==> [Pi] JASPER_HOSTNAME=${NEW_FQDN} in /etc/jasper/jasper.env"
-# 0640/0750: modes python-runtime.sh's other jasper_env_file_set calls use for this file.
-remote_sudo "bash -c '. /usr/local/lib/jasper/jasper-env-file.sh && \
-jasper_env_file_set /etc/jasper/jasper.env JASPER_HOSTNAME \"\$1\" 0640 0750' \
-_ $(shell_quote "$NEW_FQDN")"
+remote_sudo "$(remote_env_file_set_cmd /etc/jasper/jasper.env JASPER_HOSTNAME "$NEW_FQDN" 0640 0755)"
 
 echo "==> [Pi] restart avahi-daemon + refresh identity snapshot"
 remote_sudo "systemctl restart avahi-daemon"
