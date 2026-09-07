@@ -950,83 +950,35 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
-
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                self._render_index(
-                    ctx["csrf_token"], status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
-                )
-                return
-
-            if path == "/playlist-preview":
-                if not guard_read_request(self):
-                    return
-                # Read-only AJAX endpoint — no CSRF, no flash.
-                self._handle_playlist_preview(qs)
-                return
-
             if path == "/oauth-callback":
                 if not guard_read_request(self, allow_cross_site_navigation=True):
                     return
                 # OAuth callback from Spotify (or the bounce page) —
-                # protected by the OAuth `state` nonce, not by CSRF.
-                self._handle_oauth_callback_get(qs)
+                # protected by the OAuth `state` nonce, not by CSRF. Its
+                # guard variant differs from every other GET route here,
+                # so it stays a special case ahead of the table.
+                self._handle_oauth_callback_get(urllib.parse.parse_qs(url.query))
                 return
-
-            self.send_error(HTTPStatus.NOT_FOUND)
+            handler_fn = _GET_ROUTES.get(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not guard_read_request(self):
+                return
+            handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            # State-changing POST routes — all require CSRF.
-            CSRF_POST_ROUTES = (
-                "/setup-credentials", "/reset-credentials", "/start",
-                "/paste-callback", "/remove", "/default",
-                "/playlist-add", "/playlist-remove",
-            )
-            if path not in CSRF_POST_ROUTES:
+            handler_fn = _POST_ROUTES.get(path)
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = _read_form(self)
             if not guard_mutating_request(self, form):
                 reject_csrf(self)
                 return
-
-            if path == "/setup-credentials":
-                self._handle_setup_credentials(form)
-                return
-
-            if path == "/reset-credentials":
-                self._handle_reset_credentials()
-                return
-
-            if path == "/start":
-                self._handle_start(form)
-                return
-
-            if path == "/paste-callback":
-                self._handle_paste_callback(form)
-                return
-
-            if path == "/remove":
-                self._handle_remove(form)
-                return
-
-            if path == "/default":
-                self._handle_default(form)
-                return
-
-            if path == "/playlist-add":
-                self._handle_playlist_add(form)
-                return
-
-            if path == "/playlist-remove":
-                self._handle_playlist_remove(form)
-                return
+            handler_fn(self, form)
 
         # --- route bodies ---
 
@@ -1355,6 +1307,41 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             auth.code_verifier = verifier
             auth.code_challenge = challenge
             auth.get_access_token(code, check_cache=False)
+
+    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+    # (exact path -> handler callable). The tables stay local to this
+    # closure (rather than module-level) because Handler is defined here
+    # and every route body closes over `cfg`. Each entry is either the
+    # existing route-body method itself (called with the handler as its
+    # explicit `self`) or a thin adapter for the one method whose
+    # signature doesn't already match.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        ctx = begin_request(handler)
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        handler._render_index(
+            ctx["csrf_token"], status_msg=ctx["flash"],
+            back_href=safe_back_href((qs.get("return_to") or [""])[0]),
+        )
+
+    def _get_playlist_preview(handler: BaseHTTPRequestHandler) -> None:
+        # Read-only AJAX endpoint — no CSRF, no flash.
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        handler._handle_playlist_preview(qs)
+
+    _GET_ROUTES = {
+        "/": _get_index,
+        "/playlist-preview": _get_playlist_preview,
+    }
+    _POST_ROUTES = {
+        "/setup-credentials": Handler._handle_setup_credentials,
+        "/reset-credentials": lambda h, f: h._handle_reset_credentials(),
+        "/start": Handler._handle_start,
+        "/paste-callback": Handler._handle_paste_callback,
+        "/remove": Handler._handle_remove,
+        "/default": Handler._handle_default,
+        "/playlist-add": Handler._handle_playlist_add,
+        "/playlist-remove": Handler._handle_playlist_remove,
+    }
 
     return Handler
 
