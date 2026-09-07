@@ -75,7 +75,7 @@ cue (H2), then replug. jts4: nothing; the P12 session deploys it for HW-3/HW-5. 
 server-VAD path is deleted rather than kept as a knob; the May A/B lost 0/5, 3/5, 0/5; a re-run
 restores it from git history) and object on #4208 only if you want that experiment path kept.
 
-**State on 2026-09-07 02:10 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
+**State on 2026-09-07 03:15 UTC.** P1 done (handoff #4279; residuals filed as #4281, #4282, #4284,
 #4304). P2 round two executing on Dip (11 rows; HW-6 dropped; row 11 — the `first-party-runtime.sh`
 seam and the airplay-mode push design — approved to land last; its box rows go to #4027 for the
 Space Hater sessions, none needs the owner). P4 done (handoff #4327: 12 PRs, `audio_graph` deleted, ADR-0245,
