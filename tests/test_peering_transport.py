@@ -25,6 +25,7 @@ from jasper.peering.transport import (
     encode_end,
     encode_heartbeat,
     encode_wake,
+    open_multicast_socket,
 )
 
 
@@ -155,3 +156,31 @@ def test_wake_with_oob_score_clamped_at_decode():
     msg = decode(raw)
     assert isinstance(msg, IncomingWake)
     assert msg.report.score == 1.0  # clamped
+
+
+# ---------- Socket plumbing ----------
+
+
+def test_open_multicast_socket_closes_socket_on_bind_failure(monkeypatch):
+    import errno
+    import socket as socket_mod
+
+    created: list[socket_mod.socket] = []
+    real_socket_cls = socket_mod.socket
+
+    def recording_socket(*args, **kwargs):
+        sock = real_socket_cls(*args, **kwargs)
+        created.append(sock)
+        return sock
+
+    def failing_bind(self, *args, **kwargs):
+        raise OSError(errno.ENODEV, "No such device")
+
+    monkeypatch.setattr(socket_mod, "socket", recording_socket)
+    monkeypatch.setattr(real_socket_cls, "bind", failing_bind)
+
+    with pytest.raises(OSError):
+        open_multicast_socket()
+
+    assert len(created) == 1
+    assert created[0].fileno() == -1
