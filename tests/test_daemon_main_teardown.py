@@ -292,7 +292,7 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     patch("_make_connection", _connection)
 
     # --- resources opened inside the stack ---
-    patch("_configured_wake_legs", lambda *a, **k: [
+    patch("configured_wake_legs", lambda *a, **k: [
         (wake_legs.by_token("on"), "udp:9876"),
     ])
     patch("make_mic_capture", lambda device, **k: _traced_cm(trace, "mic"))
@@ -320,10 +320,10 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     ))
     patch("_schedule_assistant_loudness_seed", lambda *a, **k: None)
 
-    async def _cancel_tracked_tasks(_tasks) -> None:
+    async def cancel_tracked_tasks(_tasks) -> None:
         trace.append(("startup_tasks", "exit"))
 
-    patch("_cancel_tracked_tasks", _cancel_tracked_tasks)
+    patch("cancel_tracked_tasks", cancel_tracked_tasks)
     patch("WakeLoop", lambda *a, **k: _FakeWakeLoop(trace, *a, **k))
 
     async def _serve_control_socket(*_a, **_kw):

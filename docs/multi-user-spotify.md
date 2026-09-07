@@ -448,7 +448,7 @@ jaspercurry/spotify-oauth-callback    GitHub Pages bounce page (separate
 jasper/accounts.py                    Registry / Account
 jasper/spotify_router.py              Router.resolve_for_transport / Router.active /
                                        build_clients (PKCE)
-jasper/spotify_routing.py             resolve_target (cold-start device picker, _normalise)
+jasper/spotify_routing.py             resolve_target (cold-start device picker, normalise)
 jasper/web/spotify_setup.py           jasper-web HTTP service (PKCE wizard)
 jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
 jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch

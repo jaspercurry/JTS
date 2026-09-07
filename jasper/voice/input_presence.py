@@ -29,7 +29,7 @@ local mic is present" from "no local mic, but a remote is paired" — and the
 daemon needs exactly that distinction to decide whether to plan a wake leg at
 all. So the AEC reconciler publishes its own half separately as
 ``JASPER_LOCAL_MIC_PRESENT`` (``1`` / ``0`` / ``unknown``), which
-``Config.local_mic_present`` reads and ``_configured_wake_legs`` acts on. Do
+``Config.local_mic_present`` reads and ``configured_wake_legs`` acts on. Do
 not try to recover that fact from this marker, and nothing derived from this
 marker may phrase itself as "voice is running on the accessory" — that is a
 runtime claim and this file only knows about starting.

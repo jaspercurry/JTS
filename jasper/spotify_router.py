@@ -44,7 +44,7 @@ from .accounts import (
     maybe_migrate_legacy, registry_path,
 )
 from .log_event import log_event
-from .spotify_routing import _normalise as _normalise_title
+from .spotify_routing import normalise
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +487,7 @@ class Router:
             # No identity signal to match on. Caller falls back.
             return None
 
-        title_norm = _normalise_title(mpris_title)
+        title_norm = normalise(mpris_title)
 
         cached = self._cache
         if (
@@ -569,7 +569,7 @@ class Router:
             item = pb.get("item") or {}
             sp_title = item.get("name", "")
             is_playing = bool(pb.get("is_playing"))
-            matches = bool(sp_title) and _normalise_title(sp_title) == title_norm
+            matches = bool(sp_title) and normalise(sp_title) == title_norm
             logger.debug(
                 "router: account %s playback title=%r is_playing=%s match=%s",
                 ac.account.name, sp_title, is_playing, matches,

@@ -377,7 +377,7 @@ def transport_coherence_report(
                 # writes it from the accepted active-lane decision — and the
                 # PATH is its projection, with exactly one derivation and one
                 # writer (jasper.fanin.coupling_reconcile's
-                # `_outputd_ring_path_for`, applied by `_outputd_actions` on
+                # `outputd_ring_path_for`, applied by `_outputd_actions` on
                 # every pass). A crossed pair is therefore always a projection
                 # one pass behind its source, never a disagreement between two
                 # independent observations — and refusing on it DEADLOCKED the
