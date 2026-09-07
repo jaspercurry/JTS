@@ -583,110 +583,182 @@ def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> 
 
 
 def _shell_files_the_fast_lane_must_route() -> list[Path]:
-    """Every shell file scripts/test-fast's changed-file mapping covers."""
+    """Every shell file scripts/test-fast's changed-file mapping covers.
+
+    Includes the lane-tools arm's extensionless launchers (test-fast,
+    test-merge, rust-ci-needed) alongside the `*.sh` globs -- that arm routes
+    them by literal name, not by suffix.
+    """
 
     files = set(ROOT.glob("scripts/*.sh")) | set(ROOT.glob("deploy/**/*.sh"))
     files |= {p for p in (ROOT / "deploy" / "bin").glob("*") if p.is_file()}
+    files |= {
+        ROOT / "scripts" / "test-fast",
+        ROOT / "scripts" / "test-merge",
+        ROOT / "scripts" / "rust-ci-needed",
+    }
     return sorted(f for f in files if f.is_file())
+
+
+def _tests_naming_literal(literal: str, test_files: list[str]) -> set[str]:
+    """tests/test_*.py files (by relative path) whose content has `literal`."""
+
+    result = subprocess.run(
+        ["grep", "-l", "-F", "--", literal, *test_files],
+        capture_output=True,
+        text=True,
+    )
+    return {f"tests/{Path(line).name}" for line in result.stdout.splitlines()}
+
+
+def _deploy_bin_skips_content_derivation(shell_file: Path) -> bool:
+    """True when scripts/test-fast's deploy/bin/* arm never reaches grep.
+
+    That arm runs content derivation only once neither the convention pin
+    nor the sibling glob matched (issue #4194's speed trade, deliberately
+    kept -- deploy/bin was never the incident, the lib arm was). Mirrors the
+    arm's own module-name derivation so the path/quoted-literal floor below
+    is only asserted where the lane actually computes it.
+    """
+
+    if shell_file.parent != ROOT / "deploy" / "bin":
+        return False
+    module = shell_file.name.removeprefix("jasper-").replace("-", "_")
+    if (ROOT / "tests" / f"test_{module}.py").is_file():
+        return True
+    if (ROOT / "tests" / f"test_{module}_script.py").is_file():
+        return True
+    return any((ROOT / "tests").glob(f"test_{module}_*.py"))
 
 
 def test_fast_lane_selects_every_test_that_names_a_shell_file_by_path(
     tmp_path: Path,
 ) -> None:
-    """A changed shell file must select every test that names its own path.
+    """A changed shell file must select every test that names it (issue #4194, #4248).
 
-    Derived, not hand-listed (issue #4194, #4248): a scripts/deploy-to-pi.sh
-    change used to select nothing, and a deploy/lib/jasper-env-file.sh change
-    missed the reconciler suites that source it (tests/test_aec_reconcile.py,
-    tests/test_audio_hardware_reconcile.py) because only that one lib had a
-    hand-written pin. This runs the real lane against a copy of the real
-    tests/ tree, once per shell file under scripts/ and deploy/, and checks
-    that every test file whose CONTENT names the file's path is a subset of
-    what the lane actually selects -- no expected-selection list is written
-    by hand.
+    Runs the real lane against a copy of the real tests/ tree, once per
+    shell file under scripts/ and deploy/. "Names it" means references the
+    file's path, or its basename as a quoted string literal -- the same
+    definition scripts/test-fast's generic-basename escalation uses, so a
+    generic file (deploy/install.sh) pins an exact match and every other
+    file pins a subset of its broader bare-basename match. No
+    expected-selection list is written by hand.
     """
 
     repo = tmp_path / "repo"
     (repo / "scripts").mkdir(parents=True)
-    shutil.copytree(ROOT / "tests", repo / "tests")
+    shutil.copytree(
+        ROOT / "tests",
+        repo / "tests",
+        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"),
+    )
     for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
         shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
     _init_git_repo(repo)
 
-    fake_pytest = repo / "fake-pytest"
-    fake_pytest.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env python3",
-                "import sys",
-                "raise SystemExit(5 if '--last-failed' in sys.argv else 0)",
-                "",
-            ]
-        ),
+    # The recording-pytest idiom from test_test_lane_tool_resolution.py's
+    # _fast_lane_selected_tests: record every invocation's argv rather than
+    # parse the lane's own "==> pytest changed-file selection" banner.
+    recorder = repo / "recording-pytest"
+    recorder.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "raise SystemExit(5 if '--last-failed' in sys.argv else 0)\n",
         encoding="utf-8",
     )
-    fake_pytest.chmod(0o755)
-    fake_ruff = repo / "fake-ruff"
-    fake_ruff.write_text("#!/usr/bin/env sh\nexit 0\n", encoding="utf-8")
-    fake_ruff.chmod(0o755)
+    recorder.chmod(0o755)
+    true_bin = shutil.which("true") or "/usr/bin/true"
     # Committed so each iteration's single injected file is the ONLY thing
     # the lane sees as changed -- left uncommitted, every copied test file
     # would read as untracked and the tests/test_*.py arm would select the
-    # entire suite, making the subset check trivially true for every file.
+    # entire suite.
     _commit_all(repo, "baseline")
 
-    env = {
-        **os.environ,
-        "PYTEST": str(fake_pytest),
-        "RUFF": str(fake_ruff),
-        "TEST_BASE": "missing-base",
-    }
-    real_test_files = [str(p) for p in sorted((ROOT / "tests").glob("test_*.py"))]
-
-    violations: dict[str, list[str]] = {}
-    for shell_file in _shell_files_the_fast_lane_must_route():
-        relpath = shell_file.relative_to(ROOT).as_posix()
-        grep = subprocess.run(
-            ["grep", "-l", "-F", "--", relpath, *real_test_files],
-            capture_output=True,
-            text=True,
-        )
-        expected = {f"tests/{Path(line).name}" for line in grep.stdout.splitlines()}
-        if not expected:
-            continue  # nothing names this file by path -- no floor to check
-
+    def selected_tests_for(relpath: str) -> set[str]:
+        calls = repo / "pytest-calls.jsonl"
+        calls.unlink(missing_ok=True)
         # A few targets (scripts/_test_lane.sh) are also harness dependencies
-        # copied in above; truncating one would break every later iteration's
-        # own invocation of the lane. Append instead of overwriting when the
-        # path already exists, and restore via git rather than deleting.
+        # copied in above; truncating one would break every later call's own
+        # invocation of the lane. Append instead of overwriting when the path
+        # already exists, and restore via git rather than deleting.
         target = repo / relpath
         pre_existing = target.exists()
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as fh:
             fh.write("\n# routing-guard probe\n")
         try:
-            result = _run(["bash", "scripts/test-fast"], cwd=repo, env=env)
+            _run(
+                ["bash", "scripts/test-fast"],
+                cwd=repo,
+                env={
+                    **os.environ,
+                    "PYTEST": str(recorder),
+                    "PYTEST_CALLS": str(calls),
+                    "RUFF": true_bin,
+                    "TEST_BASE": "missing-base",
+                },
+            )
         finally:
             if pre_existing:
                 _run(["git", "checkout", "--", relpath], cwd=repo)
             else:
                 target.unlink()
+        return {
+            arg
+            for line in calls.read_text(encoding="utf-8").splitlines()
+            for arg in json.loads(line)
+            if arg.startswith("tests/")
+        }
 
-        selected: set[str] = set()
-        in_selection_block = False
-        for line in result.splitlines():
-            if line.strip() == "==> pytest changed-file selection":
-                in_selection_block = True
-                continue
-            if not in_selection_block:
-                continue
-            if line.startswith("==>"):
-                break
-            selected.add(line.strip())
+    # The routing-policy and always-on-guards phases select a fixed set
+    # regardless of which file changed; probing a path nothing can possibly
+    # reference isolates that fixed set so it can be subtracted below,
+    # leaving exactly what the changed-file case arm itself contributed.
+    baseline = selected_tests_for("scripts/zzz-routing-guard-baseline-probe.sh")
 
-        missing = sorted(expected - selected)
+    real_test_files = [str(p) for p in sorted((ROOT / "tests").glob("test_*.py"))]
+
+    violations: dict[str, object] = {}
+    for shell_file in _shell_files_the_fast_lane_must_route():
+        if _deploy_bin_skips_content_derivation(shell_file):
+            continue
+        relpath = shell_file.relative_to(ROOT).as_posix()
+        base = shell_file.name
+        expected = (
+            _tests_naming_literal(relpath, real_test_files)
+            | _tests_naming_literal(f'"{base}"', real_test_files)
+            | _tests_naming_literal(f"'{base}'", real_test_files)
+        )
+        raw_selected = selected_tests_for(relpath)
+
+        if not expected:
+            # A bare, unquoted mention (prose, an RST ``double-backtick``)
+            # still crosses the lane's own non-generic bare-basename match,
+            # so it is not a floor violation for that file to select
+            # something here -- only a TRUE zero-referrer file (no bare
+            # mention either) is the no-fallback-net case (issue #4194,
+            # #4248): nothing may name it at all, and the changed-file arm
+            # must contribute nothing for it, not silently sweep in an
+            # unrelated test. Baseline-subtracted here (unlike below): the
+            # always-on-guards phase's own fixed list would otherwise look
+            # like a real contribution for every file, since it runs
+            # unconditionally.
+            if _tests_naming_literal(base, real_test_files):
+                continue
+            file_specific = raw_selected - baseline
+            if file_specific:
+                violations[relpath] = {"expected none, but selected": sorted(file_specific)}
+            continue
+
+        # Not baseline-subtracted: an expected referrer that happens to sit
+        # in the always-on-guards' own fixed list (e.g.
+        # tests/test_shell_env_source_convention.py) still genuinely runs on
+        # every change, which is what "names it" promises.
+        missing = sorted(expected - raw_selected)
         if missing:
-            violations[relpath] = missing
+            violations[relpath] = {"missing": missing}
 
     assert not violations, violations
 
