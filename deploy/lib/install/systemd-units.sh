@@ -1312,6 +1312,7 @@ restart_jasper_control_and_input() {
     systemctl reset-failed jasper-control.service 2>/dev/null || true
     systemctl restart jasper-control.service || \
         echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
+    # Ordered after jasper-control, which is what the input bridge posts key events to.
     systemctl restart jasper-input.service 2>/dev/null || true
 }
 

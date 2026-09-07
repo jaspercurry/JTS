@@ -39,8 +39,7 @@ JTS_LIB_TARGET_OPTIONAL=1 source "@LIB@"
 eval "$(awk '/^verify_manifest_advanced\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "@DEPLOY@")"
 declare -F verify_manifest_advanced >/dev/null || { echo "harness: extraction failed" >&2; exit 99; }
 # Stub the external seam: the maintenance finalizer is a no-op (it would
-# otherwise try to ssh). The Pi-file read now happens once at the call
-# site, so the manifest is passed straight in as $1.
+# otherwise try to ssh).
 finish_airplay_health_maintenance() { :; }
 cleanup_remote_facts() { :; }
 trap - EXIT

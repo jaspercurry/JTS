@@ -578,6 +578,11 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
     assert first("systemctl reset-failed jasper-control.service") < first(
         "systemctl restart jasper-control.service"
     )
+    # jasper-input's HID bridge posts key events to jasper-control, so it must
+    # restart after, never before.
+    assert first("systemctl restart jasper-control.service") < first(
+        "systemctl restart jasper-input.service"
+    )
 
     refreshed = {
         unit

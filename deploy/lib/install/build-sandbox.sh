@@ -47,6 +47,7 @@
 BUILD_SANDBOX_KB_PER_JOB_CPP=1500000   # C++ -O3 (webrtc-audio-processing)
 # shellcheck disable=SC2034
 BUILD_SANDBOX_KB_PER_JOB_C=400000      # C -O2 autotools (shairport-sync, nqptp)
+# MemTotal (kB) bound consumed by build_swap_required below and by install.sh's detect_hardware_tier.
 RUST_LOW_MEMORY_BUILD_THRESHOLD_KB=1200000
 BUILD_SWAP_CREATED=0
 BUILD_SWAP_PATH_ACTIVE=""
