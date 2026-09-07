@@ -1049,18 +1049,11 @@ def test_fast_lane_prunes_a_stale_last_failed_id_without_a_full_suite_fallback(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = _TRUE_BIN
 
     result = subprocess.run(
         [_BASH, "scripts/test-fast"],
         cwd=repo,
-        env={
-            **os.environ,
-            "PYTEST": str(recorder),
-            "PYTEST_CALLS": str(calls),
-            "RUFF": stand_in,
-            "TEST_BASE": "missing-base",
-        },
+        env=lane_env(recorder, calls),
         check=False,
         capture_output=True,
         text=True,
@@ -1135,18 +1128,11 @@ def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = _TRUE_BIN
 
     result = subprocess.run(
         [_BASH, "scripts/test-fast"],
         cwd=repo,
-        env={
-            **os.environ,
-            "PYTEST": str(recorder),
-            "PYTEST_CALLS": str(calls),
-            "RUFF": stand_in,
-            "TEST_BASE": "missing-base",
-        },
+        env=lane_env(recorder, calls),
         check=False,
         capture_output=True,
         text=True,
