@@ -147,7 +147,7 @@ def test_play_valid_slug_routes_to_control_endpoint(cli_env, capsys):
     and report success — exercising the code past find_cue() that used
     to raise NameError on the undefined `_env`. Mocks the typed control
     client's POST so no network is touched."""
-    from jasper.control import client as control
+    from jasper.platform import control_client as control
 
     captured = {}
 
@@ -173,7 +173,7 @@ def test_play_reports_failure_on_non_ok_result(cli_env, capsys):
     """If jasper-control answers but the body's result isn't 'ok', the
     CLI reports failure and exits non-zero (the `result == 'ok'` check
     survived the migration to the typed client)."""
-    from jasper.control import client as control
+    from jasper.platform import control_client as control
 
     def _fake_post(path, body=None, *, timeout=None, **kw):
         return control.ControlResponse(200, b'{"result": "error"}')
@@ -189,7 +189,7 @@ def test_play_reports_unreachable_on_control_error(cli_env, capsys):
     """When jasper-control is down the client raises ControlError; the
     CLI surfaces the 'could not reach jasper-control' guidance and exits
     non-zero rather than crashing."""
-    from jasper.control import client as control
+    from jasper.platform import control_client as control
 
     def _fake_post(path, body=None, *, timeout=None, **kw):
         raise control.ControlError("connection refused")

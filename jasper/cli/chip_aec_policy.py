@@ -18,7 +18,7 @@ from typing import Any
 
 from ..chip_aec.health import DISPOSITIONS, alignment_health, render_shell_assignments
 from ..chip_aec.policy import resolve_chip_aec_dac_gate
-from ..route_latency.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
+from ..platform.status_socket import DEFAULT_STATUS_TIMEOUT_SECONDS, read_status_socket
 
 
 def _query_outputd_status(

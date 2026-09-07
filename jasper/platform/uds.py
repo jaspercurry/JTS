@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Local UDS client helpers used by jasper-control endpoints."""
+"""Client side of the voice-daemon and jasper-mux control sockets, shared by
+control, measurement and doctor callers."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +11,7 @@ import json
 import time
 from typing import Any
 
-from ..route_latency.status_socket import MUX_CONTROL_SOCKET_PATH
+from .status_socket import MUX_CONTROL_SOCKET_PATH
 
 # The one ceiling every local STATUS reader in jasper-control shares.  It is a
 # safety bound on a hostile or wedged local daemon, not a size estimate for any
@@ -23,7 +24,7 @@ MAX_STATUS_BYTES = 256 * 1024
 # process itself starts). A connect landing in that window would otherwise
 # surface as a hard "not running" 503 for a daemon that is merely still
 # coming up. Bounded well under the bridge's 2.0s per-request HTTP timeout
-# (jasper/control/client.py DEFAULT_TIMEOUT) so a caller sees one clean 503
+# (jasper/platform/control_client.py DEFAULT_TIMEOUT) so a caller sees one clean 503
 # rather than its own request timing out mid-retry.
 _CONNECT_RETRY_INTERVAL_SEC = 0.25
 _CONNECT_RETRY_BUDGET_SEC = 1.2
@@ -44,7 +45,7 @@ async def _connect_voice_socket(
             await asyncio.sleep(_CONNECT_RETRY_INTERVAL_SEC)
 
 
-async def _voice_socket_command(
+async def voice_socket_command(
     socket_path: str, cmd: str, *, timeout: float = 5.0,
 ) -> dict:
     """Send one ASCII line to voice_daemon's control socket and return
@@ -68,7 +69,7 @@ async def _voice_socket_command(
     return json.loads(line.decode("utf-8"))
 
 
-async def _mux_socket_command(
+async def mux_socket_command(
     cmd: str,
     *,
     socket_path: str = MUX_CONTROL_SOCKET_PATH,
@@ -162,7 +163,7 @@ async def read_status_body(
         chunks.append(chunk)
 
 
-async def _local_status_json(
+async def local_status_json(
     socket_path: str,
     *,
     timeout: float = 2.0,

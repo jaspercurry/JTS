@@ -11,7 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jasper.control import grouping_supervisor, uds
+from jasper.control import grouping_supervisor
+from jasper.platform import uds
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 from tests.fake_clock_fixtures import FakeClock
 
@@ -65,7 +66,7 @@ async def test_voice_socket_command_retries_connect_until_socket_appears(
 
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", flaky_connect)
 
-    result = await uds._voice_socket_command("/run/jasper/voice.sock", "START")
+    result = await uds.voice_socket_command("/run/jasper/voice.sock", "START")
 
     assert result == {"result": "OK"}
     assert attempts == 3
@@ -90,7 +91,7 @@ async def test_voice_socket_command_gives_up_after_retry_budget(monkeypatch):
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", always_missing)
 
     with pytest.raises(FileNotFoundError):
-        await uds._voice_socket_command("/run/jasper/voice.sock", "START")
+        await uds.voice_socket_command("/run/jasper/voice.sock", "START")
 
     assert attempts > 1, "gave up on the first attempt instead of retrying"
     assert clock.now >= uds._CONNECT_RETRY_BUDGET_SEC
@@ -118,7 +119,7 @@ async def test_voice_socket_command_retries_connection_refused_too(monkeypatch):
 
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", flaky_connect)
 
-    result = await uds._voice_socket_command("/run/jasper/voice.sock", "START")
+    result = await uds.voice_socket_command("/run/jasper/voice.sock", "START")
 
     assert result == {"result": "OK"}
     assert attempts == 2
@@ -129,7 +130,7 @@ async def test_mux_command_is_one_bounded_json_exchange(monkeypatch):
     opener = AsyncMock(return_value=(reader, writer))
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
 
-    result = await uds._mux_socket_command(
+    result = await uds.mux_socket_command(
         "STATUS",
         socket_path="/tmp/mux.sock",
         timeout=0.25,
@@ -152,7 +153,7 @@ async def test_mux_command_deadline_includes_connect(monkeypatch):
     monkeypatch.setattr(uds.asyncio, "open_unix_connection", stalled_connect)
 
     with pytest.raises(asyncio.TimeoutError):
-        await uds._mux_socket_command("STATUS", timeout=0.01)
+        await uds.mux_socket_command("STATUS", timeout=0.01)
     assert connect_started.is_set()
 
 
@@ -165,7 +166,7 @@ async def test_mux_command_wedged_close_cannot_extend_deadline(monkeypatch):
         AsyncMock(return_value=(reader, writer)),
     )
 
-    result = await uds._mux_socket_command("STATUS", timeout=0.01)
+    result = await uds.mux_socket_command("STATUS", timeout=0.01)
 
     assert result == {"active_source": "idle"}
     writer.close.assert_called_once()
@@ -174,9 +175,9 @@ async def test_mux_command_wedged_close_cannot_extend_deadline(monkeypatch):
 
 async def test_mux_command_validates_request_and_response(monkeypatch):
     with pytest.raises(ValueError, match="one non-empty line"):
-        await uds._mux_socket_command("STATUS\nAUTO")
+        await uds.mux_socket_command("STATUS\nAUTO")
     with pytest.raises(ValueError, match="positive"):
-        await uds._mux_socket_command("STATUS", timeout=0)
+        await uds.mux_socket_command("STATUS", timeout=0)
 
     for reply, match in (
         (b'{"error":"bad owner"}\n', "bad owner"),
@@ -190,11 +191,11 @@ async def test_mux_command_validates_request_and_response(monkeypatch):
             AsyncMock(return_value=(reader, writer)),
         )
         with pytest.raises(RuntimeError, match=match):
-            await uds._mux_socket_command("STATUS")
+            await uds.mux_socket_command("STATUS")
 
 
 async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
-    """_mux_socket_command must terminate its caller when cancelled, even
+    """mux_socket_command must terminate its caller when cancelled, even
     when jasper-mux's reply lands in the very same event-loop tick as the
     cancellation.
 
@@ -224,7 +225,7 @@ async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
     )
 
     task = asyncio.create_task(
-        uds._mux_socket_command(
+        uds.mux_socket_command(
             "STATUS", socket_path="/tmp/mux.sock", timeout=30.0,
         )
     )
@@ -241,7 +242,7 @@ async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
 
     done, pending = await asyncio.wait({task}, timeout=10.0)
     assert not pending, (
-        "_mux_socket_command ignored cancellation and is still running -- "
+        "mux_socket_command ignored cancellation and is still running -- "
         "a swallowed CancelledError makes "
         "_refresh_measurement_gate_lease's task immortal and wedges "
         "measurement_window() teardown (#1952)"
@@ -336,7 +337,7 @@ async def test_both_local_status_readers_survive_a_real_outputd_payload(
     server = await _serve_once(short_sock_path, payload)
     try:
         # Leg (a): the reader /state uses for outputd.
-        state_view = await uds._local_status_json(short_sock_path, timeout=5.0)
+        state_view = await uds.local_status_json(short_sock_path, timeout=5.0)
     finally:
         server.close()
         await server.wait_closed()
@@ -381,7 +382,7 @@ async def test_a_reply_past_the_ceiling_is_refused_rather_than_truncated(
     # the reader returns None: a truncated object is not a smaller answer, it
     # is a wrong one, and a caller that parsed a prefix would act on it.
     #
-    # Asserted against `read_status_body` itself. Through `_local_status_json`
+    # Asserted against `read_status_body` itself. Through `local_status_json`
     # a returned PREFIX also comes out as None — `json.loads` refuses it — so
     # that surface cannot tell refusing from truncating, which is the whole
     # distinction here.
@@ -398,7 +399,7 @@ async def test_a_reply_past_the_ceiling_is_refused_rather_than_truncated(
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
         # And the caller built on it degrades the same way.
-        assert await uds._local_status_json(short_sock_path, timeout=5.0) is None
+        assert await uds.local_status_json(short_sock_path, timeout=5.0) is None
     finally:
         server.close()
         await server.wait_closed()

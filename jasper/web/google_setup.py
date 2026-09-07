@@ -1067,11 +1067,11 @@ def make_server(
     creds_path: str = CREDS_FILE,
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is socket/tuple/int per
-    _systemd.make_http_server's contract."""
-    from . import _systemd
+    systemd.make_http_server's contract."""
+    from ..platform import systemd
     cfg = {
         "creds_path": creds_path,
         "redirect_uri": redirect_uri or resolved_google_redirect_uri(),
         "registry_path": registry_path,
     }
-    return _systemd.make_http_server(target, _make_handler(cfg))
+    return systemd.make_http_server(target, _make_handler(cfg))

@@ -323,7 +323,7 @@ import sys
 import time
 
 from jasper.route_latency.ref9891_pcap import BYTES_PER_FRAME, REF_UDP_PORT, classify_frame
-from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
+from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
 
 
 def period_bytes():

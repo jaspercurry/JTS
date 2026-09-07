@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
-from .control.uds import _mux_socket_command
+from .platform.uds import mux_socket_command as _mux_socket_command
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -243,7 +243,7 @@ async def _measurement_hold_command(path: str, body: dict) -> tuple[int, dict]:
     when the gate is off or the file is unreadable, and the header is omitted.
     """
     from .control import control_token
-    from .control.client import AsyncControlClient
+    from .platform.control_client import AsyncControlClient
 
     headers: dict[str, str] = {}
     token = control_token.current_token()
@@ -281,7 +281,7 @@ async def _acquire_measurement_hold(owner: str) -> bool:
         UnicodeError,
         asyncio.TimeoutError,
     ) as exc:
-        # RuntimeError covers control.client's ControlError without importing it.
+        # RuntimeError covers platform.control_client's ControlError without importing it.
         logger.warning(
             "jasper-control measurement hold unavailable (%s) — proceeding "
             "without it; host-slider volume observations are not held off",

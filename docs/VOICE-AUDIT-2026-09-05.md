@@ -270,7 +270,7 @@ with the WAN unplugged plays the network-down cue and never reaches
 - Prose: the 15-span lists in `report-voice-daemon` §4 and
   `report-providers` §6 (≈ −500 lines); the two contradicting comments at
   `voice_daemon.py:3815,3822` and `:4025-4037` go first.
-- Four UDS line-protocol clients converge on `jasper.control.uds` (its
+- Four UDS line-protocol clients converge on `jasper.platform.uds` (its
   client made public; `control/__init__` is three lines, and the
   circular-import excuse in `measurement_window.py` names `control.server`,
   not this module); the duplicate `GainRamp` in
@@ -391,7 +391,7 @@ Wave 2 — subtraction
 - [ ] 2.5 Dead code sweep (voice-daemon L1–L4; providers G1–G5, G7, C2, C3, C4; tools F3–F6) — partial: header re-exports #4269, dead probes + transcript Protocols #4274, `QueueFull` guards #4286, tools dead constants #4257
 - [ ] 2.6 Prose sweep, `voice_daemon.py` (voice-daemon §4, M5, M6)
 - [x] 2.7 Prose sweep, `jasper/voice/` (providers §6, I1, I2; tools F10; input-side F4) — non-adapter files merged #4276; adapters merged #4289 (one owner for the barge-in seam, no dated incidents)
-- [ ] 2.8 UDS clients converge on `jasper.control.uds` (providers D3); fan-in `GainRamp` import (rust F2)
+- [ ] 2.8 UDS clients converge on `jasper.platform.uds` (providers D3); fan-in `GainRamp` import (rust F2)
 
 Wave 3 — our side of the latency
 - [ ] 3.1 SQLite off the loop, three sites, via one writer task (voice-daemon H3, M1, M10; rust F1; latency #5)

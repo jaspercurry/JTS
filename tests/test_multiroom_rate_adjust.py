@@ -1049,7 +1049,7 @@ def _pair_channels_check(monkeypatch, *, cfg, leader_payload=None,
     import jasper.cli.doctor.grouping as groupmod  # noqa: F401 — import side
     import jasper.multiroom.config as cfgmod
     from jasper.cli.doctor.grouping import check_grouping_pair_channels
-    from jasper.control import client as control_client
+    from jasper.platform import control_client
 
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: cfg)
 

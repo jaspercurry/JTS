@@ -80,7 +80,7 @@ from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
 )
-from . import _systemd
+from ..platform import systemd
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
@@ -515,7 +515,7 @@ def _landing_html(csrf_token: str = "") -> bytes:
 # ============================================================
 
 
-def _make_handler(*, idle_hold=_systemd.no_hold) -> type[BaseHTTPRequestHandler]:
+def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -955,7 +955,7 @@ def _start_device_mutation(
     mac: str,
     mutation_id: str,
     *,
-    idle_hold=_systemd.no_hold,
+    idle_hold=systemd.no_hold,
 ) -> tuple[_DeviceMutation | None, bool]:
     """Accept one server-owned BlueZ action for a device."""
     global _ACTIVE_BLUETOOTH_ACTION
@@ -1299,10 +1299,10 @@ def _consume_pair_stream(mac: str):
 # ============================================================
 
 
-def make_server(target, *, idle_hold=_systemd.no_hold) -> ThreadingHTTPServer:
+def make_server(target, *, idle_hold=systemd.no_hold) -> ThreadingHTTPServer:
     """Build the /bluetooth server. `target` is a socket / (host, port) tuple
-    / int port per _systemd.make_http_server's contract."""
-    return _systemd.make_http_server(target, _make_handler(idle_hold=idle_hold))
+    / int port per systemd.make_http_server's contract."""
+    return systemd.make_http_server(target, _make_handler(idle_hold=idle_hold))
 
 
 def _start_dispatcher(_args, tracker) -> dict[str, Any]:

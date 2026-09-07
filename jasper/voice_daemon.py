@@ -156,7 +156,7 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
 # ~350 ms, p99 5.3 s); refusing instantly turns the common ones into
 # a dead press and a false 'can't connect' cue. The bound keeps the
 # SUCCESS path — which returns as soon as the turn opens — inside
-# jasper.control.client.DEFAULT_TIMEOUT (2.0 s) with room for the
+# jasper.platform.control_client.DEFAULT_TIMEOUT (2.0 s) with room for the
 # round trip. A refusal outlives that either way: it cues first.
 PAUSED_CONNECTION_WAIT_SEC = 1.2
 
@@ -2250,7 +2250,7 @@ class WakeLoop:
         """Play a manual-start refusal cue without holding up the reply.
 
         `manual_session_start` answers a control-socket command whose
-        caller times out at 5 s (`control/uds.py`), while a cue runs ~6 s
+        caller times out at 5 s (`jasper/platform/uds.py`), while a cue runs ~6 s
         with duck and drain; awaiting one here answers the button with a
         503 and writes the real result to a closed socket.
         """

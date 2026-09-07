@@ -38,7 +38,7 @@ from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
-from jasper.route_latency.status_socket import (
+from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     read_status_socket_or_none,
 )

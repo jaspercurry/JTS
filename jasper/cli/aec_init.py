@@ -59,7 +59,7 @@ from jasper.chip_aec.alignment import (
 )
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
-from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
+from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
 from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.aec_init")

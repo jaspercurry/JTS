@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jasper.control import uds as uds_mod
+from jasper.platform import uds as uds_mod
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
@@ -158,7 +158,7 @@ def test_session_start_succeeds_once_the_late_socket_appears(
 ):
     """A press landing in the ~2s gap after a jasper-voice restart -- before
     its control socket exists -- must not hard-fail: the bounded connect
-    retry in jasper.control.uds._connect_voice_socket absorbs it, and the
+    retry in jasper.platform.uds._connect_voice_socket absorbs it, and the
     request succeeds normally once the socket appears within budget."""
     clock = FakeClock()
     monkeypatch.setattr(uds_mod.time, "monotonic", clock.monotonic)

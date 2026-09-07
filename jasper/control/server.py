@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
-from .client import CONTROL_PORT
+from ..platform.control_client import CONTROL_PORT
 from ..atomic_io import locked_update_env_file
 from ..fanin.latency_mode import (
     options as _usb_latency_options,
@@ -86,10 +86,10 @@ from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
 from .single_flight import SingleFlightTTLCache
-from .uds import (
-    _local_status_json,
-    _mux_socket_command,
-    _voice_socket_command,
+from ..platform.uds import (
+    local_status_json as _local_status_json,
+    mux_socket_command as _mux_socket_command,
+    voice_socket_command as _voice_socket_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -1742,7 +1742,7 @@ def _make_handler(
         # method that re-discriminates self.path internally (transport
         # action, system action). The string keys keep the route literals
         # greppable for the client/server contract test
-        # (tests/test_control_client.py).
+        # (tests/test_platform_control_client.py).
         _GET_ROUTES = {
             "/healthz": "_get_healthz",
             "/volume": "_get_volume",

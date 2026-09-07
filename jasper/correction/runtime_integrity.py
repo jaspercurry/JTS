@@ -22,7 +22,7 @@ from typing import Any
 from jasper.audio_measurement.quality_model import Severity
 from jasper.fanin.status import FANIN_STATUS_SOCKET
 from jasper.memory_policy import memory_headroom_thresholds
-from jasper.route_latency.status_socket import read_status_socket_or_none
+from jasper.platform.status_socket import read_status_socket_or_none
 
 SCHEMA_VERSION = 1
 

@@ -508,6 +508,6 @@ def make_server(
     state_path: str = WEATHER_FILE,
     transit_path: str = TRANSIT_FILE,
 ) -> ThreadingHTTPServer:
-    from . import _systemd
+    from ..platform import systemd
     cfg = {"state_path": state_path, "transit_path": transit_path}
-    return _systemd.make_http_server(target, _make_handler(cfg))
+    return systemd.make_http_server(target, _make_handler(cfg))

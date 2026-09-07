@@ -21,7 +21,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import tool
-from ..control.client import AsyncControlClient, ControlError
+from ..platform.control_client import AsyncControlClient, ControlError
 
 if TYPE_CHECKING:
     from ..volume_coordinator import VolumeCoordinator
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The control-API transport is OWNED by jasper.control.client (base URL,
+# The control-API transport is OWNED by jasper.platform.control_client (base URL,
 # timeout policy, error model) — the tools compose it instead of re-rolling
 # urllib. 4 s outer timeout covers jasper-control's own 2.5 s leader hop.
 # Module-level so tests can swap in a fake; constructed lazily so importing

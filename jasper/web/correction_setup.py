@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ..log_event import log_event
 from . import correction_room_flow, correction_tuning
-from ._systemd import no_hold
+from ..platform.systemd import no_hold
 
 from ._common import (
     begin_request,
@@ -1197,15 +1197,15 @@ def make_server(
     idle_hold: Callable[[str], AbstractContextManager[Any]] = no_hold,
 ) -> ThreadingHTTPServer:
     """Build the wizard server. `target` is socket/tuple/int per
-    _systemd.make_http_server's contract.
+    systemd.make_http_server's contract.
 
     ``idle_hold`` is ``main``'s ``IdleShutdownTracker.hold`` — the seam that
     lets a route keep the socket-activated process alive across background work
-    it starts but does not await. Defaulting to ``_systemd.no_hold`` keeps a
+    it starts but does not await. Defaulting to ``systemd.no_hold`` keeps a
     server built without an idle tracker (tests, direct invocation) behaving
     exactly as before."""
-    from . import _systemd
-    return _systemd.make_http_server(
+    from ..platform import systemd
+    return systemd.make_http_server(
         target, _make_handler_class(hostname=hostname, idle_hold=idle_hold),
     )
 

@@ -383,7 +383,7 @@ def read_measurement_hold() -> dict[str, Any] | None:
     not conflated. The client import is lazy so importing this module inside
     jasper-control stays free of it.
     """
-    from .client import ControlError, get_measurement
+    from ..platform.control_client import ControlError, get_measurement
 
     try:
         hold = get_measurement()

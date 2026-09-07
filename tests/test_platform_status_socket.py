@@ -4,7 +4,7 @@
 
 """Contract tests for the shared STATUS-socket reader.
 
-Exercises `jasper.route_latency.status_socket` against a tiny in-process
+Exercises `jasper.platform.status_socket` against a tiny in-process
 Unix-socket server that speaks the same `STATUS\\n` → JSON protocol the fan-in
 and outputd control sockets do, so both consumers (the artifact writer and the
 harness) share one verified mechanic.
@@ -23,7 +23,7 @@ import pytest
 from jasper import audio_validation
 from jasper.control.airplay_health import AirPlayHealthSampler
 from jasper.correction import runtime_integrity
-from jasper.route_latency import status_socket
+from jasper.platform import status_socket
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 from tests.status_socket_fixtures import DribblingStatusSocket, FakeStatusSocket
 

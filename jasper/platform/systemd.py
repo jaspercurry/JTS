@@ -194,7 +194,7 @@ def drain_unclaimed_listeners(
 
 
 def _drain_forever(sockets: list[socket.socket]) -> None:
-    log = logging.getLogger("jasper.web._systemd")
+    log = logging.getLogger("jasper.platform.systemd")
     while True:
         try:
             ready, _, _ = select.select(sockets, [], [])
@@ -455,7 +455,7 @@ class IdleShutdownTracker:
         self._stopped = True
 
     def _run(self) -> None:
-        log = logging.getLogger("jasper.web._systemd")
+        log = logging.getLogger("jasper.platform.systemd")
         while not self._stopped:
             time.sleep(self._watchdog_period)
             if self._stopped:

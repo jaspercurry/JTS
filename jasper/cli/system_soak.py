@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jasper.route_latency.status_socket import (
+from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     MUX_CONTROL_SOCKET_PATH,
     OUTPUTD_STATUS_SOCKET,

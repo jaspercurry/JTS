@@ -33,10 +33,10 @@ from typing import Any
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
-from ..route_latency.status_socket import OUTPUTD_STATUS_SOCKET
+from ..platform.status_socket import OUTPUTD_STATUS_SOCKET
 from ..service_units import unit_failed
 from ..fanin.latency_mode import PRESETS, classify_runtime
-from ..route_latency.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
+from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,
@@ -51,7 +51,8 @@ from .transport_park import (
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
-from .uds import MAX_STATUS_BYTES, MUX_CONTROL_SOCKET_PATH, _mux_socket_command
+from ..platform.status_socket import MUX_CONTROL_SOCKET_PATH
+from ..platform.uds import MAX_STATUS_BYTES, mux_socket_command
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ def _read_mux_status(
     """Read mux's already-normalized source activity over its local UDS."""
     try:
         return asyncio.run(
-            _mux_socket_command(
+            mux_socket_command(
                 "STATUS",
                 socket_path=socket_path,
                 timeout=timeout_sec,

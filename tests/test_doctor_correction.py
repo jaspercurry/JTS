@@ -917,7 +917,7 @@ def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
 
 def _patch_measurement(monkeypatch, hold=None, error=None):
     """Point check_measurement_hold's control read at a scripted answer."""
-    from jasper.control import client as control_client
+    from jasper.platform import control_client
 
     def fake_get_measurement(**_kwargs):
         if error is not None:
@@ -965,7 +965,7 @@ def test_check_measurement_hold_verdicts(monkeypatch, hold, status, reason):
 
 
 def test_measurement_hold_skips_when_control_is_down(monkeypatch):
-    from jasper.control import client as control_client
+    from jasper.platform import control_client
 
     _patch_measurement(monkeypatch, error=control_client.ControlError("refused"))
     r = correction.check_measurement_hold()

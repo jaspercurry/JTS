@@ -239,7 +239,7 @@ async def test_manual_refusal_cue_does_not_hold_up_the_reply():
     """The reply must not wait out the cue it just started.
 
     `manual_session_start` answers a control-socket START whose caller
-    times out at 5 s (`control/uds.py`) while a cue runs ~6 s with duck
+    times out at 5 s (`jasper/platform/uds.py`) while a cue runs ~6 s with duck
     and drain: awaiting one answered the button 503 and left the real
     result to be written to a closed socket.
     """

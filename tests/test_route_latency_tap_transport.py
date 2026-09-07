@@ -14,7 +14,7 @@ tap (``auto`` == ``fanin``). These tests pin:
   always targeting the fan-in tap + its ``FANIN_DEFAULT_TAP_PATH``;
 * the ``FaninTapClient`` wire — ``TAP_ARM {json}`` / ``TAP_DISARM`` + plaintext
   ``OK …`` / ``ERR …`` replies — against a tiny in-process AF_UNIX stand-in for
-  jasper-fanin's control socket (mirrors ``test_route_latency_status_socket.py``);
+  jasper-fanin's control socket (mirrors ``test_platform_status_socket.py``);
 * the cross-language constants against the Rust the harness does NOT own
   (``rust/jasper-fanin/src/impulse_tap.rs`` default path, ``state.rs`` ``source``
   marker), so a Rust-side rename fails loudly here.

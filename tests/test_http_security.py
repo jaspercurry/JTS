@@ -151,7 +151,7 @@ def test_management_read_accepts_usb_gadget_and_link_local_host_headers():
 def test_management_read_rejects_unspecified_address_host():
     """0.0.0.0 is a bind address, never a legitimate browser Host. The
     fix for the 2026-06-11 /system/ 403 lives in the control *client*
-    (jasper.control.client._connect_host maps unspecified → loopback
+    (jasper.platform.control_client._connect_host maps unspecified → loopback
     before connecting), NOT here: the guard keeps rejecting so a
     poisoned client surfaces as a loud 403 instead of silently passing."""
     ok, reason = http_security.management_read_allowed({"Host": "0.0.0.0:8780"})

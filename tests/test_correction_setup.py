@@ -44,7 +44,7 @@ from jasper.web import (
     correction_setup,
     correction_tuning,
 )
-from jasper.web._systemd import no_hold
+from jasper.platform.systemd import no_hold
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
@@ -427,7 +427,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     # ...and the route reads it off the handler class make_server binds.
     # (main() handing tracker.hold to make_server is pinned at runtime by
     # test_web_correction_setup::test_main_wires_idle_tracker_to_capture_entry_restore.)
-    from jasper.web import _systemd
+    from jasper.platform import systemd as _systemd
 
     built: dict[str, object] = {}
     monkeypatch.setattr(

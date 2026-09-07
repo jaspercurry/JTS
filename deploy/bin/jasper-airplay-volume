@@ -34,7 +34,7 @@ state="${runtime_dir}/airplay-volume.pct"
 restore_state="${runtime_dir}/airplay-restore.pct"
 lock="${runtime_dir}/airplay-volume.lock"
 session_start="${runtime_dir}/airplay-session-start"
-# jasper-control is always localhost on jasper/control/client.py's
+# jasper-control is always localhost on jasper/platform/control_client.py's
 # CONTROL_PORT — the one module that owns this contract.
 url="${2:-http://127.0.0.1:8780}/volume/set"
 

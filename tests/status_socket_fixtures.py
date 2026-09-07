@@ -6,7 +6,7 @@
 an in-process fake socket.
 
 Deliberately free of any ``jasper`` import so a leaf unit test for
-:mod:`jasper.route_latency.status_socket` can use it without dragging a
+:mod:`jasper.platform.status_socket` can use it without dragging a
 package it does not exercise into the run.
 """
 

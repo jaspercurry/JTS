@@ -1064,6 +1064,6 @@ def make_server(
     state_path: str = WAKE_MODEL_FILE,
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> ThreadingHTTPServer:
-    from . import _systemd
+    from ..platform import systemd
     cfg = {"state_path": state_path, "control_base": control_base}
-    return _systemd.make_http_server(target, _make_handler(cfg))
+    return systemd.make_http_server(target, _make_handler(cfg))

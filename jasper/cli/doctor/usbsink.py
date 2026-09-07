@@ -39,7 +39,7 @@ from jasper.audio_validation_route import route_live_state_issues
 from jasper.fanin.status import fanin_usbsink_lane_is_direct
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
+from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 from jasper.source_intent import source_intent_enabled
 from jasper.usbgadget import (
     DEFAULT_UDC_CLASS_DIR,

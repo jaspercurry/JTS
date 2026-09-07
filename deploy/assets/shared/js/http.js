@@ -67,7 +67,7 @@ export function isControlTokenRequired(err) {
 // guard_mutating_host (a Host/Origin the allowlist no longer accepts). Both
 // answer with a tiny HTML page, not JSON, most commonly because the page sat
 // idle long enough for the socket-activated wizard process to idle-exit and
-// respawn fresh (jasper/web/_systemd.py IdleShutdownTracker) before the next
+// respawn fresh (jasper/platform/systemd.py IdleShutdownTracker) before the next
 // click. `err.body === null` (JSON parsing failed) is what distinguishes this
 // from isControlTokenRequired's JSON shape above, and from any route's own
 // JSON {error:"..."} 403 (which keeps its own message via parseResponse's

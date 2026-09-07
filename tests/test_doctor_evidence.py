@@ -331,7 +331,7 @@ def test_every_literal_unit_the_doctor_asks_about_is_rostered():
 
 
 def test_control_state_wraps_the_control_client(monkeypatch):
-    import jasper.control.client as control
+    import jasper.platform.control_client as control
 
     monkeypatch.setattr(control, "get_state", lambda **kw: {"resilience": {}})
     ev = Evidence()
@@ -341,7 +341,7 @@ def test_control_state_wraps_the_control_client(monkeypatch):
 
 
 def test_control_state_is_fail_soft_on_transport_error(monkeypatch):
-    import jasper.control.client as control
+    import jasper.platform.control_client as control
 
     def raises(**kw):
         raise control.ControlError("connection refused")
@@ -354,7 +354,7 @@ def test_control_state_is_fail_soft_on_transport_error(monkeypatch):
 
 
 def test_control_system_snapshot_wraps_the_control_client(monkeypatch):
-    import jasper.control.client as control
+    import jasper.platform.control_client as control
 
     monkeypatch.setattr(
         control, "get_system_snapshot", lambda **kw: {"metrics": {"current": {}}},
@@ -366,7 +366,7 @@ def test_control_system_snapshot_wraps_the_control_client(monkeypatch):
 
 
 def test_control_system_snapshot_is_fail_soft_on_transport_error(monkeypatch):
-    import jasper.control.client as control
+    import jasper.platform.control_client as control
 
     def raises(**kw):
         raise control.ControlError("connection refused")

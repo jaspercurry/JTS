@@ -15,7 +15,7 @@ import os
 import shutil
 import tempfile
 
-from jasper.control.uds import _voice_socket_command
+from jasper.platform.uds import voice_socket_command
 from jasper.voice.control_socket import serve
 from jasper.voice_daemon import WakeLoop
 from tests._wake_loop import wake_loop_for_tests
@@ -48,21 +48,21 @@ async def _running_socket(wake_loop: WakeLoop):
 async def test_start_returns_the_loop_result_for_an_unrecognized_source() -> None:
     wl, _spy = _wake_loop()
     async with _running_socket(wl) as socket_path:
-        response = await _voice_socket_command(socket_path, "START badsource")
+        response = await voice_socket_command(socket_path, "START badsource")
     assert response == {"result": "UNKNOWN_SOURCE"}
 
 
 async def test_end_returns_the_loop_result_with_no_session_open() -> None:
     wl, _spy = _wake_loop()
     async with _running_socket(wl) as socket_path:
-        response = await _voice_socket_command(socket_path, "END")
+        response = await voice_socket_command(socket_path, "END")
     assert response == {"result": "NO_SESSION"}
 
 
 async def test_status_returns_session_status_unwrapped() -> None:
     wl, _spy = _wake_loop()
     async with _running_socket(wl) as socket_path:
-        response = await _voice_socket_command(socket_path, "STATUS")
+        response = await voice_socket_command(socket_path, "STATUS")
     assert "result" not in response
     assert response == wl.session_status()
 
@@ -70,7 +70,7 @@ async def test_status_returns_session_status_unwrapped() -> None:
 async def test_cue_play_reaches_the_configured_cue_manager() -> None:
     wl, spy = _wake_loop()
     async with _running_socket(wl) as socket_path:
-        response = await _voice_socket_command(
+        response = await voice_socket_command(
             socket_path, "CUE_PLAY cant_connect",
         )
     assert response == {"result": "ok"}
@@ -86,10 +86,10 @@ async def test_mute_and_unmute_are_reflected_in_status(tmp_path) -> None:
 
     wl._play_mute_click = _noop_click
     async with _running_socket(wl) as socket_path:
-        mute_response = await _voice_socket_command(socket_path, "MUTE")
-        muted_status = await _voice_socket_command(socket_path, "STATUS")
-        unmute_response = await _voice_socket_command(socket_path, "UNMUTE")
-        unmuted_status = await _voice_socket_command(socket_path, "STATUS")
+        mute_response = await voice_socket_command(socket_path, "MUTE")
+        muted_status = await voice_socket_command(socket_path, "STATUS")
+        unmute_response = await voice_socket_command(socket_path, "UNMUTE")
+        unmuted_status = await voice_socket_command(socket_path, "STATUS")
     assert mute_response == {"result": "ok"}
     assert muted_status["mic_muted"] is True
     assert unmute_response == {"result": "ok"}
@@ -99,7 +99,7 @@ async def test_mute_and_unmute_are_reflected_in_status(tmp_path) -> None:
 async def test_unknown_command_names_itself_in_the_reply() -> None:
     wl, _spy = _wake_loop()
     async with _running_socket(wl) as socket_path:
-        response = await _voice_socket_command(socket_path, "BOGUS")
+        response = await voice_socket_command(socket_path, "BOGUS")
     assert response == {"result": "UNKNOWN", "command": "BOGUS"}
 
 
@@ -111,7 +111,7 @@ async def test_a_handler_exception_returns_the_bare_error_shape() -> None:
 
     wl.session_status = _boom
     async with _running_socket(wl) as socket_path:
-        response = await _voice_socket_command(socket_path, "STATUS")
+        response = await voice_socket_command(socket_path, "STATUS")
     assert response == {"result": "ERROR"}
 
 

@@ -13,7 +13,7 @@ import pytest
 from jasper.cli.doctor import _evidence, audio_runtime_fanin, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.output_topology import OutputTopologyError
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
+from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 
 from ._doctor_audio_runtime_fixtures import (
     _fanin_status_payload,

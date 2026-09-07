@@ -253,7 +253,7 @@ async def test_follower_forward_failure_is_a_spoken_error_not_inert_write(
 ):
     """Leader unreachable → the tool returns an `error` the LLM speaks.
     Falling back to the local coordinator would 'succeed' inaudibly."""
-    from jasper.control.client import ControlError
+    from jasper.platform.control_client import ControlError
 
     fake = _arm_follower(
         monkeypatch, error=ControlError("POST", "/volume/set", "no route"),

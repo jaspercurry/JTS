@@ -29,7 +29,7 @@ from pathlib import Path
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import devices_playback_is_pipe
 from ...fanin_coupling import read_declared_ring_wire_format
-from ...route_latency.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
+from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _service_state_failure

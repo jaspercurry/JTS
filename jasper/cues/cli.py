@@ -109,7 +109,7 @@ def _cmd_play(args) -> int:
         print(f"error: unknown cue slug: {args.slug!r}", file=sys.stderr)
         return 2
 
-    from ..control import client as control
+    from ..platform import control_client as control
 
     url = f"{control.DEFAULT_BASE_URL}/cue/play"
     try:

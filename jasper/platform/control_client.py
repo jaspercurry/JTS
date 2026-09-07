@@ -25,8 +25,8 @@ each request closes its connection so the FD count stays flat.
   faked in tests.
 
 When a new control endpoint gets a caller, add a semantic method here rather
-than scattering another literal. ``tests/test_control_client.py`` asserts the
-paths this client targets all exist in the server's route table.
+than scattering another literal. ``tests/test_platform_control_client.py``
+asserts the paths this client targets all exist in the server's route table.
 """
 from __future__ import annotations
 

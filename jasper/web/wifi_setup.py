@@ -1465,6 +1465,6 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 def make_server(target) -> ThreadingHTTPServer:
     """Used by jasper.web.__main__ to colocate this server with the
     other settings wizards inside one process. `target` is a
-    socket/tuple/int per _systemd.make_http_server's contract."""
-    from . import _systemd
-    return _systemd.make_http_server(target, _make_handler())
+    socket/tuple/int per systemd.make_http_server's contract."""
+    from ..platform import systemd
+    return systemd.make_http_server(target, _make_handler())

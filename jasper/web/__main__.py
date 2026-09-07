@@ -62,9 +62,9 @@ from jasper.install_profile import (
 )
 from jasper.log_event import log_event
 
-from . import _systemd
 from ..accounts import registry_path as spotify_registry_path
 from ..google_creds import registry_path as google_registry_path
+from ..platform import systemd as _systemd
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)

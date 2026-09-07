@@ -27,7 +27,7 @@ from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
 )
-from jasper.route_latency.status_socket import FANIN_STATUS_SOCKET
+from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 
 from ._doctor_audio_runtime_fixtures import (
     _fanin_status_payload,

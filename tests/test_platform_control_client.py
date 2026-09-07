@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.control.client — the typed jasper-control client.
+"""Tests for jasper.platform.control_client — the typed jasper-control client.
 
 Two things matter: (1) the client must not drift from the server's route
 table (a method targeting a renamed/removed endpoint is a silent break), and
@@ -19,7 +19,7 @@ from threading import Thread
 
 import pytest
 
-from jasper.control import client
+from jasper.platform import control_client as client
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_SRC = (ROOT / "jasper" / "control" / "server.py").read_text()

@@ -96,7 +96,7 @@ from .busctl import system_busctl
 from .control import restart_broker
 from .fanin.control import fanin_command
 from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
-from .route_latency.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
+from .platform.status_socket import FANIN_STATUS_SOCKET, MUX_CONTROL_SOCKET_PATH
 from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
