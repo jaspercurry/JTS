@@ -66,6 +66,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.lane_fixtures import (
+    BASH,
+    TRUE_BIN,
+    fast_lane_selected_tests,
+    git,
+    lane_env,
+    scratch_lane_repo,
+)
+
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
 
@@ -83,15 +92,8 @@ _SANDBOX_TOOLS = (
 
 _LANES = ("test-fast", "test-merge")
 
-# Invoked by absolute path: the sandbox PATH deliberately excludes bash itself.
-_BASH = shutil.which("bash") or "/bin/bash"
 
-# `true` accepts and ignores whatever flags a gate is handed and exits 0, so
-# every gate a test is not about clears without doing anything.
-_TRUE_BIN = shutil.which("true") or "/usr/bin/true"
-
-
-def _other_gate_stand_ins(lane: str, stand_in: str = _TRUE_BIN) -> dict[str, str]:
+def _other_gate_stand_ins(lane: str, stand_in: str = TRUE_BIN) -> dict[str, str]:
     """Overrides that clear the gates ``lane`` runs ahead of its pytest phase."""
     if lane == "test-fast":
         return {"RUFF": stand_in}
@@ -130,10 +132,6 @@ def lane_sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return repo, env
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
-
-
 def _run(
     repo: Path,
     env: dict[str, str],
@@ -143,7 +141,7 @@ def _run(
     argv0: str | None = None,
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [_BASH, argv0 or f"scripts/{lane}"],
+        [BASH, argv0 or f"scripts/{lane}"],
         cwd=cwd or repo,
         env=env,
         capture_output=True,
@@ -180,7 +178,7 @@ def test_test_fast_also_refuses_on_a_missing_ruff(
     failure attributable to ``ruff`` is the one observed.
     """
     repo, env = lane_sandbox
-    result = _run(repo, {**env, "PYTEST": _TRUE_BIN}, "test-fast")
+    result = _run(repo, {**env, "PYTEST": TRUE_BIN}, "test-fast")
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -302,7 +300,7 @@ def test_fatal_block_survives_an_empty_path(tmp_path: Path) -> None:
     """
     shutil.copy2(_SCRIPTS / "_test_lane.sh", tmp_path / "_test_lane.sh")
     result = subprocess.run(
-        [_BASH, "-c", "source ./_test_lane.sh; resolve_lane_tool test-fast pytest PYTEST"],
+        [BASH, "-c", "source ./_test_lane.sh; resolve_lane_tool test-fast pytest PYTEST"],
         cwd=tmp_path,
         env={"PATH": ""},
         capture_output=True,
@@ -331,75 +329,8 @@ def test_fatal_headline_survives_tail_truncation(
     assert "issue #1836" in last_line
 
 
-def _fast_lane_selected_tests(
-    tmp_path: Path,
-    *,
-    changed_path: str,
-    routed_tests: tuple[str, ...],
-    test_contents: dict[str, str] | None = None,
-) -> set[str]:
-    repo = tmp_path / "repo"
-    (repo / "scripts").mkdir(parents=True)
-    (repo / "tests").mkdir()
-    for name in ("test-fast", "_test_lane.sh"):
-        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
-    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
-    for relative in (changed_path, *routed_tests):
-        path = repo / relative
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                (test_contents or {}).get(relative, ""), encoding="utf-8"
-            )
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "tests@example.invalid")
-    _git(repo, "config", "user.name", "JTS Tests")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
-    changed = repo / changed_path
-    changed.write_text(
-        changed.read_text(encoding="utf-8") + "\n# edited\n",
-        encoding="utf-8",
-    )
-
-    calls = repo / "pytest-calls.jsonl"
-    recorder = repo / "recording-pytest"
-    recorder.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        "with open(os.environ['PYTEST_CALLS'], 'a', encoding='utf-8') as f:\n"
-        "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-        "raise SystemExit(5 if '--last-failed' in sys.argv else 0)\n",
-        encoding="utf-8",
-    )
-    recorder.chmod(0o755)
-    stand_in = _TRUE_BIN
-
-    subprocess.run(
-        [_BASH, "scripts/test-fast"],
-        cwd=repo,
-        env={
-            **os.environ,
-            "PYTEST": str(recorder),
-            "PYTEST_CALLS": str(calls),
-            "RUFF": stand_in,
-            "TEST_BASE": "missing-base",
-        },
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    return {
-        arg
-        for line in calls.read_text(encoding="utf-8").splitlines()
-        for arg in json.loads(line)
-    }
-
-
 @pytest.mark.parametrize(
-    ("changed_path", "routed_tests", "test_contents"),
+    ("changed_path", "routed_tests", "test_contents", "absent"),
     [
         (
             "scripts/_test_lane.sh",
@@ -408,12 +339,13 @@ def _fast_lane_selected_tests(
                 "tests/test_dependency_groups.py",
             ),
             None,
+            (),
         ),
         (
-            # The tests/*_fixtures.py arm routes by grepping each routed
-            # test for the changed module's own basename (same idiom as the
-            # deploy/bin arm's grep fallback below), so the stand-in test
-            # files need that basename in them, same as a real importer.
+            # The tests/*.py arm (any non-test helper under tests/) routes
+            # by grepping each routed test for the changed module's own
+            # stem, so the stand-in test files need that stem in them, same
+            # as a real importer.
             "tests/wake_feature_bank_fixtures.py",
             (
                 "tests/test_build_wake_feature_bank.py",
@@ -421,24 +353,20 @@ def _fast_lane_selected_tests(
                 "tests/test_wake_training_feature_bank.py",
             ),
             {
-                "tests/test_build_wake_feature_bank.py": (
-                    "from tests.wake_feature_bank_fixtures import x\n"
-                ),
-                "tests/test_build_wake_negative_feature_bank.py": (
-                    "from tests.wake_feature_bank_fixtures import x\n"
-                ),
-                "tests/test_wake_training_feature_bank.py": (
-                    "from tests.wake_feature_bank_fixtures import x\n"
-                ),
+                name: "from tests.wake_feature_bank_fixtures import x\n"
+                for name in (
+                    "tests/test_build_wake_feature_bank.py",
+                    "tests/test_build_wake_negative_feature_bank.py",
+                    "tests/test_wake_training_feature_bank.py",
+                )
             },
+            (),
         ),
         (
-            # issue #3142: a module nested one directory deeper than the
-            # package selects only the package/module arms and would miss
-            # the doctor family's tests/test_doctor_<module>.py convention.
-            # test_doctor_env.py is an unrelated sibling pulled in only by
-            # the family-wide glob, pinning that the fix covers the whole
-            # jasper/cli/doctor/ package, not just this one file.
+            # issue #3142: a module nested one directory deeper than its
+            # package would miss the doctor family's test_doctor_<module>.py
+            # convention; test_doctor_env.py, pulled in only by the
+            # family-wide glob, pins that the fix covers the whole package.
             "jasper/cli/doctor/audio_runtime_camilla.py",
             (
                 "tests/test_audio_runtime_camilla.py",
@@ -447,12 +375,34 @@ def _fast_lane_selected_tests(
                 "tests/test_doctor_env.py",
             ),
             None,
+            (),
+        ),
+        (
+            # add_tests_naming (issue #4194, #4248): a basename match and a
+            # helper-importer match (tests/_h.py) both select; `absent` below don't.
+            "scripts/widget.sh",
+            ("tests/test_basename.py", "tests/test_via_helper.py"),
+            {
+                "tests/test_basename.py": "widget.sh\n",
+                "tests/test_via_helper.py": "from ._h import x\n",
+                "tests/_h.py": "widget.sh\n",
+                "tests/test_unrelated.py": "gadget.sh\n",
+            },
+            ("tests/_h.py", "tests/test_unrelated.py"),
+        ),
+        (
+            "scripts/lonely.sh",
+            (),
+            {"tests/test_unrelated.py": "gadget.sh\n"},
+            ("tests/test_unrelated.py",),
         ),
     ],
     ids=(
         "lane-resolver",
         "wake-feature-bank-fixtures",
         "doctor-nested-module",
+        "add-tests-naming-basename-and-helper-importer",
+        "add-tests-naming-names-nothing",
     ),
 )
 def test_fast_lane_routes_internal_support_files_to_their_guards(
@@ -460,23 +410,26 @@ def test_fast_lane_routes_internal_support_files_to_their_guards(
     changed_path: str,
     routed_tests: tuple[str, ...],
     test_contents: dict[str, str] | None,
+    absent: tuple[str, ...],
 ) -> None:
     """Support-file-only edits must select their dependent test contracts.
 
     Driven through the lane with a recording stand-in for pytest rather than
     asserting on the script's text: a string check would still pass if the
     mapping were unreachable or pointed at paths that do not exist.
-    Everything is committed first so ``changed_path`` is the only edit.
+    Everything (``absent`` files too) is committed first so ``changed_path``
+    is the only edit; ``absent`` entries must not end up selected.
     """
 
-    selected = _fast_lane_selected_tests(
+    selected = fast_lane_selected_tests(
         tmp_path,
         changed_path=changed_path,
-        routed_tests=routed_tests,
+        routed_tests=routed_tests + absent,
         test_contents=test_contents,
     )
 
     assert set(routed_tests) <= selected, selected
+    assert not (set(absent) & selected), selected
 
 
 def _load_ci_classifier():
@@ -510,7 +463,7 @@ def test_fast_lane_routes_deploy_index_html_to_the_landing_bundle(
     running it explicitly. Verified failing on origin/main, passing here.
 
     Wrinkle: LANDING_PYTEST_TARGETS' one function-scoped entry is a
-    `file::test_name` pytest node id. _fast_lane_selected_tests's
+    `file::test_name` pytest node id. fast_lane_selected_tests's
     changed_path/routed_tests plumbing creates each `routed_tests` entry AS
     A FILE so test-fast's `[[ -f ... ]]` existence check can see it -- the
     literal string with `::` in it is never a real path, so this stubs the
@@ -530,7 +483,7 @@ def test_fast_lane_routes_deploy_index_html_to_the_landing_bundle(
         target.split("::", 1)[0] for target in qualified_targets
     )
 
-    selected = _fast_lane_selected_tests(
+    selected = fast_lane_selected_tests(
         tmp_path,
         changed_path="deploy/index.html",
         routed_tests=stub_files,
@@ -552,7 +505,7 @@ def test_fast_lane_propagates_routing_policy_failure_before_later_work(
     (repo / "scripts").mkdir(parents=True)
     for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
         shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
-    _git(repo, "init", "-q")
+    git(repo, "init", "-q")
 
     calls = repo / "pytest-calls.jsonl"
     recorder = repo / "recording-pytest"
@@ -567,7 +520,7 @@ def test_fast_lane_propagates_routing_policy_failure_before_later_work(
     recorder.chmod(0o755)
 
     result = subprocess.run(
-        [_BASH, "scripts/test-fast", "--collect-only", "-k", "requested_test"],
+        [BASH, "scripts/test-fast", "--collect-only", "-k", "requested_test"],
         cwd=repo,
         env={
             **os.environ,
@@ -740,7 +693,7 @@ def test_lane_verdict_sentinel_survives_tail_truncation_when_unresolvable(
     """
     repo, env = lane_sandbox
     result = subprocess.run(
-        [_BASH, f"scripts/{lane}"],
+        [BASH, f"scripts/{lane}"],
         cwd=repo,
         env=env,
         stdout=subprocess.PIPE,
@@ -841,7 +794,7 @@ def test_lane_killed_by_a_signal_does_not_print_a_passed_shaped_verdict(
     repo, env = lane_sandbox
     marker = repo / "pytest-started"
     proc = subprocess.Popen(
-        [_BASH, "scripts/test-merge"],
+        [BASH, "scripts/test-merge"],
         cwd=repo,
         env={
             **env,
@@ -899,7 +852,7 @@ def _emit_verdict(status: int, *, preamble: str = "") -> subprocess.CompletedPro
         f"lane_emit_verdict test-merge {status}\n"
     )
     return subprocess.run(
-        [_BASH, "-c", script], capture_output=True, text=True
+        [BASH, "-c", script], capture_output=True, text=True
     )
 
 
@@ -1018,18 +971,7 @@ def test_fast_lane_prunes_a_stale_last_failed_id_without_a_full_suite_fallback(
     surgical (the live entry survives and gets run) rather than "wipe the
     whole cache on any drift".
     """
-    repo = tmp_path / "repo"
-    (repo / "scripts").mkdir(parents=True)
-    (repo / "tests").mkdir()
-    for name in ("test-fast", "_test_lane.sh"):
-        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
-    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "tests@example.invalid")
-    _git(repo, "config", "user.name", "JTS Tests")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
+    repo = scratch_lane_repo(tmp_path)
 
     (repo / "test_still_here.py").write_text(
         "def test_ok():\n    assert True\n", encoding="utf-8"
@@ -1063,18 +1005,11 @@ def test_fast_lane_prunes_a_stale_last_failed_id_without_a_full_suite_fallback(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = _TRUE_BIN
 
     result = subprocess.run(
-        [_BASH, "scripts/test-fast"],
+        [BASH, "scripts/test-fast"],
         cwd=repo,
-        env={
-            **os.environ,
-            "PYTEST": str(recorder),
-            "PYTEST_CALLS": str(calls),
-            "RUFF": stand_in,
-            "TEST_BASE": "missing-base",
-        },
+        env=lane_env(recorder, calls),
         check=False,
         capture_output=True,
         text=True,
@@ -1111,18 +1046,7 @@ def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
     rather than either erroring or handing pytest a now-empty --last-failed
     call.
     """
-    repo = tmp_path / "repo"
-    (repo / "scripts").mkdir(parents=True)
-    (repo / "tests").mkdir()
-    for name in ("test-fast", "_test_lane.sh"):
-        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
-    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "tests@example.invalid")
-    _git(repo, "config", "user.name", "JTS Tests")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
+    repo = scratch_lane_repo(tmp_path)
 
     stale_id = "test_renamed_away.py::test_old_name"
     cache_dir = repo / ".pytest_cache" / "v" / "cache"
@@ -1149,18 +1073,11 @@ def test_fast_lane_skips_last_failed_when_every_cached_id_is_stale(
         encoding="utf-8",
     )
     recorder.chmod(0o755)
-    stand_in = _TRUE_BIN
 
     result = subprocess.run(
-        [_BASH, "scripts/test-fast"],
+        [BASH, "scripts/test-fast"],
         cwd=repo,
-        env={
-            **os.environ,
-            "PYTEST": str(recorder),
-            "PYTEST_CALLS": str(calls),
-            "RUFF": stand_in,
-            "TEST_BASE": "missing-base",
-        },
+        env=lane_env(recorder, calls),
         check=False,
         capture_output=True,
         text=True,
@@ -1199,7 +1116,7 @@ def test_test_merge_also_refuses_on_a_missing_mypy(
     by this addition.
     """
     repo, env = lane_sandbox
-    result = _run(repo, {**env, "PYTEST": _TRUE_BIN}, "test-merge")
+    result = _run(repo, {**env, "PYTEST": TRUE_BIN}, "test-merge")
 
     assert result.returncode != 0
     combined = result.stdout + result.stderr
@@ -1346,7 +1263,7 @@ def test_fast_lane_routes_deploy_bin_scripts_to_their_tests(
     reproduces how the real tree pins it -- by literal reference, not by
     filename.
     """
-    selected = _fast_lane_selected_tests(
+    selected = fast_lane_selected_tests(
         tmp_path,
         changed_path=f"deploy/bin/{script}",
         routed_tests=routed_tests,
