@@ -88,7 +88,7 @@ def render(
         counts["fails"], counts["warns"], counts["speaker_silent"],
     )
     if core:
-        # The deploy reads this line as its verdict. See ADR-0247.
+        # The deploy reads this line as its verdict. See ADR-0248.
         print(render_logfmt("deploy.health", {
             "status": "fail" if fails else "ok",
             "fail": fails,
