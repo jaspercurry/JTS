@@ -45,6 +45,7 @@ from jasper.airplay_mode import ENV_VAR, MODE_ENV_FILE, mode_from_env
 
 from ..control.restart_broker import manage_units
 from ..env_file import read_env_file, write_env_file
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -209,6 +210,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write airplay mode env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
+        log_event(logger, "airplay.save", mode=mode, client=handler.address_string())
         _restart_shairport()
         send_see_other(
             handler, "./",
