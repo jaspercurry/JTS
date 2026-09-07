@@ -55,7 +55,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -111,22 +110,9 @@ class VolumeRecord:
 
 
 class VolumePersistence:
-    """Atomic on-disk persistence of speaker volume.
-
-    Writes are debounced: callers may report observed volume frequently
-    and we'll only actually hit the SD card on real changes that haven't
-    been written recently. Explicit user-initiated changes (set_volume
-    voice tool) bypass debounce via `save_now`.
-    """
+    """Atomic on-disk persistence of speaker volume."""
 
     DEFAULT_PATH = "/var/lib/jasper/speaker_volume.json"
-    # Don't write to flash more often than this in the polling path.
-    DEBOUNCE_SEC = 30.0
-    # If a polled main_volume changes by less than this from the last
-    # persisted value, treat it as noise and don't write. Keeps SD-card
-    # writes proportional to real user activity, not every drift in
-    # Camilla's reported value.
-    MIN_DELTA_DB = 0.5
 
     def __init__(self, path: str | None = None) -> None:
         self._path = Path(path or self.DEFAULT_PATH)
@@ -134,8 +120,6 @@ class VolumePersistence:
         self._operation_lock_path = self._path.with_name(
             f".{self._path.name}.operation.lock",
         )
-        self._last_written_db: float | None = None
-        self._last_written_at_mono: float = 0.0
         # In-memory copy of all persisted fields, so we can write the
         # full record whenever any single field changes (avoids losing
         # one field when only another updates).
@@ -297,50 +281,10 @@ class VolumePersistence:
         )
 
     def save_now(self, main_volume_db: float) -> None:
-        """Force-write main_volume to disk immediately. Used for
-        explicit user actions (set_volume voice tool, mute) where we
-        want the new level captured before any restart could lose it."""
+        """Write main_volume to disk, so the level survives a restart."""
         with self._state_update():
             self._current_main_volume_db = float(main_volume_db)
             self._write_full()
-        self._last_written_db = self._current_main_volume_db
-        self._last_written_at_mono = time.monotonic()
-
-    def maybe_save(self, main_volume_db: float) -> bool:
-        """Debounced main_volume write — for poll-driven detection of
-        external changes (mpc, hardware knob, etc). Returns True if
-        we wrote.
-
-        Refreshes from disk before writing so the file's
-        listening_level + last_used_at fields (which might have been
-        updated by another process — e.g. jasper-control via remote)
-        aren't trampled by this process's stale in-memory state.
-        Only main_volume_db is treated as owned by this writer."""
-        db = float(main_volume_db)
-        now = time.monotonic()
-        last_db = self._last_written_db
-        if last_db is not None:
-            if abs(db - last_db) < self.MIN_DELTA_DB:
-                return False
-            if now - self._last_written_at_mono < self.DEBOUNCE_SEC:
-                return False
-        with self._state_update():
-            self._current_main_volume_db = db
-            self._write_full()
-        self._last_written_db = db
-        self._last_written_at_mono = now
-        return True
-
-    def save_pre_mute_level(self, level: int | None) -> None:
-        """Persist the pre-mute level (or clear it with None).
-
-        Compatibility wrapper for callers that predate transition tokens.
-        VolumeCoordinator uses ``save_mute_state`` so the latch and token land
-        atomically.
-        """
-        with self._state_update():
-            token = self._current_mute_token if level is not None else None
-            self._save_mute_state_locked(level, token)
 
     def save_mute_state(
         self,
@@ -354,41 +298,31 @@ class VolumePersistence:
         mistake the renderer's stale pre-push value for a post-mute user edit.
         """
         with self._state_update():
-            self._save_mute_state_locked(level, mute_token)
-
-    def _save_mute_state_locked(
-        self,
-        level: int | None,
-        mute_token: str | None,
-    ) -> None:
-        """Apply a mute-state partial update while ``_state_update`` is held."""
-        if level is not None:
-            level = max(0, min(100, int(level)))
-            if mute_token is not None:
-                mute_token = str(mute_token)
-                if not mute_token or len(mute_token) > 128:
-                    raise ValueError("mute_token must contain 1..128 characters")
-        else:
-            mute_token = None
-        self._current_pre_mute_level = level
-        self._current_mute_token = mute_token
-        if self._current_main_volume_db is None:
-            # No disk record and no main-volume context. A mute latch by itself
-            # is not enough to invent a synthetic listening level.
-            logger.debug(
-                "volume persistence: skipping pre_mute write "
-                "(no main_volume context yet)",
-            )
-            return
-        self._write_full()
+            if level is not None:
+                level = max(0, min(100, int(level)))
+                if mute_token is not None:
+                    mute_token = str(mute_token)
+                    if not mute_token or len(mute_token) > 128:
+                        raise ValueError("mute_token must contain 1..128 characters")
+            else:
+                mute_token = None
+            self._current_pre_mute_level = level
+            self._current_mute_token = mute_token
+            if self._current_main_volume_db is None:
+                # No disk record and no main-volume context. A mute latch by itself
+                # is not enough to invent a synthetic listening level.
+                logger.debug(
+                    "volume persistence: skipping pre_mute write "
+                    "(no main_volume context yet)",
+                )
+                return
+            self._write_full()
 
     def save_listening_level(
         self, percent: int, *, mark_user_change: bool = True,
     ) -> None:
-        """Force-write the canonical listening_level (0-100) to disk.
-        Not debounced: listening_level changes are infrequent compared
-        with poll-driven main-volume observations, and we want every
-        change durable so a crash doesn't lose the user's last command.
+        """Write the canonical listening_level (0-100) to disk, so a
+        crash doesn't lose the user's last command.
 
         `mark_user_change` controls whether last_used_at is bumped to
         now. Set False for boot-time restore writes — otherwise every
