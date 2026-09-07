@@ -103,30 +103,6 @@ clear_install_in_progress() {
 }
 
 
-# --- Install failure record ---
-#
-# Written by the installer's EXIT trap (install_exit_cleanup) so a failed
-# deploy leaves one machine-readable record naming the rc and the INSTALL_STEPS
-# row install.sh was on. Removed on a clean exit, so the file's presence means
-# "the last install on this boot failed". /run is tmpfs, so a reboot clears it
-# like the other markers here.
-INSTALL_LAST_FAILURE_MARKER="${REBOOT_REQUIRED_MARKER%/*}/last_failure"
-
-record_install_outcome() {
-    local rc="$1"
-    if [[ "${rc}" == "0" ]]; then
-        rm -f "${INSTALL_LAST_FAILURE_MARKER}"
-        return 0
-    fi
-    # The trap can fire before mark_install_in_progress created the run dir.
-    install -d -m 0755 "${INSTALL_LAST_FAILURE_MARKER%/*}"
-    local step="${INSTALL_CURRENT_STEP:-unknown}"
-    printf 'rc=%s\nstep=%s\n' "${rc}" "${step}" > "${INSTALL_LAST_FAILURE_MARKER}"
-    chmod 0644 "${INSTALL_LAST_FAILURE_MARKER}"
-    echo "  install failed: rc=${rc} step=${step} record=${INSTALL_LAST_FAILURE_MARKER}"
-}
-
-
 # Compute vm.min_free_kbytes from MemTotal_kB.
 # Formula: clamp(0.02 × memtotal_kb, 16384, 262144) — 2% of total RAM,
 # with a 16 MB floor (Raspberry Pi OS ships 16384 in

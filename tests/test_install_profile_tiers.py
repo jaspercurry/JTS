@@ -17,8 +17,10 @@ These tests pin the NEW invariants:
    pass through; bogus raises.
 2. A persisted endpoint marker resolves to streambox (auto-migration)
    with NO implicit-tier-change error and NO accept flag.
-3. The streambox dry-run plan includes the audio graph (fanin/outputd/
-   camilla); the full plan includes voice.
+3. ``main()`` and ``--dry-run`` iterate one ``INSTALL_STEPS`` table: the
+   plan renders exactly the steps the run executes, each profile reaches
+   its own tier functions, the required orderings hold, and a failing
+   step aborts the install with a journal record naming it.
 4. install.sh has NO endpoint install functions, and the deleted endpoint
    artifacts do not exist.
 5. A bonded follower parks the brain (cross-referenced with the multiroom
@@ -33,6 +35,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -71,15 +74,16 @@ def _run_install_helper(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-#: Functions the step driver below must NOT stub out: main itself, the EXIT
-#: trap plus the two helpers it records a failure through, the journal
-#: wrapper the STEPS loop emits through, and the truthiness helpers main()
-#: branches on, plus the advisory doctor wrapper (inert once the doctor it
-#: calls is stubbed, and itself under test below). Everything else install.sh
-#: defines becomes a no-op, so one run makes the profile's executed step list
-#: observable.
+#: Functions the step driver below must NOT stub out: main() and the rest of
+#: its control flow (the row iterator, the truthiness helpers), the EXIT trap
+#: plus the two helpers it records a failure through, the journal wrapper the
+#: STEPS loop emits through, and the advisory doctor wrapper (inert once the
+#: doctor it calls is stubbed, and itself under test below). Everything else
+#: install.sh defines becomes a no-op, so one run makes the profile's executed
+#: step list observable.
 _KEEP_REAL = (
     "main",
+    "install_steps_for_profile",
     "install_exit_cleanup",
     "_call_if_defined",
     "record_install_outcome",
@@ -91,13 +95,13 @@ _KEEP_REAL = (
 
 
 def _run_main(
-    profile: str, *, extra: str = "", run_dir: Path | None = None
+    profile: str, *, extra: str = ""
 ) -> subprocess.CompletedProcess[str]:
     """Run main() for `profile` with every install step neutered.
 
     `logger` is a shell function here, so the loop's journal line lands on
-    stdout; `run_dir` redirects the /run/jasper-install markers at their own
-    seam so the EXIT trap and the failure record run for real.
+    stdout while the real EXIT trap runs; the /run/jasper-install markers are
+    redirected at their own seam so no run can touch the host's.
     """
     script = "\n".join(
         [
@@ -115,11 +119,11 @@ def _run_main(
     )
     env = os.environ.copy()
     env.pop("JASPER_INSTALL_DRY_RUN", None)
-    if run_dir is not None:
-        env["JTS_REBOOT_REQUIRED_MARKER"] = str(run_dir / "reboot_required")
-    return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
-    )
+    with tempfile.TemporaryDirectory() as run_dir:
+        env["JTS_REBOOT_REQUIRED_MARKER"] = f"{run_dir}/reboot_required"
+        return subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+        )
 
 
 def _journal(stdout: str, field: str) -> list[str]:
@@ -139,6 +143,23 @@ def _executed(profile: str) -> tuple[list[str], list[str]]:
     result = _run_main(profile)
     assert result.returncode == 0, result.stderr
     return _journal(result.stdout, "step"), _journal(result.stdout, "fn")
+
+
+def _step_rows() -> list[tuple[str, str, str, int]]:
+    """Every INSTALL_STEPS row as (name, profiles, fn, phrase length), read by
+    EXECUTING the table in bash rather than parsing install.sh's text."""
+    result = _run_install_helper(
+        'for row in "${INSTALL_STEPS[@]}"; do '
+        """IFS='|' read -r name profiles fn phrase <<<"${row}"; """
+        'printf "%s %s %s %s\\n" "${name}" "${profiles}" "${fn}" "${#phrase}"; '
+        "done"
+    )
+    assert result.returncode == 0, result.stderr
+    rows = [line.split() for line in result.stdout.splitlines()]
+    # A row missing a field loses a token here, so this is the malformed-row
+    # check as well as the unpack.
+    assert all(len(row) == 4 for row in rows), rows
+    return [(name, profiles, fn, int(size)) for name, profiles, fn, size in rows]
 
 
 def _plan_steps(profile: str) -> list[str]:
@@ -405,6 +426,13 @@ _REQUIRED_ORDER = (
     ("systemd_units", "doctor"),
     # `nginx -t` needs the cert files on disk.
     ("correction_tls", "nginx_site"),
+    # install_alsa exports DONGLE_CARD, which the unit install consumes as
+    # APPLE_DONGLE_SERVICE_CARD.
+    ("alsa", "systemd_units"),
+    # jasper-control renders its advert from the template and reads peer_id at
+    # startup, so both exist before the unit install restarts it.
+    ("avahi_control", "systemd_units"),
+    ("peering_template", "systemd_units"),
     # Fresh-flat startup needs output_hardware.json before the base graph is
     # rendered and before runtime-safe-graph writes outputd-statefile.yml.
     ("jasper", "output_hw_state"),
@@ -441,8 +469,20 @@ def test_dry_run_renders_exactly_the_steps_the_install_runs(profile):
     main(), so the plan cannot drift from the run."""
     plan = _plan_steps(profile)
     assert plan == _executed(profile)[0]
-    assert len(plan) >= 30, plan
     assert len(set(plan)) == len(plan), plan
+
+
+def test_every_row_is_well_formed_and_reaches_exactly_one_of_the_two_plans():
+    """Whole-list drift guard. A row whose `profiles` token is mistyped runs
+    on neither profile and so falls out of the union; a row that lost a field
+    fails the unpack; a wholesale deletion falls under the floor."""
+    rows = _step_rows()
+    assert len(rows) >= 40, rows
+    assert {profiles for _, profiles, _, _ in rows} <= {"both", "full", "streambox"}
+    assert all(size > 0 for _, _, _, size in rows), rows
+    assert set(_plan_steps("full")) | set(_plan_steps("streambox")) == {
+        name for name, _, _, _ in rows
+    }
 
 
 @pytest.mark.parametrize(
@@ -474,35 +514,26 @@ def test_required_step_order_holds_on_both_profiles(profile):
 
 
 @pytest.mark.parametrize("profile", ["full", "streambox"])
-def test_a_failing_step_aborts_the_install_and_leaves_a_record(
-    profile, tmp_path: Path
-):
-    """`set -e` stops the loop at the failing row, and the EXIT trap records
-    which row it was so the next operator does not have to re-read the
-    transcript."""
-    result = _run_main(
-        profile, extra="install_camilladsp() { return 7; }", run_dir=tmp_path
-    )
+def test_a_failing_step_aborts_the_install_and_is_recorded(profile):
+    """`set -e` stops the loop at the failing row, and the EXIT trap names
+    that row in the journal so the next operator does not have to re-read the
+    transcript. journald is persistent, so the record outlives the reboot."""
+    result = _run_main(profile, extra="install_camilladsp() { return 7; }")
 
     assert result.returncode == 7, result.stderr
-    steps = _journal(result.stdout, "step")
-    assert steps[-1] == "camilladsp", steps
-    assert "renderers" not in steps, steps
-    record = tmp_path / "last_failure"
-    assert record.read_text(encoding="utf-8").splitlines() == [
-        "rc=7",
-        "step=camilladsp",
-    ]
+    fns = _journal(result.stdout, "fn")
+    assert fns[-1] == "install_camilladsp", fns
+    assert "install_renderers" not in fns, fns
+    assert _journal(result.stdout, "event")[-1] == "install.failed"
+    assert _journal(result.stdout, "rc") == ["7"]
+    assert _journal(result.stdout, "step")[-1] == "camilladsp"
 
 
-def test_a_clean_run_clears_an_earlier_failure_record(tmp_path: Path):
-    record = tmp_path / "last_failure"
-    record.write_text("rc=9\nstep=stale\n", encoding="utf-8")
-
-    result = _run_main("full", run_dir=tmp_path)
+def test_a_clean_run_records_no_failure(profile="full"):
+    result = _run_main(profile)
 
     assert result.returncode == 0, result.stderr
-    assert not record.exists()
+    assert "install.failed" not in result.stdout
 
 
 @pytest.mark.parametrize("profile", ["full", "streambox"])

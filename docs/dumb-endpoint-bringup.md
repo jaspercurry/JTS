@@ -438,8 +438,8 @@ rejected on the strength of them:
   extras such as `spotipy`, `zeroconf`, `evdev`, and `dbus_next`.
 - **Install-plan guard**: the endpoint profile's `--dry-run` plan
   contains no cargo builds, no AEC3 build, no renderer source builds,
-  and no voice/web units. The streambox profile's dry-run plan contains
-  the local renderer/DSP graph and explicitly excludes voice/wake/mic/AEC.
+  and no voice/web units. The streambox profile's dry-run plan lists the
+  local renderer/DSP step names and none of the full-tier-only ones.
   Extend the existing dry-run plan test surface
   (`tests/test_install_profile_tiers.py` is the pattern).
 - **Full-profile regression guard**: with the profile env unset, the

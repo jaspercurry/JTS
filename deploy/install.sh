@@ -94,12 +94,28 @@ SHAIRPORT_SYNC_ARCHIVE_URL="https://github.com/jaspercurry/JTS/releases/download
 SHAIRPORT_SYNC_SHA256="c8d860c68723d78aea3d3eef0861bfbd01aa2f52d81c768c4e359ccabf42cbb5"
 # One structured journald line for the installer, tagged so a deploy can be
 # replayed with `journalctl -t jasper-install`. Best-effort: never fails a run.
+# _mem_log and _build_sandbox_log keep their own copies of this call: their
+# libs are sourced standalone (deploy/bin/jasper-contained-build, and tests),
+# where a function install.sh defines does not exist.
 jasper_install_log() {
     logger -t jasper-install -- "$*" 2>/dev/null || true
 }
 
-# The STEPS row main() is currently on; the EXIT trap records it on failure.
+# The STEPS row main() is currently on, read by record_install_outcome below.
 INSTALL_CURRENT_STEP=""
+
+# The installer's failure record, called from install_exit_cleanup's
+# _call_if_defined. A journal line rather than a /run marker: journald is
+# persistent, so the record survives the reboot an operator reaches for first.
+record_install_outcome() {
+    local rc="$1"
+    if [[ "${rc}" == "0" ]]; then
+        return 0
+    fi
+    local line="event=install.failed rc=${rc} step=${INSTALL_CURRENT_STEP:-prologue}"
+    jasper_install_log "${line}"
+    echo "  ${line}"
+}
 
 print_install_usage() {
     cat <<'EOF'
@@ -1698,7 +1714,8 @@ INSTALL_STEPS=(
     "park_build_units|both|park_low_memory_build_units|park audio/runtime daemons before the Rust builds"
     "deps|full|install_deps|apt-get update and the full-tier runtime/build packages"
     "deps|streambox|install_streambox_deps|apt-get update and the streambox renderer/DSP packages"
-    # install_alsa exports DONGLE_CARD, which install_camilladsp reads.
+    # install_alsa exports DONGLE_CARD, which install_systemd_units reads as
+    # APPLE_DONGLE_SERVICE_CARD.
     "alsa|both|install_alsa|render /etc/asound.conf and apply the snd-aloop options"
     "camilladsp|both|install_camilladsp|fetch and install the pinned CamillaDSP binary"
     "renderers|both|install_renderers|build/install shairport-sync, nqptp, librespot and bluez-alsa"
@@ -1751,30 +1768,33 @@ run_doctor_summary_advisory() {
     run_doctor_summary || true
 }
 
+# The INSTALL_STEPS rows that run on `$1`, in order: the one owner of the match.
+install_steps_for_profile() {
+    local row profiles
+    for row in "${INSTALL_STEPS[@]}"; do
+        IFS='|' read -r _ profiles _ _ <<<"${row}"
+        case "${profiles}" in both|"$1") printf '%s\n' "${row}" ;; esac
+    done
+}
+
 # --dry-run: the rows main() would run, in order, and nothing else.
 print_install_plan() {
-    local profile="$1"
-    local row name profiles phrase
-    echo "==> JTS install plan (dry run) - profile: ${profile}"
-    echo "No host changes are made in this mode. Each line below is one step of"
-    echo "the real install, in execution order."
-    echo
-    echo "Hardware tier (detected on this host): $(detect_hardware_tier)"
-    echo "Before the table: report that tier, require root, arm the exit trap,"
-    echo "mark the install in progress, and persist the tier in"
-    echo "${INSTALL_PROFILE_MARKER}."
-    echo
-    echo "Run for real from a Pi-local checkout:"
-    echo "  sudo JASPER_INSTALL_PROFILE=${profile} JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh"
-    echo
-    for row in "${INSTALL_STEPS[@]}"; do
-        IFS='|' read -r name profiles _ phrase <<<"${row}"
-        case "${profiles}" in
-            both|"${profile}") ;;
-            *) continue ;;
-        esac
+    local name phrase
+    cat <<EOF
+==> JTS install plan (dry run) - profile: $1
+Nothing below is executed. Ahead of the table main() reports the hardware tier
+(refusing a non-arm64 host unless JASPER_ALLOW_UNSUPPORTED_ARCH=1), requires
+root, arms the exit trap, marks the install in progress, and persists the tier
+in ${INSTALL_PROFILE_MARKER} (refusing a full/streambox change unless
+JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1).
+
+Hardware tier (detected on this host): $(detect_hardware_tier)
+Run for real: sudo JASPER_INSTALL_PROFILE=$1 JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
+
+EOF
+    while IFS='|' read -r name _ _ phrase; do
         printf '  %s: %s\n' "${name}" "${phrase}"
-    done
+    done <<<"$(install_steps_for_profile "$1")"
 }
 
 main() {
@@ -1824,18 +1844,15 @@ main() {
     mark_install_in_progress
     persist_install_profile "${install_profile}"
 
-    local row name profiles fn phrase
-    for row in "${INSTALL_STEPS[@]}"; do
-        IFS='|' read -r name profiles fn phrase <<<"${row}"
-        case "${profiles}" in
-            both|"${install_profile}") ;;
-            *) continue ;;
-        esac
+    # Rows on fd 3, so each step keeps the script's own stdin (apt, a build).
+    local row name fn phrase
+    while IFS= read -r row <&3; do
+        IFS='|' read -r name _ fn phrase <<<"${row}"
         INSTALL_CURRENT_STEP="${name}"
         jasper_install_log "event=install.step profile=${install_profile} step=${name} fn=${fn}"
         echo "==> ${name}: ${phrase}"
         "${fn}"
-    done
+    done 3<<<"$(install_steps_for_profile "${install_profile}")"
 }
 
 # Only run main when invoked directly. When sourced (e.g. by tests

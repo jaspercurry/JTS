@@ -71,7 +71,7 @@
 The scoped PR that falls out of this note (see
 [§ Scoped PR](#scoped-pr-tier-detection--observability--arch-guard)) is
 deliberately small and behavior-neutral on supported hardware: detect
-the tier, surface it in the install log and both dry-run plans, and
+the tier, surface it in the install log and the dry-run plan, and
 fail-fast (overridably) on an unsupported architecture. It establishes
 the tier vocabulary A/B/C plug into and closes the gap where a tier
 mismatch wasn't self-evident from the tooling, by putting the tier in the

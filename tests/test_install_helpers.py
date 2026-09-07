@@ -3166,16 +3166,6 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
     assert run.returncode == 5, run.stderr
 
 
-def test_the_install_traps_the_unparking_handler():
-    """The recovery is worthless if the swap-only trap is armed instead."""
-    install_sh = _INSTALL_SH.read_text(encoding="utf-8")
-    assert "trap cleanup_build_swap EXIT" not in install_sh, (
-        "install.sh must trap the combined handler so an aborted install "
-        "unparks; the swap-only trap leaves the speaker dead"
-    )
-    assert install_sh.count("trap install_exit_cleanup EXIT") == 1
-
-
 def test_low_memory_park_reuses_the_shared_core_graph_park_list():
     """Phase one's names have one owner.
 
