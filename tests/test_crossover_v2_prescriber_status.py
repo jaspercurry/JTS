@@ -681,7 +681,7 @@ def test_the_handoff_url_survives_an_unset_hostname(tmp_path, capsys, monkeypatc
 
 
 def test_the_handoff_page_is_the_one_the_household_actually_opens():
-    """The path printed here is the path the correction hub links to.
+    """The path printed here is the path the nav manifest links to.
 
     Two owners of "where does a human go for active-speaker tuning" would drift
     the day the page moves, and the CLI's copy is the one nobody would notice —
@@ -691,10 +691,9 @@ def test_the_handoff_page_is_the_one_the_household_actually_opens():
     ``jasper.web`` to print a string would be the worse trade); this test is
     what makes the two one answer.
     """
-    from jasper.web.correction_hub import SECTIONS
+    from jasper.web.nav import entry
 
-    hrefs = {key: href for key, _label, href in SECTIONS}
-    assert cli.CROSSOVER_PAGE_PATH == hrefs["crossover"]
+    assert cli.CROSSOVER_PAGE_PATH == entry("/sound/speaker/crossover/").path
 
 
 @pytest.mark.parametrize(

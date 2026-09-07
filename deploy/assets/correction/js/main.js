@@ -312,8 +312,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 
   function hideEl(el, hidden) {
     if (!el) return;
-    if (hidden) el.classList.add('hidden');
-    else el.classList.remove('hidden');
+    if (hidden) el.hidden = true;
+    else el.hidden = false;
   }
 
   function setRunTransportLocked(locked) {
@@ -425,7 +425,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     var model = micModelSelect.value;
     selectedCalibrationId = null;
     selectedCalibrationMeta = null;
-    calibrationPreview.classList.add('hidden');
+    calibrationPreview.hidden = true;
     calibrationPreview.textContent = '';
     calibrationStatus.className = 'mic-status';
     // Any reconciliation of the model/serial UI (a manual model change, the
@@ -436,20 +436,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // banner otherwise never updates, so editing the visible fields directly
     // looked like it silently had no effect).
     householdMicPrefillPending = false;
-    householdMicBanner.classList.add('hidden');
+    householdMicBanner.hidden = true;
     if (!model) {
-      serialRow.classList.add('hidden');
-      uploadRow.classList.add('hidden');
+      serialRow.hidden = true;
+      uploadRow.hidden = true;
       calibrationStatus.textContent =
         'No calibration loaded. This is okay for a quick check, but a calibrated mic is recommended before trusting filter decisions.';
     } else if (model === 'other') {
-      serialRow.classList.add('hidden');
-      uploadRow.classList.remove('hidden');
+      serialRow.hidden = true;
+      uploadRow.hidden = false;
       calibrationStatus.textContent =
         'Upload a calibration file for this microphone.';
     } else {
-      serialRow.classList.remove('hidden');
-      uploadRow.classList.remove('hidden');
+      serialRow.hidden = false;
+      uploadRow.hidden = false;
       calibrationStatus.textContent =
         'Enter the mic serial so JTS can fetch the calibration file. Upload is available as a fallback.';
       // If we already know this mic's serial from a prior successful fetch,
@@ -473,8 +473,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     // retire the stale "remembered" claim rather than leaving it to
     // contradict the fresh fetch/upload this edit is heading toward.
     householdMicPrefillPending = false;
-    householdMicBanner.classList.add('hidden');
-    calibrationPreview.classList.add('hidden');
+    householdMicBanner.hidden = true;
+    calibrationPreview.hidden = true;
     calibrationPreview.textContent = '';
     calibrationStatus.className = 'mic-status bad';
     if (micModelSelect.value === 'other') {
@@ -514,7 +514,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       calibrationPreview.textContent =
         'Preview range: ' + Math.round(f0) + '–' + Math.round(f1) +
         ' Hz · hash ' + selectedCalibrationMeta.file_sha256.slice(0, 12);
-      calibrationPreview.classList.remove('hidden');
+      calibrationPreview.hidden = false;
     }
   }
 
@@ -548,20 +548,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!hasOption) return;  // registry drifted since the record was saved
     micModelSelect.value = modelKey;
     if (!modelKey) {
-      serialRow.classList.add('hidden');
-      uploadRow.classList.add('hidden');
+      serialRow.hidden = true;
+      uploadRow.hidden = true;
     } else if (modelKey === 'other') {
-      serialRow.classList.add('hidden');
-      uploadRow.classList.remove('hidden');
+      serialRow.hidden = true;
+      uploadRow.hidden = false;
     } else {
-      serialRow.classList.remove('hidden');
-      uploadRow.classList.remove('hidden');
+      serialRow.hidden = false;
+      uploadRow.hidden = false;
     }
     showCalibrationLoaded(data);
     if (!selectedCalibrationId) return;
     householdMicBannerText.textContent =
       'Using ' + selectedCalibrationMeta.label + ' — remembered from your last measurement.';
-    householdMicBanner.classList.remove('hidden');
+    householdMicBanner.hidden = false;
     // Not yet a household choice made IN THIS SESSION — just a replayed past
     // one. maybeInferCalibrationModel is allowed to override it below if the
     // mic this browser actually detects doesn't match (issue #1656).
@@ -569,7 +569,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   householdMicChangeBtn.addEventListener('click', function () {
-    householdMicBanner.classList.add('hidden');
+    householdMicBanner.hidden = true;
     micModelSelect.value = '';
     updateMicCalibrationRows();
   });
@@ -773,9 +773,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         'Capture settings did not match what we requested: ' +
         problems.join(', ') +
         '. The measurement will refuse to start in this state.';
-      errBanner.classList.remove('hidden');
+      errBanner.hidden = false;
     } else {
-      errBanner.classList.add('hidden');
+      errBanner.hidden = true;
     }
     renderBrowserAudioLocal(actual, problems);
   }
@@ -953,7 +953,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       return false;
     }
 
-    constraintsBlock.classList.remove('hidden');
+    constraintsBlock.hidden = false;
 
     var settings = stream.getAudioTracks()[0].getSettings();
     var trackLabel = stream.getAudioTracks()[0].label || '';
@@ -1158,7 +1158,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       });
     });
     if (!issues.length) {
-      qualityBanner.className = 'quality-banner hidden';
+      qualityBanner.className = 'quality-banner';
+      qualityBanner.hidden = true;
       qualityBanner.innerHTML = '';
       return;
     }
@@ -1166,6 +1167,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       return issue.severity === 'fail';
     });
     qualityBanner.className = 'quality-banner ' + (hasFail ? 'fail' : 'warn');
+    qualityBanner.hidden = false;
     qualityBanner.innerHTML =
       '<strong>' + (hasFail ? 'Measurement blocked:' : 'Measurement quality warnings:') +
       '</strong><p>' + (hasFail
@@ -1204,7 +1206,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // Walk the button's own ancestor chain instead.
   function isWizardResetVisible() {
     for (var node = resetBtn; node; node = node.parentNode || null) {
-      if (node.classList && node.classList.contains('hidden')) return false;
+      if (node.hidden) return false;
     }
     return true;
   }
@@ -1341,10 +1343,10 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (!wizardNudges) return;
     wizardNudges.innerHTML = '';
     if (!nudges || !nudges.length) {
-      wizardNudges.classList.add('hidden');
+      wizardNudges.hidden = true;
       return;
     }
-    wizardNudges.classList.remove('hidden');
+    wizardNudges.hidden = false;
     nudges.forEach(function (nudge) {
       if (!nudge || !nudge.text) return;
       var sev = nudge.severity === 'warn' ? 'warn' : 'info';
@@ -1373,12 +1375,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function renderPrimaryAction(nextAction) {
     if (!wizardNextBtn) return;
     if (wizardActionInFlight) {
-      wizardNextBtn.classList.add('hidden');
+      wizardNextBtn.hidden = true;
       wizardNextBtn.disabled = true;
       return;
     }
     if (!nextAction || !nextAction.endpoint) {
-      wizardNextBtn.classList.add('hidden');
+      wizardNextBtn.hidden = true;
       wizardNextBtn.textContent = '';
       wizardNextBtn.removeAttribute('data-endpoint');
       return;
@@ -1386,7 +1388,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     wizardNextBtn.textContent = String(nextAction.label);
     wizardNextBtn.setAttribute('data-endpoint', String(nextAction.endpoint));
     wizardNextBtn.disabled = false;   // nudges never gate the action
-    wizardNextBtn.classList.remove('hidden');
+    wizardNextBtn.hidden = false;
   }
 
   // Delegated click for the wizard primary action. Reads the endpoint from
@@ -1398,7 +1400,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     pendingHomeownerFailure = null;
     wizardActionInFlight = true;
     wizardNextBtn.disabled = true;
-    wizardNextBtn.classList.add('hidden');
+    wizardNextBtn.hidden = true;
     try {
       if (ep === '/start') {
         await startMeasurement();
@@ -1623,20 +1625,20 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     if (action) {
       readinessBlockerAction.textContent = String(action.label);
       readinessBlockerAction.href = String(action.href);
-      readinessBlockerAction.classList.remove('hidden');
+      readinessBlockerAction.hidden = false;
     } else {
       readinessBlockerAction.textContent = '';
       readinessBlockerAction.removeAttribute('href');
-      readinessBlockerAction.classList.add('hidden');
+      readinessBlockerAction.hidden = true;
     }
   }
 
   function renderEnvelopeFailure() {
     Object.keys(sectionNodes).forEach(function (sectionId) {
-      sectionNodes[sectionId].classList.add('hidden');
+      sectionNodes[sectionId].hidden = true;
     });
     renderPrimaryAction(null);
-    if (wizardChrome) wizardChrome.classList.remove('hidden');
+    if (wizardChrome) wizardChrome.hidden = false;
     if (wizardVerdict) {
       wizardVerdict.textContent =
         'The speaker could not refresh this step. Wait a moment and try again.';
@@ -1650,12 +1652,12 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // order received; it contains no screen-to-section policy.
   function renderSections(sections, curves) {
     Object.keys(sectionNodes).forEach(function (sectionId) {
-      sectionNodes[sectionId].classList.add('hidden');
+      sectionNodes[sectionId].hidden = true;
     });
     sections.forEach(function (sectionId) {
       var node = sectionNodes[sectionId];
       envelopeSections.appendChild(node);
-      node.classList.remove('hidden');
+      node.hidden = false;
     });
 
     // Review and result use one neutral evidence subtree. The selected
@@ -1682,7 +1684,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // presentation path).
   function renderEnvelope(env) {
     if (!env || !wizardChrome) return;
-    wizardChrome.classList.remove('hidden');
+    wizardChrome.hidden = false;
     if (env.blocker || env.failure) pendingHomeownerFailure = null;
     if (wizardVerdict) {
       wizardVerdict.textContent = String(
@@ -1718,26 +1720,26 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   function renderTuning(block) {
     if (!tuningPanel) return;
     if (!block || !block.offered) {
-      tuningActions.classList.add('hidden');
-      tuningNudge.classList.add('hidden');
+      tuningActions.hidden = true;
+      tuningNudge.hidden = true;
       return;
     }
     if (block.available) {
-      tuningNudge.classList.add('hidden');
-      tuningActions.classList.remove('hidden');
+      tuningNudge.hidden = true;
+      tuningActions.hidden = false;
     } else {
-      tuningActions.classList.add('hidden');
+      tuningActions.hidden = true;
       tuningNudge.textContent = String(block.nudge || 'Tuning assistant unavailable.');
-      tuningNudge.classList.remove('hidden');
+      tuningNudge.hidden = false;
     }
   }
 
   // Set the tuning status line (a short "thinking…" / error string).
   function setTuningStatus(text) {
     if (!tuningStatus) return;
-    if (!text) { tuningStatus.classList.add('hidden'); tuningStatus.textContent = ''; return; }
+    if (!text) { tuningStatus.hidden = true; tuningStatus.textContent = ''; return; }
     tuningStatus.textContent = String(text);
-    tuningStatus.classList.remove('hidden');
+    tuningStatus.hidden = false;
   }
 
   function setTuningBusy(busy) {
@@ -1761,9 +1763,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
         tuningProvenance.textContent =
           'Note: some figures above were not in the measurement and may be '
           + 'the assistant guessing — trust the plotted curve, not those numbers.';
-        tuningProvenance.classList.remove('hidden');
+        tuningProvenance.hidden = false;
       } else {
-        tuningProvenance.classList.add('hidden');
+        tuningProvenance.hidden = true;
         tuningProvenance.textContent = '';
       }
     }
@@ -2249,7 +2251,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     try {
       await postJson('session/delete', {id: sessionId});
       if (sessionReport.dataset.sessionId === sessionId) {
-        sessionReport.className = 'session-report hidden';
+        sessionReport.className = 'session-report';
+        sessionReport.hidden = true;
         sessionReport.textContent = '';
         delete sessionReport.dataset.sessionId;
       }
@@ -2258,6 +2261,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       await refreshEnvelope();
     } catch (e) {
       sessionReport.className = 'session-report blocked';
+      sessionReport.hidden = false;
       sessionReport.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
     }
   }
@@ -2265,6 +2269,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   async function loadSessionReport(sessionId) {
     if (!sessionId) return;
     sessionReport.className = 'session-report';
+    sessionReport.hidden = false;
     sessionReport.textContent = 'Loading report…';
     try {
       var resp = await fetch(
@@ -2689,10 +2694,11 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   function resetMeasurementUiForStart() {
-    resetBtn.classList.add('hidden');
-    resultSection.classList.add('hidden');
-    positionPrompt.classList.add('hidden');
-    qualityBanner.className = 'quality-banner hidden';
+    resetBtn.hidden = true;
+    resultSection.hidden = true;
+    positionPrompt.hidden = true;
+    qualityBanner.className = 'quality-banner';
+    qualityBanner.hidden = true;
     qualityBanner.innerHTML = '';
     lastChartEnvelope = null;
     inVerifyMode = false;
@@ -2788,7 +2794,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   async function continueToNextPosition() {
     // The envelope-owned wizard button is disabled by its dispatcher before
     // this runs, preventing a second /next-position double-tap.
-    positionPrompt.classList.add('hidden');
+    positionPrompt.hidden = true;
     setStateBadge('preparing', 'pausing music…');
     if (!(await ensureLocalCaptureReady())) {
       throw new Error('microphone capture is not ready');
@@ -2853,9 +2859,9 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   }
 
   async function startAutolevel() {
-    autolevelStatus.classList.remove('hidden');
-    autolevelLockBtn.classList.remove('hidden');
-    autolevelCancelBtn.classList.remove('hidden');
+    autolevelStatus.hidden = false;
+    autolevelLockBtn.hidden = false;
+    autolevelCancelBtn.hidden = false;
     autolevelRmsBuffer = [];
 
     // Step 1: measure ambient noise floor for ~500 ms BEFORE the
@@ -2941,8 +2947,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       autolevelLockBtn.onclick = prevLockHandler;
       autolevelCancelBtn.onclick = prevCancelHandler;
       autolevelLine.textContent = safeErrorMessage(e, GENERIC_STEP_FAILURE);
-      autolevelLockBtn.classList.add('hidden');
-      autolevelCancelBtn.classList.add('hidden');
+      autolevelLockBtn.hidden = true;
+      autolevelCancelBtn.hidden = true;
       return;
     }
     watcher = setInterval(watchAutolevelRms, 50);
@@ -2997,8 +3003,8 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
     clearInterval(watcher);
     autolevelLockBtn.onclick = prevLockHandler;
     autolevelCancelBtn.onclick = prevCancelHandler;
-    autolevelLockBtn.classList.add('hidden');
-    autolevelCancelBtn.classList.add('hidden');
+    autolevelLockBtn.hidden = true;
+    autolevelCancelBtn.hidden = true;
   }
 
   async function cancelAutolevel() {
@@ -3042,15 +3048,15 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   // wrong state.
   function applyButtonPolicy(state, autolevelStatus) {
     // Default: everything hidden / disabled.
-    positionPrompt.classList.add('hidden');
-    resetBtn.classList.add('hidden');
+    positionPrompt.hidden = true;
+    resetBtn.hidden = true;
     resetBtn.disabled = false;
-    cancelMeasureBtn.classList.add('hidden');
+    cancelMeasureBtn.hidden = true;
     cancelMeasureBtn.disabled = false;
     emergencyStopActive = false;
-    autolevelLockBtn.classList.add('hidden');
+    autolevelLockBtn.hidden = true;
     autolevelLockBtn.disabled = false;
-    autolevelCancelBtn.classList.add('hidden');
+    autolevelCancelBtn.hidden = true;
     autolevelCancelBtn.disabled = false;
     var autolevelRamping = autolevelStatus === 'ramping';
     // The persistent shell owns the emergency action outside the envelope.
@@ -3071,26 +3077,26 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
       cancelMeasureBtn.textContent = emergencyStopActive
         ? 'Stop measurement'
         : 'Cancel measurement';
-      cancelMeasureBtn.classList.remove('hidden');
+      cancelMeasureBtn.hidden = false;
     }
     // Per-state additions:
     if (autolevelRamping) {
       // Manual Lock + Cancel always available during the ramp so
       // the user can override the auto-detection (iOS Safari AGC
       // makes the mic-based decision unreliable in some setups).
-      autolevelLockBtn.classList.remove('hidden');
-      autolevelCancelBtn.classList.remove('hidden');
+      autolevelLockBtn.hidden = false;
+      autolevelCancelBtn.hidden = false;
     }
     if (state === 'needs_next_position') {
-      positionPrompt.classList.remove('hidden');
+      positionPrompt.hidden = false;
     } else if (state === 'needs_repeat_capture') {
-      positionPrompt.classList.remove('hidden');
+      positionPrompt.hidden = false;
       positionCurrent.textContent = '1';
       positionTotal.textContent = '1';
     } else if (state === 'ready') {
-      resetBtn.classList.remove('hidden');
+      resetBtn.hidden = false;
     } else if (state === 'applied' || state === 'verified') {
-      resetBtn.classList.remove('hidden');
+      resetBtn.hidden = false;
     }
     // resetBtn's own hidden class just settled — re-derive whether the
     // banner's reset control should defer to it (see syncCurrentCorrectionReset).
@@ -3349,9 +3355,7 @@ import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
   if (changeRunDefaultsBtn) {
     changeRunDefaultsBtn.addEventListener('click', function () {
       if (runTransportLocked) return;
-      setMeasurementOptionsOpen(
-        measurementOptions.classList.contains('hidden')
-      );
+      setMeasurementOptionsOpen(measurementOptions.hidden);
     });
   }
   [positionsSelect, targetSelect, strategySelect].forEach(function (select) {

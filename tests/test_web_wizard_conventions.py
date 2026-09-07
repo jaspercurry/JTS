@@ -839,40 +839,17 @@ def test_wizard_python_strings_do_not_inline_dialog_helper_calls():
 # a class named "hidden" to anything. This shipped invisibly on the
 # crossover page (hardware-confirmed 2026-07-16): the retired "Open phone
 # capture" / "Stop measurement" controls stayed on screen on every step
-# because crossover.css carries no local `.hidden` rule either. The one
-# legitimate exception is the room measurement page, which DOES define its
-# own local `.hidden` rule in its page CSS — every other page must use the
-# attribute, which is the only mechanism the shared stylesheet implements.
-_LEGACY_HIDDEN_CLASS_PAGES = {
-    "jasper/web/correction_room_flow.py": "deploy/assets/correction/correction.css",
-    "deploy/assets/correction/js/main.js": "deploy/assets/correction/correction.css",
-}
+# because crossover.css carries no local `.hidden` rule either.
 _HIDDEN_CLASSLIST_RE = re.compile(
     r"classList\.(?:add|remove|toggle)\(\s*['\"]hidden['\"]"
 )
 _CLASS_ATTR_RE = re.compile(r"""class=(["'])(.*?)\1""")
 
 
-def test_legacy_hidden_class_pages_still_carry_their_local_rule():
-    """The allowlist above is only honest while its pages truly own a
-    `.hidden` rule — if that rule is ever removed, the page must move to
-    the native attribute (and its entry must come out of the allowlist)."""
-    for page, css_path in _LEGACY_HIDDEN_CLASS_PAGES.items():
-        css = Path(css_path).read_text()
-        assert re.search(r"\.hidden\b", css), (
-            f"{page} is allowlisted as having a local `.hidden` rule in "
-            f"{css_path}, but that rule is gone — convert {page} to the "
-            "native `hidden` attribute and drop it from "
-            "_LEGACY_HIDDEN_CLASS_PAGES"
-        )
-
-
 def test_static_modules_hide_elements_with_the_attribute_not_a_class():
     assert WEB_MODULE_FILES, "expected web ES modules to scan"
     offenders = []
     for path in WEB_MODULE_FILES:
-        if str(path) in _LEGACY_HIDDEN_CLASS_PAGES:
-            continue
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             if _HIDDEN_CLASSLIST_RE.search(line):
                 offenders.append(f"{path}:{lineno}: {line.strip()}")
@@ -886,8 +863,6 @@ def test_static_modules_hide_elements_with_the_attribute_not_a_class():
 def test_wizard_markup_hides_elements_with_the_attribute_not_a_class():
     offenders = []
     for path in WEB_PY_FILES:
-        if str(path) in _LEGACY_HIDDEN_CLASS_PAGES:
-            continue
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             for _quote, class_value in _CLASS_ATTR_RE.findall(line):
                 if "hidden" in class_value.split():
@@ -1048,7 +1023,9 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
 # docs/UX-AUDIT-2026-09-03.md §5.5 — no inline style= in jasper/web/*.py
 # HTML (recurrence: 21 in correction_room_flow.py, 8 in google_setup.py —
 # B.4's --tone/.badge promotion cleared one of google's, so the live count
-# below is 7; measured at HEAD, not the audit snapshot).
+# below is 7; C.S5's title/header/back pass moved all 21 of
+# correction_room_flow.py's into classes, clearing that entry entirely;
+# measured at HEAD, not the audit snapshot).
 #
 # Shrink-only: each entry is today's real style="/style=' count for that
 # module. The test fails if a count GROWS (a new inline style=) and fails
@@ -1056,9 +1033,6 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
 # update the allowlist in the same PR, never pass by accident. Delete an
 # entry outright once its module reaches 0.
 _INLINE_STYLE_ALLOWLIST = {
-    # Correction cluster: canonical_header() + correction.css absorb these
-    # as every correction page gets a title/back_href pass (C.S5).
-    "correction_room_flow.py": 21,
     # Services cluster (C.A5): /google/, /ha/, /transit/, /weather/ each get
     # an app.css-token pass as part of that row.
     "google_setup.py": 7,
@@ -1134,10 +1108,6 @@ _TITLE_ALLOWLIST = {
     ("/spotify/", "Spotify accounts"): {"title", "header"},         # C.R1
     ("/bluetooth/", "Bluetooth devices"): {"title", "header"},      # C.R1
     ("/airplay/", "AirPlay sync"): {"title", "header"},             # C.R1
-    ("/sound/speaker/crossover/", "Active speaker"): {"title", "header"},  # C.S5
-    ("/sound/room/", "Room correction"): {"title"},                 # C.S5
-    ("/sound/bass/", "Bass"): {"back", "title", "header"},          # C.S5
-    ("/sound/measurements/", "Measurements"): {"back", "title"},    # C.S5
     ("/voice/", "Voice"): {"back", "title", "header"},              # C.A2
     ("/wake/", "Wake word"): {"back"},                              # C.A3
     ("/tools/", "Tools"): {"back"},                                 # C.A4
