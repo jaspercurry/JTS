@@ -2934,9 +2934,6 @@ class WakeLoop:
         await self._prepare_assistant_loudness_context()
         await self._tts.pause_content_meter()
         self._content_activity.pause()
-        # Tell the volume coordinator a session is active so its
-        # source-transition handler doesn't fight the ducker's
-        # additive math on camilla.
         self._volume_coordinator.note_voice_session(
             True,
             camilla_volume_locked=getattr(

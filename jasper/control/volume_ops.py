@@ -237,8 +237,9 @@ def _make_duck_active_probe(
 
     The probe asks jasper-voice over UDS whether a duck holder is
     currently holding camilla below the canonical listening_level
-    target. True → defer the accessory's camilla write (the duck release
-    lands it on session end). False → write camilla normally.
+    target. True → skip the accessory's camilla write; listening_level
+    still persists, so the user's intent is not lost. False → write
+    camilla normally.
     None → unknown (UDS unreachable / voice wedged / response
     malformed); the coordinator treats this as fail-open and writes
     camilla — the accessory must never silently stop working because of

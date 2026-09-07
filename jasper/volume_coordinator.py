@@ -312,8 +312,7 @@ class VolumeCoordinator:
         self._lock = asyncio.Lock()
 
         # Voice-session gate: while True, the source-transition
-        # handler is suppressed because the ducker has temporary
-        # control of camilla. Set/cleared by voice_daemon's WakeLoop
+        # handler is suppressed. Set/cleared by voice_daemon's WakeLoop
         # via `note_voice_session(True/False)`. Only meaningful on
         # the long-lived coordinator owned by jasper-voice; per-
         # request coordinators in jasper-control always read False
@@ -321,8 +320,7 @@ class VolumeCoordinator:
         self._voice_session_active: bool = False
         # A voice session does not necessarily lock Camilla. Current production
         # ducks renderer/program audio inside fan-in, leaving Camilla as a safe
-        # user-volume surface for the final music+TTS mix. The legacy Camilla
-        # ducker is the only transport that sets this flag.
+        # user-volume surface for the final music+TTS mix.
         self._camilla_volume_locked: bool = False
         # Correction-measurement gate for the voice daemon's own 1 Hz
         # reconciler. This is intentionally narrow: it does not turn this

@@ -151,7 +151,7 @@ jasper/voice/
   control_socket.py     ~100   the UDS protocol server, lifted out of daemon_main
   wake_loop.py         ~1400   WakeLoop core: legs, OR-gate, acquire/drain, turn open/end, session_status
   wake_telemetry.py     ~260   WakeFunnel: on_fire/stage/outcome/audio rings; the only SQLite seam; never awaited on a frame path
-  assistant_output.py   ~590   cues, chirps, dynamic text, output episodes; FanInDucker converges with camilla.Ducker here
+  assistant_output.py   ~590   cues, chirps, dynamic text, output episodes; FanInDucker
   measurement_hold.py   ~610   landed (#4104): pause/pause_response/resume for the measurement window
   research_announcer.py ~370   announce/confirm state machine over a small TurnHost protocol
   push_to_talk.py       ~370   manual mic set, hold cap, keepalive, manual endpointer
@@ -407,7 +407,7 @@ Wave 4 — decompose WakeLoop
 - [ ] 4.3 `wake_telemetry.py` (also `_handle_wake_frame` inlay) — partial: module extracted, fire-time `_current_condition` write deleted (`_maybe_refresh_condition` sole writer) merged #4325; `_handle_wake_frame` inlay open (untouched by #4325's diff, still 209 lines at HEAD vs the row's ~150 target)
 - [x] 4.4 `research_announcer.py` + `TurnHost` — merged #4330 (`ResearchWindow` enum replaces four booleans)
 - [x] 4.5 `push_to_talk.py` — merged #4340
-- [ ] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` (voice-daemon §2 item 6)
+- [x] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` — merged #4369 (converged by deleting the legacy Camilla transport; `FanInDucker` is the voice loop's only duck transport)
 - [ ] 4.7 `daemon_main.py` table-driven builders + `AsyncExitStack` teardown + `control_socket.py` (providers F1–F3) — partial: exit-stack teardown merged #4301; control_socket.py extraction merged #4315; table-driven builders open
 
 Wave 5 — one provider base

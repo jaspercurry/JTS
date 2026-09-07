@@ -583,13 +583,10 @@ class VolumeOwner:
                     depth_db=handle.depth_db or 0.0,
                 )
             # This read and :meth:`_settle`'s are NOT one question asked
-            # twice. They are separated by a round-trip, and the fader is
-            # shared across daemons: a duck holder clears the duck-active flag
-            # BEFORE awaiting this release, so jasper-control's probe
-            # (``control.volume_ops._make_duck_active_probe``) stops deferring
-            # and may write CamillaDSP while the first read is in flight.
-            # Settling on the earlier sample would skip the repair and leave
-            # the foreign value standing.
+            # twice. They are separated by a round-trip and the fader is
+            # shared across daemons, so another writer can land a value while
+            # the first read is in flight. Settling on the earlier sample
+            # would skip the repair and leave that value standing.
             await self._settle(
                 settled, context=f"release:{handle.kind.value}",
             )

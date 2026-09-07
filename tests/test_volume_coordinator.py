@@ -1427,7 +1427,7 @@ async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
     assert await coord.get_camilla_target_db() == pytest.approx(percent_to_db(20))
 
 
-async def test_ducker_restore_preserves_degraded_push_guard(tmp_path):
+async def test_get_camilla_target_db_preserves_degraded_push_guard(tmp_path):
     """Push-mode normally restores Camilla to 0 dB, but a degraded
     handoff guard is intentional safety state and must survive restore."""
     coord, _, _ = _coord(
@@ -2203,7 +2203,7 @@ async def test_the_duck_restore_target_follows_the_active_carrier(
     coord, _, persistence = _real_coord(tmp_path, active=active, level=level)
     # A persisted attenuation would mean a degraded handoff guard, which is a
     # deliberate exception pinned by
-    # test_ducker_restore_preserves_degraded_push_guard.
+    # test_get_camilla_target_db_preserves_degraded_push_guard.
     persistence.save_now(0.0)
 
     assert await coord.get_camilla_target_db() == pytest.approx(expected)

@@ -486,8 +486,9 @@ class AssistantOutput:
         and a ~6 s cue is short enough for plain duck/restore.
 
         The cue plays even if ducking fails: unducked but audible beats
-        silence on a wake-blocking condition. Restore short-circuits when the
-        duck did not latch, so the finally is unconditional.
+        silence on a wake-blocking condition. The finally restores
+        unconditionally — a duck that reported failure may still have
+        delivered the attenuation, so the release has to run anyway.
 
         ``episode`` is for the one caller that cannot let this method take
         its own admission: the research cancel timeout has to end the turn
