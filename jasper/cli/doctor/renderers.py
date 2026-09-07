@@ -65,7 +65,6 @@ REASON_MUX_NOT_ACTIVE = "mux_not_active"
 
 REASON_BLUEALSA_NOT_ACTIVE = "bluealsa_not_active"
 
-REASON_BT_PAIRING_SYSTEMCTL_SHOW_FAILED = "bt_pairing_systemctl_show_failed"
 REASON_BT_PAIRING_AGENT_NOT_RUNNING = "bt_pairing_agent_not_running"
 REASON_BT_PAIRING_WRONG_AGENT = "bt_pairing_wrong_agent"
 REASON_BT_PAIRING_BLUETOOTHCTL_UNAVAILABLE = "bt_pairing_bluetoothctl_unavailable"
@@ -430,25 +429,11 @@ def check_bluetooth_pairing_policy() -> CheckResult:
             f"bt-agent.service state={active}/{sub}; no-code default agent not running",
             reason=REASON_BT_PAIRING_AGENT_NOT_RUNNING,
         )
-    # ExecStart isn't in the batched roster read's property set — one small
-    # dedicated call for the one property this check needs it for.
-    try:
-        exec_proc = _run(["systemctl", "show", "bt-agent.service", "-p", "ExecStart"])
-    except FileNotFoundError:
+    # ExecStart isn't in the batched roster read's property set.
+    exec_starts = evidence.unit_property("ExecStart", ("bt-agent.service",))
+    if exec_starts is None:
         return _systemctl_unavailable_result("Bluetooth pairing policy")
-    if exec_proc.returncode != 0:
-        return CheckResult(
-            "Bluetooth pairing policy",
-            "fail",
-            "systemctl show bt-agent.service failed",
-            reason=REASON_BT_PAIRING_SYSTEMCTL_SHOW_FAILED,
-        )
-    exec_start = ""
-    for line in exec_proc.stdout.splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key == "ExecStart":
-            exec_start = value
-            break
+    exec_start = exec_starts[0]
     if expected_exec not in exec_start:
         return CheckResult(
             "Bluetooth pairing policy",

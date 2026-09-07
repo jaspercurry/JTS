@@ -66,17 +66,16 @@ def _bt_show(discoverable: str, pairable: str) -> SimpleNamespace:
 
 
 def _run_bt_pairing_probe(monkeypatch, *, exec_path: str, bt_result):
-    """`_run` stand-in for the two subprocesses `check_bluetooth_pairing_policy`
-    calls: the agent's `ExecStart`, then `bluetoothctl show` — skipped by the
-    wrong-agent case, which returns before ever reaching it. ``bt_result`` is
-    a `SimpleNamespace(returncode, stdout, stderr)` or an exception instance
-    to raise in its place."""
+    """Seed the agent's `ExecStart` evidence and stand in for the one
+    subprocess `check_bluetooth_pairing_policy` still runs, `bluetoothctl
+    show` — skipped by the wrong-agent case, which returns before ever
+    reaching it. ``bt_result`` is a `SimpleNamespace(returncode, stdout,
+    stderr)` or an exception instance to raise in its place."""
+    _evidence.evidence.seed(
+        "prop:ExecStart:bt-agent.service", [f"{{ path={exec_path} ; }}"],
+    )
 
     def fake_run(cmd, *args, **kwargs):
-        if cmd[:4] == ["systemctl", "show", "bt-agent.service", "-p"]:
-            return SimpleNamespace(
-                returncode=0, stdout=f"ExecStart={{ path={exec_path} ; }}\n", stderr="",
-            )
         if cmd == ["bluetoothctl", "show"]:
             if isinstance(bt_result, Exception):
                 raise bt_result

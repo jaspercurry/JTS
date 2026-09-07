@@ -10,13 +10,12 @@ stays in the check. ``run_async`` resets the cache at the start of every
 run and records that run's row guard in it, so a check can read the guard it
 is running under; a test fixture resets it between tests.
 
-Test seams: patch this module's reader functions (``_run``,
-``read_status_socket``, ``read_unit_states``) or ``evidence.seed(key, value)``
+Test seams: patch this module's reader functions (``read_status_socket``,
+``read_unit_states``, ``read_unit_property``) or ``evidence.seed(key, value)``
 a memo entry directly; the keys are the ones the public methods build.
 """
 from __future__ import annotations
 
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -29,10 +28,9 @@ from ...route_latency.status_socket import (
 )
 from ...service_units import (
     DOCTOR_UNIT_ROSTER,
-    parse_property_blocks,
+    read_unit_property,
     read_unit_states,
 )
-from ._shared import _run
 from ._shared import install_profile_is_streambox as _install_profile_is_streambox
 
 T = TypeVar("T")
@@ -75,27 +73,6 @@ def _read_status(path: str, timeout: float) -> StatusRead:
         return StatusRead(read_status_socket(path, timeout=timeout))
     except Exception as exc:  # noqa: BLE001 — classified by the caller
         return StatusRead(None, exc)
-
-
-def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
-    """One value of ``prop`` per unit, in input order; None when systemctl is
-    unavailable (dev host) or the reply is not one block per unit.
-
-    One subprocess per property rather than per unit: unbatched, a property
-    outside ``SHOW_PROPERTIES`` would cost N invocations, a large
-    constant-factor loss on the Pi.
-    """
-    try:
-        out = _run(
-            ["systemctl", "show", "--no-page", f"--property={prop}", *units],
-            timeout=UNIT_SHOW_TIMEOUT_SECONDS,
-        ).stdout
-    except (subprocess.SubprocessError, FileNotFoundError, OSError):
-        return None
-    values = parse_property_blocks(out, prop)
-    if len(values) != len(units):
-        return None
-    return values
 
 
 def _loopback_substreams() -> dict[int, str]:
@@ -226,7 +203,9 @@ class Evidence:
         per unit."""
         return self.get(
             f"prop:{prop}:{','.join(units)}",
-            lambda: _systemctl_show_property(prop, list(units)),
+            lambda: read_unit_property(
+                prop, units, timeout=UNIT_SHOW_TIMEOUT_SECONDS,
+            ),
         )
 
     # -- files and readers shared by several checks ----------------------
