@@ -44,7 +44,9 @@ const siblingDir = dirname(modulePath);
 // declarations land in the shared scope the entry reads them from), then
 // every source's import lines stripped alike and the named imports stubbed
 // in `preamble`.
-const SIBLING_MODULES = ["api.js", "capture.js", "format.js", "quality.js"];
+const SIBLING_MODULES = [
+  "api.js", "capture.js", "chart.js", "format.js", "quality.js", "report.js",
+];
 const STRIP_EXPORT = [/^export /gm, ""];
 
 // ---- classList stub ----

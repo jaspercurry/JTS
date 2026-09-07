@@ -20,15 +20,19 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // unchanged.
 import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 import {
-  GENERIC_STEP_FAILURE, endpoint, homeownerError, rootCaUrl, safeErrorMessage,
-  secureCorrectionUrl,
+  GENERIC_STEP_FAILURE, endpoint, fetchStatus, homeownerError, postJson,
+  responseError, rootCaUrl, safeErrorMessage, secureCorrectionUrl,
+  validatePublicFailure,
 } from "./api.js";
 import { float32ToWav } from "./capture.js";
+import { drawChart } from "./chart.js";
 import {
-  describeFilters, formatAppliedAt, formatBytes, formatMaybeDb,
-  orientationLabel, reportIssueList,
+  describeFilters, formatAppliedAt, formatBytes, orientationLabel,
 } from "./format.js";
-import { qualityBanner, renderQuality } from "./quality.js";
+import { clearQuality, renderQuality } from "./quality.js";
+import {
+  renderBrowserAudioLocal, renderBrowserAudioReport, renderSessionReport,
+} from "./report.js";
 (function () {
   'use strict';
 
@@ -91,7 +95,6 @@ import { qualityBanner, renderQuality } from "./quality.js";
   var constraintsBlock = document.getElementById('constraints');
   var rowsTbody = document.getElementById('constraint-rows');
   var errBanner = document.getElementById('err-banner');
-  var browserAudioReport = document.getElementById('browser-audio-report');
   var levelBar = document.getElementById('level-bar-fill');
   var levelReadout = document.getElementById('level-db');
   var envelopeSections = document.getElementById('envelope-sections');
@@ -236,30 +239,6 @@ import { qualityBanner, renderQuality } from "./quality.js";
     '/apply': true,
     '/reset': true,
     '/verify': true,
-  };
-  // Closed presentation vocabulary. Codes are duplicated at this wire
-  // boundary deliberately: a malformed/partially deployed server must not
-  // smuggle arbitrary diagnostics into a block the browser treats as safe.
-  var KNOWN_FAILURES = {
-    speaker_setup_incomplete: {text: "Finish speaker setup first.", retryable: false},
-    speaker_readiness_unavailable: {text: "Speaker setup could not be checked. Try again.", retryable: true},
-    speaker_readiness_fault: {text: "The speaker's saved setup could not be read. That looks like a device fault rather than a setup step, so trying again is unlikely to help.", retryable: false},
-    measurement_in_progress: {text: "A measurement is already in progress. Finish or stop it before starting again.", retryable: true},
-    measurement_setup_invalid: {text: "The measurement setup changed. Review the microphone choices and try again.", retryable: true},
-    speaker_measurement_unsafe: {text: "The speaker is not ready to measure safely. Review speaker setup, then try again.", retryable: false},
-    microphone_setup_unavailable: {text: "The saved microphone setup is unavailable. Choose the microphone again.", retryable: true},
-    measurement_stopped: {text: "Measurement stopped.", retryable: true},
-    test_signal_unavailable: {text: "The speaker could not play the test sound. Try again.", retryable: true},
-    measurement_analysis_failed: {text: "The speaker could not finish this measurement. Try measuring again.", retryable: true},
-    correction_update_failed: {text: "The correction could not be applied. Check the current correction before trying again.", retryable: true},
-    correction_restore_failed: {text: "The previous sound could not be confirmed restored. The correction may still be applied.", retryable: true},
-    correction_auto_revert_failed: {text: "That measured worse, but the correction could not be removed automatically. It is STILL APPLIED. Use Reset to remove it.", retryable: true},
-    tuning_busy: {text: "The tuning assistant just ran. Wait a moment, then try again.", retryable: true},
-    tuning_spend_limit: {text: "The daily assistant budget is reached. Try again after the daily rollover.", retryable: false},
-    tuning_unavailable: {text: "The tuning assistant is not set up yet.", retryable: false},
-    tuning_request_failed: {text: "The tuning assistant could not continue. Try again.", retryable: true},
-    tuning_proposal_rejected: {text: "That suggestion was not applied because it did not pass the speaker's safety checks.", retryable: true},
-    unknown_failure: {text: "The speaker could not continue this step. Try again.", retryable: true},
   };
   var KNOWN_SECTION_IDS = [
     'current-correction', 'run-defaults', 'readiness-blocker',
@@ -755,39 +734,6 @@ import { qualityBanner, renderQuality } from "./quality.js";
       errBanner.hidden = true;
     }
     renderBrowserAudioLocal(actual, problems);
-  }
-
-  function renderBrowserAudioLocal(actual, problems) {
-    var issues = problems.slice();
-    if (actual.channelCount !== 1) {
-      issues.push('channelCount is ' + actual.channelCount + ' (JTS will use the first channel)');
-    }
-    var level = problems.length ? 'fail' : (issues.length ? 'warn' : 'ok');
-    browserAudioReport.className = 'browser-audio-card ' + level;
-    browserAudioReport.hidden = false;
-    browserAudioReport.innerHTML =
-      '<strong>Browser audio path: ' +
-      (level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
-      '</strong>' +
-      reportIssueList(
-        issues,
-        'Input metadata looks ready for measurement. Capture quality is still checked after each sweep.'
-      );
-  }
-
-  function renderBrowserAudioReport(report) {
-    if (!report) return;
-    var level = report.level || (report.failed ? 'fail' : 'warn');
-    browserAudioReport.className = 'browser-audio-card ' + level;
-    browserAudioReport.hidden = false;
-    browserAudioReport.innerHTML =
-      '<strong>Browser audio path: ' +
-      escapeText(level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
-      '</strong><p class="hint">' + (level === 'ok'
-        ? 'The microphone settings are ready for measurement.'
-        : (level === 'fail'
-          ? 'The microphone settings are not safe for this measurement.'
-          : 'The microphone may reduce measurement accuracy.')) + '</p>';
   }
 
   var LOCAL_CAPTURE_MEMORY_KEY = 'jts-room-local-capture-v1';
@@ -1520,30 +1466,6 @@ import { qualityBanner, renderQuality } from "./quality.js";
     setRunTransportLocked(!block.change_allowed);
   }
 
-  function validatePublicFailure(block) {
-    if (block === null) return null;
-    if (!block || typeof block !== 'object' ||
-        typeof block.code !== 'string' || !KNOWN_FAILURES[block.code] ||
-        typeof block.text !== 'string' || !block.text.trim() ||
-        typeof block.retryable !== 'boolean') {
-      throw new Error('invalid room-correction failure');
-    }
-    var expected = KNOWN_FAILURES[block.code];
-    if (block.text !== expected.text || block.retryable !== expected.retryable) {
-      throw new Error('room-correction failure presentation mismatch');
-    }
-    var action = block.recovery_action;
-    if (action !== null) {
-      if (!action || typeof action.label !== 'string' || !action.label.trim() ||
-          typeof action.href !== 'string' || !action.href.startsWith('/') ||
-          action.href.startsWith('//') || action.href.indexOf('\\') !== -1 ||
-          /[\u0000-\u001f]/.test(action.href)) {
-        throw new Error('invalid room-correction recovery action');
-      }
-    }
-    return block;
-  }
-
   function renderReadinessBlocker(blocker) {
     if (!readinessBlockerMessage || !readinessBlockerAction) return;
     readinessBlockerMessage.textContent = blocker ? String(blocker.text) : '';
@@ -2189,237 +2111,6 @@ import { qualityBanner, renderQuality } from "./quality.js";
     }
   }
 
-  function renderSessionReport(payload) {
-    var evidence = payload.evidence || {};
-    var readiness = evidence.agent_readiness || {};
-    var bundle = evidence.bundle || {};
-    var measurement = evidence.measurement || {};
-    var confidence = evidence.confidence || {};
-    var acoustic = (evidence.acoustic_quality || {}).summary || {};
-    var runtime = (evidence.runtime_integrity || {}).summary || {};
-    var position = evidence.position_analysis || {};
-    var repeatability = evidence.repeatability || {};
-    var versions = payload.artifact_versions || {};
-    var readinessLevel = readiness.level || 'caution';
-    var suspicious = []
-      .concat(bundle.issues || [])
-      .concat(((evidence.runtime_integrity || {}).issues || []))
-      .concat(((evidence.acoustic_quality || {}).issues || []))
-      .concat(repeatability.issues || [])
-      .concat(position.feature_flags || []);
-    var trusted = [];
-    if (bundle.has_result) trusted.push({message: 'Analysis result is present.'});
-    if (bundle.has_artifact_manifest) trusted.push({message: 'Artifact manifest is present.'});
-    if (acoustic.snr_level && acoustic.snr_level !== 'unavailable') {
-      trusted.push({message: 'SNR evidence is ' + acoustic.snr_level + '.'});
-    }
-    if (runtime.level === 'ok') trusted.push({message: 'Runtime integrity is OK.'});
-    if (repeatability.available) {
-      trusted.push({message: 'Same-seat repeatability is ' + repeatability.level + '.'});
-    }
-    var gates = confidence.strategy_gates || {};
-    var refused = ['safe', 'balanced', 'assertive'].filter(function (name) {
-      return gates[name] && gates[name].allowed === false;
-    }).map(function (name) {
-      var reason = (gates[name].reasons || [])[0] || 'strategy gate blocked';
-      return {message: name + ' correction blocked: ' + reason};
-    });
-    sessionReport.className = 'session-report ' + readinessLevel;
-    sessionReport.innerHTML =
-      '<h3>Measurement report · ' + escapeText(evidence.session_id || payload.session_id || 'unknown') + '</h3>' +
-      '<p class="hint"><strong>Recommended next action:</strong> ' +
-      escapeText(readiness.recommended_action || 'review evidence before applying stronger correction') + '</p>' +
-      '<div class="metric-grid">' +
-        '<div class="metric"><span class="label">Readiness</span><span class="value">' +
-        escapeText(readinessLevel) + '</span></div>' +
-        '<div class="metric"><span class="label">Confidence</span><span class="value">' +
-        escapeText(confidence.level || '—') + ' · ' + Number(confidence.score || 0).toFixed(0) + '/100</span></div>' +
-        '<div class="metric"><span class="label">SNR</span><span class="value">' +
-        escapeText(acoustic.snr_level || '—') + ' · ' + formatMaybeDb(acoustic.min_estimated_snr_db) + '</span></div>' +
-        '<div class="metric"><span class="label">Runtime</span><span class="value">' +
-        escapeText(runtime.level || 'unknown') + '</span></div>' +
-        '<div class="metric"><span class="label">Positions</span><span class="value">' +
-        Number(position.position_count || measurement.positions_completed || 0) + '</span></div>' +
-        '<div class="metric"><span class="label">Repeatability</span><span class="value">' +
-        escapeText(repeatability.level || 'unavailable') + '</span></div>' +
-      '</div>' +
-      '<h4>What happened</h4>' +
-      '<p class="hint">State ' + escapeText(bundle.state || 'unknown') +
-      ' · target ' + escapeText(measurement.target_choice || 'unknown') +
-      ' · strategy ' + escapeText(measurement.strategy_choice || 'unknown') +
-      ' · bundle schema v' + escapeText(bundle.schema_version || 'unknown') + '.</p>' +
-      '<h4>What looks trustworthy</h4>' +
-      reportIssueList(trusted, 'No positive evidence was available yet.') +
-      '<h4>What looks suspicious or missing</h4>' +
-      reportIssueList(suspicious.concat((readiness.reasons || []).map(function (reason) {
-        return {message: reason};
-      })), 'No warnings were recorded in the read-only evidence packet.') +
-      '<h4>What JTS refused to correct</h4>' +
-      reportIssueList(refused, 'No strategy gate refusal was recorded.') +
-      '<h4>Artifact versions</h4>' +
-      '<p class="hint">bundle v' + escapeText(versions.bundle_schema_version || bundle.schema_version || 'unknown') +
-      ' · manifest v' + escapeText(versions.artifact_manifest_schema_version || 'missing') +
-      ' · result v' + escapeText(versions.result_json_schema_version || 'missing') +
-      ' · runtime v' + escapeText(versions.runtime_integrity_schema_version || 'missing') +
-      ' · acoustic v' + escapeText(versions.acoustic_quality_schema_version || 'missing') +
-      ' · evidence packet v' + escapeText(versions.evidence_packet_schema_version || evidence.artifact_schema_version || 'unknown') +
-      '.</p>';
-  }
-
-  function filterEffectCurve(measured, predicted) {
-    if (
-      !measured || !predicted ||
-      !measured.freqs_hz || !measured.magnitude_db ||
-      !predicted.magnitude_db ||
-      measured.magnitude_db.length !== predicted.magnitude_db.length
-    ) {
-      return null;
-    }
-    return {
-      freqs_hz: measured.freqs_hz,
-      magnitude_db: measured.magnitude_db.map(function (value, idx) {
-        return Number(predicted.magnitude_db[idx] || 0) - Number(value || 0);
-      })
-    };
-  }
-
-  function drawChart(curves, fillSegments) {
-    curves = curves || {};
-    var measured = curves.measured || null;
-    var target = curves.target || null;
-    var predicted = curves.predicted || null;
-    var verify = curves.verify || null;
-    var dpr = window.devicePixelRatio || 1;
-    var rect = canvas.getBoundingClientRect();
-    // Defensive: a hidden canvas (display:none ancestor) reports
-    // 0×0. Drawing into it silently produces an empty chart. Bail
-    // and log — caller is responsible for re-invoking after the
-    // canvas becomes visible.
-    if (rect.width < 10 || rect.height < 10) {
-      console.warn('drawChart skipped — canvas not laid out yet ' +
-        '(' + rect.width + '×' + rect.height + ')');
-      return;
-    }
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
-    var c = canvas.getContext('2d');
-    c.scale(dpr, dpr);
-    c.clearRect(0, 0, rect.width, rect.height);
-
-    // Margins
-    var ml = 40, mr = 10, mt = 10, mb = 22;
-    var W = rect.width - ml - mr;
-    var H = rect.height - mt - mb;
-
-    var fMin = 20, fMax = 20000;
-    var dbMin = -20, dbMax = 20;
-
-    function fx(f) { return ml + W * (Math.log2(f / fMin) / Math.log2(fMax / fMin)); }
-    function fy(db) { return mt + H * (1 - (db - dbMin) / (dbMax - dbMin)); }
-
-    // Grid
-    c.strokeStyle = '#e6e6e6'; c.fillStyle = '#888';
-    c.font = '11px sans-serif'; c.lineWidth = 1;
-    [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000].forEach(function (f) {
-      var x = fx(f);
-      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
-      var label = f >= 1000 ? (f / 1000) + 'k' : '' + f;
-      c.fillText(label, x - 8, mt + H + 14);
-    });
-    [-20, -10, 0, 10, 20].forEach(function (db) {
-      var y = fy(db);
-      c.beginPath(); c.moveTo(ml, y); c.lineTo(ml + W, y); c.stroke();
-      c.fillText(db + ' dB', 2, y + 3);
-    });
-    // 0 dB emphasis
-    c.strokeStyle = '#bbb';
-    c.beginPath(); c.moveTo(ml, fy(0)); c.lineTo(ml + W, fy(0)); c.stroke();
-
-    function drawCurve(curve, color, dashed, width) {
-      if (!curve || !curve.freqs_hz) return;
-      c.strokeStyle = color;
-      c.lineWidth = width || 2;
-      if (dashed) c.setLineDash([4, 4]); else c.setLineDash([]);
-      c.beginPath();
-      var first = true;
-      for (var i = 0; i < curve.freqs_hz.length; i++) {
-        var x = fx(curve.freqs_hz[i]);
-        var y = fy(curve.magnitude_db[i]);
-        if (first) { c.moveTo(x, y); first = false; }
-        else c.lineTo(x, y);
-      }
-      c.stroke();
-      c.setLineDash([]);
-    }
-
-    // Honest before/after fill: shade the area between the
-    // pre-correction measured curve and the post-correction verify
-    // curve, green where the correction moved toward the target
-    // (improved), amber where it moved away (regressed). The segment
-    // classification + grid indices come from the Pi envelope; this only
-    // renders them against the exact server-smoothed curves.
-    function drawBeforeAfterFill(segments, beforeCurve, afterCurve) {
-      if (
-        !segments || !segments.length ||
-        !beforeCurve || !beforeCurve.freqs_hz || !beforeCurve.magnitude_db ||
-        !afterCurve || !afterCurve.magnitude_db ||
-        beforeCurve.freqs_hz.length !== beforeCurve.magnitude_db.length ||
-        beforeCurve.freqs_hz.length !== afterCurve.magnitude_db.length
-      ) return;
-      var freqs = beforeCurve.freqs_hz;
-      var beforeDb = beforeCurve.magnitude_db;
-      var afterDb = afterCurve.magnitude_db;
-      var n = freqs.length;
-      segments.forEach(function (seg) {
-        var lo = Number(seg.i_lo);
-        var hi = Number(seg.i_hi);
-        if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi < lo) return;
-        lo = Math.max(0, lo);
-        hi = Math.min(n - 1, hi);
-        c.fillStyle = seg.tone === 'improved'
-          ? 'rgba(29, 185, 84, 0.22)'   // green — moved toward target
-          : 'rgba(214, 130, 0, 0.22)';  // amber — moved away
-        c.beginPath();
-        var first = true;
-        for (var i = lo; i <= hi; i++) {
-          var x = fx(freqs[i]);
-          var y = fy(afterDb[i]);
-          if (first) { c.moveTo(x, y); first = false; }
-          else c.lineTo(x, y);
-        }
-        for (var j = hi; j >= lo; j--) {
-          c.lineTo(fx(freqs[j]), fy(beforeDb[j]));
-        }
-        c.closePath();
-        c.fill();
-      });
-    }
-
-    // Measured before/after fill (green=improved, amber=regressed),
-    // under the curves so both edges stay visible. The improved/
-    // regressed verdict + grid indices are Pi-computed; we only fill
-    // between the server-smoothed before/after curves within each
-    // server-classified segment. Render only when a verify exists.
-    if (verify && fillSegments && fillSegments.length) {
-      drawBeforeAfterFill(fillSegments, measured, verify);
-    }
-
-    drawCurve(target, '#888', true, 2);
-    drawCurve(measured, '#d44', false, 2);
-    drawCurve(predicted, '#1db954', false, 2);
-    if (chartShowFilter && chartShowFilter.checked) {
-      drawCurve(
-        filterEffectCurve(measured, predicted),
-        '#2b7bb9',
-        true,
-        1.6,
-      );
-    }
-    // Phase 2: post-correction verify pass overlay (purple dashed).
-    drawCurve(verify, '#a050d0', true, 2);
-    return true;
-  }
-
   function redrawLatestChart() {
     if (lastChartEnvelope) drawEnvelopeCurves(lastChartEnvelope);
   }
@@ -2434,55 +2125,6 @@ import { qualityBanner, renderQuality } from "./quality.js";
     };
     if (wizardVerdict) wizardVerdict.textContent = pendingHomeownerFailure.text;
     if (!pendingHomeownerFailure.retryable) renderPrimaryAction(null);
-  }
-
-  async function responseError(resp, fallback) {
-    var text = '';
-    var payload = null;
-    try {
-      text = await resp.text();
-      payload = JSON.parse(text);
-    } catch (_e) {}
-    var failure = null;
-    try {
-      failure = validatePublicFailure(payload && payload.failure || null);
-    } catch (_e) {}
-    console.warn('room-correction request failed', {
-      status: resp.status,
-      failureCode: failure && failure.code,
-    });
-    return homeownerError(failure, fallback);
-  }
-
-  async function postJson(path, body) {
-    var url = endpoint(path);
-    var resp;
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(body || {})
-      });
-    } catch (e) {
-      console.warn('room-correction request unavailable', {url: url, error: e});
-      throw homeownerError(null, GENERIC_STEP_FAILURE);
-    }
-    if (!resp.ok) {
-      throw await responseError(resp, GENERIC_STEP_FAILURE);
-    }
-    return await resp.json();
-  }
-
-  async function fetchStatus() {
-    var resp;
-    try {
-      resp = await fetch(endpoint('status'), {cache: 'no-store'});
-    } catch (e) {
-      console.warn('room-correction status unavailable', e);
-      throw homeownerError(null, GENERIC_STEP_FAILURE);
-    }
-    if (!resp.ok) throw await responseError(resp, GENERIC_STEP_FAILURE);
-    return await resp.json();
   }
 
   // -- Workflow --
@@ -2531,9 +2173,7 @@ import { qualityBanner, renderQuality } from "./quality.js";
     resetBtn.hidden = true;
     resultSection.hidden = true;
     positionPrompt.hidden = true;
-    qualityBanner.className = 'quality-banner';
-    qualityBanner.hidden = true;
-    qualityBanner.innerHTML = '';
+    clearQuality();
     lastChartEnvelope = null;
     inVerifyMode = false;
     calibrationMismatchAlerted = false;

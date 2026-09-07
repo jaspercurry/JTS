@@ -5,7 +5,13 @@
 // quality.js — the capture-quality banner: which reports a /status payload
 // carries, and the one banner they render into.
 
-export var qualityBanner = document.getElementById('quality-banner');
+var qualityBanner = document.getElementById('quality-banner');
+
+export function clearQuality() {
+  qualityBanner.className = 'quality-banner';
+  qualityBanner.hidden = true;
+  qualityBanner.innerHTML = '';
+}
 
 function qualityReports(payload) {
   var reports = [];
@@ -31,9 +37,7 @@ export function renderQuality(payload) {
     });
   });
   if (!issues.length) {
-    qualityBanner.className = 'quality-banner';
-    qualityBanner.hidden = true;
-    qualityBanner.innerHTML = '';
+    clearQuality();
     return;
   }
   var hasFail = issues.some(function (issue) {

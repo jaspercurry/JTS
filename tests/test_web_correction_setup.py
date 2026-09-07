@@ -17,6 +17,9 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+import shutil
+import subprocess
 import threading
 from contextlib import nullcontext
 from http import HTTPStatus
@@ -39,14 +42,9 @@ from tests.test_web_wizard_cli import (
 _IMPORTED_FIXTURES = (_wizard_harness_fixture,)
 
 
-_CORRECTION_MODULE = (
-    Path(__file__).resolve().parents[1]
-    / "deploy" / "assets" / "correction" / "js" / "main.js"
+_FAILURE_CATALOG_JS = (
+    Path(__file__).resolve().parent / "js" / "correction_failure_catalog.mjs"
 )
-# Sibling modules main.js was cut into (pure move, #4422) — same
-# tests/js/correction_render_harness.mjs list. A presence pin against
-# `_module_js()` must keep seeing code that moves between these files.
-_CORRECTION_SIBLING_MODULES = ("api.js", "capture.js", "format.js", "quality.js")
 
 
 @pytest.fixture(autouse=True)
@@ -58,15 +56,6 @@ def _saved_passive_layout(tmp_path, monkeypatch):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     save_output_topology(_full_range_stereo(), path)
-
-
-def _module_js() -> str:
-    parts = [_CORRECTION_MODULE.read_text()]
-    parts += [
-        (_CORRECTION_MODULE.parent / name).read_text()
-        for name in _CORRECTION_SIBLING_MODULES
-    ]
-    return "\n".join(parts)
 
 
 def test_run_async_timeout_cancels_loop_task():
@@ -261,27 +250,26 @@ def test_render_leaves_household_default_copy_to_the_envelope():
 
 
 def test_browser_failure_presentation_matches_server_catalog():
-    import json
-    import re
-
     from jasper.correction import failures
 
-    js = _module_js()
-    block = re.search(
-        r"var KNOWN_FAILURES = \{(?P<body>.*?)\n  \};",
-        js,
-        re.DOTALL,
+    node = shutil.which("node")
+    if node is None:
+        # A developer without node gets a skip; CI does not — this is the only
+        # check that the browser's closed vocabulary still matches the
+        # server's, and a silent skip would report drift as green.
+        if os.environ.get("CI"):
+            pytest.fail("node is not on PATH in CI")
+        pytest.skip("node not on PATH")
+    proc = subprocess.run(
+        [node, str(_FAILURE_CATALOG_JS)],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    assert block is not None
-    entries = re.findall(
-        r'^\s*([a-z][a-z0-9_]*): \{text: ("(?:[^"\\]|\\.)*"), '
-        r"retryable: (true|false)\},?$",
-        block["body"],
-        re.MULTILINE,
-    )
+    assert proc.returncode == 0, proc.stderr
     browser = {
-        code: (json.loads(text), retryable == "true")
-        for code, text, retryable in entries
+        code: (entry["text"], entry["retryable"])
+        for code, entry in json.loads(proc.stdout).items()
     }
     server = {
         code: (
