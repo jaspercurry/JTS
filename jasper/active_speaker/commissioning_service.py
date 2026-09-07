@@ -29,6 +29,7 @@ from jasper.audio_measurement.evidence_identity import (
 )
 from jasper.audio_measurement.null_walk import NullWalkError
 from jasper.log_event import log_event
+from .commissioning_apply import APPLY_PURPOSE, reopen_applied_candidate_proof
 from .delay_sweep import sweep_spec
 from .commissioning_evidence import (
     REFERENCE_AXIS_GEOMETRY_ID,
@@ -205,8 +206,6 @@ class CommissioningCaptureService:
         protected_safety_profile_fingerprint: str,
     ) -> RegionEvidencePlan:
         """Resolve pre-apply authority without rebasing it onto an applied graph."""
-
-        from .commissioning_apply import APPLY_PURPOSE
 
         lifecycle = self.run_store.lifecycle_state(self.run)
         mutation = self.run_store.current_live_mutation(self.run)
@@ -907,8 +906,6 @@ class CommissioningCaptureService:
     def status(self) -> dict[str, Any]:
         """Return one current state, finalizing only an exact completed receipt."""
 
-        from .commissioning_apply import APPLY_PURPOSE
-
         if not self.run_store.callback_is_current(self.run):
             raise CommissioningServiceError(
                 "run_generation_stale", "commissioning run ownership changed"
@@ -1011,7 +1008,6 @@ class CommissioningCaptureService:
             else:
                 status = "candidate_ready"
         elif lifecycle_state in {"applied_unverified", "verified"}:
-            from .commissioning_apply import reopen_applied_candidate_proof
             from .commissioning_verification import CommissioningVerificationService
 
             candidate, artifact = self._reopen_candidate(

@@ -47,25 +47,6 @@ def _source_path(
     )
 
 
-def _identify(
-    store: CommissioningEvidenceStore,
-    run: CommissioningRunHandle,
-    issuance_id: str,
-    filename: str,
-    *,
-    owner_generation: int | None = None,
-) -> ArtifactIdentity:
-    return store.identify_artifact(
-        f"{EVIDENCE_ROOT}/artifacts/"
-        + _source_path(
-            run,
-            issuance_id,
-            filename,
-            owner_generation=owner_generation,
-        )
-    )
-
-
 def reopen_applied_candidate_proof(
     *,
     store: CommissioningEvidenceStore,
@@ -75,12 +56,14 @@ def reopen_applied_candidate_proof(
     target_plan: RequiredTargetPlan,
     safety_profile_fingerprint: str,
 ) -> tuple[AppliedCandidateProof, ArtifactIdentity]:
-    artifact = _identify(
-        store,
-        run,
-        mutation.issuance_id,
-        "applied-proof.json",
-        owner_generation=mutation.started_owner_generation,
+    artifact = store.identify_artifact(
+        f"{EVIDENCE_ROOT}/artifacts/"
+        + _source_path(
+            run,
+            mutation.issuance_id,
+            "applied-proof.json",
+            owner_generation=mutation.started_owner_generation,
+        )
     )
     proof = AppliedCandidateProof.from_mapping(store.reopen_json_artifact(artifact))
     if (
