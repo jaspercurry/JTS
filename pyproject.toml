@@ -455,11 +455,11 @@ exhaustive = true
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
-  # Genuine two-way dependency, not an unplaced holdout: jasper.cli.aec_bridge
-  # (staying in cli) imports every jasper.aec.bridge_* module, and
-  # jasper/aec/bridge_corpus_lanes.py:36 imports back from jasper.cli.aec_bridge
-  # at module scope. No layer position is lower-than-cli and higher-than-cli
-  # at once, so this holdout stays until that back-edge is cut.
+  # Holdout on jasper.usb_mic, not on the old cli back-edge (that one is cut):
+  # jasper/aec/bridge_telemetry.py:26 and jasper/aec/bridge_config.py:39 import
+  # jasper.usb_mic, which reaches both cli and web back up through
+  # jasper/usb_mic.py:29 -> jasper/source_intent.py:45, so no position below
+  # cli conforms. This line goes with usb_mic's own.
   "aec",
   "assistant_loudness",
   "assistant_volume",

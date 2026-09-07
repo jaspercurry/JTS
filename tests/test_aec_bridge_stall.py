@@ -489,6 +489,11 @@ def test_aec_loop_emits_both_streams(monkeypatch):
     assert aec_sock.sendto.call_count == 2
     assert raw_sock.sendto.call_count == 2
 
+    # The loop's emitters count into the process singleton the stats writer
+    # and the wake-corpus recorder read.
+    sent = aec_bridge._bridge_stats.snapshot()["counters"]["packets_sent_by_leg"]
+    assert {leg: n for leg, n in sent.items() if n} == {"on": 2, "off": 2}
+
     # Primary stream: bytes match engine output, destination = OUT_PORT.
     expected_aec_p1 = b"".join(aec_frames[:4])
     expected_aec_p2 = b"".join(aec_frames[4:])
@@ -1117,18 +1122,6 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     dtln_cls.assert_called_once()
     usb_dtln_engine.close.assert_called_once()
     usb_engine.close.assert_called_once()
-
-
-def test_loop_emitters_count_into_the_process_bridge_stats() -> None:
-    """The emitters the loop builds feed the singleton the stats writer and
-    the wake-corpus recorder read — the one link the telemetry split moved."""
-    emitters: dict[str, bridge_telemetry.LegEmitter] = {}
-    emitter = aec_bridge._add_loop_emitter(
-        emitters, aec_bridge.BridgeConfig.from_env(), "on", 9876,
-    )
-
-    assert emitter.stats is aec_bridge._bridge_stats
-    emitter.close()
 
 
 def test_configured_legs_route_through_shared_emit_packet(monkeypatch):

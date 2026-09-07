@@ -477,3 +477,31 @@ class TimestampedLegEmitter(LegEmitter):
             leg=self.stats_key,
         )
         del self.batch[:frame_bytes]
+
+
+def add_loop_emitter(
+    emitters: dict[str, LegEmitter],
+    stats: _BridgeStats,
+    host: str,
+    leg: str,
+    port: int,
+    *,
+    frame_samples: int = OUT_FRAME_SAMPLES,
+    emitter_cls: type[LegEmitter] = LegEmitter,
+) -> LegEmitter:
+    """Open one leg's UDP socket and register it under `leg` in `emitters`.
+
+    Insertion order is the operator-visible leg order: the stats snapshot's
+    `ports` map and the bridge's shutdown close order both read this dict.
+    """
+    emitter = emitter_cls(
+        sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+        dest=(host, port),
+        batch=bytearray(),
+        stats_key=leg,
+        stats=stats,
+        frame_samples=frame_samples,
+    )
+    emitter.sock.setblocking(False)
+    emitters[leg] = emitter
+    return emitter

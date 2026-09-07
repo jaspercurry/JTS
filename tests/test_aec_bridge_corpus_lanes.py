@@ -263,6 +263,7 @@ def test_corpus_lane_set_matches_pin(scenario, monkeypatch, tmp_path):
     try:
         lanes = bridge_corpus_lanes.build_corpus_lanes(
             emitters,
+            aec_bridge._bridge_stats,
             aec_bridge.BridgeConfig.from_env(),
             select_engine=_select_stub,
             xvf_raw0_webrtc_enabled=flags["xvf_webrtc"],

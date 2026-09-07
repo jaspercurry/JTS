@@ -63,7 +63,6 @@ from contextlib import suppress
 import logging
 import math
 import os
-import socket
 import signal
 import sys
 import threading
@@ -130,8 +129,10 @@ from jasper.aec.bridge_telemetry import (
     StatsIdentity,
     TimestampedLegEmitter,
     _BridgeStats,
+    add_loop_emitter,
     logger,
 )
+from jasper.aec.bridge_corpus_lanes import build_corpus_lanes
 from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 from ..logging_setup import configure_logging
@@ -313,28 +314,6 @@ class _MicStarvationWatchdog:
         return self._starved_windows >= self._max_starved
 
 
-def _add_loop_emitter(
-    emitters: dict[str, LegEmitter],
-    config: BridgeConfig,
-    leg: str,
-    port: int,
-    *,
-    frame_samples: int = OUT_FRAME_SAMPLES,
-    emitter_cls: type[LegEmitter] = LegEmitter,
-) -> LegEmitter:
-    emitter = emitter_cls(
-        sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-        dest=(config.out_host, port),
-        batch=bytearray(),
-        stats_key=leg,
-        stats=_bridge_stats,
-        frame_samples=frame_samples,
-    )
-    emitter.sock.setblocking(False)
-    emitters[leg] = emitter
-    return emitter
-
-
 def _process_optional_engine(
     engine: Any,
     input_bytes: bytes,
@@ -427,9 +406,10 @@ def _aec_loop(  # noqa: PLR0915
         frame_samples: int = OUT_FRAME_SAMPLES,
         emitter_cls: type[LegEmitter] = LegEmitter,
     ) -> LegEmitter:
-        return _add_loop_emitter(
+        return add_loop_emitter(
             emitters,
-            config,
+            _bridge_stats,
+            config.out_host,
             leg,
             port,
             frame_samples=frame_samples,
@@ -473,10 +453,9 @@ def _aec_loop(  # noqa: PLR0915
             port = chip_aec_ports.get(beam.token, leg_default_port(beam.token))
             chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
 
-    # Deferred: bridge_corpus_lanes reads this module at import time.
-    from jasper.aec.bridge_corpus_lanes import build_corpus_lanes
     lanes = build_corpus_lanes(
         emitters,
+        _bridge_stats,
         config,
         select_engine=_select_engine,
         xvf_raw0_webrtc_enabled=xvf_raw0_webrtc_enabled,
