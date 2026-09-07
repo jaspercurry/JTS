@@ -81,6 +81,7 @@ def test_volume_floor_exception_keeps_error_level_and_traceback(
     assert record.exc_info is not None
     assert record.exc_info[0] is OSError
     assert record.exc_info[1] is error
+    assert record.exc_info[2] is not None
 
 
 @pytest.mark.parametrize(("status", "allowed"), [(None, False), ("ready", True)])
