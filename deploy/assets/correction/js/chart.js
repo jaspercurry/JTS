@@ -6,8 +6,8 @@
 // Pi already smoothed and the segments the Pi already classified, and
 // derives no improvement verdict of its own.
 
-var canvas = document.getElementById('chart');
-var chartShowFilter = document.getElementById('chart-show-filter');
+export var canvas = document.getElementById('chart');
+export var chartShowFilter = document.getElementById('chart-show-filter');
 
 function filterEffectCurve(measured, predicted) {
   if (

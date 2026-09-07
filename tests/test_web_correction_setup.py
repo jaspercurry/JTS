@@ -250,7 +250,7 @@ def test_render_leaves_household_default_copy_to_the_envelope():
 
 
 def test_browser_failure_presentation_matches_server_catalog():
-    from jasper.correction import failures
+    from jasper.correction import envelope, failures
 
     node = shutil.which("node")
     if node is None:
@@ -267,9 +267,10 @@ def test_browser_failure_presentation_matches_server_catalog():
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
     browser = {
         code: (entry["text"], entry["retryable"])
-        for code, entry in json.loads(proc.stdout).items()
+        for code, entry in payload["KNOWN_FAILURES"].items()
     }
     server = {
         code: (
@@ -279,6 +280,7 @@ def test_browser_failure_presentation_matches_server_catalog():
         for code in failures.FAILURE_CODES
     }
     assert browser == server
+    assert payload["SUPPORTED_ENVELOPE_SCHEMA"] == envelope.ENVELOPE_SCHEMA_VERSION
 
 
 def test_render_escapes_hostname():

@@ -30,6 +30,10 @@ export function rootCaUrl() {
 export var GENERIC_STEP_FAILURE =
   'The speaker could not continue this step. Try again.';
 
+// Must equal jasper/correction/envelope.py's ENVELOPE_SCHEMA_VERSION — an
+// envelope at any other schema version is rejected as unsupported.
+export var SUPPORTED_ENVELOPE_SCHEMA = 9;
+
 export function homeownerError(failure, fallback) {
   var err = new Error(
     failure && failure.text

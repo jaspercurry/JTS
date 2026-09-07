@@ -20,12 +20,12 @@ import { jtsConfirm, jtsAlert } from "/assets/shared/js/dialog.js";
 // unchanged.
 import { escapeHtml as escapeText } from "/assets/shared/js/escape.js";
 import {
-  GENERIC_STEP_FAILURE, endpoint, fetchStatus, homeownerError, postJson,
-  responseError, rootCaUrl, safeErrorMessage, secureCorrectionUrl,
-  validatePublicFailure,
+  GENERIC_STEP_FAILURE, SUPPORTED_ENVELOPE_SCHEMA, endpoint, fetchStatus,
+  homeownerError, postJson, responseError, rootCaUrl, safeErrorMessage,
+  secureCorrectionUrl, validatePublicFailure,
 } from "./api.js";
 import { float32ToWav } from "./capture.js";
-import { drawChart } from "./chart.js";
+import { canvas, chartShowFilter, drawChart } from "./chart.js";
 import {
   describeFilters, formatAppliedAt, formatBytes, orientationLabel,
 } from "./format.js";
@@ -121,8 +121,6 @@ import {
   var positionCurrent = document.getElementById('position-current');
   var positionTotal = document.getElementById('position-total');
   var resultSection = document.getElementById('result-section');
-  var chartShowFilter = document.getElementById('chart-show-filter');
-  var canvas = document.getElementById('chart');
   var loadSessionsBtn = document.getElementById('load-sessions');
   var sessionHistory = document.getElementById('session-history');
   var sessionReport = document.getElementById('session-report');
@@ -224,7 +222,6 @@ import {
   // homeowner labels; the browser owns only the structural bound.
   var WIZARD_PROGRESS_TOTAL = 6;
 
-  var SUPPORTED_ENVELOPE_SCHEMA = 9;
   var KNOWN_ENVELOPE_SCREENS = {
     idle: true, mic: true, level: true, sweep: true,
     review: true, apply: true, verify: true, result: true,

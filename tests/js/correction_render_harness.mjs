@@ -384,7 +384,12 @@ const fakeDocument = {
   createElement() { return makeEl("anon"); },
 };
 const fakeWindow = {
-  addEventListener() {},
+  // Recorded so the resize/orientationchange redraw pin (below) can fire
+  // the listeners boot registers — a no-op stub would silently drop them.
+  _listeners: {},
+  addEventListener(ev, fn) {
+    (this._listeners[ev] = this._listeners[ev] || []).push(fn);
+  },
   removeEventListener() {},
   location: { href: "http://jts.local/sound/room/" },
   isSecureContext: true,
@@ -3189,6 +3194,99 @@ await (async () => {
   setFetchRoute("/status", () => ({ state: "idle" }));
   setFetchRoute("/envelope", () => makeEnvelope());
   await settle();
+  resetEnvelopeBookkeeping();
+})();
+
+// 48. Regression pins for the two source-text checks retired from
+//     tests/test_correction_setup.py when P3b moved rendering into the ES
+//     module (test_render_page_requests_wake_lock,
+//     test_render_page_redraws_chart_on_resize):
+//       (a) a 2-minute sweep on iOS Safari without Wake Lock lets the
+//           screen lock mid-measurement, suspending the AudioContext and
+//           losing the capture — a completed local-capture bind must
+//           request the screen wake lock (the same flow test 46 drives to
+//           `ready === true`, where acquireWakeLock() runs).
+//       (b) rotating the phone / resizing the window must redraw the
+//           result chart, not leave the old bitmap CSS-stretched blurry.
+await (async () => {
+  // -- (a) wake lock requested at the end of a successful capture bind --
+  resetFetchCounts();
+  const runId = "wake-lock-run";
+  sessionStorageValues.set("jts-room-local-capture-v1", JSON.stringify({
+    session_id: runId, device_id: "usb", calibration_id: null,
+  }));
+  setFetchRoute("/status", () => ({
+    session_id: runId,
+    state: "needs_noise_capture",
+    local_capture_setup_bound: false,
+    autolevel: { status: "idle" },
+  }));
+  setFetchRoute("/local-capture/setup", () => ({ state: "needs_noise_capture" }));
+  const track = {
+    label: "USB measurement mic",
+    stop() {},
+    getSettings() {
+      return { sampleRate: 48000, channelCount: 1, deviceId: "usb" };
+    },
+  };
+  fakeWindow.navigator.mediaDevices.getUserMedia = async () => (
+    { getAudioTracks() { return [track]; }, getTracks() { return [track]; } }
+  );
+  getOrMake("input-device-select").value = "usb";
+  const wakeLockRequests = [];
+  fakeWindow.navigator.wakeLock = {
+    request: async (type) => {
+      wakeLockRequests.push(type);
+      return { addEventListener() {} };
+    },
+  };
+
+  const ready = await startMicCapture();
+
+  assert(ready === true, "wake-lock pin: capture bind succeeds", { ready });
+  assert(wakeLockRequests.length === 1 && wakeLockRequests[0] === "screen",
+    "a completed local-capture bind requests the screen wake lock",
+    { got: wakeLockRequests });
+
+  delete fakeWindow.navigator.wakeLock;
+  fakeWindow.navigator.mediaDevices.getUserMedia = () =>
+    Promise.reject(new Error("no media"));
+  getOrMake("input-device-select").value = "";
+  sessionStorageValues.delete("jts-room-local-capture-v1");
+  setFetchRoute("/status", () => ({ state: "idle" }));
+  setFetchRoute("/envelope", () => makeEnvelope());
+  await settle();
+  resetEnvelopeBookkeeping();
+
+  // -- (b) resize / orientationchange re-render the chart --
+  const chart = getOrMake("chart");
+  const originalGetContext = chart.getContext;
+  const recording = makeRecordingContext();
+  chart.getContext = () => recording;
+
+  drawEnvelopeCurves({ curves: { measured: curveOf(() => 0) }, fill_segments: [] });
+  const baseline = recording.ops.length;
+  assert(baseline > 0, "baseline draw records canvas ops", { got: baseline });
+
+  assert((fakeWindow._listeners.resize || []).length > 0,
+    "boot registers a resize listener to redraw the chart");
+  (fakeWindow._listeners.resize || []).forEach((fn) => fn({}));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const afterResize = recording.ops.length;
+  assert(afterResize > baseline,
+    "a resize event redraws the chart (more canvas ops recorded)",
+    { baseline, got: afterResize });
+
+  assert((fakeWindow._listeners.orientationchange || []).length > 0,
+    "boot registers an orientationchange listener to redraw the chart");
+  (fakeWindow._listeners.orientationchange || []).forEach((fn) => fn({}));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const afterOrientation = recording.ops.length;
+  assert(afterOrientation > afterResize,
+    "an orientationchange event redraws the chart (more canvas ops recorded)",
+    { afterResize, got: afterOrientation });
+
+  chart.getContext = originalGetContext;
   resetEnvelopeBookkeeping();
 })();
 
