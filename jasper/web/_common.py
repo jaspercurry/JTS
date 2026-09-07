@@ -37,9 +37,9 @@ Every wizard's request handler should look like this:
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
-`{csrf_meta_html(csrf_token)}` in the document and
-`{csrf_fetch_helpers_js()}` in its script, then uses `jsonHeaders()`
-or `csrfHeaders({...})` on state-changing POSTs.
+`{csrf_meta_html(csrf_token)}` in the document and imports
+`deploy/assets/shared/js/http.js`, then uses `jsonHeaders()` or
+`csrfHeaders({...})` on state-changing POSTs.
 
 DO NOT:
 * redirect to `./?msg=Saved…` — that pollutes browser history. Use
@@ -1289,32 +1289,6 @@ def control_token_meta_html() -> str:
     if not token:
         return ""
     return f'<meta name="jts-control-token" content="{html.escape(token)}">'
-
-
-def csrf_fetch_helpers_js() -> str:
-    """JavaScript helpers for fetch()-driven wizard POSTs.
-
-    Pages render `csrf_meta_html()` once, include this snippet in their
-    script, and use:
-
-      * `jsonHeaders()` for JSON-bodied mutating POSTs.
-      * `csrfHeaders({...})` when the POST has a non-JSON content type
-        such as `audio/wav`.
-
-    The helpers tolerate a missing meta tag so static render tests can
-    call page renderers without minting a token."""
-    return """
-function csrfHeaders(headers) {
-  var out = headers || {};
-  var tokenEl = document.querySelector('meta[name=jts-csrf]');
-  var token = tokenEl ? tokenEl.content : '';
-  if (token) out['X-CSRF-Token'] = token;
-  return out;
-}
-function jsonHeaders() {
-  return csrfHeaders({'Content-Type': 'application/json'});
-}
-""".strip()
 
 
 def reject_csrf(handler: BaseHTTPRequestHandler) -> None:

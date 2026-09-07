@@ -64,7 +64,6 @@ def test_behaviour_ships_as_es_module():
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
     assert '<script type="module" src="/assets/sources/js/main.js">' in html
     # No inline behaviour script survived the migration.
-    assert "csrf_fetch_helpers_js" not in html
     assert "addEventListener" not in html
     assert "setInterval" not in html
 
