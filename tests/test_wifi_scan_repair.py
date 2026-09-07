@@ -12,7 +12,7 @@ import struct
 
 import pytest
 
-from jasper import wifi_scan_repair
+from jasper.net import wifi_scan_repair
 
 
 def test_parse_enum_constant_handles_sequential_and_assigned_values():
@@ -111,7 +111,7 @@ def test_maybe_repair_attempt_success_writes_cooldown(tmp_path, monkeypatch, cap
         lambda iface: {"iface": iface, "ack": True},
     )
 
-    with caplog.at_level(logging.INFO, logger="jasper.wifi_scan_repair"):
+    with caplog.at_level(logging.INFO, logger="jasper.net.wifi_scan_repair"):
         result = wifi_scan_repair.maybe_repair_scan_suppression(
             "wlan0",
             state_path=state_path,

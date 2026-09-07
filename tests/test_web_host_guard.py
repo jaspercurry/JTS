@@ -21,6 +21,8 @@ from __future__ import annotations
 from email.message import Message
 from io import BytesIO
 
+import pytest
+
 from jasper.web import _common
 
 
@@ -28,7 +30,8 @@ class _FakeHandler:
     """Minimal BaseHTTPRequestHandler stand-in carrying request headers.
 
     Mirrors tests/test_web_common.py's fake, with a `path` so the
-    guard's structured-log line has something to render."""
+    guard's structured-log line has something to render and response
+    sinks so guard_read_request can write its own 403."""
 
     def __init__(self, *, cookies: str = "", path: str = "/save", **headers: str):
         self.headers = Message()
@@ -38,6 +41,15 @@ class _FakeHandler:
             self.headers[key.replace("_", "-")] = value
         self.path = path
         self.wfile = BytesIO()
+
+    def send_response(self, status: int) -> None:
+        self.status = status
+
+    def send_header(self, name: str, value: str) -> None:
+        pass
+
+    def end_headers(self) -> None:
+        pass
 
 
 _GOOD_TOKEN = "g" * 64
@@ -137,3 +149,25 @@ def test_guard_mutating_request_still_rejects_bad_token_on_allowed_host():
     h = _csrf_handler(Host="jts.local")
     h.headers["X-CSRF-Token"] = "b" * 64
     assert _common.guard_mutating_request(h) is False
+
+
+# --- both wizard guards read the reconciler's observed names ------------
+
+
+@pytest.mark.parametrize(
+    "guard",
+    (
+        pytest.param(_common.guard_mutating_host, id="mutating"),
+        pytest.param(_common.guard_read_request, id="read"),
+    ),
+)
+def test_guards_accept_the_name_identity_env_records(monkeypatch, tmp_path, guard):
+    """After an RFC 6762 collision rename the speaker answers only at the
+    name the reconciler wrote to identity.env; both guards must compose
+    the allowlist through jasper.identity_state, not the static rules
+    alone — and still refuse a foreign name."""
+    identity = tmp_path / "identity.env"
+    identity.write_text("JASPER_IDENTITY_AVAHI_HOSTNAME=kitchen-2.local\n")
+    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity))
+    assert guard(_FakeHandler(Host="kitchen-2.local")) is True
+    assert guard(_FakeHandler(Host="evil.example")) is False

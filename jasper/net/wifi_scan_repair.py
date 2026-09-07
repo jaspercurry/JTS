@@ -502,7 +502,7 @@ def send_crit_proto_stop(iface: str, *, dry_run: bool = False) -> dict[str, Any]
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m jasper.wifi_scan_repair",
+        prog="python -m jasper.net.wifi_scan_repair",
         description="Attempt the bounded Pi 5 brcmfmac scan-suppression repair.",
     )
     parser.add_argument("--iface", default=DEFAULT_IFACE)

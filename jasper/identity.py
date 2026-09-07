@@ -38,7 +38,7 @@ import os
 from dataclasses import dataclass
 
 from . import identity_state, speaker_name
-from .http_security import DEFAULT_MANAGEMENT_HOSTNAME
+from .net.http_security import DEFAULT_MANAGEMENT_HOSTNAME
 from .peering import config as peering_config
 
 logger = logging.getLogger(__name__)
