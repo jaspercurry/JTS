@@ -122,9 +122,11 @@ def memory_pressure(
     jasper-doctor's ``check_memory_pressure`` verdicts against
     :data:`MEM_PSI_WARN_AVG60`.
     """
-    return MemoryPressure(
-        _psi_some_avg60(pressure_path), _proc_value(vmstat_path, "oom_kill")
-    )
+    try:
+        oom_kill = proc_fields(vmstat_path, "oom_kill").get("oom_kill")
+    except OSError:
+        oom_kill = None
+    return MemoryPressure(_psi_some_avg60(pressure_path), oom_kill)
 
 
 def _psi_some_avg60(path: str) -> float | None:
@@ -143,57 +145,53 @@ def _psi_some_avg60(path: str) -> float | None:
     return None
 
 
-def _proc_value(path: str, key: str) -> int | None:
-    """The integer on ``key``'s line in a ``/proc`` file, or ``None``.
+def proc_fields(path: str, *names: str) -> dict[str, int]:
+    """Every named field in a ``key: value`` / ``key value`` ``/proc`` file,
+    in ONE pass (ADR-0233 rule 1 — the one parser for this shape:
+    ``/proc/vmstat``'s ``oom_kill 3`` and ``/proc/meminfo``'s
+    ``MemTotal:  1014768 kB`` alike).
 
-    Covers ``/proc/vmstat``'s ``oom_kill 3`` shape. An absent file and an
-    absent counter are the same fact here — no reading.
-    """
-    try:
-        with open(path) as f:
-            for line in f:
-                fields = line.split()
-                if len(fields) >= 2 and fields[0].rstrip(":") == key:
-                    return int(fields[1])
-    except (OSError, ValueError):
-        return None
-    return None
-
-
-def meminfo_fields(*names: str, path: str = PROC_MEMINFO) -> dict[str, int]:
-    """Every named ``/proc/meminfo`` field (e.g. ``MemTotal``), in KiB, in
-    ONE pass over the file (ADR-0233 rule 1 — the one parser for this shape;
-    jasper-doctor's ``Evidence.meminfo`` and ``system_metrics._read_meminfo``
-    both read through it).
-
-    A field absent from the file, or any read failure, simply leaves that
-    key out of the returned dict — callers use ``.get(name, default)``.
+    Raises ``OSError`` if the file cannot be opened/read; the CALLER decides
+    whether that fails soft to ``None``/absent (:func:`meminfo_kb`,
+    :func:`memory_pressure`) or should propagate (jasper-control's
+    ``SystemSampler._read_meminfo``, whose outer per-tick guard must drop the
+    whole tick rather than record a zero-filled sample as if it were real). A
+    field missing from the file, or a value that doesn't parse as an int, is
+    simply absent from the returned dict.
     """
     wanted = set(names)
     out: dict[str, int] = {}
-    try:
-        with open(path) as f:
-            for line in f:
-                fields = line.split()
-                if len(fields) < 2:
-                    continue
-                key = fields[0].rstrip(":")
-                if key not in wanted:
-                    continue
-                try:
-                    out[key] = int(fields[1])
-                except ValueError:
-                    continue
-                if len(out) == len(wanted):
-                    break
-    except OSError:
-        return {}
+    with open(path) as f:
+        for line in f:
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            key = fields[0].rstrip(":")
+            if key not in wanted:
+                continue
+            try:
+                out[key] = int(fields[1])
+            except ValueError:
+                continue
+            if len(out) == len(wanted):
+                break
     return out
 
 
+def meminfo_fields(*names: str, path: str = PROC_MEMINFO) -> dict[str, int]:
+    """Every named ``/proc/meminfo`` field (e.g. ``MemTotal``), in KiB, via
+    :func:`proc_fields` — propagates ``OSError``; see there for who catches
+    it and why."""
+    return proc_fields(path, *names)
+
+
 def meminfo_kb(field: str, *, path: str = PROC_MEMINFO) -> int | None:
-    """One ``/proc/meminfo`` field (e.g. ``MemAvailable``), in KiB."""
-    return meminfo_fields(field, path=path).get(field)
+    """One ``/proc/meminfo`` field (e.g. ``MemAvailable``), in KiB, or
+    ``None`` when the file cannot be read."""
+    try:
+        return meminfo_fields(field, path=path).get(field)
+    except OSError:
+        return None
 
 
 class ZramUsage(NamedTuple):

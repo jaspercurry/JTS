@@ -138,6 +138,17 @@ def test_check_correction_idle_exit_holds_verdicts(
     assert r.reason == reason
 
 
+def test_check_correction_idle_exit_holds_skips_without_systemctl(monkeypatch):
+    """systemctl answered nothing at all — a probe failure, not the unit
+    genuinely being inactive (that is REASON_IDLE_HOLDS_SERVICE_INACTIVE)."""
+    monkeypatch.setattr(
+        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
+    )
+    r = correction.check_correction_idle_exit_holds()
+    assert r.status == "skipped"
+    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
+
+
 def test_latest_deferred_hold_keeps_the_newest_line():
     """journalctl returns oldest-first; an older (possibly since-resolved)
     line must not shadow the most recent evidence."""
