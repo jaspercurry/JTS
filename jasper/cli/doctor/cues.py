@@ -44,7 +44,7 @@ def _cue_state(
     fallback = by_slug.get(cue.fallback) if cue.fallback else None
     if manager.is_cached(cue):
         memo[cue.slug] = "ok"
-    elif manager._find_any_cached(cue) is not None:
+    elif manager.find_any_cached(cue) is not None:
         memo[cue.slug] = "stale"
     elif fallback and _cue_state(manager, fallback, by_slug, memo) != "missing":
         memo[cue.slug] = "fallback_only"

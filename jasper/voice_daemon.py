@@ -2153,6 +2153,13 @@ class WakeLoop:
         if deferred_cancel:
             raise asyncio.CancelledError
 
+    @staticmethod
+    def _leg_task_dead(task: "asyncio.Task[None]") -> bool:
+        """A leg/manual-mic task that exited on its own, not via
+        cancellation. Shared by `_on_leg_task_done`'s wake.leg_died log
+        and `session_status`'s `wake_legs_dead`."""
+        return task.done() and not task.cancelled()
+
     def _on_leg_task_done(
         self, name: str, task: "asyncio.Task[None]",
     ) -> None:
@@ -2166,7 +2173,7 @@ class WakeLoop:
         others down, so each task is tracked and reaped independently
         instead.
         """
-        if task.cancelled():
+        if not self._leg_task_dead(task):
             return
         exc = task.exception()
         if exc is None:
@@ -3917,6 +3924,10 @@ class WakeLoop:
             or leg not in self._leg_tasks
             or not self._leg_tasks[leg].done()
         ]
+        _wake_legs_dead = [
+            leg for leg, task in self._leg_tasks.items()
+            if self._leg_task_dead(task)
+        ]
         # Neither gate feeds _maybe_refresh_condition (see the dispatch
         # sites in run() / _manual_mic_loop / _wake_leg_loop), so the level
         # fields below go stale, not just missing, while either is set.
@@ -3984,6 +3995,7 @@ class WakeLoop:
                 self._input_last_above_floor_at if mic_feeding else None
             ),
             "wake_legs": _wake_legs,
+            "wake_legs_dead": _wake_legs_dead,
             # Per-pack tool-registration outcomes (registered / skipped /
             # failed), same motivation as wake_legs: a tool family that
             # silently failed to build (event=tool_pack.build_failed) is

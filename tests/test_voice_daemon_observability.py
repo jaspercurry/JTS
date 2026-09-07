@@ -511,6 +511,61 @@ async def test_dead_wake_leg_logs_and_drops_from_wake_legs(caplog):
         await asyncio.wait_for(run_task, timeout=2.0)
 
 
+async def test_wake_legs_dead_excludes_cancelled_legs(caplog):
+    """wake_legs_dead reports only legs whose task exited on its own
+    (done, not cancelled) — a leg cancelled mid-teardown is absent from
+    both wake_legs and wake_legs_dead, not misreported as dead."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="jasper.voice_daemon")
+    wl = _wake_loop_with_legs("on", "off", "dtln")
+    _prep_session_status(wl)
+    wl._heartbeat = None
+
+    async def _mixed_wake_leg_loop(leg_name: str) -> None:
+        if leg_name == "off":
+            raise RuntimeError("boom")
+        await asyncio.Event().wait()
+
+    wl._wake_leg_loop = _mixed_wake_leg_loop
+
+    class _IdleMic:
+        async def frames(self):
+            while True:
+                await asyncio.sleep(0)
+                yield None
+
+    wl._mic = _IdleMic()
+
+    run_task = asyncio.create_task(wl.run())
+    try:
+        for _ in range(200):
+            task = wl._leg_tasks.get("off")
+            if task is not None and task.done():
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the 'off' leg task never completed")
+        # The done-callback fires via call_soon, one tick after the task
+        # itself transitions to done — a few extra yields make sure it ran.
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        wl._leg_tasks["dtln"].cancel()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert wl._leg_tasks["dtln"].cancelled()
+
+        status = wl.session_status()
+        assert status["wake_legs_dead"] == ["off"]
+        assert "dtln" not in status["wake_legs"]
+        assert "dtln" not in status["wake_legs_dead"]
+        assert "on" in status["wake_legs"]
+    finally:
+        wl._stop_event.set()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+
 async def test_returning_wake_leg_logs_as_dead_with_no_exc_type(caplog):
     """A wake-leg loop can also die by returning cleanly — its mic's frame
     generator ended — with no exception at all. That is just as deaf as a

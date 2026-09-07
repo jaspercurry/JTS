@@ -1390,6 +1390,30 @@ def test_state_voice_wake_legs_flows_from_session_status(
     assert "last_turn_ms" in body["voice"]
 
 
+def test_state_voice_wake_legs_dead_flows_from_session_status(
+    server_with_coordinator, monkeypatch,
+):
+    """Same curated-vs-passthrough regression as wake_legs, for
+    wake_legs_dead: jasper-doctor's leg row needs the daemon's own view of
+    which configured leg's task died, not just which are currently armed."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
+        return {
+            "state": "WAKE", "input_ended": False, "spend_allowed": True,
+            "connection_paused": False, "mic_muted": False,
+            "duck_active": False, "music_dbfs": -32.0,
+            "wake_legs": ["on"], "wake_legs_dead": ["off"],
+        }
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["voice"]["reachable"] is True
+    assert body["voice"]["wake_legs_dead"] == ["off"]
+
+
 def test_state_voice_classifies_every_session_status_field():
     from jasper.control import state_aggregate
     from jasper.voice_daemon import WakeLoop

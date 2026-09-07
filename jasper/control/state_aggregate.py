@@ -131,6 +131,7 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "idle_rms_dbfs",
     "input_last_above_floor_at",
     "wake_legs",
+    "wake_legs_dead",
     "push_to_talk_only",
     "tool_packs",
     "silent_responses_session",
