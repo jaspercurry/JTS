@@ -98,6 +98,88 @@ def _render_page(csrf_token: str = "", *, view: str = "system") -> bytes:
 def _make_handler(
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> type[BaseHTTPRequestHandler]:
+    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+    # (exact path -> handler callable), the shape wake_corpus_setup.py /
+    # correction_setup.py use. The tables stay local to this closure
+    # (rather than module-level) so the handlers can close over
+    # `control_base`, same as this function has always done.
+    def _get_index(handler: BaseHTTPRequestHandler, path: str) -> None:
+        ctx = begin_request(handler)
+        send_html_response(
+            handler,
+            _render_page(
+                ctx["csrf_token"],
+                view="audio" if path == "/audio" else "system",
+            ),
+        )
+
+    def _get_data(handler: BaseHTTPRequestHandler, path: str) -> None:
+        status, body = proxy_get("/system/snapshot", control_base=control_base)
+        send_proxy_json(handler, body, status=status)
+
+    def _get_diagnostics(handler: BaseHTTPRequestHandler, path: str) -> None:
+        status, body = proxy_get(
+            "/system/diagnostics", control_base=control_base, timeout=30.0,
+        )
+        send_proxy_json(handler, body, status=status)
+
+    def _get_enhanced_aec(handler: BaseHTTPRequestHandler, path: str) -> None:
+        status, body = proxy_get(
+            "/aec/enhanced-aec", control_base=control_base, timeout=5.0,
+        )
+        send_proxy_json(handler, body, status=status)
+
+    def _post_proxy(handler: BaseHTTPRequestHandler, path: str) -> None:
+        body = None
+        if path in (
+            "/audio-quality", "/usb-latency", "/usb-forensics",
+            "/optional-features/enhanced-aec/install",
+        ):
+            try:
+                length = int(handler.headers.get("Content-Length") or "0")
+            except ValueError:
+                handler.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            if length < 0 or length > 4096:
+                handler.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            body = handler.rfile.read(length) if length else b"{}"
+        # Forward a browser-supplied X-JTS-Token so the opt-in
+        # control-token gate sees it on /system/reboot|poweroff (the
+        # wizard proxies server-side; the header can't ride the browser
+        # fetch otherwise).
+        if path in (
+            "/usb-forensics",
+        ):
+            control_path = path
+        elif path == "/optional-features/enhanced-aec/install":
+            control_path = "/aec/enhanced-aec/install"
+        else:
+            control_path = "/system" + path
+        status, body = proxy_post(
+            control_path, control_base=control_base, body=body,
+            headers=forward_control_token_headers(handler),
+            timeout=120.0 if path == "/usb-latency" else 5.0,
+        )
+        send_proxy_json(handler, body, status=status)
+
+    _GET_ROUTES = {
+        "/": _get_index,
+        "/audio": _get_index,
+        "/data.json": _get_data,
+        "/diagnostics.json": _get_diagnostics,
+        "/optional-features/enhanced-aec": _get_enhanced_aec,
+    }
+    _POST_ROUTES = {
+        "/restart/voice": _post_proxy,
+        "/restart/audio": _post_proxy,
+        "/reboot": _post_proxy,
+        "/poweroff": _post_proxy,
+        "/audio-quality": _post_proxy,
+        "/usb-latency": _post_proxy,
+        "/usb-forensics": _post_proxy,
+        "/optional-features/enhanced-aec/install": _post_proxy,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -108,92 +190,25 @@ def _make_handler(
             # "/" and "/data.json".
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path in ("/", "/audio"):
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(
-                    self,
-                    _render_page(
-                        ctx["csrf_token"],
-                        view="audio" if path == "/audio" else "system",
-                    ),
-                )
+            handler_fn = _GET_ROUTES.get(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if path == "/data.json":
-                if not guard_read_request(self):
-                    return
-                status, body = proxy_get(
-                    "/system/snapshot", control_base=control_base,
-                )
-                send_proxy_json(self, body, status=status)
+            if not guard_read_request(self):
                 return
-            if path == "/diagnostics.json":
-                if not guard_read_request(self):
-                    return
-                status, body = proxy_get(
-                    "/system/diagnostics",
-                    control_base=control_base, timeout=30.0,
-                )
-                send_proxy_json(self, body, status=status)
-                return
-            if path == "/optional-features/enhanced-aec":
-                if not guard_read_request(self):
-                    return
-                status, body = proxy_get(
-                    "/aec/enhanced-aec",
-                    control_base=control_base, timeout=5.0,
-                )
-                send_proxy_json(self, body, status=status)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            handler_fn(self, path)
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            POST_ROUTES = (
-                "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
-                "/audio-quality", "/usb-latency", "/usb-forensics",
-                "/optional-features/enhanced-aec/install",
-            )
-            if path not in POST_ROUTES:
+            handler_fn = _POST_ROUTES.get(path)
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            body = None
-            if path in (
-                "/audio-quality", "/usb-latency", "/usb-forensics",
-                "/optional-features/enhanced-aec/install",
-            ):
-                try:
-                    length = int(self.headers.get("Content-Length") or "0")
-                except ValueError:
-                    self.send_error(HTTPStatus.BAD_REQUEST)
-                    return
-                if length < 0 or length > 4096:
-                    self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-                    return
-                body = self.rfile.read(length) if length else b"{}"
-            # Forward a browser-supplied X-JTS-Token so the opt-in
-            # control-token gate sees it on /system/reboot|poweroff (the
-            # wizard proxies server-side; the header can't ride the browser
-            # fetch otherwise).
-            if path in (
-                "/usb-forensics",
-            ):
-                control_path = path
-            elif path == "/optional-features/enhanced-aec/install":
-                control_path = "/aec/enhanced-aec/install"
-            else:
-                control_path = "/system" + path
-            status, body = proxy_post(
-                control_path, control_base=control_base, body=body,
-                headers=forward_control_token_headers(self),
-                timeout=120.0 if path == "/usb-latency" else 5.0,
-            )
-            send_proxy_json(self, body, status=status)
+            handler_fn(self, path)
 
     return Handler
 
