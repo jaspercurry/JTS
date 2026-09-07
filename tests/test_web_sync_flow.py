@@ -7,8 +7,9 @@
 The signal/analysis math is covered by test_multiroom_sync_measure.py; this
 file pins the apply -> /grouping/set wiring, in particular that the browser's
 X-JTS-Token is forwarded so the leader's token-gated /grouping/set write
-isn't 403'd by the mandatory control-token gate, plus the page shell the
-correction daemon serves under nginx's /sound/pair/sync/ mount.
+isn't 403'd by the mandatory control-token gate. The page shell the correction
+daemon serves under nginx's /sound/pair/sync/ mount is pinned end-to-end in
+test_correction_setup.py.
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ import io
 import logging
 import threading
 import time
-import urllib.request
 from http import HTTPStatus
 from types import SimpleNamespace
 
@@ -27,7 +27,7 @@ import pytest
 import jasper.measurement_window as coordinator
 import jasper.multiroom.state as mstate
 from jasper.web import rooms_setup as rooms
-from jasper.web import active_speaker_flow, correction_setup, sync_flow
+from jasper.web import active_speaker_flow, sync_flow
 
 from ._async_wait import wait_until, wait_until_sync
 from ._web_test_helpers import patch_measurement_window
@@ -929,27 +929,3 @@ def test_handle_play_records_playback_on_the_happy_path(monkeypatch):
     finally:
         with sync_flow._lock:
             sync_flow._reset_locked()
-
-
-def test_get_serves_the_speaker_timing_page_on_the_manifest_label():
-    """The correction daemon serves the page nginx mounts at
-    /sound/pair/sync/: manifest label as <title> and header, back to the
-    parent (docs/web-ia.md §2). The public path is pinned in
-    test_landing_page_html.py; the daemon's own route stays /sync, the
-    sibling of /crossover and /bass on this backend."""
-    server = correction_setup.make_server(("127.0.0.1", 0), hostname="jts.local")
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        resp = urllib.request.urlopen(
-            f"http://127.0.0.1:{server.server_address[1]}/sync"
-        )
-        assert resp.status == HTTPStatus.OK
-        body = resp.read().decode()
-    finally:
-        server.shutdown()
-        server.server_close()
-
-    assert "<title>Speaker timing</title>" in body
-    assert '<h1 class="app-header__title">Speaker timing</h1>' in body
-    assert 'href="/sound/pair/"' in body
-    assert '/assets/sync/sync.css?v=' in body

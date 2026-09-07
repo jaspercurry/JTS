@@ -3098,12 +3098,14 @@ def test_dom_append_children_export_via_node():
     assert json.loads(proc.stdout.strip().splitlines()[-1])["ok"] is True
 
 
-def test_bond_card_renders_no_https_balance_link_via_node():
+def test_bond_card_renders_no_cross_origin_link_via_node():
     """Issue #1842: the bond card's balance block used to build an
     `https://<hostname>/balance/` "microphone" link — a relay design
     ADR-0188 parked. On the self-signed origin that link fails hard
     (ERR_CERT_AUTHORITY_INVALID). The `/balance/` page is gone entirely now
-    (#4031); this still pins that the card builds no <a> element at all.
+    (#4031); what stays forbidden is an anchor that leaves the origin the
+    household is already on (#2632), so the harness pins every anchor's href
+    — today just the relative `sync/` entry to this page's own child.
     Skips when node isn't on PATH."""
     if _NODE is None:
         pytest.skip("node not on PATH")

@@ -176,13 +176,14 @@ never a hard-coded `jts.local`. `scripts/run-crossover-round.py` resolves
 `scripts/_lib.sh`), with `--hostname` as the override; on the box
 `jasper-angle-capture stage` prints the household's URL as `handoff_url`.
 
-**The measurement surfaces are HTTPS, and there are several.** `getUserMedia`
-needs a secure context, so nginx's 443 block serves the whole measurement
-family: `/sound/room/`, `/sound/speaker/crossover/`, `/sound/bass/`,
-`/sound/measurements/` and `/sound/pair/sync/`. Plain `http://` serves the
-same paths, and the ordinary wizards. `install.sh` provisions the private
-CA; a device has to trust it once before any of this works. nginx strips its own prefix, so a public path reaches the backend
-route under it:
+**Both listeners serve the measurement surfaces.** Ports 80 and 443 each
+carry the whole family — `/sound/room/`, `/sound/speaker/crossover/`,
+`/sound/bass/`, `/sound/measurements/` and `/sound/pair/sync/` — plus the
+ordinary wizards, so no journey step has to change scheme. `getUserMedia`
+needs a secure context, so the microphone step alone is entered over HTTPS;
+`install.sh` provisions the private CA, and a device has to trust it once
+before that step works. nginx strips its own prefix, so a public path
+reaches the backend route under it:
 
 ```
 POST https://<speaker>/sound/speaker/crossover/v2/republish

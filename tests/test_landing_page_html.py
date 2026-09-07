@@ -60,15 +60,6 @@ def _app_css() -> str:
     return _APP_CSS_PATH.read_text(encoding="utf-8")
 
 
-def _nginx_location_block(nginx: str, location: str) -> str:
-    match = re.search(
-        rf"(?ms)^    {re.escape(location)} \{{\n(?P<body>.*?)^    \}}",
-        nginx,
-    )
-    assert match is not None, f"missing nginx block: {location}"
-    return match.group(0)
-
-
 _LOCATION_RX = re.compile(
     r"(?m)^    location +(?:(?P<mod>=|\^~|~\*?) +)?(?P<path>\S+) *\{"
 )
@@ -80,10 +71,14 @@ def _nginx_servers(conf: str) -> list[tuple[frozenset[int], dict]]:
     Locations are keyed `(modifier, path)` — `("=", "/sound/pair/sync")` for
     an exact block — and carry their brace-balanced body, so a caller reads
     structure rather than slicing the file on comment text or line order.
+    Several callers pass a slice of a conf rather than the whole file; one
+    that starts inside a server block (they cut at `listen 443` to separate
+    the two) reads as that single server.
     """
+    chunks = conf.split("\nserver {")
     servers = []
-    for chunk in conf.split("\nserver {")[1:]:
-        body = chunk[: chunk.index("\n}")]
+    for chunk in (chunks[1:] or chunks):
+        body = chunk[: chunk.index("\n}")] if "\n}" in chunk else chunk
         ports = frozenset(
             int(m.group(1))
             for m in re.finditer(r"(?m)^    listen +(?:\[::\]:)?(\d+)", body)
@@ -107,6 +102,19 @@ def _proxy_upstream(block: str) -> str:
     match = re.search(r"proxy_pass +https?://([^/;\s]+)", block)
     assert match is not None, f"no proxy_pass in block: {block!r}"
     return match.group(1)
+
+
+def _nginx_location_block(nginx: str, location: str) -> str:
+    """The body of the first block matching an `location [<mod> ]<path>` header.
+
+    Same parse as `_nginx_servers` — this is the by-header lookup on top of it.
+    """
+    modifier, _, path = location.removeprefix("location").strip().rpartition(" ")
+    key = (modifier.strip(), path)
+    for _ports, locations in _nginx_servers(nginx):
+        if key in locations:
+            return locations[key]
+    raise AssertionError(f"missing nginx block: {location}")
 
 
 def _assert_strong_no_cache(block: str) -> None:

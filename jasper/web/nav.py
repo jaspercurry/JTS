@@ -54,7 +54,7 @@ NAV: tuple[NavRow, ...] = (
            "Group speakers · Wake response"),
     NavRow("Sound", "Speaker timing", "/sound/pair/sync/", "/sound/pair/",
            ("content_dsp", "pair_management"), "wave", "",
-           "Left/right arrival timing"),
+           "Timing between the two speakers"),
     NavRow("Sound", "Room correction", "/sound/room/", "/sound/", ("content_dsp",),
            "wave", "", "Microphone measurement"),
     NavRow("Sound", "Bass", "/sound/bass/", "/sound/", ("content_dsp",),

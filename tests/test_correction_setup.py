@@ -1527,6 +1527,27 @@ def test_e2e_get_index_serves_html():
         server.server_close()
 
 
+def test_get_serves_the_speaker_timing_page_on_the_manifest_label():
+    """This daemon also serves the page nginx mounts at /sound/pair/sync/:
+    manifest label as <title> and header, back to the parent
+    (docs/web-ia.md §2). The public path is pinned in
+    test_landing_page_html.py; the daemon's own route stays /sync, the
+    sibling of /crossover and /bass on this backend."""
+    server, base = _start_server()
+    try:
+        resp = urllib.request.urlopen(f"{base}/sync", timeout=5)
+        assert resp.status == 200
+        body = resp.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert "<title>Speaker timing</title>" in body
+    assert '<h1 class="app-header__title">Speaker timing</h1>' in body
+    assert 'href="/sound/pair/"' in body
+    assert "/assets/sync/sync.css?v=" in body
+
+
 def test_e2e_bonded_follower_rejects_correction_mutation(monkeypatch):
     monkeypatch.setattr(correction_setup, "bonded_follower_active", lambda: True)
     server, base = _start_server()

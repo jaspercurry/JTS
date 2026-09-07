@@ -87,7 +87,7 @@ startBtn.addEventListener('click', async () => {
 playBtn.addEventListener('click', async () => {
   try {
     playBtn.disabled = true;
-    setStatus('Recording marker...');
+    setStatus('Recording test sound...');
     const wav = await recordMarker();
     setStatus('Analyzing...');
     const data = await analyzeBlob(wav);

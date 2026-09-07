@@ -469,20 +469,21 @@ def handle_stop() -> tuple[dict, int]:
     return {"ok": True}, HTTPStatus.OK
 
 
-_PAGE_BODY = f"""
+def render_page(csrf_token: str) -> bytes:
+    body = f"""
 {canonical_header("Speaker timing", back_href="/sound/pair/",
                   back_label="Stereo pair")}
 <main class="page">
   <section class="info-card sync-card">
-    <p>This page measures left/right arrival timing at the listening
-    position. It plays a short marker through the bonded pair, records
-    the room with this browser, and recommends positive-only channel
-    delay for the leader render graph.</p>
-    <div class="sync-status" id="status"></div>
+    <p>This page sets the timing between the two speakers at your
+    listening position. It plays a short test sound through the pair,
+    records it with this browser, and recommends a small delay for
+    whichever speaker is closer to you.</p>
+    <p class="status-line" id="status" role="status" aria-live="polite"></p>
     <pre id="result"></pre>
-    <div class="sync-actions">
+    <div class="form-actions">
       <button class="btn btn--primary" id="start">Start</button>
-      <button class="btn" id="play" disabled>Play marker</button>
+      <button class="btn" id="play" disabled>Play test sound</button>
       <button class="btn" id="apply" disabled>Apply</button>
       <button class="btn" id="stop">Stop</button>
     </div>
@@ -490,12 +491,9 @@ _PAGE_BODY = f"""
 </main>
 <script type="module" src="/assets/sync/js/main.js"></script>
 """
-
-
-def render_page(csrf_token: str) -> bytes:
     return canonical_page(
         "Speaker timing",
-        _PAGE_BODY,
+        body,
         csrf_token=csrf_token,
         page_css_href="/assets/sync/sync.css",
     )
