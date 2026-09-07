@@ -1398,7 +1398,6 @@ def ring_flow_state(
     this device" into "I am not allowed to look" would let a permission problem
     read as an idle speaker.
     """
-    import os
     import time
 
     header = read_ring_header(path)

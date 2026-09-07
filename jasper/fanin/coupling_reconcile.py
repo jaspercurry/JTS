@@ -256,7 +256,6 @@ def _assistant_width_token(env_path: str | Path) -> str:
     would make the predicate only accidentally coherent.
     """
     from jasper.fanin_coupling import (
-        COUPLING_ENV_VAR,
         RING_WIRE_FORMAT,
         RING_WIRE_FORMAT_ENV_VAR,
         RING_WIRE_FORMAT_WIDE,

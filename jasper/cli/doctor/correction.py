@@ -608,8 +608,6 @@ def check_correction_cert_hostname() -> CheckResult:
     later rename (operator or Avahi collision) leaves the SAN stale and the one
     HTTPS wizard shows a browser warning. The effective name comes from
     /var/lib/jasper/identity.env; the fix is a redeploy."""
-    import subprocess
-
     from ... import identity_state
 
     label = "correction cert ↔ hostname"
