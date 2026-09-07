@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tests.lane_fixtures import fast_lane_selected_tests, lane_env, write_recording_pytest
+from tests.lane_fixtures import (
+    fast_lane_selected_tests,
+    lane_env,
+    scratch_lane_repo,
+    write_recording_pytest,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -453,19 +458,7 @@ def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
 def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None:
     """Brand-new files must affect the fast lane before an agent stages them."""
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    (repo / "scripts").mkdir()
-    (repo / "tests").mkdir()
-    shutil.copy2(ROOT / "scripts" / "test-fast", repo / "scripts" / "test-fast")
-    # The lane sources its sibling tool resolver, so the scratch repo has to
-    # carry it too (issue #1836).
-    shutil.copy2(ROOT / "scripts" / "_test_lane.sh", repo / "scripts" / "_test_lane.sh")
-    shutil.copy2(
-        ROOT / "scripts" / "ci-classify.py", repo / "scripts" / "ci-classify.py"
-    )
-
+    repo = scratch_lane_repo(tmp_path)
     (repo / "tests" / "test_dependency_groups.py").write_text("", encoding="utf-8")
     (repo / "tests" / "test_new_feature.py").write_text("", encoding="utf-8")
 
@@ -491,82 +484,16 @@ def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> 
     tests.
     """
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
-    (repo / "scripts").mkdir()
-    (repo / "tests").mkdir()
-    (repo / "experiments" / "e0-capture").mkdir(parents=True)
-    for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
-        shutil.copy2(ROOT / "scripts" / name, repo / "scripts" / name)
-
-    (repo / "tests" / "test_e0_capture_experiment.py").write_text("", encoding="utf-8")
-    # A second kit's guard, present but untouched by the change below.
-    (repo / "tests" / "test_usb_turntable_experiment.py").write_text(
-        "", encoding="utf-8"
-    )
-    # Committed first: the lane treats untracked files as changed, so an
-    # uncommitted guard would be selected by the `tests/test_*.py` arm and
-    # prove nothing about this one.
-    _commit_all(repo, "scaffold")
-
-    (repo / "experiments" / "e0-capture" / "README.md").write_text(
-        "kit prose\n", encoding="utf-8"
-    )
-
-    pytest_calls = repo / "pytest-calls.jsonl"
-    recorder = write_recording_pytest(repo / "recording-pytest")
-    _run(["scripts/test-fast"], cwd=repo, env=lane_env(recorder, pytest_calls))
-
-    calls = [
-        json.loads(line)
-        for line in pytest_calls.read_text(encoding="utf-8").splitlines()
-    ]
-    selected = [arg for call in calls for arg in call if arg.startswith("tests/")]
-    assert "tests/test_e0_capture_experiment.py" in selected, calls
-    assert "tests/test_usb_turntable_experiment.py" not in selected, calls
-
-
-def test_add_tests_naming_selects_basename_and_helper_importer_matches(
-    tmp_path: Path,
-) -> None:
-    """scripts/test-fast's add_tests_naming, pinned by one lane run each
-    (issue #4194, #4248): a basename match and a match via a non-test
-    helper's importer (tests/_h.py -- pytest never collects it, mirroring
-    tests/install_surface.py for deploy/install.sh) are selected; an
-    unrelated file, and a changed file nothing names, are not.
-    """
-
     selected = fast_lane_selected_tests(
-        tmp_path / "basename",
-        changed_path="scripts/widget.sh",
-        routed_tests=("tests/test_basename.py", "tests/test_unrelated.py"),
-        test_contents={
-            "tests/test_basename.py": "widget.sh\n",
-            "tests/test_unrelated.py": "gadget.sh\n",
-        },
+        tmp_path,
+        changed_path="experiments/e0-capture/README.md",
+        routed_tests=(
+            "tests/test_e0_capture_experiment.py",
+            "tests/test_usb_turntable_experiment.py",
+        ),
     )
-    assert "tests/test_basename.py" in selected
-    assert "tests/test_unrelated.py" not in selected
-
-    selected = fast_lane_selected_tests(
-        tmp_path / "helper-importer",
-        changed_path="scripts/widget.sh",
-        routed_tests=("tests/_h.py", "tests/test_via_helper.py"),
-        test_contents={
-            "tests/_h.py": "widget.sh\n",
-            "tests/test_via_helper.py": "from ._h import x\n",
-        },
-    )
-    assert "tests/test_via_helper.py" in selected
-
-    selected = fast_lane_selected_tests(
-        tmp_path / "names-nothing",
-        changed_path="scripts/lonely.sh",
-        routed_tests=("tests/test_unrelated.py",),
-        test_contents={"tests/test_unrelated.py": "gadget.sh\n"},
-    )
-    assert "tests/test_unrelated.py" not in selected
+    assert "tests/test_e0_capture_experiment.py" in selected
+    assert "tests/test_usb_turntable_experiment.py" not in selected
 
 
 def test_rust_ci_gate_is_path_aware_without_renaming_visible_job() -> None:

@@ -154,21 +154,21 @@ add_globbed_tests() {
   [[ "${matched}" == true ]]
 }
 
-# add_tests_naming <changed-path>
+# add_tests_naming <literal-source>
 #
-# Derives the search literal from <changed-path>'s basename: the stem for a
-# .py file (tests import these as modules, e.g. scripts/_wake_pipeline_common.py
-# -> "_wake_pipeline_common"), the full path for a suffix-less basename
-# (scripts/use, deploy/bin/jasper-aec-reconcile -- too short/common a bare
-# word otherwise: "use" alone names 729 of this repo's tests/test_*.py
-# files), or the bare basename otherwise (widget.sh). Selects every
-# tests/test_*.py naming that literal, directly or via a non-test helper
-# under tests/ (excluding conftest.py, too broad for one mention in it to
-# mean anything) that names it and that the test imports -- pytest only
+# The caller picks the literal by choosing what to pass: a .py path
+# reduces to its stem (tests import these as modules), a suffixed
+# basename stays as its bare name, and a suffix-less basename names the
+# whole string given (too short/common a bare word alone -- "use" names
+# 729 of this repo's tests/test_*.py files) -- so deploy/bin/*, whose
+# tests reference the bare basename via a Path-join, passes that
+# directly. Matches fixed-string across tests/test_*.py, plus the tests
+# of any non-test tests/*.py helper (excluding conftest.py and
+# tests/__init__.py) that names it and that a test imports -- pytest only
 # collects tests/test_*.py, so a helper's own text never runs. The import
-# match is loose (a `from`/`import` line mentioning the module name),
-# covering `from tests.x import`, `import tests.x`, `from .x import` and
-# `from tests import x`. Returns whether anything matched.
+# match is loose (a `from`/`import` line naming the module): `from
+# tests.x import`, `import tests.x`, `from .x import`, `from tests
+# import x`. Returns whether anything matched.
 add_tests_naming() {
   local changed="$1"
   local base="${changed##*/}"
@@ -219,9 +219,9 @@ while IFS= read -r changed; do
       # aren't named by the jasper arms' module-name convention below --
       # name its own basename instead. conftest.py is excluded: pytest
       # auto-loads it for every test in scope, so one mention in it means
-      # nothing about which tests actually use it.
+      # nothing about which tests actually use it -- same for tests/__init__.py.
       case "${changed}" in
-        tests/conftest.py) ;;
+        tests/conftest.py|tests/__init__.py) ;;
         *) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
       esac
       ;;
@@ -336,12 +336,12 @@ while IFS= read -r changed; do
       add_tests_naming "${raw_base}" || echo "==> no test names ${changed}"
       ;;
     scripts/*|deploy/*.sh)
-      # Laptop-side scripts (any suffix under scripts/) and shared bash
-      # libs are reached by subprocess too, so the same derivation applies
-      # (issue #4194, #4248). deploy/install.sh's basename alone names ~9%
-      # of tests/test_*.py; accepted, not narrowed -- it is the repo's one
-      # install entry point.
-      add_tests_naming "${changed}" || echo "==> no test names ${changed}"
+      # Reached by subprocess too (issue #4194, #4248; deploy/install.sh's ~9% accepted).
+      # A suffix-less name, Path-joined in tests, also gets tried quoted.
+      case "${changed##*/}" in
+        *.*) add_tests_naming "${changed}" || echo "==> no test names ${changed}" ;;
+        *) add_tests_naming "${changed}" || add_tests_naming "\"${changed##*/}\"" || echo "==> no test names ${changed}" ;;
+      esac
       ;;
     deploy/systemd/jasper-wifi-guardian*)
       # The guardian's unit pins live in the script's test file, which the

@@ -20,7 +20,7 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
 _SCRIPTS = _REPO / "scripts"
-_BASH = shutil.which("bash") or "/bin/bash"
+BASH = shutil.which("bash") or "/bin/bash"
 
 TRUE_BIN = shutil.which("true") or "/usr/bin/true"
 
@@ -60,8 +60,28 @@ def lane_env(pytest_path: Path, calls_path: Path) -> dict[str, str]:
     }
 
 
-def _git(repo: Path, *args: str) -> None:
+def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def scratch_lane_repo(tmp_path: Path) -> Path:
+    """Creates tmp_path/repo with scripts/test-fast and its two siblings
+    (the tool resolver test-fast sources, and ci-classify.py the routing
+    policy phase imports) copied in and committed as the repo's base state.
+    """
+
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "tests").mkdir()
+    for name in ("test-fast", "_test_lane.sh", "ci-classify.py"):
+        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "tests@example.invalid")
+    git(repo, "config", "user.name", "JTS Tests")
+    git(repo, "config", "commit.gpgsign", "false")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+    return repo
 
 
 def fast_lane_selected_tests(
@@ -80,23 +100,14 @@ def fast_lane_selected_tests(
     phase of the lane.
     """
 
-    repo = tmp_path / "repo"
-    (repo / "scripts").mkdir(parents=True)
-    (repo / "tests").mkdir()
-    for name in ("test-fast", "_test_lane.sh"):
-        shutil.copy2(_SCRIPTS / name, repo / "scripts" / name)
-    shutil.copy2(_SCRIPTS / "ci-classify.py", repo / "scripts" / "ci-classify.py")
+    repo = scratch_lane_repo(tmp_path)
     for relative in (changed_path, *routed_tests):
         path = repo / relative
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text((test_contents or {}).get(relative, ""), encoding="utf-8")
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.email", "tests@example.invalid")
-    _git(repo, "config", "user.name", "JTS Tests")
-    _git(repo, "config", "commit.gpgsign", "false")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "content")
     changed = repo / changed_path
     changed.write_text(
         changed.read_text(encoding="utf-8") + "\n# edited\n", encoding="utf-8"
@@ -106,7 +117,7 @@ def fast_lane_selected_tests(
     recorder = write_recording_pytest(repo / "recording-pytest")
 
     subprocess.run(
-        [_BASH, "scripts/test-fast"],
+        [BASH, "scripts/test-fast"],
         cwd=repo,
         env=lane_env(recorder, calls),
         check=True,
