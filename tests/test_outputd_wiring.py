@@ -1179,10 +1179,8 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
     included (both were unpinned until `parse_camilla_devices_config` learned
     them).
     """
-    from jasper.camilla_config_contract import (
-        DEFAULT_PLAYBACK_FORMAT,
-        parse_camilla_devices_config,
-    )
+    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     cutover = REPO / "deploy" / "camilladsp" / "outputd-cutover.yml"

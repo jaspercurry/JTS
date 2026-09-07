@@ -536,7 +536,7 @@ def test_the_shared_state_pass_starts_two_interpreters(tmp_path):
     seed (the value, then an `os.link` publish). The heal is the single
     `state_modes` row now and the publish is `link`, leaving two starts for the
     whole pass: the heal, and the one interpreter that reads the
-    `jasper.speaker_name` fact.
+    `jasper.identity.speaker_name` fact.
     """
     state_dir = tmp_path / "state"
     env_dir = tmp_path / "etc"

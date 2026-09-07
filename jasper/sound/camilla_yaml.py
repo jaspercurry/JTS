@@ -26,7 +26,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
-    DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
@@ -42,6 +41,7 @@ from jasper.camilla_emit import (
     mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import build_stereo_prefix
+from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from .profile import (
     SoundProfile,

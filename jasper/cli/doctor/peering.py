@@ -8,6 +8,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 from ...env_load import read_env_file_state
+from ...identity.reader import PEER_ID_FILE
 from ...peering.config import PEERING_OFF_VALUES, PEERING_ON_VALUES
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
@@ -112,11 +113,11 @@ def check_peering_discovery() -> CheckResult:
     )
 
 def _local_peer_id() -> str:
-    """Read /var/lib/jasper/peer_id, or '' when missing.
+    """Read PEER_ID_FILE, or '' when missing.
 
     Best-effort: check_peering_discovery uses it to drop this speaker from the
     visible-peer count, and a missing file only inflates that count by one."""
     try:
-        return Path("/var/lib/jasper/peer_id").read_text().strip()
+        return Path(PEER_ID_FILE).read_text().strip()
     except OSError:
         return ""

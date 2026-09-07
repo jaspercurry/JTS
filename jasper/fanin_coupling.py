@@ -233,6 +233,31 @@ OUTPUTD_CONTENT_FORMAT_ENV_VAR = "JASPER_OUTPUTD_CONTENT_FORMAT"
 # in fact declared.
 OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 
+# The CamillaDSP→outputd content hop's width on the snd-aloop lanes. S32_LE
+# since the wide-output-path program's flip (PR-6,
+# captures/PLAN-wide-output-path-2026-08-07.md): CamillaDSP's float math stays
+# wide all the way to outputd's i32 program spine, so the ONE deliberate output
+# quantization happens at the DAC edge, at the DAC's own declared width. At a
+# ≥24-bit edge that floor sits below the DAC's analog noise, so it stops being
+# audible at all.
+#
+# What changed at an S16 edge is WHERE that single narrowing happens, not how
+# many there are: before the flip there was already exactly one lossy narrowing
+# (CamillaDSP's S16 playback write), and outputd's widen→narrow round trip around
+# it was proven bit-exact. The flip MOVES that narrowing downstream of outputd's
+# mixing, ducking, and trim, which now do their arithmetic on full-resolution
+# content instead of on samples already quantized to 16 bits — which is what makes
+# a −18 dB tweeter trim stop costing three bits of program resolution.
+#
+# Two things must move with this value, and both are derived rather than
+# restated: ``deploy/camilladsp/outputd-cutover.yml`` carries it on BOTH ring
+# halves (since ADR-0100 the flat startup graph names ``jts_ring_capture`` and
+# ``jts_ring_playback``, and the ioplug pins the ring's own geometry), and the
+# audio-hardware reconciler emits outputd's matching
+# ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
+# :func:`content_lane_format_for_coupling`.
+DEFAULT_PLAYBACK_FORMAT = "S32_LE"
+
 # Ring B playback device. CamillaDSP writes its post-DSP stereo program to this
 # ALSA ioplug device (the WRITE direction of the same ``jts_ring`` plugin whose
 # CAPTURE direction is ``jts_ring_capture``). Its wire is whatever
@@ -437,7 +462,7 @@ def resolve_ring_wire_format(raw: str | None) -> str:
       absent key mean one thing. The default is WIDE because narrow is a width
       REGRESSION on the hop the ring replaces: the loopback CamillaDSP→outputd
       hop already carries
-      :data:`~jasper.camilla_config_contract.DEFAULT_PLAYBACK_FORMAT` (S32_LE),
+      :data:`DEFAULT_PLAYBACK_FORMAT` (S32_LE),
       so arming a ring at S16_LE would narrow a hop that was wide before the
       arm. Nothing in this repo WRITES this key — see
       :data:`RING_WIRE_FORMAT_ENV_VAR` — so an operator's ``S16_LE`` is a
@@ -975,10 +1000,6 @@ def content_lane_format_for_coupling() -> str:
     Callers that need the format for an arbitrary sink want
     ``jasper.camilla_config_contract`` instead.
     """
-    # Local import: this module stays stdlib-only at import time for the
-    # socket-activated web surfaces (see the module docstring).
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-
     value = capture_kwargs_for_coupling().get("playback_format")
     if isinstance(value, str) and value:
         return value

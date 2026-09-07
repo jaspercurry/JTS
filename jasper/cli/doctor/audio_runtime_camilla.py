@@ -27,7 +27,6 @@ from typing import Any
 
 from ...camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
-    DEFAULT_PLAYBACK_FORMAT,
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
@@ -128,6 +127,7 @@ def _expected_playback_format(
     their order is not load-bearing.
     """
     from jasper.fanin_coupling import (
+        DEFAULT_PLAYBACK_FORMAT,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
         resolve_ring_wire,

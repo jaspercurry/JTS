@@ -14,7 +14,6 @@ from jasper.camilla_config_contract import (
     UNPAIRED_POST_DSP_PLAYBACK_DEVICES,
     _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE,
     DEFAULT_PIPE_SINK_FORMAT,
-    DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
     parse_camilla_devices_config,
@@ -26,6 +25,7 @@ from jasper.camilla_latency import (
     resolve_camilla_target_level,
 )
 from jasper.fanin_coupling import (
+    DEFAULT_PLAYBACK_FORMAT,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAMILLA_GEOMETRY,
     RING_CAPTURE_DEVICE,

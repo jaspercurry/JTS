@@ -54,33 +54,10 @@ ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
 ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
-# The CamillaDSP→outputd content hop's width on the snd-aloop lanes. S32_LE
-# since the wide-output-path program's flip (PR-6,
-# captures/PLAN-wide-output-path-2026-08-07.md): CamillaDSP's float math stays
-# wide all the way to outputd's i32 program spine, so the ONE deliberate output
-# quantization happens at the DAC edge, at the DAC's own declared width. At a
-# ≥24-bit edge that floor sits below the DAC's analog noise, so it stops being
-# audible at all.
-#
-# What changed at an S16 edge is WHERE that single narrowing happens, not how
-# many there are: before the flip there was already exactly one lossy narrowing
-# (CamillaDSP's S16 playback write), and outputd's widen→narrow round trip around
-# it was proven bit-exact. The flip MOVES that narrowing downstream of outputd's
-# mixing, ducking, and trim, which now do their arithmetic on full-resolution
-# content instead of on samples already quantized to 16 bits — which is what makes
-# a −18 dB tweeter trim stop costing three bits of program resolution.
-#
-# Two things must move with this value, and both are derived rather than
-# restated: ``deploy/camilladsp/outputd-cutover.yml`` carries it on BOTH ring
-# halves (since ADR-0100 the flat startup graph names ``jts_ring_capture`` and
-# ``jts_ring_playback``, and the ioplug pins the ring's own geometry), and the
-# audio-hardware reconciler emits outputd's matching
-# ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
-# ``jasper.fanin_coupling.content_lane_format_for_coupling``.
-DEFAULT_PLAYBACK_FORMAT = "S32_LE"
 # The bonded-leader pipe sink (jasper.sound.camilla_yaml's playback_pipe_path
 # axis) and the active-speaker parked graph's /dev/null File sink are pinned
-# to THIS format, independently of DEFAULT_PLAYBACK_FORMAT: snapserver's pipe
+# to THIS format, independently of
+# :data:`~jasper.fanin_coupling.DEFAULT_PLAYBACK_FORMAT`: snapserver's pipe
 # source is a fixed-format wire contract —
 # jasper.multiroom.reconcile.snapserver_argv hardcodes `sampleformat=
 # 48000:16:2` — so a future DEFAULT_PLAYBACK_FORMAT widening (the

@@ -26,7 +26,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
     RETIRED_ALOOP_PLAYBACK_DEVICE,
-    DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
     DRIVER_DOMAIN_PAIR_TRIM_FILTER,
@@ -39,6 +38,7 @@ from jasper.camilla_config_contract import (
     total_positive_boost_db,
 )
 from jasper.camilla_latency import resolve_camilla_latency_for_devices
+from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.camilla_emit import (
     CHANNEL_SELECT_MIXER,
     emit_butterworth_highpass,

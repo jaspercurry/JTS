@@ -234,6 +234,7 @@ code = [
   "jasper/source_[es]*.py",
   "jasper/camilla.py",
   "jasper/camilla_config_contract.py",
+  "jasper/camilla_latency.py",
   "jasper/output_hardware.py",
   "jasper/output_topology.py",
   "deploy/alsa/**",
@@ -490,6 +491,7 @@ code = [
   # defaults AND the FilterSpec/PeqFilter/boost-headroom contract, so a
   # change here can touch preference-EQ composition too.
   "jasper/camilla_config_contract.py",
+  "jasper/camilla_latency.py",
   "jasper/web/sound_setup.py",
   "jasper/dsp_apply.py",
   # The BlueALSA probe backs the Bluetooth source's volume carrier:
@@ -685,6 +687,7 @@ code = [
   "jasper/transport_coherence.py",
   "jasper/mux.py",
   "jasper/camilla_config_contract.py",
+  "jasper/camilla_latency.py",
   "jasper/sound/camilla_yaml.py",
   "jasper/active_speaker/camilla_yaml.py",
   "jasper/cli/route_latency_harness.py",
