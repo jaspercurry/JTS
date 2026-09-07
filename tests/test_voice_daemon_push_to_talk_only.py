@@ -7,7 +7,44 @@ heartbeat/teardown path (#2205). The zero-wake-leg derivation itself is
 pinned directly against `PushToTalk` in tests/test_push_to_talk.py."""
 from __future__ import annotations
 
+import pytest
+
 from tests._log_events import event_fields
+
+
+@pytest.mark.parametrize(
+    "for_tests_kwargs, expected_only",
+    [
+        pytest.param({"legs": []}, True, id="zero_wake_legs"),
+        pytest.param({}, False, id="with_a_wake_leg"),
+    ],
+)
+def test_session_status_surfaces_the_ptt_keys_from_a_real_loop(
+    for_tests_kwargs, expected_only,
+):
+    """`WakeLoop.session_status()` is what `/state` and jasper-control
+    clients read push-to-talk mode from — pin it against a real
+    `WakeLoop`, not just the bare `PushToTalk` collaborator
+    (tests/test_push_to_talk.py pins `.only`'s derivation directly).
+
+    Both derivations matter: zero wake legs plus a manual mic source is
+    push-to-talk-only; a wake leg plus the same manual mic source is not,
+    even though both resolve the same source.
+    """
+    from jasper.voice.push_to_talk import ManualMicRuntime
+    from jasper.voice_daemon import WakeLoop
+
+    wl = WakeLoop.for_tests(
+        manual_mics=[ManualMicRuntime("wiim_remote_2", object(), "udp:9892")],
+        **for_tests_kwargs,
+    )
+
+    status = wl.session_status()
+
+    assert status["push_to_talk_only"] is expected_only
+    assert status["manual_mic_sources"] == ["wiim_remote_2"]
+    # No session has opened yet, so nothing is active regardless of mode.
+    assert status["active_manual_mic_source"] is None
 
 
 def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():

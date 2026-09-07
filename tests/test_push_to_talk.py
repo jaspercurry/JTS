@@ -33,14 +33,17 @@ def test_push_to_talk_only_is_derived_from_resolved_runtime():
 
 
 def test_push_to_talk_only_is_the_single_derivation_its_consumers_read():
-    """One fact, one derivation, computed once at construction and read
-    from the same `.only` attribute by every consumer — `WakeLoop.session_status`,
-    `run()`'s keepalive branch, and the source-less start refusal (pinned at
-    the loop level by test_zero_leg_run_ticks_the_heartbeat_without_a_primary_mic
-    in tests/test_voice_daemon_push_to_talk_only.py and by
+    """Pins only what `PushToTalk` itself computes: `.only` and `.sources`
+    from the given runtime, at construction time, with no re-derivation on
+    read. That every consumer — `WakeLoop.session_status`, `run()`'s
+    keepalive branch, and the source-less start refusal — actually reads
+    `WakeLoop._push_to_talk.only`/`.sources` rather than re-deriving the
+    mode from `self._mic is None` is pinned at the loop level by
+    test_session_status_surfaces_the_ptt_keys_from_a_real_loop and
+    test_zero_leg_run_ticks_the_heartbeat_without_a_primary_mic (both in
+    tests/test_voice_daemon_push_to_talk_only.py) and by
     test_source_less_refusal_reads_the_single_derivation in
-    tests/test_voice_daemon_manual_start_guard.py) all read `WakeLoop._push_to_talk.only`
-    rather than re-deriving the mode from `self._mic is None`."""
+    tests/test_voice_daemon_manual_start_guard.py."""
     from jasper.voice.push_to_talk import PushToTalk
 
     ptt = PushToTalk(_remote_runtime(), have_wake_legs=False)

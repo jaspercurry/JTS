@@ -41,7 +41,7 @@ PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC = 6.0
 # Floor for the derived push-to-talk hold cap, so an operator who sets a
 # very low JASPER_IDLE_TIMEOUT_SEC still gets a usable button rather than
 # a turn that closes before they finish a sentence. Below this the
-# watchdog may win; `_ptt_input_cap_sec` says so once, loudly.
+# watchdog may win; `input_cap_sec` says so once, loudly.
 PTT_MIN_INPUT_CAP_SEC = 5.0
 
 # Liveness-tick cadence for a push-to-talk-only speaker, which has no
@@ -110,13 +110,6 @@ async def keepalive_ticks() -> "AsyncIterator[None]":
 
 
 class PushToTalk:
-    """Runtime state for a daemon's push-to-talk mic sources.
-
-    Constructed once by `WakeLoop.__init__` from the resolved manual-mic
-    runtimes and whether any wake legs were opened; `WakeLoop` reads and
-    writes the public attributes directly for the life of the daemon.
-    """
-
     def __init__(
         self, mics: list[ManualMicRuntime], *, have_wake_legs: bool,
     ) -> None:
@@ -215,10 +208,11 @@ class PushToTalk:
 
     def hold_cap_exceeded(
         self, elapsed: float, idle_timeout_sec: float,
-    ) -> float | None:
-        """Forward one push-to-talk frame. The button owns end-of-input.
+    ) -> bool:
+        """Whether this held button has exceeded the derived input cap.
 
-        Reached from ``_handle_session_frame`` when
+        Reached from ``WakeLoop._handle_manual_session_frame``, itself
+        called from ``_handle_session_frame`` when
         ``_manual_endpoint_this_turn`` is set. Deliberately does NOT run
         local Silero:
 
@@ -231,7 +225,7 @@ class PushToTalk:
           held button. A user who presses and then gathers their thought
           is not a false wake; there was no wake to be false.
 
-        What replaces them is ``_ptt_input_cap_sec``, and something must:
+        What replaces them is ``input_cap_sec``, and something must:
         a button held but never released (wedged under a cushion, a
         release event the accessory never sends) would otherwise hold the
         duck, the LLM session, and the mic open until ``_idle_watchdog``
@@ -252,7 +246,8 @@ class PushToTalk:
         wake-turn ``reason=recording_timeout``.
         """
         cap = self.input_cap_sec(idle_timeout_sec)
-        if elapsed >= cap:
+        exceeded = elapsed >= cap
+        if exceeded:
             # `_input_ended` gates re-entry: once set, subsequent
             # held-button frames are dropped by `_handle_session_frame`'s
             # input-closed branch and never reach here, so this fires at
@@ -265,5 +260,4 @@ class PushToTalk:
                 idle_timeout_sec=f"{float(idle_timeout_sec):.1f}",
                 level=logging.WARNING,
             )
-            return cap
-        return None
+        return exceeded
