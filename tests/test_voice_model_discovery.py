@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import httpx
 import pytest
@@ -137,3 +138,24 @@ def test_refresh_cache_preserves_previous_models_on_failure(tmp_path: Path):
     assert cached.last_error == "models endpoint returned HTTP 503"
     assert cached.last_error_at == "2026-05-27T10:05:00Z"
     assert (tmp_path / "voice_model_discovery.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_refresh_cache_stamps_real_clock_as_second_resolution_zulu(tmp_path: Path):
+    cache_path = str(tmp_path / "voice_model_discovery.json")
+
+    ok_client = _client(
+        lambda _request: httpx.Response(
+            200,
+            json={"data": [{"id": "gpt-realtime-new"}]},
+        ),
+    )
+    snapshot = model_discovery.refresh_provider_cache(
+        "openai",
+        "sk-test",
+        path=cache_path,
+        http=ok_client,
+    )
+
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", snapshot.fetched_at)
+    cached = model_discovery.load_cache(cache_path)["openai"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", cached.fetched_at)
