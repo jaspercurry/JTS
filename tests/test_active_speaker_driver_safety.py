@@ -45,6 +45,7 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
+from tests._web_test_helpers import sound_page_js
 
 
 def _blocked_codes(
@@ -1775,7 +1776,7 @@ def test_the_sound_page_phrases_the_retired_field_reason_by_name() -> None:
     nothing. Pinned like the low-limit-stale name it mirrors.
     """
 
-    js = _SOUND_MAIN_JS.read_text()
+    js = sound_page_js()
     assert (
         f"'{driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON}'"
         in js
@@ -2480,16 +2481,6 @@ def _issue_codes(profile: dict) -> set[str]:
     return {issue["code"] for issue in profile["issues"]}
 
 
-
-
-_SOUND_MAIN_JS = (
-    Path(__file__).resolve().parents[1]
-    / "deploy"
-    / "assets"
-    / "sound-profile"
-    / "js"
-    / "main.js"
-)
 # ``driver_safety`` emits reason codes two structurally different ways, and a
 # code escaping through EITHER of them reaches ``evaluation.reasons`` and
 # therefore /sound's copy. A scan that saw one shape would go quiet exactly when
@@ -2552,9 +2543,9 @@ def test_the_sound_page_can_phrase_every_reason_that_is_not_a_missing_value():
     dead phrase is caught too.
     """
 
-    js = _SOUND_MAIN_JS.read_text()
+    js = sound_page_js()
     block = js.split("var SAFETY_RELATIONSHIP_TEXT = {", 1)[1].split("};", 1)[0]
-    phrased = set(re.findall(r"^\s{4}([a-z0-9_]+):$", block, re.MULTILINE))
+    phrased = set(re.findall(r"^\s+([a-z0-9_]+):$", block, re.MULTILINE))
 
     expected = {
         code for code in _emittable_reason_codes() if not code.endswith("_missing")

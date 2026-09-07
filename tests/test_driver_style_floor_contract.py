@@ -6,7 +6,7 @@
 
 The authoritative style -> protective high-pass floor table is Python's
 ``_STYLE_HIGH_PASS_HZ`` in jasper/active_speaker/driver_protection.py. The
-/sound/ page JS (deploy/assets/sound-profile/js/main.js, ``hfDriverStyles()``)
+/sound/ page JS (deploy/assets/sound-profile/js/, ``hfDriverStyles()``)
 carries a display copy so the layout-card picker and the review-card hint can
 name the floor a declared style buys. They can't share code (one Python, one
 static browser module), so this test pins the pairs: if a floor changes or a
@@ -21,26 +21,24 @@ default. Same pattern as tests/test_wifi_profile_hardening_contract.py.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from jasper.active_speaker.driver_protection import (
     _STYLE_HIGH_PASS_HZ,
     _UNKNOWN_HF_STYLE,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
-SOUND_JS = ROOT / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
+from ._web_test_helpers import sound_page_js
 
 
 def _js_style_table() -> dict[str, float]:
-    """Extract the (value, floor_hz) pairs from hfDriverStyles() in main.js."""
-    text = SOUND_JS.read_text(encoding="utf-8")
+    """Extract the (value, floor_hz) pairs from hfDriverStyles()."""
+    text = sound_page_js()
     m = re.search(
         r"function hfDriverStyles\(\) \{\s*return \[(?P<body>.*?)\];",
         text,
         flags=re.S,
     )
-    assert m is not None, "could not find hfDriverStyles() in main.js"
+    assert m is not None, "could not find hfDriverStyles() in the /sound/ page JS"
     entries = re.findall(
         r"\{value: '(?P<value>[a-z0-9_]+)', label: '[^']*', "
         r"floor_hz: (?P<floor>\d+(?:\.\d+)?)\}",
@@ -75,7 +73,7 @@ def test_js_conservative_default_copy_matches_python_unknown_floor() -> None:
     story. Both spellings are accepted so this contract keeps checking the
     NUMBER -- which is its job -- instead of failing over a word.
     """
-    text = SOUND_JS.read_text(encoding="utf-8")
+    text = sound_page_js()
     matches = re.findall(r"(?:conservative|cautious) (\d+(?:\.\d+)?) Hz", text)
     assert matches, "expected the undeclared-style copy to name the default"
     unknown_floor = _STYLE_HIGH_PASS_HZ[_UNKNOWN_HF_STYLE]

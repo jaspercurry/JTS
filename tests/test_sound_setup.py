@@ -84,6 +84,7 @@ from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
     request_with_csrf,
+    sound_page_js,
 )
 from .sound_camilla_fixtures import FakeCamilla
 
@@ -444,6 +445,7 @@ _SOUND_CSS = (
     / "deploy" / "assets" / "sound-profile" / "sound.css"
 )
 _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
+
 _ACTIVE_SPEAKER_UI_TEST = (
     Path(__file__).resolve().parent / "js" / "active_speaker_ui_test.mjs"
 )
@@ -1081,7 +1083,7 @@ def test_sound_module_preserves_editor_behaviour():
     the load-bearing pieces so the relocation can't silently drop them: the
     5-band Simple field names, the backend endpoints + epoch handshake, the
     CSRF-via-meta wiring, and no legacy prompt() flow."""
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     assert "sub_bass_db" in js
     assert "presence_db" in js
     for path in (
@@ -1258,7 +1260,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
 
     assert 'from "/assets/sound-profile/js/active-speaker-ui.js"' in js
     assert "function refreshActiveSpeakerStatus()" not in js
@@ -1405,7 +1407,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
 
 
 def test_sound_module_output_topology_surface_is_no_audio_and_backend_owned():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
 
     assert "function renderOutputTopologySetup()" in js
     assert "function refreshOutputTopology(options)" in js
@@ -1929,7 +1931,7 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
     (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw "evidence")
     and friendlySetupReason must never echo a raw snake_case code. See AGENTS.md
     "Web wizard conventions" and the active-crossover flow simplification."""
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
 
     # No backend vocabulary in any user-visible string.
@@ -5299,7 +5301,7 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     set_view_start = js.index("function setView(v)")
     set_view_end = js.index("function applySavedSelection", set_view_start)
     set_view_body = js[set_view_start:set_view_end]
@@ -5417,7 +5419,7 @@ def test_sound_component_flow_uses_bounded_responsive_grids():
 
 
 def test_sound_css_marks_live_sources_with_red_dots():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     css = _SOUND_CSS.read_text()
 
     assert "btn.classList.toggle('is-live', v === view);" in js
@@ -5430,7 +5432,7 @@ def test_sound_css_marks_live_sources_with_red_dots():
     assert ".output-sequence__item--needs-action .output-sequence__marker" not in css
 
 def test_sound_module_draws_a_single_response_curve_with_no_overlays():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     render_start = js.index("function renderGraph(payload, enabled)")
     render_end = js.index("  // Render the graph", render_start)
     render_body = js[render_start:render_end]
@@ -5447,7 +5449,7 @@ def test_sound_module_draws_a_single_response_curve_with_no_overlays():
 
 
 def test_sound_module_anchors_band_dots_to_the_summed_curve():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     markers_start = js.index("function drawBandMarkers(summed)")
     markers_end = js.index("function expandedPeqBandIndex()", markers_start)
     markers_body = js[markers_start:markers_end]
@@ -5473,7 +5475,7 @@ def test_sound_module_anchors_band_dots_to_the_summed_curve():
 def test_sound_module_reset_draft_and_simple_zero_detent():
     """Draft reset is the user-facing revert action, and Simple sliders get a
     tiny release-time zero detent so neutral is easy without per-band buttons."""
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     assert "Reset draft" in js
     assert 'data-act="reset-draft"' in js
     assert "function resetDraft()" in js
@@ -5486,7 +5488,7 @@ def test_sound_module_reset_draft_and_simple_zero_detent():
 def test_sound_readouts_are_not_fake_edit_controls():
     """Readouts are display-only; exact numeric editing was intentionally not
     shipped, so they must not masquerade as text-edit buttons."""
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     css = _SOUND_CSS.read_text()
     assert "range__readout-value" in js
     assert "simple-col__readout-value" in js
@@ -5496,7 +5498,7 @@ def test_sound_readouts_are_not_fake_edit_controls():
 
 
 def test_sound_module_prefers_explicit_profile_identity_then_stock_matches():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     fn_start = js.index("function findIdFor(profile)")
     fn_end = js.index("function sourceProfile()", fn_start)
     body = js[fn_start:fn_end]
@@ -5536,7 +5538,7 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
 
 
 def test_sound_module_hides_uncontrollable_band_controls():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     band_row = js[js.index("function bandRow(band, index)"):js.index("function typeBtn(")]
     # All six band types are offered.
     for t in ("Lowshelf", "Peaking", "Highshelf", "Highpass", "Lowpass", "Notch"):
@@ -5549,7 +5551,7 @@ def test_sound_module_hides_uncontrollable_band_controls():
 
 
 def test_sound_module_bounds_cut_filter_width_with_cut_max_q():
-    js = _SOUND_MODULE.read_text()
+    js = sound_page_js()
     # The Width slider and its clamp use a per-type ceiling for HP/LP, sourced
     # from limits.cut_max_q (SSOT in jasper/sound/profile.py CUT_MAX_Q).
     assert "function bandQMax(type)" in js
