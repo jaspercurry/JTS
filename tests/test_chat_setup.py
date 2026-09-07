@@ -30,6 +30,7 @@ from jasper.conversation_history import (
     read_settings,
 )
 from jasper.web import chat_setup
+from tests._wake_loop import wake_loop_for_tests
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CHAT_VIEWS_TEST = _ROOT / "tests" / "js" / "chat_views_test.mjs"
@@ -357,7 +358,6 @@ def test_capture_disable_stops_future_capture_without_clearing_rows(
     chat_server,
     monkeypatch,
 ) -> None:
-    from jasper.voice_daemon import WakeLoop
 
     base, db_path, settings_path = chat_server
     status, body = _http_post_json(
@@ -373,7 +373,7 @@ def test_capture_disable_stops_future_capture_without_clearing_rows(
     store = ConversationStore(str(db_path))
     try:
         assert len(store.recent(10)) == 2
-        wl = WakeLoop.for_tests(conversation_store=store)
+        wl = wake_loop_for_tests(conversation_store=store)
         monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
         wl._conversation_capture.record(
             "future command",

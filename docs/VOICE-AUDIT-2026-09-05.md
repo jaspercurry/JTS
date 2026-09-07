@@ -348,7 +348,8 @@ ADR when a constant moves. `daemon_main.py` table-driving and the
    a seam across eight modules; the voice-daemon audit found this one is
    185 lines of stub classes plus a `setattr` back door shipped to the Pi.
    Keep the seam or move it to `tests/`. Recommendation: move this one,
-   leave the other seven alone.
+   leave the other seven alone. Decided: move — closed by #4378
+   (`tests/_wake_loop.py::wake_loop_for_tests`).
 
 ## 7. Sub-agent prompt template
 
@@ -407,7 +408,7 @@ Wave 4 — decompose WakeLoop
 - [ ] 4.3 `wake_telemetry.py` (also `_handle_wake_frame` inlay) — partial: module extracted, fire-time `_current_condition` write deleted (`_maybe_refresh_condition` sole writer) merged #4325; `_handle_wake_frame` inlay open (untouched by #4325's diff, still 209 lines at HEAD vs the row's ~150 target)
 - [x] 4.4 `research_announcer.py` + `TurnHost` — merged #4330 (`ResearchWindow` enum replaces four booleans)
 - [x] 4.5 `push_to_talk.py` — merged #4340
-- [x] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` — merged #4369 (converged by deleting the legacy Camilla transport; `FanInDucker` is the voice loop's only duck transport)
+- [x] 4.6 `assistant_output.py` + `FanInDucker` converged with `camilla.Ducker` — assistant_output.py extracted #4348; camilla.Ducker convergence merged #4369 (converged by deleting the legacy Camilla transport; `FanInDucker` is the voice loop's only duck transport)
 - [ ] 4.7 `daemon_main.py` table-driven builders + `AsyncExitStack` teardown + `control_socket.py` (providers F1–F3) — partial: exit-stack teardown merged #4301; control_socket.py extraction merged #4315; table-driven builders open
 
 Wave 5 — one provider base

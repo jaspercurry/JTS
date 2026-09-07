@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from tests._log_events import event_fields
+from tests._wake_loop import wake_loop_for_tests
 
 
 @pytest.mark.parametrize(
@@ -31,10 +32,9 @@ def test_session_status_surfaces_the_ptt_keys_from_a_real_loop(
     push-to-talk-only; a wake leg plus the same manual mic source is not,
     even though both resolve the same source.
     """
-    from jasper.voice_daemon import WakeLoop
     from tests._manual_mics import remote_mic
 
-    wl = WakeLoop.for_tests(
+    wl = wake_loop_for_tests(
         manual_mics=[remote_mic()],
         **for_tests_kwargs,
     )
@@ -53,10 +53,9 @@ def test_zero_leg_wakeloop_has_no_primary_mic_or_detector():
     its readers need no special case."""
     from collections import deque
 
-    from jasper.voice_daemon import WakeLoop
     from tests._manual_mics import remote_mic
 
-    wl = WakeLoop.for_tests(
+    wl = wake_loop_for_tests(
         legs=[],
         manual_mics=[remote_mic()],
     )
@@ -73,7 +72,6 @@ def _zero_leg_loop_with_fast_keepalive(monkeypatch):
     quickly."""
     import asyncio
 
-    from jasper.voice_daemon import WakeLoop
     from tests._manual_mics import remote_mic
 
     class _IdleMic:
@@ -86,7 +84,7 @@ def _zero_leg_loop_with_fast_keepalive(monkeypatch):
             await asyncio.Event().wait()
             yield b""  # unreachable; keeps this an async generator
 
-    wl = WakeLoop.for_tests(
+    wl = wake_loop_for_tests(
         legs=[],
         manual_mics=[remote_mic(_IdleMic())],
     )

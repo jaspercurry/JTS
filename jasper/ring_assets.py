@@ -32,6 +32,7 @@ from jasper.fanin_coupling import (
     RING_SLOT_FRAMES,
     RingWire,
 )
+from jasper.json_fields import sha256_file
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into. Canonical home
 # for the value — do not re-spell it as a literal elsewhere. Build and install
@@ -256,21 +257,11 @@ def read_ring_ioplug_provenance(
 
 
 def ring_ioplug_so_sha256(*, plugin_dir: str | None = None) -> str | None:
-    """SHA-256 of the installed ioplug ``.so``, or ``None`` if unreadable.
-
-    Chunked read: the ``.so`` is small, but streaming keeps the reconciler's
-    memory bounded on a 1 GB box regardless of what ships there later.
-    """
-    import hashlib
-
-    digest = hashlib.sha256()
+    """SHA-256 of the installed ioplug ``.so``, or ``None`` if unreadable."""
     try:
-        with open(ring_ioplug_so_path(plugin_dir=plugin_dir), "rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                digest.update(chunk)
+        return sha256_file(ring_ioplug_so_path(plugin_dir=plugin_dir))
     except OSError:
         return None
-    return digest.hexdigest()
 
 
 def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:

@@ -9,6 +9,7 @@ import pytest
 
 from jasper.tts_routing import FANIN_TTS_SOCKET
 from tests._live_turn_fake import _prep_session_status, silent_frame
+from tests._wake_loop import wake_loop_for_tests
 from jasper.voice.daemon_main import _tts_ready_detail
 from jasper.voice.daemon_main import _serve_while_connecting
 
@@ -151,9 +152,8 @@ def _arm_turn(wl, *, wake: bool) -> None:
 
 def _timeline_loop(*, wake: bool):
     """A WakeLoop parked mid-turn, configured for `wake`'s endpointer."""
-    from jasper.voice_daemon import WakeLoop
 
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._user_speech_seen = True
     wl._manual_endpoint_this_turn = not wake
     wl._barge_in_active = False
@@ -430,10 +430,10 @@ def _wake_loop_with_legs(*tokens):
     """A WakeLoop with exactly the given wake-input legs armed, in order."""
     from unittest.mock import MagicMock
 
-    from jasper.voice_daemon import WakeLoop, LegRuntime
+    from jasper.voice_daemon import LegRuntime
     from jasper.wake_legs import by_token
 
-    return WakeLoop.for_tests(legs=[
+    return wake_loop_for_tests(legs=[
         LegRuntime(by_token(token), MagicMock(), MagicMock(), None)
         for token in tokens
     ])

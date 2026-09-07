@@ -13,13 +13,11 @@ and `/sound/`.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import re
 import subprocess
-import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -44,6 +42,7 @@ from .audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
 )
+from .json_fields import json_fingerprint, utc_now_iso
 
 
 SCHEMA_VERSION = 1
@@ -397,8 +396,7 @@ def detected_hardware_identity(state: OutputHardwareState | None) -> str:
                 for issue in state.issues
             ),
         }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return "sha256:" + json_fingerprint(payload)
 
 
 def detected_hardware_adoption_precondition(
@@ -450,10 +448,6 @@ class DualAppleRuntimeMapping:
             "child_devices": [child.to_dict() for child in self.child_devices],
         }
         return out
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _same_usb_bus(cards: tuple[OutputCardFact, ...]) -> bool | None:
@@ -511,7 +505,7 @@ def classify_output_cards(
     apple = tuple(
         card for card in facts if _is_apple_output_card(card)
     )
-    observed_at = observed_at or _utc_now()
+    observed_at = observed_at or utc_now_iso()
     registered_single_dacs = _registered_single_dac_cards(facts)
 
     if len(registered_single_dacs) == 1:

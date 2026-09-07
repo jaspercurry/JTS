@@ -41,7 +41,7 @@ The `jasper-control` API binds `0.0.0.0:8780` directly (LAN-reachable
 on all interfaces, not loopback-only — nginx additionally proxies a
 subset of routes for same-origin browser access) and rejects
 obvious browser-origin and DNS-rebinding abuse via
-`jasper/http_security.py` (`management_read_allowed` /
+`jasper/net/http_security.py` (`management_read_allowed` /
 `mutating_request_allowed`), caps request sizes, and avoids logging
 credentials. The nginx-fronted setup wizards under `jasper/web/` share
 those guards on state-changing requests and GET routes. A

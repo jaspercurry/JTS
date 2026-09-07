@@ -17,11 +17,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .atomic_io import atomic_write_text
+from .json_fields import utc_now_iso
 from .music_sources import Source, VolumeMode, volume_mode
 
 logger = logging.getLogger(__name__)
@@ -44,12 +44,6 @@ GUARD_CLEAR_DEFERRED_DUCK_ACTIVE = "clear_deferred_duck_active"
 
 def diagnostics_path(path: str | None = None) -> str:
     return path or os.environ.get("JASPER_VOLUME_DIAGNOSTICS_PATH", DEFAULT_PATH)
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(
-        timespec="seconds",
-    ).replace("+00:00", "Z")
 
 
 def _source_value(source: Source | str) -> str:
@@ -106,7 +100,7 @@ def record_source_push(
         "ok": bool(ok),
         "reason": reason,
         "detail": detail,
-        "updated_at": _now_iso(),
+        "updated_at": utc_now_iso(),
     }
     _write(snapshot, path)
 
@@ -130,7 +124,7 @@ def record_push_guard(
         "previous_db": None if previous_db is None else round(float(previous_db), 2),
         "reason": reason,
         "context": context,
-        "updated_at": _now_iso(),
+        "updated_at": utc_now_iso(),
     }
     _write(snapshot, path)
 
@@ -153,7 +147,7 @@ def record_push_guard_clear(
         "reason": reason,
         "context": context,
         "ok": bool(ok),
-        "updated_at": _now_iso(),
+        "updated_at": utc_now_iso(),
     }
     snapshot["last_clear_event"] = event
     if ok:

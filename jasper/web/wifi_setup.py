@@ -64,7 +64,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .. import wifi_guardian_persistence, wifi_scan_repair
+from ..net import wifi_guardian_persistence, wifi_scan_repair
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets

@@ -24,7 +24,6 @@ from jasper.enhanced_aec import (
     VENV_ROOT,
     EnhancedAecError,
     desired_fingerprint,
-    extension_sha256,
     install_profile_supports_enhanced_aec,
     parse_target_manifest,
     read_intent,
@@ -32,6 +31,7 @@ from jasper.enhanced_aec import (
     write_installed_marker,
     write_job_state,
 )
+from jasper.json_fields import sha256_file
 from jasper.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -236,7 +236,7 @@ def _download_archive(url: str, sha256: str, destination: Path) -> None:
         raise EnhancedAecError(
             f"enhanced-AEC source archive exceeds {MAX_ARCHIVE_BYTES} bytes"
         )
-    actual = extension_sha256(destination)
+    actual = sha256_file(destination)
     if actual.lower() != sha256.lower():
         raise EnhancedAecError(
             f"enhanced-AEC source hash mismatch: got {actual}, expected {sha256}"
@@ -503,7 +503,7 @@ def _activate(
         # before both mandatory v1 and enhanced v2 processed a real frame.
         write_installed_marker(
             fingerprint=fingerprint,
-            extension_sha256=extension_sha256(destination),
+            extension_sha256=sha256_file(destination),
             extension_name=destination.name,
         )
         return destination

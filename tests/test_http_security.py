@@ -8,7 +8,7 @@ from email.message import Message
 
 import pytest
 
-from jasper import http_security
+from jasper.net import http_security
 from jasper.usb_network import derive_plan
 
 
@@ -185,28 +185,24 @@ def test_avahi_suffix_only_matches_our_own_hostname(monkeypatch):
         assert (ok, reason) == (False, "host_not_allowed"), host
 
 
-def test_identity_file_names_extend_the_allowlist(monkeypatch, tmp_path):
-    """Names the identity reconciler observed (identity.env) are
-    accepted — covers shapes the static rules can't derive, e.g. a
-    stale-but-still-advertised configured name after an operator
-    rename."""
-    identity = tmp_path / "identity.env"
-    identity.write_text(
-        "JASPER_IDENTITY_OS_HOSTNAME=kitchen\n"
-        "JASPER_IDENTITY_AVAHI_HOSTNAME=kitchen-2.local\n"
-        "JASPER_IDENTITY_CONFIGURED_HOSTNAME=jts-kitchen.local\n"
-    )
-    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(identity))
+def test_extra_hosts_callable_runs_only_when_the_static_rules_miss(monkeypatch):
+    """``extra_hosts`` is a callable so a statically-allowed Host never
+    pays its lookup (identity_state's binding stats identity.env)."""
+    calls: list[int] = []
+
+    def extra() -> frozenset[str]:
+        calls.append(1)
+        return frozenset({"kitchen-2.local"})
+
     monkeypatch.setattr(http_security.socket, "gethostname", lambda: "unrelated")
-    for host in ("kitchen.local", "kitchen-2.local", "jts-kitchen.local"):
-        ok, reason = http_security.management_read_allowed({"Host": host})
-        assert (ok, reason) == (True, "ok"), host
-    # Still not a free-for-all.
-    ok, reason = http_security.management_read_allowed({"Host": "evil.example"})
-    assert (ok, reason) == (False, "host_not_allowed")
-
-
-def test_missing_identity_file_changes_nothing(monkeypatch, tmp_path):
-    monkeypatch.setenv("JASPER_IDENTITY_FILE", str(tmp_path / "absent.env"))
-    ok, reason = http_security.management_read_allowed({"Host": "evil.example"})
-    assert (ok, reason) == (False, "host_not_allowed")
+    assert http_security.management_read_allowed(
+        {"Host": "kitchen-2.local"}, extra_hosts=extra,
+    ) == (True, "ok")
+    assert http_security.management_read_allowed(
+        {"Host": "evil.example"}, extra_hosts=extra,
+    ) == (False, "host_not_allowed")
+    calls.clear()
+    assert http_security.management_read_allowed(
+        {"Host": "localhost"}, extra_hosts=extra,
+    ) == (True, "ok")
+    assert calls == []

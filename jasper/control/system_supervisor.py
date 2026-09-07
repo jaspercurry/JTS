@@ -576,7 +576,7 @@ def _read_reboot_state(path: Path) -> float | None:
     Fail-open by design: a missing, unreadable, corrupt, or malformed
     file resolves to None so a genuinely-needed reboot is never blocked
     by one bad byte on disk. Mirrors the conservative read in
-    `jasper/wifi_scan_repair.py`."""
+    `jasper/net/wifi_scan_repair.py`."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):

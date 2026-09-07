@@ -39,7 +39,7 @@ _ALLOWLIST = {
     # test_wifi_guardian_persistence's fsync-failure test), because
     # degraded rename-durability beats failing the wizard's connect.
     # atomic_write_text(durable=True) raises on those faults instead.
-    "jasper/wifi_guardian_persistence.py",
+    "jasper/net/wifi_guardian_persistence.py",
     # Plain burn-down candidate (no fsync; text/JSON with an explicit
     # chmod) — an exact fit for atomic_write_text(mode=...). Sits in the
     # measurement program's zone, so its own agent migrates it.

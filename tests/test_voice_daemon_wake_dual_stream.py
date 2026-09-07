@@ -32,6 +32,7 @@ import pytest
 from jasper.voice_daemon import WakeLoop, LegRuntime
 from jasper.wake_legs import by_token
 from tests._log_events import event_fields, event_records
+from tests._wake_loop import wake_loop_for_tests
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
@@ -52,7 +53,7 @@ def _make_wake_loop(
 ) -> WakeLoop:
     """Construct a WakeLoop via the test seam, then override the attrs
     `_handle_wake_frame` touches with mocks that detect accidental use."""
-    wl = WakeLoop.for_tests()
+    wl = wake_loop_for_tests()
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
     wl._detector = _make_detector()

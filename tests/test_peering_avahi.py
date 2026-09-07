@@ -9,9 +9,9 @@ Renders the template into a tmp_path so we don't touch real
 no-op so tests don't shell out.
 
 Reload ownership note: ``render_and_install`` now lets the shared
-``jasper.avahi_service.render_service`` own the reload (it reloads only on
+``jasper.net.avahi_service.render_service`` own the reload (it reloads only on
 ``RenderResult.WROTE``), so the render-path reload fires through
-``jasper.avahi_service.reload_avahi``. ``uninstall`` still drives peering's
+``jasper.net.avahi_service.reload_avahi``. ``uninstall`` still drives peering's
 own ``_reload_avahi``. The autouse fixture suppresses BOTH so no test
 shells out; the unchanged-render test asserts against the render-path
 reload (``avahi_service.reload_avahi``).
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper import avahi_service
+from jasper.net import avahi_service
 from jasper.peering import avahi as avahi_mod
 
 
@@ -138,7 +138,7 @@ def test_skip_write_when_unchanged(tmp_path, monkeypatch):
 
     The reload is now owned by avahi_service.render_service (it fires only
     on RenderResult.WROTE), so the no-reload assertion patches the
-    render-path reload — jasper.avahi_service.reload_avahi — not peering's
+    render-path reload — jasper.net.avahi_service.reload_avahi — not peering's
     own _reload_avahi (which now only drives uninstall)."""
     template = tmp_path / "template.xml"
     template.write_text(_TEMPLATE)
