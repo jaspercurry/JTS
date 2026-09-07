@@ -67,12 +67,12 @@ from .transport import (
     IncomingMessage,
     IncomingWake,
     MulticastTransport,
+    _maybe_float,
     encode_claim,
     encode_end,
     encode_heartbeat,
     encode_wake,
 )
-from .transport import _maybe_float
 
 logger = logging.getLogger(__name__)
 
