@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import socket
 import subprocess
 import sys
 import time
@@ -24,6 +23,7 @@ from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     MUX_CONTROL_SOCKET_PATH,
     OUTPUTD_STATUS_SOCKET,
+    read_status_socket,
 )
 from jasper.control.system_metrics import (
     EXTRA_SERVICE_GROUPS,
@@ -235,31 +235,10 @@ def _pss_rollup(control_group: str) -> dict[str, Any] | None:
 
 
 def _status_socket(path: str, timeout: float = 1.0, max_bytes: int = 65536) -> dict[str, Any] | None:
-    sock: socket.socket | None = None
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        sock.connect(path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while sum(len(c) for c in chunks) < max_bytes:
-            chunk = sock.recv(8192)
-            if not chunk:
-                break
-            chunks.append(chunk)
-    except OSError:
+        return read_status_socket(path, timeout=timeout, max_bytes=max_bytes)
+    except (OSError, ValueError):
         return None
-    finally:
-        if sock is not None:
-            try:
-                sock.close()
-            except OSError:
-                pass
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def _sample_units(

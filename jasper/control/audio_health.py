@@ -31,10 +31,11 @@ from typing import Any
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
-from ..platform.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
+from ..platform.status_socket import (
+    FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET, read_status_socket,
+)
 from ..service_units import unit_failed
 from ..fanin.latency_mode import PRESETS, classify_runtime
-from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,

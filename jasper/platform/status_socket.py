@@ -109,7 +109,7 @@ def read_status_socket_or_none(
 
     try:
         return read_status_socket(path, timeout=timeout)
-    except (OSError, json.JSONDecodeError, ValueError) as e:
+    except (OSError, ValueError) as e:
         log_event(
             logger,
             event,

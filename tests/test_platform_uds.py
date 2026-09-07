@@ -309,10 +309,10 @@ async def _serve_once(path: str, payload: bytes):
     return await asyncio.start_unix_server(handle, path=path)
 
 
-@pytest.mark.parametrize("payload", [b'{"inputs":[]}', _outputd_status_payload()], ids=["small", "outputd"])
+@pytest.mark.parametrize("payload_kind", ["small", "outputd", "exact-cap", "over-cap"])
 @pytest.mark.parametrize("consumer", ["state", "grouping", "mux"])
 async def test_status_consumers_reassemble_fragmented_json(
-    short_sock_path, tmp_path, monkeypatch, consumer, payload,
+    short_sock_path, tmp_path, monkeypatch, consumer, payload_kind,
 ):
     monkeypatch.setattr(grouping_supervisor, "OUTPUTD_CONTROL_SOCKET", short_sock_path)
     monkeypatch.setattr(mux, "FANIN_CONTROL_SOCKET", short_sock_path)
@@ -321,9 +321,16 @@ async def test_status_consumers_reassemble_fragmented_json(
         "grouping": grouping_supervisor.GroupingSupervisor().outputd_status,
         "mux": mux.Mux(mode_state_path=str(tmp_path / "mode"))._fanin_status_best_effort,
     }
+    cap = 65_536 if consumer == "mux" else 262_144
+    payload = {
+        "small": b'{"inputs":[]}',
+        "outputd": _outputd_status_payload(),
+        "exact-cap": b"{}" + b" " * (cap - 3),
+        "over-cap": b"{}" + b" " * (cap - 2),
+    }[payload_kind]
     server = await _serve_once(short_sock_path, payload)
     try:
-        assert await calls[consumer]() == json.loads(payload)
+        assert await calls[consumer]() == (None if payload_kind == "over-cap" else json.loads(payload))
     finally:
         server.close()
         await server.wait_closed()
@@ -349,6 +356,18 @@ async def test_status_limits_and_failure_policy(monkeypatch, payload, expected):
     assert await uds.local_status_json("/tmp/status.sock", max_bytes=16) == expected
     writer.close.assert_called_once()
     writer.wait_closed.assert_not_awaited()
+
+
+@pytest.mark.parametrize("phase", ["connect", "write", "drain", "read"])
+async def test_status_transport_failures_return_none(monkeypatch, phase):
+    reader, writer = _connection(b"")
+    opener = AsyncMock(return_value=(reader, writer))
+    operation = {"connect": opener, "write": writer.write, "drain": writer.drain, "read": reader.read}
+    operation[phase].side_effect = OSError
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
+
+    assert await uds.local_status_json("/tmp/status.sock") is None
+    assert writer.close.call_count == (0 if phase == "connect" else 1)
 
 
 @pytest.mark.parametrize("phase", ["connect", "drain", "read"])
