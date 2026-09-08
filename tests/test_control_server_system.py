@@ -596,9 +596,9 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
         {"converter": "best"},
     )
 
-    assert status == 200
+    assert status == 202
     assert body["ok"] is True
-    assert body["status"] == "restarted"
+    assert body["status"] == "accepted"
     assert applied == ["samplerate_best"]
     assert body["audio_quality"]["converter"] == "samplerate_best"
     from jasper.local_sources import local_source_audio_refresh_units
@@ -2124,9 +2124,9 @@ def test_system_restart_audio_uses_local_source_registry(
     calls = _record_broker(monkeypatch)
     base, _fake = server_with_coordinator
     status, body = _post(f"{base}/system/restart/audio", {})
-    assert status == 200
+    assert status == 202
     assert body["ok"] is True
-    assert body["status"] == "restarted"
+    assert body["status"] == "accepted"
     assert calls == [
         ("restart", ["jasper-camilla.service"]),
         ("try-restart", list(local_source_audio_refresh_units())),
@@ -2160,7 +2160,7 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     calls = _record_broker(monkeypatch)
     base, _fake = server_with_coordinator
     status, _body = _post(f"{base}/system/restart/audio", {})
-    assert status == 200
+    assert status == 202
     flat = [unit for _verb, units in calls for unit in units]
     assert "jasper-camilla.service" in flat
     assert "librespot.service" not in flat

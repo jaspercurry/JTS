@@ -386,7 +386,10 @@ class AecRoutes(ControlHandlerMixin):
             value=f"{threshold:.2f}",
             client=self.address_string(),
         )
-        self._send_json({"ok": True, "status": "restarted", "threshold": threshold})
+        self._send_json(
+            {"ok": True, "status": "accepted", "threshold": threshold},
+            status=202,
+        )
         return
 
     def _post_aec_commission(self) -> None:

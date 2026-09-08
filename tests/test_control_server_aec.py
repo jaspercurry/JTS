@@ -138,8 +138,8 @@ def test_aec_threshold_persists_and_restarts_voice(
 
     status, body = _post(f"{base}/aec/threshold", {"threshold": 0.42})
 
-    assert status == 200
-    assert body == {"ok": True, "status": "restarted", "threshold": 0.42}
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", "threshold": 0.42}
     assert "JASPER_WAKE_THRESHOLD=0.42" in model_file.read_text()
     assert calls == [("restart", ["jasper-voice.service"])]
 

@@ -393,7 +393,7 @@ class SystemRoutes(ControlHandlerMixin):
                 {
                     "error": (
                         "Conversion quality was saved, but the music "
-                        "renderers could not be restarted."
+                        "renderer restart could not be scheduled."
                     ),
                     "code": "audio_quality_restart_failed",
                     "intent_saved": True,
@@ -413,11 +413,12 @@ class SystemRoutes(ControlHandlerMixin):
         self._send_json(
             {
                 "ok": True,
-                "status": "restarted",
+                "status": "accepted",
                 "action": "audio-quality",
                 "try_restart_units": _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
                 "audio_quality": state,
-            }
+            },
+            status=202,
         )
         return
 
@@ -461,11 +462,9 @@ class SystemRoutes(ControlHandlerMixin):
         return
 
     def _post_system_action(self) -> None:
-        # Action endpoints for the /system dashboard. Unit actions go through
-        # the restart broker so an allowlist/polkit denial answers 502 instead
-        # of a silent ok; reboot/poweroff have no broker verb and take the
-        # process down before any verdict, so they answer 202. Either way the
-        # dashboard polls /system/snapshot for what actually came back up.
+        # Broker refusal answers 502 with a `code`; broker ok answers 202 —
+        # the job is enqueued, and /state observes what actually came back.
+        # reboot/poweroff answer 202 too, without a broker verb.
         #
         # Risk model: LAN-local + browser-origin guard
         # (consistent with the wizards). Anyone already on the
@@ -579,11 +578,12 @@ class SystemRoutes(ControlHandlerMixin):
         self._send_json(
             {
                 "ok": True,
-                "status": "restarted",
+                "status": "accepted",
                 "action": action,
                 "units": units,
                 "restart_units": restart_units,
                 "try_restart_units": try_restart_units,
-            }
+            },
+            status=202,
         )
         return
