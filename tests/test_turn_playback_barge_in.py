@@ -291,6 +291,29 @@ async def test_received_response_is_observed_even_when_interrupt_prevents_its_wr
     assert tts.write_calls == 0
 
 
+@pytest.mark.parametrize("chunk_api", [False, True])
+async def test_playback_accepts_audio_iterators_without_a_close_method(chunk_api):
+    class Audio:
+        def __init__(self):
+            self.frames = iter([b"first", b"second"])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            pcm = next(self.frames, None)
+            if pcm is None:
+                raise StopAsyncIteration
+            return AudioOutChunk(pcm) if chunk_api else pcm
+
+    turn, tts = _FakeTurn(), _BaseTts()
+    turn.audio_out_chunks = Audio if chunk_api else None
+    turn.audio_out = Audio
+    await _play_responses(turn, tts)
+    assert tts.write_calls == 2
+    assert tts.end_segment_calls == tts.wait_drained_calls == 1
+
+
 # --- chunk-loop window -------------------------------------------------
 
 

@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from contextlib import aclosing
-from typing import Awaitable, Callable
+from typing import AsyncGenerator, Awaitable, Callable
 
 from ..audio_io import TtsPlayout, confirmed_tts_flush
 from ..log_event import log_event
@@ -19,12 +19,17 @@ logger = logging.getLogger("jasper.voice_daemon")
 _WATCHDOG_POLL_SEC = 0.25
 
 
-async def _turn_audio_chunks(turn: LiveTurn):
+async def _turn_audio_chunks(turn: LiveTurn) -> AsyncGenerator[AudioOutChunk, None]:
     chunks = getattr(turn, "audio_out_chunks", None)
     source = chunks if callable(chunks) else turn.audio_out
-    async with aclosing(source()) as audio:
+    audio = source()
+    try:
         async for chunk in audio:
             yield AudioOutChunk(pcm=chunk) if isinstance(chunk, bytes) else chunk
+    finally:
+        close = getattr(audio, "aclose", None)
+        if callable(close):
+            await close()
 
 
 async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
@@ -45,7 +50,7 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
     if dropped:
         log_event(logger, "barge.dropped_pending_audio", chunks=dropped)
     await turn.cancel_response("barge_in")
-    if confirmed:
+    if confirmed and ack is not None:
         # Fan-in counts mix commits; outputd estimates drain. Neither proves
         # acoustic playback. Completed segments can be absent from this ledger.
         frames_by_item: dict[str, int] = {}

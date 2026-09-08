@@ -429,7 +429,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self, provider_item_id: str | None, audio_played_ms: int,
     ) -> None:
         """Trim only an explicitly identified item owned by this turn."""
-        if self._released or self._turn_lost:
+        if self._released or self._turn_lost or provider_item_id is None:
             return
         received_ms = self._received_ms_by_item.get(provider_item_id)
         if received_ms is None or type(audio_played_ms) is not int or audio_played_ms < 0:
