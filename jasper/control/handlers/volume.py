@@ -77,30 +77,33 @@ class VolumeRoutes(ControlHandlerMixin):
             return
         self._send_json(self._volume_payload(state))
 
-    def _get_source_state(self) -> None:
-        # Source selection state from jasper-mux. This is
-        # separate from the /sources/ wizard (on/off toggles):
-        # selecting a source does not enable or disable any
-        # renderer, it only chooses which active lane the
-        # speaker should pass through.
+    def _mux_cmd_or_error(
+        self,
+        cmd: str,
+        *,
+        log_label: str,
+        timeout: float | None = None,
+    ) -> dict[str, Any] | None:
         try:
-            result = asyncio.run(_server._mux_socket_command("STATUS"))
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            OSError,
-            asyncio.TimeoutError,
-        ) as e:
+            command = (
+                _server._mux_socket_command(cmd) if timeout is None
+                else _server._mux_socket_command(cmd, timeout=timeout)
+            )
+            return asyncio.run(command)
+        except (OSError, asyncio.TimeoutError) as e:
             self._send_json(
                 {"error": f"jasper-mux unreachable: {e}"},
                 status=503,
             )
-            return
         except Exception as e:  # noqa: BLE001
-            logger.exception("source STATUS failed")
+            logger.exception("%s failed", log_label)
             self._send_json({"error": str(e)}, status=502)
-            return
-        self._send_json(_augment_source_payload(result))
+        return None
+
+    def _get_source_state(self) -> None:
+        result = self._mux_cmd_or_error("STATUS", log_label="source STATUS")
+        if result is not None:
+            self._send_json(_augment_source_payload(result))
 
     def _post_volume_adjust(self) -> None:
         if self._maybe_forward_pair_action_to_leader():
@@ -383,24 +386,8 @@ class VolumeRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        try:
-            result = asyncio.run(
-                _server._mux_socket_command(cmd, timeout=6.0),
-            )
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            OSError,
-            asyncio.TimeoutError,
-        ) as e:
-            self._send_json(
-                {"error": f"jasper-mux unreachable: {e}"},
-                status=503,
-            )
-            return
-        except Exception as e:  # noqa: BLE001
-            logger.exception("source select failed")
-            self._send_json({"error": str(e)}, status=502)
+        result = self._mux_cmd_or_error(cmd, timeout=6.0, log_label="source select")
+        if result is None:
             return
         log_event(
             logger,

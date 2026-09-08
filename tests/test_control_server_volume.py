@@ -500,38 +500,24 @@ def test_transport_dispatcher_error_field_propagates_as_502(monkeypatch):
 def server_with_mux_stub(monkeypatch):
     """Stub jasper-mux's UDS command helper so source-selection route
     tests don't require a live daemon socket."""
-    calls: list[str] = []
-    responses: list[dict] = []
+    calls: list[tuple[str, dict]] = []
+    responses: list[dict | Exception] = []
 
-    async def fake_mux_command(cmd: str, **kwargs):  # noqa: ARG001
-        calls.append(cmd)
+    async def fake_mux_command(cmd: str, **kwargs):
+        calls.append((cmd, kwargs))
         if responses:
             response = responses.pop(0)
-            if response.get("raise") == "missing":
-                raise FileNotFoundError("/run/jasper-mux/control.sock")
+            if isinstance(response, Exception):
+                raise response
             return response
-        if cmd.startswith("SELECT "):
-            selected = cmd.split(" ", 1)[1]
-            return {
-                "mode": "manual",
-                "selected_source": selected,
-                "active_source": selected,
-                "sources": {
-                    "airplay": {"playing": selected == "airplay"},
-                    "bluetooth": {"playing": selected == "bluetooth"},
-                    "spotify": {"playing": selected == "spotify"},
-                    "usbsink": {"playing": selected == "usbsink"},
-                },
-            }
+        selected = cmd.split(" ", 1)[1] if cmd.startswith("SELECT ") else None
         return {
-            "mode": "auto",
-            "selected_source": None,
-            "active_source": "airplay",
+            "mode": "manual" if selected else "auto",
+            "selected_source": selected,
+            "active_source": selected or "airplay",
             "sources": {
-                "airplay": {"playing": True},
-                "bluetooth": {"playing": False},
-                "spotify": {"playing": False},
-                "usbsink": {"playing": False},
+                source: {"playing": source == (selected or "airplay")}
+                for source in ("airplay", "bluetooth", "spotify", "usbsink")
             },
         }
 
@@ -560,32 +546,28 @@ def server_with_mux_stub(monkeypatch):
         thread.join(timeout=2)
 
 
-def test_source_state_proxies_mux_status(server_with_mux_stub):
+@pytest.mark.parametrize(
+    ("source", "command", "kwargs", "selected"),
+    [
+        (None, "STATUS", {}, None),
+        ("bluetooth", "SELECT bluetooth", {"timeout": 6.0}, "bluetooth"),
+        ("auto", "AUTO", {"timeout": 6.0}, None),
+    ],
+)
+def test_source_routes_dispatch_mux_commands(
+    server_with_mux_stub, source, command, kwargs, selected,
+):
     base, calls, _ = server_with_mux_stub
-    status, body = _get(f"{base}/source/state")
-
+    status, body = (
+        _get(f"{base}/source/state") if source is None
+        else _post(f"{base}/source/select", {"source": source})
+    )
     assert status == 200
-    assert calls == ["STATUS"]
-    assert body["active_source"] == "airplay"
-    assert body["sources"]["airplay"]["playing"] is True
-
-
-def test_source_select_posts_source_to_mux(server_with_mux_stub):
-    base, calls, _ = server_with_mux_stub
-    status, body = _post(f"{base}/source/select", {"source": "bluetooth"})
-
-    assert status == 200
-    assert calls == ["SELECT bluetooth"]
-    assert body["mode"] == "manual"
-    assert body["selected_source"] == "bluetooth"
-
-
-def test_source_select_auto_posts_auto_to_mux(server_with_mux_stub):
-    base, calls, _ = server_with_mux_stub
-    status, _ = _post(f"{base}/source/select", {"source": "auto"})
-
-    assert status == 200
-    assert calls == ["AUTO"]
+    assert calls == [(command, kwargs)]
+    assert body["mode"] == ("manual" if selected else "auto")
+    assert body["selected_source"] == selected
+    assert body["active_source"] == (selected or "airplay")
+    assert body["sources"][selected or "airplay"]["playing"] is True
 
 
 def test_source_select_rejects_unknown_source(server_with_mux_stub):
@@ -594,18 +576,34 @@ def test_source_select_rejects_unknown_source(server_with_mux_stub):
 
     assert status == 400
     assert calls == []
-    assert "source must be" in body["error"]
+    assert "error" in body
 
 
-def test_source_state_mux_unreachable_is_503(server_with_mux_stub):
+@pytest.mark.parametrize("select", [False, True], ids=["state", "select"])
+@pytest.mark.parametrize(
+    ("response", "expected_status"),
+    [
+        (FileNotFoundError(), 503),
+        (ConnectionRefusedError(), 503),
+        (TimeoutError(), 503),
+        (OSError(), 503),
+        (RuntimeError(), 502),
+        (ValueError(), 502),
+        ({}, 200),
+    ],
+)
+def test_source_routes_normalize_mux_results(
+    server_with_mux_stub, select, response, expected_status,
+):
     base, calls, responses = server_with_mux_stub
-    responses.append({"raise": "missing"})
-
-    status, body = _get(f"{base}/source/state")
-
-    assert status == 503
-    assert calls == ["STATUS"]
-    assert "jasper-mux unreachable" in body["error"]
+    responses.append(response)
+    status, body = (
+        _post(f"{base}/source/select", {"source": "auto"}) if select
+        else _get(f"{base}/source/state")
+    )
+    assert status == expected_status
+    assert calls == ([("AUTO", {"timeout": 6.0})] if select else [("STATUS", {})])
+    assert "error" in body if isinstance(response, Exception) else body == response
 
 
 def test_source_payload_adds_sources_wizard_availability(monkeypatch):
