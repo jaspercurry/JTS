@@ -215,6 +215,7 @@ from jasper.web._common import (
     guard_read_request,
     json_island,
     read_json_object,
+    route_path,
     send_json_response,
     toggle_html,
 )
@@ -311,7 +312,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json({"error": message}, status=status)
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_json(self) -> dict[str, Any] | None:
+        """Parsed JSON body, or None after answering the client with a
+        400 — every POST body starts by reading it and returning on None."""
         try:
             return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
         except JsonBodyError as exc:
@@ -325,7 +328,8 @@ class _Handler(BaseHTTPRequestHandler):
                 message = f"invalid JSON body: {exc.__cause__}"
             else:
                 message = "invalid JSON body"
-            raise ValueError(message) from exc
+            self._send_error_json(400, message)
+            return None
 
     def _check_csrf(self) -> bool:
         """Verify the request's Host/Origin, then its X-CSRF-Token header.
@@ -370,12 +374,10 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- routing --------------------------------------------------
     #
     # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler-method name) defined at the bottom of this
+    # (exact path -> callable taking the handler) defined below this
     # class; do_DELETE and the few <id>-prefix routes (e.g. GET
     # /api/clip/<id>/wav) are matched inline since they aren't exact
-    # paths. Each table entry's handler holds the exact body the inlined
-    # `if path == ...` branch had — moved into a named method, logic
-    # unchanged. Mirrors the route-table pattern in
+    # paths. Mirrors the route-table pattern in
     # jasper/control/server.py.
     #
     # ORDERING IS LOAD-BEARING:
@@ -383,21 +385,21 @@ class _Handler(BaseHTTPRequestHandler):
     #     without revealing read-guard or CSRF state.
     #   - GET is read-guarded but NOT CSRF-protected (read-only). POST +
     #     DELETE check CSRF after route recognition and before any body read.
-    #   - do_POST reads + parses the JSON body AFTER the CSRF check, then looks
-    #     up and dispatches the route handler; each handler takes parsed `body`.
+    #   - do_POST dispatches after the CSRF check; each handler reads and
+    #     parses its own JSON body, so no body is read before the guard.
     #   - Prefix routes that don't fit an exact-match table
     #     (`/api/clip/<id>/wav` GET, `/api/clip|session/<id>` DELETE) are
     #     handled explicitly, in the same position as before.
 
     def do_GET(self) -> None:  # noqa: N802
         url = urlparse(self.path)
-        path = url.path.rstrip("/") or "/"
+        path = route_path(self.path)
         clip_wav_route = path.startswith("/api/clip/") and path.endswith("/wav")
         level_route = path == "/api/recording/level"
 
         if not (
             path == "/"
-            or path in self._GET_ROUTES
+            or path in _GET_ROUTES
             or clip_wav_route
             or level_route
         ):
@@ -417,9 +419,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
 
-        handler_name = self._GET_ROUTES.get(path)
-        if handler_name is not None:
-            getattr(self, handler_name)()
+        handler_fn = _GET_ROUTES.get(path)
+        if handler_fn is not None:
+            handler_fn(self)
             return
 
         if clip_wav_route:
@@ -554,12 +556,13 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- POST -------------------------------------------------------
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        path = route_path(self.path)
 
         # Route-check before CSRF-check (the _common.py wizard
         # convention): bogus paths return 404 without revealing
         # CSRF state.
-        if path not in self._POST_ROUTES:
+        handler_fn = _POST_ROUTES.get(path)
+        if handler_fn is None:
             self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
             return
 
@@ -568,15 +571,12 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._check_csrf():
             return
 
-        try:
-            body = self._read_json()
-        except ValueError as e:
-            self._send_error_json(400, str(e))
+        handler_fn(self)
+
+    def _post_session(self) -> None:
+        body = self._read_json()
+        if body is None:
             return
-
-        getattr(self, self._POST_ROUTES[path])(body)
-
-    def _post_session(self, body: dict[str, Any]) -> None:
         member = (body.get("member") or "").strip()
         corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
         if corpus_profile not in CORPUS_PROFILES:
@@ -742,7 +742,10 @@ class _Handler(BaseHTTPRequestHandler):
             "bridge_outputs": bridge_session.bridge_output_status(),
         })
 
-    def _post_capture_plan(self, body: dict[str, Any]) -> None:
+    def _post_capture_plan(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         corpus_profile = str(body.get("corpus_profile") or PROFILE_STANDARD)
         try:
             plan = bridge_session.build_capture_plan(
@@ -766,7 +769,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"capture_plan": plan})
 
-    def _post_session_load(self, body: dict[str, Any]) -> None:
+    def _post_session_load(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         sid = (body.get("session_id") or "").strip()
         if not sid:
             self._send_error_json(400, "session_id is required")
@@ -781,7 +787,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(result)
 
-    def _post_session_unload(self, body: dict[str, Any]) -> None:
+    def _post_session_unload(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         try:
             unloaded = self.backend.unload_session()
         except StateError as e:
@@ -789,7 +798,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"unloaded_session": unloaded})
 
-    def _post_clip_start(self, body: dict[str, Any]) -> None:
+    def _post_clip_start(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         condition = (body.get("condition") or "").strip()
         distance = (body.get("distance") or "").strip()
         try:
@@ -799,7 +811,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(result)
 
-    def _post_clip_stop(self, body: dict[str, Any]) -> None:
+    def _post_clip_stop(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         try:
             clip = self.backend.stop_recording()
         except StateError as e:
@@ -807,7 +822,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(clip.to_json())
 
-    def _post_bridge_outputs(self, body: dict[str, Any]) -> None:
+    def _post_bridge_outputs(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         action = (body.get("action") or "").strip()
         if action != "disable":
             self._send_error_json(400, "action must be disable")
@@ -845,7 +863,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"bridge_outputs": bridge_session.bridge_output_status()})
 
-    def _post_corpus_test_mode(self, body: dict[str, Any]) -> None:
+    def _post_corpus_test_mode(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         action = (body.get("action") or "").strip()
         if action not in ("enter", "exit"):
             self._send_error_json(400, "action must be enter or exit")
@@ -912,7 +933,10 @@ class _Handler(BaseHTTPRequestHandler):
             "bridge_outputs": bridge_session.bridge_output_status(),
         })
 
-    def _post_voice_daemon(self, body: dict[str, Any]) -> None:
+    def _post_voice_daemon(self) -> None:
+        body = self._read_json()
+        if body is None:
+            return
         action = (body.get("action") or "").strip()
         if action not in ("start", "stop"):
             self._send_error_json(400, "action must be start or stop")
@@ -977,7 +1001,7 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- DELETE -----------------------------------------------------
 
     def do_DELETE(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
+        path = route_path(self.path)
         parts = path.split("/")
         # Route-check before CSRF-check (the _common.py wizard
         # convention): only /api/clip/<id> and /api/session/<id>
@@ -1012,31 +1036,30 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"deleted_session": session_id, **result})
 
-    # ----- route tables (exact path -> handler-method name) ----------
-    # Keyed by exact path. do_GET / do_POST disambiguate by method.
-    # The string keys keep the route literals greppable; prefix routes
-    # (/api/clip/<id>/wav, the DELETE /api/clip|session/<id> forms) are
-    # handled explicitly in the do_* methods because they don't fit an
-    # exact-match table. test_get_routes_resolve_via_render_and_module
-    # asserts the ES module's relative api paths stay in sync.
 
-    _GET_ROUTES = {
-        "/api/status": "_get_status",
-        "/api/clips": "_get_clips",
-        "/api/sessions": "_get_sessions",
-        "/api/usb-mic/status": "_get_usb_mic_status",
-    }
-    _POST_ROUTES = {
-        "/api/session": "_post_session",
-        "/api/capture-plan": "_post_capture_plan",
-        "/api/session/load": "_post_session_load",
-        "/api/session/unload": "_post_session_unload",
-        "/api/clip/start": "_post_clip_start",
-        "/api/clip/stop": "_post_clip_stop",
-        "/api/bridge-outputs": "_post_bridge_outputs",
-        "/api/corpus-test-mode": "_post_corpus_test_mode",
-        "/api/voice-daemon": "_post_voice_daemon",
-    }
+# ----- route tables (exact path -> callable taking the handler) -----
+# Prefix routes (/api/clip/<id>/wav, the DELETE /api/clip|session/<id>
+# forms) are handled explicitly in the do_* methods because they don't
+# fit an exact-match table. test_get_routes_resolve_via_render_and_module
+# asserts the ES module's relative api paths stay in sync.
+
+_GET_ROUTES = {
+    "/api/status": _Handler._get_status,
+    "/api/clips": _Handler._get_clips,
+    "/api/sessions": _Handler._get_sessions,
+    "/api/usb-mic/status": _Handler._get_usb_mic_status,
+}
+_POST_ROUTES = {
+    "/api/session": _Handler._post_session,
+    "/api/capture-plan": _Handler._post_capture_plan,
+    "/api/session/load": _Handler._post_session_load,
+    "/api/session/unload": _Handler._post_session_unload,
+    "/api/clip/start": _Handler._post_clip_start,
+    "/api/clip/stop": _Handler._post_clip_stop,
+    "/api/bridge-outputs": _Handler._post_bridge_outputs,
+    "/api/corpus-test-mode": _Handler._post_corpus_test_mode,
+    "/api/voice-daemon": _Handler._post_voice_daemon,
+}
 
 
 def _make_handler_class(

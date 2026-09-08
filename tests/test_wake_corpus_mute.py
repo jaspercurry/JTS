@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import time
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -135,6 +137,10 @@ def test_post_session_handler_refuses_while_muted(
     )  # intentionally not started — refusal must come first
     handler_cls = wake_corpus_setup._make_handler_class(backend, "tok")
     handler = handler_cls.__new__(handler_cls)
+    body = json.dumps({"member": "jasper"}).encode()
+    handler.headers = Message()
+    handler.headers["Content-Length"] = str(len(body))
+    handler.rfile = BytesIO(body)
     sent: dict[str, object] = {}
 
     def _capture(status: int, msg: str) -> None:
@@ -142,6 +148,6 @@ def test_post_session_handler_refuses_while_muted(
         sent["msg"] = msg
 
     handler._send_error_json = _capture  # type: ignore[method-assign]
-    handler._post_session({"member": "jasper"})
+    handler._post_session()
     assert sent["status"] == 409
     assert "muted" in str(sent["msg"])

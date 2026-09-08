@@ -2218,6 +2218,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
         hostname="jts.local", idle_hold=nullcontext,
     )
     handler = handler_cls.__new__(handler_cls)
+    handler.path = "/sync/analyze"
     handler.headers = Message()
     handler.headers["Content-Length"] = str(2 * 1024 * 1024 + 1)
     handler.rfile = io.BytesIO(b"")
@@ -2229,7 +2230,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
 
     handler._send_json = _send_json
 
-    handler._dispatch_sync("/sync/analyze")
+    handler._dispatch_sync()
 
     assert sent["status"] == 400
     assert "WAV body too large" in sent["payload"]["error"]

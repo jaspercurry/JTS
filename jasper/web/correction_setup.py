@@ -63,6 +63,7 @@ from ._common import (
     guard_mutating_request,
     guard_read_request,
     reject_csrf,
+    route_path,
     send_html_response,
     send_json_response,
 )
@@ -99,99 +100,6 @@ def _render_page(hostname: str, csrf_token: str = "", flash: str = "") -> bytes:
         required_sample_rate=REQUIRED_SAMPLE_RATE,
         household_mic_prefill_payload=correction_capture._household_mic_prefill_payload(),
     )
-
-
-# ---------------------------------------------------------------------------
-# Routing
-# ---------------------------------------------------------------------------
-#
-# do_GET / do_POST dispatch through these exact-path tables (path ->
-# handler-method name on _Handler); each method holds the body its
-# `if path == ...` branch had. Mirrors the table in
-# jasper/web/wake_corpus_setup.py.
-#
-# ORDERING IS LOAD-BEARING: an unlisted path 404s before the read guard
-# (GET) or the CSRF check (POST) runs, so a bogus path never reveals
-# either. The /sync/* and /crossover/* families are dispatched by prefix
-# through their own methods, which answer their own failures and so run
-# outside do_POST's blanket 500 net.
-
-_GET_ROUTES = {
-    "/": "_get_index",
-    "/crossover": "_get_crossover",
-    "/measurements": "_get_measurements",
-    "/measurements/data": "_get_measurements_data",
-    "/crossover/status": "_get_crossover_status",
-    "/crossover/envelope": "_get_crossover_envelope",
-    "/bass": "_get_bass",
-    "/bass/status": "_get_bass_status",
-    "/sync": "_get_sync",
-    "/sync/status": "_get_sync_status",
-    "/healthz": "_get_healthz",
-    "/status": "_get_status",
-    "/entry-status": "_get_entry_status",
-    "/envelope": "_get_envelope",
-    "/sessions": "_get_sessions",
-    "/session-report": "_get_session_report",
-    "/calibration/models": "_get_calibration_models",
-}
-
-# Mutating routes this handler accepts. Membership gates the 404 above;
-# deleting a line would otherwise 404 a route silently.
-_POST_ROUTES = {
-    "/start": "_post_start",
-    "/next-position": "_post_next_position",
-    "/repeat-position": "_post_repeat_position",
-    "/verify": "_post_verify",
-    "/test-tone": "_post_test_tone",
-    "/autolevel/start": "_post_autolevel_start",
-    "/autolevel/lock": "_post_autolevel_lock",
-    "/autolevel/cancel": "_post_autolevel_cancel",
-    "/upload-noise": "_post_upload_noise",
-    "/upload-capture": "_post_upload_capture",
-    "/local-capture/setup": "_post_local_capture_setup",
-    "/calibration/fetch": "_post_calibration_fetch",
-    "/calibration/upload": "_post_calibration_upload",
-    "/apply": "_post_apply",
-    "/reset": "_post_reset",
-    "/session/delete": "_post_session_delete",
-    "/interpret": "_post_interpret",
-    "/propose": "_post_propose",
-    "/propose/apply": "_post_propose_apply",
-    "/crossover/capture-cancel": "_dispatch_crossover",
-    "/crossover/reset": "_dispatch_crossover",
-    "/crossover/recover-volume": "_dispatch_crossover",
-    # v2 session flow — the only crossover-measurement flow. There is no
-    # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
-    "/crossover/v2/session": "_dispatch_crossover",
-    "/crossover/v2/verify": "_dispatch_crossover",
-    "/crossover/v2/apply": "_dispatch_crossover",
-    # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
-    # so the apply door above can reach it by fingerprint. The apply slot is
-    # single-valued and every measure session overwrites it; this is the lookup
-    # it never had.
-    "/crossover/v2/republish": "_dispatch_crossover",
-    # The review screen's "Keep current sound", which #2641 found inert.
-    "/crossover/v2/decline": "_dispatch_crossover",
-    # A GATED session's position release — the report that the microphone has
-    # reached the angle the envelope named, from an EXTERNAL driver on the
-    # remote tier or from the person holding the tape on a hand-walked wired
-    # round (#2879).
-    "/crossover/v2/position-ready": "_dispatch_crossover",
-    # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
-    # local stand-in for the phone's authenticated completion event.
-    "/crossover/v2/complete": "_dispatch_crossover",
-    # The WIRED session's per-take retake — the local stand-in for the phone's
-    # ``begin_capture {retake: true}``, re-opening the slot that just
-    # completed while the walk is still waiting on a person.
-    "/crossover/v2/retake": "_dispatch_crossover",
-    "/sync/start": "_dispatch_sync",
-    "/sync/play": "_dispatch_sync",
-    "/sync/analyze": "_dispatch_sync",
-    "/sync/apply": "_dispatch_sync",
-    "/sync/stop": "_dispatch_sync",
-    "/sync/reset": "_dispatch_sync",
-}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -265,9 +173,11 @@ class _Handler(BaseHTTPRequestHandler):
             status=status,
         )
 
-    def _dispatch_sync(self, path: str) -> None:
+    def _dispatch_sync(self) -> None:
         """POST /sync/* — stereo-pair acoustic timing walkthrough."""
         from . import sync_flow
+
+        path = route_path(self.path)
 
         def _schedule(coro):
             return asyncio.run_coroutine_threadsafe(
@@ -312,8 +222,9 @@ class _Handler(BaseHTTPRequestHandler):
             logger.exception("%s failed", path)
             self._send_json({"ok": False, "error": str(e)}, status=500)
 
-    def _dispatch_crossover(self, path: str) -> None:
+    def _dispatch_crossover(self) -> None:
         """POST /crossover/* — secure active-crossover measurement."""
+        path = route_path(self.path)
 
         if path in {"/crossover/v2/session", "/crossover/v2/verify"}:
             # v2 commission sessions (Wave 5a). ValueError covers both the
@@ -715,8 +626,9 @@ class _Handler(BaseHTTPRequestHandler):
     # --- routes ---
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
-        if path not in _GET_ROUTES:
+        path = route_path(self.path)
+        handler_fn = _GET_ROUTES.get(path)
+        if handler_fn is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not guard_read_request(self):
@@ -727,7 +639,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.hostname, ctx["csrf_token"],
             ))
             return
-        getattr(self, _GET_ROUTES[path])()
+        handler_fn(self)
 
     def _get_index(self) -> None:
         ctx = begin_request(self)
@@ -875,8 +787,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": str(e)}, status=500)
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path.rstrip("/") or "/"
-        if path not in _POST_ROUTES:
+        path = route_path(self.path)
+        handler_fn = _POST_ROUTES.get(path)
+        if handler_fn is None:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         if not guard_mutating_request(self):
@@ -898,11 +811,13 @@ class _Handler(BaseHTTPRequestHandler):
                 status=HTTPStatus.CONFLICT,
             )
             return
+        # The prefix families answer their own failures, so they run
+        # outside the blanket 500 net below.
         if path.startswith(("/sync/", "/crossover/")):
-            getattr(self, _POST_ROUTES[path])(path)
+            handler_fn(self)
             return
         try:
-            getattr(self, _POST_ROUTES[path])()
+            handler_fn(self)
         except BadRequest as e:
             self._send_client_error(str(e))
         except Exception as e:  # noqa: BLE001
@@ -1168,6 +1083,98 @@ class _Handler(BaseHTTPRequestHandler):
                 str(e),
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
+
+
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+#
+# do_GET / do_POST dispatch through these exact-path tables
+# (path -> callable taking the handler). Mirrors the table in
+# jasper/web/wake_corpus_setup.py.
+#
+# ORDERING IS LOAD-BEARING: an unlisted path 404s before the read guard
+# (GET) or the CSRF check (POST) runs, so a bogus path never reveals
+# either. The /sync/* and /crossover/* families are dispatched by prefix
+# through their own methods, which answer their own failures and so run
+# outside do_POST's blanket 500 net.
+
+_GET_ROUTES = {
+    "/": _Handler._get_index,
+    "/crossover": _Handler._get_crossover,
+    "/measurements": _Handler._get_measurements,
+    "/measurements/data": _Handler._get_measurements_data,
+    "/crossover/status": _Handler._get_crossover_status,
+    "/crossover/envelope": _Handler._get_crossover_envelope,
+    "/bass": _Handler._get_bass,
+    "/bass/status": _Handler._get_bass_status,
+    "/sync": _Handler._get_sync,
+    "/sync/status": _Handler._get_sync_status,
+    "/healthz": _Handler._get_healthz,
+    "/status": _Handler._get_status,
+    "/entry-status": _Handler._get_entry_status,
+    "/envelope": _Handler._get_envelope,
+    "/sessions": _Handler._get_sessions,
+    "/session-report": _Handler._get_session_report,
+    "/calibration/models": _Handler._get_calibration_models,
+}
+
+# Mutating routes this handler accepts. Membership gates the 404 above;
+# deleting a line would otherwise 404 a route silently.
+_POST_ROUTES = {
+    "/start": _Handler._post_start,
+    "/next-position": _Handler._post_next_position,
+    "/repeat-position": _Handler._post_repeat_position,
+    "/verify": _Handler._post_verify,
+    "/test-tone": _Handler._post_test_tone,
+    "/autolevel/start": _Handler._post_autolevel_start,
+    "/autolevel/lock": _Handler._post_autolevel_lock,
+    "/autolevel/cancel": _Handler._post_autolevel_cancel,
+    "/upload-noise": _Handler._post_upload_noise,
+    "/upload-capture": _Handler._post_upload_capture,
+    "/local-capture/setup": _Handler._post_local_capture_setup,
+    "/calibration/fetch": _Handler._post_calibration_fetch,
+    "/calibration/upload": _Handler._post_calibration_upload,
+    "/apply": _Handler._post_apply,
+    "/reset": _Handler._post_reset,
+    "/session/delete": _Handler._post_session_delete,
+    "/interpret": _Handler._post_interpret,
+    "/propose": _Handler._post_propose,
+    "/propose/apply": _Handler._post_propose_apply,
+    "/crossover/capture-cancel": _Handler._dispatch_crossover,
+    "/crossover/reset": _Handler._dispatch_crossover,
+    "/crossover/recover-volume": _Handler._dispatch_crossover,
+    # v2 session flow — the only crossover-measurement flow. There is no
+    # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
+    "/crossover/v2/session": _Handler._dispatch_crossover,
+    "/crossover/v2/verify": _Handler._dispatch_crossover,
+    "/crossover/v2/apply": _Handler._dispatch_crossover,
+    # Make a PREVIOUSLY-MINTED, banked candidate the live published one again,
+    # so the apply door above can reach it by fingerprint. The apply slot is
+    # single-valued and every measure session overwrites it; this is the lookup
+    # it never had.
+    "/crossover/v2/republish": _Handler._dispatch_crossover,
+    # The review screen's "Keep current sound", which #2641 found inert.
+    "/crossover/v2/decline": _Handler._dispatch_crossover,
+    # A GATED session's position release — the report that the microphone has
+    # reached the angle the envelope named, from an EXTERNAL driver on the
+    # remote tier or from the person holding the tape on a hand-walked wired
+    # round (#2879).
+    "/crossover/v2/position-ready": _Handler._dispatch_crossover,
+    # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
+    # local stand-in for the phone's authenticated completion event.
+    "/crossover/v2/complete": _Handler._dispatch_crossover,
+    # The WIRED session's per-take retake — the local stand-in for the phone's
+    # ``begin_capture {retake: true}``, re-opening the slot that just
+    # completed while the walk is still waiting on a person.
+    "/crossover/v2/retake": _Handler._dispatch_crossover,
+    "/sync/start": _Handler._dispatch_sync,
+    "/sync/play": _Handler._dispatch_sync,
+    "/sync/analyze": _Handler._dispatch_sync,
+    "/sync/apply": _Handler._dispatch_sync,
+    "/sync/stop": _Handler._dispatch_sync,
+    "/sync/reset": _Handler._dispatch_sync,
+}
 
 
 def _make_handler_class(
