@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from jasper.active_speaker import program_playback
+from jasper.active_speaker.crossover_v2.composition import bind_program_playback_seams
 from jasper.active_speaker.crossover_v2.session_graph import (
     MeasurementSessionGraph,
     SessionGraphError,
@@ -405,7 +407,8 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
         graph.select_scope(scope, candidate_id)
         fingerprint = asyncio.run(graph.install())
         assert fingerprint == fingerprints.setdefault((scope, candidate_id), fingerprint)
-        emitted_graph = yaml.safe_load(graph.installed_graph_yaml())
+        assert graph.installed_graph_yaml() == cam.live
+        emitted_graph = yaml.safe_load(graph.graph_yaml())
         submitted_graph = yaml.safe_load(cam.live)
         if scope != "drivers":
             submitted_graph.pop("description")
@@ -449,7 +452,20 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=lambda *_: text)
     graph.select_scope(scope, "candidate" if scope == "candidate" else "")
     fingerprint = await graph.install()
-    assert graph.installed_graph_yaml() == text
+    assert graph.graph_yaml() == text
+    played = object()
+
+    async def play_wav(*_args, **_kwargs):
+        return played
+
+    monkeypatch.setattr(program_playback, "verified_program_aplay", play_wav)
+    playback = bind_program_playback_seams(
+        cam, bundle_dir=str(tmp_path), artifact=object(), config_dir=str(tmp_path),
+        program=object(), wav_path=str(tmp_path / "program.wav"), topology=object(),
+        safety_profile={}, role_targets={}, session_volume_db=-30.0,
+        graph_yaml=graph.installed_graph_yaml(),
+    )
+    assert await playback["play_wav"]() is played
     assert await temporary_graph_anchor(cam, await live()) == Path(cam.entry_path)
     if change == "path":
         Path(cam.entry_path).unlink()

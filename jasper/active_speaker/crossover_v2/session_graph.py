@@ -188,7 +188,7 @@ class MeasurementSessionGraph:
     def installed_graph_yaml(self) -> str:
         if self._installed_yaml is None:
             raise SessionGraphError("no measurement graph is installed")
-        return self._installed_yaml
+        return self._submitted_yaml.get(self._installed_yaml, self._installed_yaml)
 
     async def install(
         self,
