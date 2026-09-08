@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from jasper.voice.session import TurnUsage
+from jasper.voice.turn_playback import PlaybackReport
 from tests._cue_spy import SpyCues as _SpyCues
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_field_maps, event_fields, event_records
@@ -466,6 +467,7 @@ async def _torn_down_mid_hold(
         dropped=dropped,
     )
     wl._turn = turn
+    wl._playback_report = PlaybackReport(accepted_audio=chunks > 0)
     wl._bg_tasks = set()
     wl._wake_telemetry.store = None
     wl._session_id = "sess-teardown"

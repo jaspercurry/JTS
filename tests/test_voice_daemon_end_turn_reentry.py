@@ -7,31 +7,23 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
+from jasper.voice.turn_playback import play_responses
+from jasper.voice_daemon import State
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from tests._async_wait import wait_signalled, wait_until
-from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-from tests._wake_loop import FakeTts, wake_loop_for_tests
+from tests._live_turn_fake import FakeLiveTurn as _FakeTurn, silent_frame
+from tests._log_events import event_fields
+from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
 def _make_wakeloop():
-    from jasper.voice_daemon import State
-
-    class _Noop:
-        def note_voice_session(self, *_a, **_k):
-            return None
-
-        def resume(self):
-            return None
-
-    class _AsyncNoop(FakeTts):
-        async def restore(self):
-            return None
-
-    wl = wake_loop_for_tests(volume_coordinator=_Noop(), ducker=_AsyncNoop(), tts=_AsyncNoop())
+    wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
@@ -44,7 +36,6 @@ def _make_wakeloop():
     wl._silero_raw_armed_at_ms = None
     wl._input_ended = False
     wl._ending = False
-    wl._content_activity = _Noop()
 
     async def _noop_stage(_stage):
         # Yield control so a concurrent _end_turn entrant actually gets
@@ -69,8 +60,6 @@ def _make_wakeloop():
 
 def test_end_turn_is_idempotent_serial():
     """A second _end_turn call after teardown completes is a no-op."""
-    from jasper.voice_daemon import State
-
     wl = _make_wakeloop()
 
     asyncio.run(wl._end_turn())
@@ -98,8 +87,6 @@ def test_end_turn_reentry_while_teardown_in_flight_short_circuits():
     SESSION (the in-flight teardown owns the WAKE flip) to prove the
     guard does not depend on an early state change.
     """
-    from jasper.voice_daemon import State
-
     wl = _make_wakeloop()
     wl._ending = True  # first teardown is in flight
     wl._state = State.SESSION  # still SESSION — teardown flips it at the end
@@ -124,8 +111,6 @@ def test_end_turn_concurrent_callers_teardown_once():
     the top guard. Exactly one teardown runs and no AssertionError
     escapes.
     """
-    from jasper.voice_daemon import State
-
     wl = _make_wakeloop()
     turn = wl._turn  # _end_turn clears self._turn on completion
 
@@ -146,8 +131,6 @@ async def test_background_task_completion_ends_turn_without_new_mic_frame(
     completion,
 ):
     """Manual mics stop sending frames when the button is released."""
-    from jasper.voice_daemon import State
-
     wl = _make_wakeloop()
     turn = wl._turn
 
@@ -173,10 +156,159 @@ async def test_background_task_completion_ends_turn_without_new_mic_frame(
     assert turn.release_calls == 1
 
 
+async def _response_loop(pcm=bytes(8)):
+    wl = _make_wakeloop()
+    turn = wl._turn
+    turn._bytes_sent, turn._chunks_received = 4096, 1
+    wl._input_ended = True
+    wl._anchor_turn_timeline()
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    wl._wake_telemetry.outcome = AsyncMock()
+    wl._assistant_output.listening_chirp = AsyncMock()
+
+    async def cue(slug):
+        assert not wl._output_gate.is_active
+        assert wl._state is State.SESSION
+
+    wl._play_cue = AsyncMock(side_effect=cue)
+
+    async def audio():
+        yield pcm
+
+    turn.audio_out_chunks = audio
+    turn.wait_for_interrupt = asyncio.Event().wait
+    return wl, turn
+
+
+def _start_playback(wl):
+    return asyncio.create_task(play_responses(
+        wl._turn, wl._tts, report=wl._playback_report,
+        admission_refusal=wl._assistant_output.admission_refusal,
+        on_response_started=wl._turn_observer("first_response"),
+        on_first_write=wl._turn_observer("first_write"),
+    ))
+
+
+@pytest.mark.parametrize("end_path", ["callback", "frame"])
+@pytest.mark.parametrize("mode", [
+    "refused", "error", "paused_error", "partial_error", "accepted", "empty", "measurement", "interrupt",
+])
+async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_path, caplog):
+    wl, turn = await _response_loop(b"" if mode == "empty" else bytes(8))
+    failed = mode in {"refused", "error", "paused_error", "partial_error"}
+    accepted = mode in {"partial_error", "accepted"}
+    if mode == "paused_error":
+        wl._connection.is_paused = lambda: True
+    if mode == "measurement":
+        await wl._output_gate.pause_admission()
+    if mode == "interrupt":
+        interrupt = asyncio.Event()
+        interrupt.set()
+        turn.wait_for_interrupt = interrupt.wait
+
+    async def write(*args, on_first_write, **kwargs):
+        if accepted:
+            await on_first_write()
+        if mode in {"error", "paused_error", "partial_error"}:
+            raise OSError("output unavailable")
+        return accepted
+
+    wl._tts.write_segment = write
+    wl._tts.flush = AsyncMock()
+    playback = _start_playback(wl)
+    watchdog = asyncio.create_task(asyncio.sleep(0))
+    wl._bg_tasks = {playback, watchdog}
+    await asyncio.gather(playback, watchdog, return_exceptions=True)
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        try:
+            if end_path == "callback":
+                wl._arm_turn_background_end()
+                wl._on_turn_background_done(watchdog)
+                await wait_until(lambda: wl._state is State.WAKE, timeout=10.0)
+            else:
+                await wl._handle_session_frame(silent_frame())
+        finally:
+            await wl._cancel_fire_and_forget_tasks()
+
+    outcome = "session_failed" if failed else "completed"
+    reason = "playback_failed" if failed else wl._playback_report.stop_reason or "ended"
+    wl._wake_telemetry.outcome.assert_awaited_once_with(outcome, reason)
+    assert wl._assistant_output.listening_chirp.await_count == (0 if failed else 1)
+    assert wl._play_cue.await_count == (1 if failed or mode == "empty" else 0)
+    if wl._play_cue.await_count:
+        wl._play_cue.assert_awaited_once_with("internal_error")
+    assert wl._tts.flush.await_count == (1 if failed or mode == "interrupt" else 0)
+    assert wl.session_status()["silent_responses_session"] == int(
+        (failed and not accepted) or mode == "empty",
+    )
+    timeline = event_fields(caplog, "turn.timeline")
+    assert timeline["outcome"] == ("failed" if failed else "complete")
+    assert ("first_write_ms" in timeline) == accepted
+    assert turn.release_calls == turn.end_input_calls == wl._usage_store.close_calls == 1
+    assert wl._turn is None and wl._state is State.WAKE
+
+
+@pytest.mark.parametrize("reason", ["ended", "mic_muted", "stopping", "research_window_wake"])
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_teardown_joins_accepted_prefix_before_its_final_outcome(reason, write_fails, caplog):
+    wl, turn = await _response_loop()
+    writing = asyncio.Event()
+
+    async def write(*args, on_first_write, **kwargs):
+        writing.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await on_first_write()
+            if write_fails:
+                raise OSError("output failed during cancellation") from None
+            raise
+
+    wl._tts.write_segment = write
+    playback = _start_playback(wl)
+    wl._bg_tasks = {playback}
+    await wait_signalled(writing, "pending output write", producer=playback)
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        await wl._end_turn(reason)
+    failed = write_fails and reason == "ended"
+    wl._wake_telemetry.outcome.assert_awaited_once_with(
+        "session_failed" if failed else "completed", "playback_failed" if failed else reason,
+    )
+    assert "first_write_ms" in event_fields(caplog, "turn.timeline")
+    assert wl._play_cue.await_count == int(failed)
+    assert wl._silent_responses_session == 0
+    assert turn.release_calls == wl._usage_store.close_calls == 1
+    assert playback.done()
+
+
+@pytest.mark.parametrize("accepted_prefix", [False, True])
+async def test_barge_signal_is_kept_when_teardown_cancels_the_pending_write(accepted_prefix):
+    wl, turn = await _response_loop()
+    writing, interrupt = asyncio.Event(), asyncio.Event()
+    turn.wait_for_interrupt = interrupt.wait
+    wl._tts.flush = AsyncMock()
+
+    async def write(*args, on_first_write, **kwargs):
+        if accepted_prefix:
+            await on_first_write()
+        writing.set()
+        await asyncio.Event().wait()
+
+    wl._tts.write_segment = write
+    playback = _start_playback(wl)
+    wl._bg_tasks = {playback}
+    await wait_signalled(writing, "pending output write", producer=playback)
+    interrupt.set()
+    await wl._end_turn()
+    wl._wake_telemetry.outcome.assert_awaited_once_with("completed", "barge_in")
+    wl._play_cue.assert_not_awaited()
+    wl._tts.flush.assert_awaited_once()
+    assert wl._silent_responses_session == 0
+    assert turn.release_calls == 1
+
+
 def test_simultaneous_background_task_completion_schedules_one_teardown():
     """Multiple completed bg tasks should coalesce to one _end_turn task."""
-    from jasper.voice_daemon import State
-
     wl = wake_loop_for_tests()
     wl._state = State.SESSION
     wl._turn = object()
@@ -211,8 +343,6 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
     tts_socket: str,
 ) -> None:
     """PAUSE cannot open while the final chirp is still physically audible."""
-    from jasper.voice_daemon import State
-
     wl = _make_wakeloop()
     wl._cfg.tts_outputd_socket = tts_socket
     wl._turn_output_episode = await wl._output_gate.begin_turn()
@@ -247,8 +377,6 @@ async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
     phase, cancellation,
 ):
     from unittest.mock import AsyncMock, Mock
-
-    from jasper.voice_daemon import State
 
     wl = _make_wakeloop()
     turn = wl._turn
