@@ -74,6 +74,15 @@ def _try_restart_each(
     return groups
 
 
+def _safe(label: str, read: Callable[[], Any], fallback: Any = None) -> Any:
+    """One optional dashboard field: log and fall back, never fail the page."""
+    try:
+        return read()
+    except Exception:  # noqa: BLE001
+        logger.exception("%s snapshot failed", label)
+        return fallback
+
+
 def _safe_audio_quality_state() -> dict[str, Any]:
     try:
         return _read_audio_quality_state()
@@ -100,25 +109,16 @@ def _safe_audio_quality_state() -> dict[str, Any]:
 
 class SystemRoutes(ControlHandlerMixin):
     def _transport_park_reader(self) -> Callable[[], dict[str, Any]]:
-        """The park-verdict reader both operator surfaces share.
-
-        The health sampler's CACHED verdict when it has one, so the park rows
-        and the health rows built from it in one payload are the same
-        observation rather than two reads minutes apart; the module's own
-        fresh read otherwise, because ``/state`` and ``/system/snapshot`` must
-        keep answering when the sampler does not — a contract older than this
-        field. ``transport_park.snapshot()`` is fail-soft and never raises, so
-        a sampler-less handler still answers.
-
-        One resolver for both routes: the fallback rule is a single fact, and
-        a change to it that reached only one surface is exactly the drift the
-        park classifier exists to prevent.
-        """
+        """The park-verdict reader both operator surfaces share: the health
+        sampler's cached verdict when it has one, so every row in one payload
+        is the same observation; the module's own fail-soft read otherwise,
+        because both routes must keep answering without a sampler."""
         from ..transport_park import snapshot
 
         return getattr(
             self._audio_health_sampler, "transport_park_snapshot", None,
         ) or snapshot
+
     def _get_healthz(self) -> None:
         self._send_json({"ok": True})
 
@@ -152,12 +152,6 @@ class SystemRoutes(ControlHandlerMixin):
                             None if self._audio_health_sampler is None
                             else self._audio_health_sampler.snapshot
                         ),
-                        # One tick's transport-park verdict for the whole
-                        # payload: `resilience.transport_park` and the
-                        # `audio_health` rows are then the same observation,
-                        # not two reads minutes apart. Resolved by the shared
-                        # reader, so /system/snapshot cannot end up on a
-                        # different fallback rule.
                         transport_park_snapshot=self._transport_park_reader(),
                         # The 30 s systemd snapshot this daemon already
                         # samples for /system — reused so
@@ -187,54 +181,33 @@ class SystemRoutes(ControlHandlerMixin):
 
         ha_status = state_aggregate._ha_status(self._ha_status_cache.snapshot)
 
-        try:
+        def _read_airplay_health() -> Any:
             if self._audio_health_sampler is not None:
-                airplay_health = self._audio_health_sampler.airplay_snapshot()
-            else:
-                airplay_health = (
-                    self._airplay_health_sampler.snapshot()
-                    if self._airplay_health_sampler is not None
-                    else None
-                )
-        except Exception:  # noqa: BLE001
-            logger.exception("airplay health snapshot failed")
-            airplay_health = {
-                "status": "unknown",
-                "reason": "AirPlay health sampler failed",
-            }
+                return self._audio_health_sampler.airplay_snapshot()
+            if self._airplay_health_sampler is None:
+                return None
+            return self._airplay_health_sampler.snapshot()
 
-        # The sampler's cached observation when there is one, so this route
-        # re-probes nothing (ADR-0233 rule 2); same shaper as /state either way.
-        try:
+        def _read_outputd_status() -> Any:
+            # The sampler's cached observation when there is one, so this
+            # route re-probes nothing (ADR-0233 rule 2); same shaper either way.
             cached = getattr(self._audio_health_sampler, "outputd_snapshot", None)
-            outputd_status = (
-                state_aggregate._outputd_section(cached()) if cached is not None
-                else asyncio.run(state_aggregate._outputd_status())
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("outputd status snapshot failed")
-            outputd_status = None
+            if cached is None:
+                return asyncio.run(state_aggregate._outputd_status())
+            return state_aggregate._outputd_section(cached())
 
-        try:
-            audio_health = (
-                self._audio_health_sampler.snapshot()
-                if self._audio_health_sampler is not None
-                else None
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("audio health snapshot failed")
-            audio_health = None
-
-        # The park verdict the /system page's park card renders — the same
-        # cached verdict `/state.resilience.transport_park` reads, through the
-        # same resolver.
-        #
-        # NOT identical at every instant: `/state`'s whole response sits behind
-        # `STATE_RESPONSE_CACHE_TTL_SEC` (server.py) while this route composes
-        # fresh, so a sampler tick between the two leaves a skew window bounded
-        # by that TTL. Bounded and self-clearing, and both surfaces name the
-        # same park either way — what one writer for the verdict buys is that
-        # they cannot name DIFFERENT parks, not that they update in lockstep.
+        airplay_health = _safe(
+            "airplay health", _read_airplay_health,
+            {"status": "unknown", "reason": "AirPlay health sampler failed"},
+        )
+        outputd_status = _safe("outputd status", _read_outputd_status)
+        audio_health = _safe(
+            "audio health",
+            lambda: (
+                None if self._audio_health_sampler is None
+                else self._audio_health_sampler.snapshot()
+            ),
+        )
         park_reader = self._transport_park_reader()
 
         install_profile = _server._control_install_profile()
@@ -545,13 +518,10 @@ class SystemRoutes(ControlHandlerMixin):
             units = []  # systemctl reboot — no units
             action = "reboot"
         else:
-            # poweroff is reboot's terminal sibling: the speaker
-            # stays off until someone physically re-plugs power.
-            # The "graceful" part matters more than usual here —
-            # this endpoint exists *specifically* to give the
-            # household a non-power-yank way to shut down before
-            # hardware changes, after 2026-05-23's dirty-shutdown
-            # incident wiped the NetworkManager keyfile.
+            # Reboot's terminal sibling: the speaker stays off until
+            # someone re-plugs power. It exists so a household changing
+            # hardware has a graceful alternative to yanking the cord,
+            # which can leave the NetworkManager keyfile unwritten.
             units = []  # systemctl poweroff — no units
             action = "poweroff"
         # Audit BEFORE the action: reboot/poweroff take the system down, so
