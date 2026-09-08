@@ -37,6 +37,7 @@ from tests.control_server_fixtures import (
     _get,
     _isolate_household_secret,
     _post,
+    _record_broker,
     _recording_popen,
     server_with_coordinator,
 )
@@ -46,21 +47,6 @@ _IMPORTED_FIXTURES = (
     _isolate_household_secret,
     server_with_coordinator,
 )
-
-
-def _record_broker(monkeypatch, *, ok: bool = True) -> list[tuple[str, list[str]]]:
-    """Replace the restart broker's client entry point, returning the
-    ``(verb, units)`` pairs the handler asks for. Nothing real restarts."""
-    import jasper.control.server as srv_mod
-
-    calls: list[tuple[str, list[str]]] = []
-
-    def fake_manage_units(*units, verb="restart", **_kw):
-        calls.append((verb, list(units)))
-        return {"ok": ok, "action": verb, "units": list(units), "rc": 0 if ok else 1}
-
-    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage_units)
-    return calls
 
 
 def test_state_resilience_parked_snapshot_reads_the_statefile_not_live_camilla(

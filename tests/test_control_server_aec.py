@@ -20,6 +20,7 @@ from tests.control_server_fixtures import (
     _isolate_household_secret,
     _post,
     _post_raw,
+    _record_broker,
     server_with_coordinator,
 )
 
@@ -146,21 +147,6 @@ def test_aec_profile_502s_when_the_reconciler_restart_is_refused(
     assert body["intent_saved"] is True
     assert body["requested_profile"] == "xvf_chip_aec"
     assert body.get("ok") is not True
-
-
-def _record_broker(monkeypatch, *, ok: bool = True) -> list[tuple[str, list[str]]]:
-    """Replace the restart broker's client entry point, returning the
-    ``(verb, units)`` pairs the handler asks for. Nothing real restarts."""
-    import jasper.control.server as srv_mod
-
-    calls: list[tuple[str, list[str]]] = []
-
-    def fake_manage_units(*units, verb="restart", **_kw):
-        calls.append((verb, list(units)))
-        return {"ok": ok, "action": verb, "units": list(units), "rc": 0 if ok else 1}
-
-    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage_units)
-    return calls
 
 
 def test_aec_threshold_persists_and_restarts_voice(

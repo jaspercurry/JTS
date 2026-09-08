@@ -34,6 +34,21 @@ def _recording_popen(calls: list[list[str]]):
     return RecordingPopen
 
 
+def _record_broker(monkeypatch, *, ok: bool = True) -> list[tuple[str, list[str]]]:
+    """Replace the restart broker's client entry point, returning the
+    ``(verb, units)`` pairs the handler asks for. Nothing real restarts."""
+    import jasper.control.server as srv_mod
+
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_manage_units(*units, verb="restart", **_kw):
+        calls.append((verb, list(units)))
+        return {"ok": ok, "action": verb, "units": list(units), "rc": 0 if ok else 1}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage_units)
+    return calls
+
+
 @pytest.fixture(autouse=True)
 def _isolate_household_secret(monkeypatch, tmp_path):
     """Point household_credential at a throwaway path for every test here.
