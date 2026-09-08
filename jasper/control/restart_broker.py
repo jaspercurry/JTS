@@ -126,6 +126,10 @@ MANAGED_UNITS = frozenset({
     "nqptp.service",
     "librespot.service",
     "jasper-usbsink.service",
+    # The UAC2 host-volume observer. jasper.local_sources.registry declares it a
+    # USB-sink runtime/park/audio-refresh unit, so every restart path the
+    # registry drives (dashboard audio refresh, follower parking) targets it.
+    "jasper-usbsink-volume.service",
     # Durable, naturally-debounced USB microphone descriptor/producer apply.
     # jasper-control restarts it after persisting intent; the root oneshot owns
     # the delayed recompose so an in-process timer cannot be lost on exit.

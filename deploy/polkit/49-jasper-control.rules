@@ -66,6 +66,7 @@ polkit.addRule(function(action, subject) {
         "nqptp.service",
         "librespot.service",
         "jasper-usbsink.service",
+        "jasper-usbsink-volume.service",
         "jasper-usbmic-apply.service",
         "jasper-usbmic.service",
         "jasper-usbgadget.service",

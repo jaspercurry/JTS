@@ -26,6 +26,11 @@ from pathlib import Path
 import pytest
 
 from jasper.control import restart_broker
+from jasper.local_sources import (
+    local_source_audio_refresh_units,
+    local_source_lifecycles,
+    local_source_park_units,
+)
 
 # The broker's peer-cred auth uses SO_PEERCRED (Linux-only — the broker runs on
 # the Pi). On a macOS dev box the constant is absent, so the server round-trip
@@ -129,21 +134,43 @@ def test_start_only_units_are_not_general_managed_units():
 
 
 def test_managed_units_cover_every_routed_client_unit():
-    # Units the wizard / mux / correction / wake-corpus client sites send.
+    # Units the wizard / mux / correction / wake-corpus client sites send that
+    # no inventory declares — they exist only at their call sites.
     must_contain = {
         "jasper-voice.service", "jasper-control.service", "jasper-web.service",
         "jasper-mux.service", "jasper-input.service",
-        "shairport-sync.service", "nqptp.service", "librespot.service",
-        "jasper-usbsink.service", "jasper-usbgadget.service",
         "jasper-usbmic-apply.service", "jasper-usbmic.service",
-        "bluetooth.service", "bluealsa.service", "bluealsa-aplay.service",
-        "bt-agent.service",
+        "bluetooth.service",
         "jasper-aec-bridge.service", "jasper-aec-init.service",
         "jasper-aec-reconcile.service", "jasper-grouping-reconcile.service",
         "jasper-grouping-reconcile-trailing.service",
         "jasper-camilla.service", "jasper-outputd.service",
     }
     assert must_contain <= restart_broker.MANAGED_UNITS
+
+
+@pytest.mark.parametrize("verb", ["restart", "try-restart"])
+def test_local_source_registry_units_are_broker_authorized(verb):
+    """jasper.local_sources.registry is the inventory the /system audio-refresh
+    and follower-park paths restart from, so the broker must authorize every
+    unit it declares. Derived, not listed: a unit added to a lifecycle without a
+    matching allowlist entry fails here instead of at runtime with
+    'unit(s) not in allowlist'. START_ONLY membership does not count — these
+    paths restart, they do not merely start."""
+    declared = set(local_source_park_units())
+    declared.update(local_source_audio_refresh_units())
+    for lifecycle in local_source_lifecycles():
+        declared.update(lifecycle.runtime_units)
+        declared.update(lifecycle.park_units)
+        declared.update(lifecycle.audio_refresh_units)
+
+    unauthorized = {
+        unit for unit in declared
+        if not restart_broker._unit_allowed_for_verb(unit, verb)
+    }
+    assert not unauthorized, (
+        f"registry units not brokerable with {verb!r}: {sorted(unauthorized)}"
+    )
 
 
 # --------------------------------------------------------------------------
