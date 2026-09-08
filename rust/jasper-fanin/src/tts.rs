@@ -204,6 +204,10 @@ impl TtsMetrics {
         self.slots.rejected()
     }
 
+    pub fn tts_clients(&self) -> u64 {
+        self.slots.in_use() as u64
+    }
+
     pub fn frame_timeouts(&self) -> u64 {
         self.frame_timeouts.load(Ordering::Relaxed)
     }
