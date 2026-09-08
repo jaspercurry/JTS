@@ -15,12 +15,14 @@ candidate model instead.
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from jasper.log_event import log_event
 
@@ -31,8 +33,7 @@ logger = logging.getLogger(__name__)
 #: id -- distinct namespaces, do not conflate.
 CANDIDATE_ARTIFACT_GLOB = "*/evidence/v1/artifacts/crossover_v2/*/candidate.json"
 
-#: Candidate artifacts to PARSE before giving up (bounds ~4 MB JSON + a fingerprint
-#: recompute each on a 1 GB Pi); does NOT bound the directory walk.
+#: Bound the discovery listing, not exact retrieval.
 MAX_CANDIDATE_ARTIFACTS_SCANNED = 64
 
 #: Largest candidate.json this reader will parse (input ceiling, not a contract -- the
@@ -67,21 +68,28 @@ class BankedCandidate:
         return str(self.candidate.fingerprint)
 
 
-def candidate_artifact_paths(root: Path) -> list[Path]:
-    """Every published candidate.json under the bundle root, in a stable order. Sorted for
-    determinism only, NOT chronological (bundle dirs are ``uuid4().hex[:12]``);
-    :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` bounds work, not recent history.
-    """
+def _directories(root: Path) -> Iterator[Path]:
     try:
-        found = sorted({
-            path
-            for store in _candidate_roots(root)
-            for prefix in ("", "bundle/", "*/bundle/")
-            for path in store.glob(prefix + CANDIDATE_ARTIFACT_GLOB)
-        })
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if entry.is_dir():
+                    yield Path(entry.path)
     except OSError:
-        return []
-    return found[-MAX_CANDIDATE_ARTIFACTS_SCANNED:]
+        return
+
+
+def _iter_candidate_paths(root: Path) -> Iterator[Path]:
+    for store in _candidate_roots(root):
+        for directory in _directories(store):
+            yield from directory.glob(CANDIDATE_ARTIFACT_GLOB.split("/", 1)[1])
+            nested = directory if directory.name == "bundle" else directory / "bundle"
+            for bundle in _directories(nested):
+                yield from bundle.glob(CANDIDATE_ARTIFACT_GLOB.split("/", 1)[1])
+
+
+def candidate_artifact_paths(root: Path) -> list[Path]:
+    """A bounded lexical listing; exact retrieval uses the streaming iterator."""
+    return sorted(heapq.nlargest(MAX_CANDIDATE_ARTIFACTS_SCANNED, _iter_candidate_paths(root)))
 
 
 def _bank_root(root: Path | None) -> Path:
@@ -106,10 +114,7 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
 
 
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
-    """Every candidate the bounded scan can verify, in :func:`candidate_artifact_paths`
-    order. The LISTING behind :func:`find_banked_candidate`: a reader holding no
-    fingerprint yet needs the same bound, integrity check and identity resolution.
-    """
+    """The bounded discovery listing, with each candidate verified."""
     return _verified_candidates(candidate_artifact_paths(_bank_root(root)))
 
 
@@ -223,35 +228,33 @@ def find_banked_candidate(
             "fingerprint_required", "a candidate fingerprint is required"
         )
 
-    paths = candidate_artifact_paths(_bank_root(root))
-    banked = _verified_candidates(paths)
-    matches = {
-        (one.bundle_session_id, one.capture_session_id): one
-        for one in banked
-        if one.fingerprint == wanted
-    }
-
-    if len(matches) > 1:
+    found: BankedCandidate | None = None
+    examined = unverified = 0
+    for path in _iter_candidate_paths(_bank_root(root)):
+        rows = _verified_candidates([path])
+        if not rows:
+            unverified += 1
+            continue
+        one = rows[0]
+        examined += 1
+        if one.fingerprint != wanted:
+            continue
+        if found is not None and (
+            one.bundle_session_id, one.capture_session_id
+        ) != (found.bundle_session_id, found.capture_session_id):
+            raise CandidateBankRefusal("ambiguous", "multiple banked lineages claim this fingerprint")
+        found = one
+    if found is None:
         raise CandidateBankRefusal(
-            "ambiguous",
-            f"{len(matches)} banked sessions claim this candidate fingerprint",
+            "not_found", f"no banked candidate matches ({examined} examined; {unverified} unverified)",
         )
-    if not matches:
-        unverified = len(paths) - len(banked)
-        detail = (
-            f"no banked candidate matches this fingerprint ({len(banked)} examined)"
-        )
-        if unverified:
-            detail += f"; {unverified} could not be verified"
-        raise CandidateBankRefusal("not_found", detail)
 
-    found = next(iter(matches.values()))
     log_event(
         logger,
         "correction.crossover_v2_banked_candidate_found",
         candidate_fingerprint=found.fingerprint,
         bundle_session_id=found.bundle_session_id,
         capture_session_id=found.capture_session_id,
-        examined=len(banked),
+        examined=examined,
     )
     return found

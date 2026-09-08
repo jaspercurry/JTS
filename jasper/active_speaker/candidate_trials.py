@@ -33,10 +33,10 @@ def require_candidate_trial(candidate: Any, *, root: Path | None = None) -> dict
         return None
     from .commissioning_evidence_store import EVIDENCE_ROOT  # lazy: apply-only evidence reader
     from .crossover_v2.record_index import bundle_measurements  # lazy: pulls the tuning engine
-    from .crossover_v2.round_inputs import recent_round_sessions  # lazy: pulls the tuning engine
+    from .crossover_v2.round_inputs import iter_round_sessions  # lazy: pulls the tuning engine
 
     source = find_banked_candidate(candidate.fingerprint, root=root).path.parents[5]
-    for bundle in recent_round_sessions(source):
+    for bundle in iter_round_sessions(source):
         for row in bundle_measurements(bundle, candidate_id=candidate.fingerprint):
             path = bundle / EVIDENCE_ROOT / "artifacts" / row.path
             try:

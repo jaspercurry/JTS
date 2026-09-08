@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Iterator, Mapping
 
 from jasper.json_fields import finite_float
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
@@ -54,6 +54,7 @@ __all__ = [
     "STATE_FILENAME",
     "STATE_SESSION_UNKNOWN",
     "banked_round_of",
+    "iter_round_sessions",
     "matching_state_path",
     "recent_round_sessions",
     "state_matches_capture",
@@ -199,6 +200,20 @@ def banked_round_of(session_dir: Path) -> Path | None:
         return candidate if inputs.banked and inputs.session_dir == session_dir else None
     except RoundViewsError:
         return None
+
+
+def iter_round_sessions(session_dir: Path) -> Iterator[Path]:
+    """Search retained stores without a recent window or a materialized history."""
+    from jasper.active_speaker.candidate_bank import _candidate_roots, _directories  # lazy: bank imports
+
+    bank = banked_round_of(session_dir)
+    root = bank.parent if bank else session_dir.parent
+    for store in _candidate_roots(root):
+        for directory in _directories(store):
+            try:
+                yield round_inputs(directory).session_dir
+            except (OSError, CrossoverEvidencePacketError):
+                continue
 
 
 def recent_round_sessions(session_dir: Path, *, limit: int = 32) -> list[Path]:
