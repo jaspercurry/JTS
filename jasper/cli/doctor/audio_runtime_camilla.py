@@ -240,7 +240,7 @@ async def check_camilla_live_volume_limit() -> CheckResult:
     finally:
         if controller is not None:
             await controller.close()
-    if raw is None:
+    if raw is None or not raw.strip():
         return CheckResult(
             label, "skipped", "CamillaDSP is running no graph",
             reason=REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH,
