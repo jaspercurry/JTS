@@ -252,7 +252,7 @@ def _assess(
         # still an empty draft — a fresh box must not park on never-configured.
         topology = load_output_topology_strict()
     if env is None:
-        env = outputd_reconciled_env()
+        env = outputd_reconciled_env(require_readable=True)
 
     contract = classify_output_contract(topology)
     stereo_ring = ring_channels_for_topology(topology)

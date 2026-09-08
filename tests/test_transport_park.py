@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper import env_load
 from jasper.cli.doctor import audio_runtime_ring
 from jasper.control import transport_park
 from jasper.control.transport_park import (
@@ -533,6 +534,28 @@ def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
         ot, "topology_path", lambda _p=None: tmp_path / "absent.json"
     )
     assert transport_park.snapshot(env={})["status"] == "ok"
+
+
+@pytest.mark.parametrize("unreadable_layer", [None, "base", "outputd", "grouping"])
+def test_snapshot_distinguishes_missing_and_unreadable_env(
+    tmp_path, monkeypatch, unreadable_layer
+):
+    paths = {name: tmp_path / f"{name}.env" for name in ("base", "outputd", "grouping")}
+    monkeypatch.setenv("JASPER_ENV_FILE", str(paths["base"]))
+    monkeypatch.setattr(env_load, "OUTPUTD_ENV_PATH", str(paths["outputd"]))
+    monkeypatch.setattr(env_load, "OUTPUTD_GROUPING_ENV_FILE", str(paths["grouping"]))
+    if unreadable_layer is not None:
+        paths[unreadable_layer].mkdir()
+
+    state = transport_park.snapshot(_full_range_stereo())
+    assert state["status"] == ("ok" if unreadable_layer is None else "unavailable")
+    assert state["parked"] is False
+    assert state["parks"] == []
+
+    if unreadable_layer is not None:
+        paths[unreadable_layer].rmdir()
+        paths[unreadable_layer].write_text("", encoding="utf-8")
+        assert transport_park.snapshot(_full_range_stereo())["status"] == "ok"
 
 
 # --- doctor -----------------------------------------------------------------
