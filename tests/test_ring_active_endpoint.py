@@ -17,7 +17,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +26,7 @@ from jasper import ring_assets
 
 from .doctor_test_support import record_active_dac
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
+from jasper.audio_hardware import reconcile as audio_hardware_reconcile
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CAPTURE_DEVICE,
@@ -61,7 +61,7 @@ from jasper.fanin_coupling import (
 REPO = Path(__file__).resolve().parent.parent
 RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"
 OUTPUTD_CONFIG_RS = REPO / "rust/jasper-outputd/src/config.rs"
-HARDWARE_RECONCILE = REPO / "deploy/bin/jasper-audio-hardware-reconcile"
+HARDWARE_RECONCILE = REPO / "jasper/audio_hardware/reconcile.py"
 
 
 # --------------------------------------------------------------------------
@@ -408,13 +408,13 @@ def test_both_rings_are_forbidden_test_pcm_targets():
 def test_the_active_device_name_is_spelled_identically_everywhere():
     conf = RING_CONF.read_text(encoding="utf-8")
     rust = OUTPUTD_CONFIG_RS.read_text(encoding="utf-8")
-    shell = HARDWARE_RECONCILE.read_text(encoding="utf-8")
 
     assert f"pcm.{RING_ACTIVE_PLAYBACK_DEVICE} {{" in conf
     assert ring_assets.RING_ACTIVE_CONF_PCM == RING_ACTIVE_PLAYBACK_DEVICE
     assert OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE == RING_ACTIVE_PLAYBACK_DEVICE
     assert (
-        f'RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE="{RING_ACTIVE_PLAYBACK_DEVICE}"' in shell
+        audio_hardware_reconcile.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+        == RING_ACTIVE_PLAYBACK_DEVICE
     )
     # The Rust side names the PATH, not the PCM (it never resolves ALSA names).
     assert (
@@ -435,9 +435,9 @@ def test_the_active_ring_path_is_spelled_identically_everywhere():
 
 def test_the_endpoint_marker_key_is_spelled_identically_in_both_languages():
     rust = OUTPUTD_CONFIG_RS.read_text(encoding="utf-8")
-    shell = HARDWARE_RECONCILE.read_text(encoding="utf-8")
+    reconciler = HARDWARE_RECONCILE.read_text(encoding="utf-8")
     assert f'env_bool("{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}", false)' in rust
-    assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in shell
+    assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in reconciler
 
 
 @pytest.mark.parametrize(
@@ -664,23 +664,22 @@ def test_every_active_lane_write_site_writes_the_pair():
     it produces a parked one.
 
     Enumerating the sites rather than asserting "the helper exists" is what makes
-    this a guard: a future branch that reaches for ``set_env_file_var_if_changed``
+    this a guard: a future branch that reaches for ``set_env_file_var``
     directly is exactly the regression, and it would pass any test that only
     checked the helper's own body.
     """
     text = HARDWARE_RECONCILE.read_text(encoding="utf-8")
     # The helper's OWN body is the one legitimate direct writer; everything
     # outside it must route through the helper.
-    before, _, rest = text.partition("set_outputd_active_lane_pair() {")
+    before, _, rest = text.partition("    def set_outputd_active_lane_pair(")
     assert rest, "the pair helper is gone — every write site is now unguarded"
-    helper, _, after = rest.partition("\n}\n")
+    helper, _, after = rest.partition("\n    def ")
     outside = before + after
 
     lane_writes = [
         line.strip()
         for line in outside.splitlines()
-        if "JASPER_OUTPUTD_ACTIVE_LANE" in line
-        and "set_env_file_var_if_changed" in line
+        if "JASPER_OUTPUTD_ACTIVE_LANE" in line and "set_env_file_var" in line
     ]
     assert lane_writes == [], (
         "these lines write JASPER_OUTPUTD_ACTIVE_LANE directly instead of "
@@ -689,7 +688,7 @@ def test_every_active_lane_write_site_writes_the_pair():
     pair_calls = [
         line.strip()
         for line in outside.splitlines()
-        if re.match(r"^\s*set_outputd_active_lane_pair\b", line)
+        if "self.set_outputd_active_lane_pair(" in line
     ]
     # FIVE branches state the lane. The composite became TWO in P8b item 1f:
     # it may now be an ACTIVE-ring endpoint, so it stages the pair when the
@@ -697,10 +696,7 @@ def test_every_active_lane_write_site_writes_the_pair():
     # unconditional clear on every other path (an aloop composite stays byte-
     # identical). The other three are unchanged: active, non-active, parked.
     assert len(pair_calls) == 5, pair_calls
-    assert (
-        'set_outputd_active_lane_pair "1" "$DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE"'
-        ' && changed=1' in pair_calls
-    ), (
+    assert any("dual_apple_endpoint" in call for call in pair_calls), (
         "the composite's ring-staging call is gone — no composite box can be "
         "armed without it, whatever the Python preflights admit"
     )
@@ -727,8 +723,10 @@ def test_the_marker_is_set_by_positive_equality_never_by_negation():
     the marker for an empty device, a typo, or any future endpoint.
     """
     text = HARDWARE_RECONCILE.read_text(encoding="utf-8")
-    helper = text.split("set_outputd_active_lane_pair() {", 1)[1].split("\n}\n", 1)[0]
-    assert '== "$RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE"' in helper
+    helper = text.split("    def set_outputd_active_lane_pair(", 1)[1].split(
+        "\n    def ", 1
+    )[0]
+    assert "== RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE" in helper
     code = [
         line for line in helper.splitlines() if not line.lstrip().startswith("#")
     ]
