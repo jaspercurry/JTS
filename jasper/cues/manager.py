@@ -81,12 +81,8 @@ REASON_CANCELLED = "cancelled"
 REASON_ERROR = "error"
 # Refusals raised by the daemon's own output gates, recorded through
 # `note_skipped` because the attempt never reaches play()/speak_text().
-# `measurement_active` is produced by `AssistantOutput.admission_refusal`,
-# which owns that word across the daemon; it is named here only so this
-# closed set matches what `/state.cues` can report.
 REASON_OUTPUT_ACTIVE = "output_active"
 REASON_BUSY = "busy"
-REASON_MEASUREMENT_ACTIVE = "measurement_active"
 
 # `_record()`'s slug for dynamic speech (speak_text) — never the spoken text.
 _DYNAMIC_TEXT_SLUG = "text"
