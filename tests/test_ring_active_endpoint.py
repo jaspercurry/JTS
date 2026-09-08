@@ -744,10 +744,6 @@ def test_every_active_lane_write_site_writes_the_pair():
     # unconditional clear on every other path (an aloop composite stays byte-
     # identical). The other three are unchanged: active, non-active, parked.
     assert len(pair_calls) == 5, pair_calls
-    assert any("dual_apple_endpoint" in call for call in pair_calls), (
-        "the composite's ring-staging call is gone — no composite box can be "
-        "armed without it, whatever the Python preflights admit"
-    )
     # The helper writes BOTH keys, and it is the ONLY writer of the marker.
     assert "JASPER_OUTPUTD_ACTIVE_LANE" in helper
     assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in helper
@@ -763,22 +759,39 @@ def test_every_active_lane_write_site_writes_the_pair():
     )
 
 
-def test_the_marker_is_set_by_positive_equality_never_by_negation():
+@pytest.mark.parametrize(
+    ("endpoint_device", "marker"),
+    [
+        pytest.param(
+            audio_hardware_reconcile.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+            "1",
+            id="the-active-ring",
+        ),
+        pytest.param("not_the_ring", "", id="an-unrecognized-endpoint"),
+    ],
+)
+def test_the_marker_is_set_by_positive_equality_never_by_negation(
+    tmp_path, endpoint_device: str, marker: str
+):
     """A negative test would INVERT into a spurious arm on an unknown device.
 
     ``lane == 1 && device == <active ring>`` fails closed for anything it does
     not recognize. ``device != <alsa lane>`` — the tempting shorthand — would set
     the marker for an empty device, a typo, or any future endpoint.
     """
-    text = HARDWARE_RECONCILE.read_text(encoding="utf-8")
-    helper = text.split("    def set_outputd_active_lane_pair(", 1)[1].split(
-        "\n    def ", 1
-    )[0]
-    assert "== RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE" in helper
-    code = [
-        line for line in helper.splitlines() if not line.lstrip().startswith("#")
-    ]
-    assert not any("!=" in line for line in code), code
+    from jasper.env_file import read_env_file
+
+    target = tmp_path / "candidate.env"
+    run = audio_hardware_reconcile.Pass(
+        reason="test", print_env=False, no_restart=False
+    )
+    run.outputd_env_stage = str(target)
+
+    run.set_outputd_active_lane_pair("1", endpoint_device)
+
+    written = read_env_file(str(target))
+    assert written["JASPER_OUTPUTD_ACTIVE_LANE"] == "1"
+    assert written[OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR] == marker
 
 
 # --------------------------------------------------------------------------

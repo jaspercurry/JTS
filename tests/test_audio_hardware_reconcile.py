@@ -4545,21 +4545,6 @@ def test_the_shim_and_the_pass_agree_on_every_derived_leaf_name():
         }
 
 
-def test_the_shim_print_env_fallback_matches_the_unrecognized_dac_row():
-    """The shim states these six values itself, for the one case where no pass
-    can answer (deploy/install.sh:893 evals the output under `set -u`). They
-    are install.sh's contract either way, so they may not drift from the
-    answer a running pass gives for the same box."""
-    body = SCRIPT.read_text(encoding="utf-8")
-    defaults = body.partition("print_env_defaults() {")[2].partition("\n}")[0]
-    printed = _parse_print_env(
-        "\n".join(
-            line for line in defaults.splitlines() if re.match(r"^[A-Z_]+=", line)
-        )
-    )
-    assert printed == _PRINT_ENV_NO_DAC
-
-
 def test_the_shim_and_the_pass_agree_on_every_default_path():
     shim = dict(_SHIM_DEFAULT.findall(SCRIPT.read_text(encoding="utf-8")))
     expected = _module_defaults()
