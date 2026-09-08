@@ -203,8 +203,9 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
 def _compose_seats(args: argparse.Namespace, banked: BankedRound) -> int:
     results = {}
     exit_code = 0
-    prepared = None
+    prepared: tuple[VerifyPoseResult, tuple[SeatCurve, ...]]
     preparation_error = None
+    view_errors = (StageFailed,) + _ROUND_TOOL_ERRORS
     try:
         verify = verify_pose_curve(banked)
         prepared = (verify, per_seat_curves(
@@ -217,7 +218,7 @@ def _compose_seats(args: argparse.Namespace, banked: BankedRound) -> int:
         if args.out and args.out != "-":
             base = Path(args.out)
             path = base if view == "per-seat" else base.with_name(f"{base.stem}-{path.name}")
-        result = {
+        result: dict[str, Any] = {
             "sources": {
                 "bundle": str(banked.session_dir),
                 "session": banked.packet.get("session", {}),
@@ -305,9 +306,9 @@ def _compose_seats(args: argparse.Namespace, banked: BankedRound) -> int:
                 render_report(payload)
                 result["detail"] = payload
             else:
-                written = _write(payload, str(path), path)
-                result.update(out=str(written), bytes=written.stat().st_size)
-        except (StageFailed, *_ROUND_TOOL_ERRORS) as exc:
+                _write(payload, str(path), path)
+                result.update(out=str(path), bytes=path.stat().st_size)
+        except view_errors as exc:
             code = exc.code if isinstance(exc, StageFailed) else EXIT_REFUSED
             exit_code = max(exit_code, code)
             if code != EXIT_WRITE_FAILED:
