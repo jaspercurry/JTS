@@ -50,7 +50,6 @@ async def test_sdk_combined_audio_transcripts_and_completion(transcripts):
             *(types.Part(inline_data=types.Blob(data=pcm, mime_type="audio/pcm;rate=24000"))
               for pcm in audio),
         ]),
-        input_transcription=types.Transcription(text="hello") if transcripts else None,
         output_transcription=types.Transcription(text="good day") if transcripts else None,
         turn_complete=True,
     ))
@@ -61,7 +60,7 @@ async def test_sdk_combined_audio_transcripts_and_completion(transcripts):
     assert chunks[0].provider_item_id is None
     assert turn.server_turn_complete()
     capture = turn.capture()
-    assert capture.user_text == ("hello" if transcripts else None)
+    assert capture.user_text is None
     assert capture.assistant_text == ("good day" if transcripts else None)
     assert capture.data["transcripts_available"] is transcripts
 

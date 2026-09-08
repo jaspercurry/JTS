@@ -295,13 +295,9 @@ class GeminiLiveTurn(BaseLiveTurn):
         sc = getattr(response, "server_content", None)
         if sc is not None:
             if not self._cancel_requested:
-                for field, parts in (
-                    ("input_transcription", self._user_transcript_parts),
-                    ("output_transcription", self._assistant_transcript_parts),
-                ):
-                    text = getattr(getattr(sc, field, None), "text", None)
-                    if isinstance(text, str) and text:
-                        parts.append(text)
+                text = getattr(getattr(sc, "output_transcription", None), "text", None)
+                if isinstance(text, str) and text:
+                    self._assistant_transcript_parts.append(text)
             if getattr(sc, "turn_complete", False) and not self._server_turn_complete:
                 self._cancel_tools()
                 self._note_activity()
@@ -421,6 +417,8 @@ class GeminiLiveConnection(BaseLiveConnection):
         self._send_lock = asyncio.Lock()
         self._session: AsyncSession | None = None
         self._session_cm: contextlib.AbstractAsyncContextManager[AsyncSession] | None = None
+        self._input_transcript_turn: GeminiLiveTurn | None = None
+        self._input_transcript_ambiguous = False
 
         # Latest session-resumption handle from the server. Used on
         # reconnect to resume the conversation. Cleared explicitly when
@@ -512,8 +510,27 @@ class GeminiLiveConnection(BaseLiveConnection):
             ):
                 return False
             assert turn._session is not None
+            if "audio" in kwargs and not self._input_transcript_ambiguous:
+                if self._input_transcript_turn not in (None, turn):
+                    # No request IDs: overlapping unfinished input cannot be
+                    # attributed again until transport teardown clears it.
+                    self._input_transcript_ambiguous = True
+                    self._input_transcript_turn = None
+                else:
+                    self._input_transcript_turn = turn
             await turn._session.send_realtime_input(**kwargs)
             return True
+
+    def _on_input_transcription(self, transcription) -> None:
+        turn = self._input_transcript_turn
+        if turn is not None and self._owns_turn(turn) and not turn._cancel_requested:
+            text = getattr(transcription, "text", None)
+            if isinstance(text, str) and text:
+                turn._user_transcript_parts.append(text)
+        # Input transcription is unordered relative to response completion:
+        # https://ai.google.dev/api/live#bidigeneratecontentservercontent
+        if getattr(transcription, "finished", False):
+            self._input_transcript_turn = None
 
     async def _send_text_context(self, turn: GeminiLiveTurn, text: str) -> None:
         await self._send_realtime_input(turn, text=text)
@@ -680,6 +697,8 @@ class GeminiLiveConnection(BaseLiveConnection):
         self._proactive_watchdog_task = None
         await self._cancel_task(self._receive_task)
         self._receive_task = None
+        self._input_transcript_turn = None
+        self._input_transcript_ambiguous = False
         # Only now can the handle be dropped for good: until the receive
         # task above was cancelled it could still land a late
         # `session_resumption_update` and resurrect the old context.
@@ -804,6 +823,9 @@ class GeminiLiveConnection(BaseLiveConnection):
                     )
                     request_unplanned_reopen(self)
                     continue
+                transcription = getattr(getattr(response, "server_content", None), "input_transcription", None)
+                if transcription is not None:
+                    self._on_input_transcription(transcription)
                 turn = self._active_turn
                 if turn is not None and self._owns_turn(turn) and not turn._server_turn_complete:
                     await turn._on_response(response)

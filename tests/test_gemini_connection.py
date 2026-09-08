@@ -1700,3 +1700,77 @@ async def test_late_old_session_content_cannot_complete_or_capture_a_new_turn():
         resume.set()
         receiving.cancel()
         await asyncio.gather(receiving, return_exceptions=True)
+
+
+@pytest.mark.parametrize("tail_at", ["before_release", "idle", "acquired", "new_audio"])
+@pytest.mark.parametrize("finished", [True, None])
+async def test_input_transcript_owner_outlives_response_turn(tail_at, finished):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        session = factory.sessions[0]
+        old = await conn.acquire_turn()
+        await old.send_audio(b"\x01\x00")
+        await old.end_input()
+        session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="old ", finished=False if finished else None),
+            output_transcription=types.Transcription(text="old answer", finished=True),
+            turn_complete=True,
+        )))
+        await _wait_until(old.server_turn_complete)
+
+        async def tail():
+            session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+                input_transcription=types.Transcription(text="tail", finished=finished),
+            )))
+            session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="tail-read")))
+            await _wait_until(lambda: conn._resumption_handle == "tail-read")
+
+        if tail_at == "before_release":
+            await tail()
+        await old.release()
+        old_capture = old.capture()
+        if tail_at == "idle":
+            await tail()
+        fresh = await conn.acquire_turn()
+        if tail_at == "new_audio":
+            await fresh.send_audio(b"\x02\x00")
+        if tail_at in {"acquired", "new_audio"}:
+            await tail()
+        assert fresh.capture().user_text is None
+        assert fresh.capture().data["transcripts_available"] is False
+        assert old.capture() == old_capture
+        assert old.capture().user_text == ("old tail" if tail_at == "before_release" else "old")
+        assert old.capture().assistant_text == "old answer"
+
+        await fresh.send_audio(b"\x03\x00")
+        session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="new ", finished=True),
+        )))
+        session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="segment-read")))
+        await _wait_until(lambda: conn._resumption_handle == "segment-read")
+        await fresh.send_audio(b"\x04\x00")
+        await fresh.end_input()
+        session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="speech", finished=True),
+            output_transcription=types.Transcription(text="new answer", finished=True),
+            turn_complete=True,
+        )))
+        await _wait_until(fresh.server_turn_complete)
+        ambiguous = tail_at == "new_audio" or finished is None
+        assert fresh.capture().user_text == (None if ambiguous else "new speech")
+        assert fresh.capture().assistant_text == "new answer"
+        assert len(factory.sessions) == 1
+        await fresh.release()
+        request_planned_reopen(conn)
+        await _wait_until(lambda: conn._connected_event.is_set() and len(factory.sessions) == 2)
+        recovered = await conn.acquire_turn()
+        await recovered.send_audio(b"\x05\x00")
+        factory.sessions[-1].feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="after reset", finished=True),
+            turn_complete=True,
+        )))
+        await _wait_until(recovered.server_turn_complete)
+        assert recovered.capture().user_text == "after reset"
+    finally:
+        await conn.stop()
