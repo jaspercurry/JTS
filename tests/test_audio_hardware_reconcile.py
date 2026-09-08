@@ -3177,6 +3177,10 @@ _FLOOR_KEYS = (
     ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
 )
 
+_FLOOR_PLAN_PROBE_FAILS = {
+    "jasper.cli.audio_config.outputd_floor_plan": _raises(RuntimeError("gone"))
+}
+
 
 @pytest.mark.parametrize(
     ("listing", "dac_id"),
@@ -3231,6 +3235,40 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
     outputd_env = _outputd_env(tmp_path)
     for key, _value in _FLOOR_KEYS:
         assert not _outputd_env_key_present(outputd_env, key), key
+
+
+def test_reconcile_preserves_the_floor_when_the_plan_probe_cannot_answer(
+    tmp_path: Path,
+):
+    """A floor plan that could not be built leaves the four keys ALONE, the
+    way the DAC-format and content-format probes do. Clearing them would drop
+    a tuned box to outputd's packaged defaults with nothing loud anywhere; the
+    stale floor plus the degraded marker is the loud option, and the marker is
+    what stops the shim stamping a state ``--changed`` could skip against."""
+    stale = {
+        "JASPER_CAMILLA_CHUNKSIZE": "512",
+        "JASPER_CAMILLA_TARGET_LEVEL": "2048",
+        "JASPER_OUTPUTD_PERIOD_FRAMES": "512",
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": "1024",
+    }
+    state_path = tmp_path / "output_hardware.json"
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="".join(f"{k}={v}\n" for k, v in stale.items()),
+        extra_env={"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(state_path)},
+        patches=_FLOOR_PLAN_PROBE_FAILS,
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = _outputd_env(tmp_path)
+    for key, value in stale.items():
+        assert f"{key}={value}" in outputd_env, (key, outputd_env)
+    assert "event=audio_hardware_reconcile.latency_floor_skip" in result.stderr
+    assert "reason=probe_unavailable" in result.stderr
+    assert (state_path.parent / "reconcile.degraded").is_file()
 
 
 @pytest.mark.parametrize(
@@ -3938,10 +3976,7 @@ _PROBE_FAILURES = {
         {"jasper.audio_runtime_plan.route_owned_env_actions": _raises(ValueError("x"))},
         0,
     ),
-    "latency_floor": (
-        {"jasper.cli.audio_config.outputd_floor_plan": _raises(RuntimeError("gone"))},
-        0,
-    ),
+    "latency_floor": (_FLOOR_PLAN_PROBE_FAILS, 0),
     "runtime_graph": ({}, 1),
 }
 

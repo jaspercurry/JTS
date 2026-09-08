@@ -994,10 +994,14 @@ class Pass:
         The decisions come from jasper.audio_runtime_plan (operator env >
         profile floor > packaged default, in one policy layer); this only
         performs the requested mutations and reports whether the file moved.
+
+        A probe that cannot answer leaves the four keys ALONE, the same way
+        the DAC-format and content-format probes do: clearing them would
+        silently drop a tuned box to packaged defaults with no error anywhere,
+        while a stale floor is the loud option.
         """
         # lazy: import cost — the floor plan and its CLI are a policy layer the
         # --print-env path never reaches (ADR-0226).
-        from jasper.audio_runtime_plan import OUTPUTD_LATENCY_KEYS, RuntimeEnvAction
         from jasper.cli.audio_config import outputd_floor_plan
 
         try:
@@ -1006,15 +1010,18 @@ class Pass:
                 base_env=self.env_file,
                 outputd_env=self.outputd_env_target,
             )
-        # noqa reason: the fallback CLEARS the floor keys, so any failure leaves
-        # the box on packaged defaults rather than on another DAC's floor.
+        # noqa reason: any failure preserves the previous floor keys; the pass
+        # is marked degraded so the shim leaves no stamp to skip against.
         except Exception:  # noqa: BLE001
             self.mark_degraded()
-            summary = {}
-            actions = tuple(
-                RuntimeEnvAction(action="unset", key=key, value="")
-                for key in OUTPUTD_LATENCY_KEYS
+            self.latency_floor_changed = False
+            self.log(
+                "latency_floor_skip",
+                reason="probe_unavailable",
+                output_dac_id=dac_id,
+                outputd_env=self.outputd_env_file,
             )
+            return
         self.latency_floor_changed = self.set_env_file_var(
             self.outputd_env_target, [_env_action(action) for action in actions]
         )
