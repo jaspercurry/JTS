@@ -46,7 +46,10 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
 )
 from jasper.active_speaker.program_playback import ProgramPlaybackError
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-from jasper.audio_measurement.playback import PlaybackError, PlaybackFailureCode
+from jasper.audio_measurement.playback import (
+    PlaybackError, PlaybackFailureCode, PlaybackCleanupState, PlaybackObservation,
+    WavPlaybackCancelled, WavPlaybackCancelledBeforeSpawn,
+)
 
 LEVEL_DB = -20.0
 
@@ -198,6 +201,7 @@ async def test_a_clean_stimulus_reports_restore_and_counts_as_played():
 
     assert outcome.stage_reached == STAGE_RESTORE
     assert outcome.played is True
+    assert outcome.playback.emission == "completed"
     assert outcome.incident == ""
     assert seams.locked == 1 and seams.played == 1
 
@@ -211,29 +215,44 @@ async def test_a_refused_admission_stops_at_ready_and_never_plays():
     assert outcome.stage_reached == STAGE_READY
     assert outcome.played is False
     assert outcome.incident == STIMULUS_ADMISSION_REFUSED
+    assert outcome.playback.emission == "not_started"
     assert seams.played == 0, "a refused program must not reach the speaker"
     assert seams.locked == 0
 
 
-async def test_a_failed_emission_reports_lock_because_it_got_past_admission():
-    """The rung a play failure sits on is ``lock``, not ``admit``.
-
-    Reporting ``admit`` would say the writer lock was never taken, and a reader
-    diagnosing a stuck DSP writer would look in the wrong place.
-    """
+@pytest.mark.parametrize("code,emission", [
+    (PlaybackFailureCode.START_FAILED, "not_started"),
+    (PlaybackFailureCode.PROCESS_FAILED, "possible"),
+    (PlaybackFailureCode.TIMEOUT, "possible"),
+])
+@pytest.mark.parametrize("cleanup", list(PlaybackCleanupState))
+async def test_a_failed_emission_reports_lock_because_it_got_past_admission(code, emission, cleanup):
     seams = _Seams(play_raises=PlaybackError(
-        "aplay died",
-        code=PlaybackFailureCode.PROCESS_FAILED,
-        wav_path=Path("/tmp/x.wav"),
-        alsa_device="null",
+        "aplay died", code=code, wav_path=Path("/tmp/x.wav"),
+        alsa_device="null", cleanup_state=cleanup, returncode=-9,
     ))
-
     outcome = await _run(_transaction(seams=seams))
-
     assert outcome.stage_reached == STAGE_LOCK
     assert outcome.played is False
     assert outcome.incident == STIMULUS_EMISSION_FAILED
-    assert seams.locked == 1, "the failure happened INSIDE the lock"
+    assert outcome.playback.as_dict() == {
+        "emission": emission, "failure_code": code,
+        "cleanup_state": cleanup, "returncode": -9,
+    }
+
+
+@pytest.mark.parametrize("error,emission,cleanup", [
+    (WavPlaybackCancelledBeforeSpawn(), "not_started", None),
+    (WavPlaybackCancelled(PlaybackObservation(
+        emission="possible", cleanup_state=PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED,
+    )), "possible", PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED),
+])
+async def test_cancel_preserves_emission_and_child_cleanup(error, emission, cleanup):
+    from jasper.active_speaker.crossover_v2.playback_transaction import PlaybackInterrupted
+    with pytest.raises(PlaybackInterrupted) as stopped:
+        await _run(_transaction(seams=_Seams(play_raises=error)))
+    assert stopped.value.playback.emission == emission
+    assert stopped.value.playback.cleanup_state == cleanup
 
 
 @pytest.mark.parametrize(
@@ -369,6 +388,7 @@ async def test_a_played_stimulus_with_no_evidence_never_returns_a_silent_path():
     outcome = await _run(_transaction())
 
     assert outcome.played is True
+    assert outcome.playback.emission == "completed"
     assert outcome.wav_path == ""
     assert outcome.incident == STIMULUS_CAPTURE_NOT_BOUND
 
@@ -384,6 +404,7 @@ async def test_a_bound_half_that_hands_back_no_path_is_not_the_unbound_case():
     outcome = await _run(_transaction(capture=_Capture(relpath="")))
 
     assert outcome.played is True
+    assert outcome.playback.emission == "completed"
     assert outcome.wav_path == ""
     assert outcome.incident == STIMULUS_NOT_CAPTURED
 
@@ -422,6 +443,7 @@ async def test_a_capture_lost_after_the_stimulus_still_reports_it_played():
 
     assert outcome.stage_reached == STAGE_RESTORE
     assert outcome.played is True
+    assert outcome.playback.emission == "completed"
     assert outcome.incident == STIMULUS_NOT_CAPTURED
     assert seams.played == 1, "the stimulus reached the speaker"
 
@@ -571,6 +593,7 @@ async def test_an_async_compose_is_awaited_rather_than_passed_through():
 
     assert outcome.stage_reached == STAGE_RESTORE
     assert outcome.played is True
+    assert outcome.playback.emission == "completed"
     assert seams.played == 1, "the awaited program never reached the speaker"
 
 

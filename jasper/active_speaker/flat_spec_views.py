@@ -469,13 +469,11 @@ def _power_mean_across(stack_db: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class DirectivityBand:
-    """One position's departure from on-axis across one graded band. Split
-    the way ``BandResult`` splits a deviation (#1857): "2 dB down
-    off-axis" and "shaped differently off-axis" are different facts. Per
-    bin ``d_i = level_offset_db + shape_i``, so ``level_offset_db`` alone
-    is the band's directivity index and ``shape_*`` is the part no level
-    trim removes. ``level_offset_db`` is signed, negative = quieter than
-    on-axis; ``None`` when the band held no bin.
+    """One band's departure from on-axis: ``d_i = level_offset_db + shape_i``.
+
+    The level difference is not sound-power DI. A shared trim changes neither
+    it nor the residual shape. Negative offsets mean quieter than on-axis;
+    ``None`` means the band held no bin.
     """
 
     f_lo_hz: float
@@ -646,8 +644,8 @@ def directivity_table(
 ) -> DirectivityTable:
     """Every position's curve normalised to the on-axis reference, as a
     table: departure from the per-bin power mean of the ``reference_role``
-    positions, split per graded band into a level offset (directivity
-    index) and the residual shape no level trim removes. All positions
+    positions, split per graded band into a level difference and residual
+    shape. A shared trim changes neither. All positions
     must share one frequency axis; a mismatched one is a not-evaluated
     row, never resampled. No ``reference_role`` position leaves the table
     ``evaluable=False`` with every position still listed (UNSAMPLED, never

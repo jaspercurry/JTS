@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import math
+
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
+
+from jasper.active_speaker.restore_wait import await_restore_task_resilient
+from jasper.audio_measurement.playback import PlaybackObservation
+from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (
     CAPTURE_KIND_SEQUENTIAL, capture_artifact_relpath, register_capture,
@@ -144,13 +149,24 @@ class WiredStimulusCapture:
         finally:
             if not played:
                 recorder.abort()
+        async def _finish() -> str:
+            try:
+                recording = await asyncio.to_thread(recorder.finish, tail_s=WIRED_POST_ROLL_S)
+                answer = await asyncio.to_thread(self._mint_and_place, recording, str(program.phase))
+            except (WiredCaptureError, OSError, ValueError) as exc:
+                raise StimulusCaptureError("the capture could not be placed") from exc
+            self._pending.append(answer)
+            return answer.wav_path
+
+        finishing = asyncio.create_task(_finish())
         try:
-            recording = await asyncio.to_thread(recorder.finish, tail_s=WIRED_POST_ROLL_S)
-            answer = await asyncio.to_thread(self._mint_and_place, recording, str(program.phase))
-        except (WiredCaptureError, OSError, ValueError) as exc:
-            raise StimulusCaptureError("the capture could not be placed") from exc
-        self._pending.append(answer)
-        return answer.wav_path
+            return await await_restore_task_resilient(finishing)
+        except asyncio.CancelledError as exc:
+            if finishing.cancelled():
+                raise
+            raise PlaybackInterrupted(
+                PlaybackObservation(emission="completed"), wav_path=finishing.result(),
+            ) from exc
 
     def _mint_and_place(self, recording: Any, phase: str) -> WiredCaptureAnswer:
         answer = mint_wired_answer(

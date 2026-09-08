@@ -697,8 +697,6 @@ def test_stop_budget_when_the_attempt_budget_is_spent():
     )
     assert decision.decision == STOP_BUDGET
     assert decision.reason == REASON_BUDGET_EXHAUSTED
-    # The improvement is still disclosed — the loop stopped for want of tries,
-    # not for want of progress.
     assert decision.improvement_db == pytest.approx(4.0)
 
 
@@ -793,6 +791,7 @@ def test_every_decision_serialises_with_the_numbers_it_used():
         [_attempt("a1", grade_db=5.0), _attempt("a2", grade_db=1.0)], _floor(),
     )
     payload = decision.to_dict()
+    assert payload["authority"] == "advisory"
     assert payload["basis_attempt_ids"] == ["a1", "a2"]
     assert payload["magnitude_db"] == pytest.approx(4.0)
     assert payload["floor"]["claim_floor_db"] == pytest.approx(0.17016)

@@ -105,9 +105,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Grade, compare and disclose what one round measured — one "
-            "subcommand per view, over banked rounds and live sessions, each "
-            "answering on stdout and filing its artifact beside the round."
+            "Read a round's measured evidence. Select standalone views or "
+            "per-seat --include agreement directivity co-metrics to share a "
+            "round read. Answers use stdout; details use files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -121,12 +121,15 @@ def build_parser() -> argparse.ArgumentParser:
             "  jasper-round-views frozen captures/.../baseline captures/.../round-3\n"
             "  jasper-round-views spec-sweep captures/.../session-1/round-3\n"
             "\n"
+            "OPTIONAL MODEL-ERROR FLOOR (Python)\n"
+            "  jasper.active_speaker.model_error_store.adopt_floor(floor, path=...)\n"
+            "  accepts FloorStats for prediction-tracking error. This is distinct\n"
+            "  from the pooled-response repeat-floor metric. Use only when useful;\n"
+            "  it neither installs that repeat floor nor requires another campaign.\n"
+            "\n"
             "EXIT CODES\n"
-            "  0  EXIT_OK -- graded; printed, or written to --out. entry can\n"
-            "     print \"entry-state: NOT GRADED — <reason>\" on stderr and\n"
-            "     still exit 0 -- \"not gradeable yet\" is a valid verdict,\n"
-            "     not a failure, so check the printed line rather than only\n"
-            "     the code if that distinction matters to your caller\n"
+            "  0  EXIT_OK -- result available or a coverage gap reported;\n"
+            "     inspect outcome/reason and coverage in the JSON answer.\n"
             "  1  EXIT_REFUSED -- the round read, and the view itself\n"
             "     declined to grade it (a round with no cloud group, a\n"
             "     repeat floor from a single round)\n"
@@ -135,7 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  3  EXIT_WRITE_FAILED -- graded, but the destination could\n"
             "     not be written\n"
             "  1-3 print \"<status> (<reason>): <detail>\" on stderr and the\n"
-            "     same record as JSON on stdout"
+            "     same record as JSON on stdout. With --include, each result\n"
+            "     keeps its own outcome/detail path; failures leave good siblings\n"
+            "     visible and the command returns the highest failed stage code."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

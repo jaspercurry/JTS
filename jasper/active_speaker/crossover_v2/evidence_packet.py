@@ -2616,13 +2616,10 @@ def _not_evaluated(
         entries.append({
             "field": "per_bin_minimum_phase_class",
             "reason": (
-                "no feature classification is banked for this round. The "
-                "instrument that produces one runs offline over a round's "
-                "banked captures (jasper-round-views classify-features) and "
-                "nobody ran it "
-                "here. The positional bar in the response format is the "
-                "deterministic stand-in for the BLEND boost class; the "
-                "per-driver class refuses, either sign, rather than standing in"
+                "No feature classification is banked. Driver filters remain "
+                "admissible within physical and numerical limits and are "
+                "reported as unvouched. Run jasper-round-views classify-features "
+                "if that evidence would help choose an experiment."
             ),
         })
     if not drivers_available:

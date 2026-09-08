@@ -2,28 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The S3 tuning loop's improve/stop policy — a pure decision kernel.
+"""Advisory comparison of consecutive tuning attempts, with no I/O.
 
-:func:`~jasper.active_speaker.flat_spec.spec_convergence_residual` computes the residual
-but excludes loop policy by design; this module is that policy, consuming already-graded
-attempts and returning one :class:`LoopDecision`.
-
-No I/O ever (persistence lives in :mod:`model_error_store` instead); import-time light,
-pulling only stdlib at module scope (pinned by
-``test_kernel_imports_nothing_at_module_scope_but_stdlib``) -- the convergence path
-alone deferred-imports numpy/scipy via :func:`material_improvement_db`, which must stay
-a function-local import.
-
-Four rules, all measured on jts3 2026-07-31
-(``captures/repeat-floor-20260731/README.md``): (1) only consecutive attempts are
-compared, never a fixed baseline (which drifts to roughly the whole floor within ~15
-attempts); (2) repeat averaging stops paying past :data:`MAX_USEFUL_REPEAT_AVERAGES`;
-(3) a change smaller than :attr:`FloorStats.claim_floor_db` is not a change; (4) a floor
-licenses only the separation (:attr:`FloorStats.scope`) it was measured across --
-refused otherwise (#2081).
-
-An unanswerable magnitude or improvement question always yields :data:`STOP_EVIDENCE`,
-never a pass, matching :mod:`delta_probe`'s ``unavailable`` doctrine.
+Historical ``stop_*`` values describe evidence limits and planning heuristics.
+They do not prevent another experiment. The LLM decides whether more evidence
+would help; physical limits and capture integrity belong to their own owners.
+A sub-floor difference is unresolved, and a floor applies only within its
+measured scope. Numerical readers keep their existing decision/reason values.
 """
 
 from __future__ import annotations
@@ -135,11 +120,9 @@ MAX_USEFUL_REPEAT_AVERAGES = 4
 
 @dataclass(frozen=True)
 class AttemptBudget:
-    """How many *tuning attempts* one speaker gets (a tune-and-grade cycle, not a measurement
-    repeat). ``target_attempts`` is the planning number, disclosed not enforced --
-    the only bound the kernel applies is ``hard_cap_attempts``. ``hard_cap_attempts`` is
-    a policy bound (target plus one retry); no measurement sets it, and it is a
-    different quantity from :data:`MAX_USEFUL_REPEAT_AVERAGES`.
+    """Historical planning counts, also used to bound retained comparison history.
+
+    Neither count limits the number of human-started experiments.
     """
 
     target_attempts: int = 3
@@ -344,14 +327,13 @@ class AttemptRecord:
 
 @dataclass(frozen=True)
 class LoopDecision:
-    """What the loop decided, and every number it decided from. ``improved`` is carried
-    separately from ``decision``: an above-floor *regression* is still :data:`CONTINUE`
-    (the loop keeps working), never approval -- ``improved=False`` plus
-    :data:`REASON_REGRESSION_FROM_PREDECESSOR` says so. Handling a regression is the
-    live flow's policy, not this kernel's.
+    """Comparison advice and its inputs; never experiment authorization.
+
+    ``improved`` is separate from the historical decision name: a measurable
+    regression can still recommend further work.
     """
 
-    decision: str
+    decision: str | None
     reason: str
     attempts_used: int
     budget: AttemptBudget
@@ -366,10 +348,12 @@ class LoopDecision:
 
     @property
     def should_continue(self) -> bool:
+        """Legacy advice flag; not an execution gate."""
         return self.decision == CONTINUE
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "authority": "advisory",
             "decision": self.decision,
             "reason": self.reason,
             "attempts_used": self.attempts_used,
@@ -602,9 +586,7 @@ def _denominator_shrank(previous: AttemptRecord, latest: AttemptRecord) -> bool:
 def _apply_stop_conditions(
     decision: LoopDecision, *, latest: AttemptRecord,
 ) -> LoopDecision:
-    """Turn a would-be :data:`CONTINUE` into a stop when there is nowhere to go. Only reachable
-    from a decision that already survived the evidence and floor checks.
-    """
+    """Attach historical convergence/count advice after a valid comparison."""
 
     if latest.in_spec:
         return replace(decision, decision=STOP_CONVERGED, reason=REASON_IN_SPEC)

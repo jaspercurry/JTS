@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The grading verbs: the state a round entered on, a round frozen to a
-baseline's per-position references, and the round's own per-seat curves.
+baseline's per-position references, and comparison to a frozen baseline.
 
 * ``entry <round-dir>`` — grade the state the round ENTERED on, from the
   entry-baseline take it banked, through the shipped flat-spec evaluator.
@@ -15,9 +15,6 @@ baseline's per-position references, and the round's own per-seat curves.
 * ``frozen <baseline-dir> <target-dir>`` — grade ``target`` shipped AND
   frozen to ``baseline``'s per-position reference levels. Writes
   ``frozen_reference.json`` for the TARGET round.
-* ``per-seat <round-dir>`` — every banked position plus the VERIFY pose
-  (when its dump-ring capture is banked), normalised onto one comparable
-  basis. Writes ``per_seat.json``.
 """
 
 from __future__ import annotations
@@ -27,15 +24,12 @@ import argparse
 from jasper.active_speaker.crossover_v2.round_views import (
     entry_state_grade,
     frozen_reference_grade,
-    per_seat_curves,
-    verify_pose_curve,
 )
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
-    _add_norm_band_args,
     _load_round,
     _view_out,
     _write,
@@ -100,44 +94,6 @@ def _cmd_frozen(args: argparse.Namespace) -> int:
     )
 
 
-def _cmd_per_seat(args: argparse.Namespace) -> int:
-    banked = _load_round(args.round_dir)
-    verify = verify_pose_curve(banked)
-    seats = per_seat_curves(
-        banked, verify.curve, norm_band_hz=(args.norm_lo, args.norm_hi)
-    )
-    payload = {
-        "round_dir": str(banked.round_dir),
-        "banked": banked.inputs.banked,
-        "curve_grid_hz": banked.curve_grid_hz.tolist(),
-        "norm_band_hz": [args.norm_lo, args.norm_hi],
-        "verify_pose": {
-            "included": verify.curve is not None,
-            "reason": verify.reason,
-        },
-        "seats": [
-            {
-                "position_id": seat.position_id,
-                "role": seat.role,
-                "normalized_db": seat.normalized_db.tolist(),
-            }
-            for seat in seats
-        ],
-    }
-    written = _write(payload, args.out, _view_out(args, banked))
-    return answer(
-        args.command, out=written,
-        seats=[seat.position_id for seat in seats],
-        verify_pose_included=verify.curve is not None,
-        verify_pose_reason=verify.reason,
-        line=(
-            f"per-seat: {len(seats)} seat(s) ({', '.join(s.position_id for s in seats)}); "
-            f"verify pose {'included' if verify.curve is not None else f'ABSENT ({verify.reason})'}"
-            f"{f' -> {written}' if written else ''}"
-        ),
-    )
-
-
 def add_parser(sub: argparse._SubParsersAction) -> None:
     entry = sub.add_parser("entry", help="grade the state this round entered on, before it applied anything")
     entry.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
@@ -155,11 +111,3 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     frozen.add_argument("--out", default=None, help="write the result here (- for stdout)")
     frozen.set_defaults(func=_cmd_frozen)
-
-    per_seat = sub.add_parser("per-seat", help="every banked position plus the VERIFY pose, normalised")
-    per_seat.add_argument(
-        "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP
-    )
-    _add_norm_band_args(per_seat)
-    per_seat.add_argument("--out", default=None, help="write the result here (- for stdout)")
-    per_seat.set_defaults(func=_cmd_per_seat)

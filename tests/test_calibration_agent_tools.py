@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from jasper.calibration_agent import cli, tools
 from jasper.correction import bundles
 
@@ -236,3 +238,17 @@ def test_cli_returns_2_for_missing_bundle(tmp_path: Path, capsys):
 
     assert rc == 2
     assert "bundle not found" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("filename", ["info.json", "result.json"])
+@pytest.mark.parametrize("content", [b"{", b"[]", b"\xff"])
+def test_malformed_bundle_uses_the_intake_error_boundary(tmp_path, capsys, filename, content):
+    bundle_dir = _write_bundle(tmp_path / "sessions")
+    (bundle_dir / filename).write_bytes(content)
+
+    with pytest.raises(tools.AgentToolError):
+        tools.load_measurement_bundle(bundle_dir=bundle_dir)
+    assert cli.main(["--bundle-dir", str(bundle_dir), "--json"]) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err

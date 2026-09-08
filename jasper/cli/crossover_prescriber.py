@@ -87,6 +87,8 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     DECLARED_GEOMETRY_DEFAULT_PATH,
     DRIVERS_DEFAULT_PATH,
     REPEAT_FLOOR_DEFAULT_PATH,
+    banked_round_of,
+    recent_round_sessions,
     round_inputs,
 )
 from jasper.active_speaker.seat_level_reference import (
@@ -1118,6 +1120,7 @@ def status_document(
     context: dict[str, Any] = {
         "frozen_packet": None, "latest_agent_note": None, "context_error": None,
     }
+    recent = []
     try:
         if session_dir:
             context.update(context_artifacts(round_inputs(Path(session_dir)), Path(session_dir)))
@@ -1128,6 +1131,17 @@ def status_document(
                 frozen["matches_current_evidence"] = (
                     fingerprint == packet.get("packet_fingerprint") if packet else None
                 )
+        else:
+            for bundle in recent_round_sessions():
+                path = str(banked_round_of(bundle) or bundle)
+                recent.append({
+                    "path": path,
+                    "bundle_session_dir": str(bundle),
+                    "next": [
+                        shlex.join([PROG, "status", path]),
+                        shlex.join(["jasper-round-views", "inventory", path]),
+                    ],
+                })
     except (CrossoverEvidencePacketError, OSError) as exc:
         context["context_error"] = str(exc)
     # A level nobody measured is what a session rides without one, so the
@@ -1141,6 +1155,8 @@ def status_document(
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "packet_error": packet_error or None,
+        "selected_round": session_dir,
+        "recent_rounds": recent,
         **sections,
         **context,
         "seat_level_reference_volume_db": seat_level_db,
@@ -1164,13 +1180,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     packet: dict[str, Any] | None = None
     packet_error = ""
     if args.session_dir is None:
-        # On a virgin speaker no session dir exists yet. Every section below
-        # already tolerates ``packet=None``, so this reuses that path rather
-        # than inventing a second report shape.
-        packet_error = (
-            "no session_dir given -- this speaker has no crossover-v2 "
-            "session yet"
-        )
+        packet_error = "round_not_selected"
     else:
         try:
             packet = _load_packet(args)
@@ -1312,9 +1322,8 @@ def _add_evidence_args(
             "evidence/v1/artifacts/crossover_v2/<capture-session-id>/), or a "
             "banked round tree holding one"
             + (
-                ". Omit on a virgin speaker with no session yet -- status "
-                "reports what it can (declared state lives at --drivers / "
-                "the design draft) and names the gap"
+                ". Omit to list recent retained rounds and commands to select "
+                "one. Status leaves evidence unselected until you name a path"
                 if session_dir_optional
                 else ""
             )

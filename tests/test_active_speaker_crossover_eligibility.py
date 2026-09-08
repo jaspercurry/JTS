@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -445,18 +446,7 @@ def test_repeat_progress_completed_is_false_for_every_other_status(status):
     assert progress.completed is False
 
 
-def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
-    tmp_path,
-):
-    """Verifies the invalidation machinery a driver-level-check restart relies
-    on: ``repeat_admission.invalidate()`` before a fresh comparison
-    set is minted. A woofer repeat set that completed
-    3/3 with an insufficient median must not survive that restart: the
-    ledger itself is wiped, and the stale acoustic record's placement proof
-    (bound to the OLD comparison set) fails ``capture_proof_valid`` against
-    the freshly-minted one -- so the honest-terminal render's own "Restart
-    driver level check" action cannot be undone by a stale record leaking
-    back into ``driver_acoustic_usable``."""
+def test_new_comparison_rejects_legacy_repeat_and_acoustic_evidence(tmp_path):
     from jasper.active_speaker import repeat_admission
     from jasper.active_speaker.crossover_eligibility import driver_acoustic_usable
     from jasper.active_speaker.capture_geometry import normalized_placement_proof
@@ -495,31 +485,25 @@ def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
 
     old_comparison = comparison("1")
 
-    # Drive the repeat ledger to "completed" with an insufficient median:
-    # 3/3 accepted repeats whose aggregate SNR never cleared the floor.
-    repeat_admission.activate(old_comparison, path=repeat_path)
-    for attempt in (1, 2, 3):
-        reservation = repeat_admission.reserve(
-            old_comparison,
-            target_id="mono:woofer",
-            target_fingerprint=target["target_fingerprint"],
-            path=repeat_path,
-        )
-        repeat_admission.finish(
-            old_comparison,
-            target_id="mono:woofer",
-            target_fingerprint=target["target_fingerprint"],
-            token=reservation["token"],
-            result={"accepted": True, "snr_verdict": "insufficient"},
-            status="ready" if attempt == 3 else "active",
-            path=repeat_path,
-        )
-    repeat_admission.complete(
-        old_comparison,
-        target_id="mono:woofer",
-        target_fingerprint=target["target_fingerprint"],
-        path=repeat_path,
-    )
+    repeat_path.write_text(json.dumps({
+        "schema_version": 1,
+        "kind": "jts_active_speaker_repeat_admission",
+        "comparison": old_comparison,
+        "targets": {
+            "mono:woofer": {
+                "target_id": "mono:woofer",
+                "target_fingerprint": target["target_fingerprint"],
+                "owner_id": "e" * 32,
+                "attempts": 3,
+                "status": "completed",
+                "inflight": None,
+                "results": [
+                    {"attempt": attempt, "accepted": True, "snr_verdict": "insufficient"}
+                    for attempt in (1, 2, 3)
+                ],
+            },
+        },
+    }), encoding="utf-8")
     assert (
         repeat_admission.snapshot(old_comparison, path=repeat_path)["targets"][
             "mono:woofer"
@@ -563,13 +547,10 @@ def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
         old_record, old_comparison, target, capture_geometry="near_field"
     )
 
-    # The exact pair the restart branch calls before minting a fresh
-    # comparison set.
-    repeat_admission.invalidate(path=repeat_path)
     new_comparison = comparison("9")
 
-    wiped = repeat_admission.snapshot(path=repeat_path)
-    assert wiped["targets"] == {}
+    with pytest.raises(ValueError):
+        repeat_admission.snapshot(new_comparison, path=repeat_path)
     assert new_comparison["comparison_set_id"] != old_comparison["comparison_set_id"]
     assert not driver_acoustic_usable(
         old_record, new_comparison, target, capture_geometry="near_field"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -367,7 +368,7 @@ def speaker(tmp_path, monkeypatch):
         # readiness assertion, the graph install, the capture roll and the bank
         # — is the production path.
         played.append(program)
-        return object()
+        return SimpleNamespace(playback=SimpleNamespace(cleanup_state="not_needed", returncode=0))
 
     async def _compose(**_kwargs: Any) -> ProgramForStimulus:
         return ProgramForStimulus(program=object(), seams={})
@@ -438,6 +439,10 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
     assert payload["specs"][0]["graph_fingerprint"]
     assert payload["specs"][0]["n_takes"] == 1
     assert payload["specs"][0]["incidents"] == []
+    assert payload["specs"][0]["playback"][0] == {
+        "emission": "completed", "failure_code": None,
+        "cleanup_state": "not_needed", "returncode": 0,
+    }
     # stdout IS the answer: the bank verb, spelled with this run's own bundle.
     assert payload["next"] == f"jasper-round bank {payload['bundle_dir']}"
     assert payload["bundle_dir"] in captured.err
@@ -887,8 +892,9 @@ def test_a_spec_scoped_refusal_discloses_and_the_batch_carries_on(
     assert kept["n_takes"], "the batch did not carry on to the next spec"
 
 
+@pytest.mark.parametrize("setup", ["graph", "compose"])
 def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
-    speaker, monkeypatch, tmp_path, capsys,
+    speaker, monkeypatch, tmp_path, capsys, setup,
 ):
     """Arm A: the speaker stopped being held, so the rest would be guesswork.
 
@@ -903,11 +909,26 @@ def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
     played = speaker["played"]
 
     async def _install(self, *args, **kwargs):
-        if played:
+        if played and setup == "graph":
             raise graph_mod.SessionGraphError("the measurement graph was stomped")
         return await real_install(self, *args, **kwargs)
 
     monkeypatch.setattr(graph_mod.MeasurementSessionGraph, "install", _install)
+
+    bind = measure._bind_compose
+
+    def bind_compose(**kwargs):
+        original = bind(**kwargs)
+
+        async def compose(**fields):
+            if played and setup == "compose":
+                import asyncio
+                raise asyncio.CancelledError()
+            return await original(**fields)
+
+        return compose
+
+    monkeypatch.setattr(measure, "_bind_compose", bind_compose)
 
     code = measure.main([
         "--kind", MEASURE_KIND_BASELINE,
@@ -920,7 +941,8 @@ def test_a_session_scoped_failure_aborts_the_batch_and_names_where(
     assert code == EXIT_REFUSED
     assert payload["status"] == "refused"
     detail = payload["detail"]
-    assert detail["reason"] == REFUSE_GRAPH_LOST
+    assert detail["reason"] == (REFUSE_GRAPH_LOST if setup == "graph" else measure.REFUSE_CANCELLED)
+    assert detail["playback"]["emission"] == "not_started"
     assert detail["stopped_at"]["candidate_id"] == "second"
     assert detail["stopped_at"]["index"] == 1
     assert len(detail["record_ids"]) == 1
