@@ -213,31 +213,6 @@ async def test_currentsong_returns_empty_when_no_source(renderer):
 
 
 # ----------------------------------------------------------------------
-# pause_airplay — MPRIS Pause on shairport-sync
-# ----------------------------------------------------------------------
-
-async def test_pause_airplay_calls_mpris_pause(renderer):
-    """Verify pause_airplay() invokes busctl with the Pause method on
-    shairport-sync's MPRIS interface. We capture args by wrapping
-    create_subprocess_exec rather than replacing it with `new=`."""
-    captured_args: list[tuple] = []
-    fake = _mock_subprocess(returncode=0)
-
-    async def capturing(*args, **kwargs):
-        captured_args.append(args)
-        return await fake(*args, **kwargs)
-
-    with patch("asyncio.create_subprocess_exec", side_effect=capturing):
-        await renderer.pause_airplay()
-
-    assert captured_args, "create_subprocess_exec was not called"
-    args = captured_args[0]
-    assert "busctl" in args[0]
-    assert "Pause" in args
-    assert "org.mpris.MediaPlayer2.ShairportSync" in args
-
-
-# ----------------------------------------------------------------------
 # MPRIS metadata parser — tested with the actual busctl output we
 # captured from shairport-sync during the migration.
 # ----------------------------------------------------------------------

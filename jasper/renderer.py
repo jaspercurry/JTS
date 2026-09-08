@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Renderer state poller + AirPlay-pause control.
+"""Renderer state poller.
 
 Consults each renderer daemon directly for its playback state:
 
@@ -62,10 +62,10 @@ async def airplay_now_playing() -> dict[str, str]:
 
 
 class RendererClient:
-    """Renderer state + AirPlay-pause control. Read-only state queries
-    are fail-soft (log + return safe default on transport errors).
-    Source-aware routing across AirPlay/Spotify lives in
-    `jasper.tools.transport`."""
+    """Renderer state. Every query is read-only and fail-soft (log +
+    return a safe default on transport errors). Source-aware routing across
+    AirPlay/Spotify lives in `jasper.tools.transport`; stopping a source is
+    mux's, over its control socket."""
 
     def __init__(
         self,
@@ -191,22 +191,6 @@ class RendererClient:
     async def _ap_currentsong(self) -> dict[str, Any]:
         return await airplay_now_playing()
 
-    # ------------------------------------------------------------------
-    # pause_airplay — pauses an active AirPlay session via MPRIS so
-    # another source can take the speaker. Spotify pause goes via the
-    # Spotify Web API at the caller's spotify_router instance
-    # (librespot has no local control HTTP); Bluetooth transport lives
-    # in jasper.bluetooth.avrcp.
-    # ------------------------------------------------------------------
-
-    async def pause_airplay(self) -> None:
-        await _busctl_call_method(
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "Pause",
-        )
-
 
 # ----------------------------------------------------------------------
 # DBus helpers — busctl is in systemd, no extra dep. Subprocess output
@@ -231,19 +215,6 @@ async def _busctl_get_property(
     if m:
         return m.group(1)
     return line
-
-
-async def _busctl_call_method(
-    bus_name: str, object_path: str, interface: str, method: str,
-) -> bool:
-    stdout = await system_busctl(
-        "call",
-        bus_name, object_path, interface, method,
-    )
-    if stdout is None:
-        logger.debug("busctl Call %s.%s failed", interface, method)
-        return False
-    return True
 
 
 def _parse_mpris_metadata(busctl_out: str) -> dict[str, Any]:

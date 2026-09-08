@@ -182,31 +182,62 @@ def test_duplicate_alerts_coalesce_without_applying_policy(mux):
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_notify_control_command_only_marks_source_dirty(mux):
-    class Writer:
-        def __init__(self):
-            self.body = bytearray()
+class _ControlWriter:
+    def __init__(self):
+        self.body = bytearray()
 
-        def write(self, data):
-            self.body.extend(data)
+    def write(self, data):
+        self.body.extend(data)
 
-        async def drain(self):
-            pass
+    async def drain(self):
+        pass
 
-        def close(self):
-            pass
+    def close(self):
+        pass
 
-        async def wait_closed(self):
-            pass
+    async def wait_closed(self):
+        pass
 
+
+async def _control(mux, command: str) -> dict:
     reader = asyncio.StreamReader()
-    reader.feed_data(b"NOTIFY usbsink\n")
+    reader.feed_data(command.encode() + b"\n")
     reader.feed_eof()
-    writer = Writer()
-
+    writer = _ControlWriter()
     await mux._handle_control_client(reader, writer)
+    return json.loads(writer.body)
 
-    payload = json.loads(writer.body)
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("PREEMPT airplay", {"preempted": "airplay"}),
+        ("PREEMPT spotify", {"preempted": "spotify"}),
+    ],
+)
+async def test_preempt_control_command_runs_the_one_preempt_path(
+    mux, command, expected,
+):
+    """The socket verb is a thin front door onto ``_pause`` — the same
+    escalation a lost arbitration runs, so no caller needs its own weaker
+    stop."""
+    _stub_pauses(mux)
+
+    assert await _control(mux, command) == expected
+    mux._pause.assert_awaited_once_with(Source(command.split()[1]))
+
+
+@pytest.mark.parametrize("command", ["PREEMPT betamax", "PREEMPT correction"])
+async def test_preempt_control_command_refuses_a_non_music_source(mux, command):
+    _stub_pauses(mux)
+
+    assert "error" in await _control(mux, command)
+    mux._pause.assert_not_awaited()
+
+
+async def test_notify_control_command_only_marks_source_dirty(mux):
+    payload = await _control(mux, "NOTIFY usbsink")
+
     assert payload == {
         "accepted": True,
         "source": "usbsink",

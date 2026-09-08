@@ -1357,6 +1357,20 @@ class Mux:
                         }
             elif command == "AUTO":
                 payload = await self.auto_select()
+            elif command.startswith("PREEMPT "):
+                source_name = command.split(" ", 1)[1].strip()
+                try:
+                    source = Source(source_name)
+                except ValueError:
+                    payload = {"error": f"unknown source {source_name!r}"}
+                else:
+                    if source not in MUSIC_SOURCES:
+                        payload = {
+                            "error": f"not a music source {source_name!r}",
+                        }
+                    else:
+                        await self._pause(source)
+                        payload = {"preempted": source.value}
             elif command.startswith("TEST_SELECT "):
                 parts = command.split()
                 if len(parts) != 3:

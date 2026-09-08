@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .platform.uds import mux_socket_command
 
 logger = logging.getLogger(__name__)
 
@@ -165,16 +166,16 @@ async def resolve_target(
 
 async def stop_renderers(renderer, names: list[str]) -> None:
     """Stop the renderers named in `names`. Names match
-    Resolution.stop_renderers values: airplay → pause_airplay()
-    (MPRIS Pause on shairport-sync); bluetooth → BlueZ AVRCP Pause
-    when the source phone/player exposes a MediaPlayer1 object. After
-    pausing AirPlay the service takes a beat to release the audio device
-    — a small sleep avoids a race where librespot starts while
-    shairport-sync is still draining."""
+    Resolution.stop_renderers values: airplay → mux's ``PREEMPT airplay``,
+    the same DropSession-then-MPRIS-Stop escalation mux runs when a source
+    loses the speaker; bluetooth → BlueZ AVRCP Pause when the source
+    phone/player exposes a MediaPlayer1 object. After stopping AirPlay the
+    service takes a beat to release the audio device — a small sleep avoids
+    a race where librespot starts while shairport-sync is still draining."""
     for name in names:
         try:
             if name == "airplay":
-                await renderer.pause_airplay()
+                await mux_socket_command(f"PREEMPT {Source.AIRPLAY.value}")
             elif name == "bluetooth":
                 await bluetooth_avrcp_call("Pause")
             else:
