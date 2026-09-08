@@ -128,6 +128,30 @@ its parents' measurement claims. The basic
 profile has its own explicit `jasper-basic-profile review|apply` door; replacing
 a saved tune is not necessary just to make a temporary baseline measurement.
 
+## Room
+
+The room is measured on the seat cube, through the applied tune, ungated
+(methodology §11). In order:
+
+1. `jasper-angle-capture plan --program seat --size cube`: seven summed stops
+   around the listener's head (`--size express`: three). `stage` it; a human
+   moves the microphone, and an arm cannot reach the seat.
+2. `jasper-round open --tier express`, then the phone's position-ready walk
+   states each place from the head centre at ear height.
+3. `jasper-round bank <session-dir>`: the banked seat takes carry `pose_kind`,
+   `seat_offset_m` and `gating_applied: false`.
+4. `jasper-round-views room-ceiling <round-dir>`: the applied candidate's
+   trusted floor, clamped; with no readable profile the default is used and
+   disclosed.
+5. `jasper-round-views room-median <round-dir>`: median, spread and
+   per-position deviation below the ceiling; `room_median.json` is the input
+   the room candidate reads.
+6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
+   hold across the cube, and at what fraction of positions.
+7. The room candidate kind reads those two artifacts when it lands.
+
+Nothing above the ceiling changes on this evidence.
+
 ## Evidence and recovery
 
 Measurement records own numbers and identities. An optional
