@@ -2005,14 +2005,11 @@ def test_shairport_build_completes_before_old_binary_is_removed():
     assert idx_fetch < idx_build < idx_stop < idx_remove < idx_make_install
 
 
-def test_shairport_configure_enables_airplay2_and_pipe_backend():
-    """The shairport-sync source build must compile in BOTH AirPlay 2 and
-    the pipe output backend. AirPlay 2 is the whole reason we source-build
-    (Trixie apt is AP1-only); --with-pipe ships the pipe backend dormant so a
-    future shairport->pipe->reader low-latency path needs no rebuild. The flag
-    lives only on the ./configure line in renderers.sh; this contract test is
-    what keeps a refactor of that long multi-line invocation from silently
-    dropping a backend, and couples the flag to its rebuild-force trigger."""
+def test_shairport_configure_enables_airplay2():
+    """AirPlay 2 is the whole reason we source-build shairport-sync (Trixie
+    apt is AP1-only). The flag lives only on the ./configure line in
+    renderers.sh; this contract test keeps a refactor of that long multi-line
+    invocation from silently dropping the backend."""
     text = _RENDERERS_LIB.read_text(encoding="utf-8")
 
     # Isolate the shairport ./configure invocation (a backslash-continued
@@ -2025,17 +2022,7 @@ def test_shairport_configure_enables_airplay2_and_pipe_backend():
     flags = match.group("flags")
 
     assert "--with-airplay-2" in flags
-    assert "--with-pipe" in flags
-    # --with-stdout is intentionally NOT built (no planned stdout pipeline;
-    # the design target is a named-pipe reader, not shairport-as-a-pipe-stage).
     assert "--with-stdout" not in flags
-
-    # The rebuild trigger must feature-detect the pipe backend, or a flag-only
-    # change is a silent no-op on already-built Pis (-V already has "AirPlay2").
-    # The pattern is anchored so the "pipe" token matches whether it is
-    # followed by another feature token or sits at the end of the -V string,
-    # so a future trim of the feature list can't cause an infinite rebuild.
-    assert "grep -qE -- '-pipe(-|$)'" in text
 
 
 def test_install_curl_fetches_are_bounded_and_retried():

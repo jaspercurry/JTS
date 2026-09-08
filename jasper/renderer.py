@@ -8,7 +8,7 @@ Consults each renderer daemon directly for its playback state:
 
   librespot     → /run/librespot/state.env (--onevent hook)
   shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
-  bluez-alsa    → bluealsa-cli list-pcms (subprocess)
+  bluez         → org.bluez.MediaTransport1 presence (system bus)
   USB input       → jasper-fanin DIRECT lane STATUS
 
 `RendererClient.active_renderers()` returns a dict with one boolean

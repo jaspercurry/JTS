@@ -5,8 +5,8 @@
 """Tests for jasper.source_state — the three async probes that report
 which renderer is currently producing audio.
 
-The probes wrap I/O (a librespot state file, busctl, bluealsa-cli);
-mock at that boundary. Both jasper.renderer.RendererClient.active_renderers
+The probes wrap I/O (a librespot state file, busctl, the BlueZ system
+bus); mock at that boundary. Both jasper.renderer.RendererClient.active_renderers
 and jasper.mux's tick loop depend on these returning False on transport
 error rather than raising — every test here exercises that contract too.
 """
@@ -20,13 +20,6 @@ import pytest
 from jasper import source_state
 
 from tests._librespot_state import write_librespot_state
-
-
-@pytest.fixture(autouse=True)
-def _reset_bluealsa_probe_state():
-    source_state.bluealsa_probe._reset_for_tests()
-    yield
-    source_state.bluealsa_probe._reset_for_tests()
 
 
 def _mock_subprocess(
@@ -300,88 +293,18 @@ def test_usbsink_direct_streaming_reads_new_fanin_edge_state():
 
 
 # ----------------------------------------------------------------------
-# bluetooth_playing — bluealsa-cli list-pcms parsing
+# bluetooth_playing — fail-soft bool over the tri-state BlueZ probe
 # ----------------------------------------------------------------------
 
-async def test_bluetooth_playing_detects_a2dpsnk_source():
-    fake_pcm = b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source\n"
-    with patch(
-        "asyncio.create_subprocess_exec",
-        new=_mock_subprocess(stdout=fake_pcm),
-    ):
-        assert await source_state.bluetooth_playing() is True
+@pytest.mark.parametrize(
+    ("observed", "expected"), [(True, True), (False, False), (None, False)],
+)
+async def test_bluetooth_playing_collapses_unknown_to_false(
+    monkeypatch, observed, expected,
+):
+    async def fake_probe():
+        return observed
 
-
-async def test_bluetooth_playing_returns_false_on_empty_output():
-    with patch(
-        "asyncio.create_subprocess_exec",
-        new=_mock_subprocess(stdout=b""),
-    ):
-        assert await source_state.bluetooth_playing() is False
-
-
-async def test_bluetooth_playing_suppresses_after_bluealsa_cli_failure():
-    calls = {"n": 0}
-
-    async def fake(*args, **kwargs):
-        calls["n"] += 1
-        proc = MagicMock()
-        proc.communicate = AsyncMock(return_value=(b"", b"permission denied"))
-        proc.returncode = 1
-        return proc
-
-    with patch("asyncio.create_subprocess_exec", new=fake):
-        assert await source_state.bluetooth_playing() is False
-        assert await source_state.bluetooth_playing() is False
-
-    assert calls["n"] == 1
-
-
-async def test_bluetooth_playing_handles_timeout():
-    """bluealsa-cli hanging (DBus daemon stuck) should time out cleanly
-    and return False — the mux's 1 Hz tick can't tolerate a probe that
-    blocks longer than 2 s."""
-    with patch(
-        "asyncio.create_subprocess_exec",
-        side_effect=asyncio.TimeoutError(),
-    ):
-        assert await source_state.bluetooth_playing() is False
-
-
-async def test_bluetooth_playing_kills_timed_out_bluealsa_cli():
-    class _HungProc:
-        returncode = None
-
-        def __init__(self):
-            self.killed = False
-            self.waited = False
-
-        async def communicate(self):
-            raise asyncio.TimeoutError()
-
-        def kill(self):
-            self.killed = True
-
-        async def wait(self):
-            self.waited = True
-
-    proc = _HungProc()
-
-    async def fake_exec(*args, **kwargs):
-        return proc
-
-    with patch("asyncio.create_subprocess_exec", new=fake_exec):
-        assert await source_state.bluetooth_playing() is False
-
-    assert proc.killed is True
-    assert proc.waited is True
-
-
-async def test_bluetooth_playing_handles_bluealsa_cli_missing():
-    """bluealsa-cli isn't part of base Trixie; if the user ran the
-    install script with no Bluetooth path, it may genuinely be missing."""
-    with patch(
-        "asyncio.create_subprocess_exec",
-        side_effect=FileNotFoundError("bluealsa-cli"),
-    ):
-        assert await source_state.bluetooth_playing() is False
+    monkeypatch.setattr(source_state, "a2dp_sink_playing", fake_probe)
+    assert await source_state.bluetooth_playing_observed() is observed
+    assert await source_state.bluetooth_playing() is expected

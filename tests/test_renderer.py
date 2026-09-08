@@ -5,8 +5,8 @@
 """Tests for jasper.renderer.RendererClient.
 
 Mocks at the I/O boundary: tmp_path-backed librespot state file
-(which the --onevent hook would write), and asyncio.create_subprocess_exec
-for busctl / bluealsa-cli.
+(which the --onevent hook would write), asyncio.create_subprocess_exec for
+busctl, and the BlueZ A2DP probe.
 """
 from __future__ import annotations
 
@@ -36,6 +36,10 @@ def renderer(tmp_path, monkeypatch):
         "jasper.renderer.usbsink_playing",
         AsyncMock(return_value=False),
     )
+    monkeypatch.setattr(
+        "jasper.source_state.a2dp_sink_playing",
+        AsyncMock(return_value=False),
+    )
     return RendererClient(
         librespot_state_path=str(tmp_path / "librespot.state.env"),
     )
@@ -54,8 +58,8 @@ def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
 
 
 async def test_active_renderers_all_inactive(renderer):
-    # No librespot state file present, busctl empty for AirPlay,
-    # bluealsa-cli has no PCM.
+    # No librespot state file present, busctl empty for AirPlay, no A2DP
+    # transport.
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -153,11 +157,14 @@ async def test_active_renderers_spotify_playing(renderer):
     assert result["btactive"] is False
 
 
-async def test_active_renderers_bluetooth_playing(renderer):
-    fake_pcm = b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source\n"
+async def test_active_renderers_bluetooth_playing(renderer, monkeypatch):
+    monkeypatch.setattr(
+        "jasper.source_state.a2dp_sink_playing",
+        AsyncMock(return_value=True),
+    )
     with patch(
         "asyncio.create_subprocess_exec",
-        new=_mock_subprocess(stdout=fake_pcm),
+        new=_mock_subprocess(stdout=b""),
     ):
         result = await renderer.active_renderers()
     assert result["btactive"] is True
@@ -167,7 +174,7 @@ async def test_active_renderers_bluetooth_playing(renderer):
 async def test_active_renderers_resilient_to_missing_state_file(renderer):
     """If librespot state file is absent (daemon not started yet, or
     session never connected), the spotify probe returns False rather
-    than raising — same fail-soft contract as the busctl/bluealsa
+    than raising — same fail-soft contract as the busctl and BlueZ
     probes. (Direct probe-level coverage lives in test_source_state.py;
     here we just pin the integration behaviour through active_renderers.)"""
     with patch(
@@ -204,7 +211,7 @@ async def test_currentsong_returns_empty_when_no_source(renderer):
     """When no Spotify, AirPlay, or BT is active, currentsong returns
     {} — the three real renderers are the only sources we introspect."""
     # No librespot state file → no spotify; subprocess mock → no AirPlay
-    # PlaybackStatus, no BT a2dpsnk.
+    # PlaybackStatus; no BlueZ bus → no BT.
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -302,14 +309,11 @@ async def test_currentsong_airplay_returns_metadata(renderer):
     )
 
     async def fake_subproc(*args, **kwargs):
-        # First call: bluealsa-cli list-pcms (BT not active)
-        # Second call: busctl Get PlaybackStatus (returns "Playing")
-        # Third call: busctl Get Metadata (returns the sample)
+        # First call: busctl Get PlaybackStatus (returns "Playing")
+        # Second call: busctl Get Metadata (returns the sample)
         proc = MagicMock()
         proc.returncode = 0
-        if "bluealsa-cli" in args:
-            proc.communicate = AsyncMock(return_value=(b"", b""))
-        elif "PlaybackStatus" in args:
+        if "PlaybackStatus" in args:
             proc.communicate = AsyncMock(return_value=(b'v s "Playing"\n', b""))
         elif "Metadata" in args:
             proc.communicate = AsyncMock(

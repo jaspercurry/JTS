@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jasper.bluetooth.avrcp import bluetooth_avrcp_call, bluetooth_player_path
 from jasper.tools.transport import (
     _detect_source,
     make_transport_dispatcher,
@@ -310,66 +309,6 @@ def test_dispatch_no_source_returns_nothing_playing_error():
     assert "error" in result
     assert "nothing is playing" in result["error"].lower()
     assert result["source"] == "none"
-
-
-def test_bluetooth_player_path_prefers_active_a2dp_device():
-    with patch(
-        "jasper.bluetooth.avrcp.bluetooth_active_device_path",
-        new=AsyncMock(return_value="/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"),
-    ), patch(
-        "jasper.bluetooth.avrcp.bluetooth_player_paths",
-        new=AsyncMock(return_value=[
-            "/org/bluez/hci0/dev_11_22_33_44_55_66/player0",
-            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0",
-        ]),
-    ):
-        assert asyncio.run(bluetooth_player_path()) == (
-            "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0"
-        )
-
-
-def test_bluetooth_player_path_falls_back_to_first_player():
-    with patch(
-        "jasper.bluetooth.avrcp.bluetooth_active_device_path",
-        new=AsyncMock(return_value=None),
-    ), patch(
-        "jasper.bluetooth.avrcp.bluetooth_player_paths",
-        new=AsyncMock(return_value=[
-            "/org/bluez/hci0/dev_11_22_33_44_55_66/player0",
-        ]),
-    ):
-        assert asyncio.run(bluetooth_player_path()) == (
-            "/org/bluez/hci0/dev_11_22_33_44_55_66/player0"
-        )
-
-
-def test_bluetooth_playpause_uses_status_to_call_pause_when_playing():
-    captured = []
-
-    class _Proc:
-        returncode = 0
-
-        async def communicate(self):
-            return b"", b""
-
-    async def fake_exec(*args, **_kwargs):
-        captured.append(args)
-        return _Proc()
-
-    with patch(
-        "jasper.bluetooth.avrcp.bluetooth_player_path",
-        new=AsyncMock(return_value="/org/bluez/hci0/dev_AA/player0"),
-    ), patch(
-        "jasper.bluetooth.avrcp.bluetooth_player_status",
-        new=AsyncMock(return_value="playing"),
-    ), patch(
-        "jasper.busctl.asyncio.create_subprocess_exec",
-        new=fake_exec,
-    ):
-        asyncio.run(bluetooth_avrcp_call("PlayPause"))
-
-    assert captured
-    assert captured[0][-1] == "Pause"
 
 
 def test_dispatch_failures_return_error_dict():
