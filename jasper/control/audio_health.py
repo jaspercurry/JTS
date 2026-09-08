@@ -36,6 +36,7 @@ from ..platform.status_socket import (
 )
 from ..service_units import unit_failed
 from ..fanin.latency_mode import PRESETS, classify_runtime
+from ..fanin_coupling import RING_SLOT_FRAMES
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,
@@ -157,7 +158,9 @@ SIGNAL_PATH_CODES = frozenset({
     "output_absent",
     "output_backend_inactive",
     "output_deaf",
+    "output_ring_stalled",
     "output_stalled",
+    "path_pressured",
     "path_stalled",
     "path_unreported",
     "starting",
@@ -167,12 +170,26 @@ SIGNAL_PATH_CODES = frozenset({
     "undeclared_hardware",
 })
 
+# `path_pressured`'s gate on fan-in's output ring. `full_waits` ticks once per
+# SLOT publish that had to wait for the reader to free one, so its rate is read
+# as a fraction of the publish rate (sample_rate / RING_SLOT_FRAMES): jts4
+# measured 162 waits/s against 375 publishes/s with producer and consumer in
+# lockstep (issue #4124).
+#
+# A saturated ring is NOT on its own a fault — the shipped ring is 2 slots deep
+# and a paced producer waits on it routinely — so the branch also requires the
+# output to be losing periods. Together they say "no cushion AND failing",
+# which the per-xrun point incident cannot say on its own.
+RING_PRESSURE_RATIO = 0.25
+
 # Signal-path codes that name a CONSEQUENCE rather than a cause, so a
 # cause-naming detector may displace them (:func:`_yields_to_a_named_cause`).
 # `output_deaf` is what a stopped DSP, a live coherence contradiction and a
 # parked transport ALL look like from the DAC end: the lane is armed, nothing
-# produces for it, so outputd zero-fills.
-_SYMPTOM_ONLY_CODES = frozenset({"output_deaf"})
+# produces for it, so outputd zero-fills. `output_ring_stalled` is the same
+# three seen from the other end — fan-in's ring stalls on `no_reader` when
+# CamillaDSP is gone, so a named cause must still displace it.
+_SYMPTOM_ONLY_CODES = frozenset({"output_deaf", "output_ring_stalled"})
 
 # The two `_signal_path` codes that mean "outputd is not delivering audio, for
 # a reason `_signal_path` cannot see": outputd never started at all (its
@@ -194,6 +211,14 @@ _MONITOR_ERRORS = (
     TypeError,
     ValueError,
 )
+
+# The shared-path units whose restart interrupts every source, and the incident
+# key stem each one reports under (the stems `_likely_area` already classifies).
+_RESTART_WATCH_UNITS = {
+    "jasper-fanin.service": "path.fanin",
+    CAMILLA_UNIT_FULL: "path.camilla",
+    "jasper-outputd.service": "path.outputd",
+}
 
 _LABEL_TO_SOURCE = {
     spec.fanin_label: spec.id.value for spec in MUSIC_SOURCE_SPECS
@@ -792,6 +817,34 @@ def _undeclared_hardware_signal(
     }
 
 
+def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
+    """Fraction of fan-in's ring publishes that had to wait for a free slot.
+
+    None whenever any term is absent or the publish rate is underivable —
+    absence must read as "not observed", never as "no pressure".
+    """
+    ring = _mapping(fanin_output.get("ring"))
+    waits = _finite_number(ring.get("full_waits_per_sec"))
+    rate = _as_int(fanin_output.get("sample_rate"))
+    if waits is None or rate <= 0:
+        return None
+    return float(waits) * RING_SLOT_FRAMES / rate
+
+
+def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
+    """Fan-in's queued program depth, in ms.
+
+    ``occupancy`` counts ring SLOTS, each ``RING_SLOT_FRAMES`` frames wide
+    (rust/jasper-ring/src/layout.rs), not frames or ms.
+    """
+    ring = _mapping(fanin_output.get("ring"))
+    slots = _finite_number(ring.get("occupancy"))
+    rate = _as_int(fanin_output.get("sample_rate"))
+    if slots is None or slots < 0 or rate <= 0:
+        return None
+    return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
+
+
 def _signal_path(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
@@ -869,6 +922,22 @@ def _signal_path(
             ),
         }
 
+    output = _mapping(fanin.get("output"))
+    ring = _mapping(output.get("ring"))
+    if ring.get("stall_active") is True:
+        # ABOVE `output_deaf` for the same reason the fan-in watchdog is: a
+        # ring the reader has stopped draining is what leaves outputd with
+        # nothing to play, and the cause outranks its own symptom.
+        return {
+            "code": "output_ring_stalled",
+            "status": "issue",
+            "headline": "Sound is stuck inside the speaker",
+            "detail": (
+                "Sound from your sources is arriving but cannot move on to "
+                f"the speaker's output. {RESTART_REMEDY}"
+            ),
+        }
+
     # outputd is writing periods, but what it writes is silence it did not
     # intend: a deaf chain leaves both watchdogs progressing and every xrun
     # count flat (#3458). The verdict is outputd's own — it owns the DAC
@@ -935,7 +1004,32 @@ def _signal_path(
                 "sound is coming from it. Play it again, or try another source."
             ),
         }
-    tts = _mapping(outputd_map.get("tts"))
+    pressure = _ring_pressure(output)
+    xrun_rate = _finite_number(output.get("xruns_per_sec"))
+    if (
+        pressure is not None
+        and pressure >= RING_PRESSURE_RATIO
+        and xrun_rate is not None
+        and xrun_rate > 0.0
+    ):
+        return {
+            "code": "path_pressured",
+            "status": "warn",
+            "headline": "Sound is only just keeping up",
+            "detail": (
+                "Music is playing, but the speaker is right at the edge of "
+                f"keeping up with it, so it may skip. {RESTART_REMEDY}"
+            ),
+        }
+
+    # jasper-outputd's TTS lane is armed only on a passive bonded member
+    # (jasper/multiroom/tts_route.py), so fan-in's lane is the one that
+    # answers on a solo speaker; outputd's is the fallback.
+    fanin_tts = _mapping(fanin.get("tts"))
+    tts = (
+        fanin_tts if fanin_tts.get("enabled") is True
+        else _mapping(outputd_map.get("tts"))
+    )
     pending_frames = _as_int(tts.get("pending_frames"))
     budget_frames = _as_int(tts.get("budget_frames"))
     if (
@@ -1682,6 +1776,7 @@ def _incident_context(
     airplay: Mapping[str, Any],
     outputd: Mapping[str, Any] | None,
     active_source: str | None,
+    system: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Capture only the evidence rendered on a persisted incident."""
     current = _mapping(airplay.get("current"))
@@ -1691,10 +1786,19 @@ def _incident_context(
         if active_source is not None else {}
     )
     output = _mapping(_mapping(outputd).get("dac"))
+    host = _mapping(system)
     context: dict[str, Any] = {
         "clock_mode": _mapping(fanin.get("host_clock")).get("ladder"),
         "input": {"rms_dbfs": source_input.get("rms_dbfs")},
         "output": {"snd_pcm_delay_ms": _fresh_dac_delay_ms(output)},
+        # Why the box could not keep up, frozen with the incident: SoC
+        # throttling and memory stall pressure are the two host conditions
+        # that starve the audio path without leaving a trace in it.
+        "host": {
+            "throttled_now": host.get("throttled_now"),
+            "throttled_history": host.get("throttled_history"),
+            "mem_psi_some_avg60": host.get("mem_psi_some_avg60"),
+        },
     }
     attribution = _input_attribution(airplay, active_source)
     if attribution is not None:
@@ -1726,9 +1830,9 @@ def _receiver_latency(
         fill = _finite_number(resampler.get("fill_frames"))
         if fill is not None and float(fill) >= 0.0:
             components.append(("USB input queue", float(fill) * 1000.0 / rate))
-    fanin_delay = _finite_number(output.get("snd_pcm_delay_ms"))
-    if fanin_delay is not None and float(fanin_delay) >= 0.0:
-        components.append(("Mixing queue", float(fanin_delay)))
+    mixing_queue_ms = _ring_occupancy_ms(output)
+    if mixing_queue_ms is not None:
+        components.append(("Mixing queue", mixing_queue_ms))
     capture_rate = _as_int(camilla.get("capture_rate")) or rate
     camilla_frames = _finite_number(camilla.get("buffer_level"))
     if (
@@ -1784,6 +1888,39 @@ def _receiver_latency(
     }
 
 
+def _reliability(
+    fanin_output: Mapping[str, Any],
+    session: Mapping[str, Any],
+    service_states: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """How well this stream is holding together, one row per timeframe.
+
+    Each row names its own scope: the interruption count is this session's, the
+    queue pressure is live, and the restart count is since startup.
+    """
+    interruptions = _as_int(session.get("interruptions"))
+    details = [_detail("Interruptions this session", str(interruptions))]
+    pressure = _ring_pressure(fanin_output)
+    if pressure is not None:
+        details.append(_detail(
+            "Output queue pressure", f"{min(1.0, pressure) * 100:.0f}%",
+        ))
+    restarts = sum(
+        _as_int(_mapping(_mapping(service_states).get(unit)).get("n_restarts"))
+        for unit in _RESTART_WATCH_UNITS
+    )
+    if restarts:
+        details.append(_detail("Sound restarts since startup", str(restarts)))
+    return {
+        "summary": (
+            f"{interruptions} interruption(s) since this source started"
+            if interruptions else "Playing without interruption"
+        ),
+        "detail": "",
+        "details": details,
+    }
+
+
 def _current_stream(
     *,
     active_source: str | None,
@@ -1793,6 +1930,7 @@ def _current_stream(
     timing: Mapping[str, Any],
     sampled_at: float,
     session: Mapping[str, Any] | None,
+    service_states: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if active_source is None:
         return None
@@ -1862,6 +2000,9 @@ def _current_stream(
             "detail": "Post-DSP audio at the physical output stage.",
             "details": output_details,
         }
+    stream["reliability"] = _reliability(
+        _mapping(fanin.get("output")), session_state, service_states,
+    )
     rms = _finite_number(source_input.get("rms_dbfs"))
     if rms is not None:
         stream["signal"] = {
@@ -1940,6 +2081,16 @@ def _incident_evidence(issue: Mapping[str, Any]) -> list[dict[str, str]]:
             "DAC queue",
             f"{float(output_context['snd_pcm_delay_ms']):.1f} ms",
         ))
+    host = _mapping(context.get("host"))
+    # `throttled_history` never clears within a boot, so it must not be
+    # rendered as a live condition (jasper/control/system_metrics.py).
+    if _as_int(host.get("throttled_now")):
+        evidence.append(_detail("Power or heat throttling", "Now"))
+    elif _as_int(host.get("throttled_history")):
+        evidence.append(_detail("Power or heat throttling", "Earlier this boot"))
+    memory_pressure = _finite_number(host.get("mem_psi_some_avg60"))
+    if memory_pressure is not None and memory_pressure > 0:
+        evidence.append(_detail("Memory pressure", f"{float(memory_pressure):.0f}%"))
     return evidence
 
 
@@ -2257,6 +2408,7 @@ def compose_audio_health(
         timing=latency,
         sampled_at=sampled_at,
         session=session,
+        service_states=service_states,
     )
     if activity_unknown:
         selected = _selected_source(ap)
@@ -2294,6 +2446,8 @@ def compose_audio_health(
                 "inputs": copy.deepcopy(fanin.get("inputs")),
                 "host_clock": copy.deepcopy(fanin.get("host_clock")),
                 "watchdog": copy.deepcopy(fanin.get("watchdog")),
+                "output": copy.deepcopy(fanin.get("output")),
+                "tts": copy.deepcopy(fanin.get("tts")),
             },
             "outputd": {
                 "available": outputd is not None,
@@ -2333,6 +2487,7 @@ class AudioHealthSampler:
         mux_probe: Callable[[], dict[str, Any] | None] | None = None,
         route_probe: Callable[[], dict[str, Any]] | None = None,
         service_probe: Callable[[], dict[str, dict[str, Any]]] | None = None,
+        system_probe: Callable[[], Mapping[str, Any] | None] | None = None,
         output_hardware_probe: Callable[[], Any] | None = None,
         output_topology_probe: Callable[[], Any] | None = None,
         incident_store: IncidentStore | None = None,
@@ -2353,6 +2508,7 @@ class AudioHealthSampler:
         self._mux_probe = mux_probe or _read_mux_status
         self._route_probe = route_probe or read_route_claim
         self._service_probe = service_probe
+        self._system_probe = system_probe
         self._output_hardware_probe = output_hardware_probe or _read_output_hardware
         self._output_topology_probe = output_topology_probe or _read_output_topology
         observation_gap = max(15.0, sample_interval_sec * 3.0)
@@ -2378,6 +2534,7 @@ class AudioHealthSampler:
         self._previous_usb_buffer_counts: tuple[int, int] | None = None
         self._previous_fanin_pings_skipped: int | None = None
         self._previous_outputd_xruns: dict[str, int] | None = None
+        self._previous_service_restarts: dict[str, int | None] | None = None
         self._previous_outputd_clipped: int | None = None
         self._seen_raw_events: deque[tuple[Any, ...]] = deque(maxlen=40)
         self._seen_raw_event_set: set[tuple[Any, ...]] = set()
@@ -2556,7 +2713,9 @@ class AudioHealthSampler:
                 self._session.reset(None, now)
         elif active_source != self._session.source_id:
             self._session.reset(active_source, now)
-        context = _incident_context(airplay, outputd, active_source)
+        context = _incident_context(
+            airplay, outputd, active_source, self._read_system_pressure(),
+        )
         try:
             intents = {
                 source.value: enabled
@@ -2669,6 +2828,16 @@ class AudioHealthSampler:
                 output_topology_snapshot=self._output_topology_snapshot,
                 transport_park=self._transport_park,
             )
+
+    def _read_system_pressure(self) -> Mapping[str, Any] | None:
+        if self._system_probe is None:
+            return None
+        try:
+            pressure = self._system_probe()
+        except _MONITOR_ERRORS:
+            logger.debug("audio health system-pressure probe failed", exc_info=True)
+            return None
+        return pressure if isinstance(pressure, Mapping) else None
 
     def transport_park_snapshot(self) -> dict[str, Any]:
         """The transport-park verdict THIS sampler last computed.
@@ -2884,6 +3053,40 @@ class AudioHealthSampler:
                             context=context,
                         )
             self._previous_usb_buffer_counts = (unlocks, stream_stops)
+
+        # None, not 0, for a unit systemd could not be asked about: a probe
+        # that failed and recovered would otherwise read as a restart burst.
+        restarts = {
+            unit: _nonnegative_counter(
+                _mapping(self._service_states.get(unit)).get("n_restarts"),
+            )
+            for unit in _RESTART_WATCH_UNITS
+        }
+        if self._previous_service_restarts is not None:
+            for unit, stem in _RESTART_WATCH_UNITS.items():
+                previous = self._previous_service_restarts.get(unit)
+                current_restarts = restarts[unit]
+                if previous is None or current_restarts is None:
+                    continue
+                delta = current_restarts - previous
+                if delta > 0:
+                    self._record_point(
+                        _issue(
+                            f"{stem}.restarted",
+                            scope="path",
+                            impact="continuity",
+                            severity="issue",
+                            title="Sound restarted itself",
+                            detail=(
+                                "Part of the speaker's sound handling restarted, "
+                                "so playback was interrupted for a moment."
+                            ),
+                        ),
+                        now,
+                        count=delta,
+                        context=context,
+                    )
+        self._previous_service_restarts = restarts
 
         if outputd is None:
             self._previous_outputd_xruns = None

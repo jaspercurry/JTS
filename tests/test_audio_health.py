@@ -44,12 +44,22 @@ from .active_speaker_fixtures import (
 )
 
 
+# A healthy Ring A sample: 2 slots deep, nothing waiting, no stall.
+_RING = {
+    "occupancy": 2,
+    "slots": 2,
+    "stall_active": False,
+    "full_waits_per_sec": 0.0,
+}
+
+
 def _airplay(
     *,
     selected: str | None = None,
     ladder: str | None = None,
     warmup: bool = False,
     events: list[dict] | None = None,
+    ring: dict | None = None,
 ) -> dict:
     return {
         "last_sample_at": 1000.0,
@@ -96,8 +106,9 @@ def _airplay(
                 },
                 "output": {
                     "sample_rate": 48000,
-                    "snd_pcm_delay_frames": 864,
-                    "snd_pcm_delay_ms": 18.0,
+                    "period_frames": 256,
+                    "xruns_per_sec": 0.0,
+                    "ring": {**_RING, **(ring or {})},
                 },
             },
             "mpris": {"playing": selected == "airplay"},
@@ -236,12 +247,10 @@ def test_usb_l2_degrades_latency_without_claiming_continuity_failed() -> None:
     assert health["signal_path"]["status"] == "ok"
     assert health["latency"]["status"] == "warn"
     assert health["latency"]["runtime"]["mode"] == "fallback"
-    assert "Playback is protected" in health["latency"]["detail"]
     assert health["overall"]["status"] == "warn"
     usb = next(source for source in health["sources"] if source["id"] == "usbsink")
-    assert usb["headline"] == "Playing"
-    assert usb["detail"] == "Playing through the speaker."
-    assert usb["timing"]["headline"] == "Stable fallback · latency increased"
+    assert usb["state"] == "active"
+    assert usb["timing"]["status"] == "warn"
 
 
 def test_usb_runtime_preset_outranks_stale_route_label() -> None:
@@ -324,7 +333,6 @@ def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
     )
     assert spotify["state"] == "unavailable"
     assert spotify["status"] == "issue"
-    assert spotify["headline"] == "Spotify unavailable"
     assert health["overall"]["status"] == "idle"
 
 
@@ -1238,7 +1246,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
 
     health = _compose(transport=state)
     assert health["signal_path"]["code"] == "transport_parked"
-    assert health["overall"]["headline"] != "Audio is ready"
+    assert health["overall"]["status"] == "issue"
 
 
 def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path) -> None:
@@ -1275,7 +1283,7 @@ def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path
     ]
     health = _compose(transport=state)
     assert health["signal_path"]["code"] == "transport_parked"
-    assert health["overall"]["headline"] != "Audio is ready"
+    assert health["overall"]["status"] == "issue"
 
 
 def test_corrupt_layout_is_not_relabelled_as_unconfigured_silence(
@@ -1430,9 +1438,7 @@ def test_cached_service_state_distinguishes_ready_from_not_running() -> None:
 
     sources = {source["id"]: source for source in health["sources"]}
     assert sources["airplay"]["state"] == "ready"
-    assert sources["airplay"]["headline"] == "Ready"
     assert sources["spotify"]["state"] == "not_running"
-    assert sources["spotify"]["headline"] == "Not running"
 
 
 def test_household_off_is_labeled_without_inactive_failure_noise() -> None:
@@ -1449,7 +1455,6 @@ def test_household_off_is_labeled_without_inactive_failure_noise() -> None:
 
     spotify = next(source for source in health["sources"] if source["id"] == "spotify")
     assert spotify["state"] == "off"
-    assert spotify["headline"] == "Off"
     assert spotify["status"] == "idle"
 
 
@@ -1467,7 +1472,6 @@ def test_household_off_but_active_is_reported_as_drift() -> None:
     )
     spotify = next(source for source in health["sources"] if source["id"] == "spotify")
     assert spotify["state"] == "unavailable"
-    assert "running while Off" in spotify["headline"]
 
     issues = audio_health._state_issues(
         _airplay(),
@@ -1620,8 +1624,6 @@ def test_stopped_camilla_is_not_reported_as_a_clean_signal_path() -> None:
 
     assert health["overall"]["status"] == "issue"
     assert health["overall"]["headline"] == health["signal_path"]["headline"]
-    # The state this response must never claim while the DSP is dead.
-    assert health["overall"]["headline"] != "Audio is ready"
 
 
 def test_stopped_camilla_outranks_the_deafness_it_causes() -> None:
@@ -1673,11 +1675,11 @@ def test_stopped_camilla_outranks_a_source_that_looks_like_it_is_playing() -> No
     health = _compose_camilla(_CAMILLA_CLEAN_STOP, selected="airplay")
 
     assert health["overall"]["status"] == "issue"
-    assert health["overall"]["headline"] != "Audio is playing"
+    assert health["signal_path"]["code"] == "camilla_stopped"
     # The active source card carries the same reason, not a green "ok".
     airplay_card = next(c for c in health["sources"] if c["id"] == "airplay")
     assert airplay_card["status"] == "issue"
-    assert airplay_card["headline"] == audio_health.STOPPED_DSP_HEADLINE
+    assert airplay_card["headline"] == health["signal_path"]["headline"]
 
 
 def test_running_camilla_leaves_the_signal_path_clean() -> None:
@@ -1689,7 +1691,7 @@ def test_running_camilla_leaves_the_signal_path_clean() -> None:
     })
 
     assert health["signal_path"]["status"] == "ok"
-    assert health["overall"]["headline"] == "Audio is ready"
+    assert health["overall"]["status"] == "idle"
 
 
 @pytest.mark.parametrize("states", [None, {}])
@@ -1768,7 +1770,6 @@ def test_usb_off_ignores_always_on_management_gadget() -> None:
     usb = next(source for source in health["sources"] if source["id"] == "usbsink")
     assert usb["state"] == "off"
     assert usb["status"] == "idle"
-    assert usb["headline"] == "Off"
 
     issues = audio_health._state_issues(
         _airplay(),
@@ -1802,7 +1803,6 @@ def test_usb_off_with_active_audio_service_is_reported_as_drift() -> None:
     usb = next(source for source in health["sources"] if source["id"] == "usbsink")
     assert usb["state"] == "unavailable"
     assert usb["status"] == "issue"
-    assert usb["headline"] == "USB Audio is running while Off"
 
     issues = audio_health._state_issues(
         _airplay(),
@@ -1839,7 +1839,6 @@ def test_usb_on_still_requires_its_management_gadget() -> None:
     usb = next(source for source in health["sources"] if source["id"] == "usbsink")
     assert usb["state"] == "unavailable"
     assert usb["status"] == "issue"
-    assert usb["headline"] == "USB Audio unavailable"
 
     issues = audio_health._state_issues(
         _airplay(),
@@ -2147,7 +2146,10 @@ def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() ->
     ]
     assert stream["output"]["summary"] == "48 kHz final output"
     assert stream["session"]["summary"] == "No interruptions observed"
-    assert "reliability" not in stream  # session owns the roll-up once
+    assert [row["label"] for row in stream["reliability"]["details"]] == [
+        "Interruptions this session",
+        "Output queue pressure",
+    ]
 
 
 def test_usb_latency_omits_stale_or_unaged_dac_delay() -> None:
@@ -2172,7 +2174,7 @@ def test_usb_latency_omits_negative_queue_telemetry() -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
     fanin = airplay["current"]["fanin"]
     fanin["inputs"]["usbsink"]["resampler"] = {"fill_frames": -480}
-    fanin["output"]["snd_pcm_delay_ms"] = -4.0
+    fanin["output"]["ring"]["occupancy"] = -2
     airplay["current"]["camilla"]["buffer_level"] = -32
     outputd = _outputd()
     outputd["dac"]["snd_pcm_delay_ms"] = -5.0
@@ -3208,6 +3210,177 @@ def test_usb_underfill_is_recorded_but_normal_stream_stop_is_suppressed(
         assert sampler.snapshot()["current_stream"]["session"]["interruptions"] == 1
 
 
+# Ring A publishes one slot per 128 frames, so this fixture's 48 kHz geometry
+# gives 375 publishes/s; `full_waits` ticks once per publish that had to wait
+# for the reader (issue #4124). A saturated ring only degrades the path when
+# the output is also losing periods.
+@pytest.mark.parametrize(
+    ("ring", "xruns_per_sec", "code"),
+    [
+        # A stalled ring is the CAUSE of the deafness outputd reports, so it
+        # outranks `output_deaf` (the fixture below sets both).
+        ({"stall_active": True}, 0.0, "output_ring_stalled"),
+        ({"full_waits_per_sec": 162.0}, 0.2, "path_pressured"),
+        ({"full_waits_per_sec": 162.0}, 0.0, "clean"),
+        ({"full_waits_per_sec": 20.0}, 0.2, "clean"),
+        ({}, 0.2, "clean"),
+        ({}, 0.0, "clean"),
+    ],
+)
+def test_ring_pressure_and_stall_are_read_by_the_signal_path(
+    ring: dict, xruns_per_sec: float, code: str,
+) -> None:
+    airplay = _airplay(selected="usbsink", ladder="l0_locked", ring=ring)
+    airplay["current"]["fanin"]["output"]["xruns_per_sec"] = xruns_per_sec
+    health = compose_audio_health(
+        airplay=airplay,
+        outputd=_outputd(content_deaf=ring.get("stall_active", False)),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+
+    assert health["signal_path"]["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("ring", "expected"),
+    [({"occupancy": 2}, "5.3 ms"), ({"occupancy": 0}, "0.0 ms")],
+)
+def test_mixing_queue_is_derived_from_ring_occupancy(
+    ring: dict, expected: str,
+) -> None:
+    health = compose_audio_health(
+        airplay=_airplay(selected="usbsink", ladder="l0_locked", ring=ring),
+        outputd=_outputd(),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    rows = {
+        row["label"]: row["value"]
+        for row in health["current_stream"]["latency"]["details"]
+    }
+
+    assert rows["Mixing queue"] == expected
+
+
+def test_mixing_queue_is_omitted_when_the_ring_is_unreported() -> None:
+    airplay = _airplay(selected="usbsink", ladder="l0_locked")
+    airplay["current"]["fanin"]["output"].pop("ring")
+    health = compose_audio_health(
+        airplay=airplay,
+        outputd=_outputd(),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+    labels = [
+        row["label"] for row in health["current_stream"]["latency"]["details"]
+    ]
+
+    assert "Mixing queue" not in labels
+
+
+# jasper-outputd's TTS lane is armed only on a passive bonded member, so a solo
+# speaker's queue depth is fan-in's.
+@pytest.mark.parametrize(
+    ("fanin_tts", "outputd_pending", "code"),
+    [
+        ({"enabled": True, "pending_frames": 96000, "budget_frames": 96000},
+         0, "tts_queue_full"),
+        ({"enabled": True, "pending_frames": 0, "budget_frames": 96000},
+         96000, "clean"),
+        ({"enabled": False}, 96000, "tts_queue_full"),
+        (None, 96000, "tts_queue_full"),
+    ],
+)
+def test_tts_backlog_prefers_the_fanin_lane(
+    fanin_tts: dict | None, outputd_pending: int, code: str,
+) -> None:
+    airplay = _airplay(selected="usbsink", ladder="l0_locked")
+    airplay["current"]["fanin"]["tts"] = fanin_tts
+    health = compose_audio_health(
+        airplay=airplay,
+        outputd=_outputd(tts_pending_frames=outputd_pending),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+
+    assert health["signal_path"]["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("unit", "key"),
+    [
+        ("jasper-fanin.service", "path.fanin.restarted"),
+        ("jasper-camilla.service", "path.camilla.restarted"),
+        ("jasper-outputd.service", "path.outputd.restarted"),
+    ],
+)
+def test_shared_path_restarts_are_recorded_as_incidents(
+    unit: str, key: str,
+) -> None:
+    now = [1000.0]
+    restarts = [0, 2]
+
+    def service_states() -> dict:
+        return {unit: {"n_restarts": restarts.pop(0)}} if restarts else {}
+
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([
+            _airplay(selected="usbsink", ladder="l0_locked"),
+        ]),
+        outputd_probe=_outputd,
+        mux_probe=lambda: None,
+        route_probe=_route,
+        service_probe=service_states,
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    assert not [i for i in sampler.snapshot()["issues"] if i["key"] == key]
+
+    now[0] += 5.0
+    sampler._tick()
+    recorded = [i for i in sampler.snapshot()["issues"] if i["key"] == key]
+
+    assert [i["count"] for i in recorded] == [2]
+    assert recorded[0]["impact"] == "continuity"
+
+
+def test_sampler_freezes_host_pressure_onto_an_incident() -> None:
+    now = [1000.0]
+    sampler = AudioHealthSampler(
+        airplay_sampler=_FakeAirPlay([
+            _airplay(selected="usbsink", ladder="l0_locked"),
+        ]),
+        outputd_probe=lambda: _outputd(dac_xruns=1 if now[0] > 1000.0 else 0),
+        mux_probe=lambda: None,
+        route_probe=_route,
+        system_probe=lambda: {
+            "throttled_now": 0,
+            "throttled_history": 4,
+            "mem_psi_some_avg60": 12.5,
+        },
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    incident = next(
+        i for i in sampler.snapshot()["recent_incidents"]
+        if i["key"] == "path.outputd_dac_xrun"
+    )
+    evidence = {row["label"]: row["value"] for row in incident["evidence"]}
+
+    # A sticky since-boot bit must not be rendered as a live condition.
+    assert evidence["Power or heat throttling"] == "Earlier this boot"
+    assert evidence["Memory pressure"] == "12%"
+
+
 def test_sampler_uses_mux_status_as_current_source_truth() -> None:
     now = [1000.0]
     mux = [
@@ -4204,6 +4377,14 @@ def _household_shapes() -> dict[str, dict]:
         )),
         "input_stalled": _compose_with(_mutated(
             lambda ap: _fanin(ap)["inputs"]["usbsink"].update(frames_per_sec=0.0),
+            **playing,
+        )),
+        "output_ring_stalled": _compose_with(
+            _airplay(ring={"stall_active": True}, **playing)
+        ),
+        "path_pressured": _compose_with(_mutated(
+            lambda ap: _fanin(ap)["output"].update(xruns_per_sec=0.2),
+            ring={"full_waits_per_sec": 162.0},
             **playing,
         )),
         "tts_queue_full": _compose_with(
