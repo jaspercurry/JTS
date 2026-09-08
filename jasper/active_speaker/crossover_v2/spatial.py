@@ -1611,9 +1611,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
 # contract: the summed system's swept band for the passband, the tweeter's
 # measurement band for the upper echo band.
 
-# Cloud curves decimated for persistence. Mirrors
-# :data:`~.durable_state.MAX_PERSISTED_SUM_POINTS` as an independent constant,
-# so the two may diverge.
+# Point limit for smoothed cloud disclosure curves.
 CLOUD_CURVE_MAX_JSON_POINTS = 512
 
 
@@ -1787,7 +1785,7 @@ def _decimate_curve_for_json(
     stride over a raw unsmoothed prediction aliases below ~500 Hz (#1858).
     """
     n = len(freqs_hz)
-    step = max(1, n // CLOUD_CURVE_MAX_JSON_POINTS)
+    step = max(1, (n + CLOUD_CURVE_MAX_JSON_POINTS - 1) // CLOUD_CURVE_MAX_JSON_POINTS)
     return {
         "freqs_hz": [float(f) for f in freqs_hz[::step]],
         "magnitude_db": [float(m) for m in magnitude_db[::step]],
