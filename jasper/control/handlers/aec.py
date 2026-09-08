@@ -359,13 +359,24 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        try:
-            subprocess.Popen(
-                ["systemctl", "restart", "--no-block", "jasper-voice.service"],
-            )
-        except (OSError, subprocess.SubprocessError) as e:
+        restart = _server.restart_broker.manage_units(
+            "jasper-voice.service",
+            verb="restart",
+            reason="wake_threshold",
+            no_block=True,
+            timeout=5.0,
+        )
+        if not restart.get("ok"):
             self._send_json(
-                {"error": f"voice restart failed: {e}"},
+                {
+                    "error": (
+                        "Sensitivity was saved, but the assistant restart "
+                        "could not be scheduled."
+                    ),
+                    "code": "wake_threshold_restart_failed",
+                    "intent_saved": True,
+                    "threshold": threshold,
+                },
                 status=502,
             )
             return
@@ -375,7 +386,7 @@ class AecRoutes(ControlHandlerMixin):
             value=f"{threshold:.2f}",
             client=self.address_string(),
         )
-        self._send_json({"threshold": threshold})
+        self._send_json({"ok": True, "status": "restarted", "threshold": threshold})
         return
 
     def _post_aec_commission(self) -> None:

@@ -110,6 +110,58 @@ def test_aec_profile_restarts_reconciler(
     ]
 
 
+def _record_broker(monkeypatch, *, ok: bool = True) -> list[tuple[str, list[str]]]:
+    """Replace the restart broker's client entry point, returning the
+    ``(verb, units)`` pairs the handler asks for. Nothing real restarts."""
+    import jasper.control.server as srv_mod
+
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_manage_units(*units, verb="restart", **_kw):
+        calls.append((verb, list(units)))
+        return {"ok": ok, "action": verb, "units": list(units), "rc": 0 if ok else 1}
+
+    monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage_units)
+    return calls
+
+
+def test_aec_threshold_persists_and_restarts_voice(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """The sensitivity slider's restart goes through the broker, so a refused
+    restart is reportable — openWakeWord reads the threshold only at startup."""
+    base, _ = server_with_coordinator
+    model_file = tmp_path / "wake_model.env"
+    model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
+    monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
+    calls = _record_broker(monkeypatch)
+
+    status, body = _post(f"{base}/aec/threshold", {"threshold": 0.42})
+
+    assert status == 200
+    assert body == {"ok": True, "status": "restarted", "threshold": 0.42}
+    assert "JASPER_WAKE_THRESHOLD=0.42" in model_file.read_text()
+    assert calls == [("restart", ["jasper-voice.service"])]
+
+
+def test_aec_threshold_502s_when_the_voice_restart_is_refused(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    model_file = tmp_path / "wake_model.env"
+    model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
+    monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
+    _record_broker(monkeypatch, ok=False)
+
+    status, body = _post(f"{base}/aec/threshold", {"threshold": 0.42})
+
+    assert status == 502
+    assert body["code"] == "wake_threshold_restart_failed"
+    assert body["intent_saved"] is True
+    assert body["threshold"] == 0.42
+    assert body.get("ok") is not True
+
+
 def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     monkeypatch,
     server_with_coordinator,

@@ -379,19 +379,28 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        try:
-            # Refresh active renderers without resurrecting sources the
-            # household explicitly disabled in /sources/.
-            subprocess.Popen(
-                [
-                    "systemctl",
-                    "try-restart",
-                    *_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-                ],
-            )
-        except (OSError, subprocess.SubprocessError) as e:
+        # Refresh active renderers without resurrecting sources the
+        # household explicitly disabled in /sources/.
+        refresh = _server.restart_broker.manage_units(
+            *_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
+            verb="try-restart",
+            reason="audio_quality",
+            no_block=True,
+            timeout=5.0,
+        )
+        if not refresh.get("ok"):
             self._send_json(
-                {"error": f"renderer restart failed: {e}"},
+                {
+                    "error": (
+                        "Conversion quality was saved, but the music "
+                        "renderers could not be restarted."
+                    ),
+                    "code": "audio_quality_restart_failed",
+                    "intent_saved": True,
+                    "action": "audio-quality",
+                    "try_restart_units": _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
+                    "audio_quality": state,
+                },
                 status=502,
             )
             return
@@ -404,6 +413,7 @@ class SystemRoutes(ControlHandlerMixin):
         self._send_json(
             {
                 "ok": True,
+                "status": "restarted",
                 "action": "audio-quality",
                 "try_restart_units": _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
                 "audio_quality": state,
@@ -451,12 +461,11 @@ class SystemRoutes(ControlHandlerMixin):
         return
 
     def _post_system_action(self) -> None:
-        # Action endpoints for the /system dashboard. All
-        # shell out to systemctl; jasper-control already runs
-        # as root so no sudo needed. Returns immediately —
-        # the restart is async on systemd's side and the
-        # dashboard polls /system/snapshot to know when
-        # things are back up.
+        # Action endpoints for the /system dashboard. Unit actions go through
+        # the restart broker so an allowlist/polkit denial answers 502 instead
+        # of a silent ok; reboot/poweroff have no broker verb and take the
+        # process down before any verdict, so they answer 202. Either way the
+        # dashboard polls /system/snapshot for what actually came back up.
         #
         # Risk model: LAN-local + browser-origin guard
         # (consistent with the wizards). Anyone already on the
@@ -521,35 +530,56 @@ class SystemRoutes(ControlHandlerMixin):
             units=",".join(units) or "-",
             client=self.address_string(),
         )
-        try:
-            if action == "reboot":
-                subprocess.Popen(["systemctl", "reboot"])
-            elif action == "poweroff":
-                subprocess.Popen(["systemctl", "poweroff"])
-            else:
-                # Use start-after-stop semantics for core services. Local
-                # source daemons use try-restart so dashboard audio restart
-                # never turns on a source the household disabled in
-                # /sources/ (USB would otherwise re-advertise its gadget).
-                if restart_units:
-                    subprocess.Popen(["systemctl", "restart", *restart_units])
-                if try_restart_units:
-                    subprocess.Popen(
-                        [
-                            "systemctl",
-                            "try-restart",
-                            *try_restart_units,
-                        ]
-                    )
-        except (OSError, subprocess.SubprocessError) as e:
+        if action in ("reboot", "poweroff"):
+            try:
+                subprocess.Popen(["systemctl", action])
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"systemctl invocation failed: {e}"},
+                    status=502,
+                )
+                return
             self._send_json(
-                {"error": f"systemctl invocation failed: {e}"},
-                status=502,
+                {
+                    "ok": True,
+                    "status": "accepted",
+                    "action": action,
+                    "units": units,
+                    "restart_units": restart_units,
+                    "try_restart_units": try_restart_units,
+                },
+                status=202,
             )
             return
+        # Use start-after-stop semantics for core services. Local source
+        # daemons use try-restart so a dashboard audio restart never turns on
+        # a source the household disabled in /sources/ (USB would otherwise
+        # re-advertise its gadget).
+        for verb, targets in (
+            ("restart", restart_units),
+            ("try-restart", try_restart_units),
+        ):
+            if not targets:
+                continue
+            result = _server.restart_broker.manage_units(
+                *targets, verb=verb, reason=action, no_block=True, timeout=5.0,
+            )
+            if not result.get("ok"):
+                self._send_json(
+                    {
+                        "error": "The restart could not be scheduled.",
+                        "code": "system_restart_failed",
+                        "action": action,
+                        "failed_verb": verb,
+                        "failed_units": targets,
+                    },
+                    status=502,
+                )
+                return
         self._send_json(
             {
                 "ok": True,
+                "status": "restarted",
                 "action": action,
                 "units": units,
                 "restart_units": restart_units,
