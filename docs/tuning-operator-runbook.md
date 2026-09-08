@@ -56,8 +56,10 @@ Choose the order from the evidence and the next question.
    fill listed `required_inputs` before use. A missing banked pose index does
    not offer a re-banking command.
 6. **Freeze.** `jasper-crossover-prescriber packet` writes `packet.json` and
-   prints its path, fingerprint, and availability summary. Select the round
-   using the paths/flags in `status` or `packet --help`. This file is a snapshot:
+   prints its path, fingerprint, availability, and `rebuild_status_command`.
+   That command repeats the supplied inputs, including `--state`; omitting
+   an input can change the fingerprint without any saved evidence changing.
+   Select the round using the paths/flags in `status` or `packet --help`. This file is a snapshot:
    enriching the source round later does not change what it contains.
 7. **Propose and stage.** Author a prescription using the packet's response
    formats and `propose --help`. Use `--packet <round-dir>/packet.json` for both
@@ -89,6 +91,10 @@ At a pose, the execution owner runs each candidate in order under one placement
 and start grant. The human sees “Config 2 of 3 — keep the mic still.” A new pose
 or explicit recovery/retake requires another human action. Do not emulate this
 by repeatedly adopting profiles between takes.
+
+Opening a measurement session consumes any pending correction prescription for
+a possible newly fitted candidate. Named tournament candidates use their saved
+graphs; they do not require that pending prescription to be cleared.
 
 Read each take's played graph/config fingerprint, candidate, pose, capture
 settings, level, calibration context, take identity, and status. Full candidate

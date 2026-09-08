@@ -135,7 +135,7 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
     source, _ = _speaker_dirs(tmp_path / "source")
     sessions = []
     for index in (1, 2):
-        destination = tmp_path / "rounds" / f"r{index}"
+        destination = tmp_path / "rounds with spaces" / f"r{index}"
         bundle = destination / "bundle" / f"s{index}" if banked else destination
         shutil.copytree(source, bundle)
         info_path = bundle / "info.json"
@@ -147,12 +147,22 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
     note = sessions[0][0] / "agent_notes.md"
     note.write_text("Question and next human action; evidence: r1/packet.json")
     current, bundle = sessions[1]
-    assert cli.main(["packet", str(current)]) == cli.EXIT_OK
-    packet_path = Path(json.loads(capsys.readouterr().out)["out"])
+    artifacts = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
+    state = tmp_path / "flow state.json"
+    state.write_text(json.dumps({"session_id": artifacts.name, "phase": "done"}))
+    inputs = [str(current), "--state", str(state)]
+    assert cli.main(["packet", *inputs]) == cli.EXIT_OK
+    packet_summary = json.loads(capsys.readouterr().out)
+    packet_path = Path(packet_summary["out"])
 
-    _, status = _status([str(current)], capsys)
+    recipe = shlex.split(packet_summary["rebuild_status_command"])
+    assert recipe[1:] == ["status", *inputs]
+    assert cli.main(recipe[1:]) == cli.EXIT_OK
+    status = json.loads(capsys.readouterr().out)
     assert status["frozen_packet"]["path"] == str(packet_path)
     assert status["frozen_packet"]["matches_current_evidence"] is True
+    _, without_state = _status([str(current)], capsys)
+    assert without_state["frozen_packet"]["matches_current_evidence"] is False
     assert status["latest_agent_note"] == {
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
@@ -164,9 +174,9 @@ def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
     assert inventory["latest_agent_note"] == status["latest_agent_note"]
     assert inventory["frozen_packet"]["path"] == str(packet_path)
 
-    artifacts = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
     (artifacts / "feature_classification.json").write_text(json.dumps(_classification()))
-    _, enriched = _status([str(current)], capsys)
+    assert cli.main(recipe[1:]) == cli.EXIT_OK
+    enriched = json.loads(capsys.readouterr().out)
     assert enriched["banked"]["classification"]["available"] is True
     assert enriched["frozen_packet"]["matches_current_evidence"] is False
     assert enriched["packet_fingerprint"] != status["packet_fingerprint"]
