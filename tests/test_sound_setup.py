@@ -845,6 +845,32 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     assert "/sound/speaker/crossover/" not in html
 
 
+@pytest.mark.parametrize(
+    ("header", "title"),
+    [
+        ("eq", "EQ"),
+        ("speaker", "Speaker setup"),
+        ("output", "Output"),
+        # nginx sets the header on every page block, so an absent or unknown
+        # value only reaches the daemon by a hand-typed request: answer with
+        # the one page every profile serves rather than guessing.
+        ("", "EQ"),
+        ("setup", "EQ"),
+    ],
+)
+def test_the_page_mode_header_picks_the_page(tmp_path: Path, header, title):
+    """`X-JTS-Sound-Page` is the whole seam between one daemon and three URLs
+    (ADR-0253 §3): nginx sets it per location block and strips the prefix."""
+    with sound_server(tmp_path) as base:
+        request = urllib.request.Request(base + "/")
+        if header:
+            request.add_header("X-JTS-Sound-Page", header)
+        html = urllib.request.urlopen(request, timeout=5).read().decode()
+
+    assert f"<title>{title}</title>" in html
+    assert f'class="app-header__title">{title}' in html
+
+
 def _island_payload(html: str) -> dict:
     marker = 'id="sound-page-data"'
     start = html.index(">", html.index(marker)) + 1
