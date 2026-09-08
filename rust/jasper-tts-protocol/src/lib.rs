@@ -696,17 +696,14 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
 // ---------------------------------------------------------------------
 
 /// How long a client may take to finish a command it has ALREADY started
-/// writing.
-///
-/// A healthy writer puts a whole [`MAX_AUDIO_BYTES`] frame onto a Unix socket
-/// in well under 100 ms, so this is a stall bound and not a latency target:
-/// waiting costs one parked reader thread, while a false trigger drops the
-/// voice daemon's process-lifetime connection.
+/// writing — a stall bound, not a latency target: a healthy writer puts a
+/// whole [`MAX_AUDIO_BYTES`] frame on the socket in well under 100 ms.
+/// See ADR-0254.
 pub const TTS_FRAME_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Concurrent client connections a TTS server retains. Real load is one
 /// long-lived voice-daemon connection plus at most a couple of transient
-/// probes (cue park, assistant volume, doctor), so this is headroom.
+/// probes (cue park, assistant volume, doctor). See ADR-0254.
 pub const TTS_MAX_CLIENTS: usize = 8;
 
 /// Read one command, bounding only the time spent MID-FRAME.

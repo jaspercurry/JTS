@@ -57,9 +57,7 @@ TASK_CANCEL_TIMEOUT_SEC = 3.0
 SESSION_CLOSE_TIMEOUT_SEC = 3.0
 
 # Memory ceiling on one turn's playout queue (28.8 MB at 24 kHz mono
-# int16 = 48 000 B/s). Not a response-length limit: providers burst a
-# whole response ahead of realtime and none caps response length, so
-# only a wedged consumer ever reaches 600 s of unplayed audio.
+# int16 = 48 000 B/s). See ADR-0254.
 AUDIO_OUT_QUEUE_MAX_SEC = 600
 AUDIO_OUT_QUEUE_MAX_BYTES = AUDIO_OUT_QUEUE_MAX_SEC * 48_000
 

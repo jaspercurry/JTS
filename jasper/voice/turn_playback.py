@@ -257,8 +257,8 @@ async def idle_watchdog(
         done speaking". Defer while audio is still MOVING, anchored on
         TtsPlayout's sample-counted drain deadline (see
         ``expected_drain_at``); a queue that stops draining for
-        `response_stall_timeout` ends the turn rather than deferring a
-        wedged consumer forever. Canonical clean close.
+        `response_stall_timeout` ends the turn instead (ADR-0254).
+        Canonical clean close.
       * No chunks received yet → model hasn't started speaking;
         wait the full `timeout` for the first chunk to arrive (Live
         API can take 3-5 s, sometimes longer).
@@ -288,11 +288,8 @@ async def idle_watchdog(
         now = time.monotonic()
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
-            # Defer while chunks are still queued in the inter-task
-            # buffer — the consumer hasn't yet pushed them to TtsPlayout.
-            # Only while that buffer is still MOVING: a consumer wedged
-            # with audio queued behind it would otherwise defer the turn
-            # forever, and the household gets no answer and no wake.
+            # Defer while the inter-task buffer is still MOVING, never on
+            # depth alone. See ADR-0254.
             pending = turn.audio_chunks_pending()
             progress = (pending, tts.expected_drain_at())
             if progress != playout_progress:
