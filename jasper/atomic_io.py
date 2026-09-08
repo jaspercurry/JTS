@@ -37,6 +37,9 @@ These properties are load-bearing and easy to get subtly wrong by hand:
     file it does not own must not re-own it. ``preserve_target_stat=True`` copies
     the EXISTING file's uid/gid/mode onto the tempfile before the rename — the
     stricter form of the bullet above, which sets the group only.
+    ``preserve_target_owner=True`` is the middle rung: the target's uid/gid, but
+    the mode the caller asked for, for a writer that owns a file's permissions
+    without owning its ownership.
   - **One shared lock mode.** Advisory locks — including the ones the env
     writers take — default to ``SHARED_LOCK_MODE``, group-writable, so two
     units running as different service users can share one lock.
@@ -45,7 +48,8 @@ This module RAISES on failure (``OSError``) and cleans up the tempfile on any
 exception. Callers that want fail-soft behaviour (log-and-continue, as several
 ``/var/lib/jasper`` writers do) wrap the call themselves — error handling is a
 caller policy decision, not swallowed here. It stays import-cheap for daemons:
-the only project import is the stdlib-only structured-log emitter.
+its only project imports are the stdlib-only structured-log emitter and the
+stdlib-only ``EnvironmentFile`` line mechanics.
 """
 from __future__ import annotations
 
@@ -56,13 +60,15 @@ import os
 import stat
 import tempfile
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from io import TextIOWrapper
 from typing import Any, Callable
 
 import fcntl
 
+from jasper.env_file import remove as env_remove
+from jasper.env_file import upsert as env_upsert
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -79,8 +85,13 @@ __all__ = [
     "fsync_directory",
     "locked_transform_env_file",
     "locked_update_env_file",
+    "locked_upsert_env_file",
     "read_regular_bytes_nofollow",
 ]
+
+#: One env-file mutation: ``(key, value)`` to state it, ``(key, None)`` to drop
+#: it.
+EnvKeyAction = tuple[str, "str | None"]
 
 
 _UNSUPPORTED_DIR_FSYNC = frozenset(
@@ -309,6 +320,7 @@ def atomic_write_text(
     mode: int = 0o644,
     group_from_parent: bool = True,
     preserve_target_stat: bool = False,
+    preserve_target_owner: bool = False,
     durable: bool = False,
 ) -> None:
     """Atomically write ``text`` to ``path`` as UTF-8, then ``chmod`` to ``mode``.
@@ -333,6 +345,11 @@ def atomic_write_text(
     best-effort — a non-root caller cannot chown to another uid, and in that
     case it already owns the file.
 
+    ``preserve_target_owner=True`` copies the existing target's uid/gid the same
+    way but leaves ``mode`` as the caller stated it — for a writer that OWNS the
+    file's permissions and not its ownership (the env-file writers, whose
+    ``chown --reference`` + ``chmod MODE`` shell predecessor did exactly this).
+
     ``durable=True`` flushes and fsyncs the tempfile before publication, then
     fsyncs the parent directory where the platform supports directory fsync.
     Boot-critical callers use this stronger contract; ordinary runtime state
@@ -347,13 +364,14 @@ def atomic_write_text(
     os.makedirs(parent, exist_ok=True)
     parent_gid = os.stat(parent).st_gid if group_from_parent else None
     target_stat = None
-    if preserve_target_stat:
+    if preserve_target_stat or preserve_target_owner:
         try:
             target_stat = os.stat(fspath)
         except FileNotFoundError:
             target_stat = None
     if target_stat is not None:
-        mode = stat.S_IMODE(target_stat.st_mode)
+        if preserve_target_stat:
+            mode = stat.S_IMODE(target_stat.st_mode)
         parent_gid = None  # the target's own gid is more specific
     # Tempfile in the SAME directory => os.replace is an atomic same-FS rename.
     # Prefix with "." + basename so a directory listing groups it with the
@@ -653,3 +671,84 @@ def locked_transform_env_file(
             fspath, text, mode=mode, group_from_parent=group_from_parent
         )
         return dict(new_state)
+
+
+def locked_upsert_env_file(
+    path: str | os.PathLike,
+    build_actions: Callable[[str], Iterable[EnvKeyAction]],
+    *,
+    mode: int = 0o644,
+    dir_mode: int | None = None,
+    delete_when_empty: bool = False,
+    lock_timeout_sec: float | None = None,
+) -> tuple[str, bool]:
+    """Fold per-key edits onto one env file's TEXT under one hold of its lock.
+
+    The text-preserving sibling of :func:`locked_update_env_file` and
+    :func:`locked_transform_env_file`: those round-trip through a
+    ``dict[str, str]`` and drop a co-reader's comments, blank lines and
+    assignment order, which the reconcilers that own a few keys in a file
+    several units read must keep (see :mod:`jasper.env_file`). ``build_actions``
+    runs against the FRESH text read while the lock is held, not a stale
+    pre-lock snapshot, so a concurrent writer's key is folded in rather than
+    lost (ADR-0235 G8). The lock is the one ``jasper_env_lock_path`` in
+    ``deploy/lib/jasper-env-file.sh`` names, so the shell writers of a file and
+    the Python ones exclude each other.
+
+    ``dir_mode`` creates an ABSENT parent at that mode and never re-modes an
+    existing one — the installer owns each env directory's mode/group and a
+    blanket re-mode on every boot/udev reconcile re-strips them (#827).
+    ``delete_when_empty`` unlinks a file the edits emptied instead of
+    publishing zero bytes. ``lock_timeout_sec`` defaults to
+    :data:`ENV_FILE_LOCK_TIMEOUT_SECONDS`.
+
+    The publish is ``preserve_target_owner=True``: these files are created by
+    root at install with a service group (``root:jasper 0640``) inside a
+    ``root:root`` directory, so republishing them by parent group alone would
+    re-own them to root and lock the non-root status daemons out. ``mode`` is
+    still asserted on every write — same split as the ``chown --reference`` +
+    ``chmod`` shell publish this replaces, which is what repairs a file some
+    other writer left too narrow to read.
+
+    Returns ``(text, changed)`` — the file's content after the edits, and
+    whether any edit moved it. Raises ``OSError`` when the lock, the read or
+    the write failed; an existing file that is not valid UTF-8 raises one too,
+    so bit rot reaches the caller's write-failure path rather than as a
+    ``UnicodeDecodeError`` traceback.
+    """
+    fspath = os.fspath(path)
+    parent = os.path.dirname(fspath) or "."
+    if dir_mode is not None and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+        os.chmod(parent, dir_mode)
+    if lock_timeout_sec is None:
+        lock_timeout_sec = ENV_FILE_LOCK_TIMEOUT_SECONDS
+    with advisory_file_lock(env_lock_path(fspath), timeout_sec=lock_timeout_sec):
+        try:
+            text = read_regular_bytes_nofollow(fspath).decode("utf-8")
+        except FileNotFoundError:
+            text = ""
+        except UnicodeError as exc:
+            raise OSError(
+                errno.EILSEQ, f"env file is not valid UTF-8: {exc}", fspath
+            ) from exc
+        changed = False
+        for key, value in build_actions(text):
+            text, moved = (
+                env_remove(text, key)
+                if value is None
+                else env_upsert(text, key, value)
+            )
+            changed = changed or moved
+        if not changed:
+            return text, False
+        if not text and delete_when_empty:
+            try:
+                os.unlink(fspath)
+            except FileNotFoundError:
+                pass
+        else:
+            atomic_write_text(
+                fspath, text, mode=mode, preserve_target_owner=True
+            )
+    return text, changed

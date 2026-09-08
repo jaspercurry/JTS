@@ -44,15 +44,13 @@ from typing import Any
 
 from jasper.atomic_io import (
     ENV_FILE_LOCK_TIMEOUT_SECONDS,
+    EnvKeyAction as EnvAction,
     advisory_file_lock,
-    atomic_write_text,
     env_lock_path,
-    read_regular_bytes_nofollow,
+    locked_upsert_env_file,
 )
 from jasper.cli.output_hardware import ObservedOutput
 from jasper.env_file import read_env_file, read_env_file_text
-from jasper.env_file import remove as env_remove
-from jasper.env_file import upsert as env_upsert
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
@@ -85,11 +83,6 @@ RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "jts_ring_active_playback"
 
 ENV_FILE_MODE = 0o640
 ENV_DIR_MODE = 0o750
-
-#: One env-file mutation: ``(key, value)`` to state it, ``(key, None)`` to drop
-#: it. A list of these is what reaches the file, so one stage's whole intent for
-#: one file is applied under a single hold of that file's lock.
-EnvAction = tuple[str, str | None]
 
 _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
                  signal.SIGINT: (130, "INT")}
@@ -148,39 +141,6 @@ def _ensure_dir(path: Path, mode: int) -> None:
     if not path.is_dir():
         os.makedirs(path, exist_ok=True)
         os.chmod(path, mode)
-
-
-def _rewrite_env_file(
-    path: str | os.PathLike[str], actions: Sequence[EnvAction]
-) -> bool:
-    """Fold every action onto one env file under ONE hold of its own lock.
-
-    That lock is the SAME one the bash env-file writers take
-    (``atomic_io.env_lock_path`` == ``jasper_env_lock_path`` in
-    ``deploy/lib/jasper-env-file.sh``), so this writer and the remaining shell
-    writers of one file exclude each other (ADR-0235 G8). A ``None`` value drops
-    the key. Returns whether the file changed; raises ``OSError`` when the write
-    or the lock failed.
-    """
-    fspath = os.fspath(path)
-    _ensure_dir(Path(fspath).parent, ENV_DIR_MODE)
-    with advisory_file_lock(
-        env_lock_path(fspath), timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS
-    ):
-        try:
-            text = read_regular_bytes_nofollow(fspath).decode("utf-8")
-        except FileNotFoundError:
-            text = ""
-        changed = False
-        for key, value in actions:
-            if value is None:
-                text, moved = env_remove(text, key)
-            else:
-                text, moved = env_upsert(text, key, value)
-            changed = changed or moved
-        if changed:
-            atomic_write_text(fspath, text, mode=ENV_FILE_MODE)
-    return changed
 
 
 def _resolve_asound_render_lib() -> str:
@@ -366,7 +326,16 @@ class Pass:
         """The same write, reported rather than fatal: ``None`` when it did not
         land, so a caller can keep its journal line honest."""
         try:
-            return _rewrite_env_file(path, actions)
+            # An emptied file is published as ZERO BYTES, never unlinked: that
+            # is what the bash `jasper_env_file_unset` this replaced did, and
+            # jasper.env's own header comments make the case unreachable today.
+            _, changed = locked_upsert_env_file(
+                path,
+                lambda _text: actions,
+                mode=ENV_FILE_MODE,
+                dir_mode=ENV_DIR_MODE,
+            )
+            return changed
         except OSError:
             self.log(
                 "env_write_failed", file=path, key=",".join(k for k, _ in actions)
