@@ -680,7 +680,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
         "period",
         "prior_status",
         "expected",
-        "check_fallback",
     ),
     [
         pytest.param(
@@ -703,7 +702,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
                 "lane_armed": False,
                 "lane_reason": "",
             },
-            False,
             id="solo",
         ),
         pytest.param(
@@ -726,7 +724,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
                 "lane_armed": True,
                 "lane_reason": "",
             },
-            False,
             id="passive_leader",
         ),
         pytest.param(
@@ -749,7 +746,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
                 "lane_armed": False,
                 "lane_reason": LANE_REFUSED_ACTIVE_ENDPOINT,
             },
-            False,
             id="active_leader",
         ),
         pytest.param(
@@ -772,7 +768,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
                 "lane_armed": True,
                 "lane_reason": "",
             },
-            False,
             id="dumb_follower_box_not_active",
         ),
         pytest.param(
@@ -795,7 +790,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
                 "lane_armed": False,
                 "lane_reason": LANE_REFUSED_ACTIVE_ENDPOINT,
             },
-            True,  # also exercises with_fallback() below
             id="active_follower",
         ),
         pytest.param(
@@ -818,7 +812,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
                 "lane_armed": True,
                 "lane_reason": "",
             },
-            False,
             id="transitioning_from_parked",
         ),
     ],
@@ -830,7 +823,6 @@ def test_decide_role_decision_table(
     period,
     prior_status,
     expected,
-    check_fallback,
 ):
     """One decision table for the pure pre-apply role derivation."""
     d = decide_role(
@@ -863,34 +855,34 @@ def test_decide_role_decision_table(
     assert d.outputd_period_frames == period
     assert d.plan == plan(cfg)
 
-    if not check_fallback:
-        return
 
-    # with_fallback(): every role flag clears, refused_follower_fallback is
-    # read from the still-untouched REQUESTED cfg (not the now-disabled one,
-    # which would always look unparked), and requested_cfg / the pre-mutation
-    # facts survive unchanged.
-    requested = d.requested_cfg
+
+def test_with_fallback_resets_roles_and_keeps_the_requested_facts():
+    """A fail-safe refusal clears every role flag, reads the park reason from
+    the untouched REQUESTED cfg (the disabled cfg would always look unparked),
+    and keeps the pre-mutation facts — on a second fallback too."""
+    requested = _follower()
+    d = decide_role(
+        requested,
+        active_box_state=True,
+        flat_output_allowed=False,
+        outputd_period_frames=None,
+        prior_status={},
+    )
     fb = d.with_fallback()
-    assert isinstance(fb, RoleDecision)
     assert fb.requested_cfg is requested
     assert fb.cfg == dataclasses.replace(requested, enabled=False)
-    assert fb.active is False
-    assert fb.active_leader is False
-    assert fb.active_follower is False
-    assert fb.active_speaker_leader is False
-    assert fb.passive_leader is False
-    assert fb.active_endpoint is False
-    assert fb.refused_follower_fallback == local_sources_parked(requested)
-    assert fb.refused_follower_fallback is True  # _follower() IS a bonded follower
+    assert not any((
+        fb.active, fb.active_leader, fb.active_follower,
+        fb.active_speaker_leader, fb.passive_leader, fb.active_endpoint,
+    ))
+    assert fb.refused_follower_fallback is local_sources_parked(requested) is True
     assert fb.transitioning_from_parked_role == d.transitioning_from_parked_role
     assert fb.box_is_active == d.box_is_active
     assert fb.flat_output_allowed == d.flat_output_allowed
     assert fb.outputd_period_frames == d.outputd_period_frames
     assert fb.lane == d.lane
     assert fb.plan == plan(fb.cfg)
-    # A second fallback still reads the park reason from requested_cfg, not
-    # from the already-disabled cfg (which reads as unparked).
     fb2 = fb.with_fallback()
     assert fb2.requested_cfg is requested
     assert fb2.refused_follower_fallback is True
