@@ -31,7 +31,9 @@ import logging
 import pytest
 
 from jasper.audio_io import TtsPlayout
+from jasper.cues.manager import AudioCueManager
 from jasper.timers import Timer
+from tests._cue_spy import SpyCues
 from tests._log_events import event_fields
 from tests._wake_loop import wake_loop_for_tests
 
@@ -40,8 +42,11 @@ def _timer(*, id: str = "t1", label: str | None = "pasta") -> Timer:
     return Timer(id=id, label=label, fire_at=0.0, total_seconds=60, created_at=0.0)
 
 
-class _RefusingCues:
-    """A cue manager that raises if asked to play — proves nothing played."""
+class _RefusingCues(SpyCues):
+    """A cue manager that raises if asked to play — proves nothing played.
+
+    The rest of the surface is the shared spy's, so a gate that records its
+    refusal on the manager still finds the method there."""
 
     async def play(self, _slug: str) -> bool:
         raise AssertionError("cue must not play during a measurement window")
@@ -98,6 +103,47 @@ async def test_play_supervisor_cue_refuses_during_measurement(
     if not output_busy:
         assert event_fields(caplog, "cue.skipped")["reason"] == "measurement_active"
     await wl.measurement_hold.resume()
+
+
+@pytest.mark.parametrize(
+    "entry, busy_gate, reason",
+    [
+        ("admitted", "measurement", "measurement_active"),
+        ("admitted", "output", "busy"),
+        ("owned", "output", "output_active"),
+    ],
+)
+async def test_a_refused_cue_reaches_the_managers_health_record(
+    tmp_path, entry: str, busy_gate: str, reason: str,
+) -> None:
+    """A gate refusal IS the deafness /state.cues exists to show, so it has
+    to reach the manager the daemon publishes — the journal line alone
+    leaves the snapshot reading healthy."""
+    cues = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+    )
+    wl = wake_loop_for_tests()
+    wl._cues = cues
+    if busy_gate == "measurement":
+        assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    else:
+        assert await wl._output_gate.begin_if_idle("admin") is not None
+
+    if entry == "admitted":
+        assert await wl.play_cue("cant_connect") == reason
+    else:
+        assert await wl._play_cue("cant_connect") is False
+
+    snap = cues.snapshot()
+    assert snap["last"]["outcome"] == "skipped"
+    assert snap["last"]["reason"] == reason
+    assert snap["last"]["slug"] == "cant_connect"
+    # The manager was never asked to play, so nothing else was recorded.
+    assert snap["counts"] == {
+        "delivered": 0, "fallback": 0, "stale": 0, "skipped": 1, "failed": 0,
+    }
+    if busy_gate == "measurement":
+        await wl.measurement_hold.resume()
 
 
 async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
