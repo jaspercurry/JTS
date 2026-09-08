@@ -355,8 +355,9 @@ _migrate_secret_keys() {
             val="$(jasper_env_file_get "${jasper_env}" "${key}")" || continue
             [[ -n "${val}" ]] || continue
             # seed_absent keeps any stated key, so an empty placeholder goes first.
+            # A wizard value published while the installer waits for the seed's
+            # lock survives; one raced in ahead of the unset does not.
             jasper_env_file_unset "${keys_env}" "${key}" 0640
-            # The wizard may publish while the installer waits for this lock.
             jasper_env_file_seed_absent "${keys_env}" 0640 2770 "${key}=${val}"
             [[ -n "$(jasper_env_file_get "${keys_env}" "${key}")" ]] || return 1
             moved=1
