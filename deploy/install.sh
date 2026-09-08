@@ -956,7 +956,11 @@ install_alsa() {
         echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
     fi
     # 2775 root:jasper (setgid): jasper-control renders here; o+rx stays so pi-run renderers can read the /etc/asound.conf symlink.
-    install -d -m 2775 -o root -g jasper /var/lib/jasper-asound
+    if getent group jasper >/dev/null 2>&1; then
+        install -d -m 2775 -o root -g jasper /var/lib/jasper-asound
+    else
+        install -d -m 0755 /var/lib/jasper-asound
+    fi
     install -m 0644 \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
         "${ENV_DIR}/asoundrc.jasper.source"
