@@ -255,6 +255,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "classify-features": _NO_CAPTURES,
     "findings": lambda r: ["findings", str(r.measured)],
     "close-reference": _NO_CAPTURES,
+    "boundary-prior": lambda r: ["boundary-prior", str(r.measured)],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],
