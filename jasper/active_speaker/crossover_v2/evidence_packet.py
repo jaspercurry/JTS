@@ -2742,9 +2742,9 @@ def build_crossover_evidence_packet(
         state_raw, read_reason = _read_json(state_path)
         state_reason = read_reason
     state = _mapping(state_raw)
+    state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
     if state and not state_matches_capture(state, round_dir.name):
         state, state_reason = {}, STATE_SESSION_UNKNOWN
-    state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
 
     applied_profile, applied_profile_reason = _applied_profile_source(
         applied_profile_path
