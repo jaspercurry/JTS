@@ -587,6 +587,9 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     assert body["status"] == "accepted"
     assert applied == ["samplerate_best"]
     assert body["audio_quality"]["converter"] == "samplerate_best"
+    # `intent_saved` is the refusal's consolation prize ("we kept your
+    # choice, the restart did not happen"). On an ok it reads as a hedge.
+    assert "intent_saved" not in body
     from jasper.local_sources import local_source_audio_refresh_units
 
     assert calls == [("try-restart", list(local_source_audio_refresh_units()))]

@@ -113,14 +113,7 @@ class AecRoutes(ControlHandlerMixin):
             enabled=enabled_val,
             client=self.address_string(),
         )
-        self._send_json(
-            {
-                "ok": True,
-                "status": "accepted",
-                **aec_endpoints._aec_full_status(),
-            },
-            status=202,
-        )
+        self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
     def _post_aec_profile(self) -> None:
@@ -164,14 +157,7 @@ class AecRoutes(ControlHandlerMixin):
             profile=normalize_audio_input_profile(profile, default=""),
             client=self.address_string(),
         )
-        self._send_json(
-            {
-                "ok": True,
-                "status": "accepted",
-                **aec_endpoints._aec_full_status(),
-            },
-            status=202,
-        )
+        self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
     def _post_aec_usb_mic(self) -> None:
@@ -214,17 +200,21 @@ class AecRoutes(ControlHandlerMixin):
             client=self.address_string(),
         )
         if not _server._schedule_usb_gadget_recompose():
+            # A descriptor recompose is not a broker verb: there is no result
+            # to answer, only the scheduler's own refusal.
             failed_status = aec_endpoints._aec_full_status()
-            self._send_broker_result(
-                {"ok": False},
-                error=(
-                    "USB microphone preference was saved, but its "
-                    "hardware update could not be scheduled."
-                ),
-                code="usb_mic_recompose_schedule_failed",
-                intent_saved=True,
-                requested_enabled=enabled,
-                usb_mic=failed_status.get("usb_mic") or {},
+            self._send_json(
+                {
+                    "error": (
+                        "USB microphone preference was saved, but its "
+                        "hardware update could not be scheduled."
+                    ),
+                    "code": "usb_mic_recompose_schedule_failed",
+                    "intent_saved": True,
+                    "requested_enabled": enabled,
+                    "usb_mic": failed_status.get("usb_mic") or {},
+                },
+                status=502,
             )
             return
         self._send_json(aec_endpoints._aec_full_status())
@@ -405,10 +395,7 @@ class AecRoutes(ControlHandlerMixin):
             value=f"{threshold:.2f}",
             client=self.address_string(),
         )
-        self._send_json(
-            {"ok": True, "status": "accepted", "threshold": threshold},
-            status=202,
-        )
+        self._send_accepted(threshold=threshold)
         return
 
     def _post_aec_commission(self) -> None:

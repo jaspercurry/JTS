@@ -398,24 +398,30 @@ class SystemRoutes(ControlHandlerMixin):
             no_block=True,
             timeout=5.0,
         )
-        if not self._send_broker_result(
-            refresh,
-            error=(
-                "Conversion quality was saved, but the music "
-                "renderer restart could not be scheduled."
-            ),
-            code="audio_quality_restart_failed",
-            intent_saved=True,
-            action="audio-quality",
-            try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-            audio_quality=state,
-        ):
+        if not refresh.get("ok"):
+            self._send_broker_result(
+                refresh,
+                error=(
+                    "Conversion quality was saved, but the music "
+                    "renderer restart could not be scheduled."
+                ),
+                code="audio_quality_restart_failed",
+                intent_saved=True,
+                action="audio-quality",
+                try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
+                audio_quality=state,
+            )
             return
         log_event(
             logger,
             "audio_quality.set",
             converter=converter,
             client=self.address_string(),
+        )
+        self._send_accepted(
+            action="audio-quality",
+            try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
+            audio_quality=state,
         )
         return
 
@@ -535,18 +541,6 @@ class SystemRoutes(ControlHandlerMixin):
                     status=502,
                 )
                 return
-            self._send_json(
-                {
-                    "ok": True,
-                    "status": "accepted",
-                    "action": action,
-                    "units": units,
-                    "restart_units": restart_units,
-                    "try_restart_units": try_restart_units,
-                },
-                status=202,
-            )
-            return
         # Use start-after-stop semantics for core services. Local source
         # daemons use try-restart so a dashboard audio restart never turns on
         # a source the household disabled in /sources/ (USB would otherwise
@@ -570,15 +564,10 @@ class SystemRoutes(ControlHandlerMixin):
                     failed_units=targets,
                 )
                 return
-        self._send_json(
-            {
-                "ok": True,
-                "status": "accepted",
-                "action": action,
-                "units": units,
-                "restart_units": restart_units,
-                "try_restart_units": try_restart_units,
-            },
-            status=202,
+        self._send_accepted(
+            action=action,
+            units=units,
+            restart_units=restart_units,
+            try_restart_units=try_restart_units,
         )
         return

@@ -54,6 +54,10 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     ) -> None:
         raise NotImplementedError
 
+    def _send_accepted(self, **extra: Any) -> None:
+        """Answer 202 for work handed to systemd but not yet confirmed done."""
+        self._send_json({**extra, "ok": True, "status": "accepted"}, status=202)
+
     def _send_broker_result(
         self,
         result: dict[str, Any],
@@ -64,15 +68,16 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     ) -> bool:
         """Answer a `restart_broker` result with the shared envelope.
 
-        Refused: 502 `{"error", "code", **extra}`. Ok: 202
-        `{"ok": True, "status": "accepted", **extra}`. `extra` lands in
-        both bodies, so a caller whose ok body must differ (extra fields,
-        another status) calls this only from its own refused branch.
+        Refused: 502 `{**extra, "error", "code"}`. Ok: 202 via
+        `_send_accepted`. `extra` lands in both bodies, so a caller whose
+        ok body must differ (extra fields, another status) calls this only
+        from its own refused branch. The envelope keys are written last so
+        an `extra` field can never turn a refusal into an ok.
         """
         if not result.get("ok"):
-            self._send_json({"error": error, "code": code, **extra}, status=502)
+            self._send_json({**extra, "error": error, "code": code}, status=502)
             return False
-        self._send_json({"ok": True, "status": "accepted", **extra}, status=202)
+        self._send_accepted(**extra)
         return True
 
     def _voice_cmd_or_error(
