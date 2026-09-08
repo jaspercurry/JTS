@@ -746,11 +746,6 @@ docs = [
   "docs/room-correction-regime-plan.md",
   # Planning authority for the measurement/tuning program (supersessions listed in-doc).
   "docs/tuning-master-plan.md",
-  # Chunk 2 of the tuning-engine refactor (chunk 1's plan is retired; its
-  # rulings are in docs/adr/0228): the cutover, where the engine takes the
-  # calls and the two god files dissolve. Scan it when a seam binding, the record store,
-  # the analyze registry, or either god file's dissolution order changes.
-  "docs/REFACTOR-CUTOVER-2026-08.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
