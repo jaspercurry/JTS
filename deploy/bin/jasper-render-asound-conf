@@ -50,7 +50,9 @@ if [[ ! -f "$TEMPLATE" ]]; then
     exit 66
 fi
 
-install -d -m 0755 "$(dirname "$OUTPUT")"
+# Skip if it exists: GNU install -d chmods existing dirs too, and this now
+# runs as jasper-control against a root:jasper dir it doesn't own.
+[[ -d "$(dirname "$OUTPUT")" ]] || install -d -m 0755 "$(dirname "$OUTPUT")"
 tmp="${OUTPUT}.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 sed "s/__RATE_CONVERTER__/${converter}/g" "$TEMPLATE" > "$tmp"

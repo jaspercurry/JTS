@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from ...audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
@@ -36,6 +36,42 @@ from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
 from ._base import ControlHandlerMixin, logger
+
+
+# `systemctl` exits 5 when the named unit has no unit file on this box
+# (EXIT_NOTINSTALLED; verified against systemd 257 on the lab Pi).
+_UNIT_NOT_FOUND_RC = 5
+
+
+def _try_restart_each(
+    units: Iterable[str],
+    *,
+    reason: str,
+) -> dict[str, list[str]]:
+    """``try-restart`` one unit per call, grouped by what systemd answered.
+
+    A batch is a single ``systemctl`` invocation, so it can only report one
+    verdict for the whole set: a unit this profile never installed (a
+    streambox without BlueALSA) fails the call, and a real failure hides
+    every renderer that did restart. ``--no-block`` returns in milliseconds,
+    so the handful of extra calls costs nothing the caller can feel.
+    """
+    groups: dict[str, list[str]] = {
+        "accepted_units": [],
+        "skipped_units": [],
+        "failed_units": [],
+    }
+    for unit in units:
+        result = _server.restart_broker.manage_units(
+            unit, verb="try-restart", reason=reason, no_block=True, timeout=5.0,
+        )
+        if result.get("ok"):
+            groups["accepted_units"].append(unit)
+        elif result.get("rc") == _UNIT_NOT_FOUND_RC:
+            groups["skipped_units"].append(unit)
+        else:
+            groups["failed_units"].append(unit)
+    return groups
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -298,7 +334,7 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         try:
-            debug_control.set_debug(subsystem, enabled)
+            _state, restart_result = debug_control.set_debug(subsystem, enabled)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
@@ -308,6 +344,20 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
+        if restart_result is not None and not restart_result.get("ok"):
+            # debug.env is already written: the flag IS on, only its restart
+            # is missing. Without this the card reads the refusal as "nothing
+            # happened" and shows the toggle back off.
+            self._send_broker_result(
+                restart_result,
+                error=(
+                    f"The {subsystem} debug flag was saved, but its "
+                    "restart could not be scheduled."
+                ),
+                code="debug_restart_failed",
+                intent_saved=True,
+            )
+            return
         log_event(
             logger,
             "debug.toggle",
@@ -315,7 +365,7 @@ class SystemRoutes(ControlHandlerMixin):
             enabled=enabled,
             client=self.address_string(),
         )
-        self._send_json(debug_control.snapshot())
+        self._send_json(debug_control.snapshot(), status=202)
         return
 
     def _post_usb_forensics(self) -> None:
@@ -379,20 +429,22 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        try:
-            # Refresh active renderers without resurrecting sources the
-            # household explicitly disabled in /sources/.
-            subprocess.Popen(
-                [
-                    "systemctl",
-                    "try-restart",
-                    *_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-                ],
-            )
-        except (OSError, subprocess.SubprocessError) as e:
-            self._send_json(
-                {"error": f"renderer restart failed: {e}"},
-                status=502,
+        # Refresh active renderers without resurrecting sources the
+        # household explicitly disabled in /sources/.
+        groups = _try_restart_each(
+            _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS, reason="audio_quality",
+        )
+        if groups["failed_units"]:
+            self._send_refused(
+                error=(
+                    "Conversion quality was saved, but the music "
+                    "renderer restart could not be scheduled."
+                ),
+                code="audio_quality_restart_failed",
+                intent_saved=True,
+                action="audio-quality",
+                audio_quality=state,
+                **groups,
             )
             return
         log_event(
@@ -401,13 +453,10 @@ class SystemRoutes(ControlHandlerMixin):
             converter=converter,
             client=self.address_string(),
         )
-        self._send_json(
-            {
-                "ok": True,
-                "action": "audio-quality",
-                "try_restart_units": _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-                "audio_quality": state,
-            }
+        self._send_accepted(
+            action="audio-quality",
+            audio_quality=state,
+            **groups,
         )
         return
 
@@ -451,12 +500,9 @@ class SystemRoutes(ControlHandlerMixin):
         return
 
     def _post_system_action(self) -> None:
-        # Action endpoints for the /system dashboard. All
-        # shell out to systemctl; jasper-control already runs
-        # as root so no sudo needed. Returns immediately —
-        # the restart is async on systemd's side and the
-        # dashboard polls /system/snapshot to know when
-        # things are back up.
+        # Broker refusal answers 502 with a `code`; broker ok answers 202 —
+        # the job is enqueued, and /state observes what actually came back.
+        # reboot/poweroff answer 202 too, without a broker verb.
         #
         # Risk model: LAN-local + browser-origin guard
         # (consistent with the wizards). Anyone already on the
@@ -521,39 +567,51 @@ class SystemRoutes(ControlHandlerMixin):
             units=",".join(units) or "-",
             client=self.address_string(),
         )
-        try:
-            if action == "reboot":
-                subprocess.Popen(["systemctl", "reboot"])
-            elif action == "poweroff":
-                subprocess.Popen(["systemctl", "poweroff"])
-            else:
-                # Use start-after-stop semantics for core services. Local
-                # source daemons use try-restart so dashboard audio restart
-                # never turns on a source the household disabled in
-                # /sources/ (USB would otherwise re-advertise its gadget).
-                if restart_units:
-                    subprocess.Popen(["systemctl", "restart", *restart_units])
-                if try_restart_units:
-                    subprocess.Popen(
-                        [
-                            "systemctl",
-                            "try-restart",
-                            *try_restart_units,
-                        ]
-                    )
-        except (OSError, subprocess.SubprocessError) as e:
-            self._send_json(
-                {"error": f"systemctl invocation failed: {e}"},
-                status=502,
+        if action in ("reboot", "poweroff"):
+            try:
+                subprocess.Popen(["systemctl", action])
+            except (OSError, subprocess.SubprocessError) as e:
+                self._send_json(
+                    {"error": f"systemctl invocation failed: {e}"},
+                    status=502,
+                )
+                return
+        # Start-after-stop semantics for core services, as one batch: every
+        # profile installs them, so a refusal is a real failure.
+        accepted: list[str] = []
+        if restart_units:
+            result = _server.restart_broker.manage_units(
+                *restart_units, verb="restart", reason=action,
+                no_block=True, timeout=5.0,
+            )
+            if not result.get("ok"):
+                self._send_broker_result(
+                    result,
+                    error="The restart could not be scheduled.",
+                    code="system_restart_failed",
+                    action=action,
+                    units=units,
+                    failed_verb="restart",
+                    accepted_units=accepted,
+                    skipped_units=[],
+                    failed_units=restart_units,
+                )
+                return
+            accepted = list(restart_units)
+        # Local source daemons use try-restart so a dashboard audio restart
+        # never turns on a source the household disabled in /sources/ (USB
+        # would otherwise re-advertise its gadget).
+        groups = _try_restart_each(try_restart_units, reason=action)
+        groups["accepted_units"] = accepted + groups["accepted_units"]
+        if groups["failed_units"]:
+            self._send_refused(
+                error="The restart could not be scheduled.",
+                code="system_restart_failed",
+                action=action,
+                units=units,
+                failed_verb="try-restart",
+                **groups,
             )
             return
-        self._send_json(
-            {
-                "ok": True,
-                "action": action,
-                "units": units,
-                "restart_units": restart_units,
-                "try_restart_units": try_restart_units,
-            }
-        )
+        self._send_accepted(action=action, units=units, **groups)
         return

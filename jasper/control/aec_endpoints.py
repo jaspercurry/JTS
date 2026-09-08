@@ -50,6 +50,7 @@ from ..chip_aec.policy import (
     effective_chip_aec_dac_gate,
 )
 from ..wake_models import WAKE_MODEL_FILE
+from . import restart_broker
 
 _AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
@@ -352,17 +353,19 @@ def _start_xvf_firmware_update() -> None:
     )
 
 
-def _kick_aec_reconciler() -> None:
+def _kick_aec_reconciler(*, reason: str) -> dict[str, Any]:
     """Apply a persisted AEC-mode/leg change through the reconciler.
 
-    Use `restart`, not `start`: the reconciler is a Type=oneshot unit.
-    A rapid toggle can write new intent while the previous reconcile is
-    still active; `systemctl start` would be a no-op in that state and
-    leave runtime env one click behind the UI.
+    Use `restart`, not `start`: the reconciler is a Type=oneshot unit, so a
+    `start` issued while the previous reconcile is still active is a no-op
+    and would leave runtime env one click behind the UI.
     """
-    subprocess.Popen(
-        ["systemctl", "restart", "--no-block",
-         "jasper-aec-reconcile.service"],
+    return restart_broker.manage_units(
+        "jasper-aec-reconcile.service",
+        verb="restart",
+        reason=reason,
+        no_block=True,
+        timeout=5.0,
     )
 
 

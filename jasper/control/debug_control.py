@@ -29,6 +29,7 @@ import logging
 import subprocess
 import threading
 import time
+from typing import Any
 
 from jasper.log_event import log_event
 
@@ -36,6 +37,7 @@ from .. import debug_mode
 from ..atomic_io import locked_update_env_file
 from ..debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
 from ..env_file import read_env_file
+from . import restart_broker
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +66,14 @@ def _clear_all() -> dict[str, str]:
 # ------------------------------------------------------------ apply side
 
 
-def _restart_unit(unit: str) -> None:
-    """Best-effort non-blocking restart. Raises on spawn failure so the
-    endpoint can surface it; the file write has already landed, so the
-    change still applies on the daemon's next start."""
-    subprocess.Popen(["systemctl", "restart", "--no-block", unit])
+def _restart_unit(unit: str) -> dict[str, Any]:
+    """Restart via the privileged broker. Never raises (mirrors
+    restart_broker.manage_units); the file write has already landed, so
+    the change still applies on the daemon's next start even when the
+    broker refuses."""
+    return restart_broker.manage_units(
+        unit, verb="restart", reason="debug", no_block=True, timeout=5.0,
+    )
 
 
 def _unit_is_active(unit: str) -> bool:
@@ -82,17 +87,19 @@ def _unit_is_active(unit: str) -> bool:
     return proc.returncode == 0
 
 
-def _restart_unit_if_active(subsystem: str, unit: str, enabled: bool) -> None:
+def _restart_unit_if_active(
+    subsystem: str, unit: str, enabled: bool,
+) -> dict[str, Any] | None:
     """Apply debug to optional daemons without changing source enablement.
 
     ``systemctl restart`` starts inactive services, which would make the
     Debug card an accidental source toggle for optional renderers like USB
     input. If the unit is stopped, leave the env flag in place and let the
-    daemon pick it up on its next legitimate start.
+    daemon pick it up on its next legitimate start — ``None`` reports no
+    restart was attempted, distinct from a broker refusal.
     """
     if _unit_is_active(unit):
-        _restart_unit(unit)
-        return
+        return _restart_unit(unit)
     log_event(
         logger,
         "debug.apply_deferred",
@@ -101,6 +108,7 @@ def _restart_unit_if_active(subsystem: str, unit: str, enabled: bool) -> None:
         enabled=enabled,
         reason="unit_inactive",
     )
+    return None
 
 
 # Seam for tests: swap out the timer factory so unit tests don't spawn
@@ -145,11 +153,13 @@ def _on_expiry() -> None:
 
 def set_debug(
     subsystem: str, enabled: bool, *, now: float | None = None,
-) -> debug_mode.DebugState:
+) -> tuple[debug_mode.DebugState, dict[str, Any] | None]:
     """Toggle one subsystem's debug logging. Persists + applies + arms
-    expiry. Returns the resulting state. Raises ``ValueError`` on an
-    unknown subsystem; lets a restart spawn failure propagate (the file
-    write has already landed)."""
+    expiry. Returns the resulting state and the broker result of any
+    restart this triggered (``None`` when no restart was needed — an
+    in-process apply, or a deferred restart_if_active). Raises
+    ``ValueError`` on an unknown subsystem; the file write has already
+    landed regardless of what the restart, if any, reports."""
     if subsystem not in SUBSYSTEMS:
         raise ValueError(f"unknown debug subsystem: {subsystem!r}")
     now = time.time() if now is None else now
@@ -161,6 +171,7 @@ def set_debug(
         state = debug_mode.read_debug_state(now=now)
         _arm_expiry_locked(state, now)
     sub = SUBSYSTEMS[subsystem]
+    restart_result: dict[str, Any] | None = None
     if sub.apply_policy == "in_process":
         # In-process — no self-restart. apply_for re-reads debug.env (just
         # written), moves control's journal handler, and (re-)arms/cancels
@@ -169,9 +180,9 @@ def set_debug(
         # Pass `now` so the expiry check matches the just-written timestamp.
         debug_mode.apply_for("control", now=now)
     elif sub.apply_policy == "restart_if_active":
-        _restart_unit_if_active(subsystem, sub.unit, enabled)
+        restart_result = _restart_unit_if_active(subsystem, sub.unit, enabled)
     else:
-        _restart_unit(sub.unit)
+        restart_result = _restart_unit(sub.unit)
     log_event(
         logger,
         "debug.toggle",
@@ -180,7 +191,7 @@ def set_debug(
         remaining_sec=f"{state.remaining_sec:.0f}",
         client="control",
     )
-    return state
+    return state, restart_result
 
 
 def snapshot(now: float | None = None) -> dict:

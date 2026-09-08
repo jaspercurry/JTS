@@ -123,6 +123,48 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     ("bearer_token", "Bearer eyJhbGciOiJIUzI1NiJ9xyz", "Bearer <redacted>", False),
     ("authorization_bearer", "Authorization: Bearer eyJhbGciOiJIUzI1NiAA",
      "Authorization: Bearer <redacted>", False),
+    # A `Bearer` value the row above already took must not redact twice,
+    # and an `authorization` value must stop at its own end, not the line's.
+    ("authorization_bearer_in_prose",
+     "fatal: Authorization: Bearer FAKE-TOKEN-abc123 rejected",
+     "fatal: Authorization: Bearer <redacted> rejected", False),
+    ("authorization_assignment", "authorization=very-secret\nnetwork stalled",
+     "authorization=<redacted>\nnetwork stalled", False),
+    ("authorization_json_basic_scheme", '{"authorization": "Basic FAKE=="}',
+     '{"authorization": <redacted>}', False),
+    # The bare header form of the scheme above, not JSON-embedded. Python-only:
+    # no KEY=value shape the bash redactor guards holds an HTTP header line.
+    ("authorization_basic_header", "Authorization: Basic FAKE-B64-VALUE==",
+     "Authorization: <redacted>", False),
+    # A scheme and a *quoted* credential: the value run stops at the quote,
+    # so the scheme alone would redact and leave the credential behind.
+    ("authorization_basic_quoted_value", 'Authorization: Basic "FAKE-B64=="',
+     "Authorization: <redacted>", False),
+    # RFC 7616 spends its credential over comma-separated parameters, so the
+    # value is the rest of the line — one token takes `username=` and leaves
+    # every parameter after it, the response digest included.
+    ("authorization_digest_parameters",
+     'Authorization: Digest username="alice", response="FAKEDIGEST"',
+     "Authorization: <redacted>", False),
+    # NetworkManager and OAuth both answer a refused mutation with a sentence
+    # the wizard puts in its banner. One word goes; the sentence survives.
+    ("authorization_refusal_prose",
+     "authorization: user is not authorized to control networking",
+     "authorization: <redacted> is not authorized to control networking", False),
+    # No newline to stop at (unlike `authorization_assignment` above), so the
+    # value run reaches end of string and over-redacts the trailing word —
+    # accepted, over-redaction is the safe direction.
+    ("authorization_assignment_to_end_of_string",
+     "authorization=FAKESWORDFISHTOKEN rejected",
+     "authorization=<redacted>", False),
+    ("url_user_info", "https://alice:FAKE-PW-xyz@example.test/repo.git",
+     "https://<redacted>@example.test/repo.git", False),
+    # The two shapes git and pip actually emit: a token as the whole
+    # userinfo, and a password with an empty user half.
+    ("url_user_info_empty_user", "https://:FAKE-PW@host.test/repo.git",
+     "https://<redacted>@host.test/repo.git", False),
+    ("url_user_info_token_only", "https://ghp_FAKETOKEN@github.test/x.git",
+     "https://<redacted>@github.test/x.git", False),
     ("bare_openai_prefix", "Incorrect API key provided: sk-abcd1234efgh.",
      "Incorrect API key provided: <redacted>.", False),
     ("bare_google_prefix", "request denied for AIzaSyBareKey123456",
@@ -193,6 +235,10 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     # A key at end of line must not reach across into the next one.
     ("negative_password_colon_block", "password:\n  reset_count: 3",
      "password:\n  reset_count: 3", False),
+    # An `@` in the query is not user-info: the run may not cross the port
+    # into it, or the host and half the parameters vanish.
+    ("negative_url_at_sign_in_query", "http://host.test:8080?u=a@b",
+     "http://host.test:8080?u=a@b", False),
 ) + tuple(
     (f"name_{name.lower()}", f"{name}=S3CR3TV4LUE", f"{name}=<redacted>", True)
     for name in SECRET_ENV_NAMES

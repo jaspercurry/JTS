@@ -20,7 +20,7 @@ from tests.control_server_fixtures import (
     _isolate_household_secret,
     _post,
     _post_raw,
-    _recording_popen,
+    _record_broker,
     server_with_coordinator,
 )
 
@@ -41,29 +41,28 @@ class _SystemctlResult:
 
 
 def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
-    """Leg changes use the same restart kick as the software-AEC3 toggle."""
+    """Leg changes use the same restart kick as the software-AEC3 toggle.
+
+    The kick is `--no-block`, so nothing here observes the reconciler finish:
+    the answer is 202 accepted, never a claim that it restarted."""
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     mode_file = tmp_path / "aec_mode.env"
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    popens: list[list[str]] = []
 
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: {"ok": True})
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
+    monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: {"mode": "auto"})
+    calls = _record_broker(monkeypatch)
 
     status, body = _post(
         f"{base}/aec/leg",
         {"leg": "chip_aec_150", "enabled": True},
     )
 
-    assert status == 200
-    assert body == {"ok": True}
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", "mode": "auto"}
     assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in mode_file.read_text()
-    assert popens == [
-        ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
-    ]
+    assert calls == [("restart", ["jasper-aec-reconcile.service"])]
 
 
 def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
@@ -85,29 +84,92 @@ def test_aec_profile_restarts_reconciler(
     server_with_coordinator,
 ):
     base, _ = server_with_coordinator
-    import jasper.control.server as srv_mod
 
     mode_file = tmp_path / "aec_mode.env"
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    popens: list[list[str]] = []
 
     monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: {"profile": profile})
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
+    calls = _record_broker(monkeypatch)
 
     status, body = _post(
         f"{base}/aec/profile",
         {"profile": profile},
     )
 
-    assert status == 200
-    assert body == {"profile": profile}
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", "profile": profile}
     text = mode_file.read_text()
     assert f"JASPER_AUDIO_INPUT_PROFILE={profile}" in text
     assert "JASPER_WAKE_LEG_CHIP_AEC=1" in text
-    assert popens == [
-        ["systemctl", "restart", "--no-block", "jasper-aec-reconcile.service"],
-    ]
+    assert calls == [("restart", ["jasper-aec-reconcile.service"])]
+
+
+def test_aec_threshold_persists_and_restarts_voice(
+    monkeypatch, tmp_path, server_with_coordinator,
+):
+    """The sensitivity slider's restart goes through the broker, so a refused
+    restart is reportable — openWakeWord reads the threshold only at startup."""
+    base, _ = server_with_coordinator
+    model_file = tmp_path / "wake_model.env"
+    model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
+    monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
+    calls = _record_broker(monkeypatch)
+
+    status, body = _post(f"{base}/aec/threshold", {"threshold": 0.42})
+
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", "threshold": 0.42}
+    assert "JASPER_WAKE_THRESHOLD=0.42" in model_file.read_text()
+    assert calls == [("restart", ["jasper-voice.service"])]
+
+
+@pytest.mark.parametrize(
+    "path, payload, code, extra_field",
+    [
+        (
+            "/aec/leg",
+            {"leg": "chip_aec_150", "enabled": True},
+            "leg_reconcile_failed",
+            {"requested_leg": "chip_aec_150", "requested_enabled": True},
+        ),
+        (
+            "/aec/profile",
+            {"profile": "xvf_chip_aec"},
+            "profile_reconcile_failed",
+            {"requested_profile": "xvf_chip_aec"},
+        ),
+        (
+            "/aec/threshold",
+            {"threshold": 0.42},
+            "wake_threshold_restart_failed",
+            {"threshold": 0.42},
+        ),
+    ],
+)
+def test_aec_restart_502s_when_the_broker_refuses(
+    monkeypatch, tmp_path, server_with_coordinator, path, payload, code, extra_field,
+):
+    """Every /aec persist-then-restart route reports a refused restart the
+    same way: the change is persisted, but 502 with a route-specific code —
+    never a silent 200 claiming the daemon picked it up."""
+    base, _ = server_with_coordinator
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text("JASPER_AEC_MODE=auto\n")
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
+    model_file = tmp_path / "wake_model.env"
+    model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
+    monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
+    _record_broker(monkeypatch, ok=False)
+
+    status, body = _post(f"{base}{path}", payload)
+
+    assert status == 502
+    assert body["code"] == code
+    assert body["intent_saved"] is True
+    for key, value in extra_field.items():
+        assert body[key] == value
+    assert body.get("ok") is not True
 
 
 def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
@@ -277,7 +339,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     monkeypatch.setattr(
         aec_endpoints,
         "_kick_aec_reconciler",
-        lambda: pytest.fail("source selection must not run the reconciler"),
+        lambda **_kw: pytest.fail("source selection must not run the reconciler"),
     )
 
     status, body = _post(

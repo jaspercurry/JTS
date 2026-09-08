@@ -12,11 +12,9 @@ load-bearing: the persisted timestamp is what keeps a *permanent*
 userspace wedge from reboot-looping forever (see
 jasper/control/system_supervisor.py).
 
-Today those writes work only because `ProtectSystem=full` leaves /var
-writable. A future tightening to `ProtectSystem=strict` would silently
-make /var read-only and regress the reboot-loop guard. The explicit
-`ReadWritePaths=/var/lib/jasper` pins the contract; this test catches a
-config edit that drops it. Mirrors tests/test_fanin_systemd.py.
+ProtectSystem=strict makes /var read-only outside of ReadWritePaths. The
+explicit `ReadWritePaths=/var/lib/jasper` pins the contract; this test
+catches a config edit that drops it. Mirrors tests/test_fanin_systemd.py.
 """
 from __future__ import annotations
 
@@ -149,11 +147,9 @@ def test_grouping_kick_drain_outlasts_legal_reconcile_activation():
 def test_readwritepaths_pins_control_write_contracts():
     """The state-write contract must be explicit, not incidental.
 
-    Without this line the /var/lib/jasper writes (including the
-    supervisor's reboot rate-limit) survive only because
-    ProtectSystem=full happens to leave /var writable — a
-    ProtectSystem=strict edit would silently break persistence and
-    regress to the reboot-loop the rate-limit exists to prevent."""
+    ProtectSystem=strict makes /var and /etc read-only outside these
+    paths; without each one listed here, the write it backs (including
+    the supervisor's reboot rate-limit) would silently break."""
     unit = _read_unit()
     paths = _values_for(unit, "ReadWritePaths")
     assert paths, (
@@ -165,10 +161,17 @@ def test_readwritepaths_pins_control_write_contracts():
         "rate-limit at /var/lib/jasper/system_supervisor_reboot.json depends "
         f"on it. Got {paths!r}"
     )
+    assert "-/var/lib/jasper-asound" in paths, (
+        "ReadWritePaths must include /var/lib/jasper-asound; the /system "
+        "audio-quality control renders asound.conf there from inside "
+        "jasper-control's sandbox. The `-` is required: a box without the "
+        "directory must lose the render, not the whole control plane. "
+        f"Got {paths!r}"
+    )
     assert "/etc/avahi/services" in paths, (
         "ReadWritePaths must include /etc/avahi/services; wake-response "
         "peering renders /etc/avahi/services/jasper-peer.service from inside "
-        f"jasper-control under ProtectSystem=full. Got {paths!r}"
+        f"jasper-control under ProtectSystem=strict. Got {paths!r}"
     )
 
 

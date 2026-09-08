@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,7 @@ from jasper.enhanced_aec import (
 )
 from jasper.json_fields import sha256_file
 from jasper.logging_setup import configure_logging
+from jasper.secret_redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +51,6 @@ MAX_FAILURE_OUTPUT_CHARS = 4096
 SUBPROCESS_OUTPUT_SPOOL_BYTES = 64 * 1024
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_SECRET_VALUE_RE = re.compile(
-    r"(?i)\b(api[_-]?key|authorization|password|secret|token)"
-    r"(\s*[:=]\s*)(\S+)"
-)
-_URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
 
 
 class SourceChanged(EnhancedAecError):
@@ -65,9 +63,7 @@ def _bounded_failure_output(raw: str | bytes | None) -> str:
     if raw is None:
         return ""
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-    text = _ANSI_ESCAPE_RE.sub("", text)
-    text = _SECRET_VALUE_RE.sub(r"\1\2[redacted]", text)
-    text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]@", text)
+    text = redact_secrets(_ANSI_ESCAPE_RE.sub("", text))
     text = "".join(
         char if char in "\n\t" or char.isprintable() else "?"
         for char in text
@@ -371,8 +367,6 @@ def _build_v2_wheel(
 
 
 def _extract_v2_extension(wheel: Path, destination: Path) -> Path:
-    import zipfile
-
     destination.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(wheel) as bundle:
         candidates = [
@@ -691,8 +685,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"jasper-enhanced-aec-install: {exc}", file=sys.stderr)
         return 1
     if args.json:
-        import json
-
         print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

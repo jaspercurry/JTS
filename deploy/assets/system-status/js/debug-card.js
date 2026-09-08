@@ -69,6 +69,12 @@ export function buildDebugCard() {
         body: JSON.stringify({ subsystem: s.id, enabled: on }),
       });
       const data = await r.json();
+      if (!r.ok && data.intent_saved === true) {
+        console.error("system: debug toggle failed", data.error);
+        status.textContent = "Saved; restart refused: " + data.error;
+        cb.disabled = false;
+        return;
+      }
       if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
       status.textContent = "";
       render(data);  // POST returns the fresh snapshot; rebuilds the rows

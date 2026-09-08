@@ -37,6 +37,7 @@ from tests.control_server_fixtures import (
     _get,
     _isolate_household_secret,
     _post,
+    _record_broker,
     _recording_popen,
     server_with_coordinator,
 )
@@ -560,10 +561,8 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
 ):
     base, _ = server_with_coordinator
     import jasper.control.handlers.system as system_mod
-    import jasper.control.server as srv_mod
 
     applied: list[str] = []
-    popens: list[list[str]] = []
 
     def fake_apply(converter: str) -> dict:
         applied.append(converter)
@@ -576,21 +575,51 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
         }
 
     monkeypatch.setattr(system_mod, "apply_requested_converter", fake_apply)
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
+    calls = _record_broker(monkeypatch)
 
     status, body = _post(
         f"{base}/system/audio-quality",
         {"converter": "best"},
     )
 
-    assert status == 200
+    assert status == 202
+    assert body["ok"] is True
+    assert body["status"] == "accepted"
     assert applied == ["samplerate_best"]
     assert body["audio_quality"]["converter"] == "samplerate_best"
+    # `intent_saved` is the refusal's consolation prize ("we kept your
+    # choice, the restart did not happen"). On an ok it reads as a hedge.
+    assert "intent_saved" not in body
     from jasper.local_sources import local_source_audio_refresh_units
 
-    assert popens == [
-        ["systemctl", "try-restart", *local_source_audio_refresh_units()],
+    assert calls == [
+        ("try-restart", [unit]) for unit in local_source_audio_refresh_units()
     ]
+    assert body["accepted_units"] == list(local_source_audio_refresh_units())
+
+
+def test_system_audio_quality_502s_when_the_renderer_restart_is_refused(
+    monkeypatch,
+    server_with_coordinator,
+):
+    """A broker refusal (allowlist denial, broker down, nonzero systemctl) must
+    reach the caller, not be papered over with ok:true."""
+    base, _ = server_with_coordinator
+    import jasper.control.handlers.system as system_mod
+
+    monkeypatch.setattr(
+        system_mod,
+        "apply_requested_converter",
+        lambda converter: {"converter": converter, "active_converter": converter},
+    )
+    _record_broker(monkeypatch, ok=False)
+
+    status, body = _post(f"{base}/system/audio-quality", {"converter": "best"})
+
+    assert status == 502
+    assert body["code"] == "audio_quality_restart_failed"
+    assert body["intent_saved"] is True
+    assert body.get("ok") is not True
 
 
 def test_system_audio_quality_rejects_unknown_converter(
@@ -758,7 +787,9 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
     """A destructive /system/ action emits an `event=system.action` audit line
     (so a dashboard-triggered reboot is distinguishable from a watchdog/crash
     reset when debugging "the speaker restarted on its own") and shells out to
-    the right systemctl command. subprocess.Popen is mocked so no test machine
+    the right systemctl command. The broker has no reboot verb and the box goes
+    down before any verdict, so the answer is 202 accepted — never a claim that
+    the reboot happened. subprocess.Popen is mocked so no test machine
     reboots."""
     import logging
 
@@ -772,8 +803,9 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
     with caplog.at_level(logging.INFO, logger="jasper.control"):
         status, body = _post(f"{base}/system/reboot", {})
 
-    assert status == 200
+    assert status == 202
     assert body["action"] == "reboot"
+    assert body["status"] == "accepted"
     assert popens == [["systemctl", "reboot"]]
     assert any(
         "event=system.action action=reboot" in rec.getMessage()
@@ -2079,27 +2111,64 @@ def test_system_restart_audio_uses_local_source_registry(
     monkeypatch, server_with_coordinator,
 ):
     """restart-audio restarts core audio but only try-restarts local sources."""
-    import jasper.control.server as srv_mod
     from jasper.local_sources import local_source_audio_refresh_units
 
-    seen = []
-
-    def fake_popen(argv, **kw):
-        seen.append(list(argv))
-
-        class _P:
-            pass
-
-        return _P()
-
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", fake_popen)
+    calls = _record_broker(monkeypatch)
     base, _fake = server_with_coordinator
-    status, _body = _post(f"{base}/system/restart/audio", {})
-    assert status == 200
-    assert seen == [
-        ["systemctl", "restart", "jasper-camilla.service"],
-        ["systemctl", "try-restart", *local_source_audio_refresh_units()],
+    status, body = _post(f"{base}/system/restart/audio", {})
+    assert status == 202
+    assert body["ok"] is True
+    assert body["status"] == "accepted"
+    # One try-restart call per unit: a batch reports one verdict for the whole
+    # set, so a box missing one renderer would fail the rest with it.
+    assert calls == [("restart", ["jasper-camilla.service"])] + [
+        ("try-restart", [unit]) for unit in local_source_audio_refresh_units()
     ]
+    assert body["accepted_units"] == [
+        "jasper-camilla.service", *local_source_audio_refresh_units(),
+    ]
+    assert body["skipped_units"] == []
+
+
+def test_system_restart_audio_502s_when_the_broker_refuses(
+    monkeypatch, server_with_coordinator,
+):
+    """A refused restart answers 502 — the dashboard must not show "Sent" for
+    a restart systemd never accepted."""
+    _record_broker(monkeypatch, ok=False)
+    base, _fake = server_with_coordinator
+    status, body = _post(f"{base}/system/restart/audio", {})
+    assert status == 502
+    assert body["code"] == "system_restart_failed"
+    assert body["action"] == "restart-audio"
+    assert body["failed_verb"] == "restart"
+    assert body["failed_units"] == ["jasper-camilla.service"]
+    assert body.get("ok") is not True
+
+
+@pytest.mark.parametrize(
+    ("rc", "expected_status", "group"),
+    [(5, 202, "skipped_units"), (1, 502, "failed_units")],
+)
+def test_system_restart_audio_reports_each_renderer_on_its_own(
+    monkeypatch, server_with_coordinator, rc, expected_status, group,
+):
+    """A renderer this box never installed (rc 5) is skipped, not a failure;
+    a renderer that really refused fails alone. Either way the core restart
+    that already went through stays in `accepted_units` — a partial success
+    reported as a total failure sends the household chasing working audio."""
+    from jasper.local_sources import local_source_audio_refresh_units
+
+    odd_one = local_source_audio_refresh_units()[0]
+    _record_broker(monkeypatch, unit_rc={odd_one: rc})
+    base, _fake = server_with_coordinator
+
+    status, body = _post(f"{base}/system/restart/audio", {})
+
+    assert status == expected_status
+    assert body[group] == [odd_one]
+    assert "jasper-camilla.service" in body["accepted_units"]
+    assert odd_one not in body["accepted_units"]
 
 
 def test_system_restart_audio_keeps_parked_renderers_parked(
@@ -2110,19 +2179,11 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     import jasper.control.server as srv_mod
 
     monkeypatch.setattr(srv_mod, "_pair_follower_leader_addr", lambda: "jts.local")
-    seen = []
-
-    def fake_popen(argv, **kw):
-        seen.append(list(argv))
-        class _P:
-            pass
-        return _P()
-
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", fake_popen)
+    calls = _record_broker(monkeypatch)
     base, _fake = server_with_coordinator
     status, _body = _post(f"{base}/system/restart/audio", {})
-    assert status == 200
-    flat = [a for argv in seen for a in argv]
+    assert status == 202
+    flat = [unit for _verb, units in calls for unit in units]
     assert "jasper-camilla.service" in flat
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat

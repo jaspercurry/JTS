@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import textwrap
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -569,7 +570,7 @@ def test_command_failure_keeps_bounded_redacted_diagnostic_tail(monkeypatch):
     assert message.startswith("compiler exited with status 7; output tail:")
     assert "real compiler error" in message
     assert secret not in message
-    assert "token=[redacted]" in message
+    assert "<redacted>" in message
     assert "--private-argument" not in message
     assert len(message) <= enhanced_aec_install.MAX_FAILURE_OUTPUT_CHARS + 100
 
@@ -596,6 +597,66 @@ def test_command_timeout_is_bounded_and_does_not_dump_argv(monkeypatch):
     assert "network stalled" in message
     assert "very-secret" not in message
     assert "user:password" not in message
+
+
+def test_a_failed_install_persists_no_credential_in_job_state(
+    capability, tmp_path, monkeypatch,
+):
+    leaked = (
+        "fatal: Authorization: Bearer FAKE-TOKEN-abc123\n"
+        "fetching https://alice:FAKE-PW-xyz@example.test/archive.tar.gz\n"
+    )
+
+    def fail(*_args, **kwargs):
+        kwargs["stdout"].write(leaked.encode())
+        kwargs["stdout"].flush()
+        raise subprocess.CalledProcessError(1, ["curl", "--fail"])
+
+    capability.intent.write_text('{"schema_version":1,"requested":true}\n')
+    monkeypatch.setattr(subprocess, "run", fail)
+    monkeypatch.setattr(
+        enhanced_aec_install,
+        "read_intent",
+        partial(enhanced_aec.read_intent, path=capability.intent),
+    )
+    monkeypatch.setattr(
+        enhanced_aec_install, "INSTALL_LOCK_PATH", capability.install_lock,
+    )
+    monkeypatch.setattr(
+        enhanced_aec_install,
+        "_prepare_webrtc_source",
+        partial(
+            enhanced_aec_install._prepare_webrtc_source,
+            cache_root=tmp_path / "webrtc",
+        ),
+    )
+    monkeypatch.setattr(
+        enhanced_aec_install,
+        "write_job_state",
+        partial(
+            enhanced_aec.write_job_state,
+            path=capability.job,
+            state_lock_path=capability.state_lock,
+        ),
+    )
+    monkeypatch.setattr(
+        enhanced_aec_install,
+        "install",
+        partial(
+            enhanced_aec_install.install,
+            source_root=capability.source,
+            venv_root=capability.venv,
+            cache_root=tmp_path / "cache",
+        ),
+    )
+
+    assert enhanced_aec_install.main([]) == 1
+
+    persisted = capability.job.read_text(encoding="utf-8")
+    assert "FAKE-TOKEN-abc123" not in persisted
+    assert "FAKE-PW-xyz" not in persisted
+    assert "<redacted>" in persisted
+    assert json.loads(persisted)["phase"] == "failed"
 
 
 def test_runtime_refresh_failure_is_nonfatal_and_defers_to_next_restart(
