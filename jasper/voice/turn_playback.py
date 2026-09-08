@@ -254,9 +254,11 @@ async def idle_watchdog(
 
     Three cases:
       * `turn.server_turn_complete()` is True → server says "model is
-        done speaking". Defer while audio remains in flight, anchored
-        on TtsPlayout's sample-counted drain deadline (see
-        ``expected_drain_at``). Canonical clean close.
+        done speaking". Defer while audio is still MOVING, anchored on
+        TtsPlayout's sample-counted drain deadline (see
+        ``expected_drain_at``); a queue that stops draining for
+        `response_stall_timeout` ends the turn rather than deferring a
+        wedged consumer forever. Canonical clean close.
       * No chunks received yet → model hasn't started speaking;
         wait the full `timeout` for the first chunk to arrive (Live
         API can take 3-5 s, sometimes longer).
@@ -276,6 +278,8 @@ async def idle_watchdog(
     session-frame done-task check remains as a backup for always-on mic
     frames. End-of-turn drain timing is logged by ``_end_turn`` itself
     so observability is symmetric across whichever side wins the race."""
+    playout_progress: tuple[int, float] | None = None
+    progressed_at = time.monotonic()
     while True:
         await asyncio.sleep(0.25)
         if turn.turn_lost():
@@ -286,8 +290,26 @@ async def idle_watchdog(
         if turn.server_turn_complete():
             # Defer while chunks are still queued in the inter-task
             # buffer — the consumer hasn't yet pushed them to TtsPlayout.
-            if turn.audio_chunks_pending() > 0:
-                continue
+            # Only while that buffer is still MOVING: a consumer wedged
+            # with audio queued behind it would otherwise defer the turn
+            # forever, and the household gets no answer and no wake.
+            pending = turn.audio_chunks_pending()
+            progress = (pending, tts.expected_drain_at())
+            if progress != playout_progress:
+                playout_progress = progress
+                progressed_at = now
+            if pending > 0:
+                stalled_for = now - progressed_at
+                if stalled_for <= response_stall_timeout:
+                    continue
+                log_event(
+                    logger,
+                    "turn.playout_stalled",
+                    pending=pending,
+                    stalled_s=round(stalled_for, 2),
+                    level=logging.WARNING,
+                )
+                return
             if tts.expected_drain_at() > now:
                 continue
             return

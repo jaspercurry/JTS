@@ -13,14 +13,21 @@ Covers the two interrupt windows and the no-silent-failure contract:
     byte-identical to its pre-barge-in shape.
   * flush failure emits ``event=barge.flush_failed`` (WARN) and the turn
     still ends — never silently.
+
+Plus the other half of the same "never silently" contract: ``idle_watchdog``
+defers the post-turn_complete close on playout PROGRESS, so a wedged
+consumer ends the turn instead of holding it (and the wake loop) open.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
+from jasper.voice._base import BaseLiveTurn
 from jasper.voice.session import AudioOutChunk
-from tests._log_events import event_records
+from jasper.voice.turn_playback import idle_watchdog
+from tests._log_events import event_fields, event_records
 
 
 async def _play_responses(*args, **kwargs):
@@ -494,3 +501,71 @@ def test_flush_failure_skips_provider_reconcile(caplog):
         "a failed flush must not drive the provider reconcile seam"
     )
     assert len(event_records(caplog, "barge.flush_failed")) == 1
+
+
+# ---------------------------------------------------------------------------
+# idle_watchdog: the post-turn_complete deferral is progress-based.
+# ---------------------------------------------------------------------------
+
+
+class _StubTts:
+    """The watchdog reads only ``expected_drain_at`` off TtsPlayout, which
+    otherwise needs an ALSA device."""
+
+    def expected_drain_at(self) -> float:
+        return 0.0
+
+
+def _completed_turn(pending: int) -> BaseLiveTurn:
+    """A real turn the server has finished, holding `pending` unplayed
+    chunks and its terminal sentinel."""
+    turn = BaseLiveTurn(conn=None, started_at=time.monotonic())  # type: ignore[arg-type]
+    turn._server_turn_complete = True
+    for _ in range(pending):
+        turn._enqueue_audio(AudioOutChunk(pcm=bytes(8)))
+    turn._audio_q.put_nowait(None)
+    return turn
+
+
+async def test_idle_watchdog_ends_a_turn_whose_playout_stopped_moving(caplog):
+    """A consumer that wedges with audio queued behind it used to defer the
+    watchdog forever: the turn never ended, so the wake loop never came
+    back and the household lost the speaker until a restart."""
+    turn = _completed_turn(pending=3)
+
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        await asyncio.wait_for(
+            idle_watchdog(
+                turn, _StubTts(), timeout=999.0, response_stall_timeout=0.3,
+            ),
+            timeout=5.0,
+        )
+
+    fields = event_fields(caplog, "turn.playout_stalled")
+    # qsize(), so the 3 chunks plus the terminal sentinel behind them.
+    assert int(fields["pending"]) == 4
+    assert float(fields["stalled_s"]) > 0.3
+
+
+async def test_idle_watchdog_keeps_deferring_while_playout_drains(caplog):
+    """Progress, not patience: a consumer still moving chunks holds the turn
+    open well past `response_stall_timeout`, which a plain timer would cut
+    off mid-sentence."""
+    turn = _completed_turn(pending=6)
+
+    async def _consume() -> None:
+        async for _chunk in turn.audio_out_chunks():
+            await asyncio.sleep(0.2)
+
+    consumer = asyncio.ensure_future(_consume())
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        await asyncio.wait_for(
+            idle_watchdog(
+                turn, _StubTts(), timeout=999.0, response_stall_timeout=0.3,
+            ),
+            timeout=10.0,
+        )
+
+    await asyncio.wait_for(consumer, timeout=1.0)
+    assert turn.audio_chunks_pending() == 0
+    assert event_records(caplog, "turn.playout_stalled") == []
