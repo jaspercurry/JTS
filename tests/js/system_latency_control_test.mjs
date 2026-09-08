@@ -79,16 +79,18 @@ assert.equal(refs.effective.textContent, "Not active");
 assert.ok(refs.buttons.every((item) => item.el.attrs["aria-pressed"] === "false"));
 
 const quietConsole = { error() {} };
+// postJSON's failure contract: a non-2xx throws an Error carrying the
+// server's JSON verdict on .body/.status, with .message = body.error.
 const actions = await new AsyncFunction(
-  "fetch", "jsonHeaders", "console",
+  "postJSON", "console",
   `${moduleBody(actionsPath)}\nreturn { setLatencyMode };`,
 )(
-  async () => ({
-    ok: false,
-    status: 502,
-    async json() { return { error: "fan-in restart failed" }; },
-  }),
-  () => ({ "Content-Type": "application/json" }),
+  async () => {
+    const err = new Error("fan-in restart failed");
+    err.status = 502;
+    err.body = { error: "fan-in restart failed" };
+    throw err;
+  },
   quietConsole,
 );
 

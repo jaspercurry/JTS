@@ -678,8 +678,10 @@ def test_modules_wire_the_proxy_endpoints() -> None:
                  "optional-features/enhanced-aec"):
         assert path in js, f"system modules no longer reference {path}"
     assert 'getJSON("/system/data.json")' in js
-    assert 'fetch("/system/audio-quality"' in js
-    assert 'fetch("/system/usb-latency"' in js
+    # Both ride the shared postJSON, which attaches X-JTS-Token and does the
+    # 403 prompt+retry — control gates these two routes.
+    assert 'postJSON("/system/audio-quality"' in js
+    assert 'postJSON("/system/usb-latency"' in js
 
 
 def test_enhanced_aec_is_progressively_disclosed_on_software_surface() -> None:

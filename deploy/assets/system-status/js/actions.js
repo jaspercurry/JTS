@@ -7,8 +7,7 @@
 // honestly (button label or status text, plus console.error) — no silent paths.
 
 import { h } from "/assets/shared/js/dom.js";
-import { jsonHeaders } from "./api.js";
-import { postControlAction } from "/assets/shared/js/http.js";
+import { postControlAction, postJSON } from "/assets/shared/js/http.js";
 import { updateAudioQuality } from "./sections.js";
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 
@@ -70,11 +69,9 @@ export async function setQuality(refs, converter, onApplied) {
   aq.buttons.forEach((b) => { b.el.disabled = true; b.el.dataset.applying = "1"; });
   aq.status.textContent = "Applying…";
   try {
-    const r = await fetch("/system/audio-quality", {
-      method: "POST", headers: jsonHeaders(), body: JSON.stringify({ converter }),
-    });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || "HTTP " + r.status);
+    // postJSON attaches X-JTS-Token and, on a 403 control_token_required,
+    // prompts once + retries — the same gate flow the restart buttons get.
+    const body = await postJSON("/system/audio-quality", { converter });
     // Reflect the new active/pressed state immediately rather than waiting
     // for the next 5 s poll.
     if (body.audio_quality) {
@@ -98,11 +95,7 @@ export async function setLatencyMode(refs, mode, onApplied) {
   });
   latency.status.textContent = "Applying… Audio will pause briefly.";
   try {
-    const response = await fetch("/system/usb-latency", {
-      method: "POST", headers: jsonHeaders(), body: JSON.stringify({ mode }),
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
+    await postJSON("/system/usb-latency", { mode });
     latency.preference.textContent = mode[0].toUpperCase() + mode.slice(1);
     latency.status.textContent = "Preference saved. Checking the live buffer…";
     if (onApplied) onApplied(mode);

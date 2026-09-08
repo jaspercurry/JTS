@@ -330,12 +330,18 @@ def _active_speaker_grouping_block() -> dict[str, Any] | None:
 # gadget; aec/firmware/update downloads and flashes microphone firmware;
 # aec/usb-mic = starts or stops live room-audio export; aec/usb-mic-leg =
 # changes which live room-audio stream reaches the computer; aec/commission =
-# stops voice/AEC for minutes and plays audible measurement sweeps.
+# stops voice/AEC for minutes and plays audible measurement sweeps;
+# system/audio-quality re-renders asound.conf and restarts every renderer;
+# system/usb-latency reconciles the CamillaDSP coupling under the DSP-writer
+# lock. Both interrupt playback for every listener, so they are mutations, not
+# tuning knobs.
 _TOKEN_GATED_ROUTES = frozenset({
     "/system/poweroff",
     "/system/reboot",
     "/system/restart/voice",
     "/system/restart/audio",
+    "/system/audio-quality",
+    "/system/usb-latency",
     "/usb-forensics",
     "/mic/mute",
     "/aec/usb-mic",
