@@ -23,10 +23,6 @@ from . import advisor_context
 
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/correction/sessions")
-# Package resource, not documentation: the product reads this corpus at
-# runtime and injects it into an LLM prompt on the live /sound/room/ wizard.
-# It ships inside the package because install.sh rsyncs `jasper/` and nothing
-# else on a speaker -- there is no /opt/jasper/docs to search.
 DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent / "corpus"
 
 
@@ -43,9 +39,12 @@ class MeasurementBundle:
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
         return None
-    data = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AgentToolError(f"cannot read {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise AgentToolError(f"{path} must be a JSON object")
     return data
