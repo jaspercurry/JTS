@@ -378,7 +378,7 @@ async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monke
     ("rate_limit_error", "rate_limit_exceeded", True),
     ("invalid_request_error", "rate_limit_exceeded", True),
 ])
-async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, transient):
+async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, transient, caplog):
     from openai.types.realtime import RealtimeErrorEvent
     from jasper.voice._supervisor import is_transient
 
@@ -386,17 +386,23 @@ async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, trans
         async def send(self, event):
             self._inbox.put_nowait(RealtimeErrorEvent.model_validate({
                 "type": "error", "event_id": "setup_error",
-                "error": {"type": error_type, "code": code, "message": "setup failed"},
+                "error": {"type": error_type, "code": code, "message": "setup rejected plainvalue123"},
             }))
 
     conn = OpenAIRealtimeConnection(
-        api_key="fake", connect_factory=lambda **_: _FakeAsyncCM(RejectedSetup()),
+        api_key="plainvalue123", connect_factory=lambda **_: _FakeAsyncCM(RejectedSetup()),
+        backoff_schedule=(0.0,),
     )
     with pytest.raises((ValueError, RuntimeError)) as failure:
         await conn._open_session()
     assert is_transient(failure.value) is transient
     assert conn.wake_cue() == (CANT_CONNECT_CUE_SLUG if transient else NEEDS_ATTENTION_CUE_SLUG)
     assert conn.is_paused()
+    assert "plainvalue123" not in str(failure.value)
+    await run_reconnect_with_backoff(conn)
+    assert conn._state is ConnectionState.FAILED
+    assert "plainvalue123" not in caplog.text
+    assert "plainvalue123" not in conn.last_failure_detail()
     await conn.stop()
 
 

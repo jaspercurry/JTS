@@ -1046,7 +1046,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                             _event_field(error, "type") == "invalid_request_error"
                             and _event_field(error, "code") != "rate_limit_exceeded"
                         )
-                        raise (ValueError if invalid else RuntimeError)(error)
+                        error_cls = ValueError if invalid else RuntimeError
+                        raise error_cls(failure_detail(
+                            error_cls(error), literals=self._secret_literals(),
+                        ))
                 else:
                     raise ConnectionError("session closed before setup acknowledgement")
         except BaseException as e:  # noqa: BLE001
