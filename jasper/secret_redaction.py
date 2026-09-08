@@ -85,9 +85,13 @@ _SECRET_WORD_RE = re.compile(
     rf"(?:([ \t]*:[ \t]*)\S.*$|([ \t]+)(?:(?:{_QUOTED})\S*|\S{{8,}}))",
 )
 
-# `key` alone: every other query-parameter name is already a `_KEY_VALUE_RE`
-# keyword.
-_URL_PARAM_RE = re.compile(r"(?i)([?&]key=)[^&\s'\"<>]+")
+# `key` and `code` alone: every other query-parameter name is already a
+# `_KEY_VALUE_RE` keyword. `code` is the single-use OAuth authorization
+# code, which reaches a wizard's stdlib request line verbatim. Anchored on
+# `[?&]` so prose ("error code: 404") is untouched; `state` stays readable —
+# a CSRF nonce is spent by the time the line is logged and carries no
+# authority on its own.
+_URL_PARAM_RE = re.compile(r"(?i)([?&](?:key|code)=)[^&\s'\"<>]+")
 
 # Live provider key prefixes: Google (AIza), OpenAI (sk-), xAI (xai-),
 # Google OAuth client secret (GOCSPX-). See ADR-0243.
