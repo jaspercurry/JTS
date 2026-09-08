@@ -309,9 +309,13 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
-- 2026-09-08 ~20:30Z: Owner spawned lanes B (program), C (room candidate) and
-  D (bass) as fresh sessions from the kickoff snippets. Lane A (retire) waits
-  for the Wave 0b PR (in flight in its own session).
+- 2026-09-08 ~20:40Z: Owner spawned lanes B (program), C (room candidate) and
+  D (bass) as fresh sessions from the kickoff snippets; each is working on its
+  brief's first branch (`claude/seat-w1-1-4-seat-cube-program`,
+  `claude/seat-w2-2-1-room-candidate`, `claude/seat-w3-3-1-bench-binding`).
+- 2026-09-08 21:06Z: Wave 0b session started ("JTS 0b"). Lane A (retire) waits
+  for its PR; lane B's docs row 1.7 also waits for it (it replaces 0b's
+  methodology stub).
 - 2026-09-08: Lane briefs written and verified against main `f84d7da`/`72bc347`
   by Sonnet fact-checkers: `briefs/wave-1-program.md` (lane B),
   `briefs/wave-2-room-candidate.md` (lane C), `briefs/wave-3-bass.md` (lane D).
