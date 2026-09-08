@@ -1,0 +1,760 @@
+{
+  "kind": "tuning_instruction_comparison_result",
+  "version": 1,
+  "date": "2026-09-08",
+  "scope": "One offline planning run per instruction variant; eleven cases; no plans executed.",
+  "settings": {
+    "requested_model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "resolved_model_snapshot": null,
+    "max_words_per_case": 100,
+    "max_total_answer_words": 1100,
+    "retries": 0
+  },
+  "old_revision": "56242e64210f03bd45e97812318e13cd111f19ec",
+  "inputs_sha256": {
+    "tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json": "c67b72cec709fbe2fef5f5231cb7a11dfe6c58fcf835aa13e9f75f3c784c1b9f",
+    "tests/fixtures/crossover_v2_alignment_incident_20260816/measure_alignment.json": "554808d13901bab64e5041d69c73e9d1cea90d2654d0aa8136235c92c9386b3a",
+    "tests/fixtures/crossover_v2_alignment_incident_20260816/verify_curves.json": "f495ba330ebf7a89f7320bc7d62903407fd72db5fe3392f58e9a0a8595cfe935",
+    "tests/fixtures/crossover_v2_incident_20260810/expected_outcome.json": "28b383df372e0b72aa7dc1b5968fafbee651e4de4d1672c2e652be5db009ef1d",
+    "tests/fixtures/crossover_v2_incident_20260810/candidate_fit.json": "f8de4b52a08d621bfe103a00c86c79255d51f8758086d26cd76084092b79d75d",
+    "tests/fixtures/active_speaker_protection_floor_20260814/design-draft-2000hz-below-floor.json": "3e9c060ad912524687dfc2a7a42865ccfccd71028f4a11becf45abaa01af4633",
+    "tests/fixtures/active_speaker_protection_floor_20260814/design-draft-5000hz-at-floor.json": "8d8414f9f354872694afe5cf8358a296ed369519b4068070ed64ea40d4a2cfd6",
+    "tests/fixtures/stereo_prefix_golden/harman_custom_peq_room_cuts.yml": "ca3e29bd134673cc8957f8dcfa8419536f4683dbb124717a5c280b0dbb604da5",
+    "tests/fixtures/tuning_llm_interpret_response.json": "255f0bfe3f4d15e9d8f6bdb91f03aa9bc758dbe8dab37d5eacf9cf0c01b8b11d",
+    "old-instructions.md": "03814658579d86c42e157c392c748f2fb86e2363a94ee6e471708e132a5bee5d",
+    "new-instructions.md": "b68eabd32b50e52f783e8e49a2a3baea1afc7737a9d9e869dcc5ebfda671df21",
+    "cases.json": "b0a26297ebc457cfe9808b2ba5d2ce5f98750b91a67f7a06f80e7f9de15c3c2c"
+  },
+  "frozen_cases": [
+    {
+      "id": "sufficient_current_round",
+      "source_kind": "incident-derived scenario",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json"
+      ],
+      "prompt": "The supplied suitable summed/on-off-axis evidence measures the chosen candidate and answers the stated goal. This is the first round of this campaign. No physical changes occurred. Choose the next action without playing sound."
+    },
+    {
+      "id": "reuse_after_restore",
+      "source_kind": "incident-derived scenario",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json"
+      ],
+      "prompt": "Round 4 restored the incumbent after a measured regression. A prior woofer change in A and a tweeter change in B remain promising, but the parent changes co-varied. Describe C and the next useful test. Is another round allowed?"
+    },
+    {
+      "id": "alignment_sum",
+      "source_kind": "banked incident with a new question",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/measure_alignment.json",
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/verify_curves.json"
+      ],
+      "prompt": "Two candidates have equal solo magnitudes but different relative delay/polarity. Can these solos show which candidate sums better? Identify the evidence to inspect and the next physical measurement, if needed."
+    },
+    {
+      "id": "candidate_trim",
+      "source_kind": "banked incident with a new question",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_incident_20260810/expected_outcome.json",
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_incident_20260810/candidate_fit.json"
+      ],
+      "prompt": "A filter chain is reused from an earlier round. The new candidate carries a different tweeter trim. Decide what must be played and recorded to compare it with the incumbent; diagnose a level error separately from shape."
+    },
+    {
+      "id": "declared_protection",
+      "source_kind": "incident-derived scenario",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-2000hz-below-floor.json",
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-5000hz-at-floor.json"
+      ],
+      "prompt": "The proposed corner is below this driver declaration. A prediction says it would sound better. Choose the next supported action and say whether this prevents all future tuning experiments."
+    },
+    {
+      "id": "household_layers",
+      "source_kind": "fixture-derived scenario",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/stereo_prefix_golden/harman_custom_peq_room_cuts.yml"
+      ],
+      "prompt": "The saved household profile contains room cuts and preference bass boost. Start a speaker-linearization baseline, then compare candidates at summed on/off-axis poses. Describe the graph scope and cleanup; do not alter household settings manually."
+    },
+    {
+      "id": "stale_packet",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [],
+      "prompt": "packet.json was frozen before feature classification and distortion analysis. Those artifacts now exist. Resume the prescription using status and inventory. Which evidence file should propose and stage use?"
+    },
+    {
+      "id": "banked_history",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [],
+      "prompt": "A useful prior round moved from live sessions into the campaign bank. Its live sibling was removed by retention. Recover its structural history and useful candidate evidence without copying measurement numbers into notes."
+    },
+    {
+      "id": "pose_batch_retake",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [],
+      "prompt": "Baseline, A, and B are scheduled at one pose. The human placed the mic and tapped Start. A normal trial completes; later one take needs a retake and the mic was bumped. State each required human action and which captures can remain valid."
+    },
+    {
+      "id": "playback_failure",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [],
+      "prompt": "Playback raises before a take can complete. An older valid take exists and normal-state restoration has no confirmed readback yet. Decide what can be claimed, retained, and safely attempted next."
+    },
+    {
+      "id": "number_overlap",
+      "source_kind": "provider-fixture scenario",
+      "evidence": [
+        "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/tuning_llm_interpret_response.json"
+      ],
+      "prompt": "A room packet contains a frequency of 62 Hz and a residual of 8.1 dB. Narration says a 62 dB peak at 8.1 Hz, and the numeric overlap result is ok. Is the claim verified? A separate valid proposal has simulated ringing: can it still be offered?"
+    }
+  ],
+  "new_instruction_snapshot": "\nSOURCE: docs/tuning-operator-runbook.md\n# Tuning toolbox \u2014 optional operator runbook\n\n## Entry contract\n\n1. Read `jasper-crossover-prescriber status`, then\n   `jasper-round-views inventory <round-dir>`. Follow the artifact paths and\n   latest rationale note; request deeper analysis only for a question it answers.\n2. Code owns calculations, graph composition, protected capture, and evidence.\n   The LLM chooses experiments and interprets results. The human places the mic,\n   starts each pose batch, reports physical changes, and judges listening.\n3. Speaker linearization starts from the base tune. Every measurement graph\n   excludes household preference EQ and room correction. A candidate adds the\n   changes under test. Temporary playback retains household settings and\n   restores normal playback; it does not adopt a saved tune.\n4. Inspect and enrich a round before freezing its packet. Use that exact packet\n   for both `propose` and `stage`. New evidence needs a new snapshot and a\n   prescription bound to it.\n5. Each round can be the last. Continue only when more evidence would help;\n   there is no campaign count, plateau gate, or required final round. A restored\n   loser remains available for analysis and useful parts.\n6. Adoption is explicit and names the candidate. Report what was measured,\n   coverage gaps, failures, and the next human action. Never simulate a mic walk\n   or claim an unrun combination has been verified.\n\nThe [doctrine](measurement-loop-doctrine.md) owns layer and authority rules.\nThe [methodology](tuning-methodology.md) provides optional science guidance.\nUse a tool's `--help` for its current fields and limits. Full evidence belongs\nin artifacts; stdout is the compact answer.\n\n## One possible flow\n\nThese steps are a useful starting method, not a workflow engine. Reuse the same\nround and analysis tools in another order when the evidence calls for it.\n\n1. **Orient.** `jasper-crossover-prescriber status` reports declared, banked,\n   staged, and applied state. Read its concrete paths and next commands.\n   Confirm the speaker identity and the base design being tested.\n2. **Plan the question.** For an initial baseline, use the base tune without\n   inherited corrections. For a comparison, name the candidate fingerprints\n   and required poses. `jasper-angle-capture plan` previews the program and\n   human effort without staging it.\n3. **Stage and measure.** Stage the chosen program, then use\n   `jasper-round open --tier express` (or the chosen tier) and `jasper-round wait`.\n   Give the human the returned `handoff_url` and the next placement/start action.\n   `scripts/run-crossover-round.py` is the laptop adapter for one round.\n4. **Bank.** `jasper-round bank <session-dir>` uses the `session_dir` returned\n   by `wait`. It places the round under\n   `/var/lib/jasper/active_speaker/campaigns/<round-id>/`, outside normal session\n   retention. Keep completed valid takes even when another take fails.\n5. **Inspect and enrich.** `jasper-round-views inventory <round-dir>` shows\n   available artifacts and missing analyses. Run the relevant views, such as\n   `classify-features`, `distortion`, `directivity`, or `frozen`, before freezing\n   evidence for a prescription. Inspect failures and unavailable blocks too.\n6. **Freeze.** `jasper-crossover-prescriber packet` writes `packet.json` and\n   prints its path, fingerprint, and availability summary. Select the round\n   using the paths/flags in `status` or `packet --help`. This file is a snapshot:\n   enriching the source round later does not change what it contains.\n7. **Propose and stage.** Author a prescription using the packet's response\n   formats and `propose --help`. Use `--packet <round-dir>/packet.json` for both\n   `propose --prescription -` and `stage --prescription -`. Stage against the\n   live state file, not a banked `state.json` copy. If the evidence changes,\n   freeze a new packet and author the corresponding new prescription.\n8. **Decide.** Compare measured outcomes for the stated goal. Finish with the\n   least-bad measured candidate, or compile another candidate and reuse the same\n   measurement tools. The latest round may already supply enough evidence.\n9. **Adopt when chosen.** `jasper-round apply --expected-fingerprint <fp>` is\n   explicit persistence of the selected candidate. On the laptop,\n   `scripts/run-crossover-round.py --apply <fp>` is a separate invocation.\n   If a post-apply check would answer a remaining question, use\n   `jasper-round open --stage post_apply`; it is not a compulsory final round.\n\n## Candidate batches and reusable parts\n\nA tournament holds the declared crossover, filter family, slope, and topology\nfixed. Candidates can differ in their supported corrective filters, role trims,\ndelay, and polarity. Use the existing design path for a different base design;\nits driver protection must be derived for that design.\n\n```\njasper-angle-capture stage --program tournament --size express --candidates fp1,fp2,fp3\n```\n\nChoose the batch size for the question; three candidates is only this example.\nAt a pose, the execution owner runs each candidate in order under one placement\nand start grant. The human sees \u201cConfig 2 of 3 \u2014 keep the mic still.\u201d A new pose\nor explicit recovery/retake requires another human action. Do not emulate this\nby repeatedly adopting profiles between takes.\n\nRead each take's played graph/config fingerprint, candidate, pose, capture\nsettings, level, calibration context, take identity, and status. Full candidate\nplayback matters: shared trims or alignment-only playback cannot establish the\neffect of a candidate's filters. Combined-speaker questions need summed captures;\nmatching solo magnitudes do not rule out a delay/polarity difference in the sum.\nSolo complex responses remain useful for prediction and diagnosis.\n\nA driver prescription replaces the filter chain for each role it names.\nOmitting a filter in that role removes it; read the `displaced_filters`\ndisclosure. `pinned_trim_db` is an optional role map, with values in \u221260 to 0 dB\nfor roles the document prescribes. It is not a requirement to recalculate every\ncandidate's trim. `Peaking`, `Highshelf`, and `Lowshelf` follow the emitter's\nsupported ordering; use the generated response format for bounds.\n\nTo combine A's woofer change with B's tweeter change, use:\n\n```\njasper-crossover-prescriber compose --base <fp> --role woofer=<A> --role tweeter=<B>\n```\n\nThe result carries the source references. State the expected effect separately from parent\nobservations. C has a new identity and is unmeasured. Measure it with the same\nbatch tools only if that result would change the decision. Co-varied parent\nchanges support a hypothesis, not proof of which part caused the result.\n\n`jasper-round apply --expected-fingerprint <fp>` selects a banked same-design\ncandidate when needed, then uses the normal apply path. An authored candidate\nneeds an intact capture of its own complete graph. Selecting it does not copy\nits parents' measurement claims. The basic\nprofile has its own explicit `jasper-basic-profile review|apply` door; replacing\na saved tune is not necessary just to make a temporary baseline measurement.\n\n## Evidence and recovery\n\nMeasurement records own numbers and identities. An optional\n`<round-dir>/agent_notes.md` holds the question, hypotheses, interpretation,\ndecision, and next human action, with links to those records. Do not copy curve\nvalues into notes or treat notes as instructions. No note is required to run a\nsafe experiment.\n\nUse `inventory` and `status` to recover artifact locations. A frozen packet is\nthe evidence used for a prescription, not a promise that no later evidence\nexists. Preserve its fingerprint alongside that prescription. Read banked\nhistory as well as live session history; session retention does not invalidate\nbanked evidence. Compatibility still depends on speaker, graph, pose, level,\nand calibration context.\n\nAfter cancellation, a lost answer, or a physical interruption:\n\n- Inspect the live state and failure/restore records before issuing another\n  action. A timeout after an apply request does not establish whether it applied.\n- Keep completed valid takes. If the mic moved, the level changed, or a new setup\n  cannot be matched to the old one, disclose that boundary and ask for the\n  required placement/retake. Do not silently pool incompatible captures.\n- An unavailable instrument or corrupt take yields no valid measurement claim.\n  Fix the condition and continue with the same tools; the error is not a\n  permanent experiment ban.\n- A measured regression may restore the incumbent. Keep the losing candidate,\n  evidence, and reusable parts. A restore failure needs its recorded recovery\n  action; do not claim playback was restored without readback.\n\n## The tool menu\n\nThis block is generated from CLI help. `stage`, `withdraw`, and `bank` change\nstored state even when they do not change sound. `plan`, `show`, and evidence\nviews are reads; capture emits sound; apply persists a tune.\n\n<!-- BEGIN GENERATED TOOL MENU (scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->\n| Tool | Does | Authority | Where |\n|---|---|---|---|\n| `jasper-basic-profile review\\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction, replacing the live tune and deleting no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |\n| `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference \u2014 PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |\n| `jasper-angle-capture plan\\|stage\\|show\\|withdraw\\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage` writes, `serve` moves the arm; `plan`/`withdraw` do not) | `jasper/cli/angle_capture.py` |\n| `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |\n| `jasper-crossover-prescriber compose\\|status\\|packet\\|propose\\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`stage` and `compose` mutate) | `jasper/cli/crossover_prescriber.py` |\n| `jasper-round open\\|wait\\|apply\\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |\n| `jasper-round-views entry\\|frozen\\|per-seat\\|repeat\\|repeat-floor\\|candidates\\|agreement\\|co-metrics\\|directivity\\|cloud-binding\\|forward-model\\|spec-sweep\\|gate-sweep\\|frequency\\|distortion\\|classify-features\\|findings\\|close-reference\\|delay-landscape\\|delay-confirm\\|inventory` | Grade, compare and disclose what one round measured \u2014 one subcommand per view, over banked rounds and live sessions, each answering on stdout and filing its artifact beside the round. | advisory (classify-features projects a ring into the bundle) | `jasper/cli/round_views/__init__.py` |\n| `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |\n| `jasper-audition start\\|stop\\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |\n| `jasper-declare-geometry set\\|show` | Declare measurement rig geometry (speaker/mic heights, distance, optional ceiling) so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires -- see issue #3502. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |\n<!-- END GENERATED TOOL MENU -->\n\nRegenerate with `PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu.py`;\n`--check` verifies the committed menu. Tool code owns help, schema, and menu copy.\n\n## Find the analysis that answers the question\n\n| Question | View or record |\n|---|---|\n| What exists; which details are missing? | `inventory`, prescriber `status` |\n| Did the measured tune improve; where did it regress? | `frozen`, `per-seat`, `candidates`; read coverage and measurement scope |\n| Level offset or response shape? | `frozen` band `level_deviation_db` and `max_ripple_db` |\n| Does it hold off axis? | `directivity`, `agreement`, `co-metrics` over summed poses |\n| Does delay/polarity explain the crossover feature? | `delay-landscape`, `jasper-null`, `delay-confirm`; inspect branch levels |\n| Does a feature survive gate/pose changes? | `classify-features`, `gate-sweep`, `close-reference` |\n| Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |\n| How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |\n| Which part of a prescription did cloud evidence constrain? | `cloud-binding` |\n| What is predicted from banked complex solos? | `forward-model`; simulation is not a new capture |\n| Show a curve or compare two takes? | `frequency <A> [<B>]` |\n\nThe household chart at `/sound/measurements/` uses retained live session bundles;\na banked round may be absent there. `frequency` can read a banked round, bundle,\nor take file directly.\n\n## URLs and access\n\nUse the tool's `handoff_url`; it derives from the selected speaker's hostname.\nThe public measurement entry is `https://<speaker>/sound/room/`, with the\ncrossover surface at `/sound/speaker/crossover/`. Phone capture needs HTTPS and\ntrust in the speaker's local CA. Wired capture records on the Pi; do not infer\nits state from the browser's mic indicator.\n\nBackend paths in tool output use `127.0.0.1:8770` on the Pi. Through nginx,\nprefix crossover paths with `/sound/speaker`, for example\n`POST https://<speaker>/sound/speaker/crossover/v2/republish`.\nThe laptop runner resolves `.env.local`; `--hostname` selects an explicit host.\n\n## Debugging \u2014 where to look first\n\nRead the named failure and its take/phase before changing code. Fetch the Pi logs\nwith `bash scripts/fetch-pi-logs.sh`; inspect `jasper-doctor --json` and the\nspeaker's `:8780/state`. Round evidence is file-based, not a `/state` round field.\n\n| Symptom | First evidence |\n|---|---|\n| `locate_failed` or `channel_map_mismatch` | `event=program_analysis.anchor`, including ambiguity and capture identity |\n| Graph or volume cleanup unclear | `session_volume_*`, `crossover_v2_round_restore`, `crossover_v2_round_recovery_required`, `crossover_v2_volume_close_failed` |\n| Retake did not update the published result | `cloud_group_complete`, `cloud_spec`, `cloud_publish_skipped`; a repeated close is normal after a retake |\n| Calibration differs or is unavailable | `crossover_v2_calibration_resolve_failed`, `crossover_v2_uncalibrated_capture` and the take's calibration record |\n| Runtime refused a position action | Live position/take identity and `refusal_copy.py`; do not replay a stale grant |\n\n`jasper/cli/_refusal.py` owns shared exit codes: 0 done, 1 refused, 2 unreadable,\n3 unable to file the result. Read each tool's structured `reason`; argparse also\nuses 2 for bad arguments. Geometry and laptop scripts have their own documented\ncodes. The round runner keeps sub-tool codes in its trail even when its own exit\ncode groups several failures.\n\nDuring a measurement, household renderers can keep running while their lanes\nare excluded from the output mix. A restart can interrupt measurement holds;\ninspect the transition and capture validity rather than assuming clean resume.\nPer-take memory, time, and excitation limits remain bounded. Use laptop-side\nanalysis for experiments that exceed the small Pi's budget.\n\n\nSOURCE: docs/tuning-methodology.md\n# Tuning methodology \u2014 optional science reference\n\nStart with the [runbook entry contract](tuning-operator-runbook.md#entry-contract).\nRead the sections here that answer the current question. This is one useful\nmethod, not a required order or a campaign controller. The\n[doctrine](measurement-loop-doctrine.md) owns authority and layer rules; tool\nhelp owns schemas and physical limits. Source discussion is in the\n[research index](research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md).\n\n## 0. Declarations and measurement scope\n\nRead the speaker's declared design before interpreting its response. A horn's\nraw high-frequency fall can call for compensation; the same curve on a dome\ncan have another cause. Driver class is context, not a diagnosis by itself.\n\n| Input | Owner or evidence | Use |\n|---|---|---|\n| Driver sensitivity, protection floor, required slope | `DriverSpec` and declared design | Initial level estimate and protected crossover |\n| Excitation band, level, duration | `excitation_safety_plan.py` | Physical protection |\n| Mic calibration and capture gain | Take calibration record | SPL and magnitude interpretation |\n| Gate window | Per-take gate disclosure | Frequency range the capture can resolve |\n| Rig geometry | `jasper-declare-geometry set|show` | Reflection-path estimate and its source |\n| Repeat floor | Banked `repeat-floor.json` | Random measurement uncertainty |\n\nGeometry is useful when available: speaker acoustic-centre height, mic height,\ndistance, and optional ceiling height. `jasper-declare-geometry --help` lists\nunits. Derived floors must use each capture's own distance. An absent declaration\nis unknown, not zero. Centre spacing and waveguide coverage may exist only in\noperator notes; label that source instead of pretending the schema measured it.\n\nFor speaker linearization, measure the base plus the deliberate candidate layer.\nExclude previous correction from the initial baseline and exclude room/preference\nlayers from all linearization captures. Room work later holds the accepted\nspeaker tune fixed and still excludes preference EQ. The played graph is the\nproof; a saved household profile need not be flat.\n\n## 1. Prove the measurement setup\n\nBefore sound, use the established protected measurement path and the selected\nspeaker's declared caps. `jasper-seat-level` can establish a calibrated SPL\nreference. A mic sensitivity quoted at maximum capture gain is valid only with\nthat capture control at the matching setting. Absolute SPL is unavailable when\nits calibration cannot be established.\n\nInspect take validity, channel mapping, timeline anchor, clipping, level, and\ncalibration before reading acoustic differences. An invalid capture is an error,\nnot a poor speaker result. A repeated coordinate can price the noise floor of a\ncomparison. `repeat-floor` banks that analysis for later rounds.\n\nKeep uncertainty kinds distinct:\n\n- **In-capture repeat spread:** random variation during one held take.\n- **Pose spread:** response differences across positions; not a repeated\n  estimate of one response.\n- **Re-placement error:** variation after moving and returning the mic.\n- **Systematic error:** calibration, gate, geometry, and model assumptions.\n\nDo not pool these into one sigma or call repeatability absolute accuracy. Read\n`thresholds.source`: a banked measurement and a code assumption are different\nevidence. A small improvement inside repeat spread is uncertain; the LLM may\nfinish, measure a useful repeat, or try a different intervention.\n\n## 2. Base and solo measurements\n\nThe base contains declared routing/topology, crossover, required protection,\ntrims, and applicable alignment. `jasper-basic-profile review` shows its durable\napply alternative; use a scoped temporary graph for measurement.\n\nA solo capture answers a driver question. A summed capture answers how branches\ncombine. Store magnitude and phase when available. Do not infer a summed delay\nor polarity effect by adding driver magnitudes: the complex responses must be\nsummed. Even identical solo magnitudes can produce a different total response.\n\nUse named measurement programs and inspect their pose/capture cost. One pose\nbatch can measure baseline and several candidates before asking the human to\nmove. The human must deliberately start that batch. A fixture or an offline\nforward model does not perform it.\n\n## 3. Declared crossover and useful geometry\n\nCrossover design is declared and compiled through the supported design path.\nA candidate batch holds crossover and topology fixed. Do not use that contract\nto sneak in a new corner with old protection limits.\n\nFor a different base design, consider declared protection first, then off-axis\nresponse and driver spacing. Directivity is how output changes with angle.\n`directivity` can compare measured coverage; missing vertical poses cannot\nestablish vertical behavior. Use the round's speed of sound in wavelength and\npath-delay calculations. A geometry estimate is a prior to test, not acoustic\nproof or a veto on a safe experiment.\n\n## 4. Time alignment\n\nDelay errors can look like response errors near the crossover. Summed EQ fitted\nto an old alignment can compensate that error; changing alignment then changes\nwhat those filters are correcting (see [ADR-0203](adr/0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md)).\nPer-driver evidence can still be useful. Compare actual layer/phase composition\nbefore reusing it.\n\n1. **Inspect phase composition.** MEASURE analysis can replace emitted\n   protection with the configured crossover; lateral solos can retain protection.\n   Read `phase_composition`: `crossover_composed`, `protection_retained`, or\n   unknown. A retained protection phase can bias a predicted alignment.\n2. **Compute a hypothesis.** `delay-landscape` complex-sums banked branches over\n   a bounded delay grid. `\u03c4 = \u0394path/c` gives a geometric scale; at 343 m/s,\n   1 mm is about 2.915 \u00b5s. Use code for the calculation and the take's own `c`.\n3. **Measure if useful.** `jasper-null` plays a protected summed probe;\n   `delay-confirm` compares its rows with the landscape. A proposed optimum is\n   unmeasured until the corresponding summed graph has played. The returned\n   command emits sound; confirm the mic placement and human start before using\n   it. The small neighbour set is one economical test, not a required round.\n\nRead branch levels before blaming a shallow reverse null on timing. With a\nbranch level gap \u0394 dB, cancellation relative to the louder branch is limited by\n`\u221220 log10(1 \u2212 10^(\u2212\u0394/20))`. It is about 3.3 dB for a 10 dB gap. This is a\nlevel ceiling, with a different reference from a measured shoulder-based depth.\nThe graph's actual levels and repeated summed captures are stronger evidence\nthan datasheet sensitivity alone.\n\n`delay_sweep.py` owns usable/robust null depth bars. When a computed optimum and\na measured sum disagree, report the difference and consider an in-phase delay\ngrid with a repeated coordinate. Do not claim a predicted delay was confirmed.\nNor must every resolved small change be adopted: judge its value for the goal.\n\nThe alignment door uses \u00b5s and `(D_woofer \u2212 D_tweeter)`; a positive value delays\nthe tweeter. Read the packet's `request_time_prescriptions.alignment` for its\nbasis and lobe bound. A one-period shift can yield a similar null; an honest\nbasis and suitable summed evidence distinguish it.\n\n## 5. Level match and candidate trims\n\nSensitivity-derived trims are initial estimates. They may describe the maker's\ncabinet or waveguide rather than this speaker. Read whether the base trim was\nmeasured, declared, or pinned. A pin is carried intent, not a new measurement.\n\nCandidate trims are part of the candidate graph. Keep a reused filter chain's\nlevel context explicit: copy the intended role trim when it is part of the\nintervention, or refit against the new trim. The driver document's\n`pinned_trim_db` provides this pin. Do not substitute a shared baseline trim for\ndifferent candidates and then claim their full configurations were compared.\n\n## 6. Linearize per driver\n\nAsk whether the feature belongs to the speaker and whether the proposed filter\ncan control it. `classify-features`, `gate-sweep`, `close-reference`, and\n`distortion` provide distinct evidence. Run useful enrichment before freezing\nthe prescription packet. Unavailable classification is not a negative verdict.\n\n| Observation | Useful interpretation or next test |\n|---|---|\n| Feature moves with pose or gate | Interference may dominate; compare a held-pose candidate and another relevant pose |\n| Broad stable peak with modest excess group delay | A cut is a plausible experiment |\n| Deep dip with excess group-delay or position dependence | Boost may spend headroom without recovering output; inspect a bounded probe or placement change |\n| Predicted boost exceeds measured gain-back | Check level dependence, limiting, and the evidence frame |\n| Distortion rises at a changed level | Inspect per-order validity and overlap before attributing a nonlinear cause |\n| High-Q correction is smaller than repeat spread | Widen/drop it, collect a useful repeat, or end with uncertainty disclosed |\n\nThese are hypotheses, not automatic verdicts. Unknown benefit and an ideal\nflatness miss cannot veto a protected reversible test. Driver bands, composed\nboost/headroom, and emitter limits still apply. A summed blend deficit cannot\nidentify a driver to boost; the supported driver door owns that experiment.\n\n### 6a. Gate and harmonic traps\n\nA time gate limits frequency resolution. The trusted floor is approximately\n`2.5/T` Hz for gate duration `T` in seconds; `gating.py` owns the exact rules.\nThe reflection-path floor and the gate's validity floor answer different\nquestions. Read `entanglement_floor_source` and its uncertainty before claiming\nspeaker-only evidence. More repeats do not remove a systematic room contribution.\n\nA gate sweep varies the analysis window over existing raw captures. It costs no\nnew sound, but it cannot recover missing WAVs or make an invalid capture valid.\n`close-reference` compares a suitable local reference with the pose response;\ninspect reference compatibility before assigning a physical mechanism.\n\nESS harmonic extraction separates orders in time. The window may overlap a\nneighboring order or extend past available samples. Read per-order status,\nwindow, and contamination disclosure; unavailable orders are not zero distortion.\nA single level does not establish level independence, and a short sweep does not\nmeasure sustained thermal compression.\n\n## 7. Compare measured results\n\nRead realized effect, target error, and repeatability separately. If realization\nmatches but the target still fails, re-commanding the same correction harder does\nnot solve the target problem.\n\n`level_deviation_db` is the band mean against the report's reference;\n`max_ripple_db` is deviation from the band's own level. A trim changes level;\nfilters address shape. Read `graded_lo_hz` and `graded_hi_hz`, not nominal band\nedges. `evaluable=false` means not graded, never passed.\n\nCompare on-axis and relevant off-axis sums for the stated goal. `co-metrics`\nprovides another view of broad smoothness; it is advisory, not a compulsory\nsingle score. Label predictions, measured changes, and interpretation separately.\nIf several parts changed together, their individual causes are unresolved.\n\n## 8. Voicing and listening\n\nSubjective bass, warmth, or tilt belongs in preference EQ after speaker\nlinearization. Keep it out of every linearization baseline and candidate graph.\nRoom correction remains a separate higher layer. Do not fit speaker sound power\nflat merely because the on-axis target is flat; narrowing directivity changes\nthose responses differently.\n\nThe human judges the final sound. `jasper-audition` can compare supported layers\nwith temporary playback and restoration. Verify which layers its current help\nand receipt select before attributing a listening difference.\n\n## 9. Below the gate floor\n\nA gated capture cannot establish response below its validity floor. Disclose the\nunverified band. Nearfield or another supported measurement regime may answer\nthat question, with its own scope and limits. Repeating one in-room seat cannot\nturn room modes into a speaker-only response. The toolbox has no electrical\nimpedance instrument; external data must retain its source.\n\n## 10. Decide whether to continue\n\nA sufficient first or current round can end the campaign. Otherwise state the\nremaining question, choose a useful next experiment, and reuse the same tools.\nThere is no required three-round sequence, plateau termination, or last round\nwhose only purpose is to be final.\n\nA restored losing candidate stays banked. Combine useful role/filter parts into\na child with source references and its own identity. Parent observations support\nthe hypothesis; the child remains unmeasured until tested as that combination.\nWhen suitable evidence already measures the chosen candidate, adopt it explicitly\nby fingerprint and state coverage limits. Improved acoustics require real\nmeasurements; listening quality also needs the human's judgment.\n\n\nSOURCE: docs/measurement-loop-doctrine.md\n# Measurement-loop doctrine\n\nThe tuning toolbox lets an LLM choose experiments from measured evidence.\nThe [runbook entry contract](tuning-operator-runbook.md#entry-contract) is the\nshort starting point. The [methodology](tuning-methodology.md) is optional\nscience guidance. Neither is a fixed campaign sequence.\n\n## 1. The loop\n\nUse the same tools for a baseline, candidate trial, or further comparison.\nEach round can be the last. The LLM decides whether the evidence answers the\nquestion or whether another round would help. There is no required round\ncount, campaign ceiling, plateau stop, or final-confirmation round. Per-take\nresource limits and physical protection still apply; the Pi runs bounded\noperations, not an autonomous campaign loop.\n\nMeasurement is temporary playback. Saving a tune is a separate, explicit act\nthat names its candidate fingerprint. Banking evidence does not adopt a tune.\n\n### 1a. The layering rule \u2014 what a measurement plays through\n\nWhen tuning layer N, play through that layer and everything below it, with\nnothing above it. Enforce this in graph composition for every capture: solo,\nsummed, cloud, on-axis, and off-axis.\n\n- **Base:** declared routing, topology, crossover, driver protection, trims,\n  and applicable delay/polarity.\n- **Speaker linearization:** the initial baseline contains only the base.\n  Previous linearization, blend, room correction, and preference EQ are absent.\n  A candidate adds only the corrective filters, trims, and alignment changes\n  being tested.\n- **Room correction:** hold the accepted speaker tune below it. Preference EQ\n  remains absent.\n- **Preference EQ:** subjective bass, warmth, and other voicing belongs to\n  normal listening. It never participates in linearization measurements.\n\nRetain household settings while measurement uses its temporary graph. Restore\nnormal playback after the operation. Record the graph that actually played;\nturning off settings by hand is not proof of the layer boundary.\n\n## 2. The authority model\n\n- **Code computes and executes:** numerical analysis, validation, graph\n  composition, protected playback, capture, evidence, and cleanup.\n- **The LLM judges:** choose the question, read evidence, author candidates,\n  combine useful changes, select analyses and programs, and decide when to end.\n- **The human handles the room:** place the mic, deliberately start each pose\n  batch, report physical changes, and judge the final sound by listening.\n\nPredictions and quality scores inform these decisions. They do not veto a safe,\nreversible experiment because its benefit is uncertain or its ideal target is\nmissed. Missing or stale evidence is disclosed with its limits. It does not\nbecome a permanent ban on trying again.\n\n## 3. The guiding principle \u2014 least-bad measured, honed in bites\n\nChoose the least-bad measured configuration for the stated goal. A measured\nregression can restore the incumbent; retain the losing candidate and its valid\nevidence. Restore ends that adoption attempt, not the ability to learn or run\nanother round. A mismatch between forecast and measurement is evidence to\ninterpret, not proof that an otherwise useful tune must be withdrawn.\n\nA losing candidate may contain a useful change. Reuse role, filter, candidate,\nand evidence identities to name its parts and source records. Keep expected\neffect, measured observation, and interpretation separate. Co-varied changes\ndo not establish isolated causality. A child assembled from parent parts is\nunmeasured until that combination is tested; parent results do not confer\nmeasured or verified status on it.\n\nA sufficient current round can support adoption. Request more on/off-axis,\nrepeat, or level evidence only when it answers a remaining question. State\ncoverage limits; do not demand a ceremonial last round.\n\n## 4. The hard-stop enumeration (closed list)\n\n[AGENTS.md](../AGENTS.md#non-negotiables-closed-list--nothing-else-is-safety)\nowns the repository-wide non-negotiables. Their measurement mechanisms are:\n\n1. **Excitation caps:** declared driver bands, level-duration limits, and the\n   session volume admitted by `excitation_safety_plan.py`. The fader hold must\n   prove that volume before emission; an unreadable or drifting fader cannot\n   establish compliance. The session volume owner sets it; the hold checks it.\n2. **Output rails:** limiters, non-positive volume writes, and\n   `devices.volume_limit = 0.0`. Composed candidate filters and trims must obey\n   the same driver protection and headroom contracts as normal playback.\n3. **Declared driver protection:** high-pass floor, required slope, and\n   permitted bands. Different base designs use their own derived protection.\n   A same-topology candidate batch cannot silently change that premise.\n4. **Commissioning SPL stop:** honor the preset's ceiling. Absolute SPL needs\n   valid microphone sensitivity and capture-gain context; never invent it.\n5. **Firmware hazards:** never call XVF3800 `SAVE_CONFIGURATION`.\n\nThe blend door cannot emit boost: its graph stage has no boost headroom term.\nUse a supported driver candidate for a boost experiment (plan ruling R8).\nDo not remove an unsupported-candidate refusal until the candidate can be\nrendered, protected, and identified correctly.\n\n### 4a. The integrity class \u2014 refusing a CLAIM\n\nInvalid input, unavailable instrumentation, corrupt captures, wrong graph or\ncandidate identity, stale position actions, and unknown restore state are real\ntool errors. They cannot be reported as successful measurements. Preserve valid\ntakes and record failures with their take/pose identity. Report an unavailable\nresult as unknown, not as an acoustic defect.\n\nAfter an interruption, say which physical conditions must be re-established.\nDo not silently combine captures from incompatible poses, levels, or setup\nstates. A new placement or explicit recovery/retake needs a new human action;\nordinary consecutive trials at one held pose share one start grant.\n\nIntegrity refusal must not discard an already measured tune or permanently\nexclude a safe experiment. Fix the input, instrumentation, or capture condition\nand reuse the same tools. Per-operation timeouts bound execution; they do not\nset a campaign's round count.\n\n## 5. The nanny test\n\nA proposed gate must name the physical harm it prevents or the false result it\nwould otherwise record. Uncertain benefit, target miss, and a heuristic plateau\nare disclosures. Keep them out of experiment authorization.\n",
+  "grading": {
+    "requested_model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "blinded_labels": {
+      "variant-a": "new",
+      "variant-b": "old"
+    },
+    "method": {
+      "inputs_read": [
+        "cases.json",
+        "rubric.json",
+        "variant-a.json",
+        "variant-b.json"
+      ],
+      "scoring": "One pass against the supplied case prompts and rubric. A higher unsupported_claims score means fewer unsupported claims. Response length was not rewarded.",
+      "applicability": {
+        "recovery": "Scored for restore/retention, graph cleanup, frozen-history preservation, interrupted captures, and playback failure. Null for cases with no recovery or cleanup question.",
+        "other_dimensions": "Applicable to all eleven cases, including whether an offline planning step avoids unnecessary human work or sound."
+      },
+      "claim_handling": "A concrete fixture detail that cannot be checked from the four allowed files is not treated as false solely for that reason. Contradictions with the case or rubric are scored."
+    },
+    "limitations": [
+      "Only the four permitted files were read. Referenced fixtures, source code, instructions and runtime records were not inspected.",
+      "This grades planning sufficiency, not whether named commands, artifact fields or fixture-specific assertions are correct in the implementation.",
+      "No plan was executed. There were no retries, second grader, measurements of actual tokens or elapsed time, or checks of real hardware behavior.",
+      "This is one judgment on eleven supplied cases. Dimension totals are reported separately; no scalar winner is assigned."
+    ]
+  },
+  "variants": {
+    "old": {
+      "utc_start": "2026-09-08T04:12:50Z",
+      "utc_end": "2026-09-08T04:17:59Z",
+      "elapsed_seconds": 309.0,
+      "instruction_words": 25843,
+      "instruction_bytes": 177054,
+      "answer_words": 974,
+      "input_tokens": null,
+      "output_tokens": null,
+      "answers": [
+        {
+          "id": "sufficient_current_round",
+          "next_action": "Grade and bank the existing evidence; recommend keeping the chosen candidate and finish the stated goal. Round one alone does not justify another capture.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json",
+            "Existing validity, realization, benefit, spec and repeat-floor reports."
+          ],
+          "claims_and_limits": "Use the scenario's adequate summed/on/off-axis evidence. Historical prediction errors do not themselves prove acoustic regression. Claim only the measured bands and axes.",
+          "recovery": "Keep the measured incumbent; restore only for measured regression or a relevant safety/integrity failure.",
+          "human_actions": "No mic movement. A durable apply, if still needed, remains a separate deliberate action."
+        },
+        {
+          "id": "reuse_after_restore",
+          "next_action": "Describe C as incumbent structure plus A's woofer change and B's tweeter change. Plan isolated component comparisons, then a summed C-versus-incumbent test at held poses.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json",
+            "A/B intervention identities, receipts, trims and comparable measurements."
+          ],
+          "claims_and_limits": "C is unmeasured. Co-varying parent changes do not prove individual benefit. The old doctrine caps a series at three rounds, owner-extended to four; a fifth is outside that budget.",
+          "recovery": "Retain the restored incumbent and all losing-round evidence.",
+          "human_actions": "Owner must resolve the exhausted budget before further measurement; later follow pose prompts."
+        },
+        {
+          "id": "alignment_sum",
+          "next_action": "Inspect complex transfers and delay-landscape first. If existing sums do not compare both candidates, plan summed normal/inverted captures at their delay coordinates, including a repeated coordinate.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/measure_alignment.json",
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/verify_curves.json",
+            "Branch phase_composition, actual trims, null depth and repeat floor."
+          ],
+          "claims_and_limits": "Equal solo magnitudes cannot determine summation; relative phase matters. These fixtures document one applied candidate, not a controlled two-candidate comparison. Computed sums remain predictions.",
+          "recovery": "Keep the incumbent until measured comparison supports change; bank disagreement.",
+          "human_actions": "Place the mic once and keep it still; jasper-null requires no page gesture."
+        },
+        {
+          "id": "candidate_trim",
+          "next_action": "Refit the reused chain for the new trim, then compare complete candidate and incumbent summed graphs at matched on/off-axis poses. Play and bank each graph's actual trim, EQ, delay, polarity, headroom and identity.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_incident_20260810/expected_outcome.json",
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/crossover_v2_incident_20260810/candidate_fit.json",
+            "Applied receipts and per-band level_deviation_db/max_ripple_db."
+          ],
+          "claims_and_limits": "The fixture's raw tweeter trim and committed attenuation differ. Reused filters alone do not identify the candidate. Separate band level offset from ripple; a trim cannot fix shape.",
+          "recovery": "Restore the incumbent after measured regression; retain both records.",
+          "human_actions": "Follow pose prompts; keep the mic fixed between paired captures."
+        },
+        {
+          "id": "declared_protection",
+          "next_action": "Reject the 2000 Hz corner and review the supplied 5000 Hz, 24 dB/octave preview against declared bands and caps. Do not play sound.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-2000hz-below-floor.json",
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-5000hz-at-floor.json"
+          ],
+          "claims_and_limits": "The declared 5000 Hz protection floor remains binding despite prediction. These dummy-load drafts authorize no playback; passing preview is no acoustic proof. This blocks the below-floor proposal, not future in-band experiments.",
+          "recovery": "Leave the current state intact; never lower the declaration to admit a prediction.",
+          "human_actions": "Review the bounded preview; any later sound test needs a separately valid session."
+        },
+        {
+          "id": "household_layers",
+          "next_action": "Plan a temporary protection/structure baseline, then complete candidate graphs through the measurement activation door. Exclude room correction and preference EQ while linearizing speakers.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/stereo_prefix_golden/harman_custom_peq_room_cuts.yml",
+            "Measurement graph scope and actual activation/restoration readbacks."
+          ],
+          "claims_and_limits": "The file includes room cuts and preference boost. The old doctrine discloses that standing-graph summed phases still carry preference EQ. Confirm a supported scoped summed path before claiming a speaker-only on/off-axis comparison; otherwise disclose that limitation.",
+          "recovery": "Restore and verify the normal graph and measurement volume on every exit. Preserve saved household settings.",
+          "human_actions": "Move the mic and release pose holds; no manual household-EQ changes."
+        },
+        {
+          "id": "stale_packet",
+          "next_action": "Use status and inventory to locate the round and completed analyses. Intentionally rebuild packet.json once with classification and distortion included, then rebind the prescription to its new fingerprint.",
+          "evidence_to_read": [
+            "status.next",
+            "inventory artifact paths",
+            "Refreshed packet.json, including feature_classification and harmonics."
+          ],
+          "claims_and_limits": "The earlier packet cannot disclose newly available analysis. Propose and stage must use the same refreshed file, not separate rebuilds. Stage against the live state file, not banked state.json.",
+          "recovery": "If a fingerprint mismatch occurs, inspect the changed binding and re-author against the chosen packet; do not bypass it.",
+          "human_actions": "None."
+        },
+        {
+          "id": "banked_history",
+          "next_action": "Resolve the prior campaign round_dir and read its inventory. Recover structure and candidate ancestry from banked artifacts; generate the frequency comparison from that directory.",
+          "evidence_to_read": [
+            "Banked packet, candidate/preset, round receipts, previous_candidate_fingerprint and applied-profile artifacts."
+          ],
+          "claims_and_limits": "Live-session retention does not erase the campaign bank. The household measurement chart cannot display bank-only rounds. Missing raw captures limit later classification, not the validity of surviving evidence.",
+          "recovery": "Keep the bank intact. Link artifacts and record decision reasons in round notes; do not copy measurement numbers into notes.",
+          "human_actions": "None; move a mic only if a specific missing measurement becomes necessary."
+        },
+        {
+          "id": "pose_batch_retake",
+          "next_action": "Keep the mic fixed through baseline/A/B and verify activation before each capture. The old runbook says automatic sequencing of multiple complete configurations is unwired; do not assume one Start supplies it.",
+          "evidence_to_read": [
+            "Live next_action, position_pending index/attempt, capture identities and position_cycle.json."
+          ],
+          "claims_and_limits": "Accepted pre-bump captures remain valid at their original pose. A moved-mic retake is not automatically comparable with them.",
+          "recovery": "Retain old takes; repeat the affected paired comparison if original geometry cannot be established.",
+          "human_actions": "Release demanded pose holds; complete the set when prompted. For retake, select Record again, replace the bumped mic and confirm ready again."
+        },
+        {
+          "id": "playback_failure",
+          "next_action": "End the failed attempt, inspect its failure transition, and invoke supported session cleanup/restoration. Obtain graph and volume readback before another audible attempt.",
+          "evidence_to_read": [
+            "Playback failure receipt/journal, session-volume restore status, active graph identity and normal-state readback."
+          ],
+          "claims_and_limits": "No completed new take exists. The older valid take remains evidence of its own capture, never a substitute labelled as this attempt. Unconfirmed restoration is unknown, not success.",
+          "recovery": "Bank failure details separately and retain the valid take. Retry once only after the fault and relevant clamps are checked; no blind retry loop.",
+          "human_actions": "None for diagnosis; restore mic placement if it moved."
+        },
+        {
+          "id": "number_overlap",
+          "next_action": "Reject the swapped-unit claim and correct it to a residual of 8.1 dB at 62 Hz using the room packet. Offer the separate valid proposal with simulated ringing disclosed.",
+          "evidence_to_read": [
+            "/tmp/jts-tuning-instruction-eval/evidence/tests/fixtures/tuning_llm_interpret_response.json",
+            "Room packet field names, units and source bindings; proposal simulation and bounds."
+          ],
+          "claims_and_limits": "Numeric overlap does not verify meaning. Provider narration is not measured evidence. Simulated ringing is advisory, not itself a hardware/hearing stop or proof of measured harm.",
+          "recovery": "Preserve valid source evidence; measure a bounded proposal before claiming benefit and restore after measured regression.",
+          "human_actions": "Owner judges taste and any later deliberate apply."
+        }
+      ],
+      "scores": [
+        {
+          "id": "sufficient_current_round",
+          "scores": {
+            "next_action": 1,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 1,
+            "resource_use": 2
+          },
+          "reasons": {
+            "next_action": "Correctly ends after sufficient evidence, but recommends keeping the candidate while leaving any needed durable adoption as a separate action.",
+            "human_effort": "Leaves a separate deliberate apply to the human instead of completing the supported adoption step if it is needed."
+          }
+        },
+        {
+          "id": "reuse_after_restore",
+          "scores": {
+            "next_action": 0,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 0,
+            "recovery": 2,
+            "human_effort": 0,
+            "resource_use": 1
+          },
+          "reasons": {
+            "next_action": "Declares round five outside an exhausted budget; the rubric explicitly permits another round after restore.",
+            "unsupported_claims": "Treats an old three/four-round limit as binding despite the permitted continuation in this case.",
+            "human_effort": "Requires the owner to resolve an invented round-budget block before further measurement.",
+            "resource_use": "Requires isolated component comparisons before the useful C comparison, although isolated causality can remain a disclosed hypothesis."
+          }
+        },
+        {
+          "id": "alignment_sum",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 1
+          },
+          "reasons": {
+            "resource_use": "Unconditionally adds normal/inverted captures and a repeated coordinate without a stated gap that needs those extra captures."
+          }
+        },
+        {
+          "id": "candidate_trim",
+          "scores": {
+            "next_action": 1,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 1
+          },
+          "reasons": {
+            "next_action": "Requires a refit before comparison; the defined candidate can instead be played with its own intended trim, with a refit only when its level context requires one.",
+            "resource_use": "Makes refitting mandatory without evidence that the changed trim requires it."
+          }
+        },
+        {
+          "id": "declared_protection",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "household_layers",
+          "scores": {
+            "next_action": 1,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {
+            "next_action": "States the desired exclusions but leaves a clean summed path conditional on later confirmation and offers disclosure as the fallback. It does not finish the required scope-enforced summed comparison plan."
+          }
+        },
+        {
+          "id": "stale_packet",
+          "scores": {
+            "next_action": 1,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 1,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {
+            "next_action": "Correctly refreshes the content and uses one binding for propose and stage, but rebuilds the frozen packet.json instead of naming a new frozen snapshot.",
+            "recovery": "Handles a binding mismatch but does not preserve the original frozen packet and prescription as unchanged history."
+          }
+        },
+        {
+          "id": "banked_history",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 1,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {
+            "evidence_retrieval": "Locates banked identities and artifacts, but omits the speaker, graph, pose, level and calibration compatibility check before using candidate evidence."
+          }
+        },
+        {
+          "id": "pose_batch_retake",
+          "scores": {
+            "next_action": 0,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 0,
+            "recovery": 2,
+            "human_effort": 0,
+            "resource_use": 2
+          },
+          "reasons": {
+            "next_action": "Does not continue ordinary baseline/A/B trials under the existing held-pose Start grant; it treats old sequencing limits as controlling.",
+            "unsupported_claims": "Uses the old runbook statement that sequencing is unwired to deny the one-grant behavior required by this case.",
+            "human_effort": "Requires additional demanded pose holds during ordinary trials rather than reserving a fresh placement/start action for the bumped-mic recovery."
+          }
+        },
+        {
+          "id": "playback_failure",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 1,
+            "resource_use": 2
+          },
+          "reasons": {
+            "human_effort": "Correctly allows diagnosis without the human and placement repair if needed, but does not state the fresh deliberate start for recovery or retake."
+          }
+        },
+        {
+          "id": "number_overlap",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        }
+      ],
+      "totals": {
+        "next_action": {
+          "earned": 14,
+          "possible": 22
+        },
+        "evidence_retrieval": {
+          "earned": 21,
+          "possible": 22
+        },
+        "unsupported_claims": {
+          "earned": 18,
+          "possible": 22
+        },
+        "recovery": {
+          "earned": 11,
+          "possible": 12
+        },
+        "human_effort": {
+          "earned": 16,
+          "possible": 22
+        },
+        "resource_use": {
+          "earned": 19,
+          "possible": 22
+        }
+      },
+      "files_read": [
+        "old-instructions.md",
+        "cases.json",
+        "evidence/tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json",
+        "evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/measure_alignment.json",
+        "evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/verify_curves.json",
+        "evidence/tests/fixtures/crossover_v2_incident_20260810/expected_outcome.json",
+        "evidence/tests/fixtures/crossover_v2_incident_20260810/candidate_fit.json",
+        "evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-2000hz-below-floor.json",
+        "evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-5000hz-at-floor.json",
+        "evidence/tests/fixtures/stereo_prefix_golden/harman_custom_peq_room_cuts.yml",
+        "evidence/tests/fixtures/tuning_llm_interpret_response.json"
+      ]
+    },
+    "new": {
+      "utc_start": "2026-09-08 04:16:08 UTC",
+      "utc_end": "2026-09-08 04:18:55 UTC",
+      "elapsed_seconds": 167.0,
+      "instruction_words": 5064,
+      "instruction_bytes": 35928,
+      "answer_words": 971,
+      "input_tokens": null,
+      "output_tokens": null,
+      "answers": [
+        {
+          "id": "sufficient_current_round",
+          "next_action": "End this campaign and adopt the chosen measured candidate explicitly with jasper-round apply --expected-fingerprint <fp>; no compulsory second or final round.",
+          "evidence_to_read": "Prescriber status, round inventory, candidate fingerprint, complete played-graph receipt, and supplied verify_curves.json.",
+          "claims_and_limits": "Use the scenario's stated sufficient summed coverage. Report measured bands and poses. The fixture alone does not supply the chosen fingerprint or full pose metadata; model error alone does not establish physical harm.",
+          "recovery": "Check apply readback; preserve banked evidence.",
+          "human_actions": "No new mic walk. Judge final sound during normal listening."
+        },
+        {
+          "id": "reuse_after_restore",
+          "next_action": "Another round is allowed. Compose C using the same-design base, woofer=A and tweeter=B; plan a complete-graph summed comparison with the incumbent at useful on/off-axis poses.",
+          "evidence_to_read": "Status, inventory, A/B role filters, trims, alignment, source fingerprints, valid take records, and restore readback.",
+          "claims_and_limits": "C has a new fingerprint and is unmeasured. Parent improvements support a hypothesis; co-varied changes do not prove each part's cause.",
+          "recovery": "Keep the restored incumbent, losing candidate, and valid evidence. Restore normal playback after the next trial.",
+          "human_actions": "Place the mic and start each pose batch; judge listening."
+        },
+        {
+          "id": "alignment_sum",
+          "next_action": "Use compatible complex solos to predict both sums; if existing summed evidence does not compare both full candidates, plan protected summed captures at the same held pose and relevant off-axis poses.",
+          "evidence_to_read": "measure_alignment.json, verify_curves.json, branch levels, phase_composition, calibration, graph fingerprints, delay-landscape, and summed take identities.",
+          "claims_and_limits": "Equal solo magnitudes cannot rank sums. Delay and polarity change phase. Predicted improvement or an alignment confidence score is not measured confirmation.",
+          "recovery": "Retain valid captures; diagnose disagreement before choosing alignment.",
+          "human_actions": "Confirm placement and deliberately start each pose batch; keep the mic still between candidates."
+        },
+        {
+          "id": "candidate_trim",
+          "next_action": "Compare incumbent and candidate through their own complete graphs, including intended filters, tweeter trim, delay, and polarity. Preserve the intended trim with pinned_trim_db or refit for the changed level context.",
+          "evidence_to_read": "candidate_fit.json, expected_outcome.json, played config/fingerprint, take settings, calibration, level_deviation_db, max_ripple_db, and actual graded bands.",
+          "claims_and_limits": "The incident separates fitted trim from applied attenuation. A band mean error is level; ripple about that mean is shape. Shared trims cannot verify different full candidates.",
+          "recovery": "Restore household playback and retain both valid takes.",
+          "human_actions": "Place the mic and start each comparison pose batch."
+        },
+        {
+          "id": "declared_protection",
+          "next_action": "Reject the 2 kHz corner under the current declaration. Use the supported design path to review the 5 kHz LR24 no-audio preview; do not arm this dummy-load fixture.",
+          "evidence_to_read": "Both design drafts, confirmed protection profile, excitation bands, level-duration limits, and preview validation.",
+          "claims_and_limits": "The declared tweeter floor is 5 kHz with at least 24 dB/octave protection. A favorable prediction cannot override it. Dummy loads provide no acoustic proof.",
+          "recovery": "This blocks this invalid design, not future compliant experiments; a different design needs its own derived protection.",
+          "human_actions": "Review the declared setup before any later protected measurement."
+        },
+        {
+          "id": "household_layers",
+          "next_action": "Plan a temporary baseline containing only declared routing, crossover, protection, trims, and alignment. Compare complete candidates by adding only the changes under test at summed on/off-axis poses.",
+          "evidence_to_read": "Household YAML, status, inventory, candidate identities, and each actual played graph/config receipt.",
+          "claims_and_limits": "Exclude prior linearization, blend correction, room cuts, and every preference filter from the baseline. Exclude room/preference layers from every candidate capture. Saved settings need not be flat.",
+          "recovery": "Retain household settings; restore normal graph and volume and verify readback. Do not adopt the baseline.",
+          "human_actions": "Place the mic and start each pose batch."
+        },
+        {
+          "id": "stale_packet",
+          "next_action": "Read status and inventory, inspect the new classification and distortion artifacts, then freeze a new packet and author a prescription bound to its fingerprint.",
+          "evidence_to_read": "Live status paths, round inventory, latest rationale note, classification availability, per-order distortion validity, and the new packet.",
+          "claims_and_limits": "The old packet remains the old snapshot. Both propose and stage must use the exact new packet file; stage against live state, not the banked state copy.",
+          "recovery": "Preserve the old packet with its original prescription for provenance.",
+          "human_actions": "None for these planning and evidence steps."
+        },
+        {
+          "id": "banked_history",
+          "next_action": "Use prescriber status and round inventory to locate the campaign bank; recover its candidate lineage, declared design, played graphs, and valid captures.",
+          "evidence_to_read": "Banked state and receipts, candidate/role source references, latest agent_notes.md, and relevant frequency or comparison artifacts.",
+          "claims_and_limits": "Live-session retention does not invalidate banked evidence. Reuse only compatible speaker, graph, pose, level, and calibration contexts; structural history does not prove an unrun child.",
+          "recovery": "Disclose missing artifacts and obtain only evidence that answers a remaining question.",
+          "human_actions": "None to inspect history. Optional notes link records and record reasoning, without copying measurement numbers."
+        },
+        {
+          "id": "pose_batch_retake",
+          "next_action": "Run consecutive baseline/A/B trials under the existing pose start grant while placement remains unchanged. After the bump, inspect state and take identities; plan explicit recovery and the needed retake.",
+          "evidence_to_read": "Per-take completion/validity, graph fingerprints, pose, level, calibration, interruption, and restore records.",
+          "claims_and_limits": "Keep completed valid pre-bump takes. An affected take cannot establish its intended pose. Do not pool unmatched placements or silently reuse the old grant.",
+          "recovery": "Re-establish placement and settings; repeat the comparison anchor if needed to make the new comparison useful.",
+          "human_actions": "Keep still between ordinary trials; reposition and start recovery/retake; start each new pose."
+        },
+        {
+          "id": "playback_failure",
+          "next_action": "Inspect live state, the failed take/phase, and restore records before another playback. Follow the recorded recovery action and obtain normal-state readback.",
+          "evidence_to_read": "Status, inventory, playback exception, session_volume events, crossover_v2_round_restore, recovery_required, volume-close failure, and graph/volume readback.",
+          "claims_and_limits": "The failed take provides no measurement claim. Normal playback is unconfirmed. Retain the older valid take within its original scope; failure does not erase it.",
+          "recovery": "Fix the actual playback condition; retry with the same protected tools after recovery, preserving valid evidence.",
+          "human_actions": "Re-establish required placement/settings and explicitly start the recovery or retake."
+        },
+        {
+          "id": "number_overlap",
+          "next_action": "Reject the swapped-unit narration and correct it to an 8.1 dB residual at 62 Hz. Offer the separate valid proposal with simulated ringing disclosed as a prediction.",
+          "evidence_to_read": "Source packet fields, units, quantity roles, candidate validation, simulation scope, and provider response provenance.",
+          "claims_and_limits": "Numeric overlap is not semantic verification. The supplied provider fixture is narration, not proof of this scenario's packet. Predicted ringing alone cannot veto a protected reversible trial.",
+          "recovery": "Correct the false claim; measure the candidate if the result would change the decision.",
+          "human_actions": "Review the proposal; start any planned pose batch and judge listening."
+        }
+      ],
+      "scores": [
+        {
+          "id": "sufficient_current_round",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "reuse_after_restore",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "alignment_sum",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "candidate_trim",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "declared_protection",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "household_layers",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "stale_packet",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "banked_history",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "pose_batch_retake",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "playback_failure",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": 2,
+            "human_effort": 2,
+            "resource_use": 2
+          },
+          "reasons": {}
+        },
+        {
+          "id": "number_overlap",
+          "scores": {
+            "next_action": 2,
+            "evidence_retrieval": 2,
+            "unsupported_claims": 2,
+            "recovery": null,
+            "human_effort": 1,
+            "resource_use": 2
+          },
+          "reasons": {
+            "human_effort": "Reviewing the proposal and starting a measurement batch do not explicitly require user confirmation before applying the proposal."
+          }
+        }
+      ],
+      "totals": {
+        "next_action": {
+          "earned": 22,
+          "possible": 22
+        },
+        "evidence_retrieval": {
+          "earned": 22,
+          "possible": 22
+        },
+        "unsupported_claims": {
+          "earned": 22,
+          "possible": 22
+        },
+        "recovery": {
+          "earned": 12,
+          "possible": 12
+        },
+        "human_effort": {
+          "earned": 21,
+          "possible": 22
+        },
+        "resource_use": {
+          "earned": 22,
+          "possible": 22
+        }
+      },
+      "files_read": [
+        "new-instructions.md",
+        "cases.json",
+        "evidence/tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json",
+        "evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/measure_alignment.json",
+        "evidence/tests/fixtures/crossover_v2_alignment_incident_20260816/verify_curves.json",
+        "evidence/tests/fixtures/crossover_v2_incident_20260810/expected_outcome.json",
+        "evidence/tests/fixtures/crossover_v2_incident_20260810/candidate_fit.json",
+        "evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-2000hz-below-floor.json",
+        "evidence/tests/fixtures/active_speaker_protection_floor_20260814/design-draft-5000hz-at-floor.json",
+        "evidence/tests/fixtures/stereo_prefix_golden/harman_custom_peq_room_cuts.yml",
+        "evidence/tests/fixtures/tuning_llm_interpret_response.json"
+      ]
+    }
+  },
+  "limits": [
+    "One sample per variant does not establish a general accuracy or speed change.",
+    "Requested model/settings matched; exact resolved model snapshot and token counts were unavailable.",
+    "Elapsed times include tool reads and shared-machine load. Instruction word counts exclude evidence, prompts and tool outputs.",
+    "The old instructions describe earlier software. These results assess plans for the requested toolbox behavior, not acoustic quality.",
+    "The new snapshot predates final review edits; its exact frozen text is retained here only as experiment input.",
+    "Variant labels were masked from the grader, but answer phrases such as old doctrine could reveal the instruction source. This was not a fully blind evaluation."
+  ]
+}

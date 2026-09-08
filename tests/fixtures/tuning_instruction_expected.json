@@ -1,0 +1,68 @@
+{
+  "kind": "tuning_instruction_comparison_expected",
+  "version": 1,
+  "scoring": {
+    "scale": {
+      "0": "Wrong, missing, or an unsupported success claim.",
+      "1": "Mostly right, but missing a relevant boundary or asks for avoidable work.",
+      "2": "Correct, evidence-linked, and sufficient for this question."
+    },
+    "dimensions": {
+      "next_action": "Uses a supported next action; permits ending or further rounds as warranted.",
+      "evidence_retrieval": "Finds the relevant owned records without broad rereading or copied facts.",
+      "unsupported_claims": "Separates measured facts, predictions, interpretation, and unverified scope.",
+      "recovery": "Preserves valid takes and incumbent; names needed re-establishment and honest failures.",
+      "human_effort": "One grant for ordinary trials at a held pose; new pose/recovery is explicit.",
+      "resource_use": "Uses relevant bounded reads/analysis; no needless sound or ceremonial rounds. Compare actual tokens and time separately."
+    }
+  },
+  "cases": {
+    "sufficient_current_round": [
+      "May finish after this round; explicitly adopt the named measured candidate if selected.",
+      "State coverage and listening limits; do not demand a final-confirmation round or claim new acoustics."
+    ],
+    "reuse_after_restore": [
+      "Round 5 or later remains available; restore does not end iteration.",
+      "Build C from referenced role/filter parts with its own identity and unmeasured status.",
+      "Keep expected effect separate; parent co-variation does not establish isolated causality."
+    ],
+    "alignment_sum": [
+      "Inspect phase composition and actual trims; solo magnitudes cannot decide summed alignment.",
+      "Use banked complex sum as prediction and a relevant protected summed trial as measurement."
+    ],
+    "candidate_trim": [
+      "Play and record each candidate's complete filters and own trim.",
+      "Inspect level frame and trim source; a carried pin is not newly measured."
+    ],
+    "declared_protection": [
+      "Do not play below declared protection on the strength of a prediction.",
+      "Use a supported safe design/candidate; this failed input is not a permanent experiment ban."
+    ],
+    "household_layers": [
+      "Baseline is the base; every solo/summed/cloud/angle capture excludes previous correction and higher layers as applicable.",
+      "Enforce scope in composition, retain household settings, and restore normal playback after temporary activity."
+    ],
+    "stale_packet": [
+      "Inspect/enrich first, then freeze a new packet and bind a new prescription to it.",
+      "Use that same packet for propose and stage; expose the prior snapshot as stale without rewriting history."
+    ],
+    "banked_history": [
+      "Read live and campaign-bank sources through the existing record boundary.",
+      "Use identity/compatibility context and artifact references; banked records remain evidence after session eviction."
+    ],
+    "pose_batch_retake": [
+      "Continue ordinary configs under one grant and tell the human to keep the mic still.",
+      "After a bump, require deliberate placement/recovery or retake; preserve earlier valid takes and disclose the interruption.",
+      "Reject stale position actions; do not join incompatible captures."
+    ],
+    "playback_failure": [
+      "Record a failed take, not successful measurement; retain the older valid take.",
+      "Inspect/recover graph and volume state before more sound; do not assert restoration without proof.",
+      "After the condition is fixed, another bounded attempt is allowed."
+    ],
+    "number_overlap": [
+      "Overlap does not verify fields, units, meaning, or a claim. Correct the swapped-unit claim.",
+      "Simulation is disclosure; a valid protected proposal can remain offered with explicit user confirmation."
+    ]
+  }
+}

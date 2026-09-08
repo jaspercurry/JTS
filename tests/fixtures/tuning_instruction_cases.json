@@ -1,0 +1,121 @@
+{
+  "kind": "tuning_instruction_comparison_cases",
+  "version": 1,
+  "evaluation_status": "completed: one offline planning run per variant; see tuning_instruction_comparison.json",
+  "comparison": {
+    "model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "instruction_paths": [
+      "docs/tuning-operator-runbook.md",
+      "docs/tuning-methodology.md",
+      "docs/measurement-loop-doctrine.md"
+    ],
+    "old_revision": "56242e642",
+    "new_revision": "Frozen working-tree input in tuning_instruction_comparison.json; final review edits came later.",
+    "controls": [
+      "Pin the exact resolved model version, code/tool revision, and evidence file hashes once for both variants. If a model snapshot is unavailable, disclose that limit and keep both runs in the same version window.",
+      "Use identical prompts, evidence, output limits, tool access, and human-interruption facts. Change only the instruction variant.",
+      "Record the files actually read, next actions, unsupported claims, recovery actions, requested human actions, elapsed time, and input/output tokens.",
+      "Score with the separate expected file, withheld from the model. Do not force a scalar winner; report each dimension and raw resource use.",
+      "Planning only: no devices, deployment, persistence to the speaker, or sound. Existing provider fixture replay is not a fresh model evaluation."
+    ]
+  },
+  "cases": [
+    {
+      "id": "sufficient_current_round",
+      "source_kind": "incident-derived scenario",
+      "evidence": [
+        "tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json",
+        "tests/test_crossover_v2_d1_incident_replay.py"
+      ],
+      "prompt": "The supplied suitable summed/on-off-axis evidence measures the chosen candidate and answers the stated goal. This is the first round of this campaign. No physical changes occurred. Choose the next action without playing sound."
+    },
+    {
+      "id": "reuse_after_restore",
+      "source_kind": "incident-derived scenario",
+      "evidence": [
+        "tests/fixtures/crossover_v2_d1_incident_20260817/verify_curves.json"
+      ],
+      "prompt": "Round 4 restored the incumbent after a measured regression. A prior woofer change in A and a tweeter change in B remain promising, but the parent changes co-varied. Describe C and the next useful test. Is another round allowed?"
+    },
+    {
+      "id": "alignment_sum",
+      "source_kind": "banked incident with a new question",
+      "evidence": [
+        "tests/fixtures/crossover_v2_alignment_incident_20260816/measure_alignment.json",
+        "tests/fixtures/crossover_v2_alignment_incident_20260816/verify_curves.json",
+        "tests/test_crossover_v2_alignment_incident_replay.py"
+      ],
+      "prompt": "Two candidates have equal solo magnitudes but different relative delay/polarity. Can these solos show which candidate sums better? Identify the evidence to inspect and the next physical measurement, if needed."
+    },
+    {
+      "id": "candidate_trim",
+      "source_kind": "banked incident with a new question",
+      "evidence": [
+        "tests/fixtures/crossover_v2_incident_20260810/expected_outcome.json",
+        "tests/fixtures/crossover_v2_incident_20260810/candidate_fit.json"
+      ],
+      "prompt": "A filter chain is reused from an earlier round. The new candidate carries a different tweeter trim. Decide what must be played and recorded to compare it with the incumbent; diagnose a level error separately from shape."
+    },
+    {
+      "id": "declared_protection",
+      "source_kind": "incident-derived scenario",
+      "evidence": [
+        "tests/fixtures/active_speaker_protection_floor_20260814/design-draft-2000hz-below-floor.json",
+        "tests/fixtures/active_speaker_protection_floor_20260814/design-draft-5000hz-at-floor.json"
+      ],
+      "prompt": "The proposed corner is below this driver declaration. A prediction says it would sound better. Choose the next supported action and say whether this prevents all future tuning experiments."
+    },
+    {
+      "id": "household_layers",
+      "source_kind": "fixture-derived scenario",
+      "evidence": [
+        "tests/fixtures/stereo_prefix_golden/harman_custom_peq_room_cuts.yml",
+        "tests/test_crossover_v2_tuning_scope.py"
+      ],
+      "prompt": "The saved household profile contains room cuts and preference bass boost. Start a speaker-linearization baseline, then compare candidates at summed on/off-axis poses. Describe the graph scope and cleanup; do not alter household settings manually."
+    },
+    {
+      "id": "stale_packet",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [
+        "tests/test_crossover_v2_prescriber_status.py"
+      ],
+      "prompt": "packet.json was frozen before feature classification and distortion analysis. Those artifacts now exist. Resume the prescription using status and inventory. Which evidence file should propose and stage use?"
+    },
+    {
+      "id": "banked_history",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [
+        "tests/test_crossover_v2_evidence_packet.py"
+      ],
+      "prompt": "A useful prior round moved from live sessions into the campaign bank. Its live sibling was removed by retention. Recover its structural history and useful candidate evidence without copying measurement numbers into notes."
+    },
+    {
+      "id": "pose_batch_retake",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [
+        "tests/test_crossover_v2_candidate_ladder.py",
+        "tests/test_crossover_v2_position_cycle.py"
+      ],
+      "prompt": "Baseline, A, and B are scheduled at one pose. The human placed the mic and tapped Start. A normal trial completes; later one take needs a retake and the mic was bumped. State each required human action and which captures can remain valid."
+    },
+    {
+      "id": "playback_failure",
+      "source_kind": "behavior-fixture scenario",
+      "evidence": [
+        "tests/test_active_speaker_program_playback.py"
+      ],
+      "prompt": "Playback raises before a take can complete. An older valid take exists and normal-state restoration has no confirmed readback yet. Decide what can be claimed, retained, and safely attempted next."
+    },
+    {
+      "id": "number_overlap",
+      "source_kind": "provider-fixture scenario",
+      "evidence": [
+        "tests/fixtures/tuning_llm_interpret_response.json",
+        "tests/test_calibration_agent_correction_advisor.py"
+      ],
+      "prompt": "A room packet contains a frequency of 62 Hz and a residual of 8.1 dB. Narration says a 62 dB peak at 8.1 Hz, and the numeric overlap result is ok. Is the claim verified? A separate valid proposal has simulated ringing: can it still be offered?"
+    }
+  ]
+}
