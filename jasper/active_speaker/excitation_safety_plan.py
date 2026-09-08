@@ -493,17 +493,6 @@ LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
 def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
     """One target's effective-peak ceiling and where that number came from.
 
-    **The one owner of this question**, because the field is optional and two
-    readers with two local interpretations of "absent" is exactly how one of
-    them came to raise on the shape the other calls ordinary (2026-08-23).
-    Floor, checked rather than asserted: a grep of ``jasper/`` for
-    ``max_effective_peak_dbfs`` finds exactly one direct dict access, the one
-    below; the two callers that want the answer are
-    :func:`resolve_driver_excitation_ceilings` and
-    ``commissioning_runtime.prepare_summed_excitation``, and everything further
-    downstream (``web.correction_crossover_backend``) takes the already-resolved
-    number as an argument. A third reader belongs here too.
-
     * **absent** — ``LEVEL_CEILING_UNDECLARED``: no published level limit for
       this driver, exactly the no-level-intent the sensitivity derivation
       answers. The class default stands as the seed until it does.
