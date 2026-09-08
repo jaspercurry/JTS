@@ -126,12 +126,6 @@ class ProviderCatalogEntry:
     # subclasses that provider's adapter). Empty otherwise.
     interrupt_reconcile_base: str = ""
     extras: tuple[ProviderExtra, ...] = ()
-    # Pricing-editor metadata (consumed by jasper/web/voice_setup.py): the
-    # public pricing page a human/chatbot reads — no provider API exposes
-    # voice-model prices — and which ``jasper.usage.Pricing`` buckets this
-    # provider's cost model actually uses (Gemini Live can't split
-    # text/cached; Grok is flat-rate). Single source per provider so adding
-    # a backend touches the catalog entry + model_pricing.json, nothing else.
     pricing_url: str = ""
     pricing_buckets: tuple[str, ...] = ()
 

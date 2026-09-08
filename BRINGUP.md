@@ -259,29 +259,14 @@ ssh pi@<hostname>.local 'sudo -n true && echo PASSWORDLESS_SUDO_OK'
 
 ---
 
-## Phase 3 — Configure /etc/jasper/jasper.env (5 min)
+## Phase 3 — Configure services (5 min)
+
+Configure voice keys and the active provider through the wizard in Phase
+3.5 below. For optional settings owned by the main env file:
 
 ```sh
 sudo vim /etc/jasper/jasper.env
 ```
-
-Required: an API key for whichever real-time voice provider you
-want active. The voice loop runs against any of three backends —
-paste the matching key (or all three if you plan to A/B). You
-pick the active provider via the wizard in Phase 3.5, **not** in
-this file — `JASPER_VOICE_PROVIDER` is wizard-owned per PR #166
-and lives only in `/var/lib/jasper/voice_provider.env`.
-
-- `GEMINI_API_KEY=<your key from Google AI Studio>` — Gemini
-  Live (~$0.025/min)
-- `OPENAI_API_KEY=<your key from platform.openai.com>` — OpenAI
-  Realtime (~$0.30/min)
-- `XAI_API_KEY=<your key from console.x.ai>` — xAI Grok (~$0.05/min)
-
-Fresh installs have no provider selected; `jasper-voice` refuses
-to start with a clear error until the wizard writes one. If you
-set more than one key, the others stay benign — the wizard uses
-them when you switch providers.
 
 Optional but recommended:
 
@@ -316,27 +301,15 @@ sudo systemctl restart jasper-voice
 
 ## Phase 3.5 — Pick a voice provider via the wizard (2 min, REQUIRED)
 
-`JASPER_VOICE_PROVIDER` is wizard-owned (PR #166) — `jasper-voice`
-refuses to start until you've picked one. Visit
-`http://jts.local/assistant/voice/`: paste keys, pick model and voice from
-curated dropdowns, flip the active provider with a single radio
-group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
-0640 group `jasper`, provider selection only) and
-`/var/lib/jasper-secrets/voice_keys.env` (mode 0640 group
-`jasper-secrets`, API keys), which `jasper-voice.service` sources via
-`EnvironmentFile=`.
-`install.sh` actively migrates any stale `JASPER_VOICE_PROVIDER`
-out of `/etc/jasper/jasper.env` on each run, so the wizard file is
-the only place it lives.
+Visit `http://jts.local/assistant/voice/`. Paste the key for Gemini,
+OpenAI or Grok, then select the provider, model and voice. A fresh install
+needs a provider selection before `jasper-voice` can start.
 
-Bonus reasons to use the wizard (beyond it being required):
-
-- **Voice picker labels include gender/style hints.** `marin`
-  is "feminine, warm", `ash` is "masculine, soft" — easier to
-  pick than reading just the catalogue name.
-- **Switch provider without SSH.** Useful for A/B comparisons
-  or if you want to flip from Gemini's $0.025/min to OpenAI's
-  better instruction-following on the fly.
+The wizard owns both files: `/var/lib/jasper/voice_provider.env` holds the
+provider/model/voice selection (mode 0640, group `jasper`), and
+`/var/lib/jasper-secrets/voice_keys.env` holds API keys (mode 0640, group
+`jasper-secrets`). `jasper-voice.service` loads both. Use this wizard for
+voice keys; do not put them in `/etc/jasper/jasper.env`.
 
 The page is also available scriptably from your laptop:
 
@@ -345,8 +318,7 @@ bash scripts/switch-voice-provider.sh           # show current
 bash scripts/switch-voice-provider.sh openai    # switch
 ```
 
-The script refuses if the destination provider's key isn't
-already in `jasper.env` or the wizard's env file.
+Save the destination provider's key through the wizard before switching.
 
 ---
 
@@ -719,14 +691,14 @@ account routed for voice commands.
 
 ## Phase 7 — Test wake word + voice (2 min)
 
-The default wake phrase as of 2026-05-16 is **"Jarvis"** (the
+The default wake phrase is **"Jarvis"** (the
 fwartner community model, trained on the phrase set `"jarvis"` /
 `"hey jarvis"` / `"jarvis!"` / `"jarvis?"` — so either form
 triggers it). Try the shorter form first:
 
 ```
 "Jarvis."
-[~1s pause for wake detection + the active voice provider to open a turn]
+[Listen for the chirp before speaking.]
 "What time is it?"
 ```
 
@@ -863,8 +835,9 @@ is absent. The household control is the profile picker at
 `http://jts.local/assistant/wake/`; to make the reconciler look again after a
 firmware flash, `sudo systemctl start jasper-aec-reconcile`. On a managed
 XVF that selection carries intent only: the reconciler arms chip AEC when
-the detected hardware can carry it and falls back to software AEC3 with a
-disclosure when it cannot. `JASPER_AUDIO_INPUT_PROFILE=custom` is the one
+the detected hardware can carry it. Otherwise, it selects software AEC3
+on 6-channel XVF firmware or direct capture on 2-channel firmware, with a
+disclosure. `JASPER_AUDIO_INPUT_PROFILE=custom` is the one
 way to pin legs by hand.
 
 The bridge→voice transport is UDP localhost.
@@ -900,25 +873,16 @@ Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.
 
 #### Why this step exists
 
-The XVF3800 ships from Seeed on a "2-channel" firmware variant.
-That firmware's USB capture endpoint exposes only two channels —
-channel 0 is the chip's beamformed + AEC + noise-suppressed
-**Conference** output, channel 1 is its speech-recognition-tuned
-**ASR** output. Both are post-processed by the chip's on-board DSP
-and intended for use as a single conversational microphone.
+The 6-channel bridge requires a matching XVF capture endpoint. Its main
+software-AEC input is `MIC_CHANNEL_INDEX` (channel 1), with chip
+`SHF_BYPASS=1`. Channels 2–5 expose raw mics 0–3; the separate raw0 leg
+uses channel 2. These are distinct inputs.
 
-JTS's software AEC bridge needs the chip's raw, pre-DSP
-microphone outputs instead. Those only exist on the **"6-channel"
-firmware variant**, which adds raw mic 0–3 on capture channels
-2–5. Without that firmware, the AEC bridge can't run, and
-wake-word detection runs against the chip's conference channel
-only — works in a quiet room, false-wakes heavily when music is
-playing.
-
-The 6-channel firmware is a strict superset of the 2-channel
-firmware: channel 0 (Conference) and channel 1 (ASR) carry the
-same content on either. Switching back is reversible and lossless;
-it just removes the raw channels.
+Two-channel firmware uses direct capture. Channels 0/1 depend on the
+firmware geometry and chip profile: the production square chip-AEC plan
+routes fixed ASR beams there. Six channels do not imply identical processed
+outputs or a production chip beam plan. The
+[microphone reference](jasper/mics/README.md) owns that support boundary.
 
 #### Which firmware to flash
 
@@ -930,28 +894,13 @@ fact that the chip is an XVF3800:
 | Legacy square/circular XVF3800 USB 4-Mic Array | `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` from [`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-sqr`, USB `2886:001a`, ALSA `Array` |
 | ReSpeaker Flex XVF3800 **LINEAR-4** | `respeaker_flex_usb_l16k6ch_v1.0.1.bin` from [`respeaker/reSpeaker_Flex`](https://github.com/respeaker/reSpeaker_Flex/tree/main/xmos_firmwares/usb) | `BLD_MSG=ua-io16-6ch-lin`, USB `2886:0022`, ALSA `L16K6Ch` |
 
-The old `ua-io16-6ch-sqr` blob will enumerate and expose raw mics on
-a linear board, but its chip processed beams and DoA assume square
-geometry. Use it only for raw-channel-only diagnostics. For JTS wake
-and AEC tuning on the Flex LINEAR-4, flash the linear Flex blob and
-retune from the software AEC3 + raw-mic corpus legs the box falls back
-to on its own — on a managed XVF the profile picker carries intent
-only, capability picks the leg, and `xvf_software_aec3` is not offered
-to a mic with no production beam plan.
+The square firmware's processed beams and direction estimate assume square
+geometry. Use the linear Flex blob on Flex LINEAR-4. Its software-AEC3
+fallback is implemented; it has no registered production chip beam plan.
 
-**Before flashing, check the upstream directory for newer entries.**
-If a newer 6-channel variant exists, read its changelog/PR
-description against what JTS depends on:
-
-- channel 0 = Conference (post-DSP beam output)
-- channel 1 = ASR (post-DSP, speech-tuned)
-- channels 2–5 = raw mic data feeding `jasper-aec-bridge`
-
-If those channels survive the upgrade, the new version should drop
-into JTS by bumping three constants in
-[`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py):
-`FIRMWARE_BLOB_6CH` / Flex equivalents, build hash constants, and
-`*_KNOWN_GOOD_AS_OF`.
+Before using another firmware version, verify its geometry, channel mapping
+and control contract against [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
+A matching channel count alone is not enough.
 
 #### How DFU works on this chip (no button combo needed)
 
@@ -1112,8 +1061,8 @@ profile** reads `warn` and carries the reconciler's own `reason=` and
 | `state=fault` | A unit in the managed activation failed (`jasper-aec-init`, `jasper-aec-bridge`, or `jasper-outputd`) — observed breakage, not a designed wait | Inspect the unit its `action=` names, then re-run the reconciler |
 
 On Flex LINEAR-4 (`L16K6Ch` firmware), `state=disclosed_stale` on software AEC3
-is today's end state, not an operator error: chip AEC has no production beam
-plan for that geometry yet, so there is nothing to re-run.
+means no production chip beam plan is registered for that geometry. Re-running
+commissioning does not supply one.
 
 #### Why the reconciler step matters
 
@@ -1181,10 +1130,10 @@ persist them to flash via that command.
 
 **Wake fires but no voice response.**
 - The active provider's API key might be missing/invalid. Keys
-  live in `/etc/jasper/jasper.env` — check for the right one:
-  `GEMINI_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`.
+  live in `/var/lib/jasper-secrets/voice_keys.env`; check key status or
+  replace the key at `http://jts.local/assistant/voice/`.
 - The active provider lives in `/var/lib/jasper/voice_provider.env`
-  (the only place since PR #166): `grep JASPER_VOICE_PROVIDER
+  (wizard-owned): `grep JASPER_VOICE_PROVIDER
   /var/lib/jasper/voice_provider.env`.
 - Daily spend cap might be hit. Visit `http://jts.local/assistant/voice/` for the
   spend-cap status/settings; the underlying ledger is

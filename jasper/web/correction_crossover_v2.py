@@ -1986,6 +1986,7 @@ def _take_staged_angle_walk(
     )
     from jasper.active_speaker.crossover_v2.contracts import (
         MEASURE_KIND_CANDIDATE,
+        MEASURE_KIND_VERIFY,
         CrossoverV2FlowError,
     )
     from jasper.active_speaker.crossover_v2.journey import (
@@ -1995,6 +1996,7 @@ def _take_staged_angle_walk(
     )
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.spatial import TakeClaim
+    from jasper.active_speaker.measurement_programs import off_the_mark
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2105,11 +2107,18 @@ def _take_staged_angle_walk(
         prompts, request.stops,
     ):
         if stop.regime == REGIME_SUMMED:
+            # A seat or close pose with no candidate plays the applied tune
+            # whole (the VERIFY shape): the room is measured through the
+            # speaker stage it sits on (docs/measurement-loop-doctrine.md 1a).
+            through_tune = off_the_mark(stop.kind) and not stop.candidate_id
             specs_by_index[index] = MeasureSpec(
-                kind=MEASURE_KIND_CANDIDATE,
+                kind=MEASURE_KIND_VERIFY if through_tune else MEASURE_KIND_CANDIDATE,
                 positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,
                 pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
-                graph_scope="candidate" if stop.candidate_id else "base",
+                graph_scope=(
+                    "candidate" if stop.candidate_id
+                    else "speaker_tune" if through_tune else "base"
+                ),
             )
     lateral_claims = tuple(
         TakeClaim(candidate_id=stop.candidate_id)
@@ -4212,6 +4221,7 @@ def _bind_engine_measure_leg(
         POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, position_geometry,
     )
     from jasper.active_speaker.crossover_v2.journey import GROUP_PHASES
+    from jasper.active_speaker.crossover_v2.spatial import pose_kind_fields
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
     from jasper.active_speaker.crossover_v2.program_transaction import (
@@ -4260,7 +4270,8 @@ def _bind_engine_measure_leg(
                 pose_prompts=(prompt.text,),
             )
             pose = {"position_deg": geometry.degrees, "position_axis": geometry.axis,
-                    "vertical_deg": geometry.vertical_deg, "prompt": prompt.text}
+                    "vertical_deg": geometry.vertical_deg, "prompt": prompt.text,
+                    **pose_kind_fields(geometry)}
         elif entry is not None:
             screen = entry.screen
             spec = dataclasses.replace(

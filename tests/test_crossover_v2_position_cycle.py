@@ -34,6 +34,9 @@ from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.spatial import (
     LATERAL_POSE_REGIME,
     LateralPose,
+    MARK_DISTANCE_M,
+    POSITION_AXIS_HORIZONTAL,
+    PositionGeometry,
     TakeClaim,
     entry_baseline_record,
     lateral_pose_record,
@@ -125,7 +128,10 @@ def _record(
         curves=(),
     )
     return lateral_pose_record(
-        pose, position_deg=position_deg, vertical_deg=vertical_deg,
+        pose,
+        geometry=PositionGeometry(
+            POSITION_AXIS_HORIZONTAL, position_deg, MARK_DISTANCE_M, vertical_deg,
+        ),
         lateral_consumer="forward_model",
         session_id="sess-1", graph_fingerprint="fp-applied",
         captured_at="2026-08-26T00:00:00Z",

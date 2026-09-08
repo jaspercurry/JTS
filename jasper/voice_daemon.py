@@ -72,6 +72,7 @@ from .voice.output_gate import (
     AssistantOutputGate,
 )
 from .voice.turn_playback import (  # noqa: F401
+    PlaybackReport,
     idle_watchdog,
     play_responses,
 )
@@ -142,6 +143,8 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "mic_muted",
     "stopping",
     "research_window_wake",
+    "barge_in",
+    "measurement_active",
 })
 
 # How long a wake or a manual (button) session start waits out a paused
@@ -629,11 +632,6 @@ class WakeLoop:
         # `Restart=on-watchdog` revives us. See jasper/watchdog.py.
         self._heartbeat = heartbeat
 
-        # Local Silero VAD for in-session barge-in gating. While the
-        # model is producing TTS, mic frames are forwarded to Gemini
-        # ONLY if the local VAD detects user speech — TTS bleed-through
-        # is filtered out, real interrupts pass through.
-        #
         # None on a push-to-talk-only daemon: every reader below is already
         # off on a button turn (barge-in refused, server VAD refused, the
         # endpointer bypassed), and `SpeechVAD()` is what pulls openwakeword
@@ -655,6 +653,7 @@ class WakeLoop:
         # flag, deliberately NOT an early _state flip — _state must stay
         # SESSION through the teardown so output-stream gates hold.
         self._ending: bool = False
+        self._playback_report = PlaybackReport()
         self._bg_tasks: set[asyncio.Task] = set()
         self._bg_end_scheduled: bool = False
         self._fire_and_forget: set[asyncio.Task] = set()
@@ -852,6 +851,13 @@ class WakeLoop:
         for task in self._bg_tasks:
             task.add_done_callback(self._on_turn_background_done)
 
+    def _turn_background_end_reason(self) -> str | None:
+        done = [task for task in self._bg_tasks if task.done()]
+        failed = [task for task in done if not task.cancelled() and task.exception() is not None]
+        if failed:
+            return "playback_failed"
+        return (self._playback_report.stop_reason or "ended") if done else None
+
     def _on_turn_background_done(self, task: asyncio.Task) -> None:
         if task not in self._bg_tasks:
             return
@@ -859,7 +865,7 @@ class WakeLoop:
             return
         self._bg_end_scheduled = True
         self._create_fire_and_forget_task(
-            self._end_turn(),
+            self._end_turn(self._turn_background_end_reason() or "ended"),
             name="voice-turn-background-end",
         )
 
@@ -1921,8 +1927,8 @@ class WakeLoop:
             return
         if captured_at is not None:
             self._note_input_age(captured_at)
-        if any(t.done() for t in self._bg_tasks):
-            await self._end_turn()
+        if reason := self._turn_background_end_reason():
+            await self._end_turn(reason)
             return
         assert self._turn is not None
         if self._input_ended:
@@ -2275,11 +2281,6 @@ class WakeLoop:
                 ),
             },
             "spend_allowed": self._spend_cap.allowed(),
-            # usage.db writes are failing, so turns are served but their cost
-            # is not recorded and the spend cap cannot enforce. Surfaced so
-            # /state and jasper-control can show "recorded spend may be stale"
-            # instead of the cap silently flatlining. See
-            # UsageStore.write_degraded.
             "usage_tracking_degraded": self._usage_store.write_degraded,
             "connection_paused": self._connection.is_paused(),
             # The provider's own reason for the outage that
@@ -2544,9 +2545,12 @@ class WakeLoop:
             self._check_input_admission(input_epoch)
             await self._turn.send_audio(frame.tobytes())
         self._check_input_admission(input_epoch)
+        self._playback_report = PlaybackReport()
         playback = asyncio.create_task(
             play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
+                report=self._playback_report,
+                admission_refusal=self._assistant_output.admission_refusal,
                 on_response_started=self._turn_observer("first_response", event_stage="response_started"),
                 on_first_write=self._turn_observer("first_write"),
             )
@@ -2703,17 +2707,26 @@ class WakeLoop:
         episode = self._turn_output_episode
         play_no_answer_cue = False
         try:
+            # IPC cancellation can confirm an accepted prefix during the join.
+            await cancel_tracked_tasks(set(self._bg_tasks))
+            if reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS:
+                reason = self._turn_background_end_reason() or reason
+            self._bg_tasks.clear()
+            play_no_answer_cue = reason == "playback_failed"
             play_no_answer_cue = await self._record_and_release_turn(reason, episode)
         finally:
             try:
-                await self._assistant_output.finish_turn_episode(episode, completed=True)
+                await self._assistant_output.finish_turn_episode(
+                    episode, completed=reason != "playback_failed",
+                )
                 self._barge_in_active = False
                 if play_no_answer_cue:
                     # A paused connection owns its remedy cue. Keep SESSION
                     # through its drain so the cue cannot wake the detectors.
                     error = await capture_cleanup_error(lambda: self._play_cue(
                         self._connection.wake_cue()
-                        if self._connection.is_paused() else INTERNAL_ERROR_CUE_SLUG
+                        if reason != "playback_failed" and self._connection.is_paused()
+                        else INTERNAL_ERROR_CUE_SLUG
                     ))
                     if isinstance(error, Exception):
                         logger.warning("teardown no-answer cue failed: %s", error)
@@ -2723,16 +2736,14 @@ class WakeLoop:
                 self._reset_turn()
 
     async def _record_turn_outcome(self, reason: str) -> None:
-        self._emit_turn_timeline("complete")
-        # `_user_speech_seen` false means the session got no real user input:
-        # a likely false positive (music transient, TTS bleed) or a changed
-        # mind. Either way the outcome is 'no_speech', which dual-stream
-        # false-positive analysis keys off.
-        await self._wake_telemetry.stage("turn_complete")
+        failed = reason == "playback_failed"
+        self._emit_turn_timeline("failed" if failed else "complete")
+        if not failed:
+            await self._wake_telemetry.stage("turn_complete")
         # Capture event_id BEFORE the outcome write clears it.
         session_vad_eid = self._wake_telemetry.current_event_id
         terminal_outcome = (
-            "completed" if self._user_speech_seen else "no_speech"
+            "session_failed" if failed else "completed" if self._user_speech_seen else "no_speech"
         )
         await self._wake_telemetry.outcome(terminal_outcome, reason)
 
@@ -2764,11 +2775,14 @@ class WakeLoop:
         phases: list[tuple[str, Callable[[], object]]] = [
             ("turn_outcome", lambda: self._record_turn_outcome(reason)),
             ("peering_end", lambda: self._peering.session_ended(reason)),
-            ("background_stop", lambda: cancel_tracked_tasks(self._bg_tasks)),
         ]
         async def end_segment() -> None:
             if episode is not None and self._output_gate.is_current(episode):
-                await self._tts.end_segment()
+                try:
+                    if reason == "playback_failed":
+                        await self._tts.flush()
+                finally:
+                    await self._tts.end_segment()
 
         phases.append(("end_segment", end_segment))
         if self._input_ended or self._user_speech_seen or self._manual_endpoint_this_turn:
@@ -2824,8 +2838,17 @@ class WakeLoop:
             turn.turn_lost()
             and not turn.server_turn_complete()
         )
-        silent = chunks_received == 0 and not turn.turn_lost()
-        if bytes_sent == 0 and not expected_research_silence_dismiss:
+        silent = not self._playback_report.accepted_audio and not turn.turn_lost()
+        if reason == "playback_failed":
+            play_no_answer_cue = self._log_no_answer(
+                "turn.output_failed",
+                end_reason=reason,
+                counted=not self._playback_report.accepted_audio,
+                accepted_audio=self._playback_report.accepted_audio,
+                chunks_received=chunks_received,
+                bytes_sent=bytes_sent,
+            )
+        elif bytes_sent == 0 and not expected_research_silence_dismiss:
             self._log_no_answer(
                 "turn.silent_response",
                 end_reason=reason,

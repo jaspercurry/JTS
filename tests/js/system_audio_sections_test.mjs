@@ -31,7 +31,8 @@ const defList = (rows) => h("deflist", null,
 const fmtEpochAgo = (at) => `${Math.max(0, 1000 - Number(at))}s ago`;
 
 const api = await buildFunction(modulePath, {
-  rewrite: [[/^import[\s\S]*?;\n/gm, ""], [/^export /gm, ""]],
+  rewrite: [[/^import[\s\S]*?;\n/gm, ""]],
+  stripExports: true,
   guardNoImports: true,
   async: true,
   params: ["h", "badge", "defList", "fmtEpochAgo"],

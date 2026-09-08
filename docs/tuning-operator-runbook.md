@@ -128,6 +128,30 @@ its parents' measurement claims. The basic
 profile has its own explicit `jasper-basic-profile review|apply` door; replacing
 a saved tune is not necessary just to make a temporary baseline measurement.
 
+## Room
+
+The room is measured on the seat cube, through the applied tune, ungated
+(methodology §11). In order:
+
+1. `jasper-angle-capture plan --program seat --size cube`: seven summed stops
+   around the listener's head (`--size express`: three). `stage` it; a human
+   moves the microphone, and an arm cannot reach the seat.
+2. `jasper-round open --tier express`, then the phone's position-ready walk
+   states each place from the head centre at ear height.
+3. `jasper-round bank <session-dir>`: the banked seat takes carry `pose_kind`,
+   `seat_offset_m` and `gating_applied: false`.
+4. `jasper-round-views room-ceiling <round-dir>`: the applied candidate's
+   trusted floor, clamped; with no readable profile the default is used and
+   disclosed.
+5. `jasper-round-views room-median <round-dir>`: median, spread and
+   per-position deviation below the ceiling; `room_median.json` is the input
+   the room candidate reads.
+6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
+   hold across the cube, and at what fraction of positions.
+7. The room candidate kind reads those two artifacts when it lands.
+
+Nothing above the ceiling changes on this evidence.
+
 ## Evidence and recovery
 
 Measurement records own numbers and identities. An optional
@@ -171,7 +195,7 @@ Capture emits sound; apply persists a tune.
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber compose\|status\|packet\|propose\|stage` | Emit one crossover round's evidence packet, read a prescription back through the strict gate, and say where this speaker stands. | advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round open\|wait\|apply\|bank` | Open, wait on, apply and bank a crossover round from the speaker itself. The three wizard verbs scripts/run-crossover-round.py drives from a laptop, over the same transport and the same apply gate, plus the bank that files a finished session in the on-box campaign home. | mutating-with-gates (`open`/`apply`/`bank` write; `wait` does not) | `jasper/cli/round.py` |
-| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
+| `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|spec-sweep\|gate-sweep\|frequency\|distortion\|classify-features\|findings\|close-reference\|boundary-prior\|delay-landscape\|delay-confirm\|room-ceiling\|room-median\|room-persistence\|inventory` | Read a round's measured evidence. Select standalone views or per-seat --include agreement directivity co-metrics to share a round read. Answers use stdout; details use files. | advisory (analysis views save artifacts; `classify-features` also updates the bundle) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |
 | `jasper-declare-geometry set\|show` | Declare measurement rig geometry: speaker/mic heights, distance and optional ceiling, so entanglement_floor_hz has a provenance-labeled, non-measured source on rigs where the measured reflection finder structurally never fires (issue #3502); and optional front/side wall distances, which only the jasper-round-views boundary-prior model reads. | advisory (`set` writes; `show` does not) | `jasper/cli/declare_geometry.py` |

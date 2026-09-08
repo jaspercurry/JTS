@@ -156,9 +156,7 @@ class RuntimeProfile:
 
     @property
     def recommended_profile(self) -> str:
-        # A managed XVF is a chip-AEC product.  Unsupported firmware or
-        # geometry is an actionable parked state, never an invitation to
-        # silently route the same hardware through AEC3/direct-mic.
+        # Requested intent; the reconciler owns active capture and fallback.
         if self.present:
             return "xvf_chip_aec"
         return "direct_mic"
@@ -349,7 +347,7 @@ CHIP_BEAM_PLANS: dict[str, ChipBeamPlan] = {
 }
 
 
-# The USB firmware variants JTS has validated. The 6-ch variants add
+# Recognized USB firmware variants. The 6-ch variants add
 # the raw-mic capture channels needed by the software AEC bridge.
 VARIANT_2CH = FirmwareVariant(
     variant_id="xvf3800_legacy_square_2ch",
@@ -589,20 +587,10 @@ MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
 #   2 = Raw mic 0  (pre-everything — no BF, no NS, no AGC, no HPF)
 #   3-5 = Raw mics 1-3
 #
-# We use channel 1 for the software-AEC fallback because it is the
-# canonical XVF3800 voice-assistant capture channel — used by Seeed's own
-# examples, the Reachy Mini stack, and the formatBCE/ESPHome integration.
-# In that fallback profile, jasper-aec-init writes `SHF_BYPASS=1` because
-# the chip's AEC pipeline is incompatible unless the outputd USB-IN
-# reference path is armed. Empirically that also bypasses the chip SHF
-# post-processing path on channels 0/1, so this is a raw-ish input rather
-# than a beamformed / NS / AGC output. Software AEC3 then runs host-side.
-# In chip-AEC mode, the bridge captures ch0/ch1 as fixed 150/210 ASR
-# beams instead and forwards the selected beam directly.
-#
-# NOT channel 2 (raw mic 0): that channel has literally no chip
-# processing — toggling chip NS/AGC moves it 0.4 dB against 8+ dB on
-# ch 0/1, so reading it pays for the chip's DSP without using it.
+# Software-AEC fallback uses channel 1 with SHF_BYPASS=1; chip AEC requires
+# an armed outputd USB-IN reference path.
+# Bypass also disables SHF processing on channels 0/1. The validated chip
+# profile instead forwards its registered fixed beams on those channels.
 MIC_CHANNEL_INDEX = 1
 
 

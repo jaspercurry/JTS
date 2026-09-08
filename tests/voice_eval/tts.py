@@ -2,17 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Synthesize prompt audio via OpenAI's TTS, cached on disk.
+"""Synthesize prompt audio via OpenAI TTS and cache it on disk.
 
-The harness needs to inject *user* audio into the voice loop. We
-generate it once per (text, voice) tuple and reuse the WAV forever
-— costs stay at $0 after first run.
-
-Single source of truth: one TTS model, one voice. Variance in the
-*assistant's* behavior should never be confused with variance in
-the prompt. If we later need a multilingual or non-OpenAI source,
-swap by changing the constants here — no Protocol, no plug-in
-indirection until that's actually required.
+Reuse each complete prompt so prompt variation does not confound comparisons
+of the assistant. The cache key includes text, voice, model and output rate.
 """
 from __future__ import annotations
 
@@ -29,9 +22,7 @@ except ImportError:  # pragma: no cover
     AsyncOpenAI = None  # type: ignore[assignment]
 
 
-# OpenAI TTS settings. gpt-4o-mini-tts is ~$0.60 per 1M chars (early
-# 2026) and outputs 24kHz mono — we resample to 16kHz for the
-# daemon. Voice "alloy" is neutral and clear; pick once and keep.
+# OpenAI returns 24 kHz mono PCM; the harness sends 16 kHz mono.
 TTS_MODEL = "gpt-4o-mini-tts"
 TTS_VOICE = "alloy"
 TTS_OUT_RATE_HZ = 24_000
@@ -41,9 +32,7 @@ DEFAULT_CACHE_DIR = Path(__file__).resolve().parent / "audio_cache"
 
 
 def cache_path(text: str, *, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
-    """Deterministic path for a (text, voice, model, rate) tuple. SHA-256
-    over the inputs that affect bytes-on-disk. Voice/model are baked
-    into the hash so a future swap auto-invalidates."""
+    """Hash text, voice, model and output rate so changed inputs use a new cache file."""
     key = f"{TTS_MODEL}|{TTS_VOICE}|{DAEMON_RATE_HZ}|{text}"
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
     safe = "".join(c if c.isalnum() else "_" for c in text)[:40]
@@ -53,12 +42,10 @@ def cache_path(text: str, *, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
 async def synth(
     text: str, *, cache_dir: Path = DEFAULT_CACHE_DIR, force: bool = False,
 ) -> Path:
-    """Return a path to a 16kHz mono PCM WAV of `text`. Cached. If the
-    cache hit exists and `force` is False, returns it without calling
-    OpenAI.
+    """Return a 16 kHz mono PCM WAV, reusing the cache unless force=True.
 
-    Raises RuntimeError if OPENAI_API_KEY is missing AND no cached
-    file exists — the test should `pytest.skip` in that case."""
+    A cache miss or forced synthesis needs the OpenAI package and API key.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_path(text, cache_dir=cache_dir)
     if path.exists() and not force:
@@ -76,19 +63,7 @@ async def synth(
         )
 
     client = AsyncOpenAI(api_key=key)
-    # NON-streaming on purpose. The streaming variant
-    # (`client.audio.speech.with_streaming_response.create(...)` +
-    # `async for chunk in resp.iter_bytes()`) is the documented API
-    # path, but it ships with a real bug against PCM: chunks come back
-    # incomplete and the assembled audio is mostly silence with just
-    # the first word or two audible. Confirmed via the OpenAI
-    # Community ("TTS streaming does not work", "Gpt-4o-mini-tts
-    # Issues: Volume Fluctuations, Silence, Repetition, Distortion",
-    # openai-python issue #864) and reproduced here 2026-05-21 against
-    # gpt-4o-mini-tts. The non-streaming variant returns the complete
-    # response in one shot — no chunk-boundary issues — at the cost of
-    # waiting for the full audio before saving (fine for our use case:
-    # prompts are short and cached on disk).
+    # Wait for the whole prompt because playback consumes a complete cached WAV.
     response = await client.audio.speech.create(
         model=TTS_MODEL,
         voice=TTS_VOICE,
@@ -103,12 +78,7 @@ async def synth(
 
 
 def _resample_24k_to_16k(pcm: bytes) -> bytes:
-    """24kHz → 16kHz linear resample (ratio 2/3) on int16 mono.
-
-    Linear is fine here: the daemon's wake / VAD / LLM-side ASR all
-    operate on speech-band content and aren't sensitive to the
-    high-frequency artefacts a sharper filter would suppress. If
-    we ever care, swap to scipy.signal.resample_poly(..., 2, 3)."""
+    """Resample int16 mono from 24 kHz to 16 kHz with linear interpolation."""
     import array
     src = array.array("h")
     src.frombytes(pcm)

@@ -40,12 +40,13 @@ function h(tag, props, ...children) {
 }
 const defList = (rows, modifier = "") => h("deflist", { rows, modifier });
 
-const STRIP = [[/^import[\s\S]*?;\n/gm, ""], [/^export /gm, ""]];
+const STRIP = [[/^import[\s\S]*?;\n/gm, ""]];
 
 const {
   transportParkCard, transportParkBody, PARK_HEADLINE, CONVERGE_HEADLINE,
 } = buildFunction(sectionsPath, {
   rewrite: STRIP,
+  stripExports: true,
   guardNoImports: true,
   params: ["h", "defList"],
   returns: [
@@ -171,6 +172,7 @@ assert.equal(transportParkBody(unclassified).length, 1);
 const titled = (title) => ({ section: h("section", { title }), body: h("div") });
 const { buildSystemPanel } = buildFunction([sectionsPath, viewsPath], {
   rewrite: STRIP,
+  stripExports: true,
   guardNoImports: true,
   params: [
     "h", "defList", "livePill", "titledCard", "actionButton", "collapsible",

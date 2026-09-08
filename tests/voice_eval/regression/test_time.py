@@ -2,31 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Time regression scenarios.
+"""Paid, read-only time scenarios.
 
-Each scenario follows the same three-assertion shape as
-`test_subway.py`:
-
-  1. Trajectory: the model called the expected tool.
-  2. Outcome: the tool returned the expected fields.
-  3. Reality: the tool's data matches an independent ground-truth
-     fetch within tolerance.
-
-Read-only — no playback side-effects.
-
-Why this matters even though "the LLM knows the time": the
-realtime models DON'T know the time mid-session. The system prompt
-bakes a timestamp at connection-open and the connection stays open
-for hours with idle-context-reset disabled (current default). With
-no tool to refresh the clock, the model speaks the stale bake.
-
-============================================================
-COST NOTICE — read tests/voice_eval/harness.py top docstring
-============================================================
-Paid LLM API calls per turn. Read-only scenarios but the LLM
-cost still applies. PASS_K = 3 turns per scenario function.
-DO NOT loop or increase PASS_K without explicit human approval.
-============================================================
+The connection's prompt timestamp can become stale; answers need fresh tool time.
+PASS_K = 3 turns per scenario. Announce the count and estimated cost before
+running. Never loop or auto-retry.
+Increase PASS_K only with explicit approval.
+See tests/voice_eval/README.md for run rules and evidence limits.
 """
 from __future__ import annotations
 
@@ -42,23 +24,7 @@ PASS_K = 3
 
 @pytest.mark.parametrize("trial", range(PASS_K))
 async def test_what_time_is_it(harness, trial: int) -> None:
-    """Asks 'what time is it?' — the model should call
-    `get_current_time` (or whatever the time tool ends up being
-    named) and the response should be within 1 minute of
-    `datetime.now()`.
-
-    Without a time tool the model reads its stale system-prompt
-    timestamp (baked at connection-open, potentially many hours old)
-    and confidently speaks the wrong time; this test asserts the
-    model instead calls a tool for fresh time on every question.
-
-    Status (2026-06-15): the `get_current_time` tool has landed, is
-    registered in `_build_test_registry`, and returns a
-    minute-resolution `local_time` ISO string — exactly what
-    assertion #2 reads. The earlier "no time tool exists yet"
-    KNOWN-FAILING note is obsolete; this scenario is expected to
-    pass. (Not re-run in the fix that corrected this note — confirm
-    on the next paid eval pass.)"""
+    """Require fresh tool time and compare tool and spoken times with the clock."""
     result = await harness.ask("what time is it?")
 
     # 1. Trajectory — the model must call the time tool.
@@ -75,14 +41,6 @@ async def test_what_time_is_it(harness, trial: int) -> None:
             f"See transcript: {result.transcript_path}",
         )
 
-    # 2. Outcome — response includes a parseable local timestamp.
-    #
-    # The tool's exact response shape will be decided when the tool
-    # is built. We assert on a `local_time` ISO-8601 field for now;
-    # if the eventual tool uses a different field name, update this
-    # assertion alongside the tool implementation. The shape is a
-    # contract worth pinning early so the scenario keeps reading
-    # the right field after the fix lands.
     result_dict = call.result or {}
     local_time_raw = result_dict.get("local_time")
     assert local_time_raw, (
@@ -100,9 +58,6 @@ async def test_what_time_is_it(harness, trial: int) -> None:
 
     # 3. Reality — tool time matches wall-clock within tolerance.
     now = oracles.time_now_local()
-    # Make both tz-aware for comparison (or strip tz on truth) —
-    # the tool's emission is local-and-aware; oracles.time_now_local
-    # is also aware.
     if tool_time.tzinfo is None:
         # Fall back to naive comparison against local naive now.
         now = now.replace(tzinfo=None)

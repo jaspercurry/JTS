@@ -14,7 +14,8 @@ if (!modulePath) {
 }
 
 const { enhancedAecPresentation } = buildFunction(modulePath, {
-  rewrite: [[/^import .*;\n/gm, ""], [/^export /gm, ""]],
+  rewrite: [[/^import .*;\n/gm, ""]],
+  stripExports: true,
   guardNoImports: true,
   returns: ["enhancedAecPresentation"],
 })();

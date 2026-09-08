@@ -109,6 +109,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "delay-confirm": ViewArtifact("delay_confirmation.json", TAKES_BUNDLE_AND_FC),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
     "boundary-prior": ViewArtifact("boundary_prior.json"),
+    "room-ceiling": ViewArtifact("room_ceiling.json"),
+    "room-median": ViewArtifact("room_median.json"),
+    "room-persistence": ViewArtifact("room_persistence.json"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(

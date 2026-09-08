@@ -505,7 +505,7 @@ def _applied_profile(fc_hz: float = 1648.7) -> dict[str, Any]:
     """The bare shape ``_crossover_fc_hz`` reads — no SSOT schema wrapper.
 
     Used only for direct ``_crossover_fc_hz`` calls, which read the fields
-    below without going through :func:`~.evidence_packet._applied_profile_source`.
+    below without going through :func:`~.evidence_packet.applied_profile_source`.
     A test that goes through the real loader (:func:`_write_applied_profile`)
     needs the wrapper; this one does not.
     """
@@ -519,7 +519,7 @@ def _applied_profile(fc_hz: float = 1648.7) -> dict[str, Any]:
 def _write_applied_profile(tmp_path: Path, *, fc_hz: float = 1648.7) -> Path:
     """A minimal applied-profile SSOT file, valid enough for the real loader.
 
-    ``load_applied_baseline_profile_state`` (via ``_applied_profile_source``)
+    ``load_applied_baseline_profile_state`` (via ``applied_profile_source``)
     only accepts a document carrying its own schema stamp and an "applied"
     status — see ``jasper.active_speaker.baseline_profile._load_saved_state``
     and ``_applied_profile_anchor``.

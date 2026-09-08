@@ -4,14 +4,9 @@
 
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 
 from .openwakeword_guard import ensure_openwakeword_import_safe
-
-logger = logging.getLogger(__name__)
-
 
 class WakeWordDetector:
     """Stateful wake-word scorer over 16 kHz int16 frames.
@@ -21,16 +16,8 @@ class WakeWordDetector:
     """
 
     def __init__(self, model_name: str, threshold: float = 0.5) -> None:
-        # `openwakeword.model` is imported here, not at module top, so this
-        # module stays importable on a dev machine without openwakeword in its
-        # venv (parallel to the lazy import of `sounddevice` in
-        # jasper.audio_io). Tests that exercise only the pure-Python helpers
-        # below — or that import voice_daemon transitively — work without the
-        # Pi-side dep.
-        #
-        # The guard must precede that import; see jasper/openwakeword_guard.py.
         ensure_openwakeword_import_safe()
-        from openwakeword.model import Model
+        from openwakeword.model import Model  # lazy: optional Pi dependency
 
         # model_name can be a stock name like "hey_jarvis" (resolved by
         # openWakeWord's bundled models) or a path to a custom .onnx file.
@@ -44,6 +31,11 @@ class WakeWordDetector:
         )
         self._threshold = threshold
         self._key = self._resolve_score_key(model_name)
+        # openWakeWord 0.6.0 reset reruns mel/embedding inference on 4 s of
+        # random PCM. Save pristine startup buffers to keep that work out of reset.
+        prep = self._model.preprocessor
+        self._initial_melspectrogram = prep.melspectrogram_buffer.copy()
+        self._initial_features = prep.feature_buffer.copy()
 
     @property
     def threshold(self) -> float:
@@ -58,36 +50,16 @@ class WakeWordDetector:
         return model_name
 
     def score_frame(self, frame: np.ndarray) -> float:
-        """Score one frame and return the raw wake-score (0.0-1.0).
-
-        Unlike `feed`, returns the score regardless of threshold —
-        callers track recent peaks across frames, run OR-gate logic
-        across multiple legs, or write sub-threshold scores to
-        telemetry. Threshold comparison is the caller's job.
-        """
+        """Return the raw wake score (0.0–1.0); callers apply the threshold."""
         scores = self._model.predict(frame)
         return float(scores.get(self._key, 0.0))
 
     def reset(self) -> None:
-        """Reset internal model state after a wake fires.
-
-        openWakeWord's prediction smoothing keeps recent-activation
-        state across calls — once the model has scored a wake-word
-        spike, its baseline stays elevated for several seconds, so
-        anything speech-shaped (music vocals, TTS-tail bleed) can
-        more easily push past the threshold and false-fire on the
-        next pass through WAKE state. Calling this between a wake
-        firing and the next listening window clears that bias.
-
-        Implementation note: openWakeWord exposes
-        `model.reset()` which clears per-model prediction-buffer
-        history. The deque-style internal buffers and any model-
-        level smoothing both get zeroed.
-        """
-        try:
-            self._model.reset()
-        except Exception as e:  # noqa: BLE001
-            # Older openwakeword versions might not expose reset();
-            # don't crash if it's not there — the symptom (post-wake
-            # false-fires) is annoying but not catastrophic.
-            logger.debug("wake detector reset() not available: %s", e)
+        """Discard audio and prediction history without running inference."""
+        prep = self._model.preprocessor
+        prep.raw_data_buffer.clear()
+        prep.melspectrogram_buffer = self._initial_melspectrogram.copy()
+        prep.accumulated_samples = 0
+        prep.raw_data_remainder = np.empty(0)
+        prep.feature_buffer = self._initial_features.copy()
+        self._model.prediction_buffer.clear()

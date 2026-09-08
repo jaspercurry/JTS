@@ -110,37 +110,18 @@ def _build_test_registry(
     *,
     test_state: "dict[str, object] | None" = None,
 ) -> ToolRegistry:
-    """Construct the tool registry the eval harness exposes to the
-    LLM. Mirrors the daemon's `_build_registry`.
+    """Build production tool packs with handles for assertions and cleanup.
 
-    `test_state` is an optional dict the builder populates with
-    side-channel references for test assertions — e.g. the timer
-    scheduler so a scenario can `list_active()` after a turn to
-    verify final state without making another paid LLM call, or the
-    volume coordinator so a scenario can read+restore the prior
-    listening level. Tests that don't need side-channel access pass
-    None.
+    `test_state` exposes scheduler state and the volume coordinator so tests
+    can inspect results or restore volume without another paid turn.
 
-    **Side-effect warning**: registering `spotify_play`, the
-    transport tools, and the volume tools means a scenario that
-    exercises them WILL affect live playback / speaker volume. The
-    Spotify scenarios honour `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1`; the
-    volume scenarios restore the prior level in a `finally`. The
-    `home_assistant` tool performs REAL smart-home actions (lights,
-    locks, scenes) on the configured HA. `flag_recent_issue` only
-    writes a SQLite row to a throwaway tmp store, so it's low-risk.
-    Subway/weather/time/calendar/gmail scenarios are read-only.
-
-    **Hardware-backed tools**: the volume coordinator drives
-    CamillaDSP over a websocket; calendar/gmail hit Google's APIs.
-    Both only function where the eval actually runs (the Pi for
-    Camilla, any host with linked Google accounts for the Google
-    tools). On a laptop these tools register but their scenarios skip
-    — collection still works everywhere.
-
-    As new tools land, add them through `jasper.tools.packs.TOOL_PACKS`
-    alongside the matching scenario file. The model only sees what's
-    registered."""
+    Spotify, transport and volume tools can change live playback. Spotify
+    scenarios honour JASPER_VOICE_EVAL_SKIP_PLAYBACK=1; volume scenarios
+    restore the prior level in a finally. Home Assistant can perform real
+    smart-home actions. Diagnostic flags use a temporary SQLite store.
+    Subway/weather/time/calendar/gmail scenarios are read-only. Configuration
+    and service access determine which live-tool scenarios can run.
+    """
     registry = ToolRegistry()
     # Shared untrusted-content monitor, exactly as the daemon wires it. The
     # gmail/calendar tools stamp it; the home_assistant consequential-action
@@ -150,14 +131,8 @@ def _build_test_registry(
     if test_state is not None:
         test_state["untrusted_monitor"] = untrusted_monitor
 
-    # Volume — source-aware coordinator backed by CamillaDSP. The
-    # coordinator construction is identical to the daemon's; it does
-    # NOT connect to CamillaDSP at build time (CamillaController is
-    # lazy), so this is safe to construct on a laptop. The tools only
-    # *work* where CamillaDSP is reachable (the Pi) — the volume
-    # scenarios restore the prior level in a finally and skip if the
-    # coordinator can't read a level. Exposed via test_state so a
-    # scenario can read+restore the level without a second paid call.
+    # Camilla connects lazily. Expose the coordinator so scenarios can
+    # read and restore the level without a second paid call.
     volume_persistence = VolumePersistence(cfg.volume_state_path)
     renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
     try:
@@ -175,7 +150,6 @@ def _build_test_registry(
     if test_state is not None:
         test_state["volume_coordinator"] = volume_coordinator
 
-    # Weather — stateless HTTP client. Read-only.
     weather = WeatherClient(
         cfg.weather_default_location,
         cfg.weather_units,
@@ -213,18 +187,10 @@ def _build_test_registry(
         test_state["research_scheduler"] = research_scheduler
         test_state["research_db_path"] = research_db.name
 
-    # Transit (subway / bus / Citi Bike, and future city packs) — read-only
-    # HTTP clients. Use the daemon's OWN entry point so this can't drift from
-    # production: each provider parses its own env keys and `active_transit`
-    # builds + registers the tools for the household's enabled city packs.
-    # (This replaced a hand-rolled mirror that read typed `Config` fields,
-    # which is exactly the drift the hardware-free
-    # `tests/test_voice_eval_registry.py` exists to catch.)
+    # Providers own their env parsing; use the same transit builder as the daemon.
     active = transit.active_transit(os.environ)
     if test_state is not None:
-        # Own the lifecycle: ActiveTransit holds built clients (BusClient's
-        # httpx pool today). Stash it so aclose() reclaims them — discarding
-        # it here leaked the pool across every harness teardown.
+        # Retain the client owner so aclose() can release its HTTP pools.
         test_state["active_transit"] = active
     google_routes = build_google_routes_client(os.environ)
     if test_state is not None:
@@ -467,9 +433,7 @@ class VoiceEvalHarness:
                 ),
             )
             if connection.is_paused():
-                # start() now survives a terminal connect so the daemon
-                # stays up; an eval must fail fast on it instead, with
-                # the provider's own reason.
+                # A paused connection keeps the daemon alive but cannot run an eval.
                 detail = connection.last_failure_detail()
                 await connection.stop()
                 raise RuntimeError(
@@ -645,28 +609,19 @@ class VoiceEvalHarness:
 
     @staticmethod
     def extract_minutes_from_text(text: str) -> list[int]:
-        """Pull integers out of spoken text, in the order they appear.
+        """Extract one-to-three-digit groups in order, using word boundaries.
 
-        Used by subway-style scenarios: "Next train in 6, 22, and 36
-        minutes" → [6, 22, 36]. Catches numeric forms only; if the
-        model spells numbers out ("six, twenty-two, and thirty-six"),
-        this returns []. Provider docstrings (and our SYSTEM_INSTRUCTION)
-        instruct the model to use numeric form, so this is fine in
-        practice — if a future model insists on words, swap in a
-        words-to-numbers parser."""
-        # Match integers with optional thousands separators, but cap
-        # at 3 digits since subway arrivals are minutes (<= 999).
+        Spelled-out numbers are ignored. Commas split groups: "1,234" gives [1, 234].
+        """
         return [int(m) for m in re.findall(r"\b(\d{1,3})\b", text or "")]
 
     @staticmethod
     def extract_time_from_text(text: str):
-        """Pull the first HH:MM-shaped time out of spoken text and
-        return a `datetime.time`. Returns None if no match.
+        """Parse the first HH:MM-shaped time, with an optional AM/PM suffix.
 
-        Handles "10:15", "10:15 AM", "10:15PM", "10:15 a.m.". Doesn't
-        handle spelled-out forms ("ten fifteen") — same limitation
-        as `extract_minutes_from_text`. A future model that always
-        spells out times would need a words-to-numbers parser."""
+        Accepts "10:15", "10:15 AM", "10:15PM" and "10:15 a.m.".
+        Spelled-out times are unsupported. Missing or invalid times return None.
+        """
         m = re.search(
             r"\b(\d{1,2}):(\d{2})(?:\s*([ap])\.?\s*m\.?)?\b",
             (text or "").lower(),

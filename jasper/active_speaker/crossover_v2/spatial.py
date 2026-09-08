@@ -41,6 +41,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
+from ..measurement_programs import POSE_KIND_BEARING, validated_pose
 from .contracts import (
     DESIGN_AXIS_DEG,
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
@@ -638,18 +639,28 @@ class PositionGeometry:
     placed "about" 1 m out. No combination of axis and angle is refused here —
     a vertical walk is performed by hand, and the automation that cannot swing
     in elevation refuses at ``capture_plan.position_angle_deg``.
+
+    ``kind`` categorizes the pose (ADR-0260). A ``seat`` pose is
+    stated from the listener's head as ``seat_offset_m`` ``(right, forward,
+    up)``, not from the mark, so its ``mark_distance_m`` is ``None``; a
+    ``close`` pose states its own standoff there.
     """
 
     axis: str
     degrees: int | None
-    mark_distance_m: float
+    mark_distance_m: float | None
     vertical_deg: int = 0
+    kind: str = POSE_KIND_BEARING
+    seat_offset_m: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.axis not in POSITION_AXES:
             raise ValueError(
                 f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
             )
+        object.__setattr__(
+            self, "seat_offset_m", validated_pose(self.kind, self.seat_offset_m)[0],
+        )
         # `bool` is an `int` and is never an elevation.
         if isinstance(self.vertical_deg, bool) or not isinstance(
             self.vertical_deg, int
@@ -658,6 +669,30 @@ class PositionGeometry:
                 "a pose elevation is a whole number of degrees above mark "
                 f"height, got {self.vertical_deg!r}"
             )
+
+
+def pose_kind_fields(
+    geometry: PositionGeometry, *, gating_applied: bool | None = None,
+) -> dict[str, Any]:
+    """The take-record keys a categorized pose adds (ADR-0260).
+
+    Empty for a bearing at the mark, so every record banked before poses had
+    a kind is byte-identical; a reader takes absence as that bearing. A seat
+    or close take says its kind, where it was stated from, and — from the
+    one caller that analyzed it — whether its response was gated; a caller
+    that does not know says nothing, so a merge over the record keeps it.
+    """
+    if geometry.kind == POSE_KIND_BEARING:
+        return {}
+    return {
+        "pose_kind": geometry.kind,
+        "seat_offset_m": (
+            [float(v) for v in geometry.seat_offset_m]
+            if geometry.seat_offset_m is not None else None
+        ),
+        "mark_distance_m": geometry.mark_distance_m,
+        **({"gating_applied": gating_applied} if gating_applied is not None else {}),
+    }
 
 
 def take_id_for(position_id: str, attempt: int) -> str:
@@ -961,6 +996,7 @@ def cloud_position_record(
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
         "curves": [dict(curve) for curve in curves],
+        **pose_kind_fields(geometry, gating_applied=gating_applied),
     }
 
 
@@ -1052,21 +1088,23 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
 def lateral_pose_record(
     pose: LateralPose,
     *,
-    position_deg: int,
-    vertical_deg: int = 0,
+    geometry: PositionGeometry,
     lateral_consumer: str,
     session_id: str,
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
     claim: TakeClaim = TakeClaim(),
+    gating_applied: bool | None = None,
 ) -> dict[str, Any]:
     """One retained lateral pose, as the evidence bundle's sidecar carries it.
 
-    ``position_deg`` is the SIGNED whole-degree bearing (negative LEFT of the
-    design axis), derived by ``capture_plan.position_angle_deg`` and stated
-    rather than re-derived. ``lateral_consumer`` is one of
-    :data:`~.journey.LATERAL_CONSUMERS`.
+    ``geometry`` is WHERE the microphone was, derived by
+    ``capture_plan.position_geometry`` and stated rather than re-derived; its
+    ``degrees`` is the SIGNED whole-degree bearing (negative LEFT of the design
+    axis). ``lateral_consumer`` is one of :data:`~.journey.LATERAL_CONSUMERS`.
+    ``gating_applied`` rides only on a categorized pose
+    (:func:`pose_kind_fields`): a seat take keeps its reflections.
 
     ``graph_fingerprint`` is WHICH CANDIDATE WAS APPLIED while this pose was
     taken, in :func:`~.coordinator.entry_graph_fingerprint`'s namespace —
@@ -1093,6 +1131,8 @@ def lateral_pose_record(
     cloud position is a summed sweep judged by gating and ripple, and those
     columns are never meaningful for a pose.
     """
+    if geometry.degrees is None:
+        raise ValueError("a lateral pose commands a horizontal bearing; this geometry declares none")
     return {
         "pose_id": pose.pose_id,
         **_take_identity(
@@ -1102,15 +1142,16 @@ def lateral_pose_record(
         ),
         "prompt": pose.prompt,
         "role": pose.role,
-        "position_deg": int(position_deg),
+        "position_deg": int(geometry.degrees),
         "position_axis": POSITION_AXIS_HORIZONTAL,
-        "vertical_deg": int(vertical_deg),
+        "vertical_deg": int(geometry.vertical_deg),
         "offset_cm": float(pose.offset_cm),
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
         "lateral_consumer": lateral_consumer,
         "captured_at": captured_at,
         "curves": [pose_curve_record(curve) for curve in pose.curves],
+        **pose_kind_fields(geometry, gating_applied=gating_applied),
     }
 
 
@@ -1389,7 +1430,8 @@ POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
 
 # The mark distance the CHECK screen asks for ("about 1 m in front of the
 # speaker") — the reference length that turns this flow's lateral OFFSETS into
-# the BEARINGS a positioner can act on.
+# the BEARINGS a positioner can act on. A default, not a pin: a categorized
+# pose states its own distance (ADR-0260).
 MARK_DISTANCE_M = 1.0
 
 #: The pose a capture with no prompted move of its own was taken at.

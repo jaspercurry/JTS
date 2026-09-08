@@ -1238,7 +1238,7 @@ class AgreementFeature:
         }
 
 
-def _local_features(
+def local_features(
     grid: np.ndarray, pooled: np.ndarray, *, lo_hz: float, hi_hz: float, feature_db: float
 ) -> list[tuple[int, int, int]]:
     """``(center_idx, lo_idx, hi_idx)`` for every local extremum of
@@ -1325,7 +1325,7 @@ def agreement_table(
     pooled = detrended.mean(axis=0)
     features = []
     n_seats = len(seats)
-    for i, a, b in _local_features(grid, pooled, lo_hz=lo_hz, hi_hz=hi_hz, feature_db=feature_db):
+    for i, a, b in local_features(grid, pooled, lo_hz=lo_hz, hi_hz=hi_hz, feature_db=feature_db):
         seat_values = detrended[:, a : b + 1].mean(axis=1)
         p = float(pooled[a : b + 1].mean())
         sign = np.sign(p) if p != 0 else 1.0
