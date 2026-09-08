@@ -250,10 +250,36 @@ disjoint files.
   structure-first campaign → 1.6 → 2.4 → 3.4 rungs → 4.1. The owner's time at
   the box is the critical path.
 
+### 6a. Run order (the sequence, not just the lanes)
+
+1. **Wave 0b brief → fresh session → one docs PR → orchestrator review → merge.**
+   Nothing else starts before this merges; every lane cites its two ADRs.
+2. **Row 1.0 (PR #4138 rebased) and your `jasper-null` hardware run.** The one
+   hardware item that can happen early; it gates 1.4's capture and 3.1.
+3. **Four fresh sessions at once**, each from its own brief:
+   - Lane A, retire: three PRs in order — room product, calibration agent, bass
+     wizard. Census first, shared pieces moved first, verdicts per module.
+   - Lane B, program: 1.4 poses and programs, 1.5 room views, 1.7 docs.
+   - Lane C, room candidate: 2.1, 2.2, 2.3 on fixtures.
+   - Lane D, bass: 3.1 (after row 1.0), 3.2, 3.3, 3.4, 3.5.
+4. **Hardware, in this order and only when the tuning-flow campaign has adopted
+   a speaker tune:** 1.6 first seat-cube session → 2.4 two sessions → 3.4 rungs
+   → 4.1 limiter campaign. 1.6 can run against whatever tune is applied; 2.4
+   waits for an adopted tune or its grades are against a tune about to change.
+5. **Wave 4** after 3.x and 4.1: runtime scheduler, first production caller.
+6. **Wave 5** after 2.1 and 4.3: one headroom budget, runbook sequence.
+7. **Wave 6** when the emitter is quiet and the second cabinet is real.
+
+After every merge the orchestrating session reviews the diff against the row,
+appends to §9, and comments once on #4502 with the PR links.
+
 ## 7. Session protocol
 
 - One fresh session per lane per wave. The orchestrating session writes the
-  brief (reading list, verified facts, rows, proofs, gates, report format) and
+  brief (reading list, verified facts, rows, proofs, gates, report format) into
+  `seat-tuning-program/briefs/wave-<n>-<lane>.md` on this branch, and the fresh
+  session is pointed at that file. The brief is re-verified against HEAD when
+  written; the plan holds the what and why, the brief the how. The orchestrator
   reviews the merged diff before the next brief.
 - Model split: Sonnet verifies citations and sweeps prose; Opus implements and
   reviews; the top model designs, adjudicates premises, and holds the
@@ -274,6 +300,9 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-08: `briefs/` added: `wave-0-decisions.md` (the brief Wave 0 ran
+  from, recovered) and `reference-right-size-cleanup-brief.md` (what the
+  cleanup program was told, kept here so our rows do not collide with it).
 - 2026-09-08: Wave 0 merged (PR #4488). Same day the owner redirected the
   program: room and bass are layers of the one toolbox (was: separate
   products); bass has no nearfield rung (was: nearfield plant fit); poses are
