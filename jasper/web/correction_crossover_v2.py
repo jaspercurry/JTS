@@ -393,10 +393,10 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "kind": STATE_KIND,
-        "updated_at": time.time(),
-        **{k: v for k, v in state.items() if k not in {"schema_version", "kind"}},
+        **{k: v for k, v in state.items() if k not in {"schema_version", "kind", "updated_at"}},
     }
     with _state_lock:
+        payload["updated_at"] = time.time()
         atomic_write_text(
             _state_path(),
             # allow_nan=False: fail at the writer that produced the non-finite
@@ -405,6 +405,15 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
             mode=0o640,
             durable=durable,
         )
+
+
+def _persist_execution_result(session_id: str, **result: Any) -> None:
+    with _state_lock:
+        state = load_v2_state()
+        if not state or state.get("session_id") != session_id:
+            return
+        state["execution"] = {**(state.get("execution") or {}), **result}
+        save_v2_state(state, durable=True)
 
 
 def _update_current_review(
@@ -2244,6 +2253,9 @@ def persist_conductor_state(
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
 
     with _state_lock:
+        current = load_v2_state() or {}
+        if current.get("session_id") == session_id and current.get("execution"):
+            built.state["execution"] = current["execution"]
         save_v2_state(built.state, durable=built.durable)
         bundle_id = (built.state.get("evidence") or {}).get("bundle_session_id")
         if isinstance(bundle_id, str) and Path(bundle_id).name == bundle_id:
@@ -2312,6 +2324,7 @@ def _persist_terminal_failure(
         and prior_outcome in {"pass", "fail", "inconclusive"}
         and (prior or {}).get("session_id") == session_id
     ):
+        _persist_execution_result(session_id, cleanup_fault_code=code)
         # consume() persists VERIFY before publishing capture_result. Later
         # trouble is a cleanup fault, not a commissioning verdict.
         log_event(
@@ -4291,6 +4304,10 @@ def _bind_engine_measure_leg(
             outcome = run_async(_measured())
         finally:
             records.enrich = records.after_bank = None
+            _persist_execution_result(
+                str(tuning.session_id), playback=tuning.last_playback.as_dict(),
+                record_ids=list(tuning.banked_record_ids), index=index, attempt=attempt,
+            )
         if len(outcome.stimuli) != 1:
             raise CrossoverV2LocalSeamError("one flow slot must produce exactly one stimulus")
         stimulus = outcome.stimuli[0]

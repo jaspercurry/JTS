@@ -50,6 +50,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
     CapturedRecordStore, WiredCaptureAnswer,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase, bank_into
@@ -504,6 +505,10 @@ def _engine_leg(monkeypatch, phase_map, specs=None, prompts=None):
     records = CapturedRecordStore(_Store(), capture)
 
     class _Tuning:
+        session_id = "angle-walk"
+        last_playback = PlaybackObservation()
+        banked_record_ids = ()
+
         async def restore_graph(self):
             return None
 
