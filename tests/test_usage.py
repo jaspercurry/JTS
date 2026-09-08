@@ -4,11 +4,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -28,6 +31,12 @@ from jasper.usage import (
     pricing_for_model,
     tuning_usage_db_path,
 )
+
+
+from jasper.usage_writer import VoiceUsageStore
+
+from tests._log_events import event_fields, event_records
+from tests._wake_loop import wake_loop_for_tests
 
 
 def test_open_and_close_session_records_cost(tmp_path: Path):
@@ -1012,3 +1021,344 @@ def test_read_only_ctor_closes_connection_on_corrupt_file(
     # contribution, no raise (its per-read open now cannot leak the FD).
     reader = AggregateUsageReader(paths=[str(db)])
     assert reader.spend_last_24h_usd() == 0.0
+
+
+async def _wait_usage(predicate):
+    async with asyncio.timeout(2):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+@pytest.mark.parametrize("locked", [False, True])
+async def test_buffered_usage_keeps_receipt_time_cost_and_attribution(tmp_path, locked):
+    db = str(tmp_path / "usage.db")
+    store = await VoiceUsageStore.start(db, pricing=pricing_for_model("gpt-realtime-2"))
+    lock = sqlite3.connect(db, isolation_level=None)
+    try:
+        if locked:
+            lock.execute("BEGIN IMMEDIATE")
+        start = datetime.now(timezone.utc)
+        tick = asyncio.create_task(asyncio.sleep(0.01))
+        began = time.monotonic()
+        first = store.open_session("openai")
+        cost = store.close_session(first, 1000, 2000)
+        second = store.open_session("gemini")
+        meter = BillableActivityMeter(store, "grok", 3600)
+        meter.mark_started()
+        await tick
+        assert time.monotonic() - began < 0.1
+        assert store.spend_last_24h_usd() >= cost
+        assert not SpendCap(store, cost / 2).allowed()
+        assert store.session_count_today_utc() == 2
+        await asyncio.sleep(0.05)
+        meter.mark_ended()
+        end = datetime.now(timezone.utc)
+        total = store.spend_last_24h_usd()
+        assert store.spend_month_to_date_usd() == pytest.approx(total)
+        store.close_session(second, 0, 0)
+        await asyncio.sleep(0.15)
+        assert store.spend_last_24h_usd() == pytest.approx(total)
+    finally:
+        lock.close()
+        await store.aclose()
+    assert not store.write_degraded
+    with sqlite3.connect(db) as conn:
+        sessions = conn.execute(
+            "SELECT id, provider, started_at, ended_at, cost_usd FROM sessions "
+            "ORDER BY started_at",
+        ).fetchall()
+        assert [(r[0], r[1], r[4]) for r in sessions] == [
+            (first, "openai", cost), (second, "gemini", 0),
+        ]
+        assert start <= datetime.fromisoformat(sessions[0][2]) <= end
+        assert start <= datetime.fromisoformat(sessions[0][3]) <= end
+        opened, closed = conn.execute(
+            "SELECT opened_at, closed_at FROM connection_intervals",
+        ).fetchone()
+        assert start <= datetime.fromisoformat(opened) < datetime.fromisoformat(closed) <= end
+    reader = UsageStore(db, read_only=True)
+    try:
+        assert reader.spend_last_24h_usd() == pytest.approx(total)
+    finally:
+        reader._conn.close()
+
+
+async def test_buffered_queue_reserves_closes_and_discloses_loss(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(VoiceUsageStore, "_MAX_PENDING", 2)
+    db = str(tmp_path / "usage.db")
+    store = await VoiceUsageStore.start(db)
+    lock = sqlite3.connect(db, isolation_level=None)
+    try:
+        lock.execute("BEGIN IMMEDIATE")
+        accepted = store.open_session("openai")
+        meter = BillableActivityMeter(store, "grok", 3600)
+        meter.mark_started()
+        await asyncio.sleep(0.01)
+        for _ in range(4):
+            store.close_session(store.open_session("overflow"), 1000, 2000)
+        meter.mark_ended()
+        cost = store.close_session(accepted, 1000, 2000)
+        assert len(store._pending) == 2
+        assert store.write_degraded
+        assert store.spend_last_24h_usd() >= cost
+        await _wait_usage(lambda: bool(event_records(caplog, "usage.queue_overflow")))
+        assert event_fields(caplog, "usage.queue_overflow")["lost"] == "4"
+    finally:
+        lock.close()
+        await store.aclose()
+    assert store.write_degraded  # Saving other rows cannot repair the missing history.
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT id, cost_usd FROM sessions").fetchall() == [(accepted, cost)]
+        opened, closed = conn.execute(
+            "SELECT opened_at, closed_at FROM connection_intervals",
+        ).fetchone()
+        assert datetime.fromisoformat(closed) > datetime.fromisoformat(opened)
+
+
+@pytest.mark.parametrize("recover", [False, True])
+async def test_buffered_write_errors_and_shutdown_are_bounded(tmp_path, monkeypatch, caplog, recover):
+    monkeypatch.setattr(VoiceUsageStore, "_DRAIN_SECONDS", 0.1)
+    db = str(tmp_path / "usage.db")
+    store = await VoiceUsageStore.start(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TRIGGER reject_usage BEFORE INSERT ON sessions "
+                     "BEGIN SELECT RAISE(FAIL, 'test'); END")
+    sid = store.open_session("openai")
+    cost = store.close_session(sid, 1000, 2000)
+    await _wait_usage(lambda: store._write_error is not None)
+    assert store.write_degraded
+    assert store.spend_last_24h_usd() == pytest.approx(cost)
+    if recover:
+        with sqlite3.connect(db) as conn:
+            conn.execute("DROP TRIGGER reject_usage")
+        await _wait_usage(lambda: not store.write_degraded)
+    began = time.monotonic()
+    await store.aclose()
+    assert time.monotonic() - began < 0.3
+    assert not store._thread.is_alive()
+    assert store.write_degraded is not recover
+    if not recover:
+        assert event_fields(caplog, "usage.drain_incomplete")["pending"] == "1"
+    with sqlite3.connect(db) as conn:
+        rows = conn.execute("SELECT id, cost_usd FROM sessions").fetchall()
+    assert rows == ([(sid, cost)] if recover else [])
+
+
+async def test_buffered_household_refresh_is_read_only_and_keeps_last_good_spend(tmp_path, monkeypatch):
+    monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.05)
+    db = str(tmp_path / "usage.db")
+    store = await VoiceUsageStore.start(db)
+    household = store
+    tuning = str(tmp_path / "usage-tuning.db")
+    try:
+        assert not Path(tuning).exists()
+        _record_cost(tuning, 0.4)
+        await _wait_usage(lambda: household.spend_last_24h_usd() >= 0.4)
+        cap = SpendCap(household, 0.45)
+        assert cap.allowed()
+        own_cost = store.close_session(store.open_session(), 10000, 10000)
+        assert not cap.allowed()
+        contents = Path(tuning).read_bytes()
+        with sqlite3.connect(tuning, isolation_level=None) as lock:
+            lock.execute("BEGIN EXCLUSIVE")
+            await _wait_usage(lambda: store.write_degraded)
+            start = time.monotonic()
+            assert household.spend_last_24h_usd() == pytest.approx(0.4 + own_cost)
+            assert time.monotonic() - start < 0.05
+            lock.rollback()
+        await _wait_usage(lambda: not store.write_degraded)
+        assert Path(tuning).read_bytes() == contents
+        _record_cost(tuning, 0.2)
+        await _wait_usage(lambda: household.spend_last_24h_usd() >= 0.6 + own_cost - 1e-9)
+        assert household.session_count_today_utc() == 3
+    finally:
+        await store.aclose()
+
+
+async def test_buffered_start_recovers_history_without_rebilling_crash_interval(tmp_path):
+    db = str(tmp_path / "usage.db")
+    _record_cost(db, 0.25)
+    disk = UsageStore(db)
+    disk.record_billable_activity_open("grok", 3600)
+    disk._conn.close()
+    lock = sqlite3.connect(db, isolation_level=None)
+    lock.execute("BEGIN IMMEDIATE")
+    store = await VoiceUsageStore.start(db)
+    try:
+        BillableActivityMeter(store, "grok", 3600)
+        assert store.write_degraded
+        sid = store.open_session("openai")
+        cost = store.close_session(sid, 1000, 1000)
+        lock.close()
+        await _wait_usage(lambda: not store.write_degraded)
+        assert store.spend_last_24h_usd() == pytest.approx(0.25 + cost)
+        assert store.session_count_today_utc() == 2
+    finally:
+        lock.close()
+        await store.aclose()
+
+
+async def test_usage_lock_does_not_delay_live_turn_acquisition(tmp_path):
+    db = str(tmp_path / "usage.db")
+    store = await VoiceUsageStore.start(db)
+    wl = wake_loop_for_tests()
+    wl._usage_store = store
+    wl._spend_cap = SpendCap(store, 1)
+    wl._content_activity.refresh_now = AsyncMock()
+    wl._connection.acquire_turn = AsyncMock(side_effect=RuntimeError())
+    try:
+        with sqlite3.connect(db, isolation_level=None) as lock:
+            lock.execute("BEGIN IMMEDIATE")
+            began = time.monotonic()
+            tick = asyncio.create_task(asyncio.sleep(0.01))
+            with pytest.raises(RuntimeError):
+                await wl._begin_turn_inner(pre_roll=False)
+            wl._connection.acquire_turn.assert_awaited_once()
+            assert wl._session_id != _UNRECORDED_SESSION
+            store.close_session(wl._session_id, 0, 0)
+            await tick
+            assert time.monotonic() - began < 0.1
+            lock.rollback()
+    finally:
+        await store.aclose()
+
+
+async def test_buffered_start_cancellation_stops_its_worker(tmp_path, monkeypatch):
+    db = str(tmp_path / "usage.db")
+    UsageStore(db)._conn.close()
+    instances = []
+    original_init = VoiceUsageStore.__init__
+
+    def capture(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        instances.append(self)
+
+    monkeypatch.setattr(VoiceUsageStore, "__init__", capture)
+    with sqlite3.connect(db, isolation_level=None) as lock:
+        lock.execute("BEGIN EXCLUSIVE")
+        starting = asyncio.create_task(VoiceUsageStore.start(db))
+        await asyncio.sleep(0.01)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await starting
+        lock.rollback()
+    assert len(instances) == 1
+    assert not instances[0]._thread.is_alive()
+    with pytest.raises(sqlite3.ProgrammingError):
+        instances[0]._conn.execute("SELECT 1")
+
+
+async def test_buffered_history_and_concurrent_writer_refresh_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.02)
+    db = str(tmp_path / "usage.db")
+    seed = UsageStore(db)
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
+            [(now.isoformat(), 0.001)] * 1000,
+        )
+    seed._conn.close()
+    first = await VoiceUsageStore.start(db)
+    second = await VoiceUsageStore.start(db)
+    try:
+        assert first.spend_last_24h_usd() == pytest.approx(1)
+        assert first.session_count_today_utc() == 1000
+        ids = [s.open_session("concurrent") for s in (first, second)]
+        assert len(set(ids)) == 2
+        costs = [s.close_session(sid, 1000, 1000) for s, sid in zip((first, second), ids)]
+        expected = 1 + sum(costs)
+        for s in (first, second):
+            await _wait_usage(lambda: abs(s.spend_last_24h_usd() - expected) < 1e-9)
+            assert s.spend_month_to_date_usd() == pytest.approx(expected)
+            assert s.session_count_today_utc() == 1002
+            assert s._conn.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
+    finally:
+        await first.aclose()
+        await second.aclose()
+    restarted = await VoiceUsageStore.start(db)
+    try:
+        assert restarted.spend_last_24h_usd() == pytest.approx(expected)
+        with sqlite3.connect(db) as conn:
+            assert {r[0] for r in conn.execute("SELECT id FROM sessions WHERE provider = 'concurrent'")} == set(ids)
+    finally:
+        await restarted.aclose()
+
+
+async def test_buffered_snapshots_follow_day_month_and_rolling_windows(tmp_path, monkeypatch):
+    class Clock(datetime):
+        current = datetime(2026, 9, 30, 23, 59, 59, tzinfo=timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr("jasper.usage.datetime", Clock)
+    monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.02)
+    db = str(tmp_path / "usage.db")
+    UsageStore(db)._conn.close()
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO sessions (started_at, cost_usd) VALUES (?, ?)",
+            [("2026-09-01T00:00:00+00:00", 0.4),
+             ("2026-09-30T00:00:00+00:00", 0.2),
+             ("2026-09-30T23:59:00+00:00", 0.3)],
+        )
+    store = await VoiceUsageStore.start(db)
+    try:
+        assert store.spend_last_24h_usd() == pytest.approx(0.5)
+        assert store.spend_month_to_date_usd() == pytest.approx(0.9)
+        assert store.session_count_today_utc() == 2
+        Clock.current = datetime(2026, 10, 1, 0, 0, 1, tzinfo=timezone.utc)
+        await _wait_usage(lambda: abs(store.spend_last_24h_usd() - 0.3) < 1e-9)
+        assert store.spend_month_to_date_usd() == 0
+        assert store.session_count_today_utc() == 0
+    finally:
+        await store.aclose()
+
+
+async def test_unreadable_companion_cannot_fill_the_voice_queue(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(VoiceUsageStore, "_MAX_PENDING", 2)
+    db = str(tmp_path / "usage.db")
+    (tmp_path / "usage-tuning.db").write_bytes(b"not sqlite")
+    store = await VoiceUsageStore.start(db)
+    total = 0.0
+    try:
+        for _ in range(6):
+            sid = store.open_session("openai")
+            assert sid != _UNRECORDED_SESSION
+            total += store.close_session(sid, 1000, 1000)
+            await _wait_usage(lambda: not store._pending)
+        assert store.write_degraded
+        assert store.spend_last_24h_usd() == pytest.approx(total)
+        assert store.session_count_today_utc() == 6
+        assert store._lost == 0
+    finally:
+        await store.aclose()
+    assert not event_records(caplog, "usage.drain_incomplete")
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT sum(cost_usd) FROM sessions").fetchone()[0] == pytest.approx(total)
+
+
+async def test_starting_another_writer_preserves_live_billable_interval(tmp_path, monkeypatch):
+    monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.02)
+    db = str(tmp_path / "usage.db")
+    first = await VoiceUsageStore.start(db)
+    meter = BillableActivityMeter(first, "grok", 3600)
+    meter.mark_started()
+    try:
+        await _wait_usage(lambda: not first._dirty and not first._cleanup_requested)
+        await asyncio.sleep(0.05)
+        second = await VoiceUsageStore.start(db)
+        try:
+            with sqlite3.connect(db) as conn:
+                assert conn.execute("SELECT closed_at FROM connection_intervals").fetchone() == (None,)
+            assert second.spend_last_24h_usd() >= 0.05
+            meter.mark_ended()
+            total = first.spend_last_24h_usd()
+            await _wait_usage(lambda: abs(second.spend_last_24h_usd() - total) < 1e-9)
+        finally:
+            await second.aclose()
+    finally:
+        meter.mark_ended()
+        await first.aclose()

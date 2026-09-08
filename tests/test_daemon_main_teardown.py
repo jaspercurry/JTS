@@ -162,8 +162,10 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     patch("configure_logging", lambda *a, **k: None)
     monkeypatch.setattr(daemon_main.flight_recorder, "install", lambda _s: None)
     patch("load_pricing_overrides", lambda *a, **k: {})
-    patch("household_usage_reader", lambda *a, **k: (lambda: 0.0))
-    patch("UsageStore", lambda *a, **k: SimpleNamespace())
+    async def _usage_start(*_a, **_k):
+        return _resource(trace, "usage", "aclose", is_async=True)
+
+    patch("VoiceUsageStore", SimpleNamespace(start=_usage_start))
     patch("_wire_billable_activity_meter", lambda **k: None)
     patch("_warn_if_research_model_unpriced", lambda *a, **k: None)
     patch("install_volume_owner", lambda *a, **k: None)
@@ -481,5 +483,5 @@ async def test_an_early_raise_releases_what_was_registered_before_it(
 
     assert teardown_trace.exited() == [
         "active_research", "volume_observer", "volume_coordinator",
-        "ha", "transit", "weather",
+        "ha", "transit", "weather", "usage",
     ]
