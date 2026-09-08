@@ -140,6 +140,33 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
     return _AIRPLAY_TITLE_RE.search(result.stdout) is not None
 
 
+async def airplay_playbackstatus_observed() -> bool | None:
+    """MPRIS ``PlaybackStatus == "Playing"``, uncorroborated.
+
+    The half of :func:`airplay_playing_observed` that a caller wants when its
+    fail-safe direction is "assume a listener is there": a genuine sender that
+    publishes no ``xesam:title`` (screen/system audio, untitled streams) still
+    reports Playing here. Callers that must not act on a phantom SETUP want the
+    corroborated predicate instead.
+    """
+    result = await run_busctl(
+        "call",
+        "org.mpris.MediaPlayer2.ShairportSync",
+        "/org/mpris/MediaPlayer2",
+        "org.freedesktop.DBus.Properties", "Get", "ss",
+        "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+    )
+    if result is None:
+        logger.debug("busctl PlaybackStatus probe failed")
+        return None
+    if result.returncode != 0:
+        return _airplay_nonzero_observation(result.stderr)
+    # busctl emits a single line like:  v s "Playing"
+    # (variant-of-string-of-value). Substring match is robust to
+    # leading/trailing whitespace busctl may add.
+    return b'"Playing"' in result.stdout
+
+
 async def airplay_playing_observed() -> bool | None:
     """True iff shairport-sync is currently emitting AirPlay audio.
 
@@ -159,23 +186,9 @@ async def airplay_playing_observed() -> bool | None:
     jasper-mux to flap source every 30 s and the volume coordinator
     to duck Spotify by -25 dB on each cycle.
     """
-    result = await run_busctl(
-        "call",
-        "org.mpris.MediaPlayer2.ShairportSync",
-        "/org/mpris/MediaPlayer2",
-        "org.freedesktop.DBus.Properties", "Get", "ss",
-        "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
-    )
-    if result is None:
-        logger.debug("busctl PlaybackStatus probe failed")
-        return None
-    if result.returncode != 0:
-        return _airplay_nonzero_observation(result.stderr)
-    # busctl emits a single line like:  v s "Playing"
-    # (variant-of-string-of-value). Substring match is robust to
-    # leading/trailing whitespace busctl may add.
-    if b'"Playing"' not in result.stdout:
-        return False
+    playing = await airplay_playbackstatus_observed()
+    if playing is not True:
+        return playing
     return await _airplay_has_metadata_title_observed()
 
 

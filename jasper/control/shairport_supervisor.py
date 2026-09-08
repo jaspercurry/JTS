@@ -36,7 +36,7 @@ import time
 from typing import Any
 
 from jasper.log_event import log_event
-from jasper.source_state import airplay_playing_observed
+from jasper.source_state import airplay_playbackstatus_observed
 
 from .supervisor_runtime import (
     build_asyncio_thread,
@@ -278,7 +278,11 @@ class ShairportSupervisor:
         return data.startswith(b"RTSP/1.0 200 ")
 
     async def is_session_active(self) -> bool:
-        """True when a genuine AirPlay session is observed.
+        """True when MPRIS reports Playing.
+
+        Deliberately the uncorroborated predicate: this gate fails safe
+        toward "a listener is there", and a genuine sender that publishes no
+        track title must not be restarted out from under.
 
         If the probe is unknown, fail safe to "active" only
         while systemd still reports shairport-sync live or unknown. A
@@ -290,7 +294,7 @@ class ShairportSupervisor:
         the counter can arm, so the unit_inactive bypass is reached
         only after the tick confirms the unit is not deliberately off.
         """
-        playing = await airplay_playing_observed()
+        playing = await airplay_playbackstatus_observed()
         if playing is None:
             unit_active = await self.is_shairport_unit_active()
             if unit_active is False:

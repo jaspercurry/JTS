@@ -103,9 +103,10 @@ def _resolved_route_consumes_volume_context(
     is zero (``downstream_db`` is never mutated to 0 in Python). Unknown stages
     fail closed in both classifiers.
     """
-    return resolved_tts_socket_feeds_pre_dsp_fanin(
-        resolved,
-    ) or resolved_tts_socket_feeds_post_dsp_outputd(resolved)
+    return (
+        resolved_tts_socket_feeds_pre_dsp_fanin(resolved)
+        or resolved_tts_socket_feeds_post_dsp_outputd(resolved)
+    )
 
 
 def volume_context_publisher_for_runtime(

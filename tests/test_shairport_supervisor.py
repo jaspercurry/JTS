@@ -223,7 +223,7 @@ async def test_dead_shairport_unit_bypasses_mpris_unknown_and_restarts(
         return None
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.airplay_playing_observed",
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
         unknown_probe,
     )
 
@@ -266,7 +266,7 @@ async def test_disabled_unit_is_never_restarted(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.airplay_playing_observed",
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
         unknown_probe,
     )
 
@@ -724,7 +724,7 @@ async def test_session_gate_maps_probe_to_active(
 ):
     sup = ShairportSupervisor()
     monkeypatch.setattr(
-        "jasper.control.shairport_supervisor.airplay_playing_observed",
+        "jasper.control.shairport_supervisor.airplay_playbackstatus_observed",
         AsyncMock(return_value=observed),
     )
     monkeypatch.setattr(

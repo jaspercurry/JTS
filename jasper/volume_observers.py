@@ -24,13 +24,12 @@ speed (1 Hz polling captures everything), and a polling loop is
 simpler to reason about — one well-placed sleep, one error path per
 source, no long-lived subscription state to manage.
 
-Cadence: 1 Hz, mirroring jasper-mux's source-state poll. A tick probes
-only the source the coordinator reports active — every other reading
-was discarded, and each probe but Spotify's forks a subprocess — so an
-idle box runs none. USB sink is the exception even when active: its
-daemon observes the host-side gadget mixer directly and posts
-`source="usbsink"` changes to jasper-control, so this observer never
-polls it.
+Cadence: 1 Hz, mirroring jasper-mux's source-state poll. A tick probes at
+most one daemon, the active source's — every other reading was discarded,
+and the BT probe forks a subprocess — so an idle box runs none. AirPlay and
+USB sink run none even when active: both are event-driven inbound (the
+shairport volume hook; the usbsink daemon's `source="usbsink"` posts to
+jasper-control), so this observer never polls them.
 
 Echo prevention belongs to the coordinator: an observation matching a
 value it wrote within ECHO_WINDOW_SEC is ignored as its own echo.
