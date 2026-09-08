@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import Iterator, Mapping
 
 from jasper.json_fields import finite_float
+from jasper.active_speaker import bundles
+from jasper.active_speaker.candidate_bank import _candidate_roots
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
-from jasper.active_speaker.bundles import DEFAULT_SESSIONS_DIR
-from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
 
 from jasper.active_speaker.state_paths import (
     DEFAULT_BASELINE_PROFILE_STATE_PATH as APPLIED_PROFILE_DEFAULT_PATH,
@@ -216,23 +216,17 @@ def iter_round_sessions(session_dir: Path) -> Iterator[Path]:
                 continue
 
 
-def recent_round_sessions(session_dir: Path, *, limit: int = 32) -> list[Path]:
+def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -> list[Path]:
     """Read a bounded window from adjacent live and campaign stores.
 
     Directory times select the window; capture times order the evidence.
     Duplicate bundle ids are read from the requested store first.
+    No selected session uses the configured live and adjacent campaign stores.
     """
-    bank = banked_round_of(session_dir)
-    root = bank.parent if bank else session_dir.parent
-    roots = [root]
-    paired = {
-        DEFAULT_SESSIONS_DIR.name: DEFAULT_CAMPAIGN_ROOT.name,
-        DEFAULT_CAMPAIGN_ROOT.name: DEFAULT_SESSIONS_DIR.name,
-    }.get(root.name)
-    if paired:
-        roots.append(root.parent / paired)
+    bank = banked_round_of(session_dir) if session_dir is not None else None
+    root = (bank.parent if bank else session_dir.parent) if session_dir else bundles.sessions_dir()
     sessions: dict[str, tuple[float, Path]] = {}
-    for store in roots:
+    for store in _candidate_roots(root):
         if not store.is_dir():
             continue
         directories = sorted(
