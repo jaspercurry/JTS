@@ -57,20 +57,19 @@ _BUNDLE_DIR_METAVAR = "<bundle-dir>"
 
 PROG = "jasper-round-views"
 
-#: The positionals a view's subcommand takes, with the inventoried round in
-#: the SLOT that writes the artifact beside it: ``frozen`` grades — and writes
-#: beside — the TARGET, ``repeat`` writes beside the FIRST directory, so their
-#: second round sits on opposite sides. A hint carrying ``<other-round>`` is
-#: one this inventory cannot fill, and running it without that round is an
-#: invocation argparse rejects — and so is one carrying inputs that live
-#: outside the round tree at all.
 TAKES_THIS_ROUND = "<this-round>"
-TAKES_AFTER_ANOTHER = "<other-round> <this-round>"
-TAKES_BEFORE_ANOTHER = "<this-round> <other-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
-TAKES_BUNDLE_AND_RING = f"{TAKES_THIS_BUNDLE} --dumps <ring> --state <flow-state>"
-TAKES_FAR_AND_CLOSE = "--far-round <this-round> --close-round <other-round> --close-m M"
-TAKES_BUNDLE_AND_FC = "<this-round's bundle> --fc-hz <applied-corner>"
+TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
+TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
+TAKES_BUNDLE_AND_RING = (
+    TAKES_THIS_BUNDLE, "--dumps", "<ring>", "--state", "<flow-state>",
+    "--applied-profile", "<applied-profile>",
+)
+TAKES_FAR_AND_CLOSE = (
+    "--far-round", TAKES_THIS_ROUND, "--close-round", "<other-round>",
+    "--close-m", "<distance-m>",
+)
+TAKES_BUNDLE_AND_FC = (TAKES_THIS_BUNDLE, "--fc-hz", "<applied-corner>")
 
 
 class ViewArtifact(NamedTuple):
@@ -84,7 +83,7 @@ class ViewArtifact(NamedTuple):
     """
 
     artifact: str
-    takes: str = TAKES_THIS_ROUND
+    takes: tuple[str, ...] = (TAKES_THIS_ROUND,)
     in_artifact_dir: bool = False
     producer: str | None = None
 
@@ -117,14 +116,14 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         HARMONICS_ARTIFACT, TAKES_BUNDLE_AND_RING, in_artifact_dir=True
     ),
     "classify-features": ViewArtifact(
-        CLASSIFICATION_ARTIFACT, TAKES_THIS_BUNDLE, in_artifact_dir=True
+        CLASSIFICATION_ARTIFACT, (TAKES_THIS_BUNDLE,), in_artifact_dir=True
     ),
     "findings": ViewArtifact("findings.json"),
     # No view writes this one: the banker does, as it files the session. It is
     # inventoried anyway because "does this round carry its pose index" is the
     # same question as the rest, asked of the same directory.
     "position-cycle": ViewArtifact(
-        POSITION_CYCLE_FILENAME, TAKES_THIS_BUNDLE, producer="jasper-round bank",
+        POSITION_CYCLE_FILENAME, (TAKES_THIS_BUNDLE,), producer="jasper-round bank",
     ),
 }
 
