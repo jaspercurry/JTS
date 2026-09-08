@@ -22,12 +22,17 @@ What is pinned, and why each pin exists:
   truncation, no resample anywhere in the engine).
 * **The pre-roll guarantee** — ``start()`` does not return until real audio
   arrived, and fails loudly (before any excitation could play) when none does.
+* **The ONE answer mint** — every wired take in the product (the wizard's plan
+  walk, the engine's play seam, ``jasper-null``) becomes a
+  ``WiredCaptureAnswer`` here, so the device block, the calibration reference
+  and the integrity counters cannot differ by which door recorded it.
 """
 from __future__ import annotations
 
 import struct
 import wave
 import io
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,15 +47,22 @@ from jasper.audio_measurement.frame_ledger import (
     reconcile_capture_frames,
 )
 from jasper.audio_measurement.wired_capture import (
+    CODE_WIRED_MIC_MISSING,
     WiredCaptureError,
+    WiredMicDevice,
+    WiredMicMissing,
     WiredRecorder,
     ZERO_RUN_MIN_SAMPLES,
     ZERO_RUN_RECORD_CAP,
     build_capture_integrity_report,
+    decode_wav_to_mono,
     encode_wav_s32,
+    mint_wired_answer,
+    require_wired_mic,
     resolve_wired_mic,
     scan_zero_runs,
     select_capture_channel,
+    setup_from_hint,
 )
 from jasper.mics.xvf3800 import USB_VID_PID as XVF_USB_VID_PID
 from tests.wired_capture_fixtures import FakePcm
@@ -504,3 +516,89 @@ def test_abort_is_idempotent_and_closes_the_pcm():
     recorder.abort()
     recorder.abort()
     assert pcm.closed is True
+
+
+# --------------------------------------------------------------------------- #
+# the shared refusal, and the ONE answer mint
+# --------------------------------------------------------------------------- #
+
+
+def test_absence_is_disclosed_with_the_way_forward(tmp_path):
+    """ADR-0188: wired is THE acoustic-measurement path, so no mic is a named
+    disclosure carrying its remedy — never a session measuring on something
+    nobody chose. Every door raises THIS, and maps it to its own exit code."""
+    with pytest.raises(WiredMicMissing) as caught:
+        require_wired_mic(proc_asound=tmp_path)
+    assert caught.value.code == CODE_WIRED_MIC_MISSING
+    assert "measurement mic" in str(caught.value)
+
+
+def _umik2() -> WiredMicDevice:
+    return WiredMicDevice(
+        card_id="UMIK2",
+        card_index=2,
+        usb_id=UMIK2_USB_ID,
+        model_key="minidsp_umik2",
+        model_label="miniDSP UMIK-2",
+    )
+
+
+@pytest.mark.parametrize(
+    "hint, expected",
+    [
+        (
+            SimpleNamespace(
+                resolvable=True, calibration_id="cal-123", model="minidsp_umik2",
+            ),
+            {
+                "calibration": {
+                    "mode": "stored",
+                    "calibration_id": "cal-123",
+                    "model": "minidsp_umik2",
+                }
+            },
+        ),
+        (SimpleNamespace(resolvable=False, calibration_id="x", model="m"), None),
+        (None, None),
+    ],
+    ids=["stored", "unresolvable", "no-record"],
+)
+def test_the_answer_carries_a_stored_calibration_reference_or_none(hint, expected):
+    """The seam's reference shape, and the two ways there is none.
+
+    A door with no household session in reach — the CLI doors — resolves no
+    hint at all and mints with no ``setup``, which is the same
+    annotated-uncalibrated path the unresolvable hint lands on.
+    """
+    assert setup_from_hint(hint) == expected
+    answer = mint_wired_answer(
+        _record([(32, [(7, 3)] * 32)]),
+        device=_umik2(),
+        setup=setup_from_hint(hint),
+    )
+    assert answer.setup == expected
+
+
+def test_a_door_with_no_household_session_mints_an_uncalibrated_answer():
+    """The CLI doors state no ``setup`` rather than carrying a reference they
+    cannot resolve."""
+    answer = mint_wired_answer(_record([(32, [(7, 3)] * 32)]), device=_umik2())
+    assert answer.setup is None
+
+
+def test_mint_wired_answer_is_the_whole_answer():
+    """One recording in, all four seam fields out: the audio, the mic that
+    heard it, the calibration reference, and the counters the analyzer grades
+    the take by."""
+    recording = _record([(32, [(7, 3)] * 32), "overrun", (32, [(7, 3)] * 32)])
+    answer = mint_wired_answer(recording, device=_umik2())
+
+    samples, rate = decode_wav_to_mono(answer.wav)
+    assert rate == RATE
+    assert samples.size == recording.frames
+    assert answer.device["card"] == "UMIK2"
+    assert answer.device["model_key"] == "minidsp_umik2"
+    assert answer.device["channel_selected"] == 0
+    assert answer.capture_integrity[REPORT_KEY_FRAMES] == recording.frames
+    assert answer.capture_integrity[REPORT_KEY_RENDER_GAPS] == 1
+    assert set(INTEGRITY_COUNTER_KEYS) <= set(answer.capture_integrity)

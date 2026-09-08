@@ -2409,7 +2409,7 @@ def default_setup_calibration_for_v2() -> Any | None:
     ``build_v2_session_spec``/``build_v2_verify_session_spec`` via their
     shared ``**spec_kwargs`` forward to ``build_crossover_sweep_spec``, and
     the measurement source mints the capture's own reference from it
-    through ``setup_from_hint``. Fail-soft: any
+    through ``wired_capture.setup_from_hint``. Fail-soft: any
     resolution miss yields no hint, never blocks session open.
     """
     from .correction_capture import _default_setup_calibration_for_spec
@@ -4191,8 +4191,9 @@ def _wired_stimulus_capture(wired_device: Any, evidence_store: Any) -> Any:
     """The play seam's capture half: the Pi's own microphone, on the box the
     stimulus comes out of."""
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
-        WiredStimulusCapture, setup_from_hint,
+        WiredStimulusCapture,
     )  # lazy: ALSA capture boundary
+    from jasper.audio_measurement.wired_capture import setup_from_hint
 
     return WiredStimulusCapture(
         device=wired_device, bundle_dir=Path(evidence_store.bundle_dir),
