@@ -341,7 +341,9 @@ reassert_intsecrets_compartment_perms() {
 }
 
 # Operator seeds still enter jasper.env; the wizards own the compartments.
-# Never remove a broad key until the compartment has an assignment for it.
+# Never remove a broad key until the compartment holds a NON-EMPTY value for
+# it: .env.example seeds every key empty, and an empty compartment line would
+# shadow a later operator seed under EnvironmentFile= later-wins (#4442).
 _migrate_secret_keys() {
     local keys_env="$1" jasper_env="${ENV_DIR}/jasper.env"
     shift
@@ -349,11 +351,14 @@ _migrate_secret_keys() {
     ensure_secrets_dir
     local key val moved=0
     for key in "$@"; do
-        if ! jasper_env_file_get "${keys_env}" "${key}" >/dev/null; then
+        if [[ -z "$(jasper_env_file_get "${keys_env}" "${key}")" ]]; then
+            # seed_absent keeps any stated key, so an empty placeholder goes first.
+            jasper_env_file_unset "${keys_env}" "${key}" 0640
             val="$(jasper_env_file_get "${jasper_env}" "${key}")" || continue
+            [[ -n "${val}" ]] || continue
             # The wizard may publish while the installer waits for this lock.
             jasper_env_file_seed_absent "${keys_env}" 0640 2770 "${key}=${val}"
-            jasper_env_file_get "${keys_env}" "${key}" >/dev/null || return 1
+            [[ -n "$(jasper_env_file_get "${keys_env}" "${key}")" ]] || return 1
             moved=1
         fi
         jasper_env_file_unset "${jasper_env}" "${key}" 0640

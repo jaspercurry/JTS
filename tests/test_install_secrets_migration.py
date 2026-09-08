@@ -89,15 +89,17 @@ def test_secret_move_preserves_values_and_removes_broad_copies(
     broad.write_text(f'JASPER_HOSTNAME=jts.local\n{key}=stale\n  {key} = "{encoded}"\r\n')
     broad.chmod(0o640)
     if canonical is not None:
-        target.write_text(f"{key}={canonical}\n")
+        target.write_text(f"{key}={shlex.quote(canonical)}\n")
         target.chmod(0o640)
     owner = (broad.stat().st_uid, broad.stat().st_gid)
+    assigned = canonical or value  # a non-empty compartment value wins; an empty one is a placeholder
     for _ in range(2):
         proc = _run(tmp_path, fn)
         assert proc.returncode == 0, proc.stderr
-        assert read_env_file(target) == {key: value if canonical is None else canonical}
-        assert read_env_file(broad) == {"JASPER_HOSTNAME": "jts.local"}
-        for path in (broad, target):
+        assert read_env_file(target) == ({key: assigned} if assigned else {})
+        assert read_env_file(broad) == {"JASPER_HOSTNAME": "jts.local", **({} if assigned else {key: ""})}
+        assert target.exists() is (canonical is not None or bool(value))
+        for path in filter(Path.exists, (broad, target)):
             assert stat.S_IMODE(path.stat().st_mode) == 0o640
             assert (path.stat().st_uid, path.stat().st_gid) == owner
         assert not list(tmp_path.rglob("*.bak"))
