@@ -144,6 +144,8 @@ _VOICE_STATUS_PUBLISHED_KEYS = (
     frozenset(_VOICE_STATUS_DIRECT_KEYS)
     | frozenset(_VOICE_STATUS_NESTED_FIELDS.values())
 )
+#: Not pulled through into `/state.voice`: either internal to the daemon, or
+#: published at the TOP level of `/state` instead (`research`, `cues`).
 _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "state",
     "input_ended",
@@ -152,6 +154,7 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "active_manual_mic_source",
     "barge_in_reconcile",
     "research",
+    "cues",
 })
 
 

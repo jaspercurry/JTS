@@ -29,6 +29,7 @@ import pytest
 from jasper.control import aec_endpoints, state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
+from tests._cue_spy import SpyCues
 from tests._librespot_state import write_librespot_state
 from tests._wake_loop import wake_loop_for_tests
 from tests.control_server_fixtures import (
@@ -1397,7 +1398,11 @@ def test_state_voice_wake_legs_flows_from_session_status(
 def test_state_voice_classifies_every_session_status_field():
     from jasper.control import state_aggregate
 
-    status_keys = frozenset(wake_loop_for_tests().session_status())
+    # With a cue manager attached, so a field only a configured daemon
+    # reports is inside the closed set rather than skipped past it.
+    wl = wake_loop_for_tests()
+    wl._cues = SpyCues()
+    status_keys = frozenset(wl.session_status())
     published = state_aggregate._VOICE_STATUS_PUBLISHED_KEYS
     withheld = state_aggregate._VOICE_STATUS_WITHHELD_KEYS
 
