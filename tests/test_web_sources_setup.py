@@ -2,16 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free tests for the /sources/ wizard (sources_setup.py).
+"""Hardware-free tests for the /sources/ wizard page (sources_setup.py).
 
-Renders the page and drives the /state + /set handlers in-process; mocks
-all systemctl / DBus / boot-config reads. No network, no hardware.
-
-The page was migrated to the canonical design system (canonical_page +
-toggle_html + an ES module). These tests pin both the canonical-look
-markers and the unchanged behaviour: the four per-source toggles, the
-/state snapshot shape, the /set CSRF gate + dispatch + read-back, the
-USB hardware-capability guard, and the Bluetooth DBus / HID-warning path.
+Renders the page and drives the /state + /set handlers in-process. State
+derivation and enable-time preconditions live in
+``jasper.local_sources.status`` (see tests/test_local_sources_status.py);
+these tests pin only what this module itself owns: the page render, the
+route/CSRF/JSON-framing contract, and that /set defers to the shared
+coordinator (``jasper.local_sources.status`` + ``request_source_intent``)
+rather than re-implementing it.
 """
 from __future__ import annotations
 
@@ -23,7 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.local_sources import local_source_lifecycle
 from jasper.music_sources import Source
 from jasper.web import _common
 from jasper.web import sources_setup as mod
@@ -33,10 +31,6 @@ CSRF = "x" * 43
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCES_MODULE = REPO_ROOT / "deploy" / "assets" / "sources" / "js" / "main.js"
-AIRPLAY_UNIT = local_source_lifecycle(Source.AIRPLAY).intent_unit
-SPOTIFY_CONNECT_UNIT = local_source_lifecycle(Source.SPOTIFY).intent_unit
-assert AIRPLAY_UNIT is not None
-assert SPOTIFY_CONNECT_UNIT is not None
 
 
 # ---- render -----------------------------------------------------------------
@@ -51,10 +45,12 @@ def test_renders_through_canonical_page():
 
 def test_no_legacy_switch_markup():
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
-    # toggle_html (canonical) is used; the legacy clickable switch is gone.
+    # toggle_html (canonical) is used; the legacy clickable switch is gone,
+    # and no unrendered template placeholder survived.
     assert 'class="switch"' not in html
     assert 'class="slider"' not in html
-    assert 'class="toggle"' in html
+    assert html.count('class="toggle"') == 4
+    assert "{toggle_" not in html
 
 
 def test_behaviour_ships_as_es_module():
@@ -83,8 +79,8 @@ def test_every_source_row_rendered():
 def test_first_paint_toggles_are_disabled_and_unchecked():
     # _index_html renders all toggles disabled at first paint; the checked
     # state is hydrated client-side from /state. So here we only assert the
-    # first-paint contract (no checked); checked-state is covered by the
-    # _gather_state tests + the ES module.
+    # first-paint contract (no checked); checked-state is covered by
+    # jasper.local_sources.status's tests + the ES module.
     html = mod._index_html(csrf_token=CSRF).decode("utf-8")
     assert "checked" not in html
 
@@ -119,552 +115,6 @@ def test_status_banner_severity_and_escaping():
     ).decode("utf-8")
     assert "<script>alert(1)</script>" not in xss
     assert "&lt;script&gt;" in xss
-
-
-# ---- _gather_state ----------------------------------------------------------
-
-
-@pytest.fixture
-def stub_backends(monkeypatch):
-    """Stub intent and hardware probes so state reads are deterministic."""
-
-    def _stub(
-        *,
-        active=(),
-        available_units=None,
-        usb_ready=True,
-        usb_card=False,
-        bt=(True, False),
-        bt_adapter=True,
-        intents=None,
-        parked=False,
-    ):
-        active_set = set(active)
-        if AIRPLAY_UNIT in active_set:
-            active_set.update(
-                local_source_lifecycle(Source.AIRPLAY).health_units
-            )
-        if available_units is None:
-            available_units = {
-                *local_source_lifecycle(Source.AIRPLAY).health_units,
-                *mod.BLUETOOTH_RUNTIME_UNITS,
-                SPOTIFY_CONNECT_UNIT,
-                mod.USBSINK_UNIT,
-                # The composite gadget owner replaced the old init unit; its
-                # availability is what /sources checks for "the USB stack is
-                # installed". Host-visible AUDIO presence is a separate signal
-                # (the uac2 ALSA card) stubbed via usb_card below.
-                mod.USBSINK_GADGET_UNIT,
-            }
-        available_set = set(available_units)
-        if intents is None:
-            intents = {
-                Source.AIRPLAY: True,
-                Source.BLUETOOTH: True,
-                Source.SPOTIFY: True,
-                Source.USBSINK: False,
-            }
-        monkeypatch.setattr(mod, "read_source_intents", lambda: dict(intents))
-        monkeypatch.setattr(mod, "bonded_follower_active", lambda: parked)
-        monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
-        monkeypatch.setattr(
-            mod, "_unit_available", lambda unit: unit in available_set,
-        )
-        monkeypatch.setattr(mod, "_unit_active", lambda unit: unit in active_set)
-        class _Snapshot:
-            @staticmethod
-            def available(unit):
-                return unit in available_set
-
-            @staticmethod
-            def active(unit):
-                return unit in active_set
-
-            @staticmethod
-            def activating(_unit):
-                return False
-
-        monkeypatch.setattr(mod, "probe_unit_snapshot", lambda _units: _Snapshot())
-        monkeypatch.setattr(
-            mod,
-            "_usbsink_capability",
-            lambda *a, **k: (
-                usb_ready,
-                "" if usb_ready else "USB output DAC uses the shared port",
-            ),
-        )
-        # The uac2 ALSA card is the host-visible "USB audio device advertised"
-        # signal now that the composite gadget can outlive audio (it also carries the
-        # USB management network), so gadget-active is no longer that proxy.
-        monkeypatch.setattr(mod, "_uac2_card_present", lambda: usb_card)
-        monkeypatch.setattr(
-            mod,
-            "_bluetooth_availability",
-            lambda _snapshot=None: mod.BluetoothAvailability(
-                available=(
-                    bt_adapter
-                    and all(unit in available_set for unit in mod.BLUETOOTH_RUNTIME_UNITS)
-                ),
-                radio_present=bt_adapter,
-                any_soft_blocked=not intents[Source.BLUETOOTH],
-                all_soft_blocked=not intents[Source.BLUETOOTH],
-                hard_blocked=False,
-            ),
-        )
-        monkeypatch.setattr(mod, "read_fanin_status", lambda: {})
-        monkeypatch.setattr(
-            mod.os.path,
-            "isdir",
-            lambda path: path == mod.BLUETOOTH_ADAPTER_PATH and bt_adapter,
-        )
-
-        async def _bt():
-            return bt
-
-        monkeypatch.setattr(mod, "_bt_state", _bt)
-
-    return _stub
-
-
-def test_gather_state_shape(stub_backends):
-    stub_backends(
-        active={
-            AIRPLAY_UNIT,
-            SPOTIFY_CONNECT_UNIT,
-            *mod.BLUETOOTH_RUNTIME_UNITS,
-        },
-        usb_ready=False,
-        bt=(True, True),
-    )
-    state = mod._gather_state()
-    assert state["airplay"] == {
-        "enabled": True,
-        "desired": True,
-        "effective": "on",
-        "available": True,
-    }
-    assert state["spotify_connect"] == {
-        "enabled": True,
-        "desired": True,
-        "effective": "on",
-        "available": True,
-    }
-    assert state["bluetooth"] == {
-        "enabled": True,
-        "desired": True,
-        "effective": "on",
-        "available": True,
-        "hasPairedHid": True,
-    }
-    # USB unavailable because the output DAC owns the shared data port.
-    assert state["usbsink"]["enabled"] is False
-    assert state["usbsink"]["desired"] is False
-    assert state["usbsink"]["effective"] == "off"
-    assert state["usbsink"]["available"] is False
-    assert "output DAC" in str(state["usbsink"]["unavailableReason"])
-
-
-def test_source_state_keeps_availability_independent_from_effective_off():
-    state = mod._source_state(
-        desired=False,
-        observed=False,
-        available=False,
-        unavailable_reason="hardware cannot provide this source",
-    )
-
-    assert state == {
-        "enabled": False,
-        "desired": False,
-        "effective": "off",
-        "available": False,
-        "unavailableReason": "hardware cannot provide this source",
-    }
-
-
-def test_source_state_reports_off_drift_even_when_source_is_unavailable():
-    state = mod._source_state(
-        desired=False,
-        observed=True,
-        available=False,
-        unavailable_reason="hardware cannot provide this source",
-    )
-
-    assert state["effective"] == "degraded"
-    assert state["available"] is False
-    assert state["unavailableReason"] == "hardware cannot provide this source"
-    assert "current runtime state does not match" in str(state["degradedReason"])
-
-
-def test_gather_state_renderer_units_unavailable(stub_backends):
-    stub_backends(available_units=set(), usb_ready=True)
-    state = mod._gather_state()
-
-    # Availability never rewrites the user's durable choice.
-    assert state["airplay"]["enabled"] is True
-    assert state["airplay"]["desired"] is True
-    assert state["airplay"]["effective"] == "unavailable"
-    assert state["airplay"]["available"] is False
-    assert "not installed on this speaker" in str(
-        state["airplay"]["unavailableReason"]
-    )
-    assert state["spotify_connect"]["enabled"] is True
-    assert state["spotify_connect"]["effective"] == "unavailable"
-    assert state["spotify_connect"]["available"] is False
-    assert state["usbsink"]["enabled"] is False
-    assert state["usbsink"]["available"] is False
-    unavailable = " ".join(
-        str(item.get("unavailableReason") or "")
-        for item in state.values()
-    )
-    assert "install.sh" in unavailable
-
-
-def test_gather_state_endpoint_profile_disables_stale_renderer_units(
-    stub_backends, monkeypatch,
-):
-    stub_backends(
-        active={AIRPLAY_UNIT, SPOTIFY_CONNECT_UNIT, mod.USBSINK_UNIT},
-        bt=(True, False),
-        usb_ready=True,
-    )
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
-
-    state = mod._gather_state()
-
-    assert state["airplay"]["enabled"] is True
-    assert state["airplay"]["desired"] is True
-    assert state["airplay"]["effective"] == "unavailable"
-    assert state["airplay"]["available"] is False
-    assert state["spotify_connect"]["enabled"] is True
-    assert state["spotify_connect"]["available"] is False
-    assert state["bluetooth"]["enabled"] is True
-    assert state["bluetooth"]["available"] is False
-    assert "not installed on this speaker" in str(
-        state["bluetooth"]["unavailableReason"]
-    )
-    assert state["usbsink"]["enabled"] is False
-    assert state["usbsink"]["available"] is False
-
-
-def test_gather_state_bluetooth_unavailable(stub_backends):
-    stub_backends(bt=(False, False), bt_adapter=False)
-    state = mod._gather_state()["bluetooth"]
-    assert state["enabled"] is True
-    assert state["desired"] is True
-    assert state["effective"] == "unavailable"
-    assert state["available"] is False
-    assert state["hasPairedHid"] is False
-    assert "Bluetooth adapter" in str(state["unavailableReason"])
-
-
-@pytest.mark.parametrize(
-    "availability,expected",
-    [
-        (
-            mod.BluetoothAvailability(
-                available=False,
-                radio_present=True,
-                any_soft_blocked=False,
-                all_soft_blocked=False,
-                hard_blocked=True,
-            ),
-            "hardware radio switch",
-        ),
-        (
-            mod.BluetoothAvailability(
-                available=False,
-                radio_present=True,
-                any_soft_blocked=False,
-                all_soft_blocked=False,
-                hard_blocked=False,
-                missing_units=("bt-agent.service",),
-            ),
-            "bt-agent.service",
-        ),
-    ],
-)
-def test_sources_reuses_specific_bluetooth_unavailable_reason(
-    stub_backends,
-    monkeypatch,
-    availability,
-    expected,
-):
-    stub_backends()
-    monkeypatch.setattr(
-        mod, "_bluetooth_availability", lambda _snapshot=None: availability,
-    )
-
-    state = mod._gather_state()["bluetooth"]
-
-    assert state["available"] is False
-    assert expected in str(state["unavailableReason"])
-
-
-def test_gather_state_keeps_enabled_intent_when_runtime_is_degraded(
-    stub_backends,
-):
-    stub_backends(active=set(), bt=(False, False))
-
-    state = mod._gather_state()
-
-    for key in ("airplay", "bluetooth", "spotify_connect"):
-        assert state[key]["enabled"] is True
-        assert state[key]["desired"] is True
-        assert state[key]["effective"] == "degraded"
-        assert state[key]["available"] is True
-        assert "degradedReason" in state[key]
-
-
-def test_gather_state_bluetooth_off_remains_available(stub_backends):
-    stub_backends(
-        bt=(False, False),
-        intents={
-            Source.AIRPLAY: True,
-            Source.BLUETOOTH: False,
-            Source.SPOTIFY: True,
-            Source.USBSINK: False,
-        },
-    )
-
-    state = mod._gather_state()["bluetooth"]
-
-    assert state == {
-        "enabled": False,
-        "desired": False,
-        "effective": "off",
-        "available": True,
-        "hasPairedHid": False,
-    }
-
-
-# ---- _apply routing ---------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("wizard_key", "source"),
-    [
-        ("airplay", Source.AIRPLAY),
-        ("bluetooth", Source.BLUETOOTH),
-        ("spotify_connect", Source.SPOTIFY),
-        ("usbsink", Source.USBSINK),
-    ],
-)
-@pytest.mark.parametrize("enabled", [True, False])
-def test_apply_routes_each_source_through_shared_coordinator(
-    monkeypatch, wizard_key, source, enabled,
-):
-    events = []
-
-    def local_sources_allowed():
-        events.append(("validate-role",))
-        return True
-
-    def unit_available(unit):
-        events.append(("validate-unit", unit))
-        return True
-
-    def usbsink_capability():
-        events.append(("validate-usb-hardware",))
-        return True, ""
-
-    def bluetooth_present():
-        events.append(("validate-bluetooth-hardware",))
-        return mod.BluetoothAvailability(
-            available=True,
-            radio_present=True,
-            any_soft_blocked=False,
-            all_soft_blocked=False,
-            hard_blocked=False,
-        )
-
-    monkeypatch.setattr(mod, "_local_sources_allowed", local_sources_allowed)
-    monkeypatch.setattr(mod, "_unit_available", unit_available)
-    monkeypatch.setattr(mod, "_usbsink_capability", usbsink_capability)
-    monkeypatch.setattr(mod, "_bluetooth_availability", bluetooth_present)
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda target, desired: events.append(("request", target, desired)),
-    )
-
-    mod._apply(wizard_key, enabled)
-
-    requests = [event for event in events if event[0] == "request"]
-    assert requests == [("request", source, enabled)]
-    if enabled:
-        assert events[0][0].startswith("validate-")
-    else:
-        assert events == requests
-    assert events[-1] == requests[0]
-
-
-def test_apply_refuses_unavailable_renderer(monkeypatch):
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
-    monkeypatch.setattr(mod, "_unit_available", lambda unit: False)
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda *a: pytest.fail("must not request intent"),
-    )
-
-    with pytest.raises(RuntimeError):
-        mod._apply("airplay", True)
-
-
-@pytest.mark.parametrize(
-    ("wizard_key", "source"),
-    [
-        ("airplay", Source.AIRPLAY),
-        ("spotify_connect", Source.SPOTIFY),
-        ("bluetooth", Source.BLUETOOTH),
-    ],
-)
-def test_apply_off_persists_when_source_hardware_or_units_are_missing(
-    monkeypatch, wizard_key, source,
-):
-    calls = []
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
-    monkeypatch.setattr(mod, "_unit_available", lambda _unit: False)
-    monkeypatch.setattr(
-        mod,
-        "_bluetooth_availability",
-        lambda: mod.BluetoothAvailability(
-            available=False,
-            radio_present=False,
-            any_soft_blocked=None,
-            all_soft_blocked=None,
-            hard_blocked=None,
-            error="missing",
-        ),
-    )
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda target, desired: calls.append((target, desired)),
-    )
-
-    mod._apply(wizard_key, False)
-
-    assert calls == [(source, False)]
-
-
-@pytest.mark.parametrize(
-    ("wizard_key", "source"),
-    [
-        ("airplay", Source.AIRPLAY),
-        ("spotify_connect", Source.SPOTIFY),
-        ("bluetooth", Source.BLUETOOTH),
-        ("usbsink", Source.USBSINK),
-    ],
-)
-def test_apply_off_persists_on_profile_without_local_sources(
-    monkeypatch, wizard_key, source,
-):
-    calls = []
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda target, desired: calls.append((target, desired)),
-    )
-
-    mod._apply(wizard_key, False)
-
-    assert calls == [(source, False)]
-
-
-def test_apply_refuses_usbsink_without_hardware_capability(monkeypatch):
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
-    monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
-    monkeypatch.setattr(
-        mod,
-        "_usbsink_capability",
-        lambda: (False, "USB output DAC uses the shared port"),
-    )
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda *a: pytest.fail("must not request intent"),
-    )
-
-    with pytest.raises(RuntimeError):
-        mod._apply("usbsink", True)
-
-
-def test_apply_refuses_renderer_when_local_sources_disallowed(monkeypatch):
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
-    monkeypatch.setattr(mod, "_unit_available", lambda unit: True)
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda *a: pytest.fail("must not request intent"),
-    )
-
-    with pytest.raises(RuntimeError):
-        mod._apply("spotify_connect", True)
-
-
-def test_apply_refuses_bluetooth_when_local_sources_disallowed(monkeypatch):
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: False)
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda *a: pytest.fail("must not request intent"),
-    )
-
-    with pytest.raises(RuntimeError):
-        mod._apply("bluetooth", True)
-
-
-@pytest.mark.parametrize(
-    "availability,expected",
-    [
-        (
-            mod.BluetoothAvailability(
-                available=False,
-                radio_present=False,
-                any_soft_blocked=None,
-                all_soft_blocked=None,
-                hard_blocked=None,
-            ),
-            "Bluetooth adapter",
-        ),
-        (
-            mod.BluetoothAvailability(
-                available=False,
-                radio_present=True,
-                any_soft_blocked=False,
-                all_soft_blocked=False,
-                hard_blocked=True,
-            ),
-            "hardware radio switch",
-        ),
-        (
-            mod.BluetoothAvailability(
-                available=False,
-                radio_present=True,
-                any_soft_blocked=False,
-                all_soft_blocked=False,
-                hard_blocked=False,
-                missing_units=("bt-agent.service",),
-            ),
-            "bt-agent.service",
-        ),
-    ],
-)
-def test_apply_bluetooth_reuses_specific_availability_reason(
-    monkeypatch, availability, expected,
-):
-    monkeypatch.setattr(mod, "_local_sources_allowed", lambda: True)
-    monkeypatch.setattr(mod, "_bluetooth_availability", lambda: availability)
-    monkeypatch.setattr(
-        mod,
-        "request_source_intent",
-        lambda *a: pytest.fail("must not request intent"),
-    )
-
-    with pytest.raises(RuntimeError, match=expected):
-        mod._apply("bluetooth", True)
 
 
 # ---- handler routing + CSRF -------------------------------------------------
@@ -741,50 +191,52 @@ class _TrackingReader(io.BytesIO):
         return super().read(size)
 
 
-def test_get_state_returns_snapshot(stub_backends, monkeypatch):
-    stub_backends(active={AIRPLAY_UNIT}, usb_ready=True, bt=(True, False))
-    delegated_probe = mod.probe_unit_snapshot
-    calls: list[tuple[str, ...]] = []
-
-    def counted_probe(units):
-        calls.append(tuple(units))
-        return delegated_probe(units)
-
-    monkeypatch.setattr(mod, "probe_unit_snapshot", counted_probe)
+def test_get_state_returns_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        mod.source_status,
+        "read_source_status",
+        lambda: {
+            "pair": {"parked": False},
+            "airplay": {"enabled": True, "desired": True, "effective": "on", "available": True},
+        },
+    )
     h = _drive("GET", "/state")
     assert h.status == 200
     payload = _body_json(h)
     assert payload["airplay"]["enabled"] is True
-    assert payload["usbsink"]["available"] is True
-    assert calls == [mod._STATE_UNITS]
 
 
 def test_get_state_failure_is_explicit_for_initial_hydration(monkeypatch):
     def fail_state():
         raise RuntimeError("invalid source intent")
 
-    monkeypatch.setattr(mod, "_gather_state", fail_state)
+    monkeypatch.setattr(mod.source_status, "read_source_status", fail_state)
     h = _drive("GET", "/state")
     assert h.status == 502
     assert _body_json(h) == {"error": "invalid source intent"}
 
 
-def test_post_set_without_csrf_is_rejected(stub_backends, monkeypatch):
-    stub_backends()
-    monkeypatch.setattr(mod, "_apply", lambda *a: pytest.fail("must not apply"))
+def test_post_set_without_csrf_is_rejected():
     h = _drive(
         "POST", "/set",
         body=json.dumps({"source": "airplay", "enabled": True}).encode(),
     )
-    # reject_csrf sends 403; _apply must never run (asserted via the stub above).
+    # reject_csrf sends 403 before the handler (and _apply) ever runs.
     assert h.status == int(HTTPStatus.FORBIDDEN)
 
 
-def test_post_set_with_csrf_dispatches_and_reads_back(stub_backends, monkeypatch):
-    stub_backends(active=set(), usb_ready=True, bt=(True, False))
+def test_post_set_with_csrf_dispatches_and_reads_back(monkeypatch):
     applied = []
     monkeypatch.setattr(
         mod, "_apply", lambda source, enabled: applied.append((source, enabled))
+    )
+    monkeypatch.setattr(
+        mod.source_status,
+        "read_source_status",
+        lambda: {
+            "pair": {"parked": False},
+            "airplay": {}, "bluetooth": {}, "spotify_connect": {}, "usbsink": {},
+        },
     )
     h = _drive(
         "POST", "/set",
@@ -799,6 +251,36 @@ def test_post_set_with_csrf_dispatches_and_reads_back(stub_backends, monkeypatch
         "pair", "airplay", "bluetooth", "spotify_connect", "usbsink",
     }
     assert payload["pair"] == {"parked": False}
+
+
+def test_post_set_blocked_enable_returns_502_with_reason(monkeypatch):
+    """`_apply` raises `enable_blocker`'s reason verbatim; the route
+    surfaces it as the /set error without ever requesting the intent."""
+    monkeypatch.setattr(
+        mod.source_status,
+        "enable_blocker",
+        lambda target: (
+            "AirPlay is not installed on this speaker. Re-run install.sh "
+            "to set up the local renderer stack."
+        ),
+    )
+    monkeypatch.setattr(
+        mod, "request_source_intent",
+        lambda *a: pytest.fail("must not request a blocked intent"),
+    )
+    monkeypatch.setattr(
+        mod.source_status, "read_source_status",
+        lambda: {"pair": {"parked": False}},
+    )
+
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": "airplay", "enabled": True}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+
+    assert h.status == 502
+    assert "not installed on this speaker" in _body_json(h)["error"]
 
 
 def test_post_set_reconcile_failure_returns_durable_readback(monkeypatch):
@@ -817,7 +299,9 @@ def test_post_set_reconcile_failure_returns_durable_readback(monkeypatch):
         raise RuntimeError("reconcile start failed")
 
     monkeypatch.setattr(mod, "_apply", fail_after_intent_write)
-    monkeypatch.setattr(mod, "_gather_state", lambda: durable_state)
+    monkeypatch.setattr(
+        mod.source_status, "read_source_status", lambda: durable_state,
+    )
 
     h = _drive(
         "POST", "/set",
@@ -840,8 +324,8 @@ def test_post_set_success_keeps_durable_choice_when_state_readback_fails(
 ):
     monkeypatch.setattr(mod, "_apply", lambda _source, _enabled: None)
     monkeypatch.setattr(
-        mod,
-        "_gather_state",
+        mod.source_status,
+        "read_source_status",
         lambda: (_ for _ in ()).throw(RuntimeError("state read failed")),
     )
 
@@ -859,9 +343,7 @@ def test_post_set_success_keeps_durable_choice_when_state_readback_fails(
     }
 
 
-def test_post_set_unknown_source_400(stub_backends, monkeypatch):
-    stub_backends()
-    monkeypatch.setattr(mod, "_apply", lambda *a: pytest.fail("must not apply"))
+def test_post_set_unknown_source_400():
     h = _drive(
         "POST", "/set",
         body=json.dumps({"source": "nope", "enabled": True}).encode(),
@@ -920,13 +402,11 @@ def test_post_set_rejects_missing_enabled_without_applying(monkeypatch):
     ],
 )
 def test_post_set_rejects_invalid_json_framing_without_applying(
-    stub_backends,
     monkeypatch,
     body,
     content_length,
     expected_reads,
 ):
-    stub_backends()
     monkeypatch.setattr(mod, "_apply", lambda *_a: pytest.fail("must not apply"))
     handler = _make_inst(
         "/set",
@@ -944,11 +424,7 @@ def test_post_set_rejects_invalid_json_framing_without_applying(
     assert handler.rfile.read_calls == expected_reads
 
 
-def test_post_set_request_body_oserror_remains_distinct(
-    stub_backends,
-    monkeypatch,
-):
-    stub_backends()
+def test_post_set_request_body_oserror_remains_distinct(monkeypatch):
     monkeypatch.setattr(mod, "_apply", lambda *_a: pytest.fail("must not apply"))
     handler = _make_inst(
         "/set",
@@ -972,6 +448,68 @@ def test_post_unknown_path_is_404():
 def test_get_unknown_path_is_404():
     h = _drive("GET", "/bogus")
     assert h.status == int(HTTPStatus.NOT_FOUND)
+
+
+def test_set_rejected_while_bonded_follower(monkeypatch):
+    """The pair owns source choices while bonded, so a follower cannot
+    accumulate hidden desired state that surprises the household on unpair."""
+    monkeypatch.setattr(mod.source_status, "sources_parked", lambda: True)
+    monkeypatch.setattr(mod, "_apply", lambda *a: pytest.fail("must not apply"))
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": "airplay", "enabled": True}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+    assert h.status == 409
+    assert "stereo pair" in _body_json(h)["error"]
+
+
+# ---- _apply: the route defers to the shared coordinator, never re-implements it
+
+
+@pytest.mark.parametrize(
+    ("wizard_key", "source"),
+    [
+        ("airplay", Source.AIRPLAY),
+        ("bluetooth", Source.BLUETOOTH),
+        ("spotify_connect", Source.SPOTIFY),
+        ("usbsink", Source.USBSINK),
+    ],
+)
+@pytest.mark.parametrize("enabled", [True, False])
+def test_post_set_routes_each_source_through_shared_coordinator(
+    monkeypatch, wizard_key, source, enabled,
+):
+    """One route test over the four sources x on/off: `_apply` consults
+    `enable_blocker` only when enabling (a stale desired-on source must stay
+    turn-offable even when blocked from turning back on) and always hands
+    the result to the shared source-intent coordinator."""
+    monkeypatch.setattr(mod.source_status, "sources_parked", lambda: False)
+    monkeypatch.setattr(
+        mod.source_status, "read_source_status", lambda: {"pair": {"parked": False}},
+    )
+    blocker_calls = []
+
+    def enable_blocker(target):
+        blocker_calls.append(target)
+        return ""
+
+    monkeypatch.setattr(mod.source_status, "enable_blocker", enable_blocker)
+    applied = []
+    monkeypatch.setattr(
+        mod, "request_source_intent",
+        lambda target, desired: applied.append((target, desired)),
+    )
+
+    h = _drive(
+        "POST", "/set",
+        body=json.dumps({"source": wizard_key, "enabled": enabled}).encode(),
+        csrf_cookie=CSRF, csrf_header=CSRF,
+    )
+
+    assert h.status == 200
+    assert applied == [(source, enabled)]
+    assert blocker_calls == ([source] if enabled else [])
 
 
 # ---- the ES module is wired and clean ---------------------------------------
@@ -1040,50 +578,3 @@ def test_es_module_has_no_native_dialogs_or_innerhtml():
     assert ".innerHTML" not in code
     for native in ("window.confirm", "window.alert", "window.prompt"):
         assert native not in code
-
-
-def test_set_rejected_while_bonded_follower(stub_backends, monkeypatch):
-    """The pair owns source choices while bonded, so a follower cannot
-    accumulate hidden desired state that surprises the household on unpair."""
-    stub_backends()
-    monkeypatch.setattr(mod, "bonded_follower_active", lambda: True)
-    monkeypatch.setattr(mod, "_apply", lambda *a: pytest.fail("must not apply"))
-    h = _drive(
-        "POST", "/set",
-        body=json.dumps({"source": "airplay", "enabled": True}).encode(),
-        csrf_cookie=CSRF, csrf_header=CSRF,
-    )
-    assert h.status == 409
-    assert "stereo pair" in _body_json(h)["error"]
-
-
-def test_parked_bluetooth_outranks_unavailable_across_sources_surface(
-    stub_backends,
-):
-    stub_backends(parked=True, bt_adapter=False)
-    state = mod._gather_state()["bluetooth"]
-    assert state["effective"] == "parked"
-    assert state["available"] is False
-
-
-def test_state_reports_parked_pair_without_rewriting_desired(stub_backends):
-    intents = {
-        Source.AIRPLAY: True,
-        Source.BLUETOOTH: False,
-        Source.SPOTIFY: True,
-        Source.USBSINK: False,
-    }
-    stub_backends(usb_ready=True, intents=intents, parked=True, bt=(False, False))
-
-    state = mod._gather_state()
-
-    assert state["pair"] == {"parked": True}
-    for key, source in (
-        ("airplay", Source.AIRPLAY),
-        ("bluetooth", Source.BLUETOOTH),
-        ("spotify_connect", Source.SPOTIFY),
-        ("usbsink", Source.USBSINK),
-    ):
-        assert state[key]["enabled"] is intents[source]
-        assert state[key]["desired"] is intents[source]
-        assert state[key]["effective"] == "parked"

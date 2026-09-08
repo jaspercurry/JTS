@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any
 
+from ...local_sources import status as source_status
 from ...log_event import log_event
 from ...music_sources import MUSIC_SOURCE_SPECS
 from .. import measurement_hold
@@ -44,8 +45,7 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
             wizard_state = None
     if wizard_state is None:
         try:
-            from ...web.sources_setup import _gather_state as _sources_state
-            fresh_state = _sources_state()
+            fresh_state = source_status.read_source_status()
         except Exception as e:  # noqa: BLE001
             logger.debug("source availability read failed: %s", e)
             return payload

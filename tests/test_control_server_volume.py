@@ -607,10 +607,10 @@ def test_source_routes_normalize_mux_results(
 
 
 def test_source_payload_adds_sources_wizard_availability(monkeypatch):
-    import jasper.web.sources_setup as sources_mod
+    import jasper.local_sources.status as source_status
     from jasper.control.handlers.volume import _augment_source_payload
 
-    monkeypatch.setattr(sources_mod, "_gather_state", lambda: {
+    monkeypatch.setattr(source_status, "read_source_status", lambda: {
         "airplay": {"available": True, "enabled": True},
         "bluetooth": {"available": False, "enabled": False},
         "spotify_connect": {"available": True, "enabled": True},
@@ -635,7 +635,7 @@ def test_source_payload_adds_sources_wizard_availability(monkeypatch):
 
 def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
     from jasper.control.handlers import volume as volume_handlers
-    import jasper.web.sources_setup as sources_mod
+    import jasper.local_sources.status as source_status
 
     entered_probe = threading.Event()
     release_probe = threading.Event()
@@ -666,7 +666,7 @@ def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
-    monkeypatch.setattr(sources_mod, "_gather_state", slow_gather_state)
+    monkeypatch.setattr(source_status, "read_source_status", slow_gather_state)
     volume_handlers._source_availability_cache = None
     worker = threading.Thread(target=augment)
     worker.start()

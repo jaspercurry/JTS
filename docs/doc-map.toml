@@ -548,6 +548,7 @@ code = [
   "jasper/bluetooth/availability.py",
   "jasper/local_sources/registry.py",
   "jasper/local_sources/markers.py",
+  "jasper/local_sources/status.py",
   "jasper/mux.py",
   "jasper/control/shairport_supervisor.py",
   "jasper/control/restart_broker.py",
@@ -601,7 +602,7 @@ requires_docs_when = [
   "A source intent key/default, desired-versus-effective state, source resource declaration, AirPlay/Spotify unit convergence, Bluetooth RF-kill/BlueZ/accessory ordering, USB transition ordering, follower parking interaction, any maintenance path that can restart a source, boot/deploy replay, or source-aware health behavior changes.",
 ]
 verification = [
-  "pytest tests/test_source_intent_reconcile.py tests/test_web_sources_setup.py tests/test_web_bluetooth_setup.py tests/test_bluetooth_setup_ui.py tests/test_local_sources_registry.py tests/test_multiroom_reconcile.py tests/test_source_intent_systemd.py tests/test_install_core_audio_graph_loop.py",
+  "pytest tests/test_source_intent_reconcile.py tests/test_web_sources_setup.py tests/test_local_sources_status.py tests/test_web_bluetooth_setup.py tests/test_bluetooth_setup_ui.py tests/test_local_sources_registry.py tests/test_multiroom_reconcile.py tests/test_source_intent_systemd.py tests/test_install_core_audio_graph_loop.py",
 ]
 
 [[subsystem]]
@@ -636,7 +637,7 @@ requires_docs_when = [
   "Composite gadget composition (network vs. audio function), the `jasper-usbgadget*` scripts/unit, or the local-source registry's gadget-park/restore behavior changes.",
 ]
 verification = [
-  "pytest tests/test_usbsink_volume_bridge.py tests/test_usbsink_systemd.py tests/test_sources_setup_usbsink.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
+  "pytest tests/test_usbsink_volume_bridge.py tests/test_usbsink_systemd.py tests/test_local_sources_status.py tests/test_local_sources_registry.py tests/test_local_source_guard.py tests/test_local_source_systemd_guard.py tests/test_usbgadget_script.py",
 ]
 
 [[subsystem]]
