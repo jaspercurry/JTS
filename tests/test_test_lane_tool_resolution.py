@@ -944,6 +944,7 @@ def test_lane_that_parsed_no_pytest_summary_says_so_instead_of_zero_passed(
         ("mixed", "directory", (), 0),
         ("empty", "files", ("-k", "ci_classifier"), 0),
         ("empty", "environment", ("-k", "ci_classifier"), 0),
+        ("empty", "environment", ("-n", "2", "--dist=loadfile"), 0),
         ("empty", "files", ("-k", "absent"), 5),
         ("empty", "files", ("-o", "python_functions=*", "-k", "helper"), 1),
     ],
@@ -975,10 +976,9 @@ def test_fast_lane_coalesces_targets_after_policy_and_prunes_stale_failures(
             stream.write("def helper(): assert False\n")
     (repo / "conftest.py").write_text(
         "import json, os\n"
-        "def pytest_runtest_logreport(report):\n"
-        "    if report.when == 'call':\n"
-        "        with open(os.environ['EXECUTED_TESTS'], 'a') as f:\n"
-        "            f.write(json.dumps(report.nodeid) + '\\n')\n",
+        "def pytest_runtest_call(item):\n"
+        "    with open(os.environ['EXECUTED_TESTS'], 'a') as f:\n"
+        "        f.write(json.dumps(item.nodeid) + '\\n')\n",
         encoding="utf-8",
     )
     git(repo, "add", "-A")
@@ -1032,8 +1032,8 @@ def test_fast_lane_coalesces_targets_after_policy_and_prunes_stale_failures(
     expected = {f"{name}::test_ok[{value}]" for name in expected_files for value in (0, 1)}
     if cached == "mixed":
         expected.add(live_id)
-    if options:
-        expected = {item for item in expected if options[-1] in item}
+    if "-k" in options:
+        expected = {item for item in expected if options[options.index("-k") + 1] in item}
     if status == 1:
         expected = {f"{name}::helper" for name in _ci_classifier.ROUTING_POLICY_PYTEST_TARGETS}
     if not targets and not cli_options:
