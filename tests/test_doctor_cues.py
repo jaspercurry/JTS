@@ -82,3 +82,57 @@ def test_check_cue_cache_classifies_the_registry(
     result = cues.check_cue_cache(cfg)
     assert result.status == status
     assert result.reason == (getattr(cues, reason_name) if reason_name else "")
+
+
+# --- check_cue_delivery ---
+
+
+def test_check_cue_delivery_skips_when_state_unavailable(monkeypatch):
+    monkeypatch.setattr(cues, "_read_cue_delivery_state", lambda: None)
+
+    result = cues.check_cue_delivery()
+
+    assert result.status == "skipped"
+    assert result.reason == cues.REASON_CUE_DELIVERY_UNAVAILABLE
+
+
+def test_check_cue_delivery_warns_on_recorded_failures(monkeypatch):
+    monkeypatch.setattr(
+        cues, "_read_cue_delivery_state",
+        lambda: {
+            "counts": {
+                "delivered": 3, "fallback": 0, "stale": 0, "skipped": 0,
+                "failed": 2,
+            },
+            "last": {
+                "outcome": "failed", "reason": "no_cache", "slug": "wake_ack",
+                "age_seconds": 5.0,
+            },
+        },
+    )
+
+    result = cues.check_cue_delivery()
+
+    assert result.status == "warn"
+    assert result.reason == cues.REASON_CUE_DELIVERY_FAILED
+
+
+def test_check_cue_delivery_ok_when_no_failures_recorded(monkeypatch):
+    monkeypatch.setattr(
+        cues, "_read_cue_delivery_state",
+        lambda: {
+            "counts": {
+                "delivered": 3, "fallback": 0, "stale": 0, "skipped": 0,
+                "failed": 0,
+            },
+            "last": {
+                "outcome": "delivered", "reason": "ok", "slug": "wake_ack",
+                "age_seconds": 1.0,
+            },
+        },
+    )
+
+    result = cues.check_cue_delivery()
+
+    assert result.status == "ok"
+    assert result.reason == ""
