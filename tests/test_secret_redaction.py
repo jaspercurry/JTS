@@ -159,6 +159,12 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "authorization=<redacted>", False),
     ("url_user_info", "https://alice:FAKE-PW-xyz@example.test/repo.git",
      "https://<redacted>@example.test/repo.git", False),
+    # The two shapes git and pip actually emit: a token as the whole
+    # userinfo, and a password with an empty user half.
+    ("url_user_info_empty_user", "https://:FAKE-PW@host.test/repo.git",
+     "https://<redacted>@host.test/repo.git", False),
+    ("url_user_info_token_only", "https://ghp_FAKETOKEN@github.test/x.git",
+     "https://<redacted>@github.test/x.git", False),
     ("bare_openai_prefix", "Incorrect API key provided: sk-abcd1234efgh.",
      "Incorrect API key provided: <redacted>.", False),
     ("bare_google_prefix", "request denied for AIzaSyBareKey123456",
@@ -229,6 +235,10 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     # A key at end of line must not reach across into the next one.
     ("negative_password_colon_block", "password:\n  reset_count: 3",
      "password:\n  reset_count: 3", False),
+    # An `@` in the query is not user-info: the run may not cross the port
+    # into it, or the host and half the parameters vanish.
+    ("negative_url_at_sign_in_query", "http://host.test:8080?u=a@b",
+     "http://host.test:8080?u=a@b", False),
 ) + tuple(
     (f"name_{name.lower()}", f"{name}=S3CR3TV4LUE", f"{name}=<redacted>", True)
     for name in SECRET_ENV_NAMES

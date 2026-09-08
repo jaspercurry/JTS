@@ -71,8 +71,12 @@ _AUTHORIZATION_RE = re.compile(
 )
 
 # URL user-info: a failed fetch echoes the whole remote back, credentials
-# included.
-_URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
+# included. RFC 3986 userinfo holds no `/`, `?` or `#`, so excluding those
+# keeps the run inside the authority — a `host:port` followed by a query
+# holding an `@` is not user-info. The colon is not required: git and pip
+# both carry a token as the whole userinfo, or as the password half of an
+# empty user.
+_URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/?#\s@]+@")
 
 # NetworkManager names a *property* `802-11-wireless-security.psk`, and the
 # wizard puts its "property is invalid" error in the banner. Only that
