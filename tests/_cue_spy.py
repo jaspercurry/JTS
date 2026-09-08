@@ -6,7 +6,7 @@
 runs end to end in daemon tests.
 
 Covers every method `WakeLoop` / `AssistantOutput` reach: `play()` (wake
-path), `speak_text_guarded()` (dynamic text), `attach_tts()` /
+path), `speak_text()` (dynamic text), `attach_tts()` /
 `prerender_text()` (the hooks `run()` wires), `note_skipped()` (the output
 gates' refusals) and `snapshot()` (the `/state` cue-delivery block in
 `session_status()`). The health record is a real manager, so the snapshot
@@ -39,10 +39,10 @@ class SpyCues:
         self._health._record(OUTCOME_DELIVERED, REASON_OK, slug)
         return True
 
-    async def speak_text_guarded(
-        self, text: str, should_play: Callable[[], bool],
+    async def speak_text(
+        self, text: str, should_play: Callable[[], bool] | None = None,
     ) -> bool:
-        if not should_play():
+        if should_play is not None and not should_play():
             return False
         self.spoken.append(text)
         self._health._record(OUTCOME_DELIVERED, REASON_OK, "text")

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text, fsync_directory
+from jasper.bass_extension.apply_intent import decode_apply_intent
 
 BASS_EXTENSION_RUNTIME_ADAPTER_IDS = frozenset({"sealed_v1"})
 BASS_EXTENSION_APPLY_INTENT_PATH = Path(
@@ -50,23 +51,6 @@ def _profile_entry(raw: bytes | None) -> dict[str, Any]:
         "bytes": raw.decode("utf-8") if raw is not None else None,
         "sha256": _sha256(raw) if raw is not None else None,
     }
-
-
-def _parse_profile_entry(value: Any) -> bytes | None:
-    if not isinstance(value, Mapping) or type(value.get("present")) is not bool:
-        raise BassExtensionApplyError("bass-extension intent profile entry is invalid")
-    text = value.get("bytes")
-    digest = value.get("sha256")
-    if value["present"] is False:
-        if text is not None or digest is not None:
-            raise BassExtensionApplyError("absent predecessor profile marker is invalid")
-        return None
-    if not isinstance(text, str):
-        raise BassExtensionApplyError("bass-extension intent profile bytes are invalid")
-    raw = text.encode("utf-8")
-    if digest != _sha256(raw):
-        raise BassExtensionApplyError("bass-extension intent profile fingerprint is invalid")
-    return raw
 
 
 def _selected_path(statefile_path: Path) -> Path:
@@ -235,12 +219,7 @@ def _read_intent(path: Path) -> dict[str, Any] | None:
         return None
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise BassExtensionApplyError("pending bass-extension intent is unreadable") from exc
-    if (
-        not isinstance(value, dict)
-        or value.get("kind") != "jts_bass_extension_apply_intent"
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != 1
-    ):
+    if not isinstance(value, dict):
         raise BassExtensionApplyError("pending bass-extension intent is malformed")
     return value
 
@@ -257,80 +236,36 @@ async def _restore_locked(
     staged_metadata_path: Path,
     config_dir: Path,
 ) -> None:
-    from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
-
-    config = intent.get("config")
-    profiles = intent.get("profiles")
-    graphs = intent.get("graphs")
-    operation_id = intent.get("operation_id")
-    if (
-        not isinstance(config, Mapping)
-        or not isinstance(profiles, Mapping)
-        or not isinstance(graphs, Mapping)
-        or not isinstance(operation_id, str)
-        or len(operation_id) != 32
-        or any(ch not in "0123456789abcdef" for ch in operation_id)
-    ):
-        raise BassExtensionApplyError("pending bass-extension intent payload is invalid")
     try:
-        config_path = config["path"]
-        mode = config["mode"]
-        predecessor_text = config["predecessor_bytes"]
-        desired_text = config["desired_bytes"]
-        if (
-            not isinstance(config_path, str)
-            or not config_path
-            or config_path.strip() != config_path
-            or type(mode) is not int
-            or mode < 0
-            or mode > 0o7777
-            or not isinstance(predecessor_text, str)
-            or not isinstance(desired_text, str)
-        ):
-            raise TypeError
-        selected = Path(config_path)
-        predecessor_bytes = predecessor_text.encode("utf-8")
-        desired_bytes = desired_text.encode("utf-8")
-        predecessor_fp = graphs["predecessor"]
-        desired_fp = graphs["desired"]
-        if not isinstance(predecessor_fp, str) or not isinstance(desired_fp, str):
-            raise TypeError
-        ExactDspStateIdentity.from_mapping(intent["predecessor_identity"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise BassExtensionApplyError("pending bass-extension intent payload is invalid") from exc
+        record = decode_apply_intent(intent)
+    except ValueError as exc:
+        raise BassExtensionApplyError("pending bass-extension predecessor identity is invalid") from exc
+    selected = Path(record.config_path)
     if (
-        config.get("predecessor_sha256") != _sha256(predecessor_bytes)
-        or config.get("desired_sha256") != _sha256(desired_bytes)
-        or _normal_fingerprint(predecessor_text) != predecessor_fp
-        or _normal_fingerprint(desired_text) != desired_fp
-        or selected.resolve().parent != config_dir.resolve()
+        selected.resolve().parent != config_dir.resolve()
         or _selected_path(statefile_path) != selected
         or intent.get("boot_selector_target") != str(selected)
     ):
         raise BassExtensionApplyError("pending bass-extension predecessor identity is invalid")
-    predecessor_profile = _parse_profile_entry(profiles.get("predecessor"))
-    desired_profile = _parse_profile_entry(profiles.get("desired"))
-    if desired_profile is None:
-        raise BassExtensionApplyError("pending desired bass-extension profile is absent")
     atomic_write_text(
         selected,
-        predecessor_text,
-        mode=mode,
+        record.predecessor_graph_bytes.decode("utf-8"),
+        mode=record.mode,
         durable=True,
     )
     await _reload_and_match(
         controller,
         selected_path=selected,
-        expected_bytes=predecessor_bytes,
-        expected_graph_fingerprint=predecessor_fp,
+        expected_bytes=record.predecessor_graph_bytes,
+        expected_graph_fingerprint=record.predecessor_graph_fingerprint,
         statefile_path=statefile_path,
     )
-    if predecessor_profile is None:
+    if record.predecessor_profile_bytes is None:
         _durable_unlink(profile_path)
     else:
         atomic_write_text(
             profile_path,
-            predecessor_profile.decode("utf-8"),
+            record.predecessor_profile_bytes.decode("utf-8"),
             mode=0o640,
             durable=True,
         )

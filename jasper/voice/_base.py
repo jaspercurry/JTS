@@ -175,9 +175,8 @@ class BaseLiveTurn:
     def _enqueue_audio(self, chunk: AudioOutChunk) -> None:
         """Queue one model audio chunk under the playout byte ceiling.
 
-        Over the ceiling the incoming chunk is dropped, which truncates
-        the tail exactly as a barge-in flush does. The terminal sentinel
-        is never routed here, so the consumer still ends the turn.
+        Drop-newest over the ceiling; the terminal sentinel never routes
+        through here, so the consumer still ends the turn. See ADR-0254.
         """
         size = len(chunk.pcm)
         if self._queued_bytes + size > AUDIO_OUT_QUEUE_MAX_BYTES:
@@ -202,9 +201,7 @@ class BaseLiveTurn:
         `_on_connection_lost` queued one), so the drain reads the queue
         to empty rather than stopping at the first `None` — stopping
         there would replay that chunk ahead of the sentinel as
-        pre-interrupt audio. The dropped-byte count resets with it: a
-        barge-in truncation is the household's own doing, not the
-        overflow `turn.truncated_response` cues about. See ADR-0254.
+        pre-interrupt audio. See ADR-0254.
         """
         dropped = 0
         saw_sentinel = False

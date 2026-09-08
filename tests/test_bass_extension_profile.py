@@ -1320,8 +1320,14 @@ async def test_failed_recovery_retains_intent_and_reports_required(
     )["apply_recovery_required"] is True
 
 
-async def test_recovery_validates_desired_record_before_mutating_predecessor(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("field_path,value", [
+    (("config", "desired_sha256"), "0" * 64),
+    (("config", "desired_bytes"), "\ud800"),
+    (("profiles", "desired", "bytes"), "\ud800"),
+    (("profiles", "predecessor", "bytes"), "\ud800"),
+])
+async def test_recovery_validates_record_before_mutating_predecessor(
+    monkeypatch, tmp_path, field_path, value
 ):
     applied = {**_applied_baseline(), "status": "applied"}
     predecessor = _profile(applied_baseline=applied)
@@ -1348,16 +1354,21 @@ async def test_recovery_validates_desired_record_before_mutating_predecessor(
         desired_graph_bytes=b"---\ngraph: plain\n",
         selector_target=selected,
     )
-    intent["config"]["desired_sha256"] = "0" * 64
+    entry = intent
+    for key in field_path[:-1]:
+        entry = entry[key]
+    entry[field_path[-1]] = value
     intent_path.write_text(json.dumps(intent), encoding="utf-8")
     selected.write_text("truncated", encoding="utf-8")
+    profile_before = profile_path.read_bytes()
 
-    with pytest.raises(BassExtensionApplyError, match="identity"):
+    with pytest.raises(BassExtensionApplyError):
         await recover_pending_bass_extension_apply(
             **{key: value for key, value in paths.items() if key != "validate"}
         )
 
     assert selected.read_text(encoding="utf-8") == "truncated"
+    assert profile_path.read_bytes() == profile_before
     assert intent_path.exists()
     assert cam.reload_count == 0
 

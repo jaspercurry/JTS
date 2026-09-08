@@ -139,12 +139,8 @@ async def idle_watchdog(
 
     Three cases:
       * `turn.server_turn_complete()` is True → server says "model is
-        done speaking". Defer while the turn's own playout queue is
-        still MOVING; a queue that stops draining for
-        `response_stall_timeout` ends the turn instead (ADR-0254). Once
-        it is empty, TtsPlayout's sample-counted drain deadline (see
-        ``expected_drain_at``) holds the turn open for the residual.
-        Canonical clean close.
+        done speaking". Canonical clean close; the loop below holds the
+        turn open while playout is still moving.
       * No chunks received yet → model hasn't started speaking;
         wait the full `timeout` for the first chunk to arrive (Live
         API can take 3-5 s, sometimes longer).

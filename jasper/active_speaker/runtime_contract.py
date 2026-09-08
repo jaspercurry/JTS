@@ -24,7 +24,6 @@ import logging
 import math
 import os
 import json
-import hashlib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -36,6 +35,8 @@ import yaml
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
+from jasper.bass_extension.apply_intent import decode_apply_intent
+from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
 
@@ -224,7 +225,6 @@ ACTIVE_BASELINE_SOURCE = (
 ACTIVE_DRIVER_DOMAIN_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_driver_domain_config"
 )
-_DRIVER_DOMAIN_PAIR_TRIM = "pair_balance_trim"
 # Both emitted baseline-shaped sources run every output live through a
 # protective per-driver chain; they differ only in the pre-split prefix
 # (program-domain headroom + preference EQ vs inter-speaker channel-select).
@@ -3807,32 +3807,6 @@ def _evaluated_profile_summary(
     }
 
 
-def _intent_profile_bytes(
-    intent: Mapping[str, Any],
-    role: str,
-) -> bytes | None | object:
-    profiles = intent.get("profiles")
-    entry = profiles.get(role) if isinstance(profiles, Mapping) else None
-    if not isinstance(entry, Mapping) or type(entry.get("present")) is not bool:
-        return _INVALID_BYTES
-    text = entry.get("bytes")
-    digest = entry.get("sha256")
-    if entry["present"] is False:
-        return None if text is None and digest is None else _INVALID_BYTES
-    if not isinstance(text, str):
-        return _INVALID_BYTES
-    try:
-        raw = text.encode("utf-8")
-    except UnicodeEncodeError:
-        return _INVALID_BYTES
-    if digest != hashlib.sha256(raw).hexdigest():
-        return _INVALID_BYTES
-    return raw
-
-
-_INVALID_BYTES = object()
-
-
 def _snapshot_profile_summary(
     *,
     topology: OutputTopology,
@@ -3848,81 +3822,18 @@ def _snapshot_profile_summary(
             applied_baseline_state=applied_baseline_state,
             profile_bytes=profile_bytes,
         )
-    intent = _json_mapping(intent_bytes)
+    try:
+        intent = decode_apply_intent(_json_mapping(intent_bytes))
+    except ValueError:
+        return {"authority_valid": False, "runtime_block_required": False}
     graph_fingerprint = _normalized_graph_fingerprint(graph_text)
-    if (
-        intent is None
-        or intent.get("kind") != "jts_bass_extension_apply_intent"
-        or type(intent.get("schema_version")) is not int
-        or intent.get("schema_version") != 1
-        or graph_fingerprint is None
-    ):
-        return {"authority_valid": False, "runtime_block_required": False}
-    graphs = intent.get("graphs")
-    config = intent.get("config")
-    operation_id = intent.get("operation_id")
-    if (
-        not isinstance(graphs, Mapping)
-        or not isinstance(config, Mapping)
-        or not isinstance(operation_id, str)
-        or len(operation_id) != 32
-        or any(ch not in "0123456789abcdef" for ch in operation_id)
-    ):
-        return {"authority_valid": False, "runtime_block_required": False}
-    try:
-        from jasper.audio_measurement.evidence_identity import ExactDspStateIdentity
-
-        ExactDspStateIdentity.from_mapping(intent.get("predecessor_identity"))
-        config_path = config["path"]
-        mode = config["mode"]
-        predecessor_graph = config["predecessor_bytes"]
-        desired_graph = config["desired_bytes"]
-    except (KeyError, TypeError, ValueError):
-        return {"authority_valid": False, "runtime_block_required": False}
-    if (
-        not isinstance(config_path, str)
-        or not config_path
-        or config_path.strip() != config_path
-        or type(mode) is not int
-        or mode < 0
-        or mode > 0o7777
-        or not isinstance(predecessor_graph, str)
-        or not isinstance(desired_graph, str)
-        or intent.get("boot_selector_target") != config_path
-        or selected_config_path != config_path
-    ):
-        return {"authority_valid": False, "runtime_block_required": False}
-    try:
-        predecessor_sha256 = hashlib.sha256(
-            predecessor_graph.encode("utf-8")
-        ).hexdigest()
-        desired_sha256 = hashlib.sha256(
-            desired_graph.encode("utf-8")
-        ).hexdigest()
-    except UnicodeEncodeError:
-        return {"authority_valid": False, "runtime_block_required": False}
-    if (
-        config.get("predecessor_sha256") != predecessor_sha256
-        or config.get("desired_sha256") != desired_sha256
-        or graphs.get("predecessor")
-        != _normalized_graph_fingerprint(predecessor_graph)
-        or graphs.get("desired") != _normalized_graph_fingerprint(desired_graph)
-    ):
-        return {"authority_valid": False, "runtime_block_required": False}
-    predecessor = _intent_profile_bytes(intent, "predecessor")
-    desired = _intent_profile_bytes(intent, "desired")
-    if (
-        predecessor is _INVALID_BYTES
-        or desired is _INVALID_BYTES
-        or desired is None
-        or profile_bytes not in (predecessor, desired)
-    ):
+    if graph_fingerprint is None or selected_config_path != intent.config_path:
         return {"authority_valid": False, "runtime_block_required": False}
     matching_profiles = []
-    if graphs.get("predecessor") == graph_fingerprint:
-        matching_profiles.append(predecessor)
-    if graphs.get("desired") == graph_fingerprint:
-        matching_profiles.append(desired)
+    if intent.predecessor_graph_fingerprint == graph_fingerprint:
+        matching_profiles.append(intent.predecessor_profile_bytes)
+    if intent.desired_graph_fingerprint == graph_fingerprint:
+        matching_profiles.append(intent.desired_profile_bytes)
     # A no-block replacement can legitimately have identical predecessor and
     # desired graph fingerprints.  The exact persisted profile bytes select
     # the corresponding evaluation without widening authority to a third pair.

@@ -36,7 +36,11 @@ from ..audio_io import (
 from ..camilla import CueDuck
 from ..config import Config
 from ..cues import AudioCueManager
-from ..cues.manager import REASON_BUSY, REASON_OUTPUT_ACTIVE
+from ..cues.manager import (
+    REASON_BUSY,
+    REASON_OUTPUT_ACTIVE,
+    REASON_UNKNOWN_SLUG,
+)
 from ..tts_routing import (
     tts_socket_feeds_post_dsp_outputd,
     tts_socket_feeds_pre_dsp_fanin,
@@ -358,7 +362,7 @@ class AssistantOutput:
             return "cues_not_configured"
         from ..cues.registry import find as _find
         if _find(slug) is None:
-            return "unknown_slug"
+            return REASON_UNKNOWN_SLUG
         refusal = self.admission_refusal()
         if refusal is not None:
             log_event(logger, "cue.skipped", reason=refusal, slug=slug)
@@ -411,7 +415,7 @@ class AssistantOutput:
             log_event(
                 logger,
                 "dynamic_text.skipped",
-                reason=self.admission_refusal() or "output_active",
+                reason=self.admission_refusal() or REASON_OUTPUT_ACTIVE,
                 active_kind=self._output_gate.active_kind,
             )
             return False
@@ -420,7 +424,7 @@ class AssistantOutput:
             return self._output_gate.is_current(episode)
 
         async def _speak() -> bool:
-            return bool(await cues.speak_text_guarded(text, _episode_current))
+            return bool(await cues.speak_text(text, _episode_current))
 
         restore: Callable[[], Awaitable[None]] | None = None
         try:
@@ -654,7 +658,7 @@ class AssistantOutput:
             log_event(
                 logger,
                 "mute_click.skipped",
-                reason=self.admission_refusal() or "output_active",
+                reason=self.admission_refusal() or REASON_OUTPUT_ACTIVE,
                 active_kind=self._output_gate.active_kind,
             )
             return
