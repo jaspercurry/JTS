@@ -68,7 +68,10 @@ use crate::mixer::gain_db_to_linear;
 use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
-use jasper_tts_protocol::{command_name, read_command, TtsCommand};
+use jasper_tts_protocol::{
+    command_name, is_frame_timeout, read_command_deadlined, TtsClientSlot, TtsClientSlots,
+    TtsCommand, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
+};
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 /// Default pending-audio budget: 2 s of queued-but-unplayed assistant
@@ -164,6 +167,8 @@ pub struct TtsMetrics {
     pub pending_frames: Arc<AtomicU64>,
     pub dropped_audio_frames: Arc<AtomicU64>,
     pub dropped_commands: Arc<AtomicU64>,
+    pub connections_rejected: Arc<AtomicU64>,
+    pub frame_timeouts: Arc<AtomicU64>,
     pub flush_requests: Arc<AtomicU64>,
     pub flushed_frames: Arc<AtomicU64>,
     pub max_pending_frames: u64,
@@ -182,6 +187,8 @@ impl TtsMetrics {
             pending_frames: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
+            connections_rejected: Arc::new(AtomicU64::new(0)),
+            frame_timeouts: Arc::new(AtomicU64::new(0)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames,
@@ -193,6 +200,12 @@ impl TtsMetrics {
         self.dropped_audio_frames
             .fetch_add(frames, Ordering::Relaxed);
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Returns true for the first rejection of this process, which is the
+    /// only one worth a log line — the counter carries the rest.
+    fn mark_connection_rejected(&self) -> bool {
+        self.connections_rejected.fetch_add(1, Ordering::Relaxed) == 0
     }
 
     /// A clone of the shared snapshot cell, handed to `OutputCore` so the audio
@@ -249,6 +262,7 @@ pub fn spawn_tts_server(
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("binding outputd TTS socket {}", path.display()))?;
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
+    let slots = TtsClientSlots::new(TTS_MAX_CLIENTS);
     thread::Builder::new()
         .name("outputd-tts-ipc".to_string())
         .stack_size(crate::HELPER_STACK_BYTES)
@@ -256,12 +270,23 @@ pub fn spawn_tts_server(
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
+                        let Some(slot) = slots.try_acquire() else {
+                            if metrics.mark_connection_rejected() {
+                                eprintln!(
+                                    "event=outputd.tts_socket.connection_rejected \
+                                     max_clients={TTS_MAX_CLIENTS}"
+                                );
+                            }
+                            drop(stream);
+                            continue;
+                        };
                         if let Err(e) = spawn_tts_client(
                             stream,
                             tx.clone(),
                             flush_tx.clone(),
                             Arc::clone(&epoch),
                             metrics.clone(),
+                            slot,
                         ) {
                             eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
                         }
@@ -282,11 +307,16 @@ fn spawn_tts_client(
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
+    slot: TtsClientSlot,
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("outputd-tts-client".to_string())
         .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, metrics))
+        .spawn(move || {
+            // Held for the connection's life; released when this thread ends.
+            let _slot = slot;
+            handle_tts_client(stream, tx, flush_tx, epoch, metrics, TTS_FRAME_DEADLINE)
+        })
         .map(|_| ())
 }
 
@@ -296,10 +326,11 @@ fn handle_tts_client(
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
+    frame_deadline: Duration,
 ) {
     let mut reader = BufReader::new(stream);
     loop {
-        match read_command(&mut reader) {
+        match read_command_deadlined(&mut reader, frame_deadline) {
             Ok(Some(TtsCommand::Close)) | Ok(None) => return,
             Ok(Some(TtsCommand::Flush)) => {
                 if !queue_flush(&mut reader, &flush_tx, &epoch, &metrics, false) {
@@ -324,6 +355,14 @@ fn handle_tts_client(
                 ) {
                     return;
                 }
+            }
+            Err(e) if is_frame_timeout(&e) => {
+                metrics.frame_timeouts.fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "event=outputd.tts_socket.frame_timeout deadline_s={}",
+                    frame_deadline.as_secs()
+                );
+                return;
             }
             Err(e) => {
                 eprintln!("event=outputd.tts_socket.protocol_error detail={e}");
@@ -1107,5 +1146,34 @@ mod tests {
             sub_lsb, wide,
             "a quarter-LSB offset must reach outputd's mix, not round away",
         );
+    }
+
+    /// A client that announces a payload and then stops writing is dropped
+    /// and counted, so its reader thread cannot be parked forever.
+    #[test]
+    fn tts_client_stalled_mid_frame_is_disconnected_and_counted() {
+        let (tx, _rx, flush_tx, _flush_rx, metrics, epoch) =
+            tts_channels(DEFAULT_MAX_PENDING_FRAMES);
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let handle = {
+            let metrics = metrics.clone();
+            thread::spawn(move || {
+                handle_tts_client(
+                    server,
+                    tx,
+                    flush_tx,
+                    epoch,
+                    metrics,
+                    Duration::from_millis(150),
+                );
+            })
+        };
+
+        client.write_all(b"AUDIO 1000\n").unwrap();
+        client.flush().unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(metrics.frame_timeouts.load(Ordering::Relaxed), 1);
+        drop(client);
     }
 }
