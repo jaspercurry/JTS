@@ -216,3 +216,27 @@ def test_a_failing_drain_keeps_the_persist_failure_in_its_exception_chain(row, m
         assert caught.value.__context__ is DISK_FULL
 
     asyncio.run(_drive())
+
+
+@pytest.mark.parametrize("row", POST_WALK, ids=lambda row: row.id)
+@pytest.mark.parametrize("result", ["failed", "deferred", "emergency_attenuated", "exact_restored", "already_resolved"])
+def test_typed_volume_cleanup_is_not_a_false_success(row, result, monkeypatch):
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlanError, SessionVolumeRestoreResult
+    observed = []
+    monkeypatch.setattr(v2host, "persist_conductor_state", lambda *a, **k: None)
+    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *a, **k: None)
+    monkeypatch.setattr(v2host, "_persist_execution_result", lambda sid, **facts: observed.append(facts))
+
+    async def cleanup():
+        return SessionVolumeRestoreResult(result)
+
+    async def drive():
+        hooks = v2host.V2VolumeHooks(open=_opened, close=cleanup, abandon=cleanup)
+        if result == "failed":
+            with pytest.raises(SessionVolumePlanError):
+                await row.drive(hooks, monkeypatch)
+        else:
+            await row.drive(hooks, monkeypatch)
+
+    asyncio.run(drive())
+    assert observed[-1]["volume_restore"] == result

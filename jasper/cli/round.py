@@ -175,10 +175,11 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         client, timeout_s=args.timeout_s, poll_s=args.poll_s
     )
     status = str(result["status"])
+    facts = {key: result.get(key) for key in ("capture", "needs_recovery", "execution", "verify")}
     if status != "terminal":
         return failed(
             _EXIT_BY_WAIT_STATUS[status], str(result["reason"]),
-            {"phase": result["phase"], "session_id": result["session_id"],
+            {**facts, "phase": result["phase"], "session_id": result["session_id"],
              "failure": result["failure"],
              "waited_s": args.timeout_s if status == "timed_out" else None},
         )
@@ -192,6 +193,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         session_dir=session_dir,
         next=f"{PROG} bank {shlex.quote(session_dir)}" if session_dir else "",
         session_dir_reason="" if session_dir else "capture_bundle_unavailable",
+        **facts,
     )
 
 

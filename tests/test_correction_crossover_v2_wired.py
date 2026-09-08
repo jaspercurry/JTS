@@ -1723,6 +1723,9 @@ class _LegSession:
     """A `TuningSession` stand-in: scripted `measure`, recorded specs."""
 
     measurement_level_db = -22.0
+    session_id = "leg-session"
+    banked_record_ids = ()
+    last_playback = SimpleNamespace(as_dict=lambda: {"emission": "unknown"})
 
     def __init__(self, outcome=None):
         self.restores = 0
@@ -2079,6 +2082,8 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path, a
                 return False
             self.live = yaml_text
             return True
+        async def normalize_config_raw(self, text, **kwargs):
+            return text
     cam = Cam()
     async def confirm_live(device, yaml_text):
         assert device.live == yaml_text
@@ -2248,3 +2253,15 @@ async def test_cancelling_recorder_start_drains_and_aborts_before_return(tmp_pat
         await asyncio.wait_for(task, 1)
     assert events == ["started", "aborted"]
     assert half.take_answer() is None
+
+
+def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr(v2host, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(v2host.time, "time", lambda: 200.0)
+    v2host.save_v2_state({"session_id": "s1", "updated_at": 1.0,
+                          "verify": {"outcome": "pass", "code": "verified"}})
+    assert v2host.load_v2_state()["updated_at"] == 200.0
+    assert v2host._persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
+    state = v2host.load_v2_state()
+    assert state["verify"] == {"outcome": "pass", "code": "verified"}
+    assert state["execution"]["cleanup_fault_code"] == "internal_error"

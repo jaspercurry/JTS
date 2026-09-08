@@ -512,3 +512,35 @@ def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
     assert receipt["reason"] == wc.REASON_ANSWER_LOST
     assert receipt["detail"]["refused_by"] == ""
     assert receipt["detail"]["http"] == 0
+
+
+@pytest.mark.parametrize("phase,capture,recovery,reason", [
+    ("done", "complete", True, "volume_recovery"),
+    ("measure", "stopped", False, "capture_stopped"),
+    ("done", "failed", False, "capture_failed"),
+])
+def test_wait_keeps_capture_cleanup_and_valid_verification(monkeypatch, capsys, phase, capture, recovery, reason):
+    facts = {"volume_restore": "failed", "record_ids": ["take-A"]}
+    opener = _opener(envelopes=[json.dumps({
+        "crossover_v2": {"session_id": "s1", "phase": phase,
+                         "needs_recovery": recovery, "execution": facts,
+                         "verify": {"outcome": "pass"}},
+        "capture": {"kind": "crossover_v2:session", "status": capture},
+    })])
+    code, answer = _run(["wait", "--timeout-s", "0.05"], opener, monkeypatch, capsys)
+    assert code == cli.EXIT_REFUSED
+    assert answer["reason"] == reason
+    assert answer["detail"]["capture"]["status"] == capture
+    assert answer["detail"]["execution"] == facts
+    assert answer["detail"]["verify"]["outcome"] == "pass"
+
+
+def test_wait_does_not_finish_before_capture_cleanup(monkeypatch, capsys):
+    opener = _opener(envelopes=[json.dumps({
+        "crossover_v2": {"session_id": "s1", "phase": "done"},
+        "capture": {"kind": "crossover_v2:session", "status": status},
+    }) for status in ("stopping", "complete")])
+    code, answer = _run(["wait", "--timeout-s", "0.05", "--poll-s", "0.001"], opener, monkeypatch, capsys)
+    assert code == cli.EXIT_OK
+    assert answer["capture"]["status"] == "complete"
+    assert not opener.envelopes

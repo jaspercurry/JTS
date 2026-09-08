@@ -648,7 +648,7 @@ def build_v2_wired_run_and_consume(
         finally:
             if done:
                 try:
-                    await volume.close()
+                    await _drain_volume(session_id, volume.close, "volume_close")
                 except (OSError, RuntimeError, ValueError) as exc:
                     log_event(
                         logger,
@@ -660,13 +660,6 @@ def build_v2_wired_run_and_consume(
                     )
                     _host._persist_terminal_failure(conductor, REASON_INTERNAL_ERROR)
                     raise
-                else:
-                    log_event(
-                        logger,
-                        "correction.crossover_v2_cleanup_complete",
-                        session_id=session_id,
-                        component="volume_close",
-                    )
             else:
                 await _abandon_best_effort(session_id, volume)
 
@@ -674,23 +667,31 @@ def build_v2_wired_run_and_consume(
 
 
 async def _abandon_best_effort(session_id: str, volume: Any) -> None:
-    """Drain the walked-away volume — the §5.5 guarantee, its copy of
-    record (same events, same CRITICAL on failure)."""
+    await _drain_volume(session_id, volume.abandon, "volume_abandon")
+
+
+async def _drain_volume(session_id: str, operation: Any, component: str) -> None:
+    from jasper.web import correction_crossover_v2 as _host  # lazy: host binds this runner
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumePlanError, SessionVolumeRestoreResult,
+    )
+
+    status = "failed"
     try:
-        await volume.abandon()
+        result = await operation()
+        status = str(getattr(result, "value", result)) if result is not None else "unknown"
+        if result == SessionVolumeRestoreResult.FAILED:
+            raise SessionVolumePlanError("session volume restore did not confirm")
     except (OSError, RuntimeError, ValueError) as exc:
         log_event(
-            logger,
-            "correction.crossover_v2_volume_abandon_failed",
-            level=logging.CRITICAL,
-            session_id=session_id,
-            component="volume_abandon",
+            logger, f"correction.crossover_v2_{component}_failed",
+            level=logging.CRITICAL, session_id=session_id, component=component,
             error_type=type(exc).__name__,
         )
         raise
+    finally:
+        _host._persist_execution_result(session_id, volume_restore=status)
     log_event(
-        logger,
-        "correction.crossover_v2_cleanup_complete",
-        session_id=session_id,
-        component="volume_abandon",
+        logger, "correction.crossover_v2_volume_cleanup",
+        session_id=session_id, component=component, outcome=status,
     )

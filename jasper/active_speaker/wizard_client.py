@@ -170,7 +170,11 @@ class WizardClient:
         """
         status, payload = self.get_json(STATUS_PATH)
         block = payload.get("crossover_v2") if isinstance(payload, Mapping) else None
-        return status, dict(block) if isinstance(block, Mapping) else {}
+        answer = dict(block) if isinstance(block, Mapping) else {}
+        capture = payload.get("capture") if isinstance(payload, Mapping) else None
+        if isinstance(capture, Mapping) and str(capture.get("kind") or "").startswith("crossover_v2:"):
+            answer["capture"] = dict(capture)
+        return status, answer
 
     def v2_block(self) -> dict[str, Any]:
         """``status["crossover_v2"]`` -- phase, candidate, failure, session id. ``{}`` when
@@ -343,22 +347,26 @@ def wait_for_round(
         phase = str(block.get("phase") or "")
         session_id = str(block.get("session_id") or "")
         failure = block.get("failure")
+        capture = block.get("capture") or {}
+        capture_status = str(capture.get("status") or "")
+        result = {
+            "phase": phase, "session_id": session_id,
+            "candidate_fingerprint": _live_fingerprint(block), "failure": failure,
+            "capture": capture, "needs_recovery": bool(block.get("needs_recovery")),
+            "execution": block.get("execution"), "verify": block.get("verify"),
+        }
+        if result["needs_recovery"]:
+            return {**result, "status": "failed", "reason": "volume_recovery"}
+        if capture_status in {"failed", "stopped"}:
+            return {**result, "status": "failed", "reason": f"capture_{capture_status}"}
         if failure and _round_is_over(failure, phase):
-            return {"status": "failed", "reason": REASON_SESSION_FAILED,
-                    "phase": phase, "session_id": session_id,
-                    "candidate_fingerprint": _live_fingerprint(block),
-                    "failure": failure}
+            return {**result, "status": "failed", "reason": REASON_SESSION_FAILED}
         if (
-            session_id
-            and session_id != prior_session_id
+            session_id and session_id != prior_session_id
             and phase not in RUNNING_PHASES
+            and capture_status not in {"starting", "running", "stopping"}
         ):
-            return {"status": "terminal", "reason": "", "phase": phase,
-                    "session_id": session_id,
-                    "candidate_fingerprint": _live_fingerprint(block),
-                    "failure": None}
+            return {**result, "status": "terminal", "reason": ""}
         if now() >= deadline:
-            return {"status": "timed_out", "reason": REASON_WAIT_TIMEOUT,
-                    "phase": phase, "session_id": session_id,
-                    "candidate_fingerprint": "", "failure": None}
+            return {**result, "status": "timed_out", "reason": REASON_WAIT_TIMEOUT}
         sleep(poll_s)
