@@ -28,7 +28,7 @@ mod ring_capture;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::{Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use alsa::pcm::{Access, Format, Frames, HwParams, State, IO, PCM};
@@ -762,11 +762,15 @@ pub struct Mixer {
     /// even if the household selected a renderer manually or mux
     /// temporarily selected NONE.
     selected_input_index: Arc<AtomicI32>,
-    /// Channel for forwarding xrun events to the off-thread log writer. Sending
-    /// on this unbounded channel is non-blocking and only fails when the
-    /// receiver is dropped (shutdown), which keeps the work loop's hot path off
-    /// disk I/O — the writer thread is the one stuck on fdatasync.
-    xrun_tx: Sender<XrunEvent>,
+    /// Channel for forwarding xrun events to the off-thread log writer. Bounded
+    /// (`main`'s `XRUN_CHANNEL_CAPACITY`) so a producer storm can never block
+    /// the SCHED_FIFO work loop on the writer's per-event fdatasync;
+    /// `send_xrun_event` uses `try_send` and drops-and-counts past capacity.
+    xrun_tx: SyncSender<XrunEvent>,
+    /// Events dropped from `xrun_tx` when the writer thread falls behind
+    /// (`TrySendError::Full`). The per-lane `xrun_count` gauges are bumped
+    /// before the send, so a drop here only loses the forensic JSONL line.
+    pub xrun_events_dropped: Arc<AtomicU64>,
     period_frames: u32,
     tts: Option<TtsMixer>,
     /// Smoothed program-lane duck gain (linear), persisted across periods.
@@ -1319,7 +1323,11 @@ impl Mixer {
     /// is required: a missing lane means one renderer silently drops out
     /// of the summed music reference. `xrun_tx` is the
     /// non-blocking channel to the off-thread xrun log writer.
-    pub fn new(config: &Config, xrun_tx: Sender<XrunEvent>, tts: Option<TtsInput>) -> Result<Self> {
+    pub fn new(
+        config: &Config,
+        xrun_tx: SyncSender<XrunEvent>,
+        tts: Option<TtsInput>,
+    ) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
         // The ONE width derivation for this run. Resolved before any lane is
         // built because it decides the DIRECT lane's render width and whether it
@@ -1528,6 +1536,7 @@ impl Mixer {
             output_delay_frames: Arc::new(AtomicU64::new(OUTPUT_DELAY_UNAVAILABLE)),
             selected_input_index: Arc::new(AtomicI32::new(-2)),
             xrun_tx,
+            xrun_events_dropped: Arc::new(AtomicU64::new(0)),
             period_frames: config.period_frames,
             tts: tts.map(TtsMixer::new),
             program_duck_current: 1.0,
@@ -1719,7 +1728,13 @@ impl Mixer {
                 // feed the SAME resampler, render one DAC-paced period. The aloop
                 // substream is never touched (`pcm` is None). The tap runs inline
                 // over the converted slice inside this call.
-                read_direct_and_render(input, period_frames, &mut self.direct_tap, &self.xrun_tx)
+                read_direct_and_render(
+                    input,
+                    period_frames,
+                    &mut self.direct_tap,
+                    &self.xrun_tx,
+                    &self.xrun_events_dropped,
+                )
             } else if input.ring.is_some() {
                 // Renderer-ingress RING lane: consume exactly one slot from this
                 // lane's SHM ring. The slot IS one render period, and a bounded
@@ -1732,7 +1747,12 @@ impl Mixer {
                 // to the DAC clock) and render exactly one DAC-paced period. The
                 // catch-up drain is bypassed on purpose — the resampler holds the
                 // ring at a small fixed fill, with no sawtooth.
-                read_into_resampler_and_render(input, period_frames, &self.xrun_tx)?
+                read_into_resampler_and_render(
+                    input,
+                    period_frames,
+                    &self.xrun_tx,
+                    &self.xrun_events_dropped,
+                )?
             } else {
                 // Bounded catch-up resync BEFORE the period read, for EVERY lane
                 // regardless of selection. A free-running lane (the USB host-clock
@@ -1745,7 +1765,12 @@ impl Mixer {
                 // lane STILL backs up and must be drained, so do NOT move this
                 // under the selection gate.
                 drain_input_excess(input, period_frames);
-                read_input(input, period_frames, &self.xrun_tx)?
+                read_input(
+                    input,
+                    period_frames,
+                    &self.xrun_tx,
+                    &self.xrun_events_dropped,
+                )?
             };
             // Per-lane content level (RMS dBFS ×100), computed for EVERY lane
             // BEFORE the selection gate below so a muxed-out lane still reports
@@ -2729,6 +2754,17 @@ fn monotonic_ns() -> i128 {
     (ts.tv_sec as i128) * 1_000_000_000 + (ts.tv_nsec as i128)
 }
 
+/// Forward one xrun event to the off-thread log writer with `try_send`,
+/// dropping and counting into `dropped` on `Full` rather than blocking the
+/// SCHED_FIFO work loop on the writer's per-event fdatasync. `Disconnected`
+/// (writer thread gone, shutdown in progress) is not counted — nothing reads
+/// `xrun_events_dropped` past that point either.
+fn send_xrun_event(tx: &SyncSender<XrunEvent>, dropped: &AtomicU64, event: XrunEvent) {
+    if let Err(TrySendError::Full(_)) = tx.try_send(event) {
+        dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Read up to `requested_frames` from `input`. Returns the number of
 /// frames actually read (may be less than requested if the kernel
 /// has less ready, or 0 if non-blocking and no data).
@@ -2744,7 +2780,8 @@ fn monotonic_ns() -> i128 {
 fn read_input(
     input: &mut Input,
     requested_frames: usize,
-    xrun_tx: &Sender<XrunEvent>,
+    xrun_tx: &SyncSender<XrunEvent>,
+    xrun_events_dropped: &AtomicU64,
 ) -> Result<usize> {
     // Non-direct lanes always have Some(pcm); the direct lane never reaches
     // this path. A None here means a silent lane — render silence.
@@ -2793,14 +2830,16 @@ fn read_input(
                     "event=fanin.xrun source=input label={} count={}",
                     input.label, count,
                 );
-                // A send error means the receiver was dropped (shutdown in
-                // progress); fine to ignore.
-                let _ = xrun_tx.send(XrunEvent {
-                    source: XrunSource::Input,
-                    label: input.label.clone(),
-                    frames: requested_frames as u32,
-                    count,
-                });
+                send_xrun_event(
+                    xrun_tx,
+                    xrun_events_dropped,
+                    XrunEvent {
+                        source: XrunSource::Input,
+                        label: input.label.clone(),
+                        frames: requested_frames as u32,
+                        count,
+                    },
+                );
                 pcm.try_recover(e, true).context("recovering input xrun")?;
                 silence_period(&mut input.read_buf, &mut input.read_buf_wide, 0);
                 Ok(0)
@@ -2835,7 +2874,8 @@ fn recover_resampler_input_xrun(
     input: &mut Input,
     error: alsa::Error,
     period_frames: usize,
-    xrun_tx: &Sender<XrunEvent>,
+    xrun_tx: &SyncSender<XrunEvent>,
+    xrun_events_dropped: &AtomicU64,
     operation: &str,
 ) -> Result<()> {
     let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2843,12 +2883,16 @@ fn recover_resampler_input_xrun(
         "event=fanin.xrun source=input label={} count={} op={} (resampler lane)",
         input.label, count, operation,
     );
-    let _ = xrun_tx.send(XrunEvent {
-        source: XrunSource::Input,
-        label: input.label.clone(),
-        frames: period_frames as u32,
-        count,
-    });
+    send_xrun_event(
+        xrun_tx,
+        xrun_events_dropped,
+        XrunEvent {
+            source: XrunSource::Input,
+            label: input.label.clone(),
+            frames: period_frames as u32,
+            count,
+        },
+    );
     // The aloop resampler lane always has Some(pcm); only the direct lane is
     // None, and it uses recover_direct_xrun instead.
     let Some(pcm) = input.pcm.as_ref() else {
@@ -2890,7 +2934,8 @@ fn recover_resampler_input_xrun(
 fn read_into_resampler_and_render(
     input: &mut Input,
     period_frames: usize,
-    xrun_tx: &Sender<XrunEvent>,
+    xrun_tx: &SyncSender<XrunEvent>,
+    xrun_events_dropped: &AtomicU64,
 ) -> Result<usize> {
     // The aloop resampler lane always has Some(pcm); the direct lane routes to
     // read_direct_and_render and never reaches here.
@@ -2924,6 +2969,7 @@ fn read_into_resampler_and_render(
                             e,
                             period_frames,
                             xrun_tx,
+                            xrun_events_dropped,
                             "avail_update",
                         )?;
                         break;
@@ -3000,6 +3046,7 @@ fn read_into_resampler_and_render(
                                 e,
                                 period_frames,
                                 xrun_tx,
+                                xrun_events_dropped,
                                 "readi",
                             )?;
                             stop_drain = true;
@@ -3144,6 +3191,27 @@ mod tests {
         // hot-pluggable direct lane parks, while ordinary lanes propagate it.
         assert_eq!(classify_pcm_errno(libc::ENODEV), PcmIoFate::Fatal);
         assert_eq!(classify_pcm_errno(libc::EIO), PcmIoFate::Fatal);
+    }
+
+    // ---- Bounded xrun channel (must never block the SCHED_FIFO work loop) ----
+
+    #[test]
+    fn send_xrun_event_drops_and_counts_past_channel_capacity() {
+        // No receiver draining: the bound-2 channel fills on the first two
+        // sends, so the third must find TrySendError::Full and drop-and-count
+        // rather than block this (the calling) thread.
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<XrunEvent>(2);
+        let dropped = AtomicU64::new(0);
+        let event = || XrunEvent {
+            source: XrunSource::Input,
+            label: "test".to_string(),
+            frames: 256,
+            count: 1,
+        };
+        send_xrun_event(&tx, &dropped, event());
+        send_xrun_event(&tx, &dropped, event());
+        send_xrun_event(&tx, &dropped, event());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
     }
 
     #[test]
