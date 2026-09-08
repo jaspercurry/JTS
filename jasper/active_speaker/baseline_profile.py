@@ -85,6 +85,7 @@ from .level_trim import (
     LevelTrimError,
     attenuation_from_group_deltas,
 )
+from .measured_crossover_candidate import candidate_room_peqs
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -1438,10 +1439,10 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
     first-session residual.
 
     Deliberately NOT the whole program-domain headroom: ``baseline_headroom_db``
-    is a module constant and the room-PEQ / preference-EQ terms are
-    recompose-time inputs that an active-crossover apply does not touch, so
-    their contributions cancel in the difference this exists to serve
-    (:func:`applied_program_level_delta_db`).
+    is a module constant and preference EQ is a recompose-time input an
+    active-crossover apply does not touch, so those cancel in the difference
+    this exists to serve; a candidate's own room boost does NOT cancel, and is
+    the incompleteness :func:`applied_program_level_delta_db` discloses.
     """
     linearization = profile_linearization(profile)
     if not linearization:
@@ -1619,12 +1620,12 @@ def applied_program_level_delta_db(
     complete for everything the apply commands.
 
     **One known incompleteness, deliberate, caught downstream.**
-    Room-PEQ and preference-EQ headroom are excluded because an
-    active-crossover candidate is emitted without them
-    (``build_baseline_profile_candidate`` passes no ``room_peqs`` /
-    ``preference_filters``), so a household that has either can see a real
-    level move this reader cannot see. That remainder is exactly what the
-    probe's ``residual_offset_db`` measures and what
+    Room-PEQ and preference-EQ headroom are excluded. The candidate's own room
+    set IS emitted (``build_baseline_profile_candidate`` passes ``room_peqs``,
+    whose boost the graph absorbs) and the household's preference layer is not
+    emitted at all; neither term is read here, so a round that changes either
+    can see a real level move this reader cannot see. That remainder is
+    exactly what the probe's ``residual_offset_db`` measures and what
     ``delta_probe.VERDICT_LEVEL_MISMATCH`` names — which is why this function
     is allowed to be an honest partial account rather than having to be a
     complete one.
@@ -2641,6 +2642,12 @@ def build_baseline_profile_candidate(
         dict(entry)
         for entry in (getattr(measured_candidate, "blend_correction", ()) or ())
     ]
+    # The candidate's own room PEQ set, reduced to the emitter's single list by
+    # ``candidate_room_peqs``. ``getattr`` with a default for the same eras as
+    # its neighbours above; the helper needs the candidate's layout, so it only
+    # runs once the field is known to be there.
+    room_correction = dict(getattr(measured_candidate, "room_correction", None) or {})
+    room_peqs = candidate_room_peqs(measured_candidate) if room_correction else ()
     if preserved_applied_profile is not None:
         preserved_corrections = (
             preserved_applied_profile.get("corrections")
@@ -2795,6 +2802,7 @@ def build_baseline_profile_candidate(
                 bass_extension_profile=bass_extension_profile,
                 linearization=linearization,
                 blend_correction=blend_correction,
+                room_peqs=room_peqs,
             )
             # A v2 measured candidate carrying delay/polarity re-proves its
             # exact requested delay binding against the freshly compiled text
@@ -2940,6 +2948,11 @@ def build_baseline_profile_candidate(
         # one is what a "what is applied right now" read (`/state`, the apply
         # observability line) uses without unpacking the snapshot.
         "blend_correction": blend_correction,
+        # The room layer this candidate applies. Top level only, NOT inside
+        # recomposition_snapshot: baseline_candidate_fingerprint hashes that
+        # snapshot, and the recompose seam re-reads the room PEQs out of the
+        # applied config text, which stays their durable copy.
+        "room_correction": room_correction,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
         # An unmeasured per-driver trim is explicitly provisional. Surfaced in
