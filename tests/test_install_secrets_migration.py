@@ -96,9 +96,9 @@ def test_secret_move_preserves_values_and_removes_broad_copies(
     for _ in range(2):
         proc = _run(tmp_path, fn)
         assert proc.returncode == 0, proc.stderr
-        assert read_env_file(target) == ({key: assigned} if assigned else {})
-        assert read_env_file(broad) == {"JASPER_HOSTNAME": "jts.local", **({} if assigned else {key: ""})}
         assert target.exists() is (canonical is not None or bool(value))
+        assert read_env_file(target) == ({key: assigned} if target.exists() else {})
+        assert read_env_file(broad) == {"JASPER_HOSTNAME": "jts.local", **({} if assigned else {key: ""})}
         for path in filter(Path.exists, (broad, target)):
             assert stat.S_IMODE(path.stat().st_mode) == 0o640
             assert (path.stat().st_uid, path.stat().st_gid) == owner
