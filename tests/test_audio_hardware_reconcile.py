@@ -29,6 +29,7 @@ from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
+from jasper.cli import audio_config as audio_config_cli
 from jasper.cli import output_hardware as output_hardware_cli
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
@@ -797,6 +798,101 @@ def test_a_blocking_lifecycle_verb_is_bounded_by_the_unit_not_the_manager_cap(
     _assert_omits(result.stderr, "event=audio_hardware_reconcile.systemctl_timeout")
 
 
+def test_a_candidate_refused_after_convergence_keeps_the_preliminary_env(
+    tmp_path: Path,
+) -> None:
+    """The SECOND candidate is the only one that may enable final output, so
+    its refusal must leave the box on the first — the one this same validator
+    already accepted — and stop nothing.
+
+    The first candidate publishes the DAC and latency facts the graph render
+    needs; the second derives the active lane from the converged graph. A
+    refusal there means the final graph did not validate, so restarting
+    anything against that lane is what a rejected candidate exists to prevent.
+    """
+    seen: list[str] = []
+
+    def accept_then_refuse(**_kwargs: Any) -> tuple[bool, tuple[str, ...]]:
+        seen.append("validate")
+        if len(seen) == 1:
+            return True, ("ok",)
+        return False, ("the converged graph does not validate this lane",)
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env="JASPER_OUTPUTD_BACKEND=stale\n",
+        patches={"jasper.cli.audio_config.validate_outputd_env": accept_then_refuse},
+    )
+
+    assert result.returncode == 78, result.stderr
+    assert len(seen) == 2, seen
+    # The PRELIMINARY candidate stands: committed by the first validation, and
+    # not rolled back to the stale value the box was found with.
+    _assert_states(
+        _outputd_env(tmp_path),
+        "JASPER_OUTPUTD_BACKEND=alsa",
+        "JASPER_OUTPUTD_DAC_PCM=outputd_dac",
+    )
+    refusal = stderr_events(result.stderr, "audio_hardware_reconcile.runtime_graph")[-1]
+    assert refusal["reason"] == "post_convergence_outputd_env_rejected"
+    assert refusal["action"] == "preserve_preliminary_env"
+    # The mixer pin this pass's own changed record earned still ran; nothing
+    # else was stopped or restarted, and no candidate was left behind.
+    transcript = _systemctl_log(tmp_path)
+    assert "--no-block restart jasper-dac-init.service" in transcript
+    _assert_omits(
+        transcript,
+        "stop jasper-voice.service",
+        "--no-block restart jasper-outputd.service",
+    )
+    assert list(tmp_path.glob(".outputd.env.candidate.*")) == []
+
+
+def test_the_cutover_render_precedes_convergence_which_precedes_the_unit_gate(
+    tmp_path: Path,
+) -> None:
+    """The flat cutover graph is the artifact convergence SELECTS from, and the
+    lane the gate acts on is derived from what convergence wrote. Reordering
+    any pair converges against the previous topology's bytes or gates units on
+    a lane no graph proved."""
+    order: list[str] = []
+    gate = reconcile_module.Pass.gate_role_services
+
+    def recorded_gate(run: reconcile_module.Pass) -> None:
+        order.append("gate")
+        return gate(run)
+
+    def recorded_render(**_kwargs: Any) -> SimpleNamespace:
+        order.append("render_cutover")
+        return SimpleNamespace(changed=True)
+
+    def recorded_converge(**kwargs: Any) -> SimpleNamespace:
+        order.append("converge")
+        return _converged(**kwargs)
+
+    with mock.patch.object(
+        reconcile_module.Pass, "gate_role_services", recorded_gate
+    ):
+        result = _run_reconcile(
+            tmp_path,
+            APPLE_LISTING,
+            "--reason",
+            "test",
+            converge=recorded_converge,
+            patches={
+                "jasper.sound.camilla_yaml.render_flat_cutover_configs": (
+                    recorded_render
+                )
+            },
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert order == ["render_cutover", "converge", "gate"]
+
+
 def test_runtime_convergence_only_writes_statefile(tmp_path: Path) -> None:
     """This hardware owner seeds the proved boot statefile; it never mutates a
     live CamillaDSP graph, which the web/coupling paths own."""
@@ -1343,7 +1439,18 @@ def _lane_less_registry():
     return mock.patch.dict(dac._BY_ID, {lane_less.id: lane_less})
 
 
-_LANE_CAP_TARGET = "jasper.audio_hardware.dac.active_outputd_lane_channels_for"
+#: The lane-cap probe has TWO names: the dac module's, and the module-scope
+#: from-import in jasper/cli/audio_config.py that the pass reaches lazily.
+#: Patch both, and import that module ABOVE any patch — a first import taken
+#: while the dac copy is a raising stub binds the stub for the whole session.
+_LANE_CAP_TARGETS = (
+    "jasper.audio_hardware.dac.active_outputd_lane_channels_for",
+    f"{audio_config_cli.__name__}.active_outputd_lane_channels_for",
+)
+
+
+def _lane_cap(replacement: Any) -> dict[str, Any]:
+    return dict.fromkeys(_LANE_CAP_TARGETS, replacement)
 
 
 @pytest.mark.parametrize(
@@ -1361,7 +1468,7 @@ _LANE_CAP_TARGET = "jasper.audio_hardware.dac.active_outputd_lane_channels_for"
         # that died yields an empty cap while the DAC is still RECOGNIZED. That
         # is TRANSIENT - reporting it as dac_no_active_lane would give a remedy
         # ("re-running cannot change it") that is false here.
-        pytest.param({_LANE_CAP_TARGET: _raises(RuntimeError("registry gone"))},
+        pytest.param(_lane_cap(_raises(RuntimeError("registry gone"))),
                      False, "lane_probe_failed", "dac_no_active_lane",
                      id="lane-probe-died"),
         # The other side of the split: a profile that genuinely declares no
@@ -3802,9 +3909,7 @@ _EDGE_FORMAT_PROBE_FAILS = {
 }
 
 
-_LANE_CAP_ANSWERS_FOUR = {
-    "jasper.audio_hardware.dac.active_outputd_lane_channels_for": lambda _id: 4
-}
+_LANE_CAP_ANSWERS_FOUR = _lane_cap(lambda _id: 4)
 
 # Every probe whose failure leaves an owned value UNWRITTEN, with the exit that
 # failure produces. The two renderers are deliberately absent: a failed render
@@ -3826,7 +3931,7 @@ _PROBE_FAILURES = {
         },
         0,
     ),
-    "active_lane_cap": ({_LANE_CAP_TARGET: _raises(RuntimeError("registry gone"))}, 0),
+    "active_lane_cap": (_lane_cap(_raises(RuntimeError("registry gone"))), 0),
     "edge_format": (_EDGE_FORMAT_PROBE_FAILS, 0),
     "content_format": (_CONTENT_FORMAT_PROBE_FAILS, 0),
     "route_plan": (
@@ -4339,6 +4444,53 @@ def _module_defaults() -> dict[str, str]:
                 .default
             ),
         }
+
+
+# The three paths the shim DERIVES from the state path rather than reading
+# from the environment, so `_SHIM_DEFAULT` cannot see them.
+_SHIM_DERIVED = re.compile(
+    r'^[A-Z_0-9]+="\$\{OUTPUT_HARDWARE_STATE_PATH%/\*\}/([^"]+)"$', re.MULTILINE
+)
+
+
+def test_the_shim_and_the_pass_agree_on_every_derived_leaf_name():
+    """The two markers and the stamp are addressed by NAME from both sides.
+
+    A leaf that drifts is silent in both directions: the pass would write a
+    degraded marker the shim's stamp guard never reads, and jasper-usbgadget's
+    `test -e` would miss a transport marker the pass did publish.
+    """
+    from jasper.output_hardware import degraded_marker_path
+
+    derived = _SHIM_DERIVED.findall(SCRIPT.read_text(encoding="utf-8"))
+    with mock.patch.dict(os.environ, {}, clear=True):
+        run = reconcile_module.Pass(reason="drift", print_env=True, no_restart=True)
+        state_dir = Path(run.state_path).parent
+        assert run.management_transport_marker.parent == state_dir
+        assert degraded_marker_path().parent == state_dir
+        assert set(derived) == {
+            run.management_transport_marker.name,
+            degraded_marker_path().name,
+            # The stamp answers --changed and nothing in the pass reads it, so
+            # the shim is its only owner; pinned here so a fourth derived path
+            # cannot appear without a Python counterpart or this list.
+            "reconcile.stamp",
+        }
+
+
+def test_the_shim_print_env_fallback_matches_the_unrecognized_dac_row():
+    """The shim states these six values itself, for the one case where no pass
+    can answer (deploy/install.sh:893 evals the output under `set -u`). They
+    are install.sh's contract either way, so they may not drift from the
+    answer a running pass gives for the same box."""
+    body = SCRIPT.read_text(encoding="utf-8")
+    defaults = body.partition("print_env_defaults() {")[2].partition("\n}")[0]
+    printed = _parse_print_env(
+        "\n".join(
+            line for line in defaults.splitlines() if re.match(r"^[A-Z_]+=", line)
+        )
+    )
+    assert printed == _PRINT_ENV_NO_DAC
 
 
 def test_the_shim_and_the_pass_agree_on_every_default_path():
