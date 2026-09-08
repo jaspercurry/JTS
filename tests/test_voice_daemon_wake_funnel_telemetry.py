@@ -39,10 +39,11 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
         registry = ToolRegistry()
         registry.register(get_weather)
         registry.set_dispatch_observer(
-            wake_loop.record_tool_dispatch_stage,
+            wake_loop.bind_tool_dispatch,
         )
 
-        await wake_loop._record_response_started()
+        wake_loop._anchor_turn_timeline(1.0)
+        await wake_loop._turn_observer("first_response", event_stage="response_started")()
         assert await dispatch_tool(registry, "get_weather", {}) == {
             "temperature": 72,
         }
@@ -92,7 +93,7 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
         registry.register(slow_first)
         registry.register(fast_second)
         registry.set_dispatch_observer(
-            wake_loop.record_tool_dispatch_stage,
+            wake_loop.bind_tool_dispatch,
         )
 
         first_task = asyncio.create_task(
@@ -122,3 +123,120 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
         if first_task is not None and not first_task.done():
             await asyncio.gather(first_task, return_exceptions=True)
         store.close()
+
+
+async def test_actual_fire_ids_and_delayed_observers_stay_with_their_turn(tmp_path, monkeypatch):
+    import sqlite3
+    import time
+    from contextlib import closing
+    from datetime import datetime, timezone
+    from jasper import wake_events
+    from jasper.wake_condition_context import classify_condition
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 8, 12, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(wake_events, "datetime", FrozenDateTime)
+    store = WakeEventStore(tmp_path)
+    store.open()
+    wl = wake_loop_for_tests(wake_event_store=store)
+    fire = dict(leg="on", score=0.9, now_loop=1.0, legs={}, firing_threshold=0.5,
+                fired_legs="on", condition=classify_condition(None, None), mic_muted=False)
+    try:
+        await store._result(store._execute, "PRAGMA busy_timeout=5000", ())
+        with closing(sqlite3.connect(store._db_path, isolation_level=None)) as lock:
+            lock.execute("BEGIN IMMEDIATE")
+            first = await wl._wake_telemetry.on_fire(**fire)
+            wl._anchor_turn_timeline(time.monotonic())
+            response = wl._turn_observer("first_response", event_stage="response_started")
+            write = wl._turn_observer("first_write")
+            chirp = wl._play_listening_chirp(going_on=True)
+            await wl._wake_telemetry.outcome("completed")
+            second = await wl._wake_telemetry.on_fire(**fire)
+            wl._anchor_turn_timeline(time.monotonic())
+            assert first != second
+            assert wl.session_status()["turn_event_id"] == second
+            await response()
+            await write()
+            await chirp
+            assert wl._turn_timeline_ms().keys() == {"total_ms"}
+            assert wl.session_status()["wake_event_store"]["pending_work"] > 0
+            lock.execute("ROLLBACK")
+        assert (await store.get_event(first))["outcome"] == "completed"
+        assert (await store.get_event(second))["ts_response_started"] is None
+        await wl._turn_observer("first_response", event_stage="response_started")()
+        assert (await store.get_event(second))["ts_response_started"] is not None
+        wl._emit_turn_timeline("complete")
+        assert wl.session_status()["last_turn_ms"]["event_id"] == second
+    finally:
+        await store.aclose()
+
+
+async def test_tool_completion_from_old_event_cannot_stamp_new_event(tmp_path):
+    store = WakeEventStore(tmp_path)
+    store.open()
+    release, started = asyncio.Event(), asyncio.Event()
+    task = None
+    try:
+        for event_id in ("A", "B"):
+            await store.begin_event(
+                event_id=event_id, trigger_kind="fire_aec_on", peak_score_aec_on=0.9,
+                peak_score_aec_off=None, threshold=0.5, wake_model="test",
+            )
+        wl = wake_loop_for_tests(wake_event_store=store, current_event_id="A")
+        async def slow() -> dict:
+            """Wait for another turn."""
+            started.set()
+            await release.wait()
+            return {"ok": True}
+        registry = ToolRegistry()
+        registry.register(slow)
+        registry.set_dispatch_observer(wl.bind_tool_dispatch)
+        task = asyncio.create_task(dispatch_tool(registry, "slow", {}))
+        await wait_signalled(started, "tool A started", producer=task)
+        await wl._wake_telemetry.outcome("completed")
+        wl._wake_telemetry._current_event_id = "B"
+        release.set()
+        assert await task == {"ok": True}
+        old, new = await store.get_event("A"), await store.get_event("B")
+        assert old["ts_tool_called"] is not None
+        assert old["ts_tool_completed"] is new["ts_tool_called"] is new["ts_tool_completed"] is None
+    finally:
+        release.set()
+        if task is not None:
+            await task
+        await store.aclose()
+
+
+async def test_wake_admission_and_arbitration_continue_with_sqlite_locked(tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from tests._live_turn_fake import silent_frame
+
+    store = WakeEventStore(tmp_path)
+    store.open()
+    wl = wake_loop_for_tests(wake_event_store=store)
+    wl._legs["on"].detector.score_frame = lambda _frame: 0.95
+    arbitrated = asyncio.Event()
+    event_id = None
+    async def lose(**_kwargs):
+        nonlocal event_id
+        event_id = wl._wake_telemetry.current_event_id
+        arbitrated.set()
+        return "LOSE"
+    wl._peering.arbitrate = lose
+    try:
+        await store._result(store._execute, "PRAGMA busy_timeout=5000", ())
+        with closing(sqlite3.connect(store._db_path, isolation_level=None)) as lock:
+            lock.execute("BEGIN IMMEDIATE")
+            await wl._handle_wake_frame(silent_frame(), leg="on")
+            await wait_signalled(arbitrated, "wake arbitration with SQLite held")
+            assert event_id is not None
+            lock.execute("ROLLBACK")
+        await wl._cancel_fire_and_forget_tasks()
+        assert (await store.get_event(event_id))["outcome"] == "peer_lost"
+    finally:
+        await wl._cancel_fire_and_forget_tasks()
+        await store.aclose()

@@ -215,15 +215,12 @@ class AssistantOutput:
         ducker: FanInDucker,
         cues: AudioCueManager | None,
         volume_coordinator: VolumeCoordinator,
-        *,
-        stamp_stage: Callable[[str], None],
     ) -> None:
         self._cfg = cfg
         self._tts = tts
         self._ducker = ducker
         self._cues = cues
         self._volume_coordinator = volume_coordinator
-        self._stamp_stage = stamp_stage
         self._output_gate = AssistantOutputGate()
         # One admission authority for assistant audio, asked twice: the gate
         # refuses an episode that has not started yet, this hook refuses the
@@ -713,26 +710,23 @@ class AssistantOutput:
             log_event(logger, "feedback_loudness.prepare_failed", **fields)
 
 
-    async def listening_chirp(self, *, going_on: bool) -> None:
-        """Best-effort. If the TTS stream isn't ready, the wake or
-        end-of-turn happens anyway — never raise. PCM is pre-rendered
-        in __init__ to keep this off the wake hot path.
-
-        ``_stamp_stage`` is the wake loop's turn-timeline stamp; calling
-        it here keeps the stamp's order against the write beneath it."""
+    async def listening_chirp(
+        self,
+        *,
+        going_on: bool,
+        on_attempt: Callable[[], Awaitable[None]] | None = None,
+        on_first_write: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Transport acceptance is observable; acoustic output is not."""
         try:
-            pcm = self._chirp_on_pcm if going_on else self._chirp_off_pcm
-            profile = (
-                self._chirp_on_profile
-                if going_on else self._chirp_off_profile
-            )
-            if going_on:
-                self._stamp_stage("cue")
+            if on_attempt is not None:
+                await on_attempt()
             await self._tts.write_segment(
-                pcm,
+                self._chirp_on_pcm if going_on else self._chirp_off_pcm,
                 segment_kind="chirp",
-                source_profile=profile,
+                source_profile=self._chirp_on_profile if going_on else self._chirp_off_profile,
                 pcm_wide=self._earcon_wide,
+                on_first_write=on_first_write,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("listening chirp failed: %s", e)

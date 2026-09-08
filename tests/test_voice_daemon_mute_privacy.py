@@ -472,8 +472,11 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
     events: list[tuple[bytes, dict]] = []
 
     class _Tts:
-        async def write_segment(self, pcm: bytes, **kwargs) -> None:
+        async def write_segment(self, pcm: bytes, on_first_write=None, **kwargs) -> bool:
             events.append((pcm, kwargs))
+            if on_first_write is not None:
+                await on_first_write()
+            return True
 
     # STATED, not inherited: the earcon bake width comes from
     # `tts_wire_is_wide()`, which reads the box's own fanin.env — absent on a

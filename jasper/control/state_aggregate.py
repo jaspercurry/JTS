@@ -117,6 +117,8 @@ _default_ha_status_cache: Any | None = None
 _VOICE_STATUS_DIRECT_KEYS = (
     "endpointer",
     "last_turn_ms",
+    "turn_event_id",
+    "wake_event_store",
     "input_audio",
     "spend_allowed",
     "usage_tracking_degraded",

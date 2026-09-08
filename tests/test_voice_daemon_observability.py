@@ -185,9 +185,9 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     await asyncio.sleep(0.002)
     await wl._end_session_input("test")
     await asyncio.sleep(0.002)
-    await wl._record_response_started()
+    await wl._turn_observer("first_response", event_stage="response_started")()
     await asyncio.sleep(0.002)
-    await wl._record_first_write()
+    await wl._turn_observer("first_write")()
     await wl._end_turn("test")
 
     fields = event_fields(caplog, "turn.timeline")
@@ -195,7 +195,7 @@ async def test_wake_turn_timeline_carries_every_stage_in_order(caplog):
     assert fields["outcome"] == "complete"
     assert fields["endpointer"] == wl._endpointer_label()
     stages = [
-        "cue_ms", "first_audio_to_provider_ms", "speech_end_ms",
+        "cue_accepted_ms", "first_audio_to_provider_ms", "speech_end_ms",
         "end_input_ms", "first_response_ms", "first_write_ms", "total_ms",
     ]
     assert [key for key in stages if key in fields] == stages
@@ -253,14 +253,7 @@ async def test_a_wake_that_opened_no_turn_does_not_anchor_a_later_one(caplog):
 async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
     caplog,
 ):
-    """A turn can duck the music, chirp, and then die on the way into the
-    session (acquire failure, peering notify, connection lost mid-open). It
-    reached the household's ears, so it owes a journal line — an unrecorded
-    turn reads as "the speaker did nothing" when the operator counts turns
-    against `outcome`. It does NOT owe `/state.voice.last_turn_ms`, which is
-    read as "how long a turn takes": a truncated ruler there is a wrong
-    number, not a blank one. The aborted turn must also close its timeline,
-    so the next one is not measured from the dead one's anchor."""
+    """A failed acquisition closes its clock without replacing completed timing."""
     import logging
 
     from tests._log_events import event_field_maps
@@ -273,7 +266,7 @@ async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
 
     (aborted,) = event_field_maps(caplog, "turn.timeline", outcome="aborted")
     assert aborted["anchor"] == "wake"
-    assert int(aborted["cue_ms"]) >= 0
+    assert int(aborted["cue_accepted_ms"]) >= 0
     assert wl._turn_anchor == 0.0
     assert wl.session_status()["last_turn_ms"] == {}
 
@@ -284,7 +277,7 @@ async def test_an_aborted_turn_is_journalled_but_not_published_as_the_ruler(
 
     (served,) = event_field_maps(caplog, "turn.timeline", outcome="complete")
     assert int(served["total_ms"]) < 1000
-    assert "cue_ms" not in served
+    assert "cue_accepted_ms" not in served
     assert wl.session_status()["last_turn_ms"]["outcome"] == "complete"
 
 
@@ -314,8 +307,8 @@ async def test_session_status_publishes_the_last_turn_timeline():
     assert wl.session_status()["last_turn_ms"] == {}
 
     await wl._end_session_input("test")
-    await wl._record_response_started()
-    await wl._record_first_write()
+    await wl._turn_observer("first_response", event_stage="response_started")()
+    await wl._turn_observer("first_write")()
     await wl._end_turn("test")
 
     last = wl.session_status()["last_turn_ms"]
@@ -579,3 +572,17 @@ def test_session_status_tool_packs_defaults_empty():
     wl = _wake_loop_with_legs("on")
     _prep_session_status(wl)
     assert wl.session_status()["tool_packs"] == []
+
+
+async def test_turn_clock_opens_before_chirp_preparation_failure():
+    wl = _timeline_loop(wake=True)
+    old_event = wl._turn_event_id
+    observed = []
+    async def fail_prepare():
+        observed.append(wl.session_status()["turn_event_id"])
+        raise OSError()
+    wl._prepare_assistant_loudness_context = fail_prepare
+    with pytest.raises(OSError):
+        await wl._begin_turn(listening_feedback=True)
+    assert observed[0] is not None and observed[0] != old_event
+    assert wl._turn_anchor == 0.0

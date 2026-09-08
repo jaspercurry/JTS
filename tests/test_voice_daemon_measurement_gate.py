@@ -261,8 +261,11 @@ class _RecordingTts(TtsPlayout):
         self._emission_refusal_logged = False
         self.segments: list[bytes] = []
 
-    async def _write_segment(self, pcm: bytes, **_kwargs) -> None:
+    async def _write_segment(self, pcm: bytes, on_first_write=None, **_kwargs) -> bool:
         self.segments.append(pcm)
+        if on_first_write is not None:
+            await on_first_write()
+        return True
 
     async def pause_content_meter(self) -> None:
         return None

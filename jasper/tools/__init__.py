@@ -450,12 +450,8 @@ class ToolRegistry:
     # jasper-doctor. Empty for registries built tool-by-tool (tests, the
     # voice-eval harness) that never run the pack walk.
     pack_outcomes: list[PackOutcome] = field(default_factory=list)
-    # Optional host-injected lifecycle observer. This is deliberately a
-    # narrow callback rather than a reference to WakeLoop / telemetry
-    # storage: tool extensions still cross only the provider-neutral
-    # dispatch seam, while the host can observe a registered call's
-    # start/completion once for every provider.
-    dispatch_observer: Callable[[str, str], Awaitable[None]] | None = field(
+    # A dispatch keeps the same event-bound observer through completion.
+    dispatch_observer: Callable[[], Callable[[str, str], Awaitable[None]]] | None = field(
         default=None,
         repr=False,
         compare=False,
@@ -509,15 +505,9 @@ class ToolRegistry:
 
     def set_dispatch_observer(
         self,
-        observer: Callable[[str, str], Awaitable[None]] | None,
+        observer: Callable[[], Callable[[str, str], Awaitable[None]]] | None,
     ) -> None:
-        """Attach the host's narrow tool-lifecycle observer.
-
-        ``stage`` is ``"called"`` or ``"completed"`` and the second
-        argument is the registered tool name. Observer failures are
-        contained by :func:`dispatch_tool`; they never change the payload
-        returned to the model.
-        """
+        """Bind one observer per dispatch to keep both stages on its original turn."""
         self.dispatch_observer = observer
 
     def _visible_to(self, provider: str) -> list[Tool]:
@@ -833,7 +823,12 @@ async def dispatch_tool(
         )
         return {"error": f"unknown tool {name}"}
 
-    await _notify_dispatch_observer(registry, "called", name)
+    try:
+        observer = registry.dispatch_observer() if registry.dispatch_observer else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tool %s observer binding failed: %s", name, exc)
+        observer = None
+    await _notify_dispatch_observer(observer, "called", name)
     logger.info("tool %s start args=%s", name, _args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
@@ -859,23 +854,16 @@ async def dispatch_tool(
         fn_ms = (_time.monotonic() - t_fn) * 1000
         logger.warning("tool %s fn RAISED after %.0fms: %s", name, fn_ms, e)
         payload = {"error": str(e)}
-    await _notify_dispatch_observer(registry, "completed", name)
+    await _notify_dispatch_observer(observer, "completed", name)
     return payload
 
 
 async def _notify_dispatch_observer(
-    registry: ToolRegistry,
+    observer: Callable[[str, str], Awaitable[None]] | None,
     stage: str,
     name: str,
 ) -> None:
-    """Run the host observer without making observability a dispatch
-    dependency.
-
-    The production wake observer is already fail-soft around SQLite, but
-    this outer guard preserves the dispatch contract for any future host
-    observer too.
-    """
-    observer = registry.dispatch_observer
+    """Observer failure does not change the tool result."""
     if observer is None:
         return
     try:
