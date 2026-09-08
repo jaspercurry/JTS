@@ -2722,6 +2722,7 @@ class WakeLoop:
             )
         finally:
             self._ending = False
+        await self._research.drain()
 
     async def _end_turn_inner(self, reason: str = "ended") -> None:
         episode = self._turn_output_episode
@@ -2745,7 +2746,6 @@ class WakeLoop:
                         raise error
             finally:
                 self._reset_turn()
-        await self._research.drain()
 
     async def _record_turn_outcome(self, reason: str) -> None:
         self._emit_turn_timeline("complete")
