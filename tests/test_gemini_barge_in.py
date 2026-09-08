@@ -30,9 +30,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _turn(conn: "GeminiLiveConnection") -> "GeminiLiveTurn":
-    return GeminiLiveTurn(
-        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
-    )
+    return GeminiLiveTurn(conn, started_at=0.0)
 
 
 async def _interrupted(turn: "GeminiLiveTurn", *, timeout: float = 0.2) -> bool:

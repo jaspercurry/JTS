@@ -1528,13 +1528,13 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
         fresh = await conn.acquire_turn()
         assert factory.configs[-1].session_resumption.handle is None
         capture_before = fresh.capture()
-        usage_before = dict(conn._cumulative_usage)
+        usage_before = fresh.usage()
         resume.set()
         await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert calls == [True]
         assert all(not session.sent_tool_responses for session in factory.sessions)
         assert fresh.capture() == capture_before
-        assert conn._cumulative_usage == usage_before
+        assert fresh.usage() == usage_before
         assert not fresh.server_turn_complete()
     finally:
         resume.set()
@@ -1700,3 +1700,135 @@ async def test_late_old_session_content_cannot_complete_or_capture_a_new_turn():
         resume.set()
         receiving.cancel()
         await asyncio.gather(receiving, return_exceptions=True)
+
+
+@pytest.mark.parametrize("tail_at", ["before_release", "idle", "acquired", "new_audio"])
+@pytest.mark.parametrize("finished", [True, None])
+async def test_input_transcript_owner_outlives_response_turn(tail_at, finished):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        session = factory.sessions[0]
+        old = await conn.acquire_turn()
+        await old.send_audio(b"\x01\x00")
+        await old.end_input()
+        session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="old ", finished=False if finished else None),
+            output_transcription=types.Transcription(text="old answer", finished=True),
+            turn_complete=True,
+        )))
+        await _wait_until(old.server_turn_complete)
+
+        async def tail():
+            session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+                input_transcription=types.Transcription(text="tail", finished=finished),
+            )))
+            session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="tail-read")))
+            await _wait_until(lambda: conn._resumption_handle == "tail-read")
+
+        if tail_at == "before_release":
+            await tail()
+        await old.release()
+        old_capture = old.capture()
+        if tail_at == "idle":
+            await tail()
+        fresh = await conn.acquire_turn()
+        if tail_at == "new_audio":
+            await fresh.send_audio(b"\x02\x00")
+        if tail_at in {"acquired", "new_audio"}:
+            await tail()
+        assert fresh.capture().user_text is None
+        assert fresh.capture().data["transcripts_available"] is False
+        assert old.capture() == old_capture
+        assert old.capture().user_text == ("old tail" if tail_at == "before_release" else "old")
+        assert old.capture().assistant_text == "old answer"
+
+        await fresh.send_audio(b"\x03\x00")
+        session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="new ", finished=True),
+        )))
+        session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="segment-read")))
+        await _wait_until(lambda: conn._resumption_handle == "segment-read")
+        await fresh.send_audio(b"\x04\x00")
+        await fresh.end_input()
+        session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="speech", finished=True),
+            output_transcription=types.Transcription(text="new answer", finished=True),
+            turn_complete=True,
+        )))
+        await _wait_until(fresh.server_turn_complete)
+        ambiguous = tail_at == "new_audio" or finished is None
+        assert fresh.capture().user_text == (None if ambiguous else "new speech")
+        assert fresh.capture().assistant_text == "new answer"
+        assert len(factory.sessions) == 1
+        await fresh.release()
+        request_planned_reopen(conn)
+        await _wait_until(lambda: conn._connected_event.is_set() and len(factory.sessions) == 2)
+        recovered = await conn.acquire_turn()
+        await recovered.send_audio(b"\x05\x00")
+        factory.sessions[-1].feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="after reset", finished=True),
+            turn_complete=True,
+        )))
+        await _wait_until(recovered.server_turn_complete)
+        assert recovered.capture().user_text == "after reset"
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("usage_on_completion", [False, True])
+@pytest.mark.parametrize("incomplete", ["interrupted", "disconnect"])
+async def test_gemini_usage_keeps_whole_response_snapshots(usage_on_completion, incomplete):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        session = factory.sessions[0]
+        totals = [0, 0]
+        for index, counts in enumerate([(1000, 500), (2500, 1300), (3000, 1500), (200, 100), None]):
+            turn = await conn.acquire_turn()
+            await turn.send_audio(b"\x01\x00")
+            await turn.end_input()
+            final_usage = None
+            if counts is not None:
+                prompt, output = counts
+                partial = types.UsageMetadata(prompt_token_count=prompt, response_token_count=output // 2)
+                session.feed(types.LiveServerMessage(usage_metadata=partial))
+                session.feed(types.LiveServerMessage(usage_metadata=partial))
+                marker = f"partial-{index}"
+                session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle=marker)))
+                await _wait_until(lambda: conn._resumption_handle == marker)
+                assert (turn.usage().input_tokens, turn.usage().output_tokens) == (prompt, output // 2)
+                final_usage = types.UsageMetadata(prompt_token_count=prompt, response_token_count=output)
+            if not usage_on_completion:
+                session.feed(types.LiveServerMessage(usage_metadata=final_usage))
+            session.feed(types.LiveServerMessage(
+                usage_metadata=final_usage if usage_on_completion else None,
+                server_content=types.LiveServerContent(turn_complete=True),
+            ))
+            await _wait_until(turn.server_turn_complete)
+            session.feed(types.LiveServerMessage(usage_metadata=types.UsageMetadata(
+                prompt_token_count=99999, response_token_count=99999,
+            )))
+            marker = f"closed-{index}"
+            session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle=marker)))
+            await _wait_until(lambda: conn._resumption_handle == marker)
+            usage = turn.usage()
+            assert (usage.input_tokens, usage.output_tokens) == (counts or (0, 0))
+            totals[0] += usage.input_tokens
+            totals[1] += usage.output_tokens
+            await turn.release()
+        assert totals == [6700, 3400]
+
+        turn = await conn.acquire_turn()
+        session.feed(types.LiveServerMessage(
+            usage_metadata=types.UsageMetadata(prompt_token_count=600, response_token_count=70),
+            server_content=types.LiveServerContent(interrupted=True),
+        ))
+        await asyncio.wait_for(turn.wait_for_interrupt(), DEFAULT_SIGNAL_TIMEOUT_S)
+        if incomplete == "disconnect":
+            session.feed_error(ConnectionError("offline test"))
+            await _wait_until(turn.turn_lost)
+        assert not turn.server_turn_complete()
+        assert (turn.usage().input_tokens, turn.usage().output_tokens) == (600, 70)
+    finally:
+        await conn.stop()
