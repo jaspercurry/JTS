@@ -473,12 +473,6 @@ impl TapState {
         self.events_dropped.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The counter itself, for the crate's shared `send_drop_counted` idiom.
-    #[inline]
-    pub fn dropped_counter(&self) -> &AtomicU64 {
-        &self.events_dropped
-    }
-
     #[inline]
     pub fn events_written(&self) -> u64 {
         self.events_written.load(Ordering::Relaxed)

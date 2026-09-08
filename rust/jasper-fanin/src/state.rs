@@ -105,7 +105,7 @@ pub struct StateServer {
     /// Per-input state (shared with the mixer).
     inputs: Vec<InputSnapshotSource>,
     /// Events dropped from the shared xrun-forwarding channel (global across
-    /// every input's xrun source, not per-lane — see `Mixer::xrun_events_dropped`).
+    /// every input's xrun source, not per-lane — see [`crate::mixer::XrunSink`]).
     xrun_events_dropped: Arc<AtomicU64>,
     /// Output state (shared with the mixer).
     output_frames_written: Arc<AtomicU64>,
@@ -233,7 +233,7 @@ impl StateServer {
             started_at: Instant::now(),
             socket_path,
             inputs,
-            xrun_events_dropped: Arc::clone(&mixer.xrun_events_dropped),
+            xrun_events_dropped: mixer.xrun.dropped(),
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
             output_delay_frames: Arc::clone(&mixer.output_delay_frames),

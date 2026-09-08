@@ -163,8 +163,7 @@ fn run() -> Result<()> {
 
     // Bounded so the SCHED_FIFO mixer thread can never block on the xrun
     // writer's per-event fdatasync. See ADR-0254.
-    const XRUN_CHANNEL_CAPACITY: usize = 256;
-    let (xrun_tx, xrun_rx) = sync_channel(XRUN_CHANNEL_CAPACITY);
+    let (xrun_tx, xrun_rx) = sync_channel(mixer::EVENT_CHANNEL_CAPACITY);
     let xrun_log_path = config.xrun_log_path.clone();
     let xrun_writer = std::thread::Builder::new()
         .name("fanin-xrun-writer".into())
