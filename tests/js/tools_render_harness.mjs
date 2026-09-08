@@ -16,21 +16,14 @@
 // same "load the ESM source via new Function" trick dialog_harness.mjs uses.
 import { buildFunction } from "./_loader.mjs";
 
-// Drop `export { a as b };` re-export lines wholesale; strip the `export`
-// keyword off declarations. (A bare `export ` strip would leave an invalid
-// `{ a as b };` block from escape.js's escapeAttr alias.)
-const stripExports = [
-  [/^\s*export\s*\{[^}]*\}\s*;?\s*$/gm, ""],
-  [/\bexport\s+(?=function|const|let|class)/g, ""],
-];
 const stripImports = [/^\s*import\s.*$/gm, ""];
 
 const { toolRow, toolDetail, toolList } = buildFunction(
   [
-    { path: process.argv[2], rewrite: stripExports },
-    { path: process.argv[3], rewrite: [stripImports, ...stripExports] },
+    process.argv[2],
+    { path: process.argv[3], rewrite: [stripImports] },
   ],
-  { returns: ["toolRow", "toolDetail", "toolList"] },
+  { stripExports: true, returns: ["toolRow", "toolDetail", "toolList"] },
 )();
 globalThis.location = new URL("http://jts.local/assistant/tools/pack/spotify/");
 
