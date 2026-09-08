@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -1193,7 +1194,7 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     assert missing["producer_needs_more_than_this_round"] is False
     assert missing["path"] == str(round_dir / "directivity.json")
     # The producer it named writes the artifact it named as missing.
-    assert cli.main(missing["produced_by"].split()[1:]) == 0
+    assert cli.main(shlex.split(missing["produced_by"])[1:]) == 0
     assert Path(missing["path"]).is_file()
 
     # A view whose subcommand takes MORE than this round says so, and places
@@ -1201,9 +1202,9 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     # grades the TARGET. What is left in brackets is what no inventory of one
     # round can fill, and running it without that round argparse rejects.
     multi = rows["frozen_reference.json"]
-    assert multi["produced_by"] == (
-        f"jasper-round-views frozen <other-round> {round_dir}"
-    )
+    assert shlex.split(multi["produced_by"]) == [
+        "jasper-round-views", "frozen", "<other-round>", str(round_dir),
+    ]
     assert multi["producer_needs_more_than_this_round"] is True
     with pytest.raises(SystemExit):
         cli.main(["frozen", str(round_dir)])
@@ -3021,3 +3022,29 @@ def test_findings_answers_a_round_that_banked_none_rather_than_refusing(
     assert set(answer["phases"].values()) == {None}
     assert (answer["findings"], answer["mechanisms"]) == (0, [])
     assert answer["echo_band_hz"] is None
+
+
+def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, capsys):
+    from jasper.cli.round_views import main, build_parser
+
+    round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", position_curves={
+        "seat": ("onax", _flat_curve()),
+    })
+    _bank_verify_measured(round_dir, measured_db=_flat_curve())
+    profile = round_dir / "applied-profile.json"
+    profile.write_text("{}")
+    assert main(["inventory", str(round_dir), "--out", "-"]) == 0
+    rows = {row["artifact"]: row for row in json.loads(capsys.readouterr().out)["artifacts"]}
+    command = shlex.split(rows["directivity.json"]["next_command"])
+    assert command == ["jasper-round-views", "directivity", str(round_dir)]
+    assert main(command[1:]) == 0
+    assert (round_dir / "directivity.json").is_file()
+    distortion = rows["harmonic_distortion.json"]
+    args = build_parser().parse_args(shlex.split(distortion["next_command"])[1:])
+    assert args.bundle_dir == round_dir / "bundle/sess1"
+    assert args.state == round_dir / "state.json"
+    assert args.applied_profile == profile
+    assert distortion["required_inputs"] == ["<ring>"]
+    assert rows["directivity.json"]["required_inputs"] == []
+    assert rows[POSITION_CYCLE_FILENAME]["next_command"] is None
+    assert rows[POSITION_CYCLE_FILENAME]["repair_reason"] == "banked_pose_index_missing"
