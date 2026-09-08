@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import wave
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,15 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_KINDS,
     UNCERTAINTY_RANDOM,
 )
+from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading
+from jasper.audio_measurement.program import (
+    FrequencyBand, RoleBand, build_measure_program, render_program_pcm, write_program_wav,
+)
+from jasper.audio_measurement.program_analysis import (
+    MeasurementGeometry, MeasurementPriors, analysis_diagnostic_summary, analyze_program_capture,
+)
+from jasper.active_speaker.crossover_v2.programs import pilot_gains
 from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 from jasper.cli._refusal import EXIT_REFUSED
 
@@ -531,18 +540,6 @@ def _write_applied_profile(tmp_path: Path, *, fc_hz: float = 1648.7) -> Path:
 
 
 def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
-    """The one seam `_scope_captures` cannot refuse is at least auditable.
-
-    Nothing checks that the ``--state`` belongs to the round the scope selects:
-    the state's id is a CAPTURE id and the ring stamps a BUNDLE id, two
-    namespaces with no banked mapping between them, so a mismatched pair
-    publishes a wrong drive through every gate cleanly. Recording the state's
-    own id does not refuse that — it makes it checkable afterwards, which is
-    the honest thing available until a capture banks its own program_id.
-
-    Pinned on both halves: the writer resolves it, and the packet carries it
-    (a recorded fact with no reader is not an audit trail).
-    """
     assert he._state_capture_session_id({"session_id": "wired-abc"}) == "wired-abc"
     # Absent, empty, and non-string all resolve to None rather than to a value
     # a reader might compare against something.
@@ -1040,7 +1037,7 @@ def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
     assert refusal.value.detail["dumps_dir"] == ring.name
 
 
-def test_the_ring_is_scoped_to_this_round_and_deduplicated_by_content(tmp_path):
+def test_the_ring_is_scoped_before_valid_capture_deduplication(tmp_path):
     """A rolling ring can hold another round's captures, and re-analyses of one."""
     ring = _ring(tmp_path, [
         ("1_measure_a", "aaa", "mine"),
@@ -1051,12 +1048,12 @@ def test_the_ring_is_scoped_to_this_round_and_deduplicated_by_content(tmp_path):
 
     captures, scope = he._scope_captures(he._bind_measure_captures(ring), "mine")
 
-    assert [capture["wav_sha256"] for capture in captures] == ["aaa", "ddd"]
+    assert [capture["wav_sha256"] for capture in captures] == ["aaa", "aaa", "ddd"]
     assert scope["session_id"] == "mine"
     # The scope reports the whole ring it chose from, not just what survived —
     # otherwise a reader cannot tell a one-capture round from a one-capture
     # SLICE of a busy ring.
-    assert scope["n_ring_captures"] == 3
+    assert scope["n_ring_captures"] == 4
 
 
 def test_an_unscoped_ring_holding_several_sessions_refuses_instead_of_pooling(tmp_path):
@@ -1142,8 +1139,7 @@ def test_an_empty_ring_is_not_an_ambiguous_one(tmp_path):
     assert scope["session_id"] is None
 
 
-def test_a_sidecar_with_no_wav_beside_it_is_skipped(tmp_path):
-    """The ring rolls WAVs off before sidecars; a bare sidecar is not a capture."""
+def test_a_sidecar_with_no_wav_stays_available_for_the_omission_record(tmp_path):
     ring = tmp_path / "dumps"
     (ring / "sidecar").mkdir(parents=True)
     (ring / "wav").mkdir()
@@ -1151,7 +1147,10 @@ def test_a_sidecar_with_no_wav_beside_it_is_skipped(tmp_path):
         "phase": "measure", "wav_sha256": "aaa",
     }))
 
-    assert he._bind_measure_captures(ring) == []
+    captures = he._bind_measure_captures(ring)
+    assert len(captures) == 1
+    assert captures[0]["take_id"] == "1_measure_a"
+    assert not captures[0]["wav"].exists()
 
 
 def test_a_null_reading_never_reaches_json_as_a_number():
@@ -1342,7 +1341,13 @@ def test_reading_a_capture_ring_never_raises_on_a_hand_edited_sidecar(tmp_path):
     (ring / "sidecar" / "2_measure_b.json").write_text(json.dumps(["a list"]))
     (ring / "sidecar" / "3_measure_c.json").write_text(json.dumps({"phase": 7}))
 
-    assert he._bind_measure_captures(ring) == []
+    omissions = []
+    captures = he._bind_measure_captures(ring, unscoped_omissions=omissions)
+    assert captures == []
+    assert omissions == [
+        {"sidecar": f"{index}_measure_{letter}.json", "reason": "sidecar_malformed"}
+        for index, letter in enumerate("abc", 1)
+    ]
 
 
 def test_a_median_over_nothing_is_nan_not_zero():
@@ -1379,6 +1384,12 @@ def test_a_capture_is_decoded_at_the_width_its_container_declares(
         writer.writeframes(struct.pack({2: "<4h", 4: "<4i"}[width], *values))
 
     assert np.allclose(he._read_mono(path), expected)
+    with pytest.raises(ValueError):
+        he._read_mono(path, sample_rate_hz=44_100)
+    truncated = tmp_path / "truncated.wav"
+    truncated.write_bytes(path.read_bytes()[:-width])
+    with pytest.raises(ValueError):
+        he._read_mono(truncated)
 
     eight = tmp_path / "unsupported.wav"
     with wave.open(str(eight), "wb") as writer:
@@ -1422,3 +1433,188 @@ def test_the_sign_convention_comes_from_the_mic_registry(calibration_id):
     assert he._sign_convention("vendor-not_a_registered_model-abc") == (
         DEFAULT_SIGN_CONVENTION
     )
+
+
+@pytest.fixture
+def harmonic_capture(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    round_dir = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
+    bands = he_bands()
+    role_bands = tuple(RoleBand(role, i, FrequencyBand(*band)) for i, (role, band) in enumerate(bands.items()))
+
+    def compose(gain):
+        gains = {"woofer": gain, "tweeter": gain - 10.0}
+        program = build_measure_program(
+            gains, role_bands, downstream_gain_db=-20.0,
+            leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role="woofer",
+            courtesy_prelude=False,
+        )
+        return program, {"session_id": round_dir.name, "gain_plan_db": gains,
+                         "candidate": {"program_id": program.program_id}}
+
+    program, state = compose(-16.0)
+    ring = tmp_path / "ring"
+    (ring / "sidecar").mkdir(parents=True)
+    (ring / "wav").mkdir()
+    wav = ring / "wav/1_measure_a.wav"
+    samples = np.pad(render_program_pcm(program).sum(axis=1).astype(float) * 0.1, (24000, 24000))
+    with wave.open(str(wav), "wb") as writer:
+        writer.setparams((1, 4, 48000, len(samples), "NONE", "not compressed"))
+        writer.writeframes((samples * 2**31).astype("<i4").tobytes())
+    diagnostic = analysis_diagnostic_summary(analyze_program_capture(
+        program, he._read_mono(wav), 48000, geometry=MeasurementGeometry(),
+        priors=MeasurementPriors(crossover_fc_hz=1800.0),
+    ))
+    stimulus = tmp_path / "stimulus.wav"
+    write_program_wav(stimulus, program)
+    sidecar = ring / "sidecar/1_measure_a.json"
+    document = {
+        "phase": "measure", "take_id": "take-a", "position_deg": 0,
+        "wav_sha256": sha256_file(wav), "diagnostic": diagnostic,
+        "jts_session_identity": {"session_id": "c2a1812b849e",
+                                 "aliases": {"capture_session_id": round_dir.name}},
+        "provenance": {"stimulus": {"program_id": program.program_id,
+                                     "wav_sha256": sha256_file(stimulus)}},
+    }
+    sidecar.write_text(json.dumps(document))
+    profile = _write_applied_profile(tmp_path, fc_hz=1800.0)
+    monkeypatch.setattr(he, "_DOWNSTREAM_GRID_DB", (-20.0,))
+
+    def read(supplied_state=state, *, scope="c2a1812b849e", output_dir=round_dir):
+        return he.read_round_harmonics(output_dir, ring, supplied_state, bands,
+                                       session_id=scope, applied_profile_path=profile)
+
+    return read, compose, sidecar, wav, document
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("program", "stimulus_program_mismatch"),
+    ("state", "capture_session_mismatch"),
+    ("capture", "capture_session_mismatch"),
+    ("stimulus", "stimulus_wav_mismatch"),
+])
+def test_harmonic_drive_requires_this_takes_program_and_source(harmonic_capture, fault, reason):
+    read, compose, sidecar, wav, document = harmonic_capture
+    original = read()
+    assert original["captures"]["n_read"] == 1
+    assert original["captures"]["read"][0]["identity"]["program_id_status"] == "matched"
+    assert original["captures"]["read"][0]["fidelity_fields_compared"] == 5
+    changed_program, state = compose(-12.0 if fault == "program" else -16.0)
+    if fault == "program":
+        readings, failures, _, compared = he._read_one_capture(
+            changed_program, he._read_mono(wav), document,
+            orders=ORDERS, calibration=None, fc_hz=1800.0,
+        )
+        assert failures == [] and compared == 5
+        old_drive = next(row for row in original["roles"] if row["role"] == "woofer")["drive"]
+        new_drive = next(row for row in readings if row.role == "woofer").drive
+        assert new_drive.stimulus_peak_dbfs - old_drive["stimulus_peak_dbfs"] == pytest.approx(4.0)
+    elif fault == "state":
+        state["session_id"] = "capture-other"
+    elif fault == "capture":
+        document["jts_session_identity"]["aliases"]["capture_session_id"] = "capture-other"
+    else:
+        document["provenance"]["stimulus"]["wav_sha256"] = "f" * 64
+    sidecar.write_text(json.dumps(document))
+    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
+        read(state)
+    assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
+    assert refused.value.evidence["refused"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("fault,reason", [("changed", "capture_wav_mismatch"), ("missing", "capture_wav_missing")])
+def test_harmonics_keeps_good_takes_and_names_lost_or_changed_wavs(harmonic_capture, fault, reason):
+    read, _, sidecar, wav, document = harmonic_capture
+    other_sidecar = sidecar.with_name("2_measure_b.json")
+    other_wav = wav.with_name("2_measure_b.wav")
+    other = {**document, "take_id": "take-b", "position_deg": 15}
+    other_sidecar.write_text(json.dumps(other))
+    if fault == "changed":
+        other_wav.write_bytes(wav.read_bytes() + b"changed")
+    artifact = read()
+    assert artifact["captures"]["n_read"] == 1
+    assert artifact["captures"]["n_refused"] == 1
+    omitted = artifact["captures"]["refused"][0]
+    assert (omitted["take_id"], omitted["position_deg"], omitted["reason"]) == ("take-b", 15, reason)
+    assert all(block["rows"] for block in artifact["roles"])
+
+
+def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic_capture):
+    read, _, sidecar, _, document = harmonic_capture
+    bound = read()
+    document.pop("provenance")
+    document["jts_session_identity"].pop("aliases")
+    sidecar.write_text(json.dumps(document))
+    legacy = read()
+    assert legacy["captures"]["n_read"] == 1
+    assert legacy["program"]["solved_downstream_gain_db"] is None
+    for original, historical in zip(bound["roles"], legacy["roles"]):
+        assert historical["rows"] == original["rows"]
+        assert historical["drive"]["status"] == "unknown"
+        assert historical["drive"]["stimulus_peak_dbfs"] is None
+        assert historical["drive"]["effective_peak_dbfs"] is None
+        assert historical["drive"]["capture_peak_dbfs"] == original["drive"]["capture_peak_dbfs"]
+
+
+@pytest.mark.parametrize("scope", ["c2a1812b849e", None])
+def test_harmonics_accounts_for_unscoped_omissions_and_duplicate_takes(harmonic_capture, scope, monkeypatch):
+    read, _, sidecar, wav, document = harmonic_capture
+    for stem, take_id in (("2_measure_duplicate", "take-copy"), ("3_measure_missing", "take-lost")):
+        sidecar.with_name(f"{stem}.json").write_text(json.dumps({**document, "take_id": take_id}))
+    wav.with_name("2_measure_duplicate.wav").write_bytes(wav.read_bytes())
+    sidecar.with_name("4_unknown.json").write_text("{bad json")
+    unreadable = sidecar.with_name("5_unknown.json")
+    unreadable.write_text("{}")
+    original_read = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == unreadable:
+            raise PermissionError()
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    expected_unscoped = [
+        {"sidecar": "4_unknown.json", "reason": "sidecar_malformed"},
+        {"sidecar": "5_unknown.json", "reason": "sidecar_unreadable"},
+    ]
+    if scope is not None:
+        sidecar.with_name("6_measure_other_round.json").write_text(json.dumps({
+            **document, "jts_session_identity": {"session_id": "other-round"},
+        }))
+        unattributed = {key: value for key, value in document.items() if key != "jts_session_identity"}
+        sidecar.with_name("7_measure_unattributed.json").write_text(json.dumps(unattributed))
+        expected_unscoped.append({"sidecar": "7_measure_unattributed.json", "reason": "session_identity_missing"})
+    artifact = read(scope=scope)
+    captures = artifact["captures"]
+    assert captures["n_read"] == captures["n_refused"] == captures["n_skipped"] == 1
+    assert captures["refused"][0]["take_id"] == "take-lost"
+    assert captures["refused"][0]["reason"] == "capture_wav_missing"
+    assert captures["skipped"][0]["take_id"] == "take-copy"
+    assert captures["skipped"][0]["duplicate_of"] == "take-a"
+    assert captures["skipped"][0]["reason"] == "duplicate_wav"
+    assert captures["n_unscoped_omissions"] == len(expected_unscoped)
+    assert captures["unscoped_omissions"] == expected_unscoped
+    assert captures["scope"]["session_id"] == "c2a1812b849e"
+    assert len(artifact["roles"]) == 2
+
+
+@pytest.mark.parametrize("capture_identity", ["alias", "capture_session_id", "missing"])
+def test_harmonics_output_directory_name_is_not_capture_identity(harmonic_capture, tmp_path, capture_identity):
+    read, _, sidecar, wav, document = harmonic_capture
+    capture_session = document["jts_session_identity"]["aliases"]["capture_session_id"]
+    if capture_identity != "alias":
+        document["jts_session_identity"].pop("aliases")
+        if capture_identity == "capture_session_id":
+            document["capture_session_id"] = capture_session
+    sidecar.write_text(json.dumps(document))
+    original = read()
+    renamed = tmp_path / "renamed-analysis-output"
+    renamed.mkdir()
+    output = renamed / "existing-output.json"
+    output.write_text(json.dumps(original))
+    assert read(output_dir=renamed) == {**original, "round_dir": renamed.name}
+    assert original["captures"]["n_read"] == 1
+    assert all(role["drive"]["status"] == "program_declared" for role in original["roles"])
+    assert sha256_file(wav) == document["wav_sha256"]
+    assert json.loads(sidecar.read_text()) == document
+    assert json.loads(output.read_text()) == original
