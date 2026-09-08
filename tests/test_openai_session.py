@@ -30,6 +30,7 @@ from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
+    request_planned_reopen,
     run_reconnect_with_backoff,
 )
 from jasper.voice.openai_session import (
@@ -60,11 +61,27 @@ class _FakeConn:
         self._inbox: asyncio.Queue = asyncio.Queue()
         self.sent: list[dict] = []
         self.closed = False
+        self.response_number = 0
+        self.commit_number = 0
+        self.response_id = "resp_1"
+        self.item_id = "msg_1"
 
     async def send(self, event: dict) -> None:
         self.sent.append(event)
         if event["type"] == "session.update":
             self._inbox.put_nowait({"type": "session.updated", "session": event["session"]})
+
+        elif event["type"] == "input_audio_buffer.commit":
+            self.commit_number += 1
+            self.feed({"type": "input_audio_buffer.committed", "item_id": f"user_{self.commit_number}"})
+        elif event["type"] == "response.create":
+            self.response_number += 1
+            self.response_id = f"resp_{self.response_number}"
+            self.item_id = f"msg_{self.response_number}"
+            self.feed({"type": "response.created", "response": {"id": self.response_id}})
+            self.feed({"type": "response.output_item.added", "item": {
+                "id": self.item_id, "type": "message", "role": "assistant",
+            }})
 
     def __aiter__(self):
         return self
@@ -82,6 +99,18 @@ class _FakeConn:
 
     # Test helpers.
     def feed(self, event: dict) -> None:
+        event = dict(event)
+        etype = event["type"]
+        if etype.startswith("response."):
+            if etype in ("response.done", "response.created"):
+                event["response"] = {"id": self.response_id, "status": "completed", **event["response"]}
+            else:
+                event.setdefault("response_id", self.response_id)
+                event.setdefault("item_id", self.item_id)
+                if etype == "response.output_item.added":
+                    self.item_id = event["item"]["id"]
+        elif etype.startswith("conversation.item.input_audio_transcription."):
+            event.setdefault("item_id", "user_1")
         self._inbox.put_nowait(event)
 
     def feed_error(self, exc: BaseException) -> None:
@@ -159,6 +188,13 @@ async def _wait_until(predicate, timeout: float = 2.0):
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"predicate never became true within {timeout}s")
+
+
+async def _begin_response(conn, wire):
+    turn = conn._active_turn
+    await turn.end_input()
+    await _wait_until(lambda: turn._response_id is not None)
+    wire.sent.clear()
 
 
 def _b64(pcm: bytes) -> str:
@@ -517,7 +553,7 @@ async def test_send_text_context_failure_marks_turn_lost(
         async def fail(_text: str) -> None:
             raise OSError("socket closed")
 
-        monkeypatch.setattr(conn, "_send_text_context", fail)
+        monkeypatch.setattr(factory.conns[0], "send", fail)
         await turn.send_text_context("context")
 
         assert turn.turn_lost() is True
@@ -615,6 +651,7 @@ async def test_truncate_falls_back_to_last_assistant_item_id():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         # The connection's receive loop sets _last_assistant_item_id from
         # this event in production.
         sess.feed({
@@ -896,6 +933,7 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         # Fake server response: one audio chunk + done.
         sess.feed({
             "type": "response.output_audio.delta",
@@ -942,6 +980,7 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         sess.feed({
             "type": "response.output_audio_transcript.delta",
             "delta": "Transport ",
@@ -973,6 +1012,8 @@ async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
     await conn.start(registry, "")
     try:
         sess = factory.conns[0]
+        await conn.acquire_turn()
+        await _begin_response(conn, sess)
         sess.feed({
             "type": "conversation.item.input_audio_transcription.completed",
             "transcript": "turn on the kitchen lights",
@@ -997,6 +1038,7 @@ async def test_user_audio_transcript_is_exposed_on_active_turn(caplog):
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         sess.feed({
             "type": "conversation.item.input_audio_transcription.completed",
             "transcript": "turn on the kitchen lights",
@@ -1017,6 +1059,7 @@ async def test_user_audio_transcript_dedupes_progressive_completions():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         for transcript in (
             "Where's the next?",
             "Where's the next bus?",
@@ -1042,6 +1085,7 @@ async def test_user_audio_transcript_preserves_distinct_completions():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         for transcript in (
             "turn on the kitchen lights",
             "set them to fifty percent",
@@ -1067,6 +1111,7 @@ async def test_audio_chunks_include_openai_provider_item_id():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         sess.feed({
             "type": "response.output_item.added",
             "item": {"type": "message", "id": "msg_abc123"},
@@ -1113,6 +1158,7 @@ async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         for payload in (b"chunk_a", b"chunk_b", b"chunk_c"):
             sess.feed({
                 "type": "response.output_audio.delta",
@@ -1169,6 +1215,7 @@ async def test_function_call_round_trip():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
 
         # Server fires response.done containing a function_call.
         sess.feed({
@@ -1245,6 +1292,7 @@ async def test_unserializable_tool_result_does_not_kill_the_turn():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
 
         sess.feed({
             "type": "response.done",
@@ -1325,6 +1373,7 @@ async def test_response_create_fired_only_once_per_tool_round_with_multiple_call
     try:
         sess = factory.conns[0]
         await conn.acquire_turn()
+        await _begin_response(conn, sess)
 
         sess.feed({
             "type": "response.done",
@@ -1373,107 +1422,6 @@ async def test_response_create_fired_only_once_per_tool_round_with_multiple_call
         await conn.stop()
 
 
-async def test_function_call_after_turn_aborted_sends_cancelled_output():
-    """If the turn is released (e.g. no-speech-detected abort, hard cap)
-    BEFORE the model's response.done arrives, and that response carries
-    function_calls, the dispatcher must still send synthetic
-    ``function_call_output`` items so server-side conversation history
-    has matching outputs for each call. Without this, the next turn
-    sees a dangling function_call and the model responds with confused
-    fallbacks like "It's still starting up" — even when the user is
-    asking something brand new.
-
-    Repro of the live bug: voice 'play X' fired wake → 3-sec context-
-    reset reconnect made the turn miss the user's speech → VAD aborted
-    → response.done arrived 1s later carrying the model's spotify_play
-    function_call → dispatcher early-returned because turn was None →
-    the call sat unanswered in conversation history → next 'play X'
-    attempt got 'It's still starting up' as the model's response.
-
-    Two invariants this test enforces:
-      1. Synthetic ``function_call_output`` is sent for every dangling
-         call_id, with an "error" payload signalling cancellation.
-      2. NO ``response.create`` is fired afterwards — we don't want the
-         model to generate an audio answer that has no turn to play
-         through.
-    """
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    invoked = []
-
-    @tool()
-    def spotify_play(query: str = "") -> dict:
-        """."""
-        invoked.append(query)
-        return {"ok": True}
-
-    registry.register(spotify_play)
-
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        # Simulate the daemon aborting the turn (no-speech detected,
-        # connection lost, etc.) BEFORE response.done arrives.
-        await turn.release()
-        # Keep this assertion scoped to the late dangling call below,
-        # independent of any teardown bookkeeping release() performs.
-        sess.sent.clear()
-
-        # Server's response.done lands AFTER the turn is gone.
-        sess.feed({
-            "type": "response.done",
-            "response": {
-                "id": "resp_1",
-                "usage": {"input_tokens": 100, "output_tokens": 8},
-                "output": [
-                    {
-                        "type": "function_call",
-                        "call_id": "call_dangling",
-                        "name": "spotify_play",
-                        "arguments": json.dumps({"query": "Release Radar"}),
-                    },
-                ],
-            },
-        })
-
-        # The synthetic cancelled output must land.
-        await _wait_until(
-            lambda: any(
-                e.get("type") == "conversation.item.create"
-                and e.get("item", {}).get("type") == "function_call_output"
-                and e.get("item", {}).get("call_id") == "call_dangling"
-                for e in sess.sent
-            ),
-            timeout=2.0,
-        )
-
-        # Tool was NOT actually invoked — we don't want the side effect
-        # (e.g. starting playback the user never confirmed).
-        assert invoked == []
-
-        # The output payload signals cancellation, so the model on the
-        # next turn doesn't "resume" the dangling call.
-        outputs = [
-            e for e in sess.sent
-            if e.get("type") == "conversation.item.create"
-            and e.get("item", {}).get("type") == "function_call_output"
-        ]
-        assert len(outputs) == 1
-        body = json.loads(outputs[0]["item"]["output"])
-        assert "error" in body
-
-        # No response.create — we deliberately don't want the model to
-        # generate an audio answer that nothing's listening for.
-        creates = [e for e in sess.sent if e.get("type") == "response.create"]
-        assert creates == [], (
-            f"expected zero response.create after sending cancelled "
-            f"function_call_output, got {len(creates)}: {creates}"
-        )
-    finally:
-        await conn.stop()
-
-
 async def test_tool_call_response_done_does_NOT_complete_turn():
     """A tool-using turn produces TWO response.done events from
     OpenAI: one closing the tool-call response (no audio), then one
@@ -1502,6 +1450,7 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         assert turn.server_turn_complete() is False
 
         # ROUND 1: server emits response.done containing the
@@ -1629,6 +1578,7 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         anchor_before = turn.last_activity_at()
 
         # Park briefly so the loop clock advances measurably.
@@ -1678,6 +1628,7 @@ async def test_unknown_tool_call_returns_error_payload():
     try:
         sess = factory.conns[0]
         await conn.acquire_turn()
+        await _begin_response(conn, sess)
         sess.feed({
             "type": "response.done",
             "response": {
@@ -2771,8 +2722,7 @@ async def test_cancelling_a_long_backoff_unwinds_at_once():
 
 
 
-@pytest.mark.parametrize("ask", ["end_input", None])
-async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
+async def test_first_chunk_event_reports_latency_since_the_ask(caplog):
     """`since_end_input_ms` is the provider's own latency — the interval
     between asking for a response and the first audio of it coming back.
     The ask is the daemon's `end_input()`; the field is absent only when
@@ -2785,9 +2735,8 @@ async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
+        await _begin_response(conn, sess)
         await asyncio.sleep(0.01)
-        if ask == "end_input":
-            await turn.end_input()
         sess.feed({
             "type": "response.output_audio.delta",
             "delta": _b64(b"chunk"),
@@ -2798,12 +2747,7 @@ async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
         fields = event_fields(caplog, "turn.first_chunk")
         assert fields["provider"] == "openai"
         assert int(fields["since_turn_start_ms"]) >= 10
-        if ask is None:
-            assert "since_end_input_ms" not in fields
-        else:
-            assert 0 <= int(fields["since_end_input_ms"]) <= int(
-                fields["since_turn_start_ms"]
-            )
+        assert 0 <= int(fields["since_end_input_ms"]) <= int(fields["since_turn_start_ms"])
         await turn.release()
     finally:
         await conn.stop()
@@ -2926,5 +2870,385 @@ async def test_dropping_pending_audio_drains_behind_the_sentinel():
         assert turn.drop_pending_audio() == 1
         played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
         assert played == []
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+async def test_stale_response_and_input_events_cannot_reach_a_new_turn(conn_cls):
+    factory = _FakeConnectFactory()
+    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    calls = []
+    registry = ToolRegistry()
+
+    @tool()
+    def action() -> dict:
+        """Run an action."""
+        calls.append(True)
+        return {}
+
+    registry.register(action)
+    await conn.start(registry, "")
+    try:
+        wire = factory.conns[0]
+        old = await conn.acquire_turn()
+        await _begin_response(conn, wire)
+        done = {"type": "response.done", "response": {
+            "id": "resp_1", "status": "completed", "output": [],
+        }}
+        await conn._dispatch_event(done["type"], done)
+        await old.release()
+        fresh = await conn.acquire_turn()
+        await _begin_response(conn, wire)
+        for event in (
+            {"type": "response.output_audio.delta", "response_id": "resp_1", "item_id": "msg_1", "delta": _b64(b"old")},
+            {"type": "response.output_audio.delta", "response_id": "resp_2", "item_id": "msg_1", "delta": _b64(b"wrong item")},
+            {"type": "conversation.item.input_audio_transcription.completed", "item_id": "user_1", "transcript": "old"},
+            done,
+            {"type": "response.done", "response": {"id": "resp_1", "status": "completed", "output": [
+                {"type": "function_call", "call_id": "old_call", "name": "action", "arguments": "{}"},
+            ]}},
+        ):
+            await conn._dispatch_event(event["type"], event)
+        assert fresh.chunks_received() == 0
+        assert not fresh.server_turn_complete()
+        assert not fresh.turn_lost()
+        assert fresh.capture() is None
+        assert calls == []
+        assert wire.sent == []
+        await old.cancel_response("late")
+        await old.truncate_assistant_audio("msg_1", 20)
+        assert wire.sent == []
+        await conn._dispatch_event("response.output_audio.delta", {
+            "response_id": "resp_2", "item_id": "msg_2", "delta": _b64(b"fresh"),
+        })
+        assert (await anext(fresh.audio_out_chunks())).pcm == b"fresh"
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled", "incomplete", "in_progress"])
+@pytest.mark.parametrize("with_tools", [False, True])
+async def test_response_status_controls_completion_and_tool_execution(conn_cls, status, with_tools):
+    factory = _FakeConnectFactory()
+    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    registry = ToolRegistry()
+    calls = []
+
+    @tool()
+    def action() -> dict:
+        """Run an action."""
+        calls.append(True)
+        return {}
+
+    registry.register(action)
+    await conn.start(registry, "")
+    try:
+        wire = factory.conns[0]
+        turn = await conn.acquire_turn()
+        await _begin_response(conn, wire)
+        event = {"type": "response.done", "response": {
+            "id": "resp_1", "status": status,
+            "usage": {"input_tokens": 2, "output_tokens": 3},
+            "output": [{"type": "function_call", "call_id": "call_1", "name": "action", "arguments": "{}"}] if with_tools else [],
+        }}
+        await conn._dispatch_event("response.done", event)
+        await conn._dispatch_event("response.done", event)
+        assert calls == ([True] if status == "completed" and with_tools else [])
+        assert turn.server_turn_complete() is (status == "completed" and not with_tools)
+        assert turn.turn_lost() is (status in ("failed", "cancelled", "incomplete"))
+        assert turn.usage().input_tokens == (0 if status == "in_progress" else 2)
+        assert sum(e["type"] == "response.create" for e in wire.sent) == len(calls)
+    finally:
+        await conn.stop()
+
+
+async def test_requested_cancellation_is_terminal_without_a_failure():
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        await _begin_response(conn, factory.conns[0])
+        await turn.cancel_response("barge_in")
+        await turn.cancel_response("again")
+        await conn._dispatch_event("response.done", {"response": {"id": "resp_1", "status": "cancelled"}})
+        assert turn.server_turn_complete()
+        assert not turn.turn_lost()
+        assert sum(e["type"] == "response.cancel" for e in factory.conns[0].sent) == 1
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+async def test_release_during_tool_await_discards_results_and_next_tools(conn_cls):
+    factory = _FakeConnectFactory()
+    conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
+    registry = ToolRegistry()
+    entered, resume = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    @tool()
+    async def action() -> dict:
+        """Run an action."""
+        calls.append(True)
+        entered.set()
+        await resume.wait()
+        return {"ok": True}
+
+    registry.register(action)
+    await conn.start(registry, "")
+    dispatch = None
+    try:
+        wire = factory.conns[0]
+        old = await conn.acquire_turn()
+        await _begin_response(conn, wire)
+        dispatch = asyncio.create_task(conn._dispatch_event("response.done", {"response": {
+            "id": "resp_1", "status": "completed", "output": [
+                {"type": "function_call", "call_id": f"call_{i}", "name": "action", "arguments": "{}"}
+                for i in range(2)
+            ],
+        }}))
+        await asyncio.wait_for(entered.wait(), 1)
+        await old.release()
+        fresh = await conn.acquire_turn()
+        fresh_wire = factory.conns[-1]
+        assert fresh_wire is not wire
+        baseline = list(fresh_wire.sent)
+        resume.set()
+        await dispatch
+        assert calls == [True]
+        assert fresh_wire.sent == baseline
+        assert not any(e.get("item", {}).get("type") == "function_call_output" for e in wire.sent)
+        assert not any(e["type"] == "response.create" for e in wire.sent)
+        assert not fresh.server_turn_complete()
+    finally:
+        resume.set()
+        if dispatch is not None:
+            await dispatch
+        await conn.stop()
+
+
+@pytest.mark.parametrize("blocked_event", ["input_audio_buffer.append", "input_audio_buffer.commit"])
+async def test_release_fences_a_send_already_waiting_or_writing(blocked_event):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        wire = factory.conns[0]
+        old = await conn.acquire_turn()
+        entered, resume = asyncio.Event(), asyncio.Event()
+        original_send = wire.send
+
+        async def send(event):
+            if event["type"] == blocked_event:
+                entered.set()
+                await resume.wait()
+            await original_send(event)
+
+        wire.send = send
+        sending = asyncio.create_task(old.send_audio(b"\x01\x00" * 1280) if blocked_event.endswith("append") else old.end_input())
+        await asyncio.wait_for(entered.wait(), 1)
+        release = asyncio.create_task(old.release())
+        await asyncio.sleep(0)
+        resume.set()
+        await asyncio.gather(sending, release)
+        assert not any(e["type"] == "response.create" for e in wire.sent)
+        assert wire.sent[-1]["type"] == "input_audio_buffer.clear"
+        fresh = await conn.acquire_turn()
+        fresh_wire = factory.conns[-1]
+        baseline = len(fresh_wire.sent)
+        await conn._send_lock.acquire()
+        late = asyncio.create_task(old.send_text_context("old"))
+        await asyncio.sleep(0)
+        conn._send_lock.release()
+        await late
+        await fresh.send_audio(b"\x02\x00" * 1280)
+        assert [e["type"] for e in fresh_wire.sent[baseline:]] == ["input_audio_buffer.append"]
+    finally:
+        await conn.stop()
+
+
+async def test_sdk_events_keep_audio_item_identity():
+    from openai.types.realtime import ResponseAudioDeltaEvent, ResponseOutputItemAddedEvent
+
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        await _begin_response(conn, factory.conns[0])
+        for item_id in ("first", "second"):
+            event = ResponseOutputItemAddedEvent.model_validate({
+                "type": "response.output_item.added", "event_id": item_id,
+                "response_id": "resp_1", "output_index": 0,
+                "item": {"id": item_id, "type": "message", "role": "assistant", "content": []},
+            })
+            await conn._dispatch_event(event.type, event)
+        audio = ResponseAudioDeltaEvent.model_validate({
+            "type": "response.output_audio.delta", "event_id": "audio",
+            "response_id": "resp_1", "item_id": "first", "output_index": 0,
+            "content_index": 0, "delta": _b64(b"\0" * 4800),
+        })
+        await conn._dispatch_event(audio.type, audio)
+        chunk = await anext(turn.audio_out_chunks())
+        assert chunk.provider_item_id == "first"
+        assert chunk.pcm == b"\0" * 4800
+        await turn.truncate_assistant_audio(chunk.provider_item_id, 50)
+        assert factory.conns[0].sent[-1] == {
+            "type": "conversation.item.truncate", "item_id": "first", "content_index": 0, "audio_end_ms": 50,
+        }
+    finally:
+        await conn.stop()
+
+
+async def test_aborted_input_is_cleared_before_the_fresh_command():
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        wire = factory.conns[0]
+        buffered = bytearray()
+        committed = []
+        original_send = wire.send
+
+        async def send(event):
+            if event["type"] == "input_audio_buffer.append":
+                buffered.extend(base64.b64decode(event["audio"]))
+            elif event["type"] == "input_audio_buffer.clear":
+                buffered.clear()
+            elif event["type"] == "input_audio_buffer.commit":
+                committed.append(bytes(buffered))
+                buffered.clear()
+            await original_send(event)
+
+        wire.send = send
+        old = await conn.acquire_turn()
+        await old.send_audio(b"\x01\x00" * 1280)
+        assert buffered
+        await old.release()
+        fresh = await conn.acquire_turn()
+        command = b"\x02\x00" * 1280
+        await fresh.send_audio(command)
+        await fresh.end_input()
+        assert factory.conns == [wire]
+        assert committed == [_upsample_16k_to_24k(command, None)[0]]
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("pending_ack", [False, True])
+async def test_reconnect_discards_ownership_and_late_release(pending_ack):
+    conn, factory = _make_conn()
+    meter_events = []
+
+    class Meter:
+        def mark_started(self):
+            meter_events.append("start")
+
+        def mark_ended(self):
+            meter_events.append("end")
+
+    conn.set_billable_activity_meter(Meter())
+    await conn.start(ToolRegistry(), "")
+    try:
+        old_wire = factory.conns[0]
+        old = await conn.acquire_turn()
+        if pending_ack:
+            async def send_without_ack(event):
+                old_wire.sent.append(event)
+            old_wire.send = send_without_ack
+            await old.end_input()
+            await old.release()
+        else:
+            await _begin_response(conn, old_wire)
+            old_wire.feed_error(ConnectionError("lost"))
+            await _wait_until(lambda: len(factory.conns) == 2 and conn._connected_event.is_set())
+        fresh = await conn.acquire_turn()
+        fresh_wire = factory.conns[-1]
+        assert fresh_wire is not old_wire
+        assert meter_events == ["start", "end", "start"]
+        conn._deferred_reconnect.request()
+        await old.release()
+        assert conn._state is ConnectionState.IN_TURN
+        assert conn._deferred_reconnect.pending
+        assert meter_events == ["start", "end", "start"]
+        assert conn._pending_commit is None
+        assert conn._pending_response is None
+        for event in (
+            {"type": "response.created", "response": {"id": "old_pending"}},
+            {"type": "response.output_audio.delta", "response_id": "old_pending", "item_id": "old", "delta": _b64(b"old")},
+            {"type": "response.done", "response": {"id": "old_pending", "status": "completed"}},
+        ):
+            old_wire.feed(event)
+        await asyncio.sleep(0)
+        assert not fresh.server_turn_complete()
+        assert fresh.chunks_received() == 0
+        assert fresh.capture() is None
+        assert len(factory.conns) == 2
+    finally:
+        await conn.stop()
+
+
+async def test_release_cleanup_keeps_its_original_socket_during_reconnect():
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    resume = asyncio.Event()
+    try:
+        old_wire = factory.conns[0]
+        old = await conn.acquire_turn()
+        await _begin_response(conn, old_wire)
+        entered = asyncio.Event()
+        original_send = old_wire.send
+
+        async def send(event):
+            if event["type"] == "response.cancel":
+                entered.set()
+                await resume.wait()
+            await original_send(event)
+
+        old_wire.send = send
+        release = asyncio.create_task(old.release())
+        await asyncio.wait_for(entered.wait(), 1)
+        await conn._teardown_session()
+        opening = asyncio.create_task(conn._open_session())
+        await _wait_until(lambda: len(factory.conns) == 2)
+        resume.set()
+        await asyncio.gather(release, opening)
+        assert [e["type"] for e in factory.conns[-1].sent] == ["session.update"]
+        assert not conn.is_paused()
+        assert not conn._reconnect_event.is_set()
+    finally:
+        resume.set()
+        await conn.stop()
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+@pytest.mark.parametrize("ending", ["error", "closed"])
+async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending):
+    entered = asyncio.Event()
+    wires = []
+
+    class ClosingConnection(_FakeConn):
+        async def __anext__(self):
+            if self._inbox.empty():
+                entered.set()
+            try:
+                return await super().__anext__()
+            except asyncio.CancelledError:
+                if ending == "error":
+                    raise ConnectionError("socket closed during teardown") from None
+                raise StopAsyncIteration from None
+
+    def connect(**kwargs):
+        wire = ClosingConnection() if not wires else _FakeConn()
+        wires.append(wire)
+        return _FakeAsyncCM(wire)
+
+    conn = conn_cls(api_key="fake", connect_factory=connect, backoff_schedule=(0.0,))
+    await conn.start(ToolRegistry(), "")
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        request_planned_reopen(conn)
+        await _wait_until(lambda: conn._connected_event.is_set())
+        assert len(wires) == 2
+        assert not conn._reconnect_event.is_set()
     finally:
         await conn.stop()

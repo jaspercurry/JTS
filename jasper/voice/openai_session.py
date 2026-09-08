@@ -26,12 +26,10 @@ Manual VAD
   ``response.create()`` to flush audio and trigger inference.
 
 Tool calls
-  Registry produces flat OpenAI tool schemas via
-  ``registry.openai_tools()``. The model emits
-  ``response.function_call_arguments.done`` with the arguments as a
-  single JSON string; we ``json.loads`` it, dispatch the registered
-  callable, and reply with ``conversation.item.create`` of type
-  ``function_call_output`` plus a fresh ``response.create()``.
+  Completed responses carry function calls in response.output. Each
+  result is returned with conversation.item.create, followed by one
+  response.create for the round. All events and results retain their
+  turn owner until release.
 
 Session lifecycle
   60-minute hard cap, no resumption mechanism. When the cap or any drop
@@ -51,6 +49,7 @@ import logging
 import os
 import time as _time
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from jasper.log_event import log_event
 
@@ -59,7 +58,9 @@ if TYPE_CHECKING:
 
 from ..tools import dispatch_tool
 from ._base import BaseLiveConnection, BaseLiveTurn
-from ._supervisor import await_connected, failure_detail, request_unplanned_reopen
+from ._supervisor import (
+    await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
+)
 from .session import (
     AudioOutChunk,
     ConnectionState,
@@ -156,6 +157,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
 
     def __init__(self, conn: "OpenAIRealtimeConnection", started_at: float) -> None:
         super().__init__(conn, started_at)
+        self._conn: OpenAIRealtimeConnection = conn
         self._usage = {"input_tokens": 0, "output_tokens": 0}
         # Modality-aware breakdown accumulator. OpenAI Realtime emits
         # `response.usage.input_token_details.{audio,text,cached}_tokens`
@@ -185,6 +187,12 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # Whether `commit()` + `response.create()` has been sent; makes
         # `end_input` idempotent.
         self._committed = False
+        self._session = getattr(conn, "_conn", None)
+        self._response_id: str | None = None
+        self._response_item_ids: set[str] = set()
+        self._input_item_id: str | None = None
+        self._cancel_requested = False
+        self._tool_round_pending = False
         # Text transcript of the user audio / assistant audio streamed by
         # Realtime. Production still uses audio for interaction; the strings
         # are retained on the turn only so WakeLoop can write opt-in
@@ -221,8 +229,8 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             # frames belong to a turn that doesn't exist yet.
             return
         try:
-            await self._conn._send_audio_chunk(self, pcm_16khz_int16)
-            self._bytes_sent += len(pcm_16khz_int16)
+            if await self._conn._send_audio_chunk(self, pcm_16khz_int16):
+                self._bytes_sent += len(pcm_16khz_int16)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "openai turn: send_audio failed (%s: %s); turn lost",
@@ -235,7 +243,13 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         if self._released or self._turn_lost or self._committed:
             return
         try:
-            await self._conn._send_text_context(text)
+            await self._conn._send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }, turn=self)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "openai turn: send_text_context failed (%s: %s); turn lost",
@@ -285,16 +299,19 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         if not pcm_24khz:
             return
         b64 = base64.b64encode(pcm_24khz).decode("ascii")
+        self._committed = True
+        self._input_item_id = uuid4().hex
         try:
             await self._conn._send_event({
                 "type": "conversation.item.create",
                 "item": {
+                    "id": self._input_item_id,
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_audio", "audio": b64}],
                 },
-            })
-            await self._conn._send_event({"type": "response.create"})
+            }, turn=self)
+            await self._conn._send_event({"type": "response.create"}, turn=self)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "openai turn: submit_recorded_audio failed (%s: %s); turn lost",
@@ -304,7 +321,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             await self._audio_q.put(None)
             return
         self._bytes_sent += len(pcm_16khz_int16)
-        self._committed = True
 
     async def end_input(self) -> None:
         """Commit the user audio buffer and trigger a response.
@@ -330,7 +346,8 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             return
         self._released = True
         elapsed_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
-        await self._audio_q.put(None)
+        self.drop_pending_audio()
+        self._audio_q.put_nowait(None)
         # Close debug WAV if open. Always log the path so the user
         # can find which file goes with which turn.
         if self._debug_wav is not None:
@@ -343,19 +360,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             except Exception as e:  # noqa: BLE001
                 logger.warning("debug record close failed: %s", e)
             self._debug_wav = None
-        # If teardown races an already-committed response, best-effort cancel
-        # it so the server doesn't keep generating after local playback has
-        # gone away. No-speech aborts release an uncommitted input buffer; do
-        # not send response.cancel there, because the server has no active
-        # response and reports a noisy response_cancel_not_active error.
-        if self._committed and not self._server_turn_complete and not self._turn_lost:
-            try:
-                await self._conn._cancel_response()
-            except Exception as e:  # noqa: BLE001
-                logger.debug(
-                    "openai turn: release cancel ignored (%s: %s)",
-                    type(e).__name__, e,
-                )
         await self._conn._on_turn_released(self)
         assistant_text = self.assistant_transcript().strip()
         if assistant_text:
@@ -422,24 +426,15 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     # ``GrokRealtimeConnection``.
 
     async def cancel_response(self, reason: str) -> None:
-        """Stop the in-progress OpenAI response (the local/manual cancel).
-
-        Guard: `response.cancel` errors with `response_cancel_not_active`
-        when no response is generating, so only send while one is. The
-        "response in progress" predicate mirrors `release()`'s: the input
-        buffer is committed, the server hasn't completed the response, and
-        the connection is still up. Idempotent and never raises —
-        `_cancel_response()` swallows wire errors at DEBUG."""
-        if not (
-            self._committed
-            and not self._server_turn_complete
-            and not self._turn_lost
-        ):
-            # No active response — cancelling now would trip the server's
-            # noisy response_cancel_not_active error.
+        if self._released or self._turn_lost or not self._committed or self._cancel_requested:
             return
+        self._cancel_requested = True
         log_event(logger, "barge.cancel", reason=reason)
-        await self._conn._cancel_response()
+        if not self._server_turn_complete:
+            if self._tool_round_pending:
+                await self._on_response_done(None)
+            else:
+                await self._conn._cancel_response(self)
 
     async def truncate_assistant_audio(
         self, provider_item_id: str | None, audio_played_ms: int,
@@ -461,7 +456,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         rejects as out-of-range and which desyncs the conversation
         context. So a non-positive played-ms is a no-op + WARN, never a
         bytes-received guess. Idempotent and never raises."""
-        if self._turn_lost:
+        if self._released or self._turn_lost:
             return
         item_id = provider_item_id or self._last_assistant_item_id
         if not item_id:
@@ -509,7 +504,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 "item_id": item_id,
                 "content_index": 0,
                 "audio_end_ms": audio_end_ms,
-            })
+            }, turn=self)
         except Exception as e:  # noqa: BLE001
             log_event(
                 logger, "barge.truncate_failed",
@@ -520,7 +515,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
 
     # ---- Internal — called by the connection's receive loop ----
 
-    async def _on_audio_delta(self, b64_audio: str) -> None:
+    async def _on_audio_delta(self, b64_audio: str, item_id: str | None = None) -> None:
         try:
             data = base64.b64decode(b64_audio)
         except Exception as e:  # noqa: BLE001
@@ -545,7 +540,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 turn_start_monotonic=self._started_at_monotonic,
                 end_input_monotonic=self._end_input_at_monotonic,
             )
-        item_id = self._last_assistant_item_id
         if item_id:
             # 24 kHz mono pcm16 = 48 bytes/ms. Accumulate per item so a later
             # truncate can clamp to THIS item's received duration (C1).
@@ -597,7 +591,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._note_activity()
         self._server_turn_complete = True
         self._record_usage(usage)
-        # Sentinel lets consumer drain queued chunks then exit; barge-in (if added later) must use a distinct signal.
         self._audio_q.put_nowait(None)
 
     def _on_assistant_item_id(self, item_id: str | None) -> None:
@@ -711,13 +704,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._conn_cm = None
         self._send_lock = asyncio.Lock()
 
-        # Count of `response.output_audio.delta` events that arrived
-        # while `_active_turn is None` (server response that landed
-        # AFTER the daemon's idle watchdog already released the turn).
-        # Logging each delta would be 50-200 lines per orphan response;
-        # we accumulate here and surface the total in the matching
-        # `response.done` warning, then reset.
-        self._orphan_delta_count: int = 0
+        # Manual VAD allows one outstanding commit and response.create.
+        # Release reopens unresolved requests instead of rebinding their acks.
+        self._pending_commit: OpenAIRealtimeTurn | None = None
+        self._pending_response: OpenAIRealtimeTurn | None = None
 
         # Optional billable-activity meter (time-billed providers, e.g.
         # Grok). Wired by the daemon before start() when the active
@@ -782,12 +772,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             turn._started_at_monotonic = _time.monotonic()
             self._active_turn = turn
             self._mark_billable_activity_started()
-            # Fresh turn — discard any orphan-delta count left over from
-            # a previous response that landed after release. The counter
-            # is also reset inside the orphan response.done handler, so
-            # this is a belt-and-suspenders reset for edge cases where
-            # the orphan response.done never arrives.
-            self._orphan_delta_count = 0
             async with self._state_lock:
                 if self._state is ConnectionState.CONNECTED:
                     self._set_state(ConnectionState.IN_TURN)
@@ -798,32 +782,46 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
 
-    async def _send_event(self, event: dict) -> None:
-        """Send a single client event to the SDK connection.
+    def _owns_turn(self, turn: OpenAIRealtimeTurn) -> bool:
+        return (
+            self._active_turn is turn and not turn._released and not turn._turn_lost
+            and self._conn is not None and turn._session is self._conn
+            and self._connected_event.is_set()
+        )
 
-        The SDK's typed wrappers (``conn.input_audio_buffer.append(...)``,
-        ``conn.response.create(...)``, etc.) call into the same low-level
-        ``send`` under the hood; we use ``send`` directly so the test
-        seam doesn't have to mock the entire typed surface, only a
-        single ``send(dict)`` method.
+    def _can_respond(self, turn: OpenAIRealtimeTurn) -> bool:
+        return self._owns_turn(turn) and not turn._cancel_requested
 
-        Serialised through ``_send_lock`` so concurrent producers
-        (audio-frame send vs. tool-result send) can't interleave at the
-        WebSocket frame boundary."""
-        if self._conn is None:
-            raise RuntimeError(f"{self._log_tag} no active session")
+    async def _send_event(self, event: dict, *, turn: OpenAIRealtimeTurn | None = None) -> bool:
         async with self._send_lock:
+            if turn is not None:
+                if not self._owns_turn(turn):
+                    return False
+                if event["type"] == "response.create":
+                    if turn._cancel_requested:
+                        return False
+                    if self._pending_response is not None:
+                        raise RuntimeError("response.create acknowledgement still pending")
+                    self._pending_response = turn
+                elif event["type"] == "input_audio_buffer.commit":
+                    self._pending_commit = turn
+                elif event.get("item", {}).get("type") == "function_call_output":
+                    if turn._cancel_requested:
+                        return False
+            if self._conn is None:
+                raise RuntimeError(f"{self._log_tag} no active session")
             await self._conn.send(event)
+            return True
 
     async def _send_audio_chunk(
         self, turn: OpenAIRealtimeTurn, pcm_16khz: bytes,
-    ) -> None:
+    ) -> bool:
         # Polyphase 16 → 24 kHz upsample. State persists per-turn.
         pcm_24khz, turn._resample_state = _upsample_16k_to_24k(
             pcm_16khz, turn._resample_state,
         )
         if not pcm_24khz:
-            return
+            return False
         # Debug tee — see OpenAIRealtimeTurn._debug_wav docstring.
         if os.environ.get("JASPER_DEBUG_RECORD_OPENAI_AUDIO", "").strip() in ("1", "true", "yes", "on"):
             try:
@@ -849,42 +847,47 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 logger.warning("debug record failed (will skip rest of turn): %s", e)
                 turn._debug_wav = None
         b64 = base64.b64encode(pcm_24khz).decode("ascii")
-        await self._send_event({
+        return await self._send_event({
             "type": "input_audio_buffer.append",
             "audio": b64,
-        })
-
-    async def _send_text_context(self, text: str) -> None:
-        await self._send_event({
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}],
-            },
-        })
+        }, turn=turn)
 
     async def _commit_and_create_response(self, turn: OpenAIRealtimeTurn) -> None:
-        # Two events, in order: commit closes the user audio buffer (the
-        # server then materialises it as a user message item); create
-        # then asks the model to produce a response. Both required under
-        # manual VAD — the server doesn't auto-commit or auto-respond.
-        await self._send_event({"type": "input_audio_buffer.commit"})
-        await self._send_event({"type": "response.create"})
+        await self._send_event({"type": "input_audio_buffer.commit"}, turn=turn)
+        await self._send_event({"type": "response.create"}, turn=turn)
 
-    async def _cancel_response(self) -> None:
-        # Best-effort: tell the server to stop generating. Idempotent on
-        # the server side — extra cancels for a non-existent response
-        # are silently ignored.
-        if self._conn is None:
-            return
+    async def _cancel_response(self, turn: OpenAIRealtimeTurn) -> None:
         try:
-            await self._send_event({"type": "response.cancel"})
+            await self._send_event({"type": "response.cancel"}, turn=turn)
         except Exception as e:  # noqa: BLE001
-            logger.debug(f"{self._log_tag} cancel ignored (%s)", e)
+            logger.debug("%s cancel ignored (%s)", self._log_tag, type(e).__name__)
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
-        self._mark_billable_activity_ended()
+        if self._active_turn is not turn:
+            return
+        async with self._send_lock:
+            session = self._conn
+            if session is not None and turn._session is session:
+                try:
+                    if turn._response_id or self._pending_response is turn:
+                        await session.send({"type": "response.cancel"})
+                    await session.send({"type": "input_audio_buffer.clear"})
+                except Exception as e:  # noqa: BLE001
+                    if self._conn is session:
+                        self._connected_event.clear()
+                        request_unplanned_reopen(self)
+                    logger.warning("%s release failed (%s)", self._log_tag, type(e).__name__)
+                # An abandoned response can still add tool calls to history.
+                # A fresh session removes them without publishing stale results.
+                else:
+                    unresolved = (
+                        turn._committed and (not turn._server_turn_complete or turn._tool_round_pending)
+                        or self._pending_commit is turn or self._pending_response is turn
+                    )
+                    if self._conn is session and unresolved:
+                        request_planned_reopen(self)
+        if self._active_turn is turn:
+            self._mark_billable_activity_ended()
         await super()._on_turn_released(turn)
 
     # ------------------------------------------------------------------
@@ -1066,10 +1069,14 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             self._conn_cm = None
             raise
         self._deferred_reconnect.clear()
-        await self._mark_connected(asyncio.create_task(self._receive_loop(events)))
+        await self._mark_connected(asyncio.create_task(self._receive_loop(events, conn)))
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
+        conn, cm = self._conn, self._conn_cm
+        self._conn = self._conn_cm = None
+        self._connected_event.clear()
+        self._pending_commit = self._pending_response = None
         # Cancel the proactive watchdog first — its only job is to fire on
         # a CONNECTED session, and we're about to leave that state.
         await self._cancel_task(self._proactive_watchdog_task)
@@ -1077,11 +1084,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._deferred_reconnect.clear()
         await self._cancel_task(self._receive_task)
         self._receive_task = None
-        await self._close_with_timeout(self._conn)
-        await self._close_cm_with_timeout(self._conn_cm)
-        self._conn_cm = None
-        self._conn = None
-        self._connected_event.clear()
+        await self._close_with_timeout(conn)
+        await self._close_cm_with_timeout(cm)
         # Close any in-flight billable-activity interval (time-billed
         # providers). Idle WebSocket lifetime is not counted.
         self._mark_billable_activity_ended()
@@ -1113,7 +1117,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             return 0.0
         return delay
 
-    async def _receive_loop(self, conn) -> None:
+    async def _receive_loop(self, events, conn) -> None:
         """Iterate the SDK connection's event stream and route events.
 
         Accepts both Pydantic-typed events (have ``.type`` attribute and
@@ -1130,7 +1134,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         supervisor, otherwise the daemon sits on a dead session and
         every subsequent wake silently fails in ``send_audio``."""
         try:
-            async for event in conn:
+            async for event in events:
+                if self._conn is not conn:
+                    return
                 etype = _event_type(event)
                 if etype is None:
                     continue
@@ -1138,9 +1144,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            self._on_receive_loop_error(e)
+            if self._conn is conn:
+                self._on_receive_loop_error(e)
             return
-        if not self._stopping.is_set():
+        if self._conn is conn and not self._stopping.is_set():
             logger.warning(
                 f"{self._log_tag} receive iteration ended cleanly "
                 "(server closed, likely the 60-minute hard cap); reconnecting",
@@ -1148,276 +1155,126 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             request_unplanned_reopen(self)
 
     async def _dispatch_event(self, etype: str, event) -> None:
-        turn = self._active_turn
-
         if etype == "error":
-            err = _event_field(event, "error") or {}
-            logger.warning(f"{self._log_tag} server error: %s", err)
+            detail = failure_detail(
+                RuntimeError(str(_event_field(event, "error"))), literals=self._secret_literals(),
+            )
+            logger.warning("%s server error: %s", self._log_tag, detail)
+            return
+        if etype in ("session.created", "session.updated"):
             return
 
-        if etype == "session.created" or etype == "session.updated":
+        turn = self._active_turn
+        if etype == "input_audio_buffer.committed":
+            owner, self._pending_commit = self._pending_commit, None
+            if owner is not None and self._owns_turn(owner):
+                owner._input_item_id = _event_field(event, "item_id")
+            return
+        if etype == "response.created":
+            owner, self._pending_response = self._pending_response, None
+            if owner is not None and self._owns_turn(owner):
+                owner._response_id = _event_field(_event_field(event, "response"), "id")
+                owner._response_item_ids.clear()
+            return
+        if turn is None or not self._owns_turn(turn):
             return
 
-        # Audio chunk for the active turn.
+        if etype.startswith("conversation.item.input_audio_transcription."):
+            if not turn._input_item_id or _event_field(event, "item_id") != turn._input_item_id:
+                return
+            if etype.endswith(".completed"):
+                text = _event_field(event, "transcript")
+                if isinstance(text, str):
+                    turn._on_user_text_done(text)
+                    log_event(logger, "openai.user_transcript", chars=len(text), level=logging.DEBUG)
+            elif etype.endswith(".failed"):
+                log_event(logger, "openai.user_transcription_failed", level=logging.WARNING)
+            return
+
+        response = _event_field(event, "response")
+        response_id = _event_field(response, "id") if response is not None else _event_field(event, "response_id")
+        if not turn._response_id or response_id != turn._response_id:
+            if etype == "response.done":
+                log_event(logger, "voice.stale_response", provider=self.PROVIDER_NAME, level=logging.DEBUG)
+            return
+        if etype == "response.done":
+            await self._handle_response_done(response, turn)
+            return
+        if turn._cancel_requested:
+            return
+        if etype == "response.output_item.added":
+            item = _event_field(event, "item")
+            item_id = _event_field(item, "id")
+            if isinstance(item_id, str) and item_id:
+                turn._response_item_ids.add(item_id)
+                if _event_field(item, "type") == "message":
+                    turn._on_assistant_item_id(item_id)
+            return
+
+        item_id = _event_field(event, "item_id")
+        if item_id not in turn._response_item_ids:
+            return
         if etype == "response.output_audio.delta":
             delta = _event_field(event, "delta")
             if isinstance(delta, str):
-                if turn is None:
-                    # Server still streaming a response after the daemon
-                    # released the turn. Tracked here, reported once in
-                    # the trailing response.done — per-delta logging
-                    # would flood the journal.
-                    self._orphan_delta_count += 1
-                else:
-                    await turn._on_audio_delta(delta)
-            return
-
-        # Assistant audio transcript — the text version of the audio
-        # the model is speaking. Production plays the audio, but we
-        # also persist the transcript at turn release so operational
-        # investigations can line up what it heard, what tool it used,
-        # and what it actually said. The eval harness also consumes
-        # these via the `text_out` trace event.
-        if etype in (
-            "response.audio_transcript.delta",
-            "response.output_audio_transcript.delta",
+                await turn._on_audio_delta(delta, item_id)
+        elif etype in (
+            "response.audio_transcript.delta", "response.output_audio_transcript.delta",
             "response.output_text.delta",
         ):
             delta = _event_field(event, "delta")
             if isinstance(delta, str) and delta:
-                if turn is not None:
-                    turn._on_assistant_text_delta(delta)
-                from .trace import emit as _trace_emit
+                turn._on_assistant_text_delta(delta)
+                from .trace import emit as _trace_emit  # lazy: optional evaluation trace
                 _trace_emit("text_out", {"delta": delta})
-            return
-
-        if etype in (
-            "response.audio_transcript.done",
-            "response.output_audio_transcript.done",
+        elif etype in (
+            "response.audio_transcript.done", "response.output_audio_transcript.done",
             "response.output_text.done",
         ):
-            text = _event_field(event, "transcript")
-            if not isinstance(text, str):
-                text = _event_field(event, "text")
-            if isinstance(text, str) and turn is not None:
+            text = _event_field(event, "transcript") or _event_field(event, "text")
+            if isinstance(text, str):
                 turn._on_assistant_text_done(text)
+
+    async def _handle_response_done(self, response, turn: OpenAIRealtimeTurn) -> None:
+        status = _event_field(response, "status")
+        if status == "in_progress":
             return
-
-        # Track the assistant audio item id — truncate_assistant_audio's
-        # conversation.item.truncate target on a barge-in.
-        if etype == "response.output_item.added":
-            item = _event_field(event, "item") or {}
-            if isinstance(item, dict) and item.get("type") == "message":
-                if turn is not None:
-                    turn._on_assistant_item_id(item.get("id"))
-            return
-
-        # Function-call argument streaming events. The official OpenAI
-        # cookbook dispatches tools on `response.done`, NOT on
-        # `function_call_arguments.done` — dispatching on the latter
-        # would send `conversation.item.create` + `response.create`
-        # while response 1 is still in-flight server-side, which
-        # races against (or is rejected by) the server. Ignoring
-        # these events lets the canonical handler in `response.done`
-        # do the work.
-        if etype in (
-            "response.function_call_arguments.delta",
-            "response.function_call_arguments.done",
-        ):
-            return
-
-        # User audio transcription (what the STT model heard the user
-        # say). Diagnostic only — the realtime model's tool choice
-        # comes from the raw audio, not this transcript. Keep transcript
-        # content out of logging entirely: the flight recorder buffers
-        # DEBUG records and dumps them to journald around failures.
-        # See the comment block next to ``transcription`` in
-        # ``_session_config`` for the full rationale.
-        if etype == "conversation.item.input_audio_transcription.completed":
-            transcript = _event_field(event, "transcript")
-            if isinstance(transcript, str):
-                text = transcript.strip()
-                if turn is not None:
-                    turn._on_user_text_done(text)
-                log_event(
-                    logger,
-                    "openai.user_transcript",
-                    chars=len(text),
-                    level=logging.DEBUG,
-                )
-            return
-        if etype == "conversation.item.input_audio_transcription.failed":
-            err = _event_field(event, "error") or {}
-            log_event(
-                logger,
-                "openai.user_transcription_failed",
-                error=str(err.get("message") if isinstance(err, dict) else err),
-                level=logging.WARNING,
-            )
-            return
-
-        # Server-side response complete.
-        if etype == "response.done":
-            await self._handle_response_done(event, turn)
-            return
-
-        logger.debug(f"{self._log_tag} event %s", etype)
-
-    async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:
-        """Dispatch a `response.done` event.
-
-        OpenAI splits a tool-using turn across multiple responses:
-            response 1: optional preamble audio + function_call output(s)
-            (client dispatches each tool, sends function_call_output items,
-             sends ONE response.create)
-            response 2: the final audio answer
-
-        This handler runs the canonical OpenAI-cookbook flow: examine
-        ``response.output[]`` for ``function_call`` items, dispatch
-        them, send their results, kick off response 2 with one
-        ``response.create``, and DEFER turn-completion to response 2's
-        own ``response.done``. If there are no function_calls in the
-        output, this is the final response — flip server_turn_complete.
-        """
-        response = _event_field(event, "response")
-        usage_dict = _normalise_usage(_event_field(response, "usage") if response is not None else None)
+        # Retire before a tool await so duplicate completion cannot dispatch twice.
+        turn._response_id = None
+        usage = _normalise_usage(_event_field(response, "usage"))
+        turn._record_usage(usage)
         function_calls = _extract_function_calls(response)
-
-        # Diagnostic log: per-response breakdown. Reading the
-        # audio/text split is the difference between "175 output
-        # tokens means 8.75 s of audio that got truncated" (would
-        # indicate a bug) vs "175 output tokens means 80 audio + 95
-        # text transcript = 1.6 s of audio total" (model just gave a
-        # short answer, no bug). Without this line we couldn't tell
-        # the two apart from journalctl alone.
-        if usage_dict:
-            in_d = usage_dict.get("input_token_details") or {}
-            out_d = usage_dict.get("output_token_details") or {}
-            logger.info(
-                "openai response.done: in=%d (audio=%d text=%d cached=%d) "
-                "out=%d (audio=%d text=%d) function_calls=%d",
-                int(usage_dict.get("input_tokens") or 0),
-                int(in_d.get("audio_tokens") or 0),
-                int(in_d.get("text_tokens") or 0),
-                int(in_d.get("cached_tokens") or 0),
-                int(usage_dict.get("output_tokens") or 0),
-                int(out_d.get("audio_tokens") or 0),
-                int(out_d.get("text_tokens") or 0),
-                len(function_calls),
-            )
-
-        if turn is None:
-            # Server-completed a response with no active turn to deliver
-            # it to. Two common shapes:
-            #   (a) idle watchdog raced the server: the wake loop ended
-            #       the turn before the first audio chunk arrived,
-            #       _end_turn fired a belated commit+response.create
-            #       during cleanup, the server then generated and
-            #       streamed audio deltas that hit a released turn and
-            #       got silently dropped (see the orphan-delta counter
-            #       in _dispatch_event).
-            #   (b) connection reset / user-spoke-too-soon path: model
-            #       was generating against the prior turn when the turn
-            #       was torn down for unrelated reasons.
-            # Either way, output audio tokens we paid for were not
-            # heard. Surface a single warning per orphan response that
-            # includes the dropped-delta count, so the next debugger
-            # has one log line that says exactly what happened.
-            if usage_dict:
-                out_d_orphan = usage_dict.get("output_token_details") or {}
-                logger.warning(
-                    "openai response.done arrived AFTER turn release: "
-                    "out=%d tokens (audio=%d) — %d audio deltas were "
-                    "silently dropped. Daemon's idle watchdog likely "
-                    "raced the server response; raise "
-                    "JASPER_IDLE_TIMEOUT_SEC or look at why the silence "
-                    "detector didn't trip earlier.",
-                    int(usage_dict.get("output_tokens") or 0),
-                    int(out_d_orphan.get("audio_tokens") or 0),
-                    self._orphan_delta_count,
-                )
-            self._orphan_delta_count = 0
-            # If the orphan response carried function_calls we still
-            # MUST send synthetic function_call_outputs back — otherwise
-            # the server-side conversation history retains dangling
-            # function_call items with no matching outputs, and the
-            # next turn sees its previous call as "still in progress"
-            # and responds with confused fallbacks like "It's still
-            # starting up" even though the user just asked something
-            # brand new. We do NOT send response.create after these
-            # synthetic outputs: we don't want the model to generate an
-            # audio response that has no turn to play through.
-            if function_calls and self._conn is not None:
-                for fc in function_calls:
-                    call_id = _event_field(fc, "call_id") or ""
-                    name = _event_field(fc, "name") or "?"
-                    if not call_id:
-                        continue
-                    try:
-                        await self._send_event({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "function_call_output",
-                                "call_id": call_id,
-                                "output": json.dumps(
-                                    {"error": "turn cancelled before dispatch"}
-                                ),
-                            },
-                        })
-                        logger.info(
-                            "tool %s: turn-aborted, sent cancelled "
-                            "function_call_output to keep server state clean",
-                            name,
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "tool %s: could not send cancelled output (%s: %s); "
-                            "next turn may be confused",
-                            name, type(e).__name__, e,
-                        )
+        turn._tool_round_pending = bool(function_calls)
+        log_event(
+            logger, "voice.response_done", provider=self.PROVIDER_NAME,
+            response_id=_event_field(response, "id"), status=status,
+            function_calls=len(function_calls),
+            input_tokens=(usage or {}).get("input_tokens", 0),
+            output_tokens=(usage or {}).get("output_tokens", 0),
+        )
+        if status != "completed":
+            if status == "cancelled" and turn._cancel_requested:
+                await turn._on_response_done(None)
+            else:
+                turn._on_connection_lost()
             return
-
-        if function_calls:
-            # Tool round. A single user-facing turn produces multiple
-            # OpenAI responses when the model uses a tool:
-            #   response 1: function_call(s) → response.done (this branch)
-            #   <client sends function_call_output items + response.create>
-            #   response 2: response.output_audio.delta × N → response.done
-            # We MUST NOT flip server_turn_complete here — the audio
-            # answer is still in flight. The no-function_calls branch
-            # below is the only place that closes the turn.
-            #
-            # Reset the pre-response idle anchor — without this, the
-            # watchdog fires mid-dispatch at small
-            # JASPER_IDLE_TIMEOUT_SEC values.
-            turn._note_activity()
-            for fc in function_calls:
-                await self._dispatch_function_call(fc)
-            # Single response.create at the end of the round, regardless
-            # of how many tools were called. Multiple response.create
-            # calls would conflict (server rejects with "active response
-            # in progress").
+        if not function_calls or turn._cancel_requested:
+            await turn._on_response_done(None)
+            return
+        turn._note_activity()
+        for fc in function_calls:
+            if not self._can_respond(turn):
+                return
+            if not await self._dispatch_function_call(fc, turn):
+                return
+        if self._can_respond(turn):
+            turn._tool_round_pending = False
             try:
-                await self._send_event({"type": "response.create"})
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    f"{self._log_tag} response.create after tool round "
-                    "failed (%s: %s); turn may stall",
-                    type(e).__name__, e,
-                )
-            # Accumulate usage from this response — the model burned
-            # input tokens reading the prompt + output tokens emitting
-            # the function call. Don't flip server_turn_complete; the
-            # audio answer is still in flight.
-            turn._record_usage(usage_dict)
-            return
+                await self._send_event({"type": "response.create"}, turn=turn)
+            except Exception:  # noqa: BLE001
+                turn._on_connection_lost()
 
-        # No function_calls: this is the final response. Flip turn
-        # completion so the daemon's idle watchdog can close after the
-        # tail buffer drains.
-        await turn._on_response_done(usage_dict)
-
-    async def _dispatch_function_call(self, fc) -> None:
+    async def _dispatch_function_call(self, fc, turn: OpenAIRealtimeTurn) -> bool:
         """Run one function_call from a response.done's output[]:
         invoke the registered tool, send the result as a
         function_call_output. The caller in `_handle_response_done`
@@ -1436,8 +1293,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         except json.JSONDecodeError:
             args = {}
             logger.warning(
-                "openai tool %s: bad JSON arguments %r; treating as empty",
-                name, arguments_json,
+                "openai tool %s: bad JSON arguments; treating as empty", name,
             )
 
         # Grok inherits this dispatch path via
@@ -1447,7 +1303,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         t0 = _time.monotonic()
         payload = await dispatch_tool(self._registry, name, args)
 
-        if self._conn is not None and call_id:
+        if self._can_respond(turn) and call_id:
             t_send = _time.monotonic()
             # Serialize + wire-send guarded like the sibling sends
             # (send_audio, end_input, …). A tool returning a payload that
@@ -1469,27 +1325,32 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     {"error": f"tool result not serializable: {type(e).__name__}"}
                 )
             try:
-                await self._send_event({
+                sent = await self._send_event({
                     "type": "conversation.item.create",
                     "item": {
                         "type": "function_call_output",
                         "call_id": call_id,
                         "output": output,
                     },
-                })
+                }, turn=turn)
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "tool %s: could not send function_call_output (%s: %s); "
                     "next turn may be confused",
                     name, type(e).__name__, e,
                 )
-                return
+                turn._on_connection_lost()
+                return False
+            if not sent:
+                return False
             send_ms = (_time.monotonic() - t_send) * 1000
             total_ms = (_time.monotonic() - t0) * 1000
             logger.info(
                 "tool result item sent to OpenAI in %.0fms (total dispatch %.0fms)",
                 send_ms, total_ms,
             )
+            return sent
+        return False
 
 
 # ---------- Module-level event helpers --------------------------------------
