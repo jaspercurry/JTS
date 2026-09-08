@@ -235,10 +235,15 @@ async def test_retired_executor_consumes_late_failure_without_repeating_observer
         """Fail after the caller retires."""
         return await asyncio.to_thread(fail_later)
 
+    @tool(timeout=0.01)
+    async def fast() -> dict:
+        """Never run after its queued deadline expires."""
+        raise AssertionError("expired queued executor started")
+
     async def observe(stage, name):
         events.append((stage, name))
 
-    registry = _registry(slow)
+    registry = _registry(slow, fast)
     registry.set_dispatch_observer(lambda: observe)
     caller = asyncio.create_task(dispatch_tool(registry, "slow", {}))
     try:
@@ -251,6 +256,12 @@ async def test_retired_executor_consumes_late_failure_without_repeating_observer
         else:
             assert await caller == {"error": "slow timed out"}
         expected = [("called", "slow")] + ([("completed", "slow")] if retirement == "timeout" else [])
+        assert events == expected
+        assert registry._execution_task is executor and not executor.done()
+        assert await asyncio.wait_for(
+            dispatch_tool(registry, "fast", {}), timeout=DEFAULT_SIGNAL_TIMEOUT_S,
+        ) == {"error": "fast timed out"}
+        expected += [("called", "fast"), ("completed", "fast")]
         assert events == expected
         assert registry._execution_task is executor and not executor.done()
         finish.set()

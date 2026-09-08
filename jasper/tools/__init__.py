@@ -173,17 +173,9 @@ _PY_TO_JSON = {
 }
 
 
-# Default wall-clock budget for a single tool dispatch (the
-# `asyncio.wait_for` cap the session adapters apply around each tool
-# coroutine). 12s gives async tool calls (httpx HTTP + parsing)
-# headroom on a busy Pi event loop where ONNX wake-word + audio
-# resampling + the realtime WebSocket compete for CPU; anything slower
-# usually means the upstream API is genuinely failing and we'd rather
-# report the timeout than hang the session further. A tool whose
-# backend is legitimately slow (e.g. an LLM-backed Home Assistant agent
-# taking 30-60s) overrides this via the `timeout=` kwarg on `@tool()`.
-# This is the ONLY place the 12s literal lives — the dispatch seams read
-# `tool.timeout`.
+# Seconds, including queue wait. Allows HTTP calls and parsing to share
+# the Pi's event loop with wake inference, audio and the provider socket.
+# Slower backends override this through @tool(timeout=...).
 DEFAULT_TOOL_TIMEOUT_SEC = 12.0
 # Observability must never become a tool-execution dependency. The production
 # callback is a local SQLite update and normally completes in well under a
@@ -216,9 +208,7 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any]
     providers: frozenset[str] | None = None
-    # Per-tool dispatch budget (seconds) applied at the session adapters'
-    # `asyncio.wait_for` seam. Defaults to `DEFAULT_TOOL_TIMEOUT_SEC`;
-    # raise it for a tool whose backend is legitimately slow.
+    # Queue and execution wait budget, in seconds.
     timeout: float = DEFAULT_TOOL_TIMEOUT_SEC
     # Whether INFO-level tool dispatch logs may include a repr preview
     # of the returned payload. Content-bearing tools opt out so
@@ -460,13 +450,14 @@ class ToolRegistry:
     )
 
     async def _execute(self, tool: Tool, args: dict[str, Any]) -> Any:
-        await self._execution_lock.acquire()
-        task = asyncio.create_task(tool.executor.execute(args), name=f"tool-{tool.name}")
-        self._execution_task = task
-        task.add_done_callback(self._execution_done)
-        # Cancellation of an executor awaiting to_thread cannot stop its real work.
-        # Retain its slot through completion, including after a timeout or turn close.
-        return await asyncio.wait_for(asyncio.shield(task), timeout=tool.timeout)
+        async with asyncio.timeout(tool.timeout):
+            await self._execution_lock.acquire()
+            task = asyncio.create_task(tool.executor.execute(args), name=f"tool-{tool.name}")
+            self._execution_task = task
+            task.add_done_callback(self._execution_done)
+            # Cancellation of an executor awaiting to_thread cannot stop its real work.
+            # Retain its slot through completion, including after a timeout or turn close.
+            return await asyncio.shield(task)
 
     def _execution_done(self, task: asyncio.Task) -> None:
         self._execution_task = None
@@ -613,10 +604,8 @@ def tool(
     provider not in the set. None (default) means visible to every
     provider.
 
-    `timeout` is the per-tool dispatch budget in seconds applied at the
-    session adapters' `asyncio.wait_for` seam. None (default) keeps
-    `DEFAULT_TOOL_TIMEOUT_SEC`; raise it for a tool whose backend is
-    legitimately slow (e.g. an LLM-backed Home Assistant agent).
+    `timeout` bounds queue and execution wait in the shared registry, in
+    seconds. None keeps `DEFAULT_TOOL_TIMEOUT_SEC`.
 
     `llm_description` overrides the MODEL-FACING description only. None
     (default) sends the model the full docstring `description`. Set it to
@@ -691,7 +680,7 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     if not asyncio.iscoroutinefunction(fn):
         # One line per registration (daemon startup), not per dispatch.
         # `dispatch_tool` runs a non-coroutine fn INLINE on the voice
-        # event loop through PythonExecutor. The `asyncio.wait_for`
+        # event loop through PythonExecutor. The async
         # timeout cannot preempt a sync body that never yields, so a slow
         # sync tool still stalls wake detection and audio playout. Every
         # shipped tool is `async def` (blocking backends go through

@@ -157,26 +157,29 @@ async def test_repeated_turns_bound_cancelled_tool_work_and_preserve_action_orde
         loop.call_soon_threadsafe(completed.set)
 
     @tool(timeout=0.01 if boundary == "timeout" else DEFAULT_SIGNAL_TIMEOUT_S)
+    async def first_action(index: int) -> dict:
+        """Run the old action on a thread."""
+        await asyncio.to_thread(threaded_action)
+        return {"index": index}
+
+    @tool()
     async def action(index: int) -> dict:
         """Record an ordered action."""
-        if index == 0:
-            await asyncio.to_thread(threaded_action)
-        else:
-            calls.append(index)
+        calls.append(index)
         return {"index": index}
 
     async def submit(turn, indices):
         await turn.end_input()
         if gemini:
             factory.sessions[-1].feed(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
-                function_calls=[types.FunctionCall(id=f"call_{i}", name="action", args={"index": i}) for i in indices],
+                function_calls=[types.FunctionCall(id=f"call_{i}", name="first_action" if i == 0 else "action", args={"index": i}) for i in indices],
             )))
         else:
             await wait_until(lambda: turn._response_id is not None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
             factory.conns[-1]._inbox.put_nowait(ResponseDoneEvent.model_validate({
                 "type": "response.done", "event_id": f"done_{indices[0]}", "response": {
                     "id": turn._response_id, "status": "completed", "output": [
-                        {"type": "function_call", "call_id": f"call_{i}", "name": "action", "arguments": json.dumps({"index": i})}
+                        {"type": "function_call", "call_id": f"call_{i}", "name": "first_action" if i == 0 else "action", "arguments": json.dumps({"index": i})}
                         for i in indices
                     ],
                 },
@@ -184,6 +187,7 @@ async def test_repeated_turns_bound_cancelled_tool_work_and_preserve_action_orde
         await wait_until(lambda: turn._tool_task is not None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
     registry.register(action)
+    registry.register(first_action)
     await conn.start(registry, "")
     try:
         old = await conn.acquire_turn()
