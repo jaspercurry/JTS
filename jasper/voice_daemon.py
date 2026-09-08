@@ -132,13 +132,7 @@ async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
     task_set.difference_update(tasks)
 
 
-# Refractory after a turn ends before the wake detector is re-armed.
-# Bounds the one transient that is a self-loop risk: TTS audio still in
-# the ALSA dmix playout buffer when _end_turn runs. The dongle dmix is
-# configured at 4096 frames @ 48 kHz ≈ 85 ms of buffering. TtsPlayout's
-# drain primitive anchors turn-end on samples actually queued, so the
-# refractory only needs to cover that dmix tail: 0.2 s is ~2.5x the
-# 85 ms buffer — still a margin, but won't swallow conversational pacing.
+# Acoustic tail margin after the output owner has drained a turn.
 WAKE_REFRACTORY_SEC = 0.2
 
 # `_end_turn` reasons the household or the daemon itself chose: whoever
@@ -1536,23 +1530,6 @@ class WakeLoop:
         for _other in self._legs.values():
             _other.detector.reset()
 
-        # The OR-gate above is RECALL: a leg crossed its threshold and won
-        # the race, *proposing* a fire. `verify()` is the PRECISION stage —
-        # it corroborates before the turn opens, and fails open. On a
-        # suppress the detectors are already reset above (the utterance
-        # elevated them either way) and the only refractory held is the
-        # short WAKE_REFRACTORY_SEC, so a genuine wake immediately after is
-        # not blinded.
-        if not self._fuser.verify(leg, fired_set, self._current_condition):
-            log_event(
-                logger,
-                "wake.suppressed",
-                leg=leg,
-                fired=fired_legs,
-                threshold=f"{firing_threshold:.2f}",
-            )
-            return
-
         if not await self._research.cancel_for_wake():
             return
 
@@ -1942,10 +1919,6 @@ class WakeLoop:
         turn's interrupt event so ``play_responses`` flushes local TTS
         immediately. The felt experience: the user talks over the assistant
         and the speaker goes quiet.
-
-        Detection and local flush only: this does NOT truncate / cancel
-        the provider response, so a real-time provider may resume after
-        the flush.
 
         Runs INLINE (never a ``_bg_task``): completed ``_bg_tasks`` end the
         turn, so a fire-once detector task would race turn-end."""
