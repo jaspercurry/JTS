@@ -90,6 +90,10 @@ replace obsolete implementation inventories; inspect current code for status.
 | R13 | Preserve room correction and its layer boundary; finish speaker linearization before expanding room work. |
 | R14 | Manual placement and the attached turntable use one capture engine and record model. Analysis remains separate on-demand verbs. |
 
+R13 restated by [ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md):
+preserve the layer boundary by graph composition; room work follows an adopted
+speaker tune.
+
 ## Measurement program constants
 
 Code is the single source for pose counts, repeats, capture ceilings, excitation

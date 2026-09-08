@@ -1,7 +1,9 @@
 # ADR-0256: The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet
 
 - **Date:** 2026-09-08
-- **Status:** Accepted
+- **Status:** Accepted. §4's six-position default is amended for the seat
+  program by
+  [ADR-0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md).
 - Refs: Bank, "Combined quasi-anechoic and in-room equalization of
   loudspeaker responses", AES 134 (2013);
   `docs/room-correction-regime-plan.md` D1, D2, D6, D7.

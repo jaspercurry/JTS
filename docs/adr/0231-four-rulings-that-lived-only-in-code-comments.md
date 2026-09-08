@@ -1,7 +1,8 @@
 # ADR-0231: Four rulings that lived only in code comments are recorded here, and one boundary note
 
 - **Date:** 2026-09-04
-- **Status:** Accepted
+- **Status:** Accepted. §5 (the D11 boundary note) is superseded by
+  [ADR-0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md).
 
 ## Context
 

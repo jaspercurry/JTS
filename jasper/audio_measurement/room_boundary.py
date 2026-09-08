@@ -94,10 +94,8 @@ What is NOT owned here
   comparable across sessions and instruments even after the room boundary
   becomes per-room.
 
-Roadmap: RC1 (this module) only makes the boundary a single value. RC2 adds a
-Schroeder-frequency estimator and RC3 a per-room transition resolved here;
-every consumer already routed here picks that up with no further edit. See
-``docs/room-correction-regime-plan.md``.
+The ceiling follows the applied tune's trusted floor, clamped to the bounds
+below; no estimator is built. See ADR-0256.
 """
 from __future__ import annotations
 
