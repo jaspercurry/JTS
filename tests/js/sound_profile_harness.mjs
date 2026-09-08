@@ -7,76 +7,62 @@
 // browser or CamillaDSP.
 //
 //   node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
-import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { buildFunction, repoPath } from "./_loader.mjs";
 
 const modulePath = process.argv[2];
-const eqMathPath = new URL("../../deploy/assets/sound-profile/js/eq-math.js", import.meta.url);
-const eqMathPreamble = readFileSync(eqMathPath, "utf8").replace(/^export\s+/gm, "");
-const escapePath = new URL("../../deploy/assets/shared/js/escape.js", import.meta.url);
-const escapePreamble = readFileSync(escapePath, "utf8")
-  .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
-  .replace(/^export\s+/gm, "");
-// http.js is the shared CSRF/JSON helper module. Inline its real definitions
-// (with `export` stripped) so csrfHeaders()/jsonHeaders() behave exactly as in
-// the browser. The lazy `import("/assets/shared/js/dialog.js")` inside
-// promptForControlToken parses but never runs — main.js only calls the two
-// header helpers, neither of which hits the token-prompt path.
-const httpPath = new URL("../../deploy/assets/shared/js/http.js", import.meta.url);
-const httpPreamble = readFileSync(httpPath, "utf8")
-  .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
-  .replace(/^export\s+/gm, "");
-const activeSpeakerUiPath = new URL("../../deploy/assets/sound-profile/js/active-speaker-ui.js", import.meta.url);
-const activeSpeakerUiPreamble = readFileSync(activeSpeakerUiPath, "utf8")
-  .replace(/^export\s+/gm, "");
+const siblingDir = dirname(modulePath);
 
-function stripKnownImports(input) {
-  return input
-    .replace(/^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
-      "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*escape\.js["'];\s*/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*http\.js["'];\s*/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*active-speaker-ui\.js["'];\s*/m, "")
-    .replace(/^import\s+\{[^}]*\}\s+from\s+["'][^"']*eq-math\.js["'];\s*/m, "")
-    .replace(
-      new RegExp(
-        '^import\\s+\\{[^}]*\\}\\s+from\\s+["\'][^"\']*sound-profile/js/(?:' +
-          SIBLING_MODULES.join("|").replace(/\./g, "\\.") + ')["\'];\\s*',
-        "gm",
-      ),
-      "",
-    );
-}
-
-// The page's concern modules, in dependency order. They share one scope in the
-// browser only through imports; concatenating them here (exports stripped)
-// reproduces that scope for the harness. Order matters: state.js reads the JSON
-// island at evaluation time, exactly as it does on the page.
-const SIBLING_MODULES = [
-  "state.js",
-  "format.js",
-  "eq-curve.js",
-  "topology.js",
-  "driver-model.js",
-  "driver-fields.js",
+// The page is one entry module plus the siblings it imports, in dependency
+// order: state.js reads the JSON island at module-evaluation time, exactly
+// as it does on the page, so it (and everything after it) must run in this
+// order. buildFunction concatenates them into a single Function body:
+// siblings ahead of the entry with their `export` keyword stripped (so their
+// top-level declarations land in the shared scope the entry reads them
+// from), then every source's import lines stripped alike.
+// A bare re-export list (`export { a, b, ... };`, escape.js's aliasing
+// `export { escapeHtml as escapeAttr };` included) isn't valid once
+// "export " is stripped — its trailing comma makes it a dangling comma
+// expression. The names it lists are already declared (as `function`/`var`/
+// `const`) earlier in the same file, so the list itself is redundant ESM
+// wiring — drop it outright rather than repair it.
+const DROP_EXPORT_LIST = [/^export \{[^}]*\};\s*$/gm, ""];
+const STRIP_EXPORT = [/^export /gm, ""];
+const SIBLING_REWRITE = [DROP_EXPORT_LIST, STRIP_EXPORT];
+// http.js's promptForControlToken (behind a lazy dialog.js import) parses but
+// never runs — main.js only calls the two header helpers, neither of which
+// hits the token-prompt path.
+const JTSCONFIRM_STUB = [
+  /^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
+  "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n",
 ];
-const siblingPreamble = SIBLING_MODULES.map((name) => {
-  const path = new URL(`../../deploy/assets/sound-profile/js/${name}`, import.meta.url);
-  return stripKnownImports(readFileSync(path, "utf8"))
-    .replace(/^export\s+\{[^}]+\};\s*$/gm, "")
-    .replace(/^export\s+/gm, "");
-}).join("\n");
 
-const rawSource = readFileSync(modulePath, "utf8");
-const unknownImportProbe = stripKnownImports(
-  'import {\n  unknownHarnessDependency,\n} from "/assets/unknown.js";\n' + rawSource
+const runner = buildFunction(
+  [
+    { path: repoPath("deploy/assets/shared/js/escape.js"), rewrite: SIBLING_REWRITE },
+    { path: repoPath("deploy/assets/shared/js/http.js"), rewrite: SIBLING_REWRITE },
+    ...[
+      "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
+      "eq-curve.js", "topology.js", "driver-model.js", "driver-fields.js",
+    ].map((name) => ({ path: join(siblingDir, name), rewrite: SIBLING_REWRITE })),
+    { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
+  ],
+  {
+    stripImports: true,
+    guardNoImports: true,
+    // fetch is deliberately NOT a param here (unlike correction_render_harness):
+    // main.js's commission auto-ramp retry loop keeps its own fetch calls
+    // alive across a real setTimeout(900ms)/(80ms) pulse cycle, and a stale
+    // pulse from an earlier scenario that no test cancelled resolves those
+    // calls against whichever scenario's mock is CURRENT when it fires. A
+    // properly-scoped `fetch` param instead keeps that stale pulse faithful
+    // to its own scenario's mock, which answers "still armed" indefinitely
+    // and inflates this harness from ~2s to minutes. globalThis.fetch below
+    // (matching every scenario's later reassignment) reproduces the original
+    // loader's behavior, including this teardown quirk — see pr_body_notes.
+    params: ["document", "window", "globalThis", "console", "setTimeout", "clearTimeout"],
+  },
 );
-if (!/^import\s+\{\s*unknownHarnessDependency/m.test(unknownImportProbe)) {
-  throw new Error("known-import stripping swallowed an unknown multiline import");
-}
-const source = stripKnownImports(rawSource);
-if (/^import\s/m.test(source)) {
-  throw new Error("unhandled import in main.js — add a strip rule + preamble to this harness");
-}
 
 function classList() {
   const values = new Set();
@@ -722,13 +708,9 @@ function setupHarness(fetchHandler, options = {}) {
     configurable: true,
   });
   delete globalThis.__jtsConfirm;
-  globalThis.btoa = (binary) => Buffer.from(binary, "binary").toString("base64");
   globalThis.fetch = fetchHandler;
 
-  new Function(
-    escapePreamble + "\n" + httpPreamble + "\n" + eqMathPreamble + "\n" +
-      activeSpeakerUiPreamble + "\n" + siblingPreamble + "\n" + source
-  )();
+  runner(globalThis.document, globalThis.window, globalThis, console, setTimeout, clearTimeout);
 
   const viewBody = elements.get("view-body");
   const driverProposal = makeEl("driver-proposal-control");
