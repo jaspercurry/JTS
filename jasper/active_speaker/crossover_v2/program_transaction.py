@@ -226,6 +226,8 @@ class ProgramPlaybackTransaction:
                 await _play()
             else:
                 wav_path = await self._capture.around(_play, program=prepared.program)
+        except PlaybackInterrupted as exc:
+            raise PlaybackInterrupted(observation, wav_path=exc.wav_path) from exc
         except (WavPlaybackCancelled, WavPlaybackCancelledBeforeSpawn) as exc:
             observation = (
                 exc.observation if isinstance(exc, WavPlaybackCancelled)

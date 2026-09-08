@@ -107,9 +107,10 @@ class PlaybackOutcome:
 
 
 class PlaybackInterrupted(asyncio.CancelledError):
-    def __init__(self, playback: PlaybackObservation) -> None:
+    def __init__(self, playback: PlaybackObservation, *, wav_path: str = "") -> None:
         super().__init__()
         self.playback = playback
+        self.wav_path = wav_path
 
 
 class PlaybackTransaction(Protocol):
