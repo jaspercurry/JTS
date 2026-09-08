@@ -3120,9 +3120,7 @@ class WakeLoop:
                 and not expected_research_silence_dismiss
             ):
                 # The model answered and the playout queue hit its byte
-                # ceiling, so the tail was dropped: the household heard an
-                # answer that stopped part-way, which is what the
-                # internal_error cue says. See ADR-0254.
+                # ceiling, so the tail was dropped. See ADR-0254.
                 play_no_answer_cue = self._log_no_answer(
                     "turn.truncated_response",
                     end_reason=reason,
