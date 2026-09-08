@@ -28,7 +28,7 @@ code:
   judged one by one, never per line (issue #1718).
 
 ``debug_assert!`` stays in scope even though this workspace's release
-profile (``panic = "abort"``, ``rust/jasper-outputd/Cargo.toml``) compiles
+profile (``panic = "abort"``, ``rust/Cargo.toml``) compiles
 it out and CI runs ``cargo test --release --locked``: an unqualified local
 ``cargo test`` or any debug-profile developer run does execute it, and no
 other gate covers that.

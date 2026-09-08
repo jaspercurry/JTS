@@ -128,9 +128,9 @@ load_env_file_lib() {
 }
 load_env_file_lib
 
-SSID="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_SSID)"
-PSK="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_PSK)"
-KEY_MGMT="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_KEY_MGMT)"
+SSID="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_SSID raw)"
+PSK="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_PSK raw)"
+KEY_MGMT="$(jasper_env_file_get "$STASH_FILE" JASPER_WIFI_KEY_MGMT raw)"
 [[ -n "$KEY_MGMT" ]] || KEY_MGMT="none"
 
 if [[ -z "$SSID" ]]; then

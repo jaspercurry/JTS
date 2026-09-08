@@ -87,11 +87,7 @@ resolve_lane_tool() {
 # `tail`'s own exit status would otherwise hide a failed lane's. lane_emit_verdict
 # below owns the set of shapes that line can take.
 #
-# N counts passing EXECUTIONS across phases, not distinct tests: test-fast
-# can run the same node id more than once (a changed test file matches both
-# the changed-file-selection phase and the always-on guards), and each
-# passing run adds to N. An honest count of what actually ran, not a claim
-# about how many distinct tests exist.
+# N counts passing executions across phases from pytest's summaries.
 
 # Counts pytest phases whose captured output actually carried a recognisable
 # `-q` summary line. Owned entirely by this file: incremented in
@@ -105,19 +101,9 @@ _lane_summary_seen=0
 #
 # Runs a pytest invocation (or a stand-in in tests) through `tee` so the
 # caller can read back its summary line afterwards, while still streaming it
-# live to whoever is watching. PYTHONUNBUFFERED is required: once a Python
-# process's stdout is not a tty (`tee` makes it not a tty), CPython switches
-# from line- to block-buffered writes, turning a live-scrolling run into
-# silence followed by a wall of dots. The exit status comes from
-# `PIPESTATUS[0]` rather than relying on `pipefail` alone, so this helper
-# behaves the same even if a future caller sources it without
-# `set -o pipefail`.
-#
-# PIPESTATUS[0] (pytest), not [1] (tee): pytest's own exit code is the
-# authoritative signal for whether the TESTS passed, and a `tee` failure is a
-# different failure mode (infrastructure, not test outcome) -- though in
-# practice a dead/unresolvable `tee` breaks the pipe pytest is writing to and
-# pytest itself then exits nonzero too, so a failed tee still reads FAILED.
+# live to whoever is watching. PYTHONUNBUFFERED keeps piped output live.
+# Check both pipeline statuses: a conditional caller suppresses `set -e`,
+# and a failed tee must not leave an old phase summary looking like a pass.
 #
 # `_lane_summary_seen` is counted here rather than in
 # lane_extract_passed_count because this function runs in the CURRENT shell
@@ -129,7 +115,10 @@ lane_pipe_pytest() {
   PYTHONUNBUFFERED=1 "$@" | tee "${output_file}"
   # Read before any other command: a simple command updates PIPESTATUS too,
   # so the pipeline's own statuses are readable only right here.
-  local status="${PIPESTATUS[0]}"
+  local statuses=("${PIPESTATUS[@]}")
+  # Exit 5 must mean pytest selected no tests, never a capture failure.
+  [[ "${statuses[1]}" -eq 0 ]] || return 1
+  [[ "${statuses[0]}" -eq 0 ]] || return "${statuses[0]}"
   # The real pytest `-q` summary shapes -- a count plus an outcome word, or
   # the wordless "no tests ran". Deliberately broad: the question this
   # answers is "did a pytest actually report back?", not "did it pass",
@@ -141,7 +130,7 @@ lane_pipe_pytest() {
     "${output_file}" 2>/dev/null; then
     _lane_summary_seen=$(( ${_lane_summary_seen:-0} + 1 ))
   fi
-  return "${status}"
+  return 0
 }
 
 # lane_extract_passed_count <output-file>

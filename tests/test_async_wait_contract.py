@@ -259,16 +259,7 @@ def test_no_new_test_coordinates_through_an_unbounded_event_wait() -> None:
         )
     )
 
-
-def test_known_unbounded_wait_allowlist_has_no_stale_entries() -> None:
-    """The ratchet only tightens.
-
-    A fixed (or deleted, or renamed) test must lose its entry, otherwise
-    the list stops describing real debt and quietly re-authorizes the
-    pattern for a name nobody is watching any more.
-    """
-
-    stale = sorted(KNOWN_UNBOUNDED_WAITS - set(_offending_tests()))
+    stale = sorted(KNOWN_UNBOUNDED_WAITS - set(offenders))
 
     assert not stale, (
         "stale KNOWN_UNBOUNDED_WAITS entries — the test was fixed, renamed, or "
@@ -301,11 +292,7 @@ def test_no_new_test_bounds_an_event_wait_below_the_hang_breaker_floor() -> None
         )
     )
 
-
-def test_known_small_bounded_wait_allowlist_has_no_stale_entries() -> None:
-    """This ratchet only tightens too, for the same reason as the other."""
-
-    stale = sorted(KNOWN_SMALL_BOUNDED_WAITS - set(_small_bounded_tests()))
+    stale = sorted(KNOWN_SMALL_BOUNDED_WAITS - set(offenders))
 
     assert not stale, (
         "stale KNOWN_SMALL_BOUNDED_WAITS entries — the test was fixed, renamed, "

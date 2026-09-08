@@ -86,19 +86,6 @@ collect_changed_files() {
 collect_changed_files | awk 'NF' | sort -u > "${changed_file_tmp}"
 
 add_test_if_present() {
-  local path="$1"
-  if [[ -f "${path}" ]]; then
-    printf '%s\n' "${path}" >> "${selected_test_tmp}"
-  fi
-}
-
-# Like add_test_if_present, but accepts a pytest node id qualified with
-# `::test_name` (as scripts/ci-classify.py's --landing-pytest-targets emits
-# for its one function-scoped target): the existence check is against the
-# file portion only, while the full id -- file plus `::`-suffix -- is what
-# gets queued, so pytest runs just that one function rather than the whole
-# file.
-add_pytest_target_if_present() {
   local target="$1"
   local file="${target%%::*}"
   if [[ -f "${file}" ]]; then
@@ -139,7 +126,7 @@ add_landing_tests_if_needed() {
     exit 1
   fi
   for landing_target in "${landing_targets[@]}"; do
-    add_pytest_target_if_present "${landing_target}"
+    add_test_if_present "${landing_target}"
   done
 }
 
@@ -370,8 +357,6 @@ while IFS= read -r changed; do
   esac
 done < "${changed_file_tmp}"
 
-sort -u "${selected_test_tmp}" -o "${selected_test_tmp}"
-
 echo "==> ruff"
 "${ruff_bin}" check .
 
@@ -456,28 +441,9 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
 fi
 
 if (( ${#resolved_lastfailed_ids[@]} > 0 )); then
-  # Deliberate: passing both is a UNION, not `"$@"` scoping the cached ids --
-  # pytest runs the resolved ids AND whatever `"$@"` names, exactly the same
-  # union `--last-failed` itself had with trailing args before this fix.
-  # Harmless: a caller-supplied path only adds tests to the phase, it can
-  # never cause a cached failure to be silently skipped.
-  lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short "${resolved_lastfailed_ids[@]}" "$@"
-  _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
+  printf '%s\n' "${resolved_lastfailed_ids[@]}" >> "${selected_test_tmp}"
 else
   echo "no last-failed tests recorded"
-fi
-
-if [[ -s "${selected_test_tmp}" ]]; then
-  echo "==> pytest changed-file selection"
-  sed 's/^/  /' "${selected_test_tmp}"
-  selected_tests=()
-  while IFS= read -r path; do
-    selected_tests+=("${path}")
-  done < "${selected_test_tmp}"
-  lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short "${selected_tests[@]}" "$@"
-  _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
-else
-  echo "==> no direct changed-file test mapping found"
 fi
 
 # Repo-wide scanners: each walks whole trees instead of testing one module, and
@@ -492,13 +458,39 @@ fi
 # test_env_vars_codified) stay in test-merge so this lane doesn't double in
 # runtime. test_ci_classifier is already covered by the routing-policy phase
 # above.
-echo "==> pytest always-on fast guards"
-lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
+printf '%s\n' \
   tests/test_dependency_groups.py tests/test_lint_contracts.py \
   tests/test_deploy_wiring_guards.py tests/test_shell_awk_environ_convention.py \
   tests/test_shell_env_source_convention.py \
   tests/test_docs_impact.py tests/test_correction_boundary_ssot.py \
-  tests/test_runtime_import_closure.py "$@"
+  tests/test_runtime_import_closure.py >> "${selected_test_tmp}"
+
+sort -u "${selected_test_tmp}" -o "${selected_test_tmp}"
+echo "==> pytest selected tests and always-on fast guards"
+sed 's/^/  /' "${selected_test_tmp}"
+selected_tests=()
+while IFS= read -r path; do
+  selected_tests+=("${path}")
+done < "${selected_test_tmp}"
+# Pytest >=9.1.1 coalesces overlapping file, directory and node-id arguments.
+# Caller options can change collection, so only the default invocation can
+# reuse the policy gate's earlier pass for every item in its registered files.
+if (( $# == 0 )); then
+  for target in "${routing_policy_tests[@]}"; do
+    selected_tests+=("--deselect=${target}")
+  done
+fi
+status=0
+lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
+  "${selected_tests[@]}" "$@" || status=$?
+if [[ "${status}" -ne 0 ]]; then
+  # Exit 5 can mean all caller-filtered matches passed in the policy phase.
+  # A collection probe distinguishes that from a filter matching nothing.
+  if [[ "${status}" -ne 5 || $# -ne 0 ]] || ! "${pytest_bin}" --collect-only -q \
+    "${routing_policy_tests[@]}" "$@" >/dev/null 2>&1; then
+    exit "${status}"
+  fi
+fi
 _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
 
 # LAST statement, deliberately: every phase the lane promises has now run, so

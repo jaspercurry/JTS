@@ -148,99 +148,30 @@ def test_dependabot_groups_leave_security_updates_ungrouped() -> None:
             assert config.get("patterns"), f"group {name!r} has no patterns"
 
 
-def _alsa_linking_crates() -> dict[str, str]:
-    """Map each `rust/<crate>` directory to the `alsa` version it declares."""
-
-    found: dict[str, str] = {}
-    for manifest in sorted((ROOT / "rust").glob("*/Cargo.toml")):
-        declared = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        spec = declared.get("dependencies", {}).get("alsa")
-        if spec is None:
-            continue
-        version = spec if isinstance(spec, str) else spec.get("version")
-        assert version, f"{manifest} declares alsa with no version"
-        found[f"/rust/{manifest.parent.name}"] = version
-    return found
-
-
-def test_alsa_linking_crates_share_one_version() -> None:
-    """Every libasound-linking crate must pin the same `alsa` version.
-
-    They talk to the same libasound on the same Pi and share the same wrapper
-    API, so a split pin means one of them is being type-checked against an API
-    the others do not have. It drifted silently once already (issue #2266),
-    behind manifest comments each asserting a parity that no longer held. A
-    comment cannot fail; this can.
-    """
-
-    crates = _alsa_linking_crates()
-
-    assert len(crates) == 3, f"expected 3 alsa-linking crates, found {crates}"
-    assert len(set(crates.values())) == 1, (
-        f"alsa version split across crates: {crates}"
-    )
-
-
-def _cargo_entry_directories() -> list[set[str]]:
-    """The directory set each cargo `updates` entry covers, one set per entry.
-
-    Dependabot accepts either `directory` (a single path) or `directories` (a
-    list). Read both, so the guards below cannot be defeated by switching form.
-    """
-
-    covered: list[set[str]] = []
-    for entry in _dependabot()["updates"]:
-        if entry["package-ecosystem"] != "cargo":
-            continue
-        directories = set(entry.get("directories") or ())
-        if "directory" in entry:
-            directories.add(entry["directory"])
-        covered.append(directories)
-    return covered
-
-
-def test_dependabot_watches_every_alsa_linking_crate() -> None:
-    """An unwatched crate directory ages with nothing raising a PR.
-
-    That is exactly how the split in test_alsa_linking_crates_share_one_version
-    formed: only jasper-fanin and jasper-outputd had cargo entries, so the other
-    two never got a bump PR and nobody noticed them falling behind.
-    """
-
-    watched = set().union(*_cargo_entry_directories())
-    unwatched = sorted(set(_alsa_linking_crates()) - watched)
-
-    assert not unwatched, (
-        "alsa-linking crate directories with no cargo entry in "
-        f".github/dependabot.yml: {unwatched}"
-    )
-
-
-def test_dependabot_bumps_the_alsa_crates_atomically() -> None:
-    """All four must be covered by ONE cargo entry, via `directories`.
-
-    Coverage alone is not enough, and the two guards are load-bearing together.
-    Dependabot groups cannot span `updates` entries, so an entry per crate
-    raises a PR per crate, each rewriting one manifest —
-    test_alsa_linking_crates_share_one_version then fails every one of them
-    individually and the bump deadlocks with nothing mergeable.
-
-    Not hypothetical: commit adf15a2cc (PR #1725) is a dependabot PR that
-    rewrote jasper-outputd's manifest alone and created the very drift #2266
-    had to repair. Splitting this entry back up would re-arm that.
-    """
-
-    entries = _cargo_entry_directories()
-    alsa_crates = set(_alsa_linking_crates())
-    owning = [covered for covered in entries if covered & alsa_crates]
-
-    assert len(owning) == 1, (
-        "the alsa-linking crates must share ONE cargo updates entry so a bump "
-        f"is atomic; found {len(owning)} entries covering them: {owning}"
-    )
-    assert alsa_crates <= owning[0], (
-        f"cargo entry misses alsa-linking crates: {sorted(alsa_crates - owning[0])}"
-    )
+def test_rust_workspace_owns_packages_resolution_and_release_profile() -> None:
+    rust = ROOT / "rust"
+    workspace = tomllib.loads((rust / "Cargo.toml").read_text())
+    members = {path for pattern in workspace["workspace"]["members"] for path in rust.glob(pattern)}
+    assert members == {manifest.parent for manifest in rust.glob("*/Cargo.toml")}
+    assert list(rust.glob("**/Cargo.lock")) == [rust / "Cargo.lock"]
+    assert workspace["workspace"]["resolver"] == "2"
+    assert workspace["profile"]["release"] == {
+        "opt-level": 3, "lto": "fat", "codegen-units": 1,
+        "strip": "debuginfo", "panic": "abort",
+    }
+    package = workspace["workspace"]["package"]
+    assert package["rust-version"] == "1.82"
+    assert package["license"] == "Apache-2.0"
+    assert package["repository"] == "https://github.com/jaspercurry/JTS"
+    for member in members:
+        manifest = tomllib.loads((member / "Cargo.toml").read_text())
+        assert all(manifest["package"][key] == {"workspace": True} for key in package)
+        alsa = manifest.get("dependencies", {}).get("alsa")
+        if alsa is not None:
+            assert alsa["workspace"] is True
+    cargo_updates = [entry for entry in _dependabot()["updates"] if entry["package-ecosystem"] == "cargo"]
+    assert len(cargo_updates) == 1
+    assert cargo_updates[0]["directory"] == "/rust"
 
 
 def test_hang_backstop_is_configured_and_uses_the_signal_method() -> None:

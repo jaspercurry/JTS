@@ -629,27 +629,7 @@ async def test_manual_end_is_idempotent_after_input_already_closed():
     assert result == "OK"
 
 
-async def test_session_task_watcher_ends_manual_turn_without_extra_frame():
-
-    wl = wake_loop_for_tests()
-    ended = asyncio.Event()
-
-    async def _end_turn():
-        ended.set()
-
-    async def _complete():
-        return None
-
-    wl._end_turn = _end_turn
-    task = asyncio.create_task(_complete())
-    wl._bg_tasks = {task}
-
-    wl._arm_session_task_watcher()
-    await asyncio.wait_for(ended.wait(), timeout=1.0)
-    await asyncio.gather(*wl._fire_and_forget)
-
-
-async def test_session_task_watcher_ignores_stale_completed_tasks():
+async def test_background_completion_ignores_tasks_from_a_previous_turn():
 
     wl = wake_loop_for_tests()
     ended = False
@@ -665,11 +645,15 @@ async def test_session_task_watcher_ignores_stale_completed_tasks():
         await asyncio.Event().wait()
 
     wl._end_turn = _end_turn
+    wl._turn = object()
     old_task = asyncio.create_task(_complete())
     new_task = asyncio.create_task(_pending())
+    wl._bg_tasks = {old_task}
+    wl._arm_turn_background_end()
     wl._bg_tasks = {new_task}
 
-    await wl._watch_session_tasks((old_task,))
+    await old_task
+    await asyncio.gather(*wl._fire_and_forget)
 
     assert ended is False
     new_task.cancel()

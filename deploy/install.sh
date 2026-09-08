@@ -1108,11 +1108,8 @@ reconcile_aec_state() {
     # /wake owns the independent host-microphone preference. Seed it Off so a
     # fresh install never exports room audio merely because USB Audio Input is
     # enabled; the UI must record an explicit household choice first.
-    if [[ ! -f "${STATE_DIR}/usb_mic.env" ]]; then
-        printf 'JASPER_USB_MIC=disabled\nJASPER_USB_MIC_LEG=primary\n' \
-            > "${STATE_DIR}/usb_mic.env"
-        chmod 0644 "${STATE_DIR}/usb_mic.env"
-    fi
+    jasper_env_file_seed_absent "${STATE_DIR}/usb_mic.env" 0644 0770 \
+        JASPER_USB_MIC=disabled JASPER_USB_MIC_LEG=primary
     # aec_mode.env has one BASH writer: ensure_mode_file in the run below.
     local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
     systemctl enable jasper-aec-reconcile.service
@@ -1718,6 +1715,7 @@ INSTALL_STEPS=(
     # APPLE_DONGLE_SERVICE_CARD.
     "alsa|both|install_alsa|render /etc/asound.conf and apply the snd-aloop options"
     "camilladsp|both|install_camilladsp|fetch and install the pinned CamillaDSP binary"
+    "support_files|both|install_jasper_support_files|publish the shared shell libraries under /usr/local/lib/jasper"
     "renderers|both|install_renderers|build/install shairport-sync, nqptp, librespot and bluez-alsa"
     "headless_boot|both|reconcile_headless_boot_config|trim the Pi boot config for headless operation"
     "usb_role|both|reconcile_usb_data_role|reconcile the USB data role from board topology"

@@ -16,13 +16,10 @@ use it, including the socket-activated wizard process and CI without hardware.
 """
 from __future__ import annotations
 
-import json
-import socket
-import time
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.platform.status_socket import FANIN_STATUS_SOCKET
+from jasper.platform.status_socket import FANIN_STATUS_SOCKET, read_status_socket
 
 
 # The STATUS input-lane ``source`` value on the USB DIRECT lane. Every
@@ -105,42 +102,12 @@ def read_fanin_status(
     timeout_sec: float = 0.5,
     max_bytes: int = 64 * 1024,
 ) -> dict[str, Any] | None:
-    """Read one bounded fan-in STATUS snapshot, failing soft to ``None``.
-
-    This is the import-light shared probe for lifecycle/management surfaces.
-    It bounds connect/read time and bytes so an unhealthy local daemon cannot
-    pin a root coordinator or socket-activated web process.
-    """
-
     if timeout_sec <= 0 or max_bytes <= 0:
         return None
     try:
-        deadline = time.monotonic() + timeout_sec
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout_sec)
-            sock.connect(socket_path)
-            sock.sendall(b"STATUS\n")
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                sock.settimeout(remaining)
-                chunk = sock.recv(min(8192, max_bytes - total + 1))
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    return None
-                chunks.append(chunk)
-    except (FileNotFoundError, ConnectionRefusedError, TimeoutError, OSError):
+        return read_status_socket(socket_path, timeout=timeout_sec, max_bytes=max_bytes)
+    except (OSError, ValueError):
         return None
-    try:
-        payload = json.loads(b"".join(chunks).decode("utf-8", "replace"))
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
 
 
 def fanin_usbsink_input(

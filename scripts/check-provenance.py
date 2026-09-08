@@ -455,9 +455,9 @@ def _validate_rust_crate_lock(
 
     crate_path = root / crate_relpath
     manifest_path = crate_path / "Cargo.toml"
-    lock_path = crate_path / "Cargo.lock"
+    lock_path = root / "rust" / "Cargo.lock"
     if not lock_path.exists():
-        errors.append(f"{crate_relpath}/Cargo.lock is missing")
+        errors.append("rust/Cargo.lock is missing")
         return
 
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
@@ -467,17 +467,15 @@ def _validate_rust_crate_lock(
 
     packages = lock.get("package", [])
     if not isinstance(packages, list):
-        errors.append("rust/jasper-fanin/Cargo.lock: missing [[package]] records")
+        errors.append("rust/Cargo.lock: missing [[package]] records")
         return
 
-    root_package = None
-    for package in packages:
-        if package.get("name") == package_name:
-            root_package = package
-            break
+    root_package = next(
+        (package for package in packages if package.get("name") == package_name), None
+    )
     if root_package is None:
         errors.append(
-            f"{crate_relpath}/Cargo.lock: missing root package {package_name!r}"
+            f"rust/Cargo.lock: missing root package {package_name!r}"
         )
         return
 
@@ -489,7 +487,7 @@ def _validate_rust_crate_lock(
     missing = sorted(direct_deps - locked_deps)
     if missing:
         errors.append(
-            f"{crate_relpath}/Cargo.lock: root package missing direct deps "
+            "rust/Cargo.lock: root package missing direct deps "
             + ", ".join(missing)
         )
 

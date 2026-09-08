@@ -1,62 +1,30 @@
 [package]
 name = "jasper-outputd"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "JTS final-output owner: writes the final DAC sink and publishes output health/reference taps."
-license = "Apache-2.0"
-repository = "https://github.com/jaspercurry/JTS"
-authors = ["Jasper Curry <jaspercurry@gmail.com>"]
-rust-version = "1.75"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
-# The shared daemon skeleton: the hand-built JSON emitter, the systemd
-# notify seam (READY=1 / WATCHDOG=1 / STOPPING=1 for the unit's
-# Type=notify + WatchdogSec=30s contract), the config-class park contract,
-# and mlockall. Same crate jasper-fanin stands on.
 jasper-daemon = { path = "../jasper-daemon" }
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
-# Shared policy-light scalar environment parsing. Outputd keeps its own
-# optional-string and strictly-positive geometry policy.
 jasper-env = { path = "../jasper-env" }
-# The shared clock-tracking DLL (spa_dll port). outputd composes it for the
-# observe-only software-AEC reference drift estimate (and, from Inc 3, the
-# converged chip-AEC SRO / content-bridge rate loops). Pure, no ALSA.
 jasper-clock = { path = "../jasper-clock" }
-# The shared windowed-sinc resampler + rate controller. content_bridge consumes
-# its SincTable / AudioRing / RateController (extracted from content_bridge so
-# the usbsink C++ binding and this daemon share one algorithm). Pure, no ALSA;
-# itself depends on jasper-clock for the control law.
 jasper-resampler = { path = "../jasper-resampler" }
-# PROTOTYPE (latency/ring-proto-shm): the SPSC SHM ping-pong ring reader for the
-# JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring content source. Pure (mmap via libc, no
-# ALSA), default-off — the reader is only constructed when the flag selects it.
 jasper-ring = { path = "../jasper-ring" }
-# Idiomatic Rust wrapper around libasound — outputd's ALSA backend reads
-# Camilla's post-DSP loopback lane and writes the final DAC directly. Every
-# ALSA-linking crate in rust/ shares one version;
-# tests/test_build_and_ci_contracts.py owns that invariant.
-alsa = "0.12"
+alsa.workspace = true
 
-# Top-level error context for daemon startup and I/O failures.
 anyhow = "1"
 
-# errno constants for ALSA xrun recovery.
 libc = "0.2"
 
-# Plain-thread signal handling for clean systemd stop.
 signal-hook = "0.4"
 
 [dev-dependencies]
-# Parse the hand-built STATUS payload in wire-contract tests as an independent
-# grammar oracle; the emit side is jasper-daemon's.
 serde_json = "1"
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = "debuginfo"
-panic = "abort"
 
 [[bin]]
 name = "jasper-outputd"

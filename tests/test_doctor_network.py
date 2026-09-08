@@ -13,13 +13,12 @@ concern, pinned in test_doctor_usbsink.py.
 """
 from __future__ import annotations
 
-import io
 import shutil
 import subprocess
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1304,34 +1303,57 @@ def _iface_and_nginx(monkeypatch, tmp_path):
     monkeypatch.setattr(web, "NGINX_SITE", site)
 
 
-class _Resp:
-    def __init__(self, status: int):
-        self.status = status
-
-    def read(self, n=-1):
-        return b"{}"
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def test_usbnet_probe_200_is_ok(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "check,address,http_reason,no_answer_reason",
+    [
+        (web.check_management_surface, "127.0.0.1",
+         web.REASON_MANAGEMENT_HTTP_ERROR, web.REASON_MANAGEMENT_NO_ANSWER),
+        (doctor_network.check_usbnet_management_probe, PLAN.device_address,
+         doctor_network.REASON_USBNET_PROBE_HTTP_ERROR,
+         doctor_network.REASON_USBNET_PROBE_NO_ANSWER),
+    ],
+    ids=["loopback", "usb"],
+)
+@pytest.mark.parametrize(
+    "outcome", [200, 403, 502, 503, "bodyless", "refused", "timeout"],
+)
+def test_management_probes(
+    monkeypatch, tmp_path, check, address, http_reason, no_answer_reason, outcome,
+):
     _iface_and_nginx(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
-    with patch("urllib.request.urlopen", return_value=_Resp(200)) as m:
-        r = doctor_network.check_usbnet_management_probe()
-    assert r.status == "ok"
-    assert r.reason == ""
-    # The observed address and Host header are the fact this probe exists
-    # to disclose — data the reason code has no room for.
-    assert PLAN.device_address in r.detail
-    assert "jts3.local" in r.detail
-    req = m.call_args[0][0]
-    assert req.full_url == f"http://{PLAN.device_address}/system/data.json"
+    url = f"http://{address}/system/data.json"
+    response = MagicMock(status=200)
+    response.__enter__.return_value = response
+    response.read.return_value = b"{}"
+    failure = None
+    if isinstance(outcome, int) and outcome != 200:
+        failure = urllib.error.HTTPError(url, outcome, "failed", None, response)
+    elif outcome == "bodyless":
+        failure = urllib.error.HTTPError(url, 502, "failed", None, None)
+    elif outcome == "refused":
+        failure = urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+    elif outcome == "timeout":
+        failure = TimeoutError()
+
+    with patch("urllib.request.urlopen", return_value=response, side_effect=failure) as opened:
+        result = check()
+
+    expected_reason = (
+        "" if outcome == 200 else
+        no_answer_reason if outcome in ("refused", "timeout") else http_reason
+    )
+    assert (result.status, result.reason, result.speaker_silent) == (
+        "ok" if outcome == 200 else "fail", expected_reason, False,
+    )
+    req = opened.call_args.args[0]
+    assert req.full_url == url
     assert req.get_header("Host") == "jts3.local"
+    assert opened.call_args.kwargs == {"timeout": 6.0}
+    if isinstance(outcome, int):
+        response.read.assert_called_once_with(512)
+    else:
+        response.read.assert_not_called()
 
 
 def test_usbnet_probe_ipv4_inspection_error_fails_loudly(monkeypatch, tmp_path):
@@ -1362,41 +1384,3 @@ def test_usbnet_probe_existing_interface_without_ipv4_fails(monkeypatch, tmp_pat
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PROBE_NO_ADDRESS
-
-
-def test_usbnet_probe_403_fails_with_guard_hint(monkeypatch, tmp_path):
-    _iface_and_nginx(monkeypatch, tmp_path)
-    err = urllib.error.HTTPError(
-        f"http://{PLAN.device_address}/system/data.json", 403, "Forbidden", None,
-        io.BytesIO(b'{"error": "host_not_allowed"}'),
-    )
-    with patch("urllib.request.urlopen", side_effect=err):
-        r = doctor_network.check_usbnet_management_probe()
-    assert r.status == "fail"
-    assert r.reason == doctor_network.REASON_USBNET_PROBE_HTTP_ERROR
-    # The 403/502/other statuses all share one reason code; the remediation
-    # hint text is the only thing that discriminates which one fired, so it
-    # stays a pure-formatting-helper `.detail` check.
-    assert "host_not_allowed" in r.detail
-    assert "test_http_security" in r.detail
-
-
-def test_usbnet_probe_502_fails(monkeypatch, tmp_path):
-    _iface_and_nginx(monkeypatch, tmp_path)
-    err = urllib.error.HTTPError(
-        f"http://{PLAN.device_address}/system/data.json", 502, "Bad Gateway", None,
-        io.BytesIO(b'{"error": "jasper-control unreachable"}'),
-    )
-    with patch("urllib.request.urlopen", side_effect=err):
-        r = doctor_network.check_usbnet_management_probe()
-    assert r.status == "fail"
-    assert r.reason == doctor_network.REASON_USBNET_PROBE_HTTP_ERROR
-
-
-def test_usbnet_probe_connection_refused_fails_naming_nginx(monkeypatch, tmp_path):
-    _iface_and_nginx(monkeypatch, tmp_path)
-    err = urllib.error.URLError(ConnectionRefusedError(111, "refused"))
-    with patch("urllib.request.urlopen", side_effect=err):
-        r = doctor_network.check_usbnet_management_probe()
-    assert r.status == "fail"
-    assert r.reason == doctor_network.REASON_USBNET_PROBE_NO_ANSWER

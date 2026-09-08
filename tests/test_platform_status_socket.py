@@ -21,7 +21,10 @@ from unittest.mock import Mock
 import pytest
 
 from jasper import audio_validation
+from jasper.cli import system_soak
+from jasper.control import audio_health
 from jasper.control.airplay_health import AirPlayHealthSampler
+from jasper.fanin.status import read_fanin_status
 from jasper.correction import runtime_integrity
 from jasper.platform import status_socket
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
@@ -93,15 +96,13 @@ def test_read_status_socket_or_none_returns_object(short_sock_path):
 
 
 def test_read_status_socket_or_none_fails_soft_when_absent(tmp_path, caplog):
-    # An unreachable socket is an expected snapshot state (daemon down); the
-    # fail-soft wrapper returns None and logs at DEBUG rather than raising.
     with caplog.at_level("DEBUG"):
         result = status_socket.read_status_socket_or_none(
             str(tmp_path / "nope.sock"), timeout=1.0, event="test.socket_unavailable"
         )
 
     assert result is None
-    assert any("test.socket_unavailable" in rec.getMessage() for rec in caplog.records)
+    assert any(rec.jasper_event == "test.socket_unavailable" for rec in caplog.records)
 
 
 def test_canonical_socket_paths_match_daemon_conventions():
@@ -160,27 +161,45 @@ def test_reader_rejects_a_reply_over_the_byte_cap(monkeypatch):
     assert fake.closed is True
 
 
-def test_reader_enforces_a_total_deadline_not_a_per_recv_one(monkeypatch):
-    fake = FakeStatusSocket(chunks=[b"x", b"y", b""])
+@pytest.mark.parametrize("connect_sec, send_sec, read_sec", [(0.8, 0.4, 0), (0.3, 0.3, 0.5)])
+def test_reader_shares_one_deadline_across_connect_send_and_read(
+    monkeypatch, connect_sec, send_sec, read_sec,
+):
+    class TimedSocket(FakeStatusSocket):
+        now = 0.0
+
+        def spend(self, seconds):
+            self.now += min(seconds, self.timeout)
+            if seconds > self.timeout:
+                raise TimeoutError
+
+        def connect(self, path):
+            self.spend(connect_sec)
+            super().connect(path)
+
+        def sendall(self, data):
+            self.spend(send_sec)
+            super().sendall(data)
+
+        def recv(self, size):
+            self.spend(read_sec)
+            return super().recv(size)
+
+    fake = TimedSocket(payload=b"{}")
     monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
-    monkeypatch.setattr(
-        status_socket.time, "monotonic", Mock(side_effect=[0.0, 0.0, 0.1, 0.2, 1.1])
-    )
+    monkeypatch.setattr(status_socket.time, "monotonic", lambda: fake.now)
 
     with pytest.raises(TimeoutError):
         status_socket.read_status_socket("/run/test.sock", timeout=1.0)
 
-    assert fake.recv_sizes == [65536]
+    assert fake.now == pytest.approx(1.0)
     assert fake.closed is True
 
 
-@pytest.mark.parametrize("failure_stage", ["connect", "recv"])
+@pytest.mark.parametrize("failure_stage", ["connect", "sendall", "recv"])
 def test_reader_closes_the_socket_on_failure(monkeypatch, failure_stage):
-    error = OSError(f"{failure_stage} failed")
-    fake = FakeStatusSocket(
-        error=error if failure_stage == "connect" else None,
-        recv_error=error if failure_stage == "recv" else None,
-    )
+    fake = FakeStatusSocket()
+    monkeypatch.setattr(fake, failure_stage, Mock(side_effect=OSError))
     monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
 
     with pytest.raises(OSError):
@@ -195,21 +214,6 @@ def test_reader_decodes_lossily_rather_than_raising_on_a_stray_byte(monkeypatch)
 
     assert status_socket.read_status_socket("/run/test.sock")["ok"] is True
 
-
-# ---- convergence: the three former hand-rolled STATUS readers -------------
-#
-# jasper.audio_validation.query_outputd_status,
-# jasper.control.airplay_health.AirPlayHealthSampler._read_fanin_status and
-# jasper.correction.runtime_integrity._read_status each used to hand-roll
-# this same connect/send/recv-loop with a PER-OPERATION `settimeout` and no
-# byte cap; all three now delegate to `read_status_socket_or_none`. A
-# dribbling server (one byte every 100 ms, forever, never closing) is the
-# shape that tells the two implementations apart: a per-operation timeout
-# never fires because every recv succeeds inside its own window, so a
-# reader without a TOTAL deadline hangs on it forever. The byte cap itself
-# is already pinned deterministically above
-# (test_reader_rejects_a_reply_over_the_byte_cap) — a real 100 ms/byte
-# trickle would take days to reach 1 MiB, so it is not re-proven here.
 
 _DRIBBLE_TIMEOUT_SEC = 0.3
 _DRIBBLE_WALL_SLACK_SEC = 2.0
@@ -250,6 +254,15 @@ def _run_on_daemon_thread(call, sock_path: Path, *, join_timeout: float):
         ("audio_validation.query_outputd_status", _call_audio_validation),
         ("airplay_health.AirPlayHealthSampler._read_fanin_status", _call_airplay_health),
         ("correction.runtime_integrity._read_status", _call_runtime_integrity),
+        ("fanin.read_fanin_status", lambda path: read_fanin_status(
+            str(path), timeout_sec=_DRIBBLE_TIMEOUT_SEC,
+        )),
+        ("audio_health._read_local_status", lambda path: audio_health._read_local_status(
+            str(path), timeout_sec=_DRIBBLE_TIMEOUT_SEC,
+        )),
+        ("system_soak._status_socket", lambda path: system_soak._status_socket(
+            str(path), timeout=_DRIBBLE_TIMEOUT_SEC,
+        )),
     ],
 )
 def test_converged_caller_bounds_a_dribbling_status_server(label, call):
@@ -265,3 +278,35 @@ def test_converged_caller_bounds_a_dribbling_status_server(label, call):
         f"(still blocked after {elapsed:.2f}s)"
     )
     assert result is None, f"{label} should fall through to None, not a partial reply"
+
+
+@pytest.mark.parametrize("consumer", [
+    read_fanin_status, audio_health._read_local_status, system_soak._status_socket,
+])
+@pytest.mark.parametrize("body, expected", [(b"{}", {}), (b"{} ", None), (b"[]", None), (b"x", None)])
+def test_converged_consumers_keep_limits_and_failure_policy(monkeypatch, consumer, body, expected):
+    fake = FakeStatusSocket(chunks=[body[:1], body[1:], b""])
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    assert consumer("/run/test.sock", max_bytes=2) == expected
+    assert fake.closed is True
+
+
+@pytest.mark.parametrize("consumer, cap", [
+    (read_fanin_status, 64 * 1024),
+    (audio_health._read_local_status, 256 * 1024),
+    (system_soak._status_socket, 64 * 1024),
+    (status_socket.read_status_socket, 1024 * 1024),
+])
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_status_consumers_keep_default_caps(monkeypatch, consumer, cap, extra_bytes):
+    body = b"{}" + b" " * (cap - 2 + extra_bytes)
+    fake = FakeStatusSocket(chunks=[body[i:i + 8192] for i in range(0, len(body), 8192)] + [b""])
+    monkeypatch.setattr(socket, "socket", lambda *a, **kw: fake)
+
+    if consumer is status_socket.read_status_socket and extra_bytes:
+        with pytest.raises(OSError):
+            consumer("/run/test.sock")
+    else:
+        assert consumer("/run/test.sock") == (None if extra_bytes else {})
+    assert fake.closed is True

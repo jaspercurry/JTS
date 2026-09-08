@@ -147,6 +147,52 @@ def _run_install_helper(
     )
 
 
+@pytest.mark.parametrize("helper,filename,defaults", [
+    ("reconcile_aec_state", "usb_mic.env", {
+        "JASPER_USB_MIC": "disabled", "JASPER_USB_MIC_LEG": "primary",
+    }),
+    ("install_renderers", "airplay_mode.env", {"JASPER_AIRPLAY_FREE_RUNNING": "no"}),
+])
+@pytest.mark.parametrize("existing", [False, True])
+def test_install_env_seeds_preserve_saved_values(tmp_path, helper, filename, defaults, existing):
+    state = tmp_path / "state"
+    state.mkdir()
+    target = state / filename
+    key = next(iter(defaults))
+    if existing:
+        target.write_text(f"{key}=saved\n")
+    stubs = r'''
+systemctl() { :; }
+/usr/local/sbin/jasper-aec-reconcile() { :; }
+seed_speaker_name_env() { :; }
+curl() { :; }
+sha256sum() { cat >/dev/null; }
+apt() { :; }
+apt-get() { :; }
+librespot() { :; }
+autoreconf() { :; }
+run_contained_build() { :; }
+build_sandbox_jobs() { echo 1; }
+make() { :; }
+getent() { return 0; }
+chgrp() { :; }
+install() { :; }
+bash() { :; }
+rm() { case "${!#}" in /etc/*|/usr/*) return 0 ;; esac; command rm "$@"; }
+fetch_verified_source_archive() {
+    mkdir -p "$3"
+    printf '#!/bin/sh\nexit 0\n' > "$3/configure"
+    chmod 0755 "$3/configure"
+}
+'''
+    for _ in range(2):
+        result = _run_install_helper(stubs + "\n" + helper, tmp_path)
+        assert result.returncode == 0, result.stderr
+        parsed = dict(line.split("=", 1) for line in target.read_text().splitlines())
+        assert parsed == {**defaults, **({key: "saved"} if existing else {})}
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
 def _run_speaker_name_seed(
     tmp_path: Path,
     *,
@@ -2222,12 +2268,10 @@ def test_write_build_manifest_is_atomic_tempfile_rename():
     ],
 )
 def test_ensure_peer_id_publishes_a_valid_id(tmp_path, seeded, preserved):
-    """peer_id is the evidence the deploy direction guard reads
-    (scripts/_lib.sh verify_or_record_peer_id), and it and
-    jasper/peering/config.py both accept ANY non-empty id — so replacing one
-    that merely looks odd is what would abort the next deploy blaming a
-    re-image. Only an absent or blank id is generated, atomically; anything
-    with content survives byte for byte, trailing CR included."""
+    """Only an absent or blank id is generated atomically; existing content
+    survives byte for byte, including a trailing CR."""
+    if not preserved and sys.platform != "linux":
+        pytest.skip("peer ID generation requires the Linux kernel UUID source")
     state = tmp_path / "state"
     state.mkdir()
     peer_id = state / "peer_id"

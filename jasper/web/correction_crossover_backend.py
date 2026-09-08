@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Correction-side active-crossover measurement backend.
-
-The correction page owns the HTTPS browser surface. Active-speaker measurement
-state, capture storage, preset resolution, and acoustic analysis are owned by
-``jasper.active_speaker.web_measurement`` so another operator surface does not
-need to rediscover the same evidence model.
-"""
+"""Correction-side active-crossover levels and saved measurement status."""
 
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ import json
 import logging
 import math
 import threading
-from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
@@ -166,10 +159,6 @@ class CrossoverLevelLease:
         self.noise_floor_db = None
         self.mic_calibration = None
         self.input_device = None
-        # Interim fixed-position repeats are process-local and scoped by both
-        # the immutable comparison set and driver target.  Nothing from one
-        # level/profile context can be paired with another.
-        self._repeat_sessions: dict[tuple[str, str], dict[str, Any]] = {}
         self._repeat_lock = threading.RLock()
         self._repeat_failures: dict[str, dict[str, Any]] = {}
         self._durable_repeat_progress: dict[str, Any] = {}
@@ -449,7 +438,6 @@ class CrossoverLevelLease:
             self.noise_floor_db = None
             self.mic_calibration = None
             self.input_device = None
-            self._repeat_sessions = {}
             self._repeat_failures = {}
             self._durable_repeat_progress = {}
         log_event(
@@ -504,70 +492,6 @@ class CrossoverLevelLease:
             }
         return locks
 
-    @staticmethod
-    def repeat_session_key(
-        comparison_set_id: str, target_fingerprint: str
-    ) -> tuple[str, str]:
-        return str(comparison_set_id), str(target_fingerprint)
-
-    def append_driver_repeat(
-        self,
-        key: tuple[str, str],
-        *,
-        target_id: str,
-        item: Mapping[str, Any],
-        attempt: int | None = None,
-    ) -> list[dict[str, Any]]:
-        # ``attempt`` is the RAW durable reservation number, so a set that
-        # survived refunded transport failures reaches its third accept at an
-        # attempt up to MAX_RESERVATIONS — the audible measurement budget still
-        # caps the number of stored (audio-emitting) items at MAX_ATTEMPTS.
-        # Its only supplier, ``web_measurement.record_driver_capture``, is
-        # itself unreachable, so nothing in production passes ``attempt``.
-        from jasper.active_speaker.repeat_admission import MAX_RESERVATIONS
-
-        with self._repeat_lock:
-            session = self._repeat_sessions.setdefault(
-                key,
-                {"target_id": target_id, "items": {}},
-            )
-            if session.get("target_id") != target_id:
-                raise RuntimeError("crossover repeat target changed during capture")
-            items = session["items"]
-            index = int(attempt) if attempt is not None else len(items) + 1
-            if not 1 <= index <= MAX_RESERVATIONS or index in items:
-                raise RuntimeError("crossover repeat attempt is duplicate or out of bounds")
-            items[index] = dict(item)
-            self._repeat_failures.pop(target_id, None)
-            return [dict(items[key]) for key in sorted(items)]
-
-    def driver_repeats(self, key: tuple[str, str]) -> list[dict[str, Any]]:
-        with self._repeat_lock:
-            session = self._repeat_sessions.get(key) or {}
-            items = session.get("items") or {}
-            return [dict(items[index]) for index in sorted(items)]
-
-    def clear_driver_repeats(self, key: tuple[str, str]) -> None:
-        with self._repeat_lock:
-            self._repeat_sessions.pop(key, None)
-
-    @contextmanager
-    def repeat_transaction(self):
-        """Serialize aggregate decisions after durable attempt reservation."""
-
-        with self._repeat_lock:
-            yield
-
-    def record_repeat_failure(
-        self, target_id: str, payload: Mapping[str, Any]
-    ) -> None:
-        with self._repeat_lock:
-            self._repeat_failures[target_id] = dict(payload)
-
-    def repeat_failure(self, target_id: str) -> dict[str, Any] | None:
-        with self._repeat_lock:
-            failure = self._repeat_failures.get(target_id)
-            return dict(failure) if failure is not None else None
 
     def set_durable_repeat_progress(self, payload: Mapping[str, Any]) -> None:
         from jasper.active_speaker.crossover_eligibility import (
@@ -762,7 +686,6 @@ class CrossoverLevelLease:
     def repeat_snapshot(self) -> dict[str, Any]:
         from jasper.active_speaker.commissioning_capture import (
             DEFAULT_REPEAT_TARGET,
-            aggregate_driver_repeats,
         )
 
         from jasper.active_speaker.repeat_admission import (
@@ -776,24 +699,6 @@ class CrossoverLevelLease:
 
         with self._repeat_lock:
             targets: dict[str, Any] = {}
-            for (
-                comparison_set_id,
-                target_fingerprint,
-            ), session in self._repeat_sessions.items():
-                item_map = session.get("items") or {}
-                items = [dict(item_map[index]) for index in sorted(item_map)]
-                aggregate = aggregate_driver_repeats(
-                    items, target=DEFAULT_REPEAT_TARGET
-                )
-                targets[str(session.get("target_id") or "")] = {
-                    "comparison_set_id": comparison_set_id,
-                    "target_fingerprint": target_fingerprint,
-                    "attempts": len(items),
-                    "accepted": aggregate["accepted"],
-                    "target": DEFAULT_REPEAT_TARGET,
-                    "needed_recapture": aggregate["needed_recapture"],
-                }
-
             # Playback admission is the authority for attempts, including
             # captures that failed in transport before acoustic analysis.  Use
             # its ledger for user-facing counts so the UI cannot promise a
@@ -808,8 +713,7 @@ class CrossoverLevelLease:
                 accepted = sum(
                     1 for result in results if result.get("accepted") is True
                 )
-                displayed = dict(targets.get(str(target_id)) or {})
-                displayed.update({
+                targets[str(target_id)] = {
                     "comparison_set_id": (
                         self._durable_repeat_progress.get("comparison") or {}
                     ).get("comparison_set_id"),
@@ -826,8 +730,7 @@ class CrossoverLevelLease:
                         and accepted < DEFAULT_REPEAT_TARGET
                     ),
                     "status": entry.get("status"),
-                })
-                targets[str(target_id)] = displayed
+                }
 
             return {
                 "targets": targets,
@@ -1279,177 +1182,6 @@ def status_payload() -> dict[str, Any]:
         payload["active"],
         driver_count,
         summed_count,
-    )
-    return payload
-
-
-async def apply_profile(
-    *,
-    tuning_owner: str,
-    expected_candidate_fingerprint: str,
-    camilla_factory: CamillaFactory,
-) -> dict[str, Any]:
-    """Atomically apply an explicitly manual or automatic Layer-A profile."""
-    _LEVEL_LEASE.assert_volume_safety_resolved()
-    if tuning_owner not in {"manual", "automatic"}:
-        raise ValueError("tuning_owner must be 'manual' or 'automatic'")
-    if tuning_owner == "automatic":
-        try:
-            commissioning_service = _commissioning_capture_service()
-            lifecycle = commissioning_service.run_store.lifecycle_state(
-                commissioning_service.run
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            commissioning_service = None
-            lifecycle = None
-            try:
-                current = _COMMISSIONING_RUN_STORE.snapshot().get("current")
-            except (OSError, RuntimeError, TypeError, ValueError) as state_exc:
-                raise ValueError(
-                    "automatic crossover apply requires readable commissioning authority"
-                ) from state_exc
-            if isinstance(current, Mapping):
-                raise ValueError(
-                    "the strict commissioning candidate authority is unavailable"
-                ) from exc
-        if lifecycle in {
-            "candidate_ready",
-            "applied_unverified",
-            "rolled_back",
-            "blocked_live_state_unknown",
-        }:
-            if lifecycle == "blocked_live_state_unknown":
-                raise ValueError(
-                    "the previous crossover must be restored before applying"
-                )
-            from jasper.active_speaker.commissioning_service import (
-                commissioning_runtime_port,
-            )
-
-            cam = camilla_factory()
-            payload = await commissioning_service.apply_candidate(
-                expected_candidate_fingerprint=expected_candidate_fingerprint,
-                runtime_port=commissioning_runtime_port(cam),
-                load_config_path=lambda path: cam.set_config_file_path(
-                    path, best_effort=False
-                ),
-            )
-            log_event(
-                logger,
-                "correction.crossover_profile_apply",
-                status=payload.get("status"),
-                tuning_owner=tuning_owner,
-                authority="strict_commissioning_candidate",
-                candidate_fingerprint=expected_candidate_fingerprint,
-            )
-            return payload
-        if lifecycle is not None:
-            raise ValueError(
-                "automatic crossover apply requires a reviewed strict candidate, "
-                f"not commissioning lifecycle {lifecycle}"
-            )
-    from jasper.active_speaker.baseline_profile import apply_baseline_profile
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement import load_measurement_state
-    from jasper.output_topology import load_output_topology
-
-    topology = load_output_topology()
-    draft = load_design_draft()
-    preview = load_crossover_preview(current_design_draft=draft)
-    measurements = load_measurement_state(topology)
-    if tuning_owner == "automatic":
-        from jasper.active_speaker import repeat_admission
-
-        comparison_set = measurements.get("active_comparison_set")
-        if not isinstance(comparison_set, Mapping):
-            raise ValueError(
-                "automatic crossover apply requires a current repeat-bound "
-                "measurement set"
-            )
-        try:
-            repeat_state = repeat_admission.snapshot(comparison_set)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise ValueError(
-                "crossover repeat safety state is unavailable; rerun the driver "
-                "level check before apply"
-            ) from exc
-        from jasper.active_speaker.crossover_eligibility import (
-            automatic_measurement_eligibility,
-        )
-        from jasper.active_speaker.measurement import active_driver_targets
-        from jasper.active_speaker.setup_status import (
-            read_active_speaker_setup_status,
-        )
-
-        setup = read_active_speaker_setup_status()
-        protected_profile = setup.get("protected_profile")
-        profile_context_id = (
-            str(protected_profile.get("candidate_fingerprint") or "")
-            if isinstance(protected_profile, Mapping)
-            else ""
-        )
-        eligibility = automatic_measurement_eligibility(
-            topology_id=topology.topology_id,
-            profile_context_id=profile_context_id,
-            driver_targets=active_driver_targets(topology),
-            measurements=measurements,
-            repeat_state=repeat_state,
-        )
-        if not eligibility.ready:
-            raise ValueError(
-                "current near-field and fixed-axis crossover evidence and "
-                "their exact repeat persistence must all be complete; resume "
-                "the guided driver measurements before automatic apply"
-            )
-    applied = load_applied_baseline_profile_state()
-    legacy_manual_profile = (
-        applied
-        if tuning_owner == "manual"
-        and isinstance(applied, Mapping)
-        and not isinstance(applied.get("recomposition_snapshot"), Mapping)
-        else None
-    )
-
-    def refresh_inputs():
-        current_topology = load_output_topology()
-        current_draft = load_design_draft()
-        current_preview = load_crossover_preview(current_design_draft=current_draft)
-        current_measurements = load_measurement_state(current_topology)
-        return (
-            current_topology,
-            current_draft,
-            current_preview,
-            current_measurements,
-        )
-
-    cam = camilla_factory()
-    payload = await apply_baseline_profile(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        load_config=lambda path: cam.set_config_file_path(path, best_effort=False),
-        get_current_config_path=lambda: cam.get_config_file_path(best_effort=False),
-        tuning_owner=tuning_owner,
-        preserved_applied_profile=legacy_manual_profile,
-        expected_candidate_fingerprint=expected_candidate_fingerprint,
-        refresh_inputs=refresh_inputs,
-    )
-    issue_codes = [
-        str(issue.get("code"))
-        for issue in payload.get("issues") or []
-        if isinstance(issue, Mapping) and issue.get("code")
-    ]
-    log_event(
-        logger,
-        "correction.crossover_profile_apply",
-        status=payload.get("status"),
-        tuning_owner=tuning_owner,
-        issue_count=len(issue_codes),
-        issue_codes=issue_codes,
-        refusal_reason=(issue_codes[0] if payload.get("status") == "blocked" else None),
     )
     return payload
 

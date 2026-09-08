@@ -5,30 +5,20 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
-from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "check-rust.sh"
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 
-RUST_CRATES = (
-    "rust/jasper-env",
-    "rust/jasper-daemon",
-    "rust/jasper-clock",
-    "rust/jasper-resampler",
-    "rust/jasper-ring",
-    "rust/jasper-host-clock",
-    "rust/jasper-tts-protocol",
-    "rust/jasper-fanin",
-    "rust/jasper-outputd",
-)
 
 
 class CargoCall(NamedTuple):
@@ -57,13 +47,8 @@ def _scratch_repo(tmp_path: Path, *, workflow_body: str | None = None) -> Path:
         or 'jobs:\n  rust:\n    env:\n      RUST_TOOLCHAIN: "9.9.9"\n',
         encoding="utf-8",
     )
-    for crate in RUST_CRATES:
-        crate_dir = repo / crate
-        crate_dir.mkdir(parents=True)
-        (crate_dir / "Cargo.toml").write_text(
-            f'[package]\nname = "{crate_dir.name}"\nversion = "0.0.0"\n',
-            encoding="utf-8",
-        )
+    (repo / "rust").mkdir()
+    (repo / "rust/Cargo.toml").write_text('[workspace]\nmembers = []\n')
     return repo
 
 
@@ -255,48 +240,28 @@ def _cargo_calls(tmp_path: Path) -> list[CargoCall]:
     return [CargoCall(*line.split("|", 7)) for line in log.read_text().splitlines()]
 
 
-def test_script_is_executable_and_is_the_ci_format_clippy_owner() -> None:
-    import yaml
-
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    rust_steps = yaml.safe_load(workflow)["jobs"]["rust"]["steps"]
-    router = (ROOT / "scripts" / "rust-ci-needed").read_text(encoding="utf-8")
-    test_fast = (ROOT / "scripts" / "test-fast").read_text(encoding="utf-8")
-    doc_map = (ROOT / "docs" / "doc-map.toml").read_text(encoding="utf-8")
-
-    assert SCRIPT.is_file()
-    assert SCRIPT.stat().st_mode & 0o111
-    assert workflow.count("RUST_TOOLCHAIN:") == 1
-    assert "run: scripts/check-rust.sh" in workflow
-    assert "run: cargo +\"$RUST_TOOLCHAIN\" clippy" not in workflow
-    rust_test_crates = [
-        step["working-directory"]
-        for step in rust_steps
-        if step.get("run", "").strip()
-        == 'cargo +"$RUST_TOOLCHAIN" test --release --locked'
+def test_ci_runs_workspace_and_isolated_host_clock_tests(tmp_path: Path) -> None:
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["rust"]
+    cache = [step for step in job["steps"] if step.get("uses", "").startswith("Swatinem/rust-cache@")]
+    assert [step["with"]["workspaces"] for step in cache] == ["rust"]
+    log = tmp_path / "cargo.log"
+    for step in job["steps"]:
+        if step.get("working-directory") != "rust":
+            continue
+        result = subprocess.run(
+            ["bash", "-c", 'cargo() { printf "%s\\n" "$*" >> "$CARGO_LOG"; }; ' + step["run"]],
+            cwd=ROOT / step["working-directory"], capture_output=True, text=True,
+            env={**os.environ, **job["env"], "CARGO_LOG": str(log)},
+        )
+        assert result.returncode == 0, result.stderr
+    calls = [shlex.split(line) for line in log.read_text().splitlines()]
+    assert calls == [
+        [f"+{job['env']['RUST_TOOLCHAIN']}", "test", "--workspace", "--release", "--locked"],
+        [f"+{job['env']['RUST_TOOLCHAIN']}", "test", "-p", "jasper-host-clock", "--release", "--locked"],
     ]
-    cache_steps = [
-        step
-        for step in rust_steps
-        if step.get("uses", "").startswith("Swatinem/rust-cache@")
-    ]
-    assert len(cache_steps) == 1
-    cache_crates = [
-        line.strip()
-        for line in cache_steps[0]["with"]["workspaces"].splitlines()
-        if line.strip()
-    ]
-    assert len(RUST_CRATES) == len(set(RUST_CRATES)) == 9
-    assert Counter(rust_test_crates) == Counter(RUST_CRATES)
-    assert Counter(cache_crates) == Counter(RUST_CRATES)
-    assert "scripts/check-rust.sh" in router
-    assert "scripts/check-rust.sh" in test_fast
-    assert 'add_test_if_present "tests/test_check_rust_script.py"' in test_fast
-    assert '"scripts/check-rust.sh"' in doc_map
-    assert '"docs/testing-tooling.md"' in doc_map
 
 
-def test_darwin_lane_uses_workflow_pin_and_exact_ci_crate_contract(
+def test_darwin_lane_uses_workflow_pin_and_workspace(
     tmp_path: Path,
 ) -> None:
     repo = _scratch_repo(tmp_path)
@@ -305,20 +270,14 @@ def test_darwin_lane_uses_workflow_pin_and_exact_ci_crate_contract(
 
     assert result.returncode == 0, result.stderr
     calls = _cargo_calls(tmp_path)
-    assert len(calls) == 18
-    assert [call.crate for call in calls if call.args.startswith("fmt ")] == [
-        Path(crate).name for crate in RUST_CRATES
-    ]
-    clippy_calls = [call for call in calls if call.args.startswith("clippy ")]
-    assert [call.crate for call in clippy_calls] == [
-        Path(crate).name for crate in RUST_CRATES
-    ]
+    assert len(calls) == 2
+    assert [call.crate for call in calls] == ["rust", "rust"]
     rustup_run_calls = [
         line
         for line in (tmp_path / "rustup.log").read_text(encoding="utf-8").splitlines()
         if line.startswith("run ")
     ]
-    assert len(rustup_run_calls) == 18
+    assert len(rustup_run_calls) == 2
     assert all(line.startswith("run 9.9.9 cargo ") for line in rustup_run_calls)
     assert not (tmp_path / "bare-cargo.log").exists()
 
@@ -326,12 +285,10 @@ def test_darwin_lane_uses_workflow_pin_and_exact_ci_crate_contract(
         if not call.args.startswith("clippy "):
             assert call.args == "fmt --all -- --check"
             continue
-        assert "clippy --release --locked --all-targets" in call.args
+        assert "clippy --workspace --release --locked --all-targets" in call.args
         assert "--target aarch64-unknown-linux-gnu" in call.args
         assert call.args.endswith("-- --no-deps -D warnings")
-        assert ("--all-features" in call.args) == (
-            call.crate == "jasper-host-clock"
-        )
+        assert "--all-features" in call.args
         assert call.generic_allow_cross == "1"
         assert call.generic_path == "/inherited/generic/path"
         assert call.generic_libdir == "/inherited/generic/libdir"
@@ -486,7 +443,7 @@ def test_cross_stub_is_cleaned_and_cargo_failure_status_is_preserved(
         repo,
         tmp_path,
         extra_env={
-            "FAKE_CARGO_FAIL_CRATE": "jasper-outputd",
+            "FAKE_CARGO_FAIL_CRATE": "rust",
             "FAKE_CARGO_FAIL_STATUS": "42",
         },
     )

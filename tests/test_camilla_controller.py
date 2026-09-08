@@ -1129,8 +1129,7 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
 
     ``runtime_contract.classify_active_bass_extension_graph`` calls
     ``normalize_config_raw`` from INSIDE the DSP writer lock — among them
-    ``commissioning_apply._apply_measured_candidate_owned`` (the candidate
-    apply) and ``multiroom.follower_config``'s
+    ``multiroom.follower_config``'s
     ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``; those
     are examples, not an exhaustive set. Its neighbours
     ``set_active_config_raw`` and ``patch_config`` both take the lock through

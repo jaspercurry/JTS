@@ -676,8 +676,7 @@ def test_both_profiles_close_the_install_window_between_staging_and_runtime(
     assert calls[mutations[0]] == first_runtime_call
     cleared = first("fn clear_install_in_progress")
     assert (
-        first("fn install_jasper_support_files")
-        < first("fn install_local_audio_graph_unit_files")
+        first("fn install_local_audio_graph_unit_files")
         < first(f"fn {stage}")
         < first("systemctl daemon-reload")
         < cleared
@@ -843,8 +842,16 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
     assert landed < {path.name for path in installer_shell_paths()}
     # The on-box renderer lib deploy/bin/jasper-audio-hardware-reconcile falls
     # back to has this one owner, ahead of every /usr/local/sbin reconciler run.
-    assert "/usr/local/lib/jasper/jasper-asound-render.sh" in _destinations(
+    support = _destinations(
         tmp_path / "support", "install_jasper_support_files"
+    )
+    assert {
+        "/usr/local/lib/jasper/jasper-asound-render.sh",
+        "/usr/local/lib/jasper/jasper-core-graph-park-units.sh",
+    } <= support
+    order = (tmp_path / "support" / "destinations.log").read_text().splitlines()
+    assert order.index("/usr/local/sbin/jasper-wifi-guardian") < order.index(
+        "/usr/local/lib/jasper/jasper-env-file.sh"
     )
 
 

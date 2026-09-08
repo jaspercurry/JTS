@@ -26,7 +26,7 @@ import pytest
 from jasper.identity.speaker_name import DEFAULT_SPEAKER_NAME, SpeakerNameError
 from jasper.web import speaker_setup
 
-from ._web_test_helpers import FakeHandler, assert_canonical_page
+from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 def _render(
@@ -463,18 +463,16 @@ def test_get_root_renders_canonical_page(monkeypatch):
         "read_state",
         lambda path: types.SimpleNamespace(name="Kitchen", room=""),
     )
-    handler = _handler_cls()
-    h = FakeHandler("/")
-    handler.do_GET(h)
+    h, _ = make_real_handler(_handler_cls(), "/")
+    h.do_GET()
     assert h.status == 200
     out = h.wfile.getvalue().decode()
     assert_canonical_page(out)
 
 
 def test_post_unknown_route_404s():
-    handler = _handler_cls()
-    h = FakeHandler("/nope", body=b"")
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/nope", body=b"")
+    h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
@@ -485,12 +483,11 @@ def test_post_save_validation_error_rerenders_with_submitted_values(monkeypatch)
         raise SpeakerNameError("Name too long")
 
     monkeypatch.setattr(speaker_setup, "validate_name", boom)
-    handler = _handler_cls()
     # csrf_token is the form field (_common.CSRF_FORM_FIELD); jts_csrf is the
     # double-submit cookie. They must carry the same token to pass guard_mutating_request.
     body = ("csrf_token=" + token + "&name=waytoolong&room=Kitchen").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
     assert h.status == int(http.HTTPStatus.UNPROCESSABLE_ENTITY)
     assert h.header_values("Location") == []
     out = h.wfile.getvalue().decode()
@@ -524,11 +521,10 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
         or True,
     )
 
-    handler = _handler_cls()
     # csrf_token = form field (CSRF_FORM_FIELD); jts_csrf = double-submit cookie.
     body = ("csrf_token=" + token + "&name=NewName&room=Kitchen").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert calls["write"] == [("NewName", "Kitchen")]
@@ -565,10 +561,9 @@ def test_post_save_room_only_edit_marks_name_unchanged(monkeypatch):
         or True,
     )
 
-    handler = _handler_cls()
     body = ("csrf_token=" + token + "&name=OldName&room=Kitchen").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert calls["apply"] == [("OldName", False)]
@@ -591,10 +586,9 @@ def test_post_save_surfaces_source_reconcile_failure(monkeypatch):
     )
     monkeypatch.setattr(speaker_setup, "_apply_name", lambda name, **_kwargs: False)
 
-    handler = _handler_cls()
     body = ("csrf_token=" + token + "&name=NewName&room=Kitchen").encode()
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
-    handler.do_POST(h)
+    h, _ = make_real_handler(_handler_cls(), "/save", body=body, headers={"Cookie": "jts_csrf=" + token})
+    h.do_POST()
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     flash_cookie = "\n".join(h.header_values("Set-Cookie"))

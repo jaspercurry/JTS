@@ -80,6 +80,7 @@ from .active_speaker_fixtures import (
     register_passive_only_dac,
 )
 from ._hat_eeprom import write_hat_eeprom
+from ._log_events import event_records, parse_event
 from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
@@ -160,25 +161,12 @@ def _no_privileged_unit_actions(monkeypatch, tmp_path: Path):
 
 
 def _event_record(caplog, event: str):
-    """The ONE ``event=<name> k=v …`` record, plus its fields as a mapping.
+    """The single event record and its fields."""
 
-    Asserting on fields rather than the whole sentence keeps these pins off
-    log prose, and folding "exactly one record" in here makes that property
-    explicit at every call site.
-    """
-
-    records = [
-        record
-        for record in caplog.records
-        if record.getMessage().split(" ", 1)[0] == f"event={event}"
-    ]
-    assert len(records) == 1, [record.getMessage() for record in records]
-    fields = dict(
-        token.split("=", 1)
-        for token in records[0].getMessage().split(" ")[1:]
-        if "=" in token
-    )
-    return records[0], fields
+    (record,) = event_records(caplog, event)
+    parsed = parse_event(record.getMessage())
+    assert parsed is not None
+    return record, parsed[1]
 
 
 def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
@@ -648,8 +636,7 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
     event,
     extra_fields,
 ):
-    """A route whose payload builder raises answers `{"error": …}` at 502 and
-    emits exactly one `result=error` event named for that route."""
+    """A failed route answers 502 and records its exception exactly once."""
     error = OSError("payload builder failed")
 
     def fail(*_args, **_kwargs):
@@ -672,7 +659,12 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload == {"error": str(error)}
-    assert _event_record(caplog, event)[1] == {"result": "error", **extra_fields}
+    record, fields = _event_record(caplog, event)
+    assert fields == {"result": "error", **extra_fields}
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert record.exc_info[1] is error
+    assert record.exc_info[2] is not None
 
 
 def test_sound_post_does_not_secondary_send_after_response_write_failure(

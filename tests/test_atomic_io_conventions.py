@@ -49,9 +49,7 @@ _ALLOWLIST = {
     # chmod) — an exact fit for atomic_write_text(mode=...). Sits in the
     # measurement program's zone, so its own agent migrates it.
     "jasper/correction/replay_artifacts.py",
-    # Plain burn-down candidates (Path.replace hand-rolls). Both sit in
-    # the parked tuning zone; that program's own agent migrates them.
-    "jasper/active_speaker/commissioning_admission.py",
+    # Plain burn-down candidate (Path.replace hand-rolls).
     "jasper/audio_measurement/playback.py",
 }
 

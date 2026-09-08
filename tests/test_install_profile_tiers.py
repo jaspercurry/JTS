@@ -396,6 +396,7 @@ _ON_EVERY_PROFILE = (
     "deps",
     "alsa",
     "camilladsp",
+    "support_files",
     "renderers",
     "headless_boot",
     "usb_role",
@@ -434,6 +435,8 @@ _FULL_ONLY_STEPS = ("camillagui", "audio_cues")
 #: (earlier, later) orderings the install depends on, each with the failure
 #: it prevents.
 _REQUIRED_ORDER = (
+    ("support_files", "renderers"),
+    ("support_files", "systemd_units"),
     # A host without the 'pi' build user stops at second zero rather than
     # fifteen minutes into apt.
     ("build_user", "deps"),
@@ -512,9 +515,7 @@ def test_every_row_is_well_formed_and_named_by_exactly_one_membership_pin():
     whose `profiles` token is mistyped runs on neither profile; a deleted row
     drops below the floor and out of the pin it was named by."""
     rows = _step_rows()
-    # 45 rows, 41 distinct names: `deps`, `jasper`, `systemd_units` and
-    # `nginx_site` each have one row per tier.
-    assert len(rows) >= 45, rows
+    assert len(rows) >= 46, rows
     assert {profiles for _, profiles, _, _ in rows} <= {"both", "full", "streambox"}
     assert all(size > 0 for _, _, _, size in rows), rows
 

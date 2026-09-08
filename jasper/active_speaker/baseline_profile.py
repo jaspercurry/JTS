@@ -2217,8 +2217,7 @@ def build_baseline_profile_candidate(
     # BEFORE validation/activation, and a rejected apply could leave the
     # canonical file holding rejected bytes. The canonical name is now
     # written ONLY by the post-success promote step in
-    # ``_apply_baseline_profile_locked`` (and commissioning's
-    # ``finalize_retained_candidate_apply``), which runs after
+    # ``_apply_baseline_profile_locked``, which runs after
     # ``apply_dsp_config`` has already proven the candidate live.
     #
     # ``driver_domain=True`` candidates are deliberately EXCLUDED: they are

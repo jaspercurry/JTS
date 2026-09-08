@@ -116,7 +116,6 @@ _GRAPH_SWAP_MODULES = {
     # restart revert it — so its mutator is `set_active_config_raw` only.
     "jasper/active_speaker/audition.py",
     "jasper/active_speaker/commission_wiring.py",
-    "jasper/active_speaker/commissioning_service.py",
     # Wave 6b: the measurement swap moved OUT of ``crossover_v2_flow.py`` and
     # into the session graph. Same daemon (jasper-correction-web, entry
     # ``jasper/web/correction_crossover_v2.py`` below), same registration
@@ -132,7 +131,6 @@ _GRAPH_SWAP_MODULES = {
     "jasper/multiroom/leader_config.py",
     "jasper/multiroom/runtime_balance.py",
     "jasper/sound/runtime.py",
-    "jasper/web/correction_crossover_backend.py",
     "jasper/web/correction_crossover_v2.py",
     # Same daemon as correction_setup below (jasper-correction-web): the route
     # bodies that reach the apply path live in correction_handlers.

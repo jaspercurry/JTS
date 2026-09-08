@@ -11,8 +11,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from jasper import mux
 from jasper.control import grouping_supervisor
 from jasper.platform import uds
+from tests._async_wait import wait_signalled
 from tests._socket_paths import short_socket_path_fixture as _short_sock_path_fixture
 from tests.fake_clock_fixtures import FakeClock
 
@@ -250,22 +252,6 @@ async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
     assert task.cancelled()
 
 
-# ---------------------------------------------------------------------------
-# STATUS payload ceiling (#2253)
-#
-# jasper-outputd's STATUS crossed 8 KiB when the chip-reference writer's
-# per-write sample ring landed. Every local reader in jasper-control that used
-# a single bounded `read(8192)` then received a PREFIX, `json.loads` raised,
-# and the fail-soft path reported "daemon unreachable" for a daemon that had
-# answered perfectly — /state.outputd null on every chip-AEC box, and the
-# grouping supervisor reading a healthy bonded member as starved, which it
-# answers with a reconciler kick that RESTARTS outputd, every rate-limit
-# window, forever.
-#
-# The fake below serves a realistically-sized outputd STATUS in chunks, so a
-# single read cannot return the whole body and read-to-EOF is load-bearing.
-# ---------------------------------------------------------------------------
-
 _RING_ENTRIES = 256
 
 
@@ -298,7 +284,7 @@ def _outputd_status_payload() -> bytes:
 
 
 async def _serve_once(path: str, payload: bytes):
-    """Serve `payload` in 4 KiB chunks, then EOF — a single read cannot win."""
+    """Split even a small response across separate event-loop turns."""
 
     async def handle(reader, writer):
         # A client that refuses an over-cap reply hangs up mid-send, so every
@@ -306,10 +292,11 @@ async def _serve_once(path: str, payload: bytes):
         # handler parks on drain() and Server.wait_closed() never returns.
         try:
             await reader.readline()
-            for start in range(0, len(payload), 4096):
-                writer.write(payload[start : start + 4096])
+            chunk_size = min(4096, max(1, len(payload) // 2))
+            for start in range(0, len(payload), chunk_size):
+                writer.write(payload[start : start + chunk_size])
                 await writer.drain()
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
             writer.write(b"\n")
             await writer.drain()
             writer.write_eof()
@@ -323,83 +310,141 @@ async def _serve_once(path: str, payload: bytes):
     return await asyncio.start_unix_server(handle, path=path)
 
 
-async def test_both_local_status_readers_survive_a_real_outputd_payload(
-    short_sock_path,
+@pytest.mark.parametrize("payload_kind", ["small", "outputd", "exact-cap", "over-cap"])
+@pytest.mark.parametrize("consumer", ["state", "grouping", "mux"])
+async def test_status_consumers_reassemble_fragmented_json(
+    short_sock_path, tmp_path, monkeypatch, consumer, payload_kind,
 ):
-    payload = _outputd_status_payload()
-    # The property that makes this test mean something: the body does not fit
-    # the 8192-byte single read both consumers used before #2253. A full ring
-    # of realistically-sized counters measures ~99.8 B an entry, so the array
-    # alone is ~25.6 KB — three times that read.
-    assert len(payload) > 8192, len(payload)
-    assert len(payload) > 24_000, len(payload)
-
+    monkeypatch.setattr(grouping_supervisor, "OUTPUTD_CONTROL_SOCKET", short_sock_path)
+    monkeypatch.setattr(mux, "FANIN_CONTROL_SOCKET", short_sock_path)
+    calls = {
+        "state": lambda: uds.local_status_json(short_sock_path),
+        "grouping": grouping_supervisor.GroupingSupervisor().outputd_status,
+        "mux": mux.Mux(mode_state_path=str(tmp_path / "mode"))._fanin_status_best_effort,
+    }
+    cap = 65_536 if consumer == "mux" else 262_144
+    payload = {
+        "small": b'{"inputs":[]}',
+        "outputd": _outputd_status_payload(),
+        "exact-cap": b"{}" + b" " * (cap - 3),
+        "over-cap": b"{}" + b" " * (cap - 2),
+    }[payload_kind]
     server = await _serve_once(short_sock_path, payload)
     try:
-        # Leg (a): the reader /state uses for outputd.
-        state_view = await uds.local_status_json(short_sock_path, timeout=5.0)
+        assert await calls[consumer]() == (None if payload_kind == "over-cap" else json.loads(payload))
     finally:
         server.close()
         await server.wait_closed()
 
-    assert state_view is not None, (
-        "/state.outputd goes null on every chip-AEC box — and the documented "
-        "jq .outputd.reference_outputs.chip_ref_writer diagnostics with it"
-    )
-    writer_view = state_view["reference_outputs"]["chip_ref_writer"]
-    assert len(writer_view["recent_writes"]) == _RING_ENTRIES
 
-
-async def test_the_grouping_supervisor_probe_survives_the_same_payload(
-    short_sock_path, monkeypatch
-):
-    payload = _outputd_status_payload()
-    assert len(payload) > 8192, len(payload)
+@pytest.mark.parametrize("payload, expected", [
+    (b"{}" + b" " * 13, {}),
+    (b"{}" + b" " * 14, {}),
+    (b"{}" + b" " * 15, None),
+    (b"[]", None),
+    (b"?", None),
+    (b"", None),
+])
+async def test_status_limits_and_failure_policy(monkeypatch, payload, expected):
+    reader = asyncio.StreamReader()
+    reader.feed_data(payload)
+    reader.feed_eof()
+    _, writer = _connection(b"")
     monkeypatch.setattr(
-        grouping_supervisor, "OUTPUTD_CONTROL_SOCKET", short_sock_path
+        uds.asyncio, "open_unix_connection", AsyncMock(return_value=(reader, writer)),
     )
 
-    server = await _serve_once(short_sock_path, payload)
-    try:
-        supervisor = grouping_supervisor.GroupingSupervisor(probe_timeout_sec=5.0)
-        starvation_view = await supervisor.outputd_status()
-    finally:
-        server.close()
-        await server.wait_closed()
+    assert await uds.local_status_json("/tmp/status.sock", max_bytes=16) == expected
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_not_awaited()
 
-    assert starvation_view is not None, (
-        "None means 'outputd unreachable', which this supervisor answers with "
-        "a reconciler kick that restarts outputd — so a healthy bonded member "
-        "would be restarted every rate-limit window, forever"
+
+@pytest.mark.parametrize("phase", ["connect", "write", "drain", "read"])
+async def test_status_transport_failures_return_none(monkeypatch, phase):
+    reader, writer = _connection(b"")
+    opener = AsyncMock(return_value=(reader, writer))
+    operation = {"connect": opener, "write": writer.write, "drain": writer.drain, "read": reader.read}
+    operation[phase].side_effect = OSError
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
+
+    assert await uds.local_status_json("/tmp/status.sock") is None
+    assert writer.close.call_count == (0 if phase == "connect" else 1)
+
+
+@pytest.mark.parametrize("phase", ["connect", "drain", "read"])
+async def test_status_deadline_bounds_every_phase(monkeypatch, phase):
+    started = asyncio.Event()
+
+    async def stalled(*_args):
+        started.set()
+        await asyncio.Event().wait()
+
+    reader, writer = _connection(b"")
+    reader.read = AsyncMock(return_value=b"")
+    opener = AsyncMock(return_value=(reader, writer))
+    if phase == "connect":
+        opener.side_effect = stalled
+    elif phase == "drain":
+        writer.drain.side_effect = stalled
+    else:
+        chunks = iter([b"{}"])
+
+        async def missing_eof(_size):
+            chunk = next(chunks, None)
+            return chunk if chunk is not None else await stalled()
+
+        reader.read.side_effect = missing_eof
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", opener)
+
+    async with asyncio.timeout(1.0):
+        assert await uds.local_status_json("/tmp/status.sock", timeout=0.01) is None
+    assert started.is_set()
+    assert writer.close.call_count == (0 if phase == "connect" else 1)
+    writer.wait_closed.assert_not_awaited()
+
+
+async def test_status_deadline_is_shared_by_connect_send_and_read(monkeypatch):
+    reader, writer = _connection(b"")
+    chunks = iter([b"{}", b""])
+
+    async def connect(_path):
+        await asyncio.sleep(0.03)
+        return reader, writer
+
+    async def drain():
+        await asyncio.sleep(0.03)
+
+    async def read(_size):
+        await asyncio.sleep(0.03)
+        return next(chunks)
+
+    writer.drain.side_effect = drain
+    reader.read = read
+    monkeypatch.setattr(uds.asyncio, "open_unix_connection", connect)
+
+    assert await uds.local_status_json("/tmp/status.sock", timeout=0.07) is None
+    writer.close.assert_called_once()
+
+
+async def test_status_cancellation_racing_reply_is_preserved(monkeypatch):
+    started = asyncio.Event()
+    reply = asyncio.get_running_loop().create_future()
+
+    async def read(_size):
+        started.set()
+        return await reply
+
+    reader, writer = _connection(b"")
+    reader.read = read
+    monkeypatch.setattr(
+        uds.asyncio, "open_unix_connection", AsyncMock(return_value=(reader, writer)),
     )
-    assert starvation_view["dac_content"]["serving_fifo"] is True
+    task = asyncio.create_task(uds.local_status_json("/tmp/status.sock"))
+    await wait_signalled(started, "STATUS reply read started", producer=task)
+    reply.set_result(b"{}")
+    task.cancel()
 
-
-async def test_a_reply_past_the_ceiling_is_refused_rather_than_truncated(
-    short_sock_path,
-):
-    # The cap is a safety bound on a hostile or wedged local daemon. Past it
-    # the reader returns None: a truncated object is not a smaller answer, it
-    # is a wrong one, and a caller that parsed a prefix would act on it.
-    #
-    # Asserted against `read_status_body` itself. Through `local_status_json`
-    # a returned PREFIX also comes out as None — `json.loads` refuses it — so
-    # that surface cannot tell refusing from truncating, which is the whole
-    # distinction here.
-    payload = b'{"x":"' + b"y" * (uds.MAX_STATUS_BYTES + 1) + b'"}'
-    server = await _serve_once(short_sock_path, payload)
-    try:
-        reader, writer = await asyncio.open_unix_connection(short_sock_path)
-        try:
-            writer.write(b"STATUS\n")
-            await writer.drain()
-            assert await uds.read_status_body(reader, timeout=5.0) is None
-        finally:
-            writer.close()
-            with contextlib.suppress(OSError):
-                await writer.wait_closed()
-        # And the caller built on it degrades the same way.
-        assert await uds.local_status_json(short_sock_path, timeout=5.0) is None
-    finally:
-        server.close()
-        await server.wait_closed()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    writer.close.assert_called_once()
+    writer.wait_closed.assert_not_awaited()

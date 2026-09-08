@@ -43,7 +43,7 @@ from jasper.control import household_credential
 from jasper.platform.control_client import PEER_DETAIL_MAX_CHARS
 from jasper.web import rooms_setup
 
-from ._web_test_helpers import FakeHandler, assert_canonical_page
+from ._web_test_helpers import assert_canonical_page, make_real_handler
 
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -191,9 +191,8 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
 
 
 def _get(path: str):
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler(path, body=None)
-    handler_cls.do_GET(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), path, body=None)
+    h.do_GET()
     return h
 
 
@@ -786,7 +785,6 @@ def test_unknown_get_route_404s(monkeypatch):
 def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
     """Drive do_POST with the CSRF guard stubbed and the daemon restarts
     captured. Returns (handler, restarts_dict)."""
-    handler_cls = rooms_setup._make_handler()
     restarts = {"voice": 0, "control": 0}
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: csrf_ok)
     monkeypatch.setattr(rooms_setup, "reject_csrf",
@@ -800,10 +798,8 @@ def _post(path: str, body: bytes, *, csrf_ok: bool, monkeypatch):
             if units == ("jasper-control",) else None
         ),
     )
-    h = FakeHandler(path, body=None)
-    h.headers["Content-Length"] = str(len(body))
-    h.rfile = BytesIO(body)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), path, body=body, content_type=None)
+    h.do_POST()
     return h, restarts
 
 
@@ -822,11 +818,8 @@ def test_post_peering_unknown_path_404s_before_csrf(monkeypatch):
         raise AssertionError("CSRF guard must not run on an unknown POST path")
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/not-peering", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/not-peering", body=b"{}", content_type=None)
+    h.do_POST()
     assert h.status == 404
 
 
@@ -868,12 +861,11 @@ def test_post_peering_rejects_invalid_json_framing_without_mutation(
         "restart_voice_daemon",
         lambda: pytest.fail("invalid request must not restart daemons"),
     )
-    handler_cls = rooms_setup._make_handler()
-    handler = FakeHandler("/peering", body=None)
+    handler, _ = make_real_handler(rooms_setup._make_handler(), "/peering", body=None)
     handler.headers["Content-Length"] = str(content_length)
     handler.rfile = _TrackingReader(body)
 
-    handler_cls.do_POST(handler)
+    handler.do_POST()
 
     assert handler.status == 400
     payload = json.loads(handler.wfile.getvalue())
@@ -892,13 +884,12 @@ def test_post_peering_request_body_oserror_remains_distinct(monkeypatch):
         "write_env_file",
         lambda *_a, **_k: pytest.fail("failed read must not write config"),
     )
-    handler_cls = rooms_setup._make_handler()
-    handler = FakeHandler("/peering", body=None)
+    handler, _ = make_real_handler(rooms_setup._make_handler(), "/peering", body=None)
     handler.headers["Content-Length"] = "2"
     handler.rfile = _TrackingReader(b"{}", fail=True)
 
     with pytest.raises(OSError, match="request body read failed"):
-        handler_cls.do_POST(handler)
+        handler.do_POST()
 
     assert handler.status is None
 
@@ -979,13 +970,12 @@ def test_grouping_routes_reject_incomplete_json_before_state_or_control_mutation
         lambda *_a: effects.append("restart_systemd_units"),
     )
 
-    handler_cls = rooms_setup._make_handler()
-    handler = FakeHandler(path, body=None)
+    handler, _ = make_real_handler(rooms_setup._make_handler(), path, body=None)
     declared_length = len(body) + 1
     handler.headers["Content-Length"] = str(declared_length)
     handler.rfile = _TrackingReader(body)
 
-    handler_cls.do_POST(handler)
+    handler.do_POST()
 
     assert handler.status == 400
     assert json.loads(handler.wfile.getvalue()) == {
@@ -1278,12 +1268,9 @@ def _post_bond(body, *, csrf_ok=True, monkeypatch, member_results=None):
     # tests don't depend on the real identity reader.
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
 
-    handler_cls = rooms_setup._make_handler()
     raw = json.dumps(body).encode()
-    h = FakeHandler("/bond", body=None)
-    h.headers["Content-Length"] = str(len(raw))
-    h.rfile = BytesIO(raw)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=raw, content_type=None)
+    h.do_POST()
     return h, calls
 
 
@@ -1302,13 +1289,12 @@ def test_bond_forwards_browser_control_token_to_members(monkeypatch):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
 
-    handler_cls = rooms_setup._make_handler()
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
-    h = FakeHandler("/bond", body=None)
-    h.headers["Content-Length"] = str(len(raw))
-    h.headers["X-JTS-Token"] = "household-secret"
-    h.rfile = BytesIO(raw)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(
+        rooms_setup._make_handler(), "/bond", body=raw, content_type=None,
+        headers={"X-JTS-Token": "household-secret"},
+    )
+    h.do_POST()
 
     assert h.status == 200
     # Both members got the forwarded token.
@@ -1329,12 +1315,9 @@ def test_bond_forwards_no_token_when_browser_sent_none(monkeypatch):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
 
-    handler_cls = rooms_setup._make_handler()
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
-    h = FakeHandler("/bond", body=None)
-    h.headers["Content-Length"] = str(len(raw))
-    h.rfile = BytesIO(raw)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=raw, content_type=None)
+    h.do_POST()
 
     assert h.status == 200
     assert seen_tokens == [None, None]
@@ -1489,11 +1472,8 @@ def test_post_bond_unknown_path_still_404s_before_csrf(monkeypatch):
         raise AssertionError("CSRF must not run on an unknown POST path")
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/bond-typo", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond-typo", body=b"{}", content_type=None)
+    h.do_POST()
     assert h.status == 404
 
 
@@ -1662,12 +1642,9 @@ def test_save_bond_mints_household_credential(monkeypatch):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts-living.local")
 
-    handler_cls = rooms_setup._make_handler()
     raw = json.dumps({"members": _stereo_pair_members()}).encode()
-    h = FakeHandler("/bond", body=None)
-    h.headers["Content-Length"] = str(len(raw))
-    h.rfile = BytesIO(raw)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=raw, content_type=None)
+    h.do_POST()
 
     assert h.status == 200
     assert household_credential.is_paired() is True  # minted
@@ -1693,11 +1670,8 @@ def test_unbond_reads_household_once_and_passes_it_to_fanout(monkeypatch):
                         lambda *a, **k: ("192.168.1.9", None, None))
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", capture)
 
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/unbond", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/unbond", body=b"{}", content_type=None)
+    h.do_POST()
 
     # Self + the matched peer both got the SAME pre-read secret (never None).
     assert seen_household and all(hh == secret for hh in seen_household)
@@ -2271,11 +2245,8 @@ def _post_unbond(*, csrf_ok=True, monkeypatch, self_grouping,
     monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
 
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/unbond", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/unbond", body=b"{}", content_type=None)
+    h.do_POST()
     return h, posts
 
 
@@ -2385,11 +2356,8 @@ def test_post_unbond_unknown_path_404s_before_csrf(monkeypatch):
         raise AssertionError("CSRF must not run on an unknown POST path")
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/unbond-typo", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/unbond-typo", body=b"{}", content_type=None)
+    h.do_POST()
     assert h.status == 404
 
 
@@ -2488,11 +2456,8 @@ def _post_swap(*, monkeypatch, self_grouping, speakers=(), peer_grouping=None,
     monkeypatch.setattr(rooms_setup, "_get_member_grouping", fake_get_grouping)
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", fake_member_post)
 
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/swap", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/swap", body=b"{}", content_type=None)
+    h.do_POST()
     return h, posts
 
 
@@ -2661,11 +2626,8 @@ def test_post_swap_rollback_failure_is_surfaced(monkeypatch):
         else None,
     )
     monkeypatch.setattr(rooms_setup_mod, "post_grouping_to_member", flaky_self)
-    handler_cls = rooms_setup_mod._make_handler()
-    h = FakeHandler("/swap", body=None)
-    h.headers["Content-Length"] = "2"
-    h.rfile = BytesIO(b"{}")
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup_mod._make_handler(), "/swap", body=b"{}", content_type=None)
+    h.do_POST()
     body = json.loads(h.wfile.getvalue())
     assert h.status == 502
     assert body["rolled_back"] is False
@@ -2725,12 +2687,9 @@ def _post_trim(*, monkeypatch, body, self_grouping, speakers=(),
     monkeypatch.setattr(rooms_setup, "_get_member_grouping",
                         lambda a, known=None: (peer_grouping or {}).get(a))
     monkeypatch.setattr(rooms_setup, "post_grouping_to_member", _post)
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/trim", body=None)
     raw = json.dumps(body).encode()
-    h.headers["Content-Length"] = str(len(raw))
-    h.rfile = BytesIO(raw)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/trim", body=raw, content_type=None)
+    h.do_POST()
     return h, posts
 
 
@@ -2949,16 +2908,13 @@ def test_bond_create_records_roster_on_leader_and_clears_follower(monkeypatch):
                         fake_member_post)
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
 
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/bond", body=None)
     payload = json.dumps({"members": [
         {"addr": "", "role": "leader", "channel": "left"},
         {"addr": "192.168.1.9", "role": "follower", "channel": "right",
          "name": "JTS3"},
     ]}).encode()
-    h.headers["Content-Length"] = str(len(payload))
-    h.rfile = BytesIO(payload)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=payload, content_type=None)
+    h.do_POST()
 
     bodies = {addr: body for addr, body in posts}
     leader_body = bodies[""]
@@ -2984,12 +2940,9 @@ def _drive_bond(members, monkeypatch):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_leader_handle", lambda: "jts.local")
 
-    handler_cls = rooms_setup._make_handler()
-    h = FakeHandler("/bond", body=None)
     payload = json.dumps({"members": members}).encode()
-    h.headers["Content-Length"] = str(len(payload))
-    h.rfile = BytesIO(payload)
-    handler_cls.do_POST(h)
+    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond", body=payload, content_type=None)
+    h.do_POST()
     return h, {addr: body for addr, body in posts}
 
 

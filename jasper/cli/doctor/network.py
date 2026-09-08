@@ -37,6 +37,7 @@ from jasper.net.wifi_guardian_persistence import (
     nm_unescape as _nm_unescape,
 )
 
+from . import web
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, _run
@@ -1043,30 +1044,16 @@ def check_usbnet_dhcp_unit() -> CheckResult:
 
 @doctor_check()
 def check_usbnet_management_probe() -> CheckResult:
-    """The management UI must answer over the USB fallback address.
-
-    Mirrors ``check_management_surface`` (jasper/cli/doctor/web.py) but
-    probes the interface's observed IPv4 address (the same endpoint the
-    deploy-time management-surface verification hits) with
-    the resolved speaker hostname as ``Host``, not nginx's loopback IPv4 —
-    the exact path a plugged-in laptop with no WiFi exercises when it falls
-    back from ``http://<hostname>.local/`` to the raw fallback IP. Pins both the
-    guard's acceptance of a private-IP Host/source (see
-    tests/test_http_security.py) and that nginx is actually listening on
-    usb0's address, without needing hardware. Skips when usb0 doesn't
-    exist (nothing to probe) or nginx isn't installed (dev host)."""
-    import urllib.error
-    import urllib.request
-
-    from .web import MANAGEMENT_502_HINT, NGINX_SITE
-
+    """Probe the USB interface's observed IPv4 address under the speaker's
+    hostname, exercising nginx's USB binding and the management host guard.
+    """
     label = "USB management network probe"
     if not _usbnet_iface_present():
         return CheckResult(
             label, "skipped", f"{USBNET_IFACE} not present",
             reason=REASON_USBNET_NOT_APPLICABLE,
         )
-    if not NGINX_SITE.exists():
+    if not web.NGINX_SITE.exists():
         return CheckResult(
             label, "skipped", "nginx site not installed",
             reason=REASON_USBNET_NGINX_NOT_INSTALLED,
@@ -1097,15 +1084,9 @@ def check_usbnet_management_probe() -> CheckResult:
     address = observed_cidr.split("/", 1)[0]
     probe_url = f"http://{address}/system/data.json"
     host = resolve_hostname()
-    req = urllib.request.Request(probe_url, headers={"Host": host})
     try:
-        with urllib.request.urlopen(req, timeout=6.0) as resp:
-            status = resp.status
-            body = resp.read(512)
-    except urllib.error.HTTPError as e:
-        status = e.code
-        body = e.read(512) if e.fp else b""
-    except (urllib.error.URLError, OSError) as e:
+        status, detail = web._read_management_response(probe_url, host)
+    except OSError as e:
         return CheckResult(
             label, "fail",
             f"no answer from nginx on {address} for Host: {host} "
@@ -1114,7 +1095,6 @@ def check_usbnet_management_probe() -> CheckResult:
         )
     if status == 200:
         return CheckResult(label, "ok", f"200 via {address} as Host: {host}")
-    detail = body.decode("utf-8", "replace").strip()[:120]
     if status == 403:
         hint = (
             " — the management-host guard rejected the fallback address; "
@@ -1122,7 +1102,7 @@ def check_usbnet_management_probe() -> CheckResult:
             "and `journalctl -u jasper-control | grep event=http.reject`"
         )
     elif status == 502:
-        hint = MANAGEMENT_502_HINT
+        hint = web.MANAGEMENT_502_HINT
     else:
         hint = ""
     return CheckResult(

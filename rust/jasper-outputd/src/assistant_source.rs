@@ -178,7 +178,7 @@ impl AssistantSource {
         writes.clear();
         let channels = self.channels;
         let period_context = loudness.current_volume_context();
-        let muted = period_context.map_or(true, |context| context.muted);
+        let muted = period_context.is_none_or(|context| context.muted);
 
         let mut current_write: Option<SegmentWrite> = None;
         for frame in out.chunks_exact_mut(channels) {

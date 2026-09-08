@@ -383,7 +383,7 @@ def test_build_artifacts_never_consumes_conventional_or_prior_release_outputs(
     stale_release_root.mkdir(parents=True)
     (stale_release_root / "stale").write_text("must disappear\n")
     conventional = (
-        repo / "rust/jasper-fanin/target/release/jasper-fanin"
+        repo / "rust/target/release/jasper-fanin"
     )
     conventional.parent.mkdir(parents=True)
     conventional.write_text("stale conventional cargo output\n")
@@ -1038,9 +1038,6 @@ def test_each_source_build_entrypoint_checks_bundle_first() -> None:
 
 
 def test_protocol_crate_and_pipewire_port_have_release_license_metadata() -> None:
-    protocol = (ROOT / "rust/jasper-tts-protocol/Cargo.toml").read_text()
-    assert 'license = "Apache-2.0"' in protocol
-    assert 'repository = "https://github.com/jaspercurry/JTS"' in protocol
     pipewire_license = ROOT / "LICENSES/PipeWire-spa-dll-MIT.txt"
     assert "Copyright © 2019 Wim Taymans" in pipewire_license.read_text()
     inventory = (ROOT / "LICENSE-third-party.md").read_text()

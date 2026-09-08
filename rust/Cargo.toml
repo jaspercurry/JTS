@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+members = ["jasper-*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+# sd-notify sets the minimum for the daemon dependency graph.
+rust-version = "1.82"
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+
+[workspace.dependencies]
+alsa = "0.12"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+# A panic in the audio path terminates the daemon for systemd to restart.
+panic = "abort"

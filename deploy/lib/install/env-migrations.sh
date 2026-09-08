@@ -340,101 +340,38 @@ reassert_intsecrets_compartment_perms() {
     systemd-tmpfiles --create --prefix="${INTSECRETS_DIR}" 2>/dev/null || true
 }
 
-# Ongoing enforcement, not migration debt: non-negotiable #3 (secrets live
-# only in their compartment) has a live producer here, so unlike this file's
-# other relocations, this sweep is never gate-cleared by fleet deployment.
-
-# Move an operator's hand-seeded provider API key out of the
-# broad /etc/jasper/jasper.env into the group-jasper-secrets voice_keys.env.
-# An operator seeding a key for headless/CI imaging is the remaining producer;
-# the /voice wizard writes voice_keys.env directly. Safe: never strips a key
-# from jasper.env until its value is confirmed written to voice_keys.env.
-migrate_voice_keys_split() {
-    getent group jasper-secrets >/dev/null 2>&1 || return 0
-    local jasper_env="${ENV_DIR}/jasper.env"
-    local keys_env="${SECRETS_DIR}/voice_keys.env"
-    local key line val moved=0
-
-    for key in GEMINI_API_KEY OPENAI_API_KEY XAI_API_KEY; do
-        # Already in the secret file (the wizard's normal path)? Just clean any
-        # stale operator seed left in jasper.env.
-        if [[ -f "${keys_env}" ]] && grep -qE "^${key}=" "${keys_env}"; then
-            _strip_key_from_broad "${key}" "${jasper_env}"
-            continue
-        fi
-        # Find the value: an operator seed in jasper.env.
-        val=""
-        if [[ -f "${jasper_env}" ]]; then
-            line=$(grep -E "^${key}=" "${jasper_env}" || true)
-            val="${line#"${key}"=}"
-        fi
-        val="${val%[$'\r\n ']*}"
-        [[ -z "${val}" ]] && continue
-        # Write to the secret file, then verify before stripping the source.
-        touch "${keys_env}"
-        chgrp jasper-secrets "${keys_env}" 2>/dev/null || true
-        chmod 0640 "${keys_env}"
-        printf '%s=%s\n' "${key}" "${val}" >> "${keys_env}"
-        if grep -qE "^${key}=" "${keys_env}"; then
-            _strip_key_from_broad "${key}" "${jasper_env}"
-            moved=1
-        fi
-    done
-    # `if/then/fi`, NOT `[[ ... ]] && echo`: the latter returns the test's exit status (1 when
-    # moved=0, the common re-deploy case), which under `set -e` aborts the whole install on
-    # every later run. The function must end on a clean status.
-    if [[ "${moved}" == "1" ]]; then
-        echo "  migrate_voice_keys_split: provider API keys -> ${keys_env}"
-    fi
-}
-
-_strip_key_from_broad() {
-    local key="$1" jasper_env="$2"
-    if [[ -f "${jasper_env}" ]]; then
-        sed_inplace "${jasper_env}" "/^${key}=/d"
-    fi
-}
-
-# Move an operator's hand-seeded Google Routes key out of the broad
-# /etc/jasper/jasper.env into the group-jasper-secrets google_routes.env. Same
-# remaining producer as migrate_voice_keys_split: headless/CI seeding. The
-# /transit wizard writes google_routes.env directly.
-migrate_google_routes_key() {
+# Operator seeds still enter jasper.env; the wizards own the compartments.
+# Never remove a broad key until the compartment has an assignment for it.
+_migrate_secret_keys() {
+    local keys_env="$1" jasper_env="${ENV_DIR}/jasper.env"
+    shift
     getent group jasper-secrets >/dev/null 2>&1 || return 0
     ensure_secrets_dir
-    local jasper_env="${ENV_DIR}/jasper.env"
-    local routes_env="${SECRETS_DIR}/google_routes.env"
-    local key="GOOGLE_ROUTES_API_KEY"
-    local line val moved=0
-
-    if [[ -f "${routes_env}" ]] && grep -qE "^${key}=" "${routes_env}"; then
-        _strip_key_from_broad "${key}" "${jasper_env}"
-        chmod 0640 "${routes_env}" 2>/dev/null || true
-        return 0
-    fi
-
-    val=""
-    if [[ -f "${jasper_env}" ]]; then
-        line=$(grep -E "^${key}=" "${jasper_env}" || true)
-        val="${line#"${key}"=}"
-    fi
-    val="${val%[$'\r\n ']*}"
-
-    if [[ -n "${val}" ]]; then
-        touch "${routes_env}"
-        chgrp jasper-secrets "${routes_env}" 2>/dev/null || true
-        chmod 0640 "${routes_env}"
-        printf '%s=%s\n' "${key}" "${val}" >> "${routes_env}"
-        if grep -qE "^${key}=" "${routes_env}"; then
-            _strip_key_from_broad "${key}" "${jasper_env}"
+    local key val moved=0
+    for key in "$@"; do
+        if ! jasper_env_file_get "${keys_env}" "${key}" >/dev/null; then
+            val="$(jasper_env_file_get "${jasper_env}" "${key}")" || continue
+            # The wizard may publish while the installer waits for this lock.
+            jasper_env_file_seed_absent "${keys_env}" 0640 2770 "${key}=${val}"
+            jasper_env_file_get "${keys_env}" "${key}" >/dev/null || return 1
             moved=1
         fi
-    else
-        _strip_key_from_broad "${key}" "${jasper_env}"
-    fi
-
+        jasper_env_file_unset "${jasper_env}" "${key}" 0640
+    done
     if [[ "${moved}" == "1" ]]; then
-        echo "  migrate_google_routes_key: Google Routes API key -> ${routes_env}"
+        echo "  migrated operator API keys -> ${keys_env}"
+    fi
+}
+
+migrate_voice_keys_split() {
+    _migrate_secret_keys "${SECRETS_DIR}/voice_keys.env" \
+        GEMINI_API_KEY OPENAI_API_KEY XAI_API_KEY
+}
+
+migrate_google_routes_key() {
+    _migrate_secret_keys "${SECRETS_DIR}/google_routes.env" GOOGLE_ROUTES_API_KEY
+    if [[ -f "${SECRETS_DIR}/google_routes.env" ]]; then
+        chmod 0640 "${SECRETS_DIR}/google_routes.env"
     fi
 }
 
