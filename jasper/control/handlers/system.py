@@ -348,8 +348,7 @@ class SystemRoutes(ControlHandlerMixin):
             # debug.env is already written: the flag IS on, only its restart
             # is missing. Without this the card reads the refusal as "nothing
             # happened" and shows the toggle back off.
-            self._send_broker_result(
-                restart_result,
+            self._send_refused(
                 error=(
                     f"The {subsystem} debug flag was saved, but its "
                     "restart could not be scheduled."
@@ -585,8 +584,7 @@ class SystemRoutes(ControlHandlerMixin):
                 no_block=True, timeout=5.0,
             )
             if not result.get("ok"):
-                self._send_broker_result(
-                    result,
+                self._send_refused(
                     error="The restart could not be scheduled.",
                     code="system_restart_failed",
                     action=action,

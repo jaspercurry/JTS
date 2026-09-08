@@ -94,8 +94,7 @@ class AecRoutes(ControlHandlerMixin):
             return
         kick = aec_endpoints._kick_aec_reconciler(reason="aec_leg")
         if not kick.get("ok"):
-            self._send_broker_result(
-                kick,
+            self._send_refused(
                 error=(
                     "The wake-detection change was saved, but the "
                     "reconciler restart could not be scheduled."
@@ -140,8 +139,7 @@ class AecRoutes(ControlHandlerMixin):
             return
         kick = aec_endpoints._kick_aec_reconciler(reason="aec_profile")
         if not kick.get("ok"):
-            self._send_broker_result(
-                kick,
+            self._send_refused(
                 error=(
                     "The microphone profile was saved, but the "
                     "reconciler restart could not be scheduled."
@@ -314,8 +312,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             if not restart.get("ok"):
                 failed_status = aec_endpoints._aec_full_status()
-                self._send_broker_result(
-                    restart,
+                self._send_refused(
                     error=(
                         "Computer microphone source was saved, but the "
                         "microphone bridge restart could not be scheduled."
@@ -375,8 +372,7 @@ class AecRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not restart.get("ok"):
-            self._send_broker_result(
-                restart,
+            self._send_refused(
                 error=(
                     "Sensitivity was saved, but the assistant restart "
                     "could not be scheduled."
@@ -495,8 +491,7 @@ class AecRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not started.get("ok"):
-            self._send_broker_result(
-                started,
+            self._send_refused(
                 error=(
                     "The preference was saved, but the background "
                     "installer could not be started."
