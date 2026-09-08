@@ -114,11 +114,10 @@ async def test_spotify_observation_distinguishes_bad_read_from_stopped(tmp_path)
 # ----------------------------------------------------------------------
 # airplay_playing — busctl Get PlaybackStatus AND Metadata on shairport
 #
-# Contract since 2026-05-22: BOTH PlaybackStatus=="Playing" AND a non-
-# empty xesam:title in Metadata are required. Phantom AirPlay SETUPs
-# from idle Apple devices set PlaybackStatus=Playing but carry empty
-# Metadata; genuine sessions populate xesam:title with the sender's
-# track title. Off-switch: JASPER_AIRPLAY_METADATA_GATE=disabled.
+# Contract: BOTH PlaybackStatus=="Playing" AND a non-empty xesam:title
+# in Metadata are required. Phantom AirPlay SETUPs from idle Apple
+# devices set PlaybackStatus=Playing but carry empty Metadata; genuine
+# sessions populate xesam:title with the sender's track title.
 # ----------------------------------------------------------------------
 
 # Sample busctl payloads. The Metadata one is a real shape captured
@@ -214,27 +213,6 @@ async def test_airplay_observation_treats_missing_bus_name_as_inactive():
         ),
     ):
         assert await source_state.airplay_playing_observed() is False
-
-
-async def test_airplay_playing_off_switch_reverts_to_playbackstatus_only(
-    monkeypatch,
-):
-    """JASPER_AIRPLAY_METADATA_GATE=disabled is the escape hatch for
-    field conditions where xesam:title genuinely empties during real
-    audio. With it set, behaviour matches the pre-2026-05-22 contract:
-    PlaybackStatus alone determines the answer."""
-    monkeypatch.setenv("JASPER_AIRPLAY_METADATA_GATE", "disabled")
-    with patch(
-        "asyncio.create_subprocess_exec",
-        new=_mock_busctl_router({
-            b"PlaybackStatus": (b'v s "Playing"\n', 0),
-            # Metadata would say phantom, but the gate is disabled so
-            # we shouldn't even call it. Test passes either way since
-            # we return early after seeing Playing.
-            b"Metadata":       (_METADATA_PHANTOM, 0),
-        }),
-    ):
-        assert await source_state.airplay_playing() is True
 
 
 async def test_airplay_metadata_transport_failure_is_unknown_to_mux():

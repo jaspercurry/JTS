@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -112,20 +111,6 @@ async def spotify_playing_observed(
     return state.get("playing") is True
 
 
-def _airplay_metadata_gate_disabled() -> bool:
-    """Env-var escape hatch for the metadata-corroboration predicate.
-
-    Set JASPER_AIRPLAY_METADATA_GATE=disabled to revert airplay_playing()
-    to its pre-2026-05-22 contract (PlaybackStatus alone). Useful if a
-    field condition is found where shairport's xesam:title is genuinely
-    empty during real audio (so far no such case is known) and the
-    full revert is needed without a redeploy.
-    """
-    return os.environ.get(
-        "JASPER_AIRPLAY_METADATA_GATE", "",
-    ).strip().lower() == "disabled"
-
-
 async def _airplay_has_metadata_title_observed() -> bool | None:
     """True iff shairport-sync's MPRIS Metadata carries a non-empty
     xesam:title at the moment we ask.
@@ -158,7 +143,7 @@ async def _airplay_has_metadata_title_observed() -> bool | None:
 async def airplay_playing_observed() -> bool | None:
     """True iff shairport-sync is currently emitting AirPlay audio.
 
-    Predicate is two-part since 2026-05-22:
+    Two-part predicate:
       1) MPRIS `PlaybackStatus == "Playing"`, AND
       2) MPRIS `Metadata` carries a non-empty `xesam:title`.
 
@@ -173,10 +158,6 @@ async def airplay_playing_observed() -> bool | None:
     owned by librespot). Trusting PlaybackStatus alone caused
     jasper-mux to flap source every 30 s and the volume coordinator
     to duck Spotify by -25 dB on each cycle.
-
-    Off-switch (env-driven, see _airplay_metadata_gate_disabled):
-        JASPER_AIRPLAY_METADATA_GATE=disabled
-    reverts to the pre-fix PlaybackStatus-only behaviour.
     """
     result = await run_busctl(
         "call",
@@ -195,10 +176,6 @@ async def airplay_playing_observed() -> bool | None:
     # leading/trailing whitespace busctl may add.
     if b'"Playing"' not in result.stdout:
         return False
-    # PlaybackStatus is Playing. Corroborate with metadata unless
-    # the gate is disabled via the escape-hatch env var.
-    if _airplay_metadata_gate_disabled():
-        return True
     return await _airplay_has_metadata_title_observed()
 
 

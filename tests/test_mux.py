@@ -1243,87 +1243,6 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
 
 
 # ----------------------------------------------------------------------
-# Escape-hatch env var. JASPER_USBSINK_PREEMPT=disabled short-circuits
-# the fan-in lane MUTE so mux still tracks state but never asks fan-in
-# to silence — degrades to Bluetooth-style "brief mixing on preempt"
-# behaviour without requiring a redeploy.
-# ----------------------------------------------------------------------
-
-
-async def test_usbsink_set_preempt_skips_mute_when_env_disabled(
-    monkeypatch, tmp_path,
-):
-    """With the escape hatch set, _usbsink_set_preempt updates the
-    tracked flag but does NOT MUTE the fan-in lane. Exercises the
-    method directly — bypasses _pause which the other tests stub."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-    await m._usbsink_set_preempt(True, reason="test_escape_hatch")
-
-    # State updated optimistically — mux's view of the world matches
-    # what it would have been if the mute had succeeded.
-    assert m._usbsink_preempted is True
-    # But no fan-in mute happened.
-    fanin_mute.assert_not_awaited()
-
-
-async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
-    monkeypatch, tmp_path,
-):
-    """The escape hatch covers both directions — silence AND unsilence
-    skip the mute. Otherwise an operator enabling the escape hatch
-    mid-flight (with USB already silenced) would never get unsilenced."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-    m._usbsink_preempted = True  # Pretend we were preempted before
-
-    await m._usbsink_set_preempt(False, reason="test_release")
-
-    assert m._usbsink_preempted is False
-    fanin_mute.assert_not_awaited()
-
-
-async def test_usbsink_set_preempt_disabled_value_must_be_literal(
-    monkeypatch, tmp_path,
-):
-    """The escape hatch is a string-match on the literal "disabled".
-    Other truthy strings (1, true, off, yes) do NOT activate it,
-    matching the sibling escape hatches' contract — avoids accidental
-    activation when an operator sets the var to a generic truthy value
-    expecting an enable. Mirrors the explicit `"disabled"` contract
-    in jasper.source_state._airplay_metadata_gate_disabled."""
-    for val in ("1", "true", "off", "yes", "enabled", ""):
-        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-        await m._usbsink_set_preempt(True, reason=f"val_{val}")
-
-        assert fanin_mute.await_count == 1, (
-            f"JASPER_USBSINK_PREEMPT={val!r} should NOT trigger the "
-            "escape hatch; only the literal 'disabled' (case-insensitive)."
-        )
-
-
-async def test_usbsink_set_preempt_disabled_case_insensitive(
-    monkeypatch, tmp_path,
-):
-    """Operators may set the value as "Disabled" or "DISABLED" by
-    convention; the gate is case-insensitive per the sibling
-    escape hatches."""
-    for val in ("disabled", "DISABLED", "Disabled", "  disabled  "):
-        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-        await m._usbsink_set_preempt(True, reason=f"val_{val!r}")
-
-        assert fanin_mute.await_count == 0, (
-            f"JASPER_USBSINK_PREEMPT={val!r} should trigger the "
-            "escape hatch (case-insensitive, whitespace-stripped)."
-        )
-
-
-# ----------------------------------------------------------------------
 # Fan-in lane-mute preempt transport (the sole USB-silencing primitive).
 # ----------------------------------------------------------------------
 
@@ -1346,16 +1265,6 @@ async def test_release_unmutes_fanin_lane(tmp_path):
     assert m._usbsink_preempted is False
 
 
-async def test_escape_hatch_never_mutes(monkeypatch, tmp_path):
-    """JASPER_USBSINK_PREEMPT=disabled degrades to graceful mix: mux tracks
-    state but issues no mute."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-    await m._usbsink_set_preempt(True, reason="preempted_by_winner")
-    assert m._usbsink_preempted is True  # tracked optimistically
-    fanin_mute.assert_not_awaited()
-
-
 async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     """A failed fan-in mute degrades gracefully: WARN, graceful mixing, tracked
     flag NOT advanced so the next tick re-attempts (1 Hz, no retry storm, no
@@ -1365,7 +1274,7 @@ async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         await m._usbsink_set_preempt(True, reason="preempted_by_winner")
     assert m._usbsink_preempted is False  # not advanced → will retry
-    assert "fanin lane mute failed" in caplog.text
+    assert "event=usbsink.preempt_failed" in caplog.records[-1].message
     # State guard did NOT latch, so a subsequent tick tries again and succeeds.
     fanin_mute.side_effect = None
     await m._usbsink_set_preempt(True, reason="preempted_by_winner")
@@ -1381,23 +1290,11 @@ async def test_reassert_mute_reissues_while_preempted(tmp_path):
     fanin_mute.assert_awaited_once_with("usbsink", True)
 
 
-async def test_reassert_mute_noops_when_not_preempted_or_escaped(
-    monkeypatch, tmp_path,
-):
-    """Reassertion is a no-op when USB isn't preempted and under the escape
-    hatch."""
-    # Not preempted.
+async def test_reassert_mute_noops_when_not_preempted(tmp_path):
     m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = False
     await m._reassert_usbsink_preempt_mute()
     fanin_mute.assert_not_awaited()
-
-    # Escape hatch active.
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m2, fanin_mute2 = _make_mux_mute_stubbed(tmp_path)
-    m2._usbsink_preempted = True
-    await m2._reassert_usbsink_preempt_mute()
-    fanin_mute2.assert_not_awaited()
 
 
 async def test_tick_preempt_reaches_fanin_mute(
