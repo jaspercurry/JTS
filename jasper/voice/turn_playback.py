@@ -19,6 +19,11 @@ logger = logging.getLogger("jasper.voice_daemon")
 # the loop; first-audio telemetry cannot be allowed to hold up speech.
 _RESPONSE_OBSERVER_TIMEOUT_SEC = 0.1
 
+# How often `idle_watchdog` re-reads the turn. Fine enough that the
+# end-of-turn close is not audible, coarse enough to stay off the Pi's
+# CPU budget for the whole of a long reply.
+_WATCHDOG_POLL_SEC = 0.25
+
 
 async def _turn_audio_chunks(turn: LiveTurn):
     chunks = getattr(turn, "audio_out_chunks", None)
@@ -254,10 +259,11 @@ async def idle_watchdog(
 
     Three cases:
       * `turn.server_turn_complete()` is True → server says "model is
-        done speaking". Defer while audio is still MOVING, anchored on
-        TtsPlayout's sample-counted drain deadline (see
-        ``expected_drain_at``); a queue that stops draining for
-        `response_stall_timeout` ends the turn instead (ADR-0254).
+        done speaking". Defer while the turn's own playout queue is
+        still MOVING; a queue that stops draining for
+        `response_stall_timeout` ends the turn instead (ADR-0254). Once
+        it is empty, TtsPlayout's sample-counted drain deadline (see
+        ``expected_drain_at``) holds the turn open for the residual.
         Canonical clean close.
       * No chunks received yet → model hasn't started speaking;
         wait the full `timeout` for the first chunk to arrive (Live
@@ -278,10 +284,10 @@ async def idle_watchdog(
     session-frame done-task check remains as a backup for always-on mic
     frames. End-of-turn drain timing is logged by ``_end_turn`` itself
     so observability is symmetric across whichever side wins the race."""
-    playout_progress: tuple[int, float] | None = None
+    playout_pending: int | None = None
     progressed_at = time.monotonic()
     while True:
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(_WATCHDOG_POLL_SEC)
         if turn.turn_lost():
             logger.warning("idle watchdog: connection lost mid-turn, ending turn")
             return
@@ -289,11 +295,14 @@ async def idle_watchdog(
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
             # Defer while the inter-task buffer is still MOVING, never on
-            # depth alone. See ADR-0254.
+            # depth alone. The progress signal is this turn's own pending
+            # count, which falls exactly when the consumer dequeues;
+            # `expected_drain_at` is shared TtsPlayout state a cue or a
+            # flush can advance, so reading it as progress would mask a
+            # wedged consumer. See ADR-0254.
             pending = turn.audio_chunks_pending()
-            progress = (pending, tts.expected_drain_at())
-            if progress != playout_progress:
-                playout_progress = progress
+            if pending != playout_pending:
+                playout_pending = pending
                 progressed_at = now
             if pending > 0:
                 stalled_for = now - progressed_at

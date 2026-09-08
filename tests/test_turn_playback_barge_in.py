@@ -24,6 +24,7 @@ import asyncio
 import logging
 import time
 
+from jasper.voice import turn_playback
 from jasper.voice._base import BaseLiveTurn
 from jasper.voice.session import AudioOutChunk
 from jasper.voice.turn_playback import idle_watchdog
@@ -270,8 +271,6 @@ def test_response_observer_failure_does_not_block_playout():
 
 
 def test_response_observer_timeout_does_not_block_playout(monkeypatch):
-    from jasper.voice import turn_playback
-
     turn = _FakeTurn(n_chunks=2)
     tts = _BaseTts()
 
@@ -519,45 +518,70 @@ def _completed_turn(pending: int) -> BaseLiveTurn:
     return turn
 
 
-async def test_idle_watchdog_ends_a_turn_whose_playout_stopped_moving(caplog):
+class _PollClock:
+    """The monotonic clock `idle_watchdog` reads once per poll.
+
+    Each read jumps `step` seconds, so every gap the watchdog measures is
+    far past the `response_stall_timeout` the test passes it, and
+    `on_poll` models what the playout consumer did in that gap. Real time
+    then plays no part in the verdict — only the poll ORDER does."""
+
+    def __init__(self, *, step: float, on_poll=None) -> None:
+        self._now = 0.0
+        self._step = step
+        self._on_poll = on_poll
+        self.reads = 0
+
+    def monotonic(self) -> float:
+        self.reads += 1
+        # Read 1 is the loop's pre-entry anchor, not a poll.
+        if self.reads > 1 and self._on_poll is not None:
+            self._on_poll()
+        self._now += self._step
+        return self._now
+
+
+def _run_watchdog(turn, clock, monkeypatch):
+    monkeypatch.setattr(turn_playback, "time", clock)
+    monkeypatch.setattr(turn_playback, "_WATCHDOG_POLL_SEC", 0.001)
+    return asyncio.wait_for(
+        idle_watchdog(turn, _BaseTts(), timeout=999.0, response_stall_timeout=1.0),
+        timeout=5.0,
+    )
+
+
+async def test_idle_watchdog_ends_a_turn_whose_playout_stopped_moving(
+    caplog, monkeypatch,
+):
     """A consumer that wedges with audio queued behind it used to defer the
     watchdog forever: the turn never ended, so the wake loop never came
     back and the household lost the speaker until a restart."""
     turn = _completed_turn(pending=3)
+    clock = _PollClock(step=5.0)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await asyncio.wait_for(
-            idle_watchdog(
-                turn, _BaseTts(), timeout=999.0, response_stall_timeout=0.3,
-            ),
-            timeout=5.0,
-        )
+        await _run_watchdog(turn, clock, monkeypatch)
 
     fields = event_fields(caplog, "turn.playout_stalled")
     # qsize(), so the 3 chunks plus the terminal sentinel behind them.
     assert int(fields["pending"]) == 4
-    assert float(fields["stalled_s"]) > 0.3
+    assert float(fields["stalled_s"]) > 1.0
 
 
-async def test_idle_watchdog_keeps_deferring_while_playout_drains(caplog):
+async def test_idle_watchdog_keeps_deferring_while_playout_drains(
+    caplog, monkeypatch,
+):
     """Progress, not patience: a consumer still moving chunks holds the turn
-    open well past `response_stall_timeout`, which a plain timer would cut
-    off mid-sentence."""
-    turn = _completed_turn(pending=6)
+    open across gaps well past `response_stall_timeout`, which a plain timer
+    would cut off mid-sentence."""
+    turn = _completed_turn(pending=3)
+    # One chunk leaves the queue between polls — the whole backlog plus the
+    # sentinel, one poll at a time.
+    clock = _PollClock(step=5.0, on_poll=turn._audio_q.get_nowait)
 
-    async def _consume() -> None:
-        async for _chunk in turn.audio_out_chunks():
-            await asyncio.sleep(0.2)
-
-    consumer = asyncio.ensure_future(_consume())
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        await asyncio.wait_for(
-            idle_watchdog(
-                turn, _BaseTts(), timeout=999.0, response_stall_timeout=0.3,
-            ),
-            timeout=10.0,
-        )
+        await _run_watchdog(turn, clock, monkeypatch)
 
-    await asyncio.wait_for(consumer, timeout=1.0)
     assert turn.audio_chunks_pending() == 0
+    assert clock.reads > 4, "the watchdog deferred across every drained chunk"
     assert event_records(caplog, "turn.playout_stalled") == []
