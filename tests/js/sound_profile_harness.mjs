@@ -1283,14 +1283,14 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
     }
   }
 
-  const setupFetched = [], hatPosts = [];
+  const outputFetched = [], hatPosts = [];
   const hat = {
     visibility: "visible", available: true, reason: "", intent_error: "",
     profiles: [{ id: "innomaker_hifi_amp_pro", label: "InnoMaker HiFi AMP Pro" }],
     desired_profile_id: null, detected_profile_id: null, detected_label: "",
     warnings: [], restart_required: false,
   };
-  const setupBase = baseFetch({
+  const hardwareBase = baseFetch({
     "./output-topology": () => response({
       output_topology: topologyPayload(), i2s_hat: hat,
     }),
@@ -1304,46 +1304,46 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
       }, !failed, failed ? 502 : 200);
     },
   });
-  const setup = setupHarness((path, options = {}) => {
-    setupFetched.push(path);
-    return setupBase(path, options);
+  const output = setupHarness((path, options = {}) => {
+    outputFetched.push(path);
+    return hardwareBase(path, options);
   }, { mode: "output" });
-  await setup.flush(); await setup.flush(); await setup.flush();
-  const setupHtml = setup.elements.get("view-body").innerHTML;
+  await output.flush(); await output.flush(); await output.flush();
+  const outputHtml = output.elements.get("view-body").innerHTML;
   for (const expected of [
     "Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness",
   ]) {
-    if (!setupHtml.includes(expected)) {
-      fail("Output mode omitted an owned control", { expected, setupHtml });
+    if (!outputHtml.includes(expected)) {
+      fail("Output mode omitted an owned control", { expected, outputHtml });
     }
   }
   for (const forbidden of ["Your profiles", "Simple", "PEQ", "Active crossover setup"]) {
-    if (setupHtml.includes(forbidden)) {
-      fail("Output mode rendered another page's control", { forbidden, setupHtml });
+    if (outputHtml.includes(forbidden)) {
+      fail("Output mode rendered another page's control", { forbidden, outputHtml });
     }
   }
   // The HAT reading rides the topology payload, so Output loads it too.
-  if (!setupFetched.includes("./output-topology")) {
-    fail("Output mode should load the I2S HAT reading", { setupFetched });
+  if (!outputFetched.includes("./output-topology")) {
+    fail("Output mode should load the I2S HAT reading", { outputFetched });
   }
   // Nothing detected: the picker is rendered, on the saved value, offering
   // only the HATs that cannot identify themselves.
-  if (!setupHtml.includes('<option value="" selected>None / unmanaged</option>') ||
-      !setupHtml.includes('<option value="innomaker_hifi_amp_pro">')) {
+  if (!outputHtml.includes('<option value="" selected>None / unmanaged</option>') ||
+      !outputHtml.includes('<option value="innomaker_hifi_amp_pro">')) {
     fail("the select must offer the undetectable HATs on the saved value",
-      { setupHtml });
+      { outputHtml });
   }
-  setup.dispatchChange({ id: "set-i2s-hat", value: "innomaker_hifi_amp_pro" });
-  await loadAndSetActiveState(setup);
-  let hatHtml = setup.elements.get("view-body").innerHTML;
+  output.dispatchChange({ id: "set-i2s-hat", value: "innomaker_hifi_amp_pro" });
+  await loadAndSetActiveState(output);
+  let hatHtml = output.elements.get("view-body").innerHTML;
   if (hatPosts[0].profile_id !== "innomaker_hifi_amp_pro")
     fail("the HAT control must POST the selected profile id", { hatPosts });
   if (!hatHtml.includes("Restart required."))
     fail("the HAT response must add its restart callout", { hatHtml });
-  setup.dispatchChange({ id: "set-i2s-hat", value: "" });
-  await loadAndSetActiveState(setup);
-  hatHtml = setup.elements.get("view-body").innerHTML;
-  const message = setup.elements.get("status").textContent;
+  output.dispatchChange({ id: "set-i2s-hat", value: "" });
+  await loadAndSetActiveState(output);
+  hatHtml = output.elements.get("view-body").innerHTML;
+  const message = output.elements.get("status").textContent;
   if (hatPosts[1].profile_id !== null ||
       message !== "Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics." ||
       hatHtml.includes("Restart required.")) {
@@ -1352,9 +1352,9 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   // A detected HAT is reported, not offered: no control to change it.
   hat.detected_profile_id = "hifiberry_dac8x_studio";
   hat.detected_label = "HiFiBerry DAC8x Studio";
-  const detectedSetup = setupHarness(setupBase, { mode: "output" });
-  await detectedSetup.flush(); await detectedSetup.flush(); await detectedSetup.flush();
-  const detectedHtml = detectedSetup.elements.get("view-body").innerHTML;
+  const detectedOutput = setupHarness(hardwareBase, { mode: "output" });
+  await detectedOutput.flush(); await detectedOutput.flush(); await detectedOutput.flush();
+  const detectedHtml = detectedOutput.elements.get("view-body").innerHTML;
   if (!detectedHtml.includes("HiFiBerry DAC8x Studio") ||
       detectedHtml.includes('id="set-i2s-hat"')) {
     fail("a detected HAT must be reported without a picker", { detectedHtml });
@@ -1363,7 +1363,7 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   const speakerFetched = [];
   const speaker = setupHarness((path, options = {}) => {
     speakerFetched.push(path);
-    return setupBase(path, options);
+    return hardwareBase(path, options);
   }, { mode: "speaker" });
   await speaker.flush(); await speaker.flush(); await speaker.flush();
   const speakerHtml = speaker.elements.get("view-body").innerHTML;
