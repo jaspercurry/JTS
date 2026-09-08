@@ -24,9 +24,8 @@ from .test_voice_daemon_manual_start_guard import _SpyCues
 
 
 def _wake_loop() -> tuple[WakeLoop, _SpyCues]:
-    wl = wake_loop_for_tests()
     spy = _SpyCues()
-    wl._cues = spy
+    wl = wake_loop_for_tests(cues=spy)
     return wl, spy
 
 

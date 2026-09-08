@@ -316,34 +316,27 @@ async def test_turn_open_failure_cue_is_honest_about_cause(caplog):
 
 
 async def test_turn_open_failure_releases_output_gate_before_cue():
-    wl = wake_loop_for_tests()
     played: list[tuple[str, str | None]] = []
-
     async def _win(**_kwargs) -> str:
         return "WIN"
-
     async def _noop(*_args, **_kwargs) -> None:
         return None
-
     async def _begin_boom(**_kwargs) -> None:
         raise RuntimeError("turn open failed")
-
     class _Conn:
         def is_paused(self) -> bool:
             return False
-
     class _Cues:
         async def play(self, slug: str) -> bool:
             played.append((slug, wl._output_gate.active_kind))
             return True
-
+    wl = wake_loop_for_tests(cues=_Cues())
     wl._wake_late_cancelled = lambda *_a, **_k: False
     wl._peering.arbitrate = _win
     wl._prepare_assistant_loudness_context = _noop
     wl._play_listening_chirp = _noop
     wl._begin_turn_inner = _begin_boom
     wl._connection = _Conn()
-    wl._cues = _Cues()
 
     try:
         await wl._arbitrate_acquire_drain(
@@ -383,10 +376,9 @@ def test_session_status_surfaces_usage_tracking_degraded():
 def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
     from jasper.voice_daemon import FanInDucker
 
-    wl = wake_loop_for_tests()
     ducker = FanInDucker("/tmp/unused.sock", -25.0)
     ducker._ducked = True
-    wl._ducker = ducker
+    wl = wake_loop_for_tests(ducker=ducker)
 
     status = wl.session_status()
     assert status["duck_active"] is True

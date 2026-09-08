@@ -1432,8 +1432,7 @@ def test_state_voice_classifies_every_session_status_field():
 
     # With a cue manager attached, so a field only a configured daemon
     # reports is inside the closed set rather than skipped past it.
-    wl = wake_loop_for_tests()
-    wl._cues = SpyCues()
+    wl = wake_loop_for_tests(cues=SpyCues())
     status_keys = frozenset(wl.session_status())
     published = state_aggregate._VOICE_STATUS_PUBLISHED_KEYS
     withheld = state_aggregate._VOICE_STATUS_WITHHELD_KEYS

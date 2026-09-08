@@ -432,11 +432,8 @@ def _teardown_loop():
     """A WakeLoop a caller can tear turns down on, with a cue manager so
     every failure cue the teardown plays is observable."""
 
-    wl = wake_loop_for_tests()
-    # Only read by the no-audio diagnostics below; `for_tests`' cfg stub
-    # does not carry it because nothing else in that seam reaches them.
+    wl = wake_loop_for_tests(cues=_SpyCues())
     wl._cfg.active_voice_model = "test-model"
-    wl._cues = _SpyCues()
     return wl
 
 
@@ -861,10 +858,7 @@ def test_wake_legs_follow_the_profiles_wake_detection_grant(
     )
     assert [spec.token for spec, _device in plan] == expected_tokens
 
-    wl = wake_loop_for_tests(
-        legs=_UNSET if plan else [],
-        manual_mics=[remote_mic()],
-    )
+    wl = wake_loop_for_tests(legs=_UNSET if plan else [], manual_mics=[remote_mic()])
     assert wl._push_to_talk.only is expected_ptt_only
 
 
@@ -997,11 +991,7 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
     would hit on a speaker that has no model to reset."""
     from tests._manual_mics import remote_mic
 
-    wl = wake_loop_for_tests(
-        legs=[],
-        manual_mics=[remote_mic()],
-        vad=None,
-    )
+    wl = wake_loop_for_tests(legs=[], manual_mics=[remote_mic()], vad=None)
     wl._push_to_talk.active_source = "wiim_remote_2"
 
     await _drive_begin_turn(wl)

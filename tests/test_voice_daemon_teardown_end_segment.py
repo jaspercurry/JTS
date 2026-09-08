@@ -32,11 +32,11 @@ from __future__ import annotations
 import asyncio
 
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-from tests._wake_loop import wake_loop_for_tests
+from tests._wake_loop import FakeTts, wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
-class _RecordingTts:
+class _RecordingTts(FakeTts):
     """TtsPlayout stand-in that records end_segment calls."""
 
     def __init__(self, *, end_segment_raises: bool = False) -> None:
@@ -48,14 +48,8 @@ class _RecordingTts:
         if self._raises:
             raise OSError("fan-in socket gone")
 
-    async def resume_content_meter(self):
-        return None
 
-    async def wait_drained(self):
-        return None
 
-    def take_paced_sec(self) -> float:
-        return 0.0
 
 
 def _make_wakeloop(tts: _RecordingTts):
@@ -72,7 +66,7 @@ def _make_wakeloop(tts: _RecordingTts):
         async def restore(self):
             return None
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(volume_coordinator=_Noop(), ducker=_AsyncNoop(), tts=tts)
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
@@ -85,11 +79,7 @@ def _make_wakeloop(tts: _RecordingTts):
     wl._silero_raw_armed_at_ms = None
     wl._input_ended = False
     wl._ending = False
-
-    wl._volume_coordinator = _Noop()
     wl._content_activity = _Noop()
-    wl._ducker = _AsyncNoop()
-    wl._tts = tts
 
     async def _noop_stage(_stage):
         await asyncio.sleep(0)

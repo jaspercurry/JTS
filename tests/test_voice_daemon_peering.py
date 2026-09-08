@@ -90,8 +90,7 @@ def _make_wake_loop(peering_enabled: bool):
     # Use the test constructor to skip hardware while still getting a
     # fully-shaped WakeLoop. We only test methods that touch cfg + a
     # couple of attrs.
-    wl = wake_loop_for_tests()
-    wl._cfg = cfg
+    wl = wake_loop_for_tests(cfg=cfg)
     wl._turn = None
     return wl
 

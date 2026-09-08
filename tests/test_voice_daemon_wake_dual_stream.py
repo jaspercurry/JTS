@@ -54,12 +54,10 @@ def _make_wake_loop(
     """Construct a WakeLoop via the test seam, then override the attrs
     `_handle_wake_frame` touches with mocks that detect accidental use."""
     wl = wake_loop_for_tests()
-    wl._cfg = MagicMock()
-    wl._cfg.peering_enabled = False
-    wl._detector = _make_detector()
+    wl._legs["on"].detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     wl._legs = {
-        "on": LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
+        "on": LegRuntime(by_token("on"), MagicMock(), wl._legs["on"].detector, None),
     }
     if detector_off is not None:
         wl._legs["off"] = LegRuntime(
@@ -107,15 +105,15 @@ async def test_single_stream_on_fires_when_threshold_crossed(caplog):
     refractory_until. Also stamps last_wake_at — marking this box's wake
     pipeline alive, before arbitration, regardless of who serves the turn."""
     wl = _make_wake_loop(detector_off=None)
-    wl._detector.score_frame.return_value = 0.85
+    wl._legs["on"].detector.score_frame.return_value = 0.85
     assert wl.session_status()["last_wake_at"] is None
 
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
 
-    wl._detector.score_frame.assert_called_once()
+    wl._legs["on"].detector.score_frame.assert_called_once()
     assert wl._refractory_until > 0
-    wl._detector.reset.assert_called_once()
+    wl._legs["on"].detector.reset.assert_called_once()
     wl._arbitrate_acquire_drain.assert_called_once()
     # Log line includes both per-leg scores and the firing leg
     assert event_fields(caplog, "wake.detected")["leg"] == "on"
@@ -129,13 +127,13 @@ async def test_subthreshold_frame_updates_recent_score_but_does_not_fire():
     leg's eventual fire can attach it as context) but does NOT fire
     wake or set refractory."""
     wl = _make_wake_loop(detector_off=None)
-    wl._detector.score_frame.return_value = 0.07
+    wl._legs["on"].detector.score_frame.return_value = 0.07
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
     assert wl._legs["on"].recent_score == pytest.approx(0.07)
     assert wl._refractory_until == 0.0
-    wl._detector.reset.assert_not_called()
+    wl._legs["on"].detector.reset.assert_not_called()
     wl._arbitrate_acquire_drain.assert_not_called()
 
 
@@ -160,7 +158,7 @@ async def test_aec_off_alone_fires_wake():
     await wl._handle_wake_frame(_frame(), leg="off")
 
     detector_off.score_frame.assert_called_once()
-    wl._detector.reset.assert_called_once()
+    wl._legs["on"].detector.reset.assert_called_once()
     detector_off.reset.assert_called_once()
     assert wl._refractory_until > 0
     wl._arbitrate_acquire_drain.assert_called_once()
@@ -173,7 +171,7 @@ async def test_or_gate_dedupes_concurrent_fires_via_refractory():
     detector_off = _make_detector(threshold=0.5)
     detector_off.score_frame.return_value = 0.71
     wl = _make_wake_loop(detector_off=detector_off)
-    wl._detector.score_frame.return_value = 0.82
+    wl._legs["on"].detector.score_frame.return_value = 0.82
 
     # AEC ON fires first
     await wl._handle_wake_frame(_frame(), leg="on")
@@ -185,7 +183,7 @@ async def test_or_gate_dedupes_concurrent_fires_via_refractory():
     # Both detectors reset once each (on the first fire only — the
     # second call returns early at the refractory check before
     # reaching reset)
-    wl._detector.reset.assert_called_once()
+    wl._legs["on"].detector.reset.assert_called_once()
     detector_off.reset.assert_called_once()
 
 
@@ -215,7 +213,7 @@ async def test_stale_other_leg_score_reported_as_none(caplog):
     log shows `score_off=none` so the operator sees the leg dried up."""
     detector_off = _make_detector(threshold=0.5)
     wl = _make_wake_loop(detector_off=detector_off)
-    wl._detector.score_frame.return_value = 0.91
+    wl._legs["on"].detector.score_frame.return_value = 0.91
     # AEC OFF "last scored" several seconds ago — beyond the 320ms
     # staleness threshold in _handle_wake_frame.
     wl._legs["off"].recent_score = 0.42
@@ -235,7 +233,7 @@ async def test_refractory_blocks_immediate_re_fire_on_same_leg():
     same leg is silently swallowed — no double-fire even without
     the OR-gate dimension."""
     wl = _make_wake_loop(detector_off=None)
-    wl._detector.score_frame.return_value = 0.9
+    wl._legs["on"].detector.score_frame.return_value = 0.9
 
     await wl._handle_wake_frame(_frame(), leg="on")
     first_fire_count = wl._arbitrate_acquire_drain.call_count
@@ -245,7 +243,7 @@ async def test_refractory_blocks_immediate_re_fire_on_same_leg():
     assert wl._arbitrate_acquire_drain.call_count == first_fire_count
     # The detector was NOT re-scored on the second call (the
     # refractory early-out is before score_frame to save CPU).
-    assert wl._detector.score_frame.call_count == 1
+    assert wl._legs["on"].detector.score_frame.call_count == 1
 
 
 async def test_missing_detector_off_means_off_leg_is_noop():

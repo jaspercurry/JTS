@@ -54,8 +54,7 @@ class _RefusingCues(SpyCues):
 
 async def test_play_cue_refuses_during_measurement(caplog) -> None:
 
-    wl = wake_loop_for_tests()
-    wl._cues = _RefusingCues()
+    wl = wake_loop_for_tests(cues=_RefusingCues())
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
@@ -78,8 +77,7 @@ async def test_play_cue_plays_normally_when_not_measuring() -> None:
             played.append(slug)
             return True
 
-    wl = wake_loop_for_tests()
-    wl._cues = _Cues()
+    wl = wake_loop_for_tests(cues=_Cues())
 
     assert await wl.play_cue("cant_connect") == "ok"
     assert played == ["cant_connect"]
@@ -90,8 +88,7 @@ async def test_play_supervisor_cue_refuses_during_measurement(
     caplog, output_busy: bool,
 ) -> None:
 
-    wl = wake_loop_for_tests()
-    wl._cues = _RefusingCues()
+    wl = wake_loop_for_tests(cues=_RefusingCues())
     if output_busy:
         assert await wl._output_gate.begin_if_idle("admin") is not None
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
@@ -122,8 +119,7 @@ async def test_a_refused_cue_reaches_the_managers_health_record(
     cues = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
     )
-    wl = wake_loop_for_tests()
-    wl._cues = cues
+    wl = wake_loop_for_tests(cues=cues)
     if busy_gate == "measurement":
         assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     else:
@@ -155,8 +151,7 @@ async def test_play_supervisor_cue_plays_normally_when_not_measuring() -> None:
             played.append(slug)
             return True
 
-    wl = wake_loop_for_tests()
-    wl._cues = _Cues()
+    wl = wake_loop_for_tests(cues=_Cues())
 
     assert await wl.play_supervisor_cue("cant_connect") == "ok"
     assert played == ["cant_connect"]
@@ -173,8 +168,7 @@ async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
                 "timer must not speak during a measurement window"
             )
 
-    wl = wake_loop_for_tests()
-    wl._cues = _Cues()
+    wl = wake_loop_for_tests(cues=_Cues())
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
@@ -205,7 +199,6 @@ async def test_announce_timer_speaks_normally_when_not_measuring() -> None:
 async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
     """A timer past its early check is still stopped at atomic admission."""
 
-
     prerender_started = asyncio.Event()
     finish_prerender = asyncio.Event()
     spoke: list[str] = []
@@ -219,8 +212,7 @@ async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
         async def speak_text(self, text: str, _should_play=None) -> None:
             spoke.append(text)
 
-    wl = wake_loop_for_tests()
-    wl._cues = _Cues()
+    wl = wake_loop_for_tests(cues=_Cues())
     announce = asyncio.create_task(wl.announce_timer(_timer()))
     await asyncio.wait_for(prerender_started.wait(), timeout=1.0)
 
