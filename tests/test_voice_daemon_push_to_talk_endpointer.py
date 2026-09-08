@@ -353,12 +353,14 @@ class _TeardownTurn:
         chunks: int = 3,
         turn_lost: bool = False,
         server_turn_complete: bool = False,
+        dropped: int = 0,
     ) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
         self._chunks = chunks
         self._turn_lost = turn_lost
         self._server_turn_complete = server_turn_complete
+        self._dropped = dropped
 
     def last_chunk_at(self) -> float:
         return 0.0
@@ -377,6 +379,9 @@ class _TeardownTurn:
 
     def chunks_received(self) -> int:
         return self._chunks
+
+    def audio_dropped_bytes(self) -> int:
+        return self._dropped
 
     def usage(self) -> TurnUsage:
         return TurnUsage()
@@ -424,6 +429,7 @@ async def _torn_down_mid_hold(
     server_turn_complete: bool = False,
     reason: str = "test",
     paused: bool = False,
+    dropped: int = 0,
     wl=None,
 ) -> _TeardownTurn:
     """Run the REAL `_end_turn_inner` on a turn where nothing else in the
@@ -439,6 +445,7 @@ async def _torn_down_mid_hold(
         chunks=chunks,
         turn_lost=turn_lost,
         server_turn_complete=server_turn_complete,
+        dropped=dropped,
     )
     wl._turn = turn
     wl._bg_tasks = set()
@@ -470,6 +477,14 @@ async def _torn_down_mid_hold(
             {"chunks": 2, "input_ended": True, "user_speech": True,
              "turn_lost": True},
             "internal_error", 1, None, id="lost_mid_reply",
+        ),
+        # The link went mid-utterance, before anything ended input — a
+        # `send_audio` failure reaches `_end_turn` this way. `silent` is
+        # False once the turn is lost, so every silence arm skips it.
+        pytest.param(
+            {"chunks": 2, "input_ended": False, "user_speech": True,
+             "turn_lost": True, "event_reason": "connection_lost"},
+            "internal_error", 1, None, id="lost_before_input_ended",
         ),
         # A button press proves intent, and nothing scores a button turn's
         # frames — a deaf press is exactly the symptom the cue exists for.
@@ -525,9 +540,12 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     and spoken about — unless the ending was one the household or the daemon
     chose, which is neither a fault nor news to anyone, and which the
     journal records at INFO instead."""
+    params = dict(turn)
+    # The diagnosis the line carries, where it is not the end reason.
+    event_reason = params.pop("event_reason", params.get("reason", "test"))
     wl = _teardown_loop()
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        await _torn_down_mid_hold(wl=wl, **{"manual": False, **turn})
+        await _torn_down_mid_hold(wl=wl, **{"manual": False, **params})
 
     assert wl._silent_responses_session == counted
     assert wl.session_status()["silent_responses_session"] == counted
@@ -551,7 +569,47 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert records[0].levelno == logging.WARNING
     assert int(fields["bytes_sent"]) == 4096
     assert int(fields["count"]) == counted
-    assert fields["reason"] == turn.get("reason", "test")
+    assert fields["reason"] == event_reason
+
+
+@pytest.mark.parametrize("dropped, reason, suppressed", [
+    (2048, "test", None), (2048, "stopping", "stopping"), (0, "test", None),
+])
+async def test_an_answer_truncated_by_the_playout_ceiling_is_heard(
+    dropped, reason, suppressed, caplog,
+):
+    """An answer that hit `AUDIO_OUT_QUEUE_MAX_BYTES` stopped part-way,
+    which is exactly what the internal_error cue says (ADR-0254). Chunks
+    arrived, so none of the silent-response arms fire and nothing else
+    would tell the household the tail is missing — unless the ending was
+    one the household or the daemon chose, which is journalled at INFO
+    and not spoken about, as in the silent-response arms.
+
+    Mutation: the same answered turn with no dropped bytes says nothing.
+    """
+    wl = _teardown_loop()
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        await _torn_down_mid_hold(
+            wl=wl, manual=False, chunks=3, input_ended=True,
+            user_speech=True, dropped=dropped, reason=reason,
+        )
+
+    cued = bool(dropped) and not suppressed
+    assert wl._cues.played == (["internal_error"] if cued else [])
+    # Not a silent response: the count and its event stay untouched.
+    assert wl._silent_responses_session == 0
+    assert not event_records(caplog, "turn.silent_response")
+    records = event_records(caplog, "turn.truncated_response")
+    assert len(records) == (1 if dropped else 0)
+    if not records:
+        return
+    assert records[0].levelno == (
+        logging.INFO if suppressed else logging.WARNING
+    )
+    fields = event_fields(caplog, "turn.truncated_response")
+    assert fields.get("suppressed") == suppressed
+    assert int(fields["dropped_bytes"]) == dropped
+    assert int(fields["chunks_received"]) == 3
 
 
 @pytest.mark.parametrize("layer", ["cue_manager", "play_cue"])

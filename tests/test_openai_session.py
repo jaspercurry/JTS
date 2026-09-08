@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
+from jasper.voice import _base
 from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
@@ -37,6 +38,8 @@ from jasper.voice.openai_session import (
     _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
+from tests._live_turn_fake import drain_audio_chunks
+from tests._log_events import event_fields, event_records
 
 
 # ---------------------------------------------------------------------------
@@ -587,8 +590,6 @@ async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
     max_audio_played_ms=0) means the ledger saw no rendered audio. Truncating
     on bytes-received instead would push audio_end_ms past the heard boundary
     and the server errors. So 0 is a no-op + WARN, never a guess."""
-    from tests._log_events import event_fields
-
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -620,8 +621,6 @@ async def test_truncate_clamps_to_item_received_ms(caplog):
     in-flight one, so the max would exceed THIS item's duration — the
     out-of-range case OpenAI rejects. truncate clamps audio_end_ms to what
     this item actually received."""
-    from tests._log_events import event_records
-
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -678,8 +677,6 @@ async def test_truncate_failure_redacts_the_connections_own_key(caplog):
     prefix-less key even when the rejection body echoes it back
     verbatim — the connection hands its own key to `failure_detail` as
     a literal (ADR-0243)."""
-    from tests._log_events import event_fields
-
     factory = _FakeConnectFactory()
     conn = OpenAIRealtimeConnection(
         api_key="plainvalue123", backoff_schedule=(0.0, 0.0),
@@ -857,8 +854,6 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
     ``response.output_audio_transcript.delta`` for assistant speech. The
     adapter logs only metadata, because the flight recorder buffers
     DEBUG records and dumps them to journald around failures."""
-    from tests._log_events import event_fields, event_records
-
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -891,8 +886,6 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
 
 
 async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
-    from tests._log_events import event_fields, event_records
-
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -2706,8 +2699,6 @@ async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
     this turn was never asked, because there is then no interval to report.
     `since_turn_start_ms` still spans the user's whole utterance plus local
     endpointing, so it is not a provider figure."""
-    from tests._log_events import event_fields
-
     caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     await conn.start(ToolRegistry(), "")
@@ -2765,4 +2756,95 @@ async def test_the_first_connect_reads_as_paused_while_it_dials(conn_cls):
         release.set()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(task, timeout=5.0)
+        await conn.stop()
+
+
+# ---------------------------------------------------------------------------
+# Playout-queue byte ceiling.
+# ---------------------------------------------------------------------------
+
+
+async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch):
+    """The per-turn playout queue is the only PCM carrier and burst
+    providers fill it ahead of realtime, so a wedged consumer would grow it
+    without bound. Past the ceiling the INCOMING chunk is dropped (tail
+    truncation, the same shape a barge-in flush leaves), the loss is
+    counted, and the terminal sentinel still ends the iterator."""
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
+    conn, _factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        with caplog.at_level(
+            logging.WARNING, logger="jasper.voice.openai_session",
+        ):
+            await turn._on_audio_delta(_b64(b"12345"))
+            await turn._on_audio_delta(_b64(b"67890"))
+            await turn._on_audio_delta(_b64(b"X"))
+            await turn._on_audio_delta(_b64(b"YZ"))
+
+        assert turn.audio_chunks_pending() == 2
+        assert turn.audio_dropped_bytes() == 3, (
+            "both over-ceiling chunks must be counted, not just the first"
+        )
+        fields = event_fields(caplog, "turn.audio_overflow")
+        assert int(fields["queued_bytes"]) == 10
+        assert int(fields["dropped_bytes"]) == 1, (
+            "only the FIRST drop of the turn logs; later drops just count"
+        )
+
+        turn._audio_q.put_nowait(None)
+        played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
+        assert [chunk.pcm for chunk in played] == [b"12345", b"67890"]
+    finally:
+        await conn.stop()
+
+
+async def test_dropping_pending_audio_frees_the_ceiling(monkeypatch):
+    """A barge-in flush clears the queue, so the accounting the ceiling
+    reads must clear with it — otherwise the turn stays permanently full
+    and the model's next words are dropped.
+
+    The dropped-byte count clears too. One turn spans several barge-in
+    episodes (``play_responses`` keeps going after a flush), and the
+    daemon cues ``internal_error`` at teardown on a non-zero count; a
+    truncation the household caused by talking over the model must not
+    end the turn with that cue. The first drop's ``turn.audio_overflow``
+    WARN stays as the journal record."""
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
+    conn, _factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        await turn._on_audio_delta(_b64(b"0123456789"))
+        await turn._on_audio_delta(_b64(b"X"))
+        assert turn.audio_dropped_bytes() == 1
+
+        turn.drop_pending_audio()
+        await turn._on_audio_delta(_b64(b"after"))
+
+        assert turn.audio_chunks_pending() == 1
+        assert turn.audio_dropped_bytes() == 0
+    finally:
+        await conn.stop()
+
+
+async def test_dropping_pending_audio_drains_behind_the_sentinel():
+    """A chunk can be queued BEHIND the terminal sentinel: the socket
+    drops mid-reply (``_on_connection_lost`` queues the sentinel) and a
+    late audio delta still lands. A drain that stopped at the first
+    sentinel would re-queue it AHEAD of that chunk, and the consumer
+    would play post-barge audio as if it were pre-interrupt."""
+    conn, _factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        turn._on_connection_lost()
+        await turn._on_audio_delta(_b64(b"late"))
+        assert turn.audio_chunks_pending() == 2
+
+        assert turn.drop_pending_audio() == 1
+        played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
+        assert played == []
+    finally:
         await conn.stop()

@@ -33,7 +33,8 @@ use crate::loudness::{
 use crate::mixer::CHANNELS;
 use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::{
-    command_name, read_command, TtsAudioSamples, TtsCommand, TtsWireWidth, VolumeContext,
+    command_name, is_frame_timeout, read_command_deadlined, TtsAudioSamples, TtsClientSlot,
+    TtsClientSlots, TtsCommand, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -80,6 +81,8 @@ pub struct TtsMetrics {
     max_pending_frames: Arc<AtomicU64>,
     budget_frames: Arc<AtomicU64>,
     protocol_errors: Arc<AtomicU64>,
+    slots: TtsClientSlots,
+    frame_timeouts: Arc<AtomicU64>,
     dropped_commands: Arc<AtomicU64>,
     dropped_audio_frames: Arc<AtomicU64>,
     stale_commands_dropped: Arc<AtomicU64>,
@@ -123,6 +126,8 @@ impl Default for TtsMetrics {
             max_pending_frames: Arc::new(AtomicU64::new(0)),
             budget_frames: Arc::new(AtomicU64::new(0)),
             protocol_errors: Arc::new(AtomicU64::new(0)),
+            slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
+            frame_timeouts: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
             stale_commands_dropped: Arc::new(AtomicU64::new(0)),
@@ -193,6 +198,18 @@ impl TtsMetrics {
 
     pub fn dropped_commands(&self) -> u64 {
         self.dropped_commands.load(Ordering::Relaxed)
+    }
+
+    pub fn connections_rejected(&self) -> u64 {
+        self.slots.rejected()
+    }
+
+    pub fn tts_clients(&self) -> u64 {
+        self.slots.in_use() as u64
+    }
+
+    pub fn frame_timeouts(&self) -> u64 {
+        self.frame_timeouts.load(Ordering::Relaxed)
     }
 
     pub fn dropped_audio_frames(&self) -> u64 {
@@ -347,6 +364,10 @@ impl TtsMetrics {
 
     fn mark_protocol_error(&self) {
         self.protocol_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn mark_frame_timeout(&self) {
+        self.frame_timeouts.fetch_add(1, Ordering::Relaxed);
     }
 
     fn mark_stale_command_dropped(&self) {
@@ -1293,12 +1314,33 @@ pub fn spawn_tts_server(
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
+                        // A client that stops reading its FLUSH_SYNC ack would
+                        // otherwise pin its slot forever inside `write_all`.
+                        // Best-effort: a socket that refuses the option is
+                        // still worth serving.
+                        let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
+                        let slot = match metrics.slots.try_acquire() {
+                            Ok(slot) => slot,
+                            // The pool counts every refusal for STATUS; only the
+                            // first and every 100th afterward are worth a
+                            // journal line, so a real ceiling stays visible past
+                            // one transient refusal at boot.
+                            Err(count) if count == 1 || count % 100 == 0 => {
+                                warn!(
+                                    "event=fanin.tts_socket.connection_rejected max_clients={} count={}",
+                                    TTS_MAX_CLIENTS, count
+                                );
+                                continue;
+                            }
+                            Err(_) => continue,
+                        };
                         if let Err(e) = spawn_tts_client(
                             stream,
                             tx.clone(),
                             flush_tx.clone(),
                             Arc::clone(&epoch),
                             metrics.clone(),
+                            slot,
                         ) {
                             warn!("event=fanin.tts_socket.spawn_failed detail={}", e);
                         }
@@ -1327,11 +1369,16 @@ fn spawn_tts_client(
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
+    slot: TtsClientSlot,
 ) -> io::Result<()> {
     thread::Builder::new()
         .name("fanin-tts-client".to_string())
         .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || handle_tts_client(stream, tx, flush_tx, epoch, metrics))
+        .spawn(move || {
+            // Held for the connection's life; released when this thread ends.
+            let _slot = slot;
+            handle_tts_client(stream, tx, flush_tx, epoch, metrics, TTS_FRAME_DEADLINE)
+        })
         .map(|_| ())
 }
 
@@ -1341,10 +1388,11 @@ fn handle_tts_client(
     flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
+    frame_deadline: Duration,
 ) {
     let mut reader = BufReader::new(stream);
     loop {
-        match read_command(&mut reader) {
+        match read_command_deadlined(&mut reader, frame_deadline) {
             Ok(Some(TtsCommand::Close)) | Ok(None) => return,
             Ok(Some(TtsCommand::Flush)) => {
                 if !queue_flush(&mut reader, &flush_tx, &epoch, false) {
@@ -1368,6 +1416,14 @@ fn handle_tts_client(
                 ) {
                     return;
                 }
+            }
+            Err(e) if is_frame_timeout(&e) => {
+                metrics.mark_frame_timeout();
+                warn!(
+                    "event=fanin.tts_socket.frame_timeout deadline_s={}",
+                    frame_deadline.as_secs()
+                );
+                return;
             }
             Err(e) => {
                 metrics.mark_protocol_error();
@@ -1639,6 +1695,8 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::Once;
 
+    use jasper_tts_protocol::read_command;
+
     static TEST_LOGGER: TestLogger = TestLogger;
     static LOG_INIT: Once = Once::new();
 
@@ -1684,6 +1742,25 @@ mod tests {
 
     use std::io::Cursor;
 
+    const TEST_FRAME_DEADLINE: Duration = Duration::from_millis(20);
+
+    fn spawn_test_tts_client(
+        tx: &SyncSender<QueuedTtsCommand>,
+        flush_tx: &SyncSender<QueuedFlush>,
+        epoch: &Arc<AtomicU64>,
+        metrics: &TtsMetrics,
+    ) -> (UnixStream, thread::JoinHandle<()>) {
+        let (client, server) = UnixStream::pair().unwrap();
+        let tx = tx.clone();
+        let flush_tx = flush_tx.clone();
+        let epoch = Arc::clone(epoch);
+        let metrics = metrics.clone();
+        let handle = thread::spawn(move || {
+            handle_tts_client(server, tx, flush_tx, epoch, metrics, TEST_FRAME_DEADLINE);
+        });
+        (client, handle)
+    }
+
     fn run_tts_client_payload(
         payload: &[u8],
         tx: &SyncSender<QueuedTtsCommand>,
@@ -1691,14 +1768,7 @@ mod tests {
         epoch: &Arc<AtomicU64>,
         metrics: &TtsMetrics,
     ) {
-        let (mut client, server) = UnixStream::pair().unwrap();
-        let tx = tx.clone();
-        let flush_tx = flush_tx.clone();
-        let epoch = Arc::clone(epoch);
-        let metrics = metrics.clone();
-        let handle = thread::spawn(move || {
-            handle_tts_client(server, tx, flush_tx, epoch, metrics);
-        });
+        let (mut client, handle) = spawn_test_tts_client(tx, flush_tx, epoch, metrics);
         client.write_all(payload).unwrap();
         client.flush().unwrap();
         drop(client);
@@ -1784,6 +1854,22 @@ mod tests {
         run_tts_client_payload(b"UNKNOWN\n", &tx, &flush_tx, &epoch, &metrics);
 
         assert_eq!(metrics.protocol_errors(), 1);
+    }
+
+    /// A client that announces a payload and then stops writing is dropped
+    /// and counted, so its reader thread cannot be parked forever.
+    #[test]
+    fn tts_client_stalled_mid_frame_is_disconnected_and_counted() {
+        let (tx, _rx, flush_tx, _flush_rx, metrics, epoch) = tts_channels(48_000);
+        let (mut client, handle) = spawn_test_tts_client(&tx, &flush_tx, &epoch, &metrics);
+
+        client.write_all(b"AUDIO 1000\n").unwrap();
+        client.flush().unwrap();
+        handle.join().unwrap();
+
+        assert_eq!(metrics.frame_timeouts(), 1);
+        assert_eq!(metrics.protocol_errors(), 0);
+        drop(client);
     }
 
     #[test]
@@ -2706,7 +2792,7 @@ mod tests {
         });
         let (mut client, server) = UnixStream::pair().unwrap();
         let handle = thread::spawn(move || {
-            handle_tts_client(server, tx, flush_tx, epoch, metrics);
+            handle_tts_client(server, tx, flush_tx, epoch, metrics, TEST_FRAME_DEADLINE);
         });
 
         client.write_all(b"PROGRAM_DUCK_ON\n").unwrap();

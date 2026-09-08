@@ -549,7 +549,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             self._received_ms_by_item[item_id] = (
                 self._received_ms_by_item.get(item_id, 0.0) + chunk_bytes / 48.0
             )
-        await self._audio_q.put(AudioOutChunk(
+        self._enqueue_audio(AudioOutChunk(
             pcm=data,
             provider_item_id=item_id,
         ))

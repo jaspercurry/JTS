@@ -3147,6 +3147,54 @@ class WakeLoop:
                         endpointer=self._endpointer_label(),
                         level=logging.WARNING,
                     )
+                else:
+                    # The link dropped mid-utterance, before anything ended
+                    # input: `silent` is False by construction once the turn
+                    # is lost, so no branch above owns this and the turn
+                    # would otherwise end with no line and no cue. Nobody
+                    # chose the ending, so it counts and it is spoken about.
+                    suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                    if not suppressed:
+                        self._silent_responses_session += 1
+                    log_event(
+                        logger,
+                        "turn.silent_response",
+                        provider=self._cfg.voice_provider,
+                        model=model,
+                        reason="connection_lost",
+                        bytes_sent=bytes_sent,
+                        chunks_received=chunks_received,
+                        turn_lost=lost_mid_reply,
+                        count=self._silent_responses_session,
+                        endpointer=self._endpointer_label(),
+                        **({"suppressed": reason} if suppressed else {}),
+                        level=logging.INFO if suppressed else logging.WARNING,
+                    )
+                    play_no_answer_cue = not suppressed
+            elif (
+                bytes_sent > 0
+                and self._turn.audio_dropped_bytes() > 0
+                and not expected_research_silence_dismiss
+            ):
+                # The model answered and the playout queue hit its byte
+                # ceiling, so the tail was dropped: the household heard an
+                # answer that stopped part-way, which is what the
+                # internal_error cue says. An ending the household or the
+                # daemon chose is journalled but not cued, as in the
+                # sibling arms above. See ADR-0254.
+                suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                log_event(
+                    logger,
+                    "turn.truncated_response",
+                    provider=self._cfg.voice_provider,
+                    model=_active_model(self._cfg),
+                    dropped_bytes=self._turn.audio_dropped_bytes(),
+                    chunks_received=chunks_received,
+                    endpointer=self._endpointer_label(),
+                    **({"suppressed": reason} if suppressed else {}),
+                    level=logging.INFO if suppressed else logging.WARNING,
+                )
+                play_no_answer_cue = not suppressed
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
                 if drain_wait_sec is not None else ""

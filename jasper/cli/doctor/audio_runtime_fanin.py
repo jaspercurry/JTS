@@ -78,6 +78,8 @@ REASON_FANIN_TTS_STATUS_NOT_PROBED = "fanin_tts_status_not_probed"
 REASON_FANIN_TTS_LANE_DISABLED = "fanin_tts_lane_disabled"
 REASON_FANIN_TTS_PROTOCOL_ERRORS = "fanin_tts_protocol_errors"
 REASON_FANIN_TTS_AUDIO_DROPPED = "fanin_tts_audio_dropped"
+REASON_FANIN_TTS_CONNECTIONS_REJECTED = "fanin_tts_connections_rejected"
+REASON_FANIN_TTS_FRAME_TIMEOUTS = "fanin_tts_frame_timeouts"
 
 REASON_HOST_CLOCK_STATUS_NOT_PROBED = "host_clock_status_not_probed"
 REASON_HOST_CLOCK_TELEMETRY_MISSING = "host_clock_telemetry_missing"
@@ -464,6 +466,7 @@ def check_fanin_service() -> CheckResult:
         )
     frames = output.get("frames_written", 0)
     xruns = output.get("xrun_count", 0)
+    xrun_events_dropped = data.get("xrun_events_dropped", 0)
     input_buffer_frames = data.get("input_buffer_frames")
     if not isinstance(input_buffer_frames, int):
         return CheckResult(
@@ -559,7 +562,8 @@ def check_fanin_service() -> CheckResult:
         f"active, frames_written={frames}, "
         f"transport={actual_transport}, "
         f"input_buffer_frames={input_buffer_frames}, "
-        f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
+        f"output xruns={xruns}, xrun_events_dropped={xrun_events_dropped}, "
+        f"input xruns={','.join(input_xruns) or '0'}, "
         f"progress_age_ms={progress_age}, "
         f"{tts_detail}"
     )
@@ -708,7 +712,8 @@ def check_fanin_tts_drops() -> CheckResult:
 
     Returns:
       - ok whenever STATUS is readable, carrying `fanin_tts_protocol_errors`,
-        `fanin_tts_audio_dropped` or `fanin_tts_lane_disabled` as its reason.
+        `fanin_tts_audio_dropped`, `fanin_tts_connections_rejected`,
+        `fanin_tts_frame_timeouts` or `fanin_tts_lane_disabled` as its reason.
       - skipped when STATUS is unreachable (reachability is owned by
         'jasper-fanin service').
     """
@@ -736,6 +741,8 @@ def check_fanin_tts_drops() -> CheckResult:
     dropped_frames = int(tts.get("dropped_audio_frames") or 0)
     dropped_commands = int(tts.get("dropped_commands") or 0)
     protocol_errors = int(tts.get("protocol_errors") or 0)
+    connections_rejected = int(tts.get("connections_rejected") or 0)
+    frame_timeouts = int(tts.get("frame_timeouts") or 0)
     budget = (
         f"pending_frames={tts.get('pending_frames')}, "
         f"budget_frames={tts.get('budget_frames')}"
@@ -765,6 +772,27 @@ def check_fanin_tts_drops() -> CheckResult:
             "accounting; an unpaced writer or a pacing regression is the "
             "usual cause.",
             reason=REASON_FANIN_TTS_AUDIO_DROPPED,
+        )
+    if connections_rejected:
+        return CheckResult(
+            name,
+            "ok",
+            f"{connections_rejected} TTS connection(s) refused at the client "
+            f"slot ceiling since fan-in start ({budget}) — a producer could "
+            "not attach for those. Check `journalctl -u jasper-fanin | grep "
+            "tts_socket.connection_rejected` for a leaked slot or a burst of "
+            "concurrent producers.",
+            reason=REASON_FANIN_TTS_CONNECTIONS_REJECTED,
+        )
+    if frame_timeouts:
+        return CheckResult(
+            name,
+            "ok",
+            f"{frame_timeouts} TTS frame read timeout(s) since fan-in start "
+            f"({budget}) — a connected producer stalled mid-command. Check "
+            "`journalctl -u jasper-fanin | grep tts_socket.frame_timeout` "
+            "for a wedged or slow TTS writer.",
+            reason=REASON_FANIN_TTS_FRAME_TIMEOUTS,
         )
     return CheckResult(name, "ok", f"none since fan-in start ({budget})")
 

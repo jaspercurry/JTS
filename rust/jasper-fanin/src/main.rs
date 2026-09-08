@@ -38,7 +38,7 @@ mod xrun_log;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -161,10 +161,9 @@ fn run() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     install_signal_handlers(&shutdown)?;
 
-    // Channel for xrun events: mixer.send (non-blocking), xrun-log
-    // thread.recv (blocking, fdatasync to disk). Keeps the mixer's
-    // hot path off of disk I/O.
-    let (xrun_tx, xrun_rx) = channel();
+    // Bounded so the SCHED_FIFO mixer thread can never block on the xrun
+    // writer's per-event fdatasync. See ADR-0254.
+    let (xrun_tx, xrun_rx) = sync_channel(mixer::EVENT_CHANNEL_CAPACITY);
     let xrun_log_path = config.xrun_log_path.clone();
     let xrun_writer = std::thread::Builder::new()
         .name("fanin-xrun-writer".into())

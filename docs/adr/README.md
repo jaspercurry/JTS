@@ -90,6 +90,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0205](0205-the-airplay-offset-ledger-is-four-terms-not-three.md) | The AirPlay offset ledger is four terms, not three | accepted |
 | [0221](0221-source-start-gates-are-marker-files-published-by-the-coordinator.md) | Source start gates are marker files published by the coordinator | accepted |
 | [0250](0250-the-host-clock-dll-block-is-deleted-not-ticked.md) | The host-clock `dll` block is deleted, not ticked | accepted |
+| [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | accepted |
 
 ## Multiroom & grouping
 

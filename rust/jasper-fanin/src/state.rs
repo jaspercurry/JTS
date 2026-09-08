@@ -104,6 +104,9 @@ pub struct StateServer {
     socket_path: PathBuf,
     /// Per-input state (shared with the mixer).
     inputs: Vec<InputSnapshotSource>,
+    /// Events dropped from the shared xrun-forwarding channel (global across
+    /// every input's xrun source, not per-lane — see [`crate::mixer::XrunSink`]).
+    xrun_events_dropped: Arc<AtomicU64>,
     /// Output state (shared with the mixer).
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
@@ -230,6 +233,7 @@ impl StateServer {
             started_at: Instant::now(),
             socket_path,
             inputs,
+            xrun_events_dropped: mixer.xrun.dropped(),
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
             output_delay_frames: Arc::clone(&mixer.output_delay_frames),
@@ -620,6 +624,15 @@ impl StateServer {
         buf.push(',');
 
         self.push_inputs_json(&mut buf);
+        buf.push(',');
+
+        // Global (not per-input) drop count on the shared xrun-forwarding
+        // channel — see [`crate::mixer::XrunSink`].
+        push_kv_u64(
+            &mut buf,
+            "xrun_events_dropped",
+            self.xrun_events_dropped.load(Ordering::Relaxed),
+        );
         buf.push(',');
 
         self.push_output_json(&mut buf);
@@ -1184,6 +1197,12 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "dropped_commands", metrics.dropped_commands());
                 buf.push(',');
+                push_kv_u64(buf, "connections_rejected", metrics.connections_rejected());
+                buf.push(',');
+                push_kv_u64(buf, "tts_clients", metrics.tts_clients());
+                buf.push(',');
+                push_kv_u64(buf, "frame_timeouts", metrics.frame_timeouts());
+                buf.push(',');
                 push_kv_u64(buf, "dropped_audio_frames", metrics.dropped_audio_frames());
                 buf.push(',');
                 push_kv_u64(
@@ -1417,6 +1436,9 @@ mod tests {
                     muted: Arc::new(AtomicBool::new(false)),
                 },
             ],
+            // Nonzero fixture value so the STATUS test proves the field is wired
+            // through, not coincidentally absent-and-zero.
+            xrun_events_dropped: Arc::new(AtomicU64::new(2)),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
             output_delay_frames: Arc::new(AtomicU64::new(1024)),
@@ -1461,6 +1483,7 @@ mod tests {
             "selection_mode",
             "selected_input",
             "inputs",
+            "xrun_events_dropped",
             "output",
             "tts",
             "watchdog",
@@ -1757,6 +1780,9 @@ mod tests {
         assert!(j.contains(r#""tts":{"enabled":true"#));
         assert!(j.contains(r#""budget_frames":96000"#));
         assert!(j.contains(r#""protocol_errors":0"#));
+        assert!(j.contains(r#""connections_rejected":0"#));
+        assert!(j.contains(r#""tts_clients":0"#));
+        assert!(j.contains(r#""frame_timeouts":0"#));
         assert!(j.contains(r#""stale_commands_dropped":0"#));
         assert!(j.contains(r#""program_duck_active":false"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));

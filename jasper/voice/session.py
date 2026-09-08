@@ -134,10 +134,17 @@ class Interruptible(Protocol):
         """How many audio chunks the playout queue still holds — the depth
         ``drop_pending_audio`` would drain.
 
-        The idle watchdog reads this to defer its tail-timer firing while
-        there's still work to play: without it, a single tts.write that
-        blocks longer than the tail timeout looks indistinguishable from
-        "audio finished" and the turn ends mid-playback."""
+        The idle watchdog measures playout PROGRESS on this depth ALONE
+        while it is nonzero, and consults the drain deadline only once it
+        reaches zero, ending the turn when neither has moved for
+        ``response_stall_timeout``. See ADR-0254."""
+        ...
+
+    def audio_dropped_bytes(self) -> int:
+        """Assistant audio this turn never queued because the playout
+        queue was already at its byte ceiling — a wedged consumer, not a
+        barge-in (which drops through ``drop_pending_audio``). Non-zero
+        means the reply was truncated at the tail."""
         ...
 
     async def cancel_response(self, reason: str) -> None:

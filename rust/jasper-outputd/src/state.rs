@@ -1281,6 +1281,16 @@ impl OutputdState {
                     m.dropped_commands.load(Ordering::Relaxed),
                 );
                 buf.push(',');
+                push_kv_u64(&mut buf, "connections_rejected", m.slots.rejected());
+                buf.push(',');
+                push_kv_u64(&mut buf, "tts_clients", m.slots.in_use() as u64);
+                buf.push(',');
+                push_kv_u64(
+                    &mut buf,
+                    "frame_timeouts",
+                    m.frame_timeouts.load(Ordering::Relaxed),
+                );
+                buf.push(',');
                 push_kv_u64(
                     &mut buf,
                     "flush_requests",
@@ -2992,6 +3002,9 @@ mod tests {
             r#""socket":"/run/jasper-outputd/tts.sock""#,
             r#""pending_frames":123"#,
             r#""budget_frames":96000"#,
+            r#""connections_rejected":0"#,
+            r#""tts_clients":0"#,
+            r#""frame_timeouts":0"#,
             r#""flushed_frames":7"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");

@@ -25,7 +25,11 @@
 //! Python consumer and barge-in truncation parse, plus assistant loudness
 //! decisions.
 
-use std::io::{self, BufRead, Read};
+use std::io::{self, BufRead, BufReader, Read};
+use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 pub mod assistant_reference;
 pub mod loudness;
@@ -686,6 +690,125 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
     ))
 }
 
+// ---------------------------------------------------------------------
+// Server bounds — one definition, consumed by both daemons' accept loops
+// and per-connection reader threads.
+// ---------------------------------------------------------------------
+
+/// How long a client may take to finish a command it has ALREADY started
+/// writing — a stall bound, not a latency target: a healthy writer puts a
+/// whole [`MAX_AUDIO_BYTES`] frame on the socket in well under 100 ms.
+/// See ADR-0254.
+pub const TTS_FRAME_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Concurrent client connections a TTS server retains. Real load is one
+/// long-lived voice-daemon connection plus at most a couple of transient
+/// probes (cue park, assistant volume, doctor). The rest is headroom over
+/// leaked connections: idling forever is legitimate here — the daemon's own
+/// connection does it — so a ceiling near real load would let a handful of
+/// leaks refuse that daemon its reconnect. Sixteen reader threads reserve
+/// 8 MiB of stack. See ADR-0254.
+pub const TTS_MAX_CLIENTS: usize = 16;
+
+/// Read one command, bounding only the time spent MID-FRAME.
+///
+/// An IDLE connection must never be dropped: the voice daemon holds one
+/// connection for its whole process lifetime and idles for hours between
+/// turns. So this blocks with no timeout until the first byte of the next
+/// command arrives, arms `deadline` over the rest of that command — the verb
+/// line plus any `AUDIO`/`AUDIO32` payload — then disarms it again.
+///
+/// A client that stalls mid-frame surfaces as an error for which
+/// [`is_frame_timeout`] is true; the caller closes the connection.
+pub fn read_command_deadlined(
+    reader: &mut BufReader<UnixStream>,
+    deadline: Duration,
+) -> io::Result<Option<TtsCommand>> {
+    if reader.fill_buf()?.is_empty() {
+        return Ok(None);
+    }
+    reader.get_ref().set_read_timeout(Some(deadline))?;
+    let command = read_command(reader);
+    // Disarm on every path: the next command may be hours away, and a still
+    // armed deadline would read as a stall. Best-effort, because a failing
+    // disarm must not discard a command that was read whole, nor replace the
+    // timeout error `is_frame_timeout` has to recognise.
+    let _ = reader.get_ref().set_read_timeout(None);
+    command
+}
+
+/// True for the error a read deadline produces. Unix reports a socket read
+/// timeout as `EAGAIN`, which maps to `WouldBlock`; other platforms report
+/// `TimedOut`.
+pub fn is_frame_timeout(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+/// Bounded pool of per-connection server slots, and the refusals it has
+/// handed back.
+///
+/// An accept loop takes a slot BEFORE it spawns the reader thread and moves
+/// the slot into that thread, so the slot returns when the thread exits and
+/// retained threads cannot exceed the capacity. Refusals are counted here, so
+/// a server publishes them without keeping a second counter of its own.
+#[derive(Clone, Debug)]
+pub struct TtsClientSlots {
+    in_use: Arc<AtomicUsize>,
+    rejected: Arc<AtomicU64>,
+    capacity: usize,
+}
+
+impl TtsClientSlots {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            in_use: Arc::new(AtomicUsize::new(0)),
+            rejected: Arc::new(AtomicU64::new(0)),
+            capacity,
+        }
+    }
+
+    /// A slot, or `Err` carrying this pool's refusal count INCLUDING this
+    /// one — so a caller journals `Err(1)` and every Nth refusal after,
+    /// letting the counter carry the rest.
+    pub fn try_acquire(&self) -> Result<TtsClientSlot, u64> {
+        let capacity = self.capacity;
+        match self
+            .in_use
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |in_use| {
+                (in_use < capacity).then_some(in_use + 1)
+            }) {
+            Ok(_) => Ok(TtsClientSlot {
+                in_use: Arc::clone(&self.in_use),
+            }),
+            Err(_) => Err(self.rejected.fetch_add(1, Ordering::Relaxed) + 1),
+        }
+    }
+
+    pub fn in_use(&self) -> usize {
+        self.in_use.load(Ordering::Relaxed)
+    }
+
+    /// Connections refused because every slot was taken.
+    pub fn rejected(&self) -> u64 {
+        self.rejected.load(Ordering::Relaxed)
+    }
+}
+
+/// One occupied slot; returns to its pool on drop.
+#[derive(Debug)]
+pub struct TtsClientSlot {
+    in_use: Arc<AtomicUsize>,
+}
+
+impl Drop for TtsClientSlot {
+    fn drop(&mut self) {
+        self.in_use.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 fn validate_token(value: &str, field: &str) -> io::Result<()> {
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(io::Error::new(
@@ -798,7 +921,8 @@ fn parse_bool_token(value: &str, field: &str) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
+    use std::thread;
 
     fn parse_all(bytes: &[u8]) -> Vec<TtsCommand> {
         let mut reader = Cursor::new(bytes.to_vec());
@@ -1167,5 +1291,60 @@ mod tests {
         assert_eq!(wide.width(), TtsWireWidth::Wide);
         assert_eq!(wide.len(), 2);
         assert!(TtsAudioSamples::Narrow(Vec::new()).is_empty());
+    }
+
+    const TEST_DEADLINE: Duration = Duration::from_millis(20);
+
+    /// A client that announces a payload and then stops writing is cut loose.
+    #[test]
+    fn a_mid_frame_stall_hits_the_deadline() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(server);
+        (&client).write_all(b"AUDIO 1000\n").unwrap();
+
+        let err = read_command_deadlined(&mut reader, TEST_DEADLINE).unwrap_err();
+
+        assert!(is_frame_timeout(&err), "unexpected error kind: {err:?}");
+        drop(client);
+    }
+
+    /// The other half of the same rule: an idle client is NOT cut loose. The
+    /// voice daemon holds one connection for hours between turns.
+    #[test]
+    fn an_idle_connection_outlives_the_deadline() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(server);
+        let writer = thread::spawn(move || {
+            thread::sleep(TEST_DEADLINE * 3);
+            (&client).write_all(b"FLUSH\n").unwrap();
+            client
+        });
+
+        let command = read_command_deadlined(&mut reader, TEST_DEADLINE).unwrap();
+
+        assert_eq!(command, Some(TtsCommand::Flush));
+        drop(writer.join().unwrap());
+    }
+
+    /// Past the ceiling a connection is refused and counted without taking a
+    /// slot, and a slot its holder releases readmits the next one.
+    #[test]
+    fn the_client_ceiling_counts_refusals_and_readmits_a_released_slot() {
+        let slots = TtsClientSlots::new(2);
+        let first = slots.try_acquire().expect("within the ceiling");
+        let second = slots.try_acquire().expect("within the ceiling");
+
+        assert_eq!(slots.try_acquire().err(), Some(1), "third slot admitted");
+        assert_eq!(slots.try_acquire().err(), Some(2), "refusals not counted");
+        assert_eq!(slots.in_use(), 2, "a refusal must not consume a slot");
+        assert_eq!(slots.rejected(), 2);
+
+        drop(second);
+        assert_eq!(slots.in_use(), 1);
+        let third = slots.try_acquire().expect("released slot not readmitted");
+        assert_eq!(slots.rejected(), 2, "an admission must not count a refusal");
+
+        drop((first, third));
+        assert_eq!(slots.in_use(), 0);
     }
 }

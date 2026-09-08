@@ -301,7 +301,7 @@ class GeminiLiveTurn(BaseLiveTurn):
                     turn_start_monotonic=self._started_at_monotonic,
                     end_input_monotonic=self._end_input_at_monotonic,
                 )
-            await self._audio_q.put(AudioOutChunk(pcm=data))
+            self._enqueue_audio(AudioOutChunk(pcm=data))
 
         # Tool calls. The connection's dispatcher resets the idle anchor
         # inside its loop too — covers slow / chained dispatches the
@@ -322,11 +322,7 @@ class GeminiLiveTurn(BaseLiveTurn):
             if getattr(sc, "interrupted", False):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
-                while True:
-                    try:
-                        self._audio_q.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
+                self.drop_pending_audio()
                 self._interrupt_event.set()
                 logger.info("model interrupted by user")
 

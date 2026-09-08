@@ -56,6 +56,11 @@ TASK_CANCEL_TIMEOUT_SEC = 3.0
 # bounded in turn by the unit's TimeoutStopSec.
 SESSION_CLOSE_TIMEOUT_SEC = 3.0
 
+# Memory ceiling on one turn's playout queue (28.8 MB at 24 kHz mono
+# int16 = 48 000 B/s). See ADR-0254.
+AUDIO_OUT_QUEUE_MAX_SEC = 600
+AUDIO_OUT_QUEUE_MAX_BYTES = AUDIO_OUT_QUEUE_MAX_SEC * 48_000
+
 # A watchdog that fires in one of these has nothing left to do: a
 # reconnect is already under way, or the connection is going down.
 _WATCHDOG_MOOT_STATES = frozenset({
@@ -113,6 +118,9 @@ class BaseLiveTurn:
         self._end_input_at_monotonic: float = 0.0
         self._bytes_sent: int = 0
         self._chunks_received: int = 0
+        # Playout-queue byte accounting for AUDIO_OUT_QUEUE_MAX_BYTES.
+        self._queued_bytes: int = 0
+        self._audio_dropped_bytes: int = 0
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
@@ -128,6 +136,7 @@ class BaseLiveTurn:
                 return
             if isinstance(chunk, bytes):
                 chunk = AudioOutChunk(pcm=chunk)
+            self._queued_bytes = max(0, self._queued_bytes - len(chunk.pcm))
             yield chunk
 
     def last_activity_at(self) -> float:
@@ -160,19 +169,58 @@ class BaseLiveTurn:
     def audio_chunks_pending(self) -> int:
         return self._audio_q.qsize()
 
+    def audio_dropped_bytes(self) -> int:
+        return self._audio_dropped_bytes
+
+    def _enqueue_audio(self, chunk: AudioOutChunk) -> None:
+        """Queue one model audio chunk under the playout byte ceiling.
+
+        Over the ceiling the incoming chunk is dropped, which truncates
+        the tail exactly as a barge-in flush does. The terminal sentinel
+        is never routed here, so the consumer still ends the turn.
+        """
+        size = len(chunk.pcm)
+        if self._queued_bytes + size > AUDIO_OUT_QUEUE_MAX_BYTES:
+            first_drop = self._audio_dropped_bytes == 0
+            self._audio_dropped_bytes += size
+            if first_drop:
+                log_event(
+                    logger,
+                    "turn.audio_overflow",
+                    queued_bytes=self._queued_bytes,
+                    dropped_bytes=self._audio_dropped_bytes,
+                    level=logging.WARNING,
+                )
+            return
+        self._queued_bytes += size
+        self._audio_q.put_nowait(chunk)
+
     def drop_pending_audio(self) -> int:
+        """Drop the whole backlog, keeping the terminal sentinel last.
+
+        A chunk can sit BEHIND the sentinel (a late provider event after
+        `_on_connection_lost` queued one), so the drain reads the queue
+        to empty rather than stopping at the first `None` — stopping
+        there would replay that chunk ahead of the sentinel as
+        pre-interrupt audio. The dropped-byte count resets with it: a
+        barge-in truncation is the household's own doing, not the
+        overflow `turn.truncated_response` cues about. See ADR-0254.
+        """
         dropped = 0
+        saw_sentinel = False
         try:
             while True:
                 item = self._audio_q.get_nowait()
                 if item is None:
-                    # Preserve the terminal sentinel so the consumer
-                    # still ends the turn.
-                    self._audio_q.put_nowait(None)
-                    break
-                dropped += 1
+                    saw_sentinel = True
+                else:
+                    dropped += 1
         except asyncio.QueueEmpty:
             pass
+        if saw_sentinel:
+            self._audio_q.put_nowait(None)
+        self._queued_bytes = 0
+        self._audio_dropped_bytes = 0
         return dropped
 
     def _note_activity(self) -> None:

@@ -659,9 +659,34 @@ def _fanin_payload_with_tts(tts: dict) -> bytes:
             },
             audio_runtime_fanin.REASON_FANIN_TTS_AUDIO_DROPPED,
         ),
+        (
+            {
+                "enabled": True,
+                "pending_frames": 0,
+                "budget_frames": 96000,
+                "connections_rejected": 3,
+            },
+            audio_runtime_fanin.REASON_FANIN_TTS_CONNECTIONS_REJECTED,
+        ),
+        (
+            {
+                "enabled": True,
+                "pending_frames": 0,
+                "budget_frames": 96000,
+                "frame_timeouts": 2,
+            },
+            audio_runtime_fanin.REASON_FANIN_TTS_FRAME_TIMEOUTS,
+        ),
         ({"enabled": False}, audio_runtime_fanin.REASON_FANIN_TTS_LANE_DISABLED),
     ],
-    ids=["quiet", "protocol-error", "dropped-audio", "lane-disabled"],
+    ids=[
+        "quiet",
+        "protocol-error",
+        "dropped-audio",
+        "connections-rejected",
+        "frame-timeouts",
+        "lane-disabled",
+    ],
 )
 def test_check_fanin_tts_counters_never_latch(monkeypatch, tts, reason):
     """Cumulative-since-start counters are reported, never warned on: one drop
