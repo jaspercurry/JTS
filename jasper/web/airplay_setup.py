@@ -36,7 +36,6 @@ URL surface (after nginx strips /airplay/):
 from __future__ import annotations
 
 import logging
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -54,6 +53,7 @@ from ._common import (
     csrf_field_html,
     read_form,
     reject_csrf,
+    route_path,
     send_html_response,
     send_see_other,
     guard_read_request,
@@ -198,7 +198,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             status_msg=ctx["flash"],
         ))
 
-    def _post_save(handler: BaseHTTPRequestHandler, form: dict[str, str]) -> None:
+    def _post_save(handler: BaseHTTPRequestHandler) -> None:
+        # Form CSRF: the token rides in the body, so the guard runs
+        # here rather than in do_POST, which route-checks first.
+        form = read_form(handler)
+        if not guard_mutating_request(handler, form):
+            reject_csrf(handler)
+            return
         mode, err = _apply_save(form)
         if err is not None:
             send_see_other(handler, "./", flash=err)
@@ -228,9 +234,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -239,17 +243,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            handler_fn(self, form)
+            handler_fn(self)
 
     return Handler
 

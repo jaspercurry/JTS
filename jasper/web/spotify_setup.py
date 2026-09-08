@@ -116,6 +116,7 @@ from ._common import (
     read_form,
     redirect_with_legacy_msg,
     reject_csrf,
+    route_path,
     restart_systemd_units,
     safe_back_href,
     send_html_response,
@@ -949,7 +950,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
+            path = route_path(self.path)
             if path == "/oauth-callback":
                 if not guard_read_request(self, allow_cross_site_navigation=True):
                     return
@@ -968,17 +969,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = _read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            handler_fn(self, form)
+            handler_fn(self)
 
         # --- route bodies ---
 
@@ -1009,7 +1004,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 health_result=health, back_href=back_href,
             ))
 
-        def _handle_setup_credentials(self, form: dict[str, str]) -> None:
+        def _handle_setup_credentials(self) -> None:
+            # Form CSRF: the token rides in the body, so every POST body
+            # guards here; do_POST route-checks first.
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             client_id = form.get("client_id", "").strip()
             mode = form.get("mode", "").strip() or "bounce"
             if mode not in OAUTH_MODES:
@@ -1043,6 +1044,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             )
 
         def _handle_reset_credentials(self) -> None:
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             _delete_creds_file()
             cfg["client_id"] = ""
             cfg["mode"] = "bounce"
@@ -1051,7 +1056,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             log_event(logger, "spotify.reset", client=self.address_string())
             self._redirect("./?msg=Credentials+cleared.")
 
-        def _handle_start(self, form: dict[str, str]) -> None:
+        def _handle_start(self) -> None:
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             if not cfg["client_id"]:
                 self._redirect("./?msg=Set+up+Spotify+credentials+first.")
                 return
@@ -1126,10 +1135,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             self._exchange_and_finish(code, state)
 
-        def _handle_paste_callback(self, form: dict[str, str]) -> None:
+        def _handle_paste_callback(self) -> None:
             """Manual mode primary path, and bounce-mode-fallback path:
             the user pasted a URL or query-string fragment containing
             code+state. Parse and exchange."""
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             pasted = form.get("pasted", "").strip()
             if not pasted:
                 self._redirect("./?msg=Paste+the+full+URL+including+code+and+state.")
@@ -1174,7 +1187,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
             )
 
-        def _handle_remove(self, form: dict[str, str]) -> None:
+        def _handle_remove(self) -> None:
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             name = form.get("name", "")
             registry = Registry.load(cfg["registry_path"])
             cache_path = ""
@@ -1195,7 +1212,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             else:
                 self._redirect("./?msg=Account+not+found")
 
-        def _handle_default(self, form: dict[str, str]) -> None:
+        def _handle_default(self) -> None:
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             name = form.get("name", "")
             registry = Registry.load(cfg["registry_path"])
             if registry.get(name) is not None:
@@ -1233,7 +1254,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json({"uri": uri, "name": name})
 
-        def _handle_playlist_add(self, form: dict[str, str]) -> None:
+        def _handle_playlist_add(self) -> None:
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             account_name = form.get("account", "").strip()
             raw = form.get("url_or_uri", "").strip()
             uri = parse_playlist_uri(raw)
@@ -1263,7 +1288,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f"./?msg=Added+{urllib.parse.quote(name)}+to+{urllib.parse.quote(account_name)}"
             )
 
-        def _handle_playlist_remove(self, form: dict[str, str]) -> None:
+        def _handle_playlist_remove(self) -> None:
+            form = _read_form(self)
+            if not guard_mutating_request(self, form):
+                reject_csrf(self)
+                return
             account_name = form.get("account", "").strip()
             uri = form.get("uri", "").strip()
             if not (account_name and uri):
@@ -1331,7 +1360,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     }
     _POST_ROUTES = {
         "/setup-credentials": Handler._handle_setup_credentials,
-        "/reset-credentials": lambda h, f: h._handle_reset_credentials(),
+        "/reset-credentials": Handler._handle_reset_credentials,
         "/start": Handler._handle_start,
         "/paste-callback": Handler._handle_paste_callback,
         "/remove": Handler._handle_remove,
