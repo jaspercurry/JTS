@@ -13,6 +13,7 @@ from .branch_chain import branch_headroom_db, sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
+    candidate_room_peqs,
     compile_candidate_config,
     prove_candidate_config,
 )
@@ -33,8 +34,15 @@ def compose_candidate(
     expected_effect: str = "",
     observation_refs: Sequence[str] = (),
     rationale: str = "",
+    room_correction: Mapping[str, Any] | None = None,
+    room_prescription_sha256: str = "",
 ) -> MeasuredCrossoverCandidate:
-    """Replace each selected role's filters and trim; retain other base settings."""
+    """Replace each selected role's filters and trim; retain other base settings.
+
+    ``room_correction`` is a room prescription door's own output, carried onto
+    the child whole: the door is the only writer, and the candidate re-derives
+    the room layer's limits from it at construction.
+    """
     preset = base.candidate.source_preset
     sources = {role: roles.get(role, base) for role in base.candidate.role_attenuations_db}
     if set(roles) - set(sources):
@@ -63,24 +71,36 @@ def compose_candidate(
                 filters, sections=sections.get(role, ()), trim_db=trims[role],
             ),
         }
+    room = dict(room_correction or {})
+    analysis: dict[str, Any] = {
+        "kind": COMPOSITION_KIND,
+        "measurement_status": "unmeasured",
+        "base": _source(base),
+        "role_sources": {role: _source(source) for role, source in sources.items()},
+        "alignment_source": _source(alignment),
+        "blend_source": _source(blend),
+        "expected_effect": expected_effect,
+        "observation_refs": list(observation_refs),
+        "rationale": rationale,
+    }
+    if room:
+        analysis["room_source"] = {
+            "prescription_sha256": room_prescription_sha256,
+            "room_median_sha256": room["basis"]["room_median_sha256"],
+        }
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND,
-        analysis={
-            "kind": COMPOSITION_KIND,
-            "measurement_status": "unmeasured",
-            "base": _source(base),
-            "role_sources": {role: _source(source) for role, source in sources.items()},
-            "alignment_source": _source(alignment),
-            "blend_source": _source(blend),
-            "expected_effect": expected_effect,
-            "observation_refs": list(observation_refs),
-            "rationale": rationale,
-        },
+        analysis=analysis,
         source_preset=preset,
         role_attenuations_db=trims,
         alignment=alignment.candidate.alignment,
         linearization=linearization,
         blend_correction=blend.candidate.blend_correction,
+        room_correction=room,
     )
-    prove_candidate_config(candidate, compile_candidate_config(candidate, playback_device="null"))
+    # The room set is emitted here so the emitter's headroom charge runs at
+    # compose rather than at apply.
+    prove_candidate_config(candidate, compile_candidate_config(
+        candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
+    ))
     return candidate
