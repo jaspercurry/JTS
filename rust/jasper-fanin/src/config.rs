@@ -1085,6 +1085,21 @@ impl Config {
             );
         }
 
+        // The JASPER_OUTPUTD_* spellings of the assistant loudness keys are
+        // read as fallbacks for one release; drop the fallback names next.
+        let max_peak_dbfs = env_f32_fallback(
+            "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS",
+            "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
+            loudness_defaults.max_peak_dbfs,
+        )?;
+        if max_peak_dbfs > 0.0 {
+            anyhow::bail!(
+                "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS (or its JASPER_OUTPUTD_ fallback)={} \
+                 must be <= 0 (a peak ceiling above full scale is never allowed)",
+                max_peak_dbfs
+            );
+        }
+
         let tts_duck_attack_ms = env_u32("JASPER_FANIN_TTS_DUCK_ATTACK_MS", 15)?;
         if !(1..=200).contains(&tts_duck_attack_ms) {
             anyhow::bail!(
@@ -1124,19 +1139,19 @@ impl Config {
             tts_duck_attack_ms,
             tts_duck_release_ms,
             assistant_loudness: AssistantLoudnessConfig {
-                assistant_offset_lu: env_f32(
+                assistant_offset_lu: env_f32_fallback(
+                    "JASPER_FANIN_ASSISTANT_OFFSET_LU",
                     "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
                     loudness_defaults.assistant_offset_lu,
                 )?,
-                max_peak_dbfs: env_f32(
-                    "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
-                    loudness_defaults.max_peak_dbfs,
-                )?,
-                fallback_source_lufs: env_f32(
+                max_peak_dbfs,
+                fallback_source_lufs: env_f32_fallback(
+                    "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_LUFS",
                     "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
                     loudness_defaults.fallback_source_lufs,
                 )?,
-                fallback_source_peak_dbfs: env_f32(
+                fallback_source_peak_dbfs: env_f32_fallback(
+                    "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
                     "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
                     loudness_defaults.fallback_source_peak_dbfs,
                 )?,
@@ -1145,7 +1160,8 @@ impl Config {
                     "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
                     loudness_defaults.default_tts_envelope_lufs,
                 )?,
-                content_silence_lufs: env_f32(
+                content_silence_lufs: env_f32_fallback(
+                    "JASPER_FANIN_CONTENT_SILENCE_LUFS",
                     "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
                     loudness_defaults.content_silence_lufs,
                 )?,
@@ -1340,13 +1356,12 @@ mod tests {
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
                 ("JASPER_FANIN_TTS_CUE_DUCK_DB", None),
-                ("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", None),
-                ("JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS", None),
-                ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
-                ("JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
+                ("JASPER_FANIN_ASSISTANT_OFFSET_LU", None),
+                ("JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS", None),
+                ("JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_LUFS", None),
+                ("JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS", None),
                 ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
-                ("JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS", None),
-                ("JASPER_OUTPUTD_CONTENT_SILENCE_LUFS", None),
+                ("JASPER_FANIN_CONTENT_SILENCE_LUFS", None),
                 ("JASPER_FANIN_ASSISTANT_REFERENCE_PATH", None),
                 ("JASPER_DUCK_DB", None),
             ],
@@ -1808,38 +1823,68 @@ mod tests {
     }
 
     #[test]
-    fn legacy_silence_target_migrates_to_default_tts_envelope() {
-        with_env(
-            &[
-                ("JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS", None),
-                (
-                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    Some("-37.5"),
-                ),
-            ],
-            || {
-                let cfg = Config::from_env().expect("legacy envelope must parse");
-                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -37.5);
-            },
-        );
+    fn assistant_loudness_keys_read_fanin_spelling_then_outputd_fallback() {
+        type Read = fn(&AssistantLoudnessConfig) -> f32;
+        let pairs: [(&str, &str, Read); 6] = [
+            (
+                "JASPER_FANIN_ASSISTANT_OFFSET_LU",
+                "JASPER_OUTPUTD_ASSISTANT_OFFSET_LU",
+                |c| c.assistant_offset_lu,
+            ),
+            (
+                "JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS",
+                "JASPER_OUTPUTD_ASSISTANT_MAX_PEAK_DBFS",
+                |c| c.max_peak_dbfs,
+            ),
+            (
+                "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_LUFS",
+                "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_LUFS",
+                |c| c.fallback_source_lufs,
+            ),
+            (
+                "JASPER_FANIN_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
+                "JASPER_OUTPUTD_ASSISTANT_FALLBACK_SOURCE_PEAK_DBFS",
+                |c| c.fallback_source_peak_dbfs,
+            ),
+            (
+                "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
+                "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
+                |c| c.default_tts_envelope_lufs,
+            ),
+            (
+                "JASPER_FANIN_CONTENT_SILENCE_LUFS",
+                "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS",
+                |c| c.content_silence_lufs,
+            ),
+        ];
+        for (new_key, old_key, read) in pairs {
+            with_env(&[(new_key, None), (old_key, Some("-37.5"))], || {
+                let cfg = Config::from_env().expect("legacy spelling must parse");
+                assert_eq!(read(&cfg.assistant_loudness), -37.5, "{old_key}");
+            });
+            with_env(
+                &[(new_key, Some("-39.0")), (old_key, Some("-37.5"))],
+                || {
+                    let cfg = Config::from_env().expect("new spelling must parse");
+                    assert_eq!(read(&cfg.assistant_loudness), -39.0, "{new_key}");
+                },
+            );
+        }
     }
 
     #[test]
-    fn new_default_tts_envelope_wins_over_legacy_silence_target() {
+    fn positive_assistant_peak_ceiling_is_rejected() {
         with_env(
-            &[
-                (
-                    "JASPER_FANIN_ASSISTANT_DEFAULT_TTS_ENVELOPE_LUFS",
-                    Some("-39.0"),
-                ),
-                (
-                    "JASPER_OUTPUTD_ASSISTANT_DEFAULT_SILENCE_TARGET_LUFS",
-                    Some("-37.5"),
-                ),
-            ],
+            &[("JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS", Some("0.5"))],
+            || assert!(Config::from_env().is_err()),
+        );
+        with_env(
+            &[("JASPER_FANIN_ASSISTANT_MAX_PEAK_DBFS", Some("0"))],
             || {
-                let cfg = Config::from_env().expect("new envelope must parse");
-                assert_eq!(cfg.assistant_loudness.default_tts_envelope_lufs, -39.0);
+                assert_eq!(
+                    Config::from_env().unwrap().assistant_loudness.max_peak_dbfs,
+                    0.0
+                )
             },
         );
     }
