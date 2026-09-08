@@ -418,6 +418,10 @@ svg { display: block; }
 .info-card--accent {
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 50%, transparent);
 }
+.info-card--ok { --tone: var(--status-ok); }
+.info-card--warn { --tone: var(--status-warn); }
+.info-card--danger { --tone: var(--status-danger); }
+.info-card--idle { --tone: var(--status-idle); }
 .info-card > * + * { margin-top: 12px; }
 .info-card__note { font-size: 13px; color: var(--muted); }
 .info-card__hint {

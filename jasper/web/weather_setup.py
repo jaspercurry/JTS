@@ -238,18 +238,18 @@ def _current_location_html(
     if loc is not None:
         if source == "weather":
             source_text = "Saved weather location."
-            tone = "var(--status-ok)"
+            tone_class = "info-card--ok"
             badge = "Saved"
         else:
             source_text = (
                 "Using the transit location until a "
                 "weather-specific location is saved."
             )
-            tone = "var(--status-idle)"
+            tone_class = "info-card--idle"
             badge = "From transit"
         display = loc.display_name or "(saved location)"
         return f"""
-<div class="info-card info-card--accent" style="--tone: {tone};">
+<div class="info-card info-card--accent {tone_class}">
   <div class="loc-head">
     <strong class="loc-name">{html.escape(display)}</strong>
     <span class="badge">{badge}</span>
@@ -261,7 +261,7 @@ def _current_location_html(
     legacy = _value_for(weather_state, DEFAULT_LOCATION_ENV).strip()
     if legacy:
         return f"""
-<div class="info-card info-card--accent" style="--tone: var(--status-warn);">
+<div class="info-card info-card--accent info-card--warn">
   <div class="loc-head">
     <strong class="loc-name">{html.escape(legacy)}</strong>
     <span class="badge">Legacy</span>
@@ -289,7 +289,7 @@ def _index_html(
     csrf_token: str,
     *,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
     submitted: dict[str, str] | None = None,
 ) -> bytes:
     csrf = csrf_field_html(csrf_token)
@@ -406,7 +406,9 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
                     transit_state,
                     ctx["csrf_token"],
                     status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
+                    back_href=safe_back_href(
+                        (qs.get("return_to") or [""])[0], default="/assistant/",
+                    ),
                 )
                 send_html_response(self, body)
                 return

@@ -401,7 +401,7 @@ def _render_index(
     csrf_token: str = "",
     *,
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     machine = _state_machine(state)
     if machine == "connected":
@@ -422,7 +422,7 @@ def _wrap(
     *,
     csrf_token: str = "",
     status_msg: str = "",
-    back_href: str = "/",
+    back_href: str = "/assistant/",
 ) -> bytes:
     """Wrap a state's body fragment in the canonical document shell.
 
@@ -924,7 +924,7 @@ to this Home Assistant instance.</p>
   </div>
 </details>
 
-<div class="info-card" style="--tone: var(--status-danger)">
+<div class="info-card info-card--danger">
   <p class="form-hint"><strong>Disconnect.</strong> Removes the URL and token from this
   speaker. Smart-home commands will stop working until you reconnect.
   Doesn't change anything in Home Assistant itself.</p>
@@ -972,7 +972,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ctx = begin_request(self)
                 self._send_html(_render_index(
                     state, ctx["csrf_token"], status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0]),
+                    back_href=safe_back_href(
+                        (qs.get("return_to") or [""])[0], default="/assistant/",
+                    ),
                 ))
                 return
             if path == "/reset":

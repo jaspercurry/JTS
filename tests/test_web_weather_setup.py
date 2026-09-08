@@ -156,7 +156,7 @@ def test_render_saved_weather_location_card():
     }
     out = _render(weather_state=state)
     assert "Brooklyn, NY" in out
-    assert 'class="info-card info-card--accent"' in out
+    assert 'class="info-card info-card--accent info-card--ok"' in out
     assert ">Saved<" in out
 
 
@@ -237,7 +237,7 @@ def test_get_root_rejects_off_origin_return_link(live_server):
     body = urllib.request.urlopen(
         live_server["url"] + "/?return_to=%2F%2Fevil.test%2F",
     ).read().decode()
-    assert 'href="/"' in body
+    assert 'href="/assistant/"' in body
     assert "evil.test" not in body
 
 
