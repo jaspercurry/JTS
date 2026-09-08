@@ -28,7 +28,12 @@ from jasper.active_speaker.runtime_contract import (
     parked_safe_graph_decision,
     safe_graph_for_current_topology,
 )
-from jasper.output_topology import OutputTopology
+from jasper.active_speaker.state_paths import baseline_profile_state_path
+from jasper.fanin.ring_health import read_persisted_coupling
+from jasper.output_topology import (
+    OutputTopology,
+    load_output_topology_strict,
+)
 
 OUTPUTD_UNIT = "jasper-outputd.service"
 
@@ -79,6 +84,7 @@ class StatefileConvergenceResult:
 def converge_boot_statefile(
     *,
     topology_path: "str | Path | None" = None,
+    topology: OutputTopology | None = None,
     statefile_path: "str | Path | None" = None,
     current_config_path: "str | Path | None" = None,
     flat_config_path: "str | Path | None" = None,
@@ -93,17 +99,16 @@ def converge_boot_statefile(
     Never touches a live CamillaDSP: the callers that own an ordered live
     transition are :func:`park_and_commit_topology` and the coupling
     reconciler. ``coupling`` defaults to the persisted fan-in intent, so a bare
-    caller seeds the graph the box will actually boot.
+    caller seeds the graph the box will actually boot. ``topology`` skips the
+    load for a caller that already parsed it (``topology_path`` is then unused);
+    ``None`` reads the path here, so a caller whose own read failed still gets
+    this function's fail-closed reason rather than a silent empty draft.
     """
 
-    from jasper.active_speaker.state_paths import baseline_profile_state_path
-    from jasper.output_topology import load_output_topology_strict
-
     if coupling is None:
-        from jasper.fanin.ring_health import read_persisted_coupling
-
         coupling = read_persisted_coupling()
-    topology = load_output_topology_strict(topology_path)
+    if topology is None:
+        topology = load_output_topology_strict(topology_path)
     kwargs: dict[str, Any] = {
         "statefile_path": statefile_path,
         "current_config_path": current_config_path,
@@ -433,7 +438,9 @@ async def _park_and_commit_topology(
 
 __all__ = [
     "RuntimeConvergenceResult",
+    "StatefileConvergenceResult",
     "TopologyRuntimeMutationResult",
     "compose_selected_flat_graph",
+    "converge_boot_statefile",
     "park_and_commit_topology",
 ]

@@ -880,7 +880,7 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     # failed observation (#i2s-hat-intent).
     for extra_env, patches in (
         ({"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}, None),
-        (None, {"jasper.cli.output_hardware.observe": _statusless_observation}),
+        (None, {"jasper.audio_hardware.reconcile.observe": _statusless_observation}),
         (None, None),
     ):
         for marker_present in (False, True):
@@ -1015,7 +1015,7 @@ def test_a_failed_classification_leaves_every_observed_fact_at_its_absent_value(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
         "--print-env",
-        patches={"jasper.cli.output_hardware.observe": _raises(OSError("no /proc"))},
+        patches={"jasper.audio_hardware.reconcile.observe": _raises(OSError("no /proc"))},
     )
 
     assert result.returncode == 0, result.stderr
@@ -1678,7 +1678,7 @@ def test_a_signalled_pass_names_the_signal_and_exits_128_plus_it(
         APPLE_LISTING,
         "--reason",
         "test",
-        patches={"jasper.cli.output_hardware.observe": _signal_self(signum)},
+        patches={"jasper.audio_hardware.reconcile.observe": _signal_self(signum)},
     )
 
     assert result.returncode == status, result.stderr
@@ -2589,7 +2589,7 @@ def test_contract_failure_preserves_an_env_without_a_clockless_output_loop(
     extra_env = _dual_apple_cards(tmp_path) if needs_dual_cards else {}
     patches = dict(_ENDPOINT_CONTRACT_FAILS)
     if observation_fails:
-        patches["jasper.cli.output_hardware.observe"] = _raises(OSError("no cards"))
+        patches["jasper.audio_hardware.reconcile.observe"] = _raises(OSError("no cards"))
 
     result = _run_reconcile(
         tmp_path,
@@ -3812,7 +3812,7 @@ _LANE_CAP_ANSWERS_FOUR = {
 # is why the shell reconciler marked degraded only when the probe could not be
 # reached at all.
 _PROBE_FAILURES = {
-    "observe": ({"jasper.cli.output_hardware.observe": _raises(OSError("no /proc"))}, 0),
+    "observe": ({"jasper.audio_hardware.reconcile.observe": _raises(OSError("no /proc"))}, 0),
     "outputd_env_validator": (
         {"jasper.cli.audio_config.validate_outputd_env": _raises(RuntimeError("gone"))},
         78,

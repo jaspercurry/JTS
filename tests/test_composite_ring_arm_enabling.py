@@ -322,7 +322,7 @@ def test_a_passive_composite_still_resolves_no_ring_at_all():
 def test_composite_floor_period_equals_ring_slot_with_its_reason():
     """The period pin, WITH the reason, so it fails if either number moves.
 
-    The equality is what clears ``_cmd_render_ring_conf_wire``'s
+    The equality is what clears ``ring_conf_wire_report``'s
     ``ring_slot_fixed_128`` refusal without needing issue #2147. Asserting only
     ``== 128`` would survive ``RING_SLOT_FRAMES`` moving to 64 while the floor
     stayed 128 — which is exactly the drift that would make the render refuse

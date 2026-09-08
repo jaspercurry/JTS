@@ -11,6 +11,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from jasper.audio_hardware.dac import (
     active_outputd_lane_channels_for,
@@ -50,6 +51,11 @@ from jasper.fanin_coupling import (
     resolve_ring_wire,
 )
 from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
+
+# lazy: import cost — jasper.output_topology is 2k lines this CLI reaches only
+# through the fail-safe loader below, or is handed already parsed.
+if TYPE_CHECKING:
+    from jasper.output_topology import OutputTopology
 
 # Both transports of the ONE active lane: the snd-aloop active PCM and the
 # ACTIVE RING. A graph naming either is an active-lane graph and must pass the
@@ -151,7 +157,7 @@ def outputd_floor_plan(
     return summary, actions
 
 
-def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
+def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
     """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
 
     An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
@@ -176,6 +182,7 @@ def ring_conf_wire_report(
     profile_id: str,
     conf_d: str = "",
     output_topology: str | None = None,
+    topology: OutputTopology | None = None,
 ) -> dict[str, str]:
     """Render the shm-ring conf.d wire from a DAC's DECLARED floor + the topology.
 
@@ -208,6 +215,9 @@ def ring_conf_wire_report(
     format; this command only joins them, which is why it re-reads the floor
     rather than taking a period on the command line.
 
+    ``topology`` is an already-parsed topology, so a caller holding one does
+    not pay a second read; ``None`` reads ``output_topology`` here.
+
     Returns the resolved ``{key: value}`` report; raises ``OSError`` /
     ``ValueError`` when the conf.d itself cannot be rendered.
     """
@@ -226,7 +236,9 @@ def ring_conf_wire_report(
             "period_frames": str(floor.outputd_period_frames),
             "conf": str(resolved_conf_d),
         }
-    topology, topology_reason = _load_topology_for_ring_wire(output_topology)
+    topology_reason = "loaded"
+    if topology is None:
+        topology, topology_reason = _load_topology_for_ring_wire(output_topology)
     # The floor gate above has already established that this box's declared
     # period is RING_SLOT_FRAMES, and the renderer refuses any other; the wire
     # carries the same axis, so it needs no second comparison here.
@@ -436,6 +448,7 @@ def validate_outputd_env(
     camilla_statefile: str,
     camilla2_statefile: str,
     output_topology: str | None = None,
+    topology: OutputTopology | None = None,
     outputd_label: str = "",
     overrides: str | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
@@ -443,7 +456,9 @@ def validate_outputd_env(
 
     The lines are what the CLI prints and what the audio-hardware reconciler
     logs; an accepted candidate may still report ``ok note=...`` for a
-    coherent-but-transient state.
+    coherent-but-transient state. ``topology`` is an already-parsed topology,
+    so a caller holding one does not pay a second read; ``None`` reads
+    ``output_topology`` in the decision below.
     """
     base = read_env_file_state(base_env)
     outputd = read_env_file_state(outputd_env)
@@ -509,6 +524,7 @@ def validate_outputd_env(
                 active_cap,
                 statefile_path=camilla_statefile,
                 crossover_statefile_path=camilla2_statefile,
+                topology=topology,
                 topology_path=output_topology,
             )
             if active_cap is not None

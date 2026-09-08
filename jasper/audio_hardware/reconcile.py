@@ -49,7 +49,7 @@ from jasper.atomic_io import (
     env_lock_path,
     locked_upsert_env_file,
 )
-from jasper.cli.output_hardware import ObservedOutput
+from jasper.cli.output_hardware import ObservedOutput, observe, observed_output
 from jasper.env_file import read_env_file, read_env_file_text
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
@@ -384,10 +384,6 @@ class Pass:
     # -- the observed record ------------------------------------------------
 
     def observe_output_hardware_state(self, *, write: bool) -> None:
-        # lazy: patch target — the tests replace it on the source module,
-        # which only a per-call import sees.
-        from jasper.cli.output_hardware import observe, observed_output
-
         action = "written" if write else "observed"
         try:
             state, cards, record_changed = observe(write=write)
@@ -616,6 +612,7 @@ class Pass:
                 camilla_statefile=self.camilla_statefile,
                 camilla2_statefile=self.camilla2_statefile,
                 output_topology=self.output_topology_path,
+                topology=self.saved_topology(),
             )
         # noqa reason: a validator that cannot answer must REJECT the candidate,
         # never abort the pass — the refusal is what preserves the running env.
@@ -793,7 +790,8 @@ class Pass:
         if not self._topology_read:
             self._topology_read = True
             try:
-                # lazy: 2k lines the --print-env path never reaches (ADR-0226).
+                # lazy: import cost — 2k lines a single-DAC install pass
+                # never needs (ADR-0226).
                 from jasper.output_topology import load_output_topology_strict
 
                 self._topology = load_output_topology_strict(
@@ -817,7 +815,8 @@ class Pass:
         ``(False, reason)`` and every caller fails closed.
         """
         try:
-            # lazy: 5k lines of contract the --print-env path never reaches.
+            # lazy: import cost — 5k lines of contract a single-DAC install
+            # pass never needs (a declared composite does reach it here).
             from jasper.active_speaker.runtime_contract import (
                 outputd_active_lane_decision,
             )
@@ -1439,6 +1438,7 @@ class Pass:
                 profile_id=self.output_dac_id,
                 conf_d=self.ring_conf_d,
                 output_topology=self.output_topology_path,
+                topology=self.saved_topology(),
             )
         # noqa reason: the conf.d render is best-effort — a failure leaves the
         # shipped wire in place and must not abort a hardware reconcile.
@@ -1514,6 +1514,7 @@ class Pass:
         try:
             result = converge_boot_statefile(
                 topology_path=self.output_topology_path,
+                topology=self.saved_topology(),
                 statefile_path=self.camilla_statefile,
                 flat_config_path=os.path.join(
                     self.camilla_conf_dir, "outputd-cutover.yml"
@@ -1560,6 +1561,11 @@ class Pass:
         blocking transition can deadlock against the jobs it waits on. The two
         BLOCKING starts in :meth:`gate_role_services` are deliberately not this
         (see their own note) and stay written out.
+
+        The direct-systemctl spelling of the broker's ``reset_then_manage``:
+        this pass is a ROOT oneshot, which is outside the client set
+        :mod:`jasper.control.restart_broker` exists for (see its docstring's
+        "NOT brokered, by design").
         """
         self.systemctl_call("reset-failed", unit, quiet=True)
         self.systemctl_call("--no-block", verb, unit, quiet=quiet)
