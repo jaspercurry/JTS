@@ -309,6 +309,9 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         if restart_result is not None and not restart_result.get("ok"):
+            # debug.env is already written: the flag IS on, only its restart
+            # is missing. Without this the card reads the refusal as "nothing
+            # happened" and shows the toggle back off.
             self._send_broker_result(
                 restart_result,
                 error=(
@@ -316,6 +319,7 @@ class SystemRoutes(ControlHandlerMixin):
                     "restart could not be scheduled."
                 ),
                 code="debug_restart_failed",
+                intent_saved=True,
             )
             return
         log_event(

@@ -217,3 +217,6 @@ def test_post_debug_answers_through_the_broker_result_helper(
     else:
         assert body["code"] == "debug_restart_failed"
         assert body.get("ok") is not True
+        # The flag is already in debug.env, so the refusal must say so —
+        # otherwise the card cannot tell "not applied" from "not saved".
+        assert body["intent_saved"] is True
