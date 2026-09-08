@@ -76,7 +76,10 @@ consumer into unbounded growth on a 1 GB box:
    reconnect. An excess connection is closed on accept. All three live once
    in `jasper-tts-protocol` and both servers
    consume them; `frame_timeouts` and `connections_rejected` publish beside
-   `dropped_commands`. `TtsPlayout` reconnects on a server-closed socket, so
+   `dropped_commands`. So do the accept loop that enforces them
+   (`serve`) and the counters that publish them (`TtsServerCounters`): each
+   daemon supplies only its own per-connection handler and queueing policy.
+   `TtsPlayout` reconnects on a server-closed socket, so
    a false deadline costs one reconnect, not deafness.
    *Known limit:* `SO_RCVTIMEO` is per read, so a client that dribbles one
    byte under the deadline is not cut — the bound targets the client that

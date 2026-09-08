@@ -811,9 +811,6 @@ impl Drop for TtsClientSlot {
 /// block: the client-slot pool plus what the reader threads refused, timed
 /// out on, or dropped. Cloneable handle over shared atomics — reader
 /// threads write, the state server reads. See ADR-0254.
-///
-/// Each daemon embeds this in its own metrics type; everything else those
-/// types hold (queue depth, loudness, ledger state) is per-daemon.
 #[derive(Clone, Debug)]
 pub struct TtsServerCounters {
     slots: TtsClientSlots,
@@ -878,8 +875,7 @@ impl TtsServerCounters {
 /// thread running `handle`, which holds that connection's slot until it
 /// returns. `daemon` (`fanin` / `outputd`) names the owner in thread names,
 /// error contexts and `event=` lines; `log` takes those lines at whatever
-/// level the caller journals at. `handle` owns the wire session — the
-/// queueing, epoch and metric policy behind it stays per-daemon.
+/// level the caller journals at.
 pub fn serve<H>(
     daemon: &'static str,
     path: &Path,

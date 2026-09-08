@@ -21,10 +21,11 @@
 //! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
-//! socket path per grouping role. The wire layer itself (command
-//! vocabulary + `read_command` parser) lives ONCE in the shared
-//! `jasper-tts-protocol` crate, imported by both daemons — the twins
-//! structurally cannot drift when the protocol grows. Outputd interprets
+//! socket path per grouping role. The wire layer (command vocabulary +
+//! `read_command` parser) and the server half (accept loop, client
+//! ceiling, socket counters) live ONCE in the shared
+//! `jasper-tts-protocol` crate — the twins structurally cannot drift when
+//! the protocol grows. Outputd interprets
 //! `VOLUME_CONTEXT` with a post-DSP mix stage: it honors mute and live
 //! canonical-volume changes while structurally zeroing Camilla's downstream
 //! compensation. `PREPARE_ASSISTANT` carries the turn-start context atomically;
@@ -43,8 +44,8 @@
 //! `"events":[]` (it cannot know DAC progress); here both come from the
 //! ledger.
 //!
-//! Threading mirrors fanin: an accept thread + one thread per client
-//! connection parse and enqueue; bounded channels with the fanin policy
+//! Threading is the shared server's: an accept thread + one thread per
+//! client connection parse and enqueue; bounded channels with the fanin policy
 //! (AUDIO drops-on-full with a counted warning — late speech is worse
 //! than lost speech; control commands block briefly — losing a
 //! SEGMENT_END or DUCK_OFF corrupts state). The audio loop never blocks
