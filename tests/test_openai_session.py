@@ -39,6 +39,7 @@ from jasper.voice.openai_session import (
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
 from tests._live_turn_fake import drain_audio_chunks
+from tests._log_events import event_fields, event_records
 
 
 # ---------------------------------------------------------------------------
@@ -589,8 +590,6 @@ async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
     max_audio_played_ms=0) means the ledger saw no rendered audio. Truncating
     on bytes-received instead would push audio_end_ms past the heard boundary
     and the server errors. So 0 is a no-op + WARN, never a guess."""
-    from tests._log_events import event_fields
-
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -622,8 +621,6 @@ async def test_truncate_clamps_to_item_received_ms(caplog):
     in-flight one, so the max would exceed THIS item's duration — the
     out-of-range case OpenAI rejects. truncate clamps audio_end_ms to what
     this item actually received."""
-    from tests._log_events import event_records
-
     conn, factory = _make_conn()
     registry = ToolRegistry()
     await conn.start(registry, "")
@@ -680,8 +677,6 @@ async def test_truncate_failure_redacts_the_connections_own_key(caplog):
     prefix-less key even when the rejection body echoes it back
     verbatim — the connection hands its own key to `failure_detail` as
     a literal (ADR-0243)."""
-    from tests._log_events import event_fields
-
     factory = _FakeConnectFactory()
     conn = OpenAIRealtimeConnection(
         api_key="plainvalue123", backoff_schedule=(0.0, 0.0),
@@ -859,8 +854,6 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
     ``response.output_audio_transcript.delta`` for assistant speech. The
     adapter logs only metadata, because the flight recorder buffers
     DEBUG records and dumps them to journald around failures."""
-    from tests._log_events import event_fields, event_records
-
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -893,8 +886,6 @@ async def test_output_audio_transcript_logged_at_debug_turn_release(caplog):
 
 
 async def test_user_audio_transcript_logged_at_debug_not_info(caplog):
-    from tests._log_events import event_fields, event_records
-
     caplog.set_level(logging.DEBUG, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     registry = ToolRegistry()
@@ -2708,8 +2699,6 @@ async def test_first_chunk_event_reports_latency_since_the_ask(caplog, ask):
     this turn was never asked, because there is then no interval to report.
     `since_turn_start_ms` still spans the user's whole utterance plus local
     endpointing, so it is not a provider figure."""
-    from tests._log_events import event_fields
-
     caplog.set_level(logging.INFO, logger="jasper.voice.openai_session")
     conn, factory = _make_conn()
     await conn.start(ToolRegistry(), "")
@@ -2781,8 +2770,6 @@ async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch)
     without bound. Past the ceiling the INCOMING chunk is dropped (tail
     truncation, the same shape a barge-in flush leaves), the loss is
     counted, and the terminal sentinel still ends the iterator."""
-    from tests._log_events import event_fields
-
     monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
     conn, _factory = _make_conn()
     await conn.start(ToolRegistry(), "")
