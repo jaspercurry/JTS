@@ -30,6 +30,7 @@ try:
     from jasper.voice.gemini_session import (
         ConnectionState,
         GeminiLiveConnection,
+        GeminiLiveTurn,
     )
     from jasper.tools import ToolRegistry, tool
     _HAVE_GENAI = True
@@ -1502,18 +1503,22 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
         await conn.stop()
 
 
-@pytest.mark.parametrize("send", ["audio", "text", "end_input"])
+@pytest.mark.parametrize("send", ["audio", "text", "end_input", "cancel"])
 @pytest.mark.parametrize("boundary", ["release", "reconnect"])
 async def test_queued_input_cannot_cross_a_gemini_turn_boundary(send, boundary):
     conn, factory = _make_conn()
     await conn.start(ToolRegistry(), "")
     old = await conn.acquire_turn()
     old_session = factory.sessions[0]
+    if send == "cancel":
+        await old.end_input()
+    sent_before = len(old_session.sent_realtime)
     await conn._send_lock.acquire()
     pending = {
         "audio": lambda: old.send_audio(b"pcm"),
         "text": lambda: old.send_text_context("old instruction"),
         "end_input": old.end_input,
+        "cancel": lambda: old.cancel_response("barge_in"),
     }[send]
     sending = asyncio.create_task(pending())
     releasing = None
@@ -1531,7 +1536,7 @@ async def test_queued_input_cannot_cross_a_gemini_turn_boundary(send, boundary):
             await releasing
         fresh = await conn.acquire_turn()
         assert old_session.sent_client_content == []
-        assert [set(call) for call in old_session.sent_realtime] == [{"activity_start"}]
+        assert len(old_session.sent_realtime) == sent_before
         assert [set(call) for call in factory.sessions[-1].sent_realtime] == [{"activity_start"}]
         assert not fresh.server_turn_complete()
     finally:
@@ -1619,3 +1624,40 @@ async def test_closing_gemini_receive_cannot_request_another_reconnect():
         assert not conn._reconnect_event.is_set()
     finally:
         await conn.stop()
+
+
+async def test_late_old_session_content_cannot_complete_or_capture_a_new_turn():
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    entered, resume = asyncio.Event(), asyncio.Event()
+
+    class OldSession:
+        async def _receive(self):
+            entered.set()
+            await resume.wait()
+            return types.LiveServerMessage(server_content=types.LiveServerContent(
+                model_turn=types.Content(role="model", parts=[
+                    types.Part(inline_data=types.Blob(data=b"\x01\x00", mime_type="audio/pcm;rate=24000")),
+                ]),
+                input_transcription=types.Transcription(text="old user"),
+                output_transcription=types.Transcription(text="old assistant"),
+                turn_complete=True,
+            ))
+
+    conn._session = OldSession()
+    receiving = asyncio.create_task(conn._receive_loop())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        conn._session = object()
+        conn._connected_event.set()
+        fresh = GeminiLiveTurn(conn, started_at=0)
+        conn._active_turn = fresh
+        resume.set()
+        await asyncio.wait_for(receiving, 1)
+        assert fresh.audio_chunks_pending() == 0
+        assert not fresh.server_turn_complete()
+        assert fresh.capture().user_text is None
+        assert fresh.capture().assistant_text is None
+    finally:
+        resume.set()
+        receiving.cancel()
+        await asyncio.gather(receiving, return_exceptions=True)

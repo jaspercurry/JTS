@@ -96,7 +96,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "spotify": ("jasper", "voice", "web"),
     "transit": ("jasper", "tools", "transit", "web"),
     "tts_flush": ("jasper", "voice"),
-    "tts_write": ("jasper", "voice"),
+    "tts_write": ("jasper",),
     "turn": ("jasper", "voice"),
     "usb_mic": ("aec", "cli", "control"),
     "usbsink": ("jasper", "usbsink"),

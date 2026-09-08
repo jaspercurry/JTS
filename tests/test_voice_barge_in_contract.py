@@ -1,22 +1,4 @@
-"""Conformance + tolerance contract for the voice turn adapters.
-
-Two halves:
-
-  * **Shape** — every shipped turn adapter satisfies `LiveTurn` and its
-    `Interruptible` half, and the set of Interruptible adapters covers
-    exactly the providers `jasper/voice/catalog.py` declares an
-    `interrupt_reconcile` kind for. A provider that declares a
-    reconciliation kind but ships a turn missing part of the seam is the
-    failure this catches.
-  * **Tolerance** — the cross-provider no-op paths (a missing
-    `provider_item_id`, no active response) are clean no-ops on every
-    adapter, never a raise. Provider-specific *live* behaviour
-    (`response.cancel` + `conversation.item.truncate` for a real id and real
-    played-ms) is pinned in `tests/test_openai_session.py`; Gemini stays a
-    genuine no-op on every path because it self-truncates server-side.
-
-See ADR-0115.
-"""
+"""Provider turn conformance and absent-response tolerance."""
 from __future__ import annotations
 
 import pytest
@@ -117,8 +99,8 @@ async def test_truncate_tolerates_missing_item_id(cls):
     without a ledger value, and never raise.
 
     A *populated* id is no longer a universal no-op: the OpenAI pack sends a
-    real conversation.item.truncate for a real id + positive played-ms. That
-    provider-specific behaviour (and its no-op-if-0 and cancel guards) is
+    real conversation.item.truncate for an owned item and valid played-ms. That
+    provider-specific behaviour (and its ownership and cancel guards) is
     pinned in tests/test_openai_session.py; here we pin only the
     cross-provider tolerance of a *missing* id."""
     turn = _make_turn(cls)

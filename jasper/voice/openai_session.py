@@ -210,17 +210,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # is exactly what OpenAI's STT model received.
         self._debug_wav: wave.Wave_write | None = None
         self._debug_wav_path: str | None = None
-        # The most recent assistant audio item id seen (set from
-        # `response.output_item.added`). `truncate_assistant_audio` uses
-        # it as the `conversation.item.truncate` target when the daemon's
-        # barge-in spine doesn't carry a provider id — see the barge-in
-        # capability seam below. Unused when barge-in is off (the
-        # default), since nothing then drives a flush + truncate.
-        self._last_assistant_item_id: str | None = None
-        # Per-item received audio (ms), keyed by assistant item id. Lets
-        # truncate_assistant_audio clamp the turn-wide ledger played-ms to the
-        # target item's own duration (C1). Per-turn dict, discarded at turn
-        # end; a tool-using turn holds only its handful of item ids.
         self._received_ms_by_item: dict[str, float] = {}
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -439,56 +428,14 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
     async def truncate_assistant_audio(
         self, provider_item_id: str | None, audio_played_ms: int,
     ) -> None:
-        """Align OpenAI conversation history to what the listener heard.
-
-        Sends `conversation.item.truncate{item_id, content_index:0,
-        audio_end_ms}`. `item_id` falls back to the turn's own
-        `_last_assistant_item_id` (captured from
-        `response.output_item.added`) so the daemon spine never has to
-        carry a provider id; `None` is tolerated (a barge-in that raced
-        the first item event leaves nothing to truncate — a no-op).
-
-        CRITICAL GUARD: `audio_end_ms` MUST be the ms *actually rendered*
-        per the playout ledger, never bytes-received. A `0` from the
-        ledger means it observed no rendered audio (the production fan-in
-        ack can return `max_audio_played_ms=0`); truncating anyway would
-        send an `audio_end_ms` past the heard boundary, which OpenAI
-        rejects as out-of-range and which desyncs the conversation
-        context. So a non-positive played-ms is a no-op + WARN, never a
-        bytes-received guess. Idempotent and never raises."""
-        if self._released or self._turn_lost:
+        """Trim only an explicitly identified item owned by this turn."""
+        if self._released or self._turn_lost or provider_item_id is None:
             return
-        item_id = provider_item_id or self._last_assistant_item_id
-        if not item_id:
-            # Barge-in raced response.output_item.added — no assistant
-            # item to align yet. Nothing to truncate.
-            log_event(
-                logger, "barge.truncate_skipped",
-                reason="no_item_id", level=logging.DEBUG,
-            )
+        received_ms = self._received_ms_by_item.get(provider_item_id)
+        if received_ms is None or type(audio_played_ms) is not int or audio_played_ms < 0:
             return
-        if audio_played_ms <= 0:
-            log_event(
-                logger, "barge.truncate_skipped",
-                reason="zero_played_ms", item_id=item_id,
-                level=logging.WARNING,
-            )
-            return
-        audio_end_ms = int(audio_played_ms)
-        received_ms = self._received_ms_by_item.get(item_id)
-        if received_ms is not None and audio_end_ms > received_ms:
-            # C1: the playout ledger reports a turn-WIDE max played-ms, but a
-            # multi-segment (tool-using) turn can carry an earlier item whose
-            # ledger ms exceeds THIS in-flight item's audio. Truncating the
-            # item past its own received duration is the out-of-range case the
-            # server rejects. Clamp to what this item actually received — an
-            # upper bound on what could have been heard (truncates down).
-            log_event(
-                logger, "barge.truncate_clamped",
-                item_id=item_id, requested_ms=audio_end_ms,
-                clamped_ms=int(received_ms), level=logging.DEBUG,
-            )
-            audio_end_ms = int(received_ms)
+        item_id = provider_item_id
+        audio_end_ms = min(audio_played_ms, int(received_ms))
         log_event(
             logger, "barge.truncate",
             # getattr-guarded so the log can't itself raise (e.g. a turn
@@ -542,7 +489,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             )
         if item_id:
             # 24 kHz mono pcm16 = 48 bytes/ms. Accumulate per item so a later
-            # truncate can clamp to THIS item's received duration (C1).
+            # truncate can clamp to this item's received duration.
             self._received_ms_by_item[item_id] = (
                 self._received_ms_by_item.get(item_id, 0.0) + chunk_bytes / 48.0
             )
@@ -592,10 +539,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._server_turn_complete = True
         self._record_usage(usage)
         self._audio_q.put_nowait(None)
-
-    def _on_assistant_item_id(self, item_id: str | None) -> None:
-        if item_id:
-            self._last_assistant_item_id = item_id
 
     def _on_assistant_text_delta(self, delta: str) -> None:
         if not delta:
@@ -1207,8 +1150,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             item_id = _event_field(item, "id")
             if isinstance(item_id, str) and item_id:
                 turn._response_item_ids.add(item_id)
-                if _event_field(item, "type") == "message":
-                    turn._on_assistant_item_id(item_id)
             return
 
         item_id = _event_field(event, "item_id")

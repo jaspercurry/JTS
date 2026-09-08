@@ -83,11 +83,8 @@ class TurnUsage:
 class TurnCapture:
     """What a finished turn offers conversation history.
 
-    Providers differ in what they can offer, not in how it is written:
-    OpenAI/Grok carry both transcripts, Gemini carries none and offers
-    bounded `data` metadata instead. Adapters normalise blank text to
-    None, so a None field was not captured rather than captured empty.
-    See docs/conversation-history-plan.md.
+    Adapters normalise absent or blank transcripts to None. Metadata must
+    not substitute generated text for an absent native transcript.
     """
 
     user_text: str | None = None
@@ -101,8 +98,8 @@ class Interruptible(Protocol):
 
     Capability-based, never provider-name-based: each catalog provider
     declares a `catalog.InterruptReconcile` kind and implements this
-    Protocol to match, so a `server_self_truncates` provider (Gemini)
-    ships honest no-ops rather than being special-cased at the call site.
+    Protocol to match. Gemini interrupts generation through manual activity
+    but has no API for trimming history to JTS playback counts.
     See ADR-0115.
     """
 
@@ -166,22 +163,18 @@ class Interruptible(Protocol):
 
         ``reason`` is for the structured-log line only. Must be idempotent
         and must never raise on an already-complete or absent response.
-        Providers with no client cancel mechanism (Gemini) implement this
-        as a no-op."""
+        Gemini uses a manual activity-start marker to interrupt generation."""
         ...
 
     async def truncate_assistant_audio(
         self, provider_item_id: str | None, audio_played_ms: int,
     ) -> None:
-        """Align the provider's conversation history to what the listener
-        actually heard, after a barge-in cut local playback short. See
-        ADR-0115.
+        """Trim an owned item to its confirmed local ledger boundary in ms.
 
-        ``provider_item_id`` MUST be tolerated as ``None`` — the normal
-        value on every call for a ``server_self_truncates`` provider
-        (Gemini), and possible transiently for a ``needs_client_truncate``
-        provider (OpenAI/Grok) before the turn's first audio item. Must be
-        idempotent and must never raise."""
+        Zero is a valid boundary; an absent item is not. Local drain counts
+        are estimates, not acoustic proof. Gemini has no item truncate API.
+        Must tolerate None and never raise on an absent or finished response.
+        """
         ...
 
 

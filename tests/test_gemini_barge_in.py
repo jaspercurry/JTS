@@ -2,34 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Gemini barge-in pack (robust-barge-in PR-5).
-
-Pins the Gemini half of the provider-pack barge-in seam. PR-2 (spine) and
-PR-3 (capability seam) already landed the moving parts — the daemon's local
-Silero gate, ``request_local_interrupt``, the ``server_content.interrupted``
-parse, and the ``cancel_response`` / ``truncate_assistant_audio`` no-op
-stubs. This file pins the *Gemini pack's* decision and contract on top:
-
-  * point 3 — ``_build_config`` keeps manual VAD + NO_INTERRUPTION (option
-    (a): the daemon's local gate is the single interruption authority, so
-    the connection wire config is barge-in-agnostic and never flips to
-    server VAD);
-  * points 1+2 — the local gate sets the interrupt event, and the reconcile
-    seam stays a no-op that never raises and never clears an armed local
-    interrupt;
-  * point 4 — an interrupted Gemini turn sends NO generation_complete; it
-    goes ``interrupted`` -> ``turn_complete``, so the turn-end signal the
-    watchdog consumes (``server_turn_complete()``) is set by ``turn_complete``
-    alone.
-
-Not duplicated here: Protocol conformance (``LiveTurn`` /
-``Interruptible``) is pinned by ``tests/test_voice_barge_in_contract.py``;
-the generic
-"watchdog returns on ``server_turn_complete``" behaviour is pinned by
-``tests/test_voice_daemon_defects.py``. The paid, on-device "speak over
-Gemini TTS" proof is a SKIPPED voice-eval placeholder — see
-``tests/voice_eval/regression/test_barge_in_gemini.py``.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -75,23 +47,17 @@ async def _interrupted(turn: "GeminiLiveTurn", *, timeout: float = 0.2) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# point 3 — the wire config is barge-in-agnostic (option a).
 # ---------------------------------------------------------------------------
 
 
-def test_build_config_keeps_manual_vad_and_no_interruption():
-    """Option (a) pin: Gemini's ``_build_config`` always emits manual VAD
-    (``automatic_activity_detection.disabled=True``) + ``NO_INTERRUPTION``.
-
-    The connection deliberately never reads the ``JASPER_BARGE_IN_GEMINI``
-    flag — the daemon's local gate owns barge-in, so the config is the same
-    whether barge-in is on or off. This guards against a future regression
-    that flips Gemini to server VAD "for barge-in" (option b), which would
-    re-open the self-interrupt-on-bleed loop NO_INTERRUPTION prevents."""
+def test_build_config_enables_manual_interruption_and_native_transcripts():
     conn = GeminiLiveConnection(api_key="fake", model="fake")
-    ric = conn._build_config().realtime_input_config
+    config = conn._build_config()
+    ric = config.realtime_input_config
     assert ric.automatic_activity_detection.disabled is True
-    assert ric.activity_handling == genai_types.ActivityHandling.NO_INTERRUPTION
+    assert ric.activity_handling == genai_types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS
+    assert config.input_audio_transcription is not None
+    assert config.output_audio_transcription is not None
 
 
 # ---------------------------------------------------------------------------
@@ -142,36 +108,40 @@ def test_build_config_uses_typed_enums_and_validated_tool_declarations():
 
 
 # ---------------------------------------------------------------------------
-# points 1+2 — local gate sets the event; the reconcile seam is a no-op.
 # ---------------------------------------------------------------------------
 
 
-async def test_local_gate_sets_interrupt_event_and_seam_stays_noop():
-    """The local gate (``request_local_interrupt``) sets the interrupt event
-    so JTS flushes its own TTS regardless of the provider, and the Gemini
-    reconcile seam is a no-op that never raises and — crucially — never
-    clears an armed local interrupt (clearing is the daemon flush path's job
-    via ``clear_interrupted``)."""
+async def test_local_interrupt_cancels_once_and_rejects_late_audio():
+    class Session:
+        def __init__(self):
+            self.sent = []
+
+        async def send_realtime_input(self, **kwargs):
+            self.sent.append(kwargs)
+
+        async def close(self):
+            pass
+
     conn = GeminiLiveConnection(api_key="fake", model="fake")
-    turn = _turn(conn)
-
-    assert await _interrupted(turn) is False
+    conn._session = session = Session()
+    conn._connected_event.set()
+    conn._active_turn = turn = _turn(conn)
+    await turn.end_input()
+    await turn._on_response(_Resp(data=b"before"))
     turn.request_local_interrupt()
-    # Event is set, so the playback path's interrupt race resolves at once.
-    assert await _interrupted(turn) is True
-
-    # Reconcile seam is a no-op even after a local interrupt (Gemini
-    # self-truncates server-side; there is nothing to cancel/truncate).
-    assert await turn.cancel_response("local-barge-in") is None
-    assert await turn.truncate_assistant_audio(None, 1234) is None
-
-    # The no-op reconcile must NOT have cleared the armed local interrupt.
-    assert await _interrupted(turn) is True
-
-
-# ---------------------------------------------------------------------------
-# point 4 — interrupted turn sends NO generation_complete.
-# ---------------------------------------------------------------------------
+    await turn.cancel_response("barge_in")
+    await turn.cancel_response("again")
+    assert sum("activity_start" in event for event in session.sent) == 1
+    turn.clear_interrupted()
+    await turn._on_response(_Resp(data=b"late"))
+    assert turn.audio_chunks_pending() == 0
+    await turn._on_response(_Resp(server_content=_SC(turn_complete=True)))
+    assert await asyncio.wait_for(drain_audio_chunks(turn), 1) == []
+    conn._resumption_handle = "old-context"
+    await turn.release()
+    assert conn._reconnect_event.is_set()
+    await conn._teardown_session()
+    assert conn._resumption_handle is None
 
 
 async def test_server_interrupt_drops_queued_audio_and_does_not_complete():
@@ -181,10 +151,7 @@ async def test_server_interrupt_drops_queued_audio_and_does_not_complete():
     "model done" to the watchdog. The trailing ``turn_complete`` is the sole
     end signal (Gemini goes interrupted -> turn_complete).
 
-    This pins the server-reported-interrupt path (defensive/forward-
-    compatible; under the production manual-VAD + NO_INTERRUPTION config the
-    server does not self-interrupt — the local gate, test above, is the
-    production driver)."""
+"""
     conn = GeminiLiveConnection(api_key="fake", model="fake")
     turn = _turn(conn)
     conn._active_turn = turn
