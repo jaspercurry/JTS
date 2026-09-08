@@ -34,16 +34,29 @@ def _recording_popen(calls: list[list[str]]):
     return RecordingPopen
 
 
-def _record_broker(monkeypatch, *, ok: bool = True) -> list[tuple[str, list[str]]]:
+def _record_broker(
+    monkeypatch,
+    *,
+    ok: bool = True,
+    unit_rc: dict[str, int] | None = None,
+) -> list[tuple[str, list[str]]]:
     """Replace the restart broker's client entry point, returning the
-    ``(verb, units)`` pairs the handler asks for. Nothing real restarts."""
+    ``(verb, units)`` pairs the handler asks for. Nothing real restarts.
+
+    ``unit_rc`` gives named units their own return code whatever ``ok``
+    says — 5 is systemctl's "no unit file on this box"."""
     import jasper.control.server as srv_mod
 
     calls: list[tuple[str, list[str]]] = []
+    rc_by_unit = unit_rc or {}
 
     def fake_manage_units(*units, verb="restart", **_kw):
         calls.append((verb, list(units)))
-        return {"ok": ok, "action": verb, "units": list(units), "rc": 0 if ok else 1}
+        rc = next(
+            (rc_by_unit[u] for u in units if u in rc_by_unit),
+            0 if ok else 1,
+        )
+        return {"ok": rc == 0, "action": verb, "units": list(units), "rc": rc}
 
     monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage_units)
     return calls

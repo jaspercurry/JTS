@@ -592,7 +592,10 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     assert "intent_saved" not in body
     from jasper.local_sources import local_source_audio_refresh_units
 
-    assert calls == [("try-restart", list(local_source_audio_refresh_units()))]
+    assert calls == [
+        ("try-restart", [unit]) for unit in local_source_audio_refresh_units()
+    ]
+    assert body["accepted_units"] == list(local_source_audio_refresh_units())
 
 
 def test_system_audio_quality_502s_when_the_renderer_restart_is_refused(
@@ -2116,10 +2119,15 @@ def test_system_restart_audio_uses_local_source_registry(
     assert status == 202
     assert body["ok"] is True
     assert body["status"] == "accepted"
-    assert calls == [
-        ("restart", ["jasper-camilla.service"]),
-        ("try-restart", list(local_source_audio_refresh_units())),
+    # One try-restart call per unit: a batch reports one verdict for the whole
+    # set, so a box missing one renderer would fail the rest with it.
+    assert calls == [("restart", ["jasper-camilla.service"])] + [
+        ("try-restart", [unit]) for unit in local_source_audio_refresh_units()
     ]
+    assert body["accepted_units"] == [
+        "jasper-camilla.service", *local_source_audio_refresh_units(),
+    ]
+    assert body["skipped_units"] == []
 
 
 def test_system_restart_audio_502s_when_the_broker_refuses(
@@ -2136,6 +2144,31 @@ def test_system_restart_audio_502s_when_the_broker_refuses(
     assert body["failed_verb"] == "restart"
     assert body["failed_units"] == ["jasper-camilla.service"]
     assert body.get("ok") is not True
+
+
+@pytest.mark.parametrize(
+    ("rc", "expected_status", "group"),
+    [(5, 202, "skipped_units"), (1, 502, "failed_units")],
+)
+def test_system_restart_audio_reports_each_renderer_on_its_own(
+    monkeypatch, server_with_coordinator, rc, expected_status, group,
+):
+    """A renderer this box never installed (rc 5) is skipped, not a failure;
+    a renderer that really refused fails alone. Either way the core restart
+    that already went through stays in `accepted_units` — a partial success
+    reported as a total failure sends the household chasing working audio."""
+    from jasper.local_sources import local_source_audio_refresh_units
+
+    odd_one = local_source_audio_refresh_units()[0]
+    _record_broker(monkeypatch, unit_rc={odd_one: rc})
+    base, _fake = server_with_coordinator
+
+    status, body = _post(f"{base}/system/restart/audio", {})
+
+    assert status == expected_status
+    assert body[group] == [odd_one]
+    assert "jasper-camilla.service" in body["accepted_units"]
+    assert odd_one not in body["accepted_units"]
 
 
 def test_system_restart_audio_keeps_parked_renderers_parked(

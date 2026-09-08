@@ -58,6 +58,10 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
         """Answer 202 for work handed to systemd but not yet confirmed done."""
         self._send_json({**extra, "ok": True, "status": "accepted"}, status=202)
 
+    def _send_refused(self, *, error: str, code: str, **extra: Any) -> None:
+        """Answer 502 for work systemd would not take: what stood, then why."""
+        self._send_json({**extra, "error": error, "code": code}, status=502)
+
     def _send_broker_result(
         self,
         result: dict[str, Any],
@@ -75,7 +79,7 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
         an `extra` field can never turn a refusal into an ok.
         """
         if not result.get("ok"):
-            self._send_json({**extra, "error": error, "code": code}, status=502)
+            self._send_refused(error=error, code=code, **extra)
             return False
         self._send_accepted(**extra)
         return True

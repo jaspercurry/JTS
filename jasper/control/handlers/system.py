@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from ...audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
@@ -36,6 +36,42 @@ from .. import server as _server
 from .. import state_aggregate
 from .. import usb_gadget_forensics
 from ._base import ControlHandlerMixin, logger
+
+
+# `systemctl` exits 5 when the named unit has no unit file on this box
+# (EXIT_NOTINSTALLED; verified against systemd 257 on the lab Pi).
+_UNIT_NOT_FOUND_RC = 5
+
+
+def _try_restart_each(
+    units: Iterable[str],
+    *,
+    reason: str,
+) -> dict[str, list[str]]:
+    """``try-restart`` one unit per call, grouped by what systemd answered.
+
+    A batch is a single ``systemctl`` invocation, so it can only report one
+    verdict for the whole set: a unit this profile never installed (a
+    streambox without BlueALSA) fails the call, and a real failure hides
+    every renderer that did restart. ``--no-block`` returns in milliseconds,
+    so the handful of extra calls costs nothing the caller can feel.
+    """
+    groups: dict[str, list[str]] = {
+        "accepted_units": [],
+        "skipped_units": [],
+        "failed_units": [],
+    }
+    for unit in units:
+        result = _server.restart_broker.manage_units(
+            unit, verb="try-restart", reason=reason, no_block=True, timeout=5.0,
+        )
+        if result.get("ok"):
+            groups["accepted_units"].append(unit)
+        elif result.get("rc") == _UNIT_NOT_FOUND_RC:
+            groups["skipped_units"].append(unit)
+        else:
+            groups["failed_units"].append(unit)
+    return groups
 
 
 def _safe_audio_quality_state() -> dict[str, Any]:
@@ -395,16 +431,11 @@ class SystemRoutes(ControlHandlerMixin):
             return
         # Refresh active renderers without resurrecting sources the
         # household explicitly disabled in /sources/.
-        refresh = _server.restart_broker.manage_units(
-            *_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-            verb="try-restart",
-            reason="audio_quality",
-            no_block=True,
-            timeout=5.0,
+        groups = _try_restart_each(
+            _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS, reason="audio_quality",
         )
-        if not refresh.get("ok"):
-            self._send_broker_result(
-                refresh,
+        if groups["failed_units"]:
+            self._send_refused(
                 error=(
                     "Conversion quality was saved, but the music "
                     "renderer restart could not be scheduled."
@@ -412,8 +443,8 @@ class SystemRoutes(ControlHandlerMixin):
                 code="audio_quality_restart_failed",
                 intent_saved=True,
                 action="audio-quality",
-                try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
                 audio_quality=state,
+                **groups,
             )
             return
         log_event(
@@ -424,8 +455,8 @@ class SystemRoutes(ControlHandlerMixin):
         )
         self._send_accepted(
             action="audio-quality",
-            try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
             audio_quality=state,
+            **groups,
         )
         return
 
@@ -545,18 +576,13 @@ class SystemRoutes(ControlHandlerMixin):
                     status=502,
                 )
                 return
-        # Use start-after-stop semantics for core services. Local source
-        # daemons use try-restart so a dashboard audio restart never turns on
-        # a source the household disabled in /sources/ (USB would otherwise
-        # re-advertise its gadget).
-        for verb, targets in (
-            ("restart", restart_units),
-            ("try-restart", try_restart_units),
-        ):
-            if not targets:
-                continue
+        # Start-after-stop semantics for core services, as one batch: every
+        # profile installs them, so a refusal is a real failure.
+        accepted: list[str] = []
+        if restart_units:
             result = _server.restart_broker.manage_units(
-                *targets, verb=verb, reason=action, no_block=True, timeout=5.0,
+                *restart_units, verb="restart", reason=action,
+                no_block=True, timeout=5.0,
             )
             if not result.get("ok"):
                 self._send_broker_result(
@@ -564,14 +590,28 @@ class SystemRoutes(ControlHandlerMixin):
                     error="The restart could not be scheduled.",
                     code="system_restart_failed",
                     action=action,
-                    failed_verb=verb,
-                    failed_units=targets,
+                    units=units,
+                    failed_verb="restart",
+                    accepted_units=accepted,
+                    skipped_units=[],
+                    failed_units=restart_units,
                 )
                 return
-        self._send_accepted(
-            action=action,
-            units=units,
-            restart_units=restart_units,
-            try_restart_units=try_restart_units,
-        )
+            accepted = list(restart_units)
+        # Local source daemons use try-restart so a dashboard audio restart
+        # never turns on a source the household disabled in /sources/ (USB
+        # would otherwise re-advertise its gadget).
+        groups = _try_restart_each(try_restart_units, reason=action)
+        groups["accepted_units"] = accepted + groups["accepted_units"]
+        if groups["failed_units"]:
+            self._send_refused(
+                error="The restart could not be scheduled.",
+                code="system_restart_failed",
+                action=action,
+                units=units,
+                failed_verb="try-restart",
+                **groups,
+            )
+            return
+        self._send_accepted(action=action, units=units, **groups)
         return
