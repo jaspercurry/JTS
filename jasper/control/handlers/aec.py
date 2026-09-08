@@ -94,8 +94,7 @@ class AecRoutes(ControlHandlerMixin):
             return
         kick = aec_endpoints._kick_aec_reconciler(reason="aec_leg")
         if not kick.get("ok"):
-            self._send_broker_result(
-                kick,
+            self._send_refused(
                 error=(
                     "The wake-detection change was saved, but the "
                     "reconciler restart could not be scheduled."
@@ -140,8 +139,7 @@ class AecRoutes(ControlHandlerMixin):
             return
         kick = aec_endpoints._kick_aec_reconciler(reason="aec_profile")
         if not kick.get("ok"):
-            self._send_broker_result(
-                kick,
+            self._send_refused(
                 error=(
                     "The microphone profile was saved, but the "
                     "reconciler restart could not be scheduled."
@@ -203,21 +201,18 @@ class AecRoutes(ControlHandlerMixin):
             # A descriptor recompose is not a broker verb: there is no result
             # to answer, only the scheduler's own refusal.
             failed_status = aec_endpoints._aec_full_status()
-            self._send_json(
-                {
-                    "error": (
-                        "USB microphone preference was saved, but its "
-                        "hardware update could not be scheduled."
-                    ),
-                    "code": "usb_mic_recompose_schedule_failed",
-                    "intent_saved": True,
-                    "requested_enabled": enabled,
-                    "usb_mic": failed_status.get("usb_mic") or {},
-                },
-                status=502,
+            self._send_refused(
+                error=(
+                    "USB microphone preference was saved, but its "
+                    "hardware update could not be scheduled."
+                ),
+                code="usb_mic_recompose_schedule_failed",
+                intent_saved=True,
+                requested_enabled=enabled,
+                usb_mic=failed_status.get("usb_mic") or {},
             )
             return
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
     def _post_aec_usb_mic_leg(self) -> None:
@@ -317,8 +312,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             if not restart.get("ok"):
                 failed_status = aec_endpoints._aec_full_status()
-                self._send_broker_result(
-                    restart,
+                self._send_refused(
                     error=(
                         "Computer microphone source was saved, but the "
                         "microphone bridge restart could not be scheduled."
@@ -330,7 +324,7 @@ class AecRoutes(ControlHandlerMixin):
                 )
                 return
             _server._usb_mic_leg_apply_pending = (leg, time.monotonic())
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
     def _post_aec_threshold(self) -> None:
@@ -378,8 +372,7 @@ class AecRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not restart.get("ok"):
-            self._send_broker_result(
-                restart,
+            self._send_refused(
                 error=(
                     "Sensitivity was saved, but the assistant restart "
                     "could not be scheduled."
@@ -416,13 +409,10 @@ class AecRoutes(ControlHandlerMixin):
                 return
             started = _server._start_aec_commission()
         if not started:
-            self._send_json(
-                {
-                    "error": "the re-commissioning run could not be started",
-                    "code": "aec_commission_start_failed",
-                    "commission": _commission_start_body(running=False),
-                },
-                status=502,
+            self._send_refused(
+                error="the re-commissioning run could not be started",
+                code="aec_commission_start_failed",
+                commission=_commission_start_body(running=False),
             )
             return
         log_event(
@@ -430,7 +420,7 @@ class AecRoutes(ControlHandlerMixin):
             "aec.commission.start",
             client=self.address_string(),
         )
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
     def _post_aec_firmware_update(self) -> None:
@@ -461,7 +451,7 @@ class AecRoutes(ControlHandlerMixin):
             if isinstance(firmware, dict)
             else "",
         )
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints._aec_full_status())
         return
 
     def _post_enhanced_aec_install(self) -> None:
@@ -501,8 +491,7 @@ class AecRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not started.get("ok"):
-            self._send_broker_result(
-                started,
+            self._send_refused(
                 error=(
                     "The preference was saved, but the background "
                     "installer could not be started."
@@ -517,5 +506,5 @@ class AecRoutes(ControlHandlerMixin):
             "aec.enhanced.install_start",
             client=self.address_string(),
         )
-        self._send_json(aec_endpoints._enhanced_aec_status())
+        self._send_accepted(**aec_endpoints._enhanced_aec_status())
         return

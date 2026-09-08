@@ -21,10 +21,11 @@
 //! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
-//! socket path per grouping role. The wire layer itself (command
-//! vocabulary + `read_command` parser) lives ONCE in the shared
-//! `jasper-tts-protocol` crate, imported by both daemons — the twins
-//! structurally cannot drift when the protocol grows. Outputd interprets
+//! socket path per grouping role. The wire layer (command vocabulary +
+//! `read_command` parser) and the server half (accept loop, client
+//! ceiling, socket counters, the queue hand-off rule) live ONCE in the
+//! shared `jasper-tts-protocol` crate — the twins structurally cannot
+//! drift when the protocol grows. Outputd interprets
 //! `VOLUME_CONTEXT` with a post-DSP mix stage: it honors mute and live
 //! canonical-volume changes while structurally zeroing Camilla's downstream
 //! compensation. `PREPARE_ASSISTANT` carries the turn-start context atomically;
@@ -43,24 +44,21 @@
 //! `"events":[]` (it cannot know DAC progress); here both come from the
 //! ledger.
 //!
-//! Threading mirrors fanin: an accept thread + one thread per client
-//! connection parse and enqueue; bounded channels with the fanin policy
-//! (AUDIO drops-on-full with a counted warning — late speech is worse
-//! than lost speech; control commands block briefly — losing a
-//! SEGMENT_END or DUCK_OFF corrupts state). The audio loop never blocks
+//! Threading is the shared server's: an accept thread + one thread per
+//! client connection parse and enqueue through the shared hand-off rule
+//! ([`jasper_tts_protocol::try_enqueue_command`]). Only the capacity below
+//! and the pending-frame budget are outputd's. The audio loop never blocks
 //! on any of it (inv-1: the DAC write stays the sole pacer).
 
-use std::fs;
-use std::io::{self, BufReader, Write as IoWrite};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{BufReader, Write as IoWrite};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::core::OutputCore;
 use crate::ledger::{PlayoutEvent, SegmentId};
@@ -69,8 +67,8 @@ use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsClientSlot, TtsClientSlots,
-    TtsCommand, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
+    is_frame_timeout, read_command_deadlined, try_enqueue_command, QueuedTtsCommand, TtsCommand,
+    TtsServerCounters, TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -80,12 +78,6 @@ pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
 
 const FLUSH_ACK_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug)]
-pub struct QueuedTtsCommand {
-    pub epoch: u64,
-    pub command: TtsCommand,
-}
 
 #[derive(Debug)]
 pub struct QueuedFlush {
@@ -165,10 +157,7 @@ impl FlushSummary {
 pub struct TtsMetrics {
     pub requests: Arc<AtomicU64>,
     pub pending_frames: Arc<AtomicU64>,
-    pub dropped_audio_frames: Arc<AtomicU64>,
-    pub dropped_commands: Arc<AtomicU64>,
-    pub slots: TtsClientSlots,
-    pub frame_timeouts: Arc<AtomicU64>,
+    pub counters: TtsServerCounters,
     pub flush_requests: Arc<AtomicU64>,
     pub flushed_frames: Arc<AtomicU64>,
     pub max_pending_frames: u64,
@@ -185,21 +174,12 @@ impl TtsMetrics {
         Self {
             requests: Arc::new(AtomicU64::new(0)),
             pending_frames: Arc::new(AtomicU64::new(0)),
-            dropped_audio_frames: Arc::new(AtomicU64::new(0)),
-            dropped_commands: Arc::new(AtomicU64::new(0)),
-            slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
-            frame_timeouts: Arc::new(AtomicU64::new(0)),
+            counters: TtsServerCounters::default(),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames,
             loudness: Arc::new(Mutex::new(TtsLoudnessSnapshot::default())),
         }
-    }
-
-    fn mark_dropped_audio(&self, frames: u64) {
-        self.dropped_audio_frames
-            .fetch_add(frames, Ordering::Relaxed);
-        self.dropped_commands.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A clone of the shared snapshot cell, handed to `OutputCore` so the audio
@@ -229,10 +209,6 @@ pub type TtsChannelBundle = (
     Arc<AtomicU64>,
 );
 
-// ---------------------------------------------------------------------
-// Server half — ported from fanin (see module header).
-// ---------------------------------------------------------------------
-
 pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
     let (tx, rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
     let (flush_tx, flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
@@ -248,79 +224,25 @@ pub fn spawn_tts_server(
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating outputd TTS socket parent {}", parent.display()))?;
-    }
-    let _ = fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("binding outputd TTS socket {}", path.display()))?;
+    let slots = metrics.counters.slots().clone();
+    jasper_tts_protocol::serve(
+        "outputd",
+        &path,
+        slots,
+        |line| eprintln!("{line}"),
+        move |stream| {
+            handle_tts_client(
+                stream,
+                tx.clone(),
+                flush_tx.clone(),
+                Arc::clone(&epoch),
+                metrics.clone(),
+                TTS_FRAME_DEADLINE,
+            )
+        },
+    )?;
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
-    thread::Builder::new()
-        .name("outputd-tts-ipc".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        // A client that stops reading its FLUSH_SYNC ack would
-                        // otherwise pin its slot forever inside `write_all`.
-                        // Best-effort: a socket that refuses the option is
-                        // still worth serving.
-                        let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
-                        let slot = match metrics.slots.try_acquire() {
-                            Ok(slot) => slot,
-                            // The pool counts every refusal for STATUS; only the
-                            // first and every 100th afterward are worth a
-                            // journal line, so a real ceiling stays visible past
-                            // one transient refusal at boot.
-                            Err(count) if count == 1 || count % 100 == 0 => {
-                                eprintln!(
-                                    "event=outputd.tts_socket.connection_rejected \
-                                     max_clients={TTS_MAX_CLIENTS} count={count}"
-                                );
-                                continue;
-                            }
-                            Err(_) => continue,
-                        };
-                        if let Err(e) = spawn_tts_client(
-                            stream,
-                            tx.clone(),
-                            flush_tx.clone(),
-                            Arc::clone(&epoch),
-                            metrics.clone(),
-                            slot,
-                        ) {
-                            eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("event=outputd.tts_socket.accept_failed detail={e}");
-                    }
-                }
-            }
-        })
-        .context("spawning outputd TTS IPC accept thread")?;
     Ok(())
-}
-
-fn spawn_tts_client(
-    stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    metrics: TtsMetrics,
-    slot: TtsClientSlot,
-) -> io::Result<()> {
-    thread::Builder::new()
-        .name("outputd-tts-client".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || {
-            // Held for the connection's life; released when this thread ends.
-            let _slot = slot;
-            handle_tts_client(stream, tx, flush_tx, epoch, metrics, TTS_FRAME_DEADLINE)
-        })
-        .map(|_| ())
 }
 
 fn handle_tts_client(
@@ -348,19 +270,21 @@ fn handle_tts_client(
             Ok(Some(command)) => {
                 metrics.requests.fetch_add(1, Ordering::Relaxed);
                 let current_epoch = epoch.load(Ordering::SeqCst);
-                if !try_enqueue_tts_command(
+                if !try_enqueue_command(
+                    "outputd",
                     &tx,
                     QueuedTtsCommand {
                         epoch: current_epoch,
                         command,
                     },
-                    &metrics,
+                    &metrics.counters,
+                    |line| eprintln!("{line}"),
                 ) {
                     return;
                 }
             }
             Err(e) if is_frame_timeout(&e) => {
-                metrics.frame_timeouts.fetch_add(1, Ordering::Relaxed);
+                metrics.counters.mark_frame_timeout();
                 eprintln!(
                     "event=outputd.tts_socket.frame_timeout deadline_s={}",
                     frame_deadline.as_secs()
@@ -407,51 +331,6 @@ fn queue_flush(
             ack: None,
         })
         .is_ok()
-}
-
-fn try_enqueue_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-    metrics: &TtsMetrics,
-) -> bool {
-    if !queued.command.is_audio() {
-        return enqueue_reliable_tts_command(tx, queued);
-    }
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            let frames = dropped_audio_frames(&queued);
-            metrics.mark_dropped_audio(frames);
-            eprintln!(
-                "event=outputd.tts_command_dropped reason=queue_full command=audio epoch={} frames={}",
-                queued.epoch, frames,
-            );
-            true
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn enqueue_reliable_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-) -> bool {
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            eprintln!(
-                "event=outputd.tts_command_backpressure reason=queue_full command={} epoch={}",
-                command_name(&queued.command),
-                queued.epoch,
-            );
-            tx.send(queued).is_ok()
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
-    queued.command.audio_frames()
 }
 
 // ---------------------------------------------------------------------
@@ -657,7 +536,7 @@ impl TtsBridge {
                     if core.pending_assistant_frames().saturating_add(incoming)
                         > self.metrics.max_pending_frames
                     {
-                        self.metrics.mark_dropped_audio(incoming);
+                        self.metrics.counters.mark_dropped_audio(incoming);
                         eprintln!(
                             "event=outputd.tts_command_dropped reason=pending_budget_exceeded command=audio epoch={} frames={} pending_frames={} budget_frames={}",
                             queued.epoch,
@@ -701,6 +580,8 @@ impl TtsBridge {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use crate::types::ProgramSample;
 
     /// One S16 sample at the program spine's scale. The TTS WIRE stays S16
@@ -1033,7 +914,7 @@ mod tests {
         send(&tx, 0, TtsCommand::Audio(vec![1i16; 16])); // 8 more: over budget
         bridge.drain(&mut core);
         assert_eq!(core.pending_assistant_frames(), 8);
-        assert_eq!(metrics.dropped_audio_frames.load(Ordering::Relaxed), 8);
+        assert_eq!(metrics.counters.dropped_audio_frames(), 8);
     }
 
     #[test]
@@ -1176,7 +1057,7 @@ mod tests {
         client.flush().unwrap();
         handle.join().unwrap();
 
-        assert_eq!(metrics.frame_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.counters.frame_timeouts(), 1);
         drop(client);
     }
 }

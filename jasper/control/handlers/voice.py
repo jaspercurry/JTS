@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from ...cues.manager import REASON_BUSY, REASON_UNKNOWN_SLUG
 from ...log_event import log_event
 from .. import server as _server
 from ._base import ControlHandlerMixin, logger
@@ -141,11 +142,11 @@ class VoiceRoutes(ControlHandlerMixin):
         http_status = 200
         if result.get("result") == "missing_slug":
             http_status = 400
-        elif result.get("result") == "unknown_slug":
+        elif result.get("result") == REASON_UNKNOWN_SLUG:
             http_status = 404
         elif result.get("result") == "cues_not_configured":
             http_status = 503
-        elif result.get("result") == "busy":
+        elif result.get("result") == REASON_BUSY:
             http_status = 409
         elif result.get("result") != "ok":
             http_status = 502
