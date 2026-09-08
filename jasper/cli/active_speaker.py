@@ -34,11 +34,12 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     PARKED_MUTED_STATUS,
-    apply_safe_graph_decision_to_statefile,
     parked_muted_exits,
     safe_graph_for_current_topology,
 )
-from jasper.active_speaker.runtime_convergence import compose_selected_flat_graph
+from jasper.active_speaker.runtime_convergence import (
+    converge_boot_statefile,
+)
 from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     ReemitAnchorReport,
@@ -341,67 +342,35 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     # --coupling lets install.sh pass the live value explicitly; when omitted we
     # read the persisted intent from fanin.env (fail-safe to loopback), so a bare
     # operator run still seeds the right graph.
-    coupling = args.coupling
-    if coupling is None:
-        from jasper.fanin.ring_health import read_persisted_coupling
-
-        coupling = read_persisted_coupling()
-    topology = load_output_topology_strict(args.topology)
-    decision = safe_graph_for_current_topology(
-        topology,
+    result = converge_boot_statefile(
+        topology_path=args.topology,
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         flat_config_path=args.flat_config,
-        coupling=coupling,
-        applied_baseline_path=baseline_profile_state_path(
-            args.applied_baseline_state
-        ),
+        coupling=args.coupling,
+        applied_baseline_path=args.applied_baseline_state,
         staged_metadata_path=args.staged_metadata,
         consider_applied_baseline=not args.no_applied_baseline,
+        write_statefile=args.write_statefile,
     )
-    wrote = False
-    if args.write_statefile and decision.ok:
-        try:
-            decision = compose_selected_flat_graph(
-                decision,
-                topology=topology,
-                coupling=coupling,
-            )
-            wrote = apply_safe_graph_decision_to_statefile(
-                decision,
-                statefile_path=args.statefile,
-                # Same topology object the decision was made from, so the
-                # write-time all-muted re-proof cannot be answered by a
-                # second, differently-read topology.
-                topology=topology,
-            )
-        except (
-            ActiveSpeakerConfigError,
-            OSError,
-            RuntimeError,
-            ValueError,
-            TypeError,
-        ) as exc:
-            # Only the parked branch generates bytes, and it refuses to write
-            # anything it cannot re-prove all-muted. Fail the run: a statefile
-            # pointing at a config we would not write is worse than a red deploy.
-            print(f"Runtime graph decision: {decision.status}")
-            print(f"  ERROR: {exc}")
-            return 1
-    payload = decision.to_dict()
-    payload["statefile_written"] = wrote
+    if result.error is not None:
+        print(f"Runtime graph decision: {result.decision.status}")
+        print(f"  ERROR: {result.error}")
+        return 1
+    payload = result.decision.to_dict()
+    payload["statefile_written"] = result.statefile_written
     payload["statefile_path"] = args.statefile
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         _print_runtime_safe_graph_summary(
             payload,
-            wrote_statefile=wrote,
+            wrote_statefile=result.statefile_written,
             # The same topology the decision was made from, so the exits named
             # here cannot come from a second, differently-read topology.
-            topology=topology,
+            topology=result.topology,
         )
-    return 0 if decision.ok else 1
+    return 0 if result.decision.ok else 1
 
 
 def _baseline_reemit_endpoint(

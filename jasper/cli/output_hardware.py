@@ -42,13 +42,13 @@ def _flag(value: bool) -> str:
     return "true" if value else "false"
 
 
-def env_lines(
+def env_values(
     state: OutputHardwareState,
     cards: tuple[OutputCardFact, ...],
     *,
     record_changed: bool = False,
-) -> str:
-    """The whole shell contract, one shlex-quoted ``KEY=value`` line per fact."""
+) -> dict[str, str]:
+    """The whole contract as ``{KEY: value}``, unquoted."""
     usb = state.usb_data_role
     mapping = dual_apple_runtime_mapping(state)
     # Padded so an absent or partial composite still answers both PCM keys.
@@ -90,8 +90,21 @@ def env_lines(
         "OBSERVED_OUTPUT_DUAL_DAC_A_PCM": pcms[0],
         "OBSERVED_OUTPUT_DUAL_DAC_B_PCM": pcms[1],
     }
+    return values
+
+
+def env_lines(
+    state: OutputHardwareState,
+    cards: tuple[OutputCardFact, ...],
+    *,
+    record_changed: bool = False,
+) -> str:
+    """The whole shell contract, one shlex-quoted ``KEY=value`` line per fact."""
     return "".join(
-        f"{key}={shlex.quote(value)}\n" for key, value in values.items()
+        f"{key}={shlex.quote(value)}\n"
+        for key, value in env_values(
+            state, cards, record_changed=record_changed
+        ).items()
     )
 
 
@@ -110,8 +123,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def observe(
+    *, write: bool = False
+) -> tuple[OutputHardwareState, tuple[OutputCardFact, ...], bool]:
+    """Classify the attached output hardware: ``(state, cards, record_changed)``.
+
+    ``write`` publishes the JSON record; ``record_changed`` then says whether
+    the record it replaced named a different profile or card.
+    """
     hat = read_hat_eeprom()
     cards = probe_system_cards(
         sys_class_sound=os.environ.get("JASPER_SYS_CLASS_SOUND", "/sys/class/sound"),
@@ -130,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     record_changed = False
-    if args.write:
+    if write:
         # Read before the write replaces it: the identity the mixer pin
         # depends on (which profile, on which card). An absent or unreadable
         # record reads as no identity, so a first write counts as a change.
@@ -140,6 +159,12 @@ def main(argv: list[str] | None = None) -> int:
             or previous.selected_card_id != state.selected_card_id
         )
         write_state(state)
+    return state, cards, record_changed
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    state, cards, record_changed = observe(write=args.write)
     if args.env:
         print(env_lines(state, cards, record_changed=record_changed), end="")
     else:

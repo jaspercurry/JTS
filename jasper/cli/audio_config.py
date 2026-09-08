@@ -115,32 +115,56 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     return 0 if not plan.errors else 1
 
 
-def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
-    base = read_env_file_state(args.base_env)
-    outputd = read_env_file_state(args.outputd_env)
-    overrides = load_runtime_overrides(
-        args.overrides,
+def outputd_floor_plan(
+    *,
+    profile_id: str,
+    base_env: str,
+    outputd_env: str,
+    overrides: str | None = None,
+):
+    """``(latency-key summary, outputd.env actions)`` for one DAC's declared floor.
+
+    Precedence (operator env > profile floor > packaged default) stays in this
+    one policy layer instead of being restated by each caller.
+    """
+    base = read_env_file_state(base_env)
+    outputd = read_env_file_state(outputd_env)
+    overrides_path = runtime_overrides_path() if overrides is None else overrides
+    store = load_runtime_overrides(
+        overrides_path,
         allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
     )
     plan = build_audio_runtime_plan(
         base_env=base.values,
         outputd_env=outputd.values,
-        overrides=overrides.values(),
-        profile_id=args.profile_id,
+        overrides=store.values(),
+        profile_id=profile_id,
         route_mode="solo",
         base_env_label=base.path,
         outputd_env_label=outputd.path,
-        override_label=args.overrides,
-        plan_warnings=overrides.warnings,
+        override_label=overrides_path,
+        plan_warnings=store.warnings,
     )
-    for key in OUTPUTD_LATENCY_KEYS:
-        print(f"summary {key} {plan.setting(key).value}")
-    for action in outputd_latency_floor_actions(
-        profile_id=args.profile_id,
+    summary = {key: str(plan.setting(key).value) for key in OUTPUTD_LATENCY_KEYS}
+    actions = outputd_latency_floor_actions(
+        profile_id=profile_id,
         base_env=base.values,
         outputd_env=outputd.values,
-        overrides=overrides.values(),
-    ):
+        overrides=store.values(),
+    )
+    return summary, actions
+
+
+def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
+    summary, actions = outputd_floor_plan(
+        profile_id=args.profile_id,
+        base_env=args.base_env,
+        outputd_env=args.outputd_env,
+        overrides=args.overrides,
+    )
+    for key, value in summary.items():
+        print(f"summary {key} {value}")
+    for action in actions:
         if action.action == "set":
             print(f"set {action.key} {action.value}")
         else:
@@ -168,7 +192,12 @@ def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
         return None, "topology_unreadable"
 
 
-def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
+def ring_conf_wire_report(
+    *,
+    profile_id: str,
+    conf_d: str = "",
+    output_topology: str | None = None,
+) -> dict[str, str]:
     """Render the shm-ring conf.d wire from a DAC's DECLARED floor + the topology.
 
     The rule, and the whole of it: a per-box ring conf.d is rendered ONLY from a
@@ -200,43 +229,57 @@ def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
     format; this command only joins them, which is why it re-reads the floor
     rather than taking a period on the command line.
 
-    Emits ``key value`` lines for the shell caller (the ``outputd-floor-actions``
-    idiom) and returns non-zero with a reason on stderr when the conf.d cannot
-    be rendered.
+    Returns the resolved ``{key: value}`` report; raises ``OSError`` /
+    ``ValueError`` when the conf.d itself cannot be rendered.
     """
-    conf_d = args.conf_d or RING_CONF_D
-    floor = latency_floor_for(args.profile_id) if args.profile_id else None
+    resolved_conf_d = conf_d or RING_CONF_D
+    floor = latency_floor_for(profile_id) if profile_id else None
     if floor is None:
-        print("result skipped")
-        print("reason no_declared_floor")
-        print(f"conf {conf_d}")
-        return 0
+        return {
+            "result": "skipped",
+            "reason": "no_declared_floor",
+            "conf": str(resolved_conf_d),
+        }
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
-        print("result skipped")
-        print(f"reason ring_slot_fixed_{RING_SLOT_FRAMES}")
-        print(f"period_frames {floor.outputd_period_frames}")
-        print(f"conf {conf_d}")
-        return 0
-    topology, topology_reason = _load_topology_for_ring_wire(args.output_topology)
+        return {
+            "result": "skipped",
+            "reason": f"ring_slot_fixed_{RING_SLOT_FRAMES}",
+            "period_frames": str(floor.outputd_period_frames),
+            "conf": str(resolved_conf_d),
+        }
+    topology, topology_reason = _load_topology_for_ring_wire(output_topology)
     # The floor gate above has already established that this box's declared
     # period is RING_SLOT_FRAMES, and the renderer refuses any other; the wire
     # carries the same axis, so it needs no second comparison here.
-    wire = resolve_ring_wire(topology)
+    outcome = render_ring_conf_wire(resolve_ring_wire(topology), conf_d=resolved_conf_d)
+    report = {
+        "result": "rendered" if outcome.changed else "unchanged",
+        "period_frames": str(outcome.period_frames),
+    }
+    if outcome.previous_period_frames is not None:
+        report["previous_period_frames"] = str(outcome.previous_period_frames)
+    report["sample_format"] = str(outcome.sample_format)
+    report["ring_a_channels"] = str(outcome.ring_a_channels)
+    report["ring_b_channels"] = str(outcome.ring_b_channels)
+    report["ring_active_channels"] = str(outcome.ring_active_channels)
+    report["topology"] = topology_reason
+    report["conf"] = str(outcome.conf_d)
+    return report
+
+
+def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
+    """Emit :func:`ring_conf_wire_report` as the shell caller's ``key value`` lines."""
     try:
-        outcome = render_ring_conf_wire(wire, conf_d=conf_d)
+        report = ring_conf_wire_report(
+            profile_id=args.profile_id,
+            conf_d=args.conf_d,
+            output_topology=args.output_topology,
+        )
     except (OSError, ValueError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    print(f"result {'rendered' if outcome.changed else 'unchanged'}")
-    print(f"period_frames {outcome.period_frames}")
-    if outcome.previous_period_frames is not None:
-        print(f"previous_period_frames {outcome.previous_period_frames}")
-    print(f"sample_format {outcome.sample_format}")
-    print(f"ring_a_channels {outcome.ring_a_channels}")
-    print(f"ring_b_channels {outcome.ring_b_channels}")
-    print(f"ring_active_channels {outcome.ring_active_channels}")
-    print(f"topology {topology_reason}")
-    print(f"conf {outcome.conf_d}")
+    for key, value in report.items():
+        print(f"{key} {value}")
     return 0
 
 
@@ -422,9 +465,25 @@ def _renderer_unit_user(unit: str) -> str | None:
     return None
 
 
-def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
-    base = read_env_file_state(args.base_env)
-    outputd = read_env_file_state(args.outputd_env)
+def validate_outputd_env(
+    *,
+    base_env: str,
+    outputd_env: str,
+    fanin_env: str,
+    camilla_statefile: str,
+    camilla2_statefile: str,
+    output_topology: str | None = None,
+    outputd_label: str = "",
+    overrides: str | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Judge a candidate outputd.env: ``(ok, report lines)``.
+
+    The lines are what the CLI prints and what the audio-hardware reconciler
+    logs; an accepted candidate may still report ``ok note=...`` for a
+    coherent-but-transient state.
+    """
+    base = read_env_file_state(base_env)
+    outputd = read_env_file_state(outputd_env)
     # Labels and the override store, not just values: this refusal is what the
     # audio-hardware reconciler logs as `outputd_env_invalid detail=...`, and
     # the operator reading it has to know WHICH layer holds the losing line.
@@ -439,30 +498,31 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
     # — the wrong-attribution failure this provenance exists to prevent — so the
     # reconciler passes the REAL destination as --outputd-label and that is what
     # the message names.
-    overrides = load_runtime_overrides(
-        args.overrides,
+    overrides_path = (
+        runtime_overrides_path() if overrides is None else overrides
+    )
+    store = load_runtime_overrides(
+        overrides_path,
         allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
     )
     # A malformed or unreadable store degrades attribution — the refusal would
     # silently stop naming an origin it cannot parse. Say so rather than let the
     # message get quietly less useful.
-    for warning in overrides.warnings:
-        print(warning)
+    lines = list(store.warnings)
     detail = outputd_env_buffer_pair_error(
         base_env=base.values,
         outputd_env=outputd.values,
         base_label=base.path,
-        outputd_label=args.outputd_label or outputd.path,
-        override_entries={entry.key: entry for entry in overrides.entries},
-        override_label=args.overrides,
+        outputd_label=outputd_label or outputd.path,
+        override_entries={entry.key: entry for entry in store.entries},
+        override_label=overrides_path,
     )
     if detail is not None:
-        print(detail)
-        return 1
-    fanin = read_env_file_state(args.fanin_env)
+        return False, (*lines, detail)
+    fanin = read_env_file_state(fanin_env)
     devices = output_endpoint_devices_from_statefiles(
-        args.camilla_statefile,
-        args.camilla2_statefile,
+        camilla_statefile,
+        camilla2_statefile,
     )
     # A graph that targets the active lane but fails the hardware/topology
     # safety proof is intentionally demoted to the passive fail-closed route by
@@ -484,9 +544,9 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
         decision = (
             outputd_active_lane_decision(
                 active_cap,
-                statefile_path=args.camilla_statefile,
-                crossover_statefile_path=args.camilla2_statefile,
-                topology_path=args.output_topology,
+                statefile_path=camilla_statefile,
+                crossover_statefile_path=camilla2_statefile,
+                topology_path=output_topology,
             )
             if active_cap is not None
             else None
@@ -500,19 +560,32 @@ def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
         camilla_devices=devices,
     )
     if report.errors:
-        print("; ".join(report.errors))
-        return 1
+        return False, (*lines, "; ".join(report.errors))
     # A note is a coherent-but-transient state (today: the ACTIVE-ring arm
-    # waypoint), so this EXITS 0 — the reconciler must be allowed to derive the
-    # marker that is the ladder's own next step. Printed on the ok path so the
-    # caller's captured stdout carries it: `jasper-audio-hardware-reconcile`
-    # logs it as event=audio_hardware_reconcile.outputd_env_note, which is the
-    # journal line an operator standing mid-ladder actually reads.
+    # waypoint), so this ACCEPTS — the reconciler must be allowed to derive the
+    # marker that is the ladder's own next step. Reported on the ok path so the
+    # caller carries it: `jasper-audio-hardware-reconcile` logs it as
+    # event=audio_hardware_reconcile.outputd_env_note, which is the journal line
+    # an operator standing mid-ladder actually reads.
     if report.notes:
-        print("ok note=" + "; ".join(report.notes))
-        return 0
-    print("ok")
-    return 0
+        return True, (*lines, "ok note=" + "; ".join(report.notes))
+    return True, (*lines, "ok")
+
+
+def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
+    ok, lines = validate_outputd_env(
+        base_env=args.base_env,
+        outputd_env=args.outputd_env,
+        fanin_env=args.fanin_env,
+        camilla_statefile=args.camilla_statefile,
+        camilla2_statefile=args.camilla2_statefile,
+        output_topology=args.output_topology,
+        outputd_label=args.outputd_label,
+        overrides=args.overrides,
+    )
+    for line in lines:
+        print(line)
+    return 0 if ok else 1
 
 
 def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
