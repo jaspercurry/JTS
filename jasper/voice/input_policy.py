@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jasper.mics.xvf3800 import ALSA_CARD_NAMES
-from jasper.wake_ports import DEFAULT_AEC_ON_PORT
+from jasper.wake_ports import DEFAULT_AEC_ON_PORT, parse_udp_device
 
 
 # The endpointer JTS ships. Provider server VAD was measured and ruled out
@@ -100,32 +100,22 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
     """
 
     mic_device = str(getattr(cfg, "mic_device", "") or "")
+    udp = parse_udp_device(mic_device.strip())
     chip_enabled = bool(getattr(cfg, "aec_chip_aec_enabled", False))
-    if chip_enabled and mic_device.startswith("udp:"):
+    aec_port = getattr(cfg, "aec_udp_port", DEFAULT_AEC_ON_PORT)
+    if udp is not None and udp[1] == aec_port:
         return SpeechInputContract(
-            profile="xvf_chip_aec",
+            profile="xvf_chip_aec" if chip_enabled else "xvf_software_aec3",
             source=mic_device,
             raw=False,
             echo_cancelled=True,
             denoised=True,
-            beamformed=True,
+            beamformed=chip_enabled,
             gain_controlled=True,
             provenance="aec_reconciler",
         )
 
-    if mic_device == f"udp:{DEFAULT_AEC_ON_PORT}":
-        return SpeechInputContract(
-            profile="xvf_software_aec3",
-            source=mic_device,
-            raw=False,
-            echo_cancelled=True,
-            denoised=True,
-            beamformed=False,
-            gain_controlled=True,
-            provenance="aec_reconciler",
-        )
-
-    if mic_device.startswith("udp:"):
+    if udp is not None:
         return SpeechInputContract(
             profile="custom_udp",
             source=mic_device,

@@ -31,10 +31,11 @@ from .assistant_volume import EffectiveVolumeContext
 from .dsp_numpy import resample_poly
 from .log_event import log_event
 from .tts_routing import FANIN_TTS_SOCKET
+from . import wake_ports
 
 # `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
 # installed in the local dev venv and isn't needed by the pure-Python
-# helpers in this module (parse_udp_device, UdpMicCapture, the dataclasses).
+# helpers in this module (UdpMicCapture and the dataclasses).
 # Lazy-import inside the two places that actually open PortAudio streams
 # (_log_audio_open_failure, MicCapture.__aenter__) so the module can be
 # imported on a dev machine, hardware-free tests can parse it, and the
@@ -383,46 +384,6 @@ class _UdpMicProtocol(asyncio.DatagramProtocol):
         self._gap_pending = False
 
 
-def parse_udp_device(device: str) -> tuple[str, int] | None:
-    """If `device` denotes a UDP mic source, return (host, port).
-
-    Accepted forms:
-      - `udp://<host>:<port>`     full URL form
-      - `udp:<port>`              shorthand, host = 127.0.0.1
-
-    Returns None if the device string is not a UDP form, so callers
-    fall through to the PortAudio path. Raises ValueError if the
-    string starts with `udp` but is malformed (typo guard).
-    """
-    if not device.lower().startswith("udp"):
-        return None
-    rest = device[3:]
-    if rest.startswith("://"):
-        rest = rest[3:]
-        if ":" not in rest:
-            raise ValueError(
-                f"udp device {device!r} missing port (expected udp://HOST:PORT)"
-            )
-        host, port_str = rest.rsplit(":", 1)
-    elif rest.startswith(":"):
-        host = "127.0.0.1"
-        port_str = rest[1:]
-    else:
-        raise ValueError(
-            f"udp device {device!r} malformed; "
-            f"use 'udp:PORT' or 'udp://HOST:PORT'"
-        )
-    try:
-        port = int(port_str)
-    except ValueError as e:
-        raise ValueError(
-            f"udp device {device!r} has non-integer port {port_str!r}"
-        ) from e
-    if not (1 <= port <= 65535):
-        raise ValueError(f"udp device {device!r} port {port} out of range")
-    return host, port
-
-
 def make_mic_capture(
     device: str | int,
     capture_rate: int = MicCapture.OUTPUT_RATE,
@@ -440,7 +401,7 @@ def make_mic_capture(
     via `Array`, or any other USB mic).
     """
     if isinstance(device, str):
-        udp = parse_udp_device(device)
+        udp = wake_ports.parse_udp_device(device)
         if udp is not None:
             host, port = udp
             return UdpMicCapture(host=host, port=port)

@@ -29,7 +29,7 @@ from jasper.accessories.registry import (
     lookup,
     lookup_by_name,
 )
-from jasper.audio_io import parse_udp_device
+from jasper.wake_ports import parse_udp_device
 from jasper.usb_mic import USB_HOST_MIC_UDP_PORT
 
 
