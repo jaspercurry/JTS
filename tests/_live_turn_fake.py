@@ -67,6 +67,10 @@ class FakeLiveTurn:
     def chunks_received(self) -> int:
         return self._chunks_received
 
+    def audio_dropped_bytes(self) -> int:
+        # No playout queue here, so nothing can overflow one.
+        return 0
+
     def turn_lost(self) -> bool:
         return False
 

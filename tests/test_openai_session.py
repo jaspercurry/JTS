@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from jasper.tools import ToolRegistry, tool
+from jasper.voice import _base
 from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
@@ -2765,4 +2766,74 @@ async def test_the_first_connect_reads_as_paused_while_it_dials(conn_cls):
         release.set()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(task, timeout=5.0)
+        await conn.stop()
+
+
+# ---------------------------------------------------------------------------
+# Playout-queue byte ceiling.
+# ---------------------------------------------------------------------------
+
+
+async def _drain_audio(turn) -> list[bytes]:
+    return [c.pcm async for c in turn.audio_out_chunks()]
+
+
+async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch):
+    """The per-turn playout queue is the only PCM carrier and burst
+    providers fill it ahead of realtime, so a wedged consumer would grow it
+    without bound. Past the ceiling the INCOMING chunk is dropped (tail
+    truncation, the same shape a barge-in flush leaves), the loss is
+    counted, and the terminal sentinel still ends the iterator."""
+    from tests._log_events import event_fields
+
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
+    conn, _factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        with caplog.at_level(
+            logging.WARNING, logger="jasper.voice.openai_session",
+        ):
+            await turn._on_audio_delta(_b64(b"12345"))
+            await turn._on_audio_delta(_b64(b"67890"))
+            await turn._on_audio_delta(_b64(b"X"))
+            await turn._on_audio_delta(_b64(b"YZ"))
+
+        assert turn.audio_chunks_pending() == 2
+        assert turn.audio_dropped_bytes() == 3, (
+            "both over-ceiling chunks must be counted, not just the first"
+        )
+        fields = event_fields(caplog, "turn.audio_overflow")
+        assert int(fields["queued_bytes"]) == 10
+        assert int(fields["dropped_bytes"]) == 1, (
+            "only the FIRST drop of the turn logs; later drops just count"
+        )
+
+        turn._audio_q.put_nowait(None)
+        assert await asyncio.wait_for(_drain_audio(turn), timeout=1.0) == [
+            b"12345", b"67890",
+        ]
+    finally:
+        await conn.stop()
+
+
+async def test_dropping_pending_audio_frees_the_ceiling(monkeypatch):
+    """A barge-in flush clears the queue, so the accounting the ceiling
+    reads must clear with it — otherwise the turn stays permanently full
+    and the model's next words are dropped."""
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
+    conn, _factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        await turn._on_audio_delta(_b64(b"0123456789"))
+        await turn._on_audio_delta(_b64(b"X"))
+        assert turn.audio_dropped_bytes() == 1
+
+        turn.drop_pending_audio()
+        await turn._on_audio_delta(_b64(b"after"))
+
+        assert turn.audio_chunks_pending() == 1
+        assert turn.audio_dropped_bytes() == 1, "the flush is not a drop"
+    finally:
         await conn.stop()

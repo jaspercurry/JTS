@@ -140,6 +140,13 @@ class Interruptible(Protocol):
         "audio finished" and the turn ends mid-playback."""
         ...
 
+    def audio_dropped_bytes(self) -> int:
+        """Assistant audio this turn never queued because the playout
+        queue was already at its byte ceiling — a wedged consumer, not a
+        barge-in (which drops through ``drop_pending_audio``). Non-zero
+        means the reply was truncated at the tail."""
+        ...
+
     async def cancel_response(self, reason: str) -> None:
         """Explicitly tell the provider to stop generating the in-progress
         response for this turn — the *local/manual* cancel path.
