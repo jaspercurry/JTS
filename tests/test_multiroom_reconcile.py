@@ -3729,6 +3729,33 @@ def test_refused_follower_grant_write_failure_keeps_prior_deny(
     assert final["local_sources_allowed"] is False
 
 
+def test_refused_follower_with_unknown_crossover_state_keeps_sources_denied(
+    tmp_path,
+    monkeypatch,
+):
+    """A REQUESTED FOLLOWER refused by the active-endpoint precheck falls back
+    to solo-active; if crossover ownership then can't be proven, sources must
+    stay denied — not granted mid-refusal because the fallback already parked
+    the requested bond (regression pin for the :1844 permission leak)."""
+    import json
+
+    requested = _follower(leader_addr="192.168.1.50")
+    _patch_main_io(monkeypatch, tmp_path, requested)
+    _refuse_follower_bond(monkeypatch)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: None,
+    )
+
+    assert main([]) == 1
+
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert status["local_sources_allowed"] is False
+    assert status["blocked_reason"] == "crossover_ownership_state_unknown"
+    assert status["active_follower"] is False
+
+
 def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):
     # Control: a non-ring (loopback) box bonds as before — the gate is ring-only.
     target, order = _patch_main_io(monkeypatch, tmp_path, _leader())

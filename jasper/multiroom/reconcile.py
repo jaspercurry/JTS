@@ -1695,6 +1695,20 @@ def main(argv: list[str] | None = None) -> int:
         active_endpoint = False
         rc = 1
 
+    def local_sources_allowed() -> bool:
+        """The one shared local-sources permission predicate.
+
+        Reads ``cfg``/``refused_follower_fallback`` fresh at call time — both
+        may have been rebound by ``fall_back_to_solo()`` since this reconcile
+        started, and a refused bond whose fallback is still pending must deny
+        just as surely as a parked bonded follower.
+        """
+        return (
+            not config.local_sources_parked(cfg)
+            and not refused_follower_fallback
+            and not transitioning_from_parked_role
+        )
+
     if active_box_state is None:
         endpoint_block_reason = "active_speaker_topology_unknown"
         log_event(
@@ -1709,9 +1723,7 @@ def main(argv: list[str] | None = None) -> int:
             active_leader=False,
             blocked_reason=endpoint_block_reason,
             requested_cfg=requested_cfg,
-            local_sources_allowed=(
-                not config.local_sources_parked(cfg) and not transitioning_from_parked_role
-            ),
+            local_sources_allowed=local_sources_allowed(),
             path=FOLLOWER_STATUS_FILE,
         )
         cleared, env_ok = _write_derived_env(
@@ -1841,9 +1853,7 @@ def main(argv: list[str] | None = None) -> int:
             active_leader=False,
             blocked_reason=reason,
             requested_cfg=requested_cfg,
-            local_sources_allowed=(
-                not config.local_sources_parked(cfg) and not transitioning_from_parked_role
-            ),
+            local_sources_allowed=local_sources_allowed(),
             path=FOLLOWER_STATUS_FILE,
         )
         return 1
@@ -1883,11 +1893,7 @@ def main(argv: list[str] | None = None) -> int:
         active_leader=active_speaker_leader,
         blocked_reason=status_block_reason,
         requested_cfg=requested_cfg,
-        local_sources_allowed=(
-            not config.local_sources_parked(cfg)
-            and not refused_follower_fallback
-            and not transitioning_from_parked_role
-        ),
+        local_sources_allowed=local_sources_allowed(),
         path=FOLLOWER_STATUS_FILE,
     )
     if not role_status_ok:
