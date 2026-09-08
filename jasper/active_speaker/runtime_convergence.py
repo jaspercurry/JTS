@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.active_speaker.environment import DEFAULT_CAMILLA_STATEFILE
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import (
     SafeGraphDecision,
@@ -83,9 +82,9 @@ class StatefileConvergenceResult:
 
 def converge_boot_statefile(
     *,
+    statefile_path: "str | Path",
     topology_path: "str | Path | None" = None,
     topology: OutputTopology | None = None,
-    statefile_path: "str | Path | None" = None,
     current_config_path: "str | Path | None" = None,
     flat_config_path: "str | Path | None" = None,
     coupling: str | None = None,
@@ -128,10 +127,7 @@ def converge_boot_statefile(
         )
         wrote = apply_safe_graph_decision_to_statefile(
             decision,
-            # Resolved HERE: this writer uses the path as given (it logs it and
-            # reads the pointer out of it), so an unresolved None would name no
-            # statefile at all.
-            statefile_path=statefile_path or DEFAULT_CAMILLA_STATEFILE,
+            statefile_path=statefile_path,
             # Same topology object the decision was made from, so the
             # write-time all-muted re-proof cannot be answered by a second,
             # differently-read topology.

@@ -705,7 +705,6 @@ def locked_upsert_env_file(
     mode: int = 0o644,
     dir_mode: int | None = None,
     delete_when_empty: bool = False,
-    lock_timeout_sec: float | None = None,
 ) -> tuple[str, bool]:
     """Fold per-key edits onto one env file's TEXT under one hold of its lock.
 
@@ -724,8 +723,7 @@ def locked_upsert_env_file(
     existing one — the installer owns each env directory's mode/group and a
     blanket re-mode on every boot/udev reconcile re-strips them (#827).
     ``delete_when_empty`` unlinks a file the edits emptied instead of
-    publishing zero bytes. ``lock_timeout_sec`` defaults to
-    :data:`ENV_FILE_LOCK_TIMEOUT_SECONDS`.
+    publishing zero bytes.
 
     The publish is ``preserve_target_owner=True``: these files are created by
     root at install with a service group (``root:jasper 0640``) inside a
@@ -746,9 +744,9 @@ def locked_upsert_env_file(
     if dir_mode is not None and not os.path.isdir(parent):
         os.makedirs(parent, exist_ok=True)
         os.chmod(parent, dir_mode)
-    if lock_timeout_sec is None:
-        lock_timeout_sec = ENV_FILE_LOCK_TIMEOUT_SECONDS
-    with advisory_file_lock(env_lock_path(fspath), timeout_sec=lock_timeout_sec):
+    with advisory_file_lock(
+        env_lock_path(fspath), timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS
+    ):
         try:
             text = read_regular_bytes_nofollow(fspath).decode("utf-8")
         except FileNotFoundError:
