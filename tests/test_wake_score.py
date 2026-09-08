@@ -13,13 +13,60 @@ from __future__ import annotations
 
 import csv
 import logging
+import sys
 import wave
+from collections import defaultdict, deque
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
 from jasper.cli import wake_score
+from jasper import wake
+
+
+@pytest.mark.parametrize("pending_samples", [0, 319])
+def test_detector_reset_isolates_audio_history_without_inference(monkeypatch, pending_samples):
+    inference = Mock(return_value={"custom": 0.7})
+    mel = np.ones((76, 32))
+    features = np.arange(41 * 96, dtype=np.float32).reshape(41, 96)
+    prep = SimpleNamespace(
+        raw_data_buffer=deque(maxlen=160000), melspectrogram_buffer=mel.copy(),
+        accumulated_samples=0, raw_data_remainder=np.empty(0),
+        feature_buffer=features.copy(),
+    )
+    model = SimpleNamespace(preprocessor=prep, prediction_buffer=defaultdict(deque),
+                            predict=inference, reset=inference)
+    monkeypatch.setattr(wake, "ensure_openwakeword_import_safe", lambda: None)
+    monkeypatch.setitem(sys.modules, "openwakeword.model", SimpleNamespace(Model=lambda **kw: model))
+    detector = wake.WakeWordDetector("/models/custom.onnx")
+    previous_arrays = []
+    for _ in range(3):
+        assert detector.score_frame(np.ones(1280, dtype=np.int16)) == 0.7
+        calls = inference.call_count
+        prep.raw_data_buffer.extend([42] * 1280)
+        prep.melspectrogram_buffer.fill(42)
+        prep.feature_buffer.fill(42)
+        prep.accumulated_samples = pending_samples
+        prep.raw_data_remainder = np.full(pending_samples, 42, dtype=np.int16)
+        model.prediction_buffer["custom"].append(0.9)
+        previous_arrays.extend((prep.melspectrogram_buffer, prep.feature_buffer))
+
+        detector.reset()
+
+        assert inference.call_count == calls
+        assert not prep.raw_data_buffer
+        assert prep.raw_data_buffer.maxlen == 160000
+        assert prep.accumulated_samples == 0
+        assert prep.raw_data_remainder.shape == (0,)
+        assert not model.prediction_buffer
+        np.testing.assert_array_equal(prep.melspectrogram_buffer, mel)
+        np.testing.assert_array_equal(prep.feature_buffer, features)
+        for previous in previous_arrays:
+            assert not np.shares_memory(prep.melspectrogram_buffer, previous)
+            assert not np.shares_memory(prep.feature_buffer, previous)
 
 
 # ---------------------------------------------------------------------------
