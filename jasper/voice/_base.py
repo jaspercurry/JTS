@@ -485,20 +485,21 @@ class BaseLiveConnection:
 
     async def _on_turn_released(self, turn: Any) -> None:
         async with self._turn_lock:
-            if self._active_turn is turn:
-                self._active_turn = None
-                self._last_turn_end_at = asyncio.get_event_loop().time()
-        async with self._state_lock:
-            if self._state is ConnectionState.IN_TURN:
-                self._set_state(ConnectionState.CONNECTED)
-        # Fire any reconnect held back for this turn — a mid-turn GoAway,
-        # a rotation, or a pre-cap watchdog that came due while the user
-        # was talking.
-        if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
-            self._logger.info(
-                "%s turn just ended, firing the deferred reconnect "
-                "(planned=%s)", self._log_tag, self._planned_rotate,
-            )
+            if self._active_turn is not turn:
+                return
+            self._active_turn = None
+            self._last_turn_end_at = asyncio.get_event_loop().time()
+            async with self._state_lock:
+                if self._state is ConnectionState.IN_TURN:
+                    self._set_state(ConnectionState.CONNECTED)
+            # Fire any reconnect held back for this turn — a mid-turn GoAway,
+            # a rotation, or a pre-cap watchdog that came due while the user
+            # was talking.
+            if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
+                self._logger.info(
+                    "%s turn just ended, firing the deferred reconnect "
+                    "(planned=%s)", self._log_tag, self._planned_rotate,
+                )
 
     # ------------------------------------------------------------------
     # Internal — the pre-emptive reconnect watchdog
@@ -649,22 +650,6 @@ class BaseLiveConnection:
             self._outage.detail, transient,
         )
 
-    async def _send_event(self, event: dict) -> None:
-        """OpenAI pack; see openai_session."""
-        raise NotImplementedError
-
-    async def _send_audio_chunk(self, turn: Any, pcm_16khz: bytes) -> None:
-        """OpenAI pack; see openai_session."""
-        raise NotImplementedError
-
-    async def _commit_and_create_response(self, turn: Any) -> None:
-        """OpenAI pack; see openai_session."""
-        raise NotImplementedError
-
-    async def _cancel_response(self) -> None:
-        """OpenAI pack; see openai_session."""
-        raise NotImplementedError
-
     async def _send_audio_blob(self, pcm: bytes) -> None:
         """Gemini pack; see gemini_session."""
         raise NotImplementedError
@@ -682,5 +667,5 @@ class BaseLiveConnection:
         raise NotImplementedError
 
     async def _send_text_context(self, text: str) -> None:
-        """OpenAI and Gemini packs; see openai_session/gemini_session."""
+        """Gemini pack; see gemini_session."""
         raise NotImplementedError
