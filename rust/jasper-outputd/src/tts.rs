@@ -23,9 +23,9 @@
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
 //! socket path per grouping role. The wire layer (command vocabulary +
 //! `read_command` parser) and the server half (accept loop, client
-//! ceiling, socket counters) live ONCE in the shared
-//! `jasper-tts-protocol` crate — the twins structurally cannot drift when
-//! the protocol grows. Outputd interprets
+//! ceiling, socket counters, the queue hand-off rule) live ONCE in the
+//! shared `jasper-tts-protocol` crate — the twins structurally cannot
+//! drift when the protocol grows. Outputd interprets
 //! `VOLUME_CONTEXT` with a post-DSP mix stage: it honors mute and live
 //! canonical-volume changes while structurally zeroing Camilla's downstream
 //! compensation. `PREPARE_ASSISTANT` carries the turn-start context atomically;
@@ -45,17 +45,16 @@
 //! ledger.
 //!
 //! Threading is the shared server's: an accept thread + one thread per
-//! client connection parse and enqueue; bounded channels with the fanin policy
-//! (AUDIO drops-on-full with a counted warning — late speech is worse
-//! than lost speech; control commands block briefly — losing a
-//! SEGMENT_END or DUCK_OFF corrupts state). The audio loop never blocks
+//! client connection parse and enqueue through the shared hand-off rule
+//! ([`jasper_tts_protocol::try_enqueue_command`]). Only the capacity below
+//! and the pending-frame budget are outputd's. The audio loop never blocks
 //! on any of it (inv-1: the DAC write stays the sole pacer).
 
 use std::io::{BufReader, Write as IoWrite};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -68,8 +67,8 @@ use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsCommand, TtsServerCounters,
-    TTS_FRAME_DEADLINE,
+    is_frame_timeout, read_command_deadlined, try_enqueue_command, QueuedTtsCommand, TtsCommand,
+    TtsServerCounters, TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -79,12 +78,6 @@ pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = 48_000 * 2;
 
 const FLUSH_ACK_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug)]
-pub struct QueuedTtsCommand {
-    pub epoch: u64,
-    pub command: TtsCommand,
-}
 
 #[derive(Debug)]
 pub struct QueuedFlush {
@@ -277,13 +270,15 @@ fn handle_tts_client(
             Ok(Some(command)) => {
                 metrics.requests.fetch_add(1, Ordering::Relaxed);
                 let current_epoch = epoch.load(Ordering::SeqCst);
-                if !try_enqueue_tts_command(
+                if !try_enqueue_command(
+                    "outputd",
                     &tx,
                     QueuedTtsCommand {
                         epoch: current_epoch,
                         command,
                     },
-                    &metrics,
+                    &metrics.counters,
+                    |line| eprintln!("{line}"),
                 ) {
                     return;
                 }
@@ -336,51 +331,6 @@ fn queue_flush(
             ack: None,
         })
         .is_ok()
-}
-
-fn try_enqueue_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-    metrics: &TtsMetrics,
-) -> bool {
-    if !queued.command.is_audio() {
-        return enqueue_reliable_tts_command(tx, queued);
-    }
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            let frames = dropped_audio_frames(&queued);
-            metrics.counters.mark_dropped_audio(frames);
-            eprintln!(
-                "event=outputd.tts_command_dropped reason=queue_full command=audio epoch={} frames={}",
-                queued.epoch, frames,
-            );
-            true
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn enqueue_reliable_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-) -> bool {
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            eprintln!(
-                "event=outputd.tts_command_backpressure reason=queue_full command={} epoch={}",
-                command_name(&queued.command),
-                queued.epoch,
-            );
-            tx.send(queued).is_ok()
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
-    queued.command.audio_frames()
 }
 
 // ---------------------------------------------------------------------

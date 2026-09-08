@@ -16,7 +16,7 @@ use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,8 +31,9 @@ use crate::loudness::{
 use crate::mixer::CHANNELS;
 use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsAudioSamples, TtsCommand,
-    TtsServerCounters, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE,
+    command_name, is_frame_timeout, read_command_deadlined, try_enqueue_command, QueuedTtsCommand,
+    TtsAudioSamples, TtsCommand, TtsServerCounters, TtsWireWidth, VolumeContext,
+    TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -49,12 +50,6 @@ const TTS_SAMPLE_RATE: u32 = 48_000;
 const PROGRAM_DUCK_IDLE_RELEASE_TTL: Duration = Duration::from_secs(30);
 const LIVE_VOLUME_RAMP_FRAMES: u32 = TTS_SAMPLE_RATE / 10;
 const PACKED_DB_NONE: i64 = i64::MIN;
-
-#[derive(Debug)]
-pub struct QueuedTtsCommand {
-    pub epoch: u64,
-    pub command: TtsCommand,
-}
 
 #[derive(Debug)]
 pub struct QueuedFlush {
@@ -1314,13 +1309,15 @@ fn handle_tts_client(
             }
             Ok(Some(command)) => {
                 let current_epoch = epoch.load(Ordering::SeqCst);
-                if !try_enqueue_tts_command(
+                if !try_enqueue_command(
+                    "fanin",
                     &tx,
                     QueuedTtsCommand {
                         epoch: current_epoch,
                         command,
                     },
-                    &metrics,
+                    &metrics.counters,
+                    |line| warn!("{line}"),
                 ) {
                     return;
                 }
@@ -1372,51 +1369,6 @@ fn queue_flush(
             ack: None,
         })
         .is_ok()
-}
-
-fn try_enqueue_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-    metrics: &TtsMetrics,
-) -> bool {
-    if !queued.command.is_audio() {
-        return enqueue_reliable_tts_command(tx, queued);
-    }
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            let frames = dropped_audio_frames(&queued);
-            metrics.counters.mark_dropped_audio(frames);
-            warn!(
-                "event=fanin.tts_command_dropped reason=queue_full command=audio epoch={} frames={}",
-                queued.epoch, frames
-            );
-            true
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn enqueue_reliable_tts_command(
-    tx: &SyncSender<QueuedTtsCommand>,
-    queued: QueuedTtsCommand,
-) -> bool {
-    match tx.try_send(queued) {
-        Ok(()) => true,
-        Err(TrySendError::Full(queued)) => {
-            warn!(
-                "event=fanin.tts_command_backpressure reason=queue_full command={} epoch={}",
-                command_name(&queued.command),
-                queued.epoch
-            );
-            tx.send(queued).is_ok()
-        }
-        Err(TrySendError::Disconnected(_)) => false,
-    }
-}
-
-fn dropped_audio_frames(queued: &QueuedTtsCommand) -> u64 {
-    queued.command.audio_frames()
 }
 
 impl FlushSummary {
