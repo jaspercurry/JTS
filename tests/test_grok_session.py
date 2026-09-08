@@ -51,6 +51,8 @@ class _FakeConn:
 
     async def send(self, event: dict) -> None:
         self.sent.append(event)
+        if event["type"] == "session.update":
+            self._inbox.put_nowait({"type": "session.updated", "session": event["session"]})
 
     def __aiter__(self):
         return self
@@ -220,3 +222,18 @@ async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
     assert messages
     assert any(m.startswith(conn.PROVIDER_NAME) for m in messages)
     assert [m for m in messages if re.match(r"openai\b", m)] == []
+
+
+def test_grok_session_uses_xai_manual_audio_shape():
+    conn, _ = _make_grok_conn()
+    conn._system_instruction_provider = lambda: "instruction"
+    assert conn._build_session_payload() == {
+        "instructions": "instruction",
+        "voice": "eve",
+        "turn_detection": {"type": None},
+        "audio": {
+            "input": {"format": {"type": "audio/pcm", "rate": 24000}},
+            "output": {"format": {"type": "audio/pcm", "rate": 24000}},
+        },
+        "tools": [],
+    }

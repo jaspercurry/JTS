@@ -2,42 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""xAI Grok Voice Agent adapter.
+"""xAI wire format over the shared OpenAI Realtime lifecycle.
 
-Per xAI's docs (https://docs.x.ai/docs/guides/voice/agent), the Grok
-Voice Agent API is **compatible with the OpenAI Realtime API
-specification** — same client events, same audio format negotiation,
-same flat function-tool schema, same ``conversation.item.create`` /
-``response.create`` round-trip. This adapter is therefore a thin
-subclass of ``OpenAIRealtimeConnection`` that:
-
-  1. Routes the WebSocket through ``wss://api.x.ai/v1/realtime`` instead
-     of OpenAI's endpoint.
-  2. Normalises the one event-name divergence that xAI explicitly
-     documents: text deltas come back as ``response.text.delta`` instead
-     of OpenAI's GA name ``response.output_text.delta``. Audio deltas
-     and tool-call events keep OpenAI's GA names on Grok, so this only
-     matters if/when we start consuming text deltas.
-  3. Skips the ``reasoning.effort`` field — Grok's voice models don't
-     accept it.
-
-Defaults:
-  - Model: ``grok-voice-think-fast-1.0`` (per xAI's docs; the older
-    ``grok-voice-fast-1.0`` is deprecated).
-  - Voice: ``eve``. Other Grok voices: ``ara``, ``rex``, ``sal``, ``leo``.
-
-Pricing: Grok Voice Agent publishes a flat $3.00/hour realtime rate —
-neither audio tokens nor cached input, so the per-turn token rows price
-to $0. The xAI dashboard shows idle warm WebSocket time is not billed
-like active conversation time, so JTS estimates spend from active voice
-turn duration: the daemon wires a ``BillableActivityMeter`` into this
-connection (gated on the bundled ``flat_per_hour_usd > 0`` rate for the
-active model), and this class inherits the ``set_billable_activity_meter``
-plumbing from ``OpenAIRealtimeConnection``. The recorded intervals fold
-into the daily spend cap via
-``UsageStore._time_billed_spend`` — so the cap constrains
-Grok the same as token-billed providers. See ``jasper.usage`` and
-``jasper.voice.daemon_main._make_connection``."""
+Session fields follow https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech.
+The adapter retains the configured model; it does not track xAI's latest alias.
+"""
 from __future__ import annotations
 
 import logging
@@ -55,18 +24,6 @@ GROK_WEBSOCKET_BASE_URL = "wss://api.x.ai/v1"
 
 
 class GrokRealtimeConnection(OpenAIRealtimeConnection):
-    """xAI Grok Voice Agent connection over the OpenAI-compatible
-    Realtime API.
-
-    Inherits the entire OpenAI adapter — supervisor, reconnect, audio
-    upsampling, tool dispatch — and only overrides:
-
-      - ``PROVIDER_NAME`` so tool registry filters use ``"grok"`` for
-        the visibility check.
-      - The default base URL.
-      - Suppression of the ``reasoning.effort`` field (Grok rejects it).
-    """
-
     PROVIDER_NAME = "grok"
 
     def __init__(
@@ -104,17 +61,18 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
 
     def _build_session_payload(self) -> dict:
         payload = super()._build_session_payload()
-        payload["audio"]["input"].pop("noise_reduction", None)
-        return payload
+        return {
+            "instructions": payload["instructions"],
+            "voice": self._voice,
+            "turn_detection": {"type": None},
+            "audio": {
+                direction: {"format": payload["audio"][direction]["format"]}
+                for direction in ("input", "output")
+            },
+            "tools": payload["tools"],
+        }
 
     async def _dispatch_event(self, etype: str, event) -> None:
-        # Per xAI docs, the only top-level event-name divergence from
-        # OpenAI's GA is `response.text.delta` (xAI) vs
-        # `response.output_text.delta` (OpenAI). We don't currently
-        # consume text deltas (audio is the only modality the daemon
-        # plays), so this normaliser is forward-compat only — if we
-        # ever start surfacing transcripts from text events, the
-        # remapping ensures the parent dispatcher sees OpenAI's name.
         if etype == "response.text.delta":
             etype = "response.output_text.delta"
         elif etype == "response.text.done":

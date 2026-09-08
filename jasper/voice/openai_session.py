@@ -79,6 +79,9 @@ logger = logging.getLogger(__name__)
 OPENAI_AUDIO_RATE_HZ = 24000
 DAEMON_MIC_RATE_HZ = 16000
 
+# Bound a provider that opens the socket but never accepts session.update.
+SESSION_SETUP_TIMEOUT_SEC = 15.0
+
 # Default reasoning effort for ``gpt-realtime-2``. Smart-speaker queries
 # are short and concrete; we don't need ``medium`` / ``high`` reasoning
 # (which trade ~1+ extra second of TTFA for marginally smarter answers
@@ -1031,22 +1034,31 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 "type": "session.update",
                 "session": self._build_session_payload(),
             })
-        except Exception as e:  # noqa: BLE001
-            # If session.update fails, the WS is already open but
-            # unconfigured. Tear down so the supervisor can retry from
-            # a clean slate.
+            events = aiter(conn)
+            async with asyncio.timeout(SESSION_SETUP_TIMEOUT_SEC):
+                async for event in events:
+                    etype = _event_type(event)
+                    if etype == "session.updated":
+                        break
+                    if etype == "error":
+                        raise ValueError(_event_field(event, "error"))
+                else:
+                    raise ConnectionError("session closed before setup acknowledgement")
+        except BaseException as e:
+            if isinstance(e, TimeoutError):
+                e.args = ("session setup acknowledgement timed out",)
             logger.warning(
                 f"{self._log_tag} session.update failed (%s: %s); "
                 "closing and re-raising for supervisor retry",
                 type(e).__name__, failure_detail(e, literals=self._secret_literals()),
             )
-            with contextlib.suppress(Exception):
-                await cm.__aexit__(None, None, None)
+            await self._close_with_timeout(conn)
+            await self._close_cm_with_timeout(cm)
             self._conn = None
             self._conn_cm = None
             raise
         self._deferred_reconnect.clear()
-        await self._mark_connected(asyncio.create_task(self._receive_loop(conn)))
+        await self._mark_connected(asyncio.create_task(self._receive_loop(events)))
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
