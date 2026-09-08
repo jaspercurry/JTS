@@ -2,29 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Timer regression scenarios.
+"""Paid timer scenarios share the harness's scheduler.
 
-Pins the LLM-visible contract for the four timer tools — set, list,
-cancel, **update**. The update scenario is the headline case: it
-reproduces the 2026-05-23 incident where the model decomposed
-"make it 2 minutes" into cancel + set and spoke a bogus preamble
-between them.
+Each trial resets it so earlier trials cannot leave timers behind. Listing
+uses one turn per trial (three at PASS_K = 3). Updating uses two turns per
+trial: set the timer, then update it (six turns at PASS_K = 3).
 
-The scenarios share state via the session-scoped harness — each
-test resets the scheduler at entry so PASS_K trials don't pollute
-each other.
-
-============================================================
-COST NOTICE — read tests/voice_eval/harness.py top docstring
-============================================================
-Paid LLM API calls per turn. Each scenario function below runs
-PASS_K (3) turns. The update scenario uses TWO turns per trial
-(set the timer, then update it), so its total is PASS_K × 2 = 6
-turns. Ballpark cost on OpenAI Realtime: ~$1.20 per full
-scenario run.
-
-DO NOT loop or increase PASS_K without explicit human approval.
-============================================================
+Announce the count and estimated cost before running. Never loop or auto-retry.
+Increase PASS_K only with explicit approval. See tests/voice_eval/README.md.
 """
 from __future__ import annotations
 
@@ -115,14 +100,7 @@ async def test_list_existing_timers_uses_list_tool(
 async def test_update_existing_timer_uses_update_tool(
     harness, trial: int,
 ) -> None:
-    """The headline scenario: set a 5-minute pasta timer, then ask
-    to make it 2 minutes. The model MUST:
-      1. Call `update_timer` (NOT cancel_timer followed by set_timer)
-      2. Leave exactly ONE timer running at the end (the 2-min one)
-
-    The pre-fix behaviour was: cancel_timer + set_timer composition,
-    with a hallucinated preamble between the two calls ("I'm setting
-    a five-minute pasta timer"). This test pins the atomic path."""
+    """Use two turns to set a timer, then update its duration."""
     sched = _reset_scheduler(harness)
 
     # Turn 1: establish the original timer.
@@ -139,7 +117,7 @@ async def test_update_existing_timer_uses_update_tool(
         f"Transcript: {setup.transcript_path}"
     )
 
-    # Turn 2: ask for the update. THIS is the scenario.
+    # Turn 2: update the existing timer.
     result = await harness.ask("actually, make it 2 minutes instead")
 
     # 1. Trajectory — the model called update_timer.
@@ -156,11 +134,6 @@ async def test_update_existing_timer_uses_update_tool(
         f"Transcript: {result.transcript_path}"
     )
 
-    # The composition path must NOT have fired. Both cancel and set
-    # together would mean the model ignored the routing rule + the
-    # tool docstrings. Either one alone on this turn is also wrong
-    # (cancel_timer alone deletes the timer; set_timer alone leaves
-    # two timers running). We assert both are absent.
     assert cancel_call is None, (
         f"[trial {trial}] model called cancel_timer despite "
         f"update_timer being the right tool for 'make it 2 minutes'. "

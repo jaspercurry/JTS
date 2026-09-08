@@ -2,28 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pytest fixtures for the voice-eval suite.
+"""Paid voice fixtures share one connection and one session event loop.
 
-The harness is session-scoped so the `LiveConnection` is opened once
-and reused across every scenario in the run. Cost matters; isolation
-is fine today because the currently-tested tools are stateless. Add
-a function-scoped variant when a stateful tool gets a scenario.
+The shared loop keeps connection tasks and turn queues alive across tests.
+Provider history and tool state can persist between trials. Missing provider
+or prompt-TTS keys skip tests using these fixtures; weather and transit
+prerequisites are checked by individual scenarios.
 
-Every test in this suite runs on the SESSION event loop (the
-collection hook below applies `loop_scope="session"`; the harness
-fixture declares the same). Without it, pytest-asyncio gives each
-test its own loop while the connection, its receive task, and the
-turn queues live on the loop of whichever test opened them — which
-pytest closes when that test ends. The 2026-06-11 on-Pi run showed
-the result: every test after the first died with "a turn is already
-active" against a connection whose loop no longer existed. One
-session-long loop is also exactly how the daemon runs.
-
-If the necessary env vars aren't set (no provider key, no
-OPENAI_API_KEY for TTS, no subway/weather config), the whole suite
-is skipped with a clear message. That way `pytest tests/voice_eval/`
-is safe to run in any environment — it either runs end-to-end or
-skips cleanly.
+Announce the scenario count, estimated cost and live tool side effects before
+running. Never loop or auto-retry paid sessions. See README.md for run rules.
 """
 from __future__ import annotations
 
@@ -35,32 +22,17 @@ import pytest_asyncio
 from jasper.config import Config
 
 
-#: Seconds before the hang backstop kills a voice_eval test. The repo
-#: default (300s, pyproject) is sized for hardware-free tests; a scenario
-#: here is a pass^3 — three sequential PAID live sessions, each with the
-#: harness's own 30s per-turn bound — so 300s can kill legitimate work.
-#: 900s still converts "wedged paid session bills forever" into a bounded
-#: burn; the harness never retries, so the ceiling is one session.
+#: Seconds per collected test item; parametrized trials have separate budgets.
 VOICE_EVAL_TIMEOUT_S = 900
 
 
 def pytest_collection_modifyitems(items) -> None:
-    """Pin every voice_eval test to the session event loop.
+    """Pin paid tests to the loop that owns the connection tasks.
 
-    append=False is load-bearing: pytest-asyncio's auto mode has already
-    put a bare ``asyncio`` marker (no loop_scope) on each item, and the
-    plugin reads the CLOSEST marker — so an appended pin loses and the
-    test silently runs on a per-function loop. That function loop's
-    Runner.close() runs loop.shutdown_asyncgens() at test teardown,
-    which finalizes google-genai's suspended connect() asyncgen and
-    cleanly closes the live websocket between tests (the 2026-06-11
-    "goodbye" — see PR #610's investigation). Prepending makes the pin
-    the closest marker, so the whole suite genuinely shares the session
-    loop, matching how the daemon runs.
-
-    The same pass raises the hang backstop to VOICE_EVAL_TIMEOUT_S.
-    Appended, not prepended: nothing else sets a timeout marker here, and
-    the asyncio pin above is the only one that depends on being closest.
+    append=False makes the session asyncio marker closest. Auto mode can add
+    an unscoped marker, and pytest-asyncio reads the closest one. A function
+    loop would close connection async generators at test teardown.
+    The timeout applies to each collected test item.
     """
     suite_dir = os.path.dirname(os.path.abspath(__file__))
     for item in items:
@@ -86,9 +58,7 @@ def _provider_key_present(cfg: Config) -> bool:
 
 @pytest.fixture(scope="session")
 def voice_eval_config() -> Config:
-    """Load Config from the environment. Skips the suite if loading
-    fails (e.g. running on a laptop without /etc/jasper/jasper.env
-    sourced)."""
+    """Load provider config; missing provider or prompt-TTS keys skip consumers."""
     try:
         cfg = Config.from_env()
     except Exception as e:  # noqa: BLE001
@@ -101,9 +71,8 @@ def voice_eval_config() -> Config:
             "switch the active provider via JASPER_VOICE_PROVIDER",
         )
     if not os.environ.get("OPENAI_API_KEY", "").strip():
-        # TTS uses OpenAI regardless of which provider drives the
-        # voice loop. Cached audio is reused after first run; missing
-        # key only matters when synthesizing a new prompt.
+        # Prompt TTS uses OpenAI for every voice provider. This fixture
+        # requires its key even when prompt audio is cached.
         pytest.skip(
             "voice-eval: OPENAI_API_KEY not set — needed for prompt-audio "
             "synthesis. (After all prompts are cached, this skip can be "

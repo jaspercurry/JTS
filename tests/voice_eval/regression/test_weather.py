@@ -2,25 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Weather regression scenarios.
+"""Paid, read-only weather scenarios.
 
-Each scenario follows the same three-assertion shape as
-`test_subway.py`:
-
-  1. Trajectory: the model called the expected tool.
-  2. Outcome: the tool returned the expected fields.
-  3. Reality: the tool's data matches an independent ground-truth
-     fetch within tolerance.
-
-Read-only — no playback side-effects.
-
-============================================================
-COST NOTICE — read tests/voice_eval/harness.py top docstring
-============================================================
-Paid LLM API calls per turn. Read-only scenarios but the LLM
-cost still applies. PASS_K = 3 turns per scenario function.
-DO NOT loop or increase PASS_K without explicit human approval.
-============================================================
+PASS_K = 3 turns per scenario. Announce the count and estimated cost before
+running. Never loop or auto-retry.
+Increase PASS_K only with explicit approval.
+See tests/voice_eval/README.md for run rules and evidence limits.
 """
 from __future__ import annotations
 
@@ -31,27 +18,12 @@ import pytest
 from tests.voice_eval import oracles
 
 
-# Run each scenario 3× (pass^3). For a regression test where
-# consistency matters, all three must pass — pytest fails the
-# overall scenario if any trial fails.
 PASS_K = 3
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))
 async def test_sunset_today(harness, trial: int) -> None:
-    """Asks 'what time does the sun set today?' — the model should
-    call `get_weather`, the tool response should include today's
-    sunset timestamp, and that timestamp should match Open-Meteo's
-    independent answer within 1 minute.
-
-    Status (2026-06-15): `get_weather` now returns daily
-    sunrise/sunset, surfaced as `today.sunset` (an ISO-8601
-    local-time string) — exactly what assertion #2 reads. The
-    earlier "doesn't request sunrise,sunset" KNOWN-FAILING note is
-    obsolete; this scenario is expected to pass. (Not re-run in the
-    fix that corrected this note — confirm on the next paid eval
-    pass.)
-    """
+    """Compare tool and spoken sunset times with the oracle for the same location."""
     if not harness.cfg.weather_prompt_location:
         pytest.skip(
             "voice-eval: weather default location not set; sunset has no "

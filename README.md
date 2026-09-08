@@ -56,7 +56,8 @@ most of the AEC complexity below.
 
 A Raspberry Pi Zero 2 W can run the `streambox` install profile: local
 renderers, outputd/CamillaDSP, and the capability-filtered landing page,
-but no voice, wake word, or mic/AEC.
+but no local wake word or mic/AEC. A paired remote with a microphone enables
+push-to-talk assistant use; see the [microphone reference](jasper/mics/README.md).
 
 ---
 
@@ -103,6 +104,10 @@ Phone (AirPlay / Spotify Connect / BT)      Computer (USB audio)
   XVF3800 4-mic array  ── USB UAC2 ──  hw:CARD=Array,DEV=0
         │                                     │
         │                                     ▼
+        │                            jasper-aec-bridge (6-channel profiles)
+        │                            - selected chip beam or software AEC3
+        │                                     │ UDP localhost
+        │                                     ▼
         │                            jasper-voice
         │                            - openWakeWord + Silero VAD
         │                            - real-time LLM session
@@ -132,11 +137,11 @@ source's volume carrier safe, so switching between push-volume sources
 (Spotify/Bluetooth) and Camilla-master sources (AirPlay/USB) cannot expose
 a full-scale transient.
 
-`jasper-aec-bridge` is reconciler-managed. In non-XVF/custom software-AEC
-profiles it consumes outputd's final-speaker UDP monitor, runs WebRTC AEC3
-against the mic, and emits cleaned mono over UDP localhost for
-`jasper-voice`. In the chip-AEC profile the same process bypasses AEC3 and
-forwards the selected hardware-AEC chip beam over that carrier.
+`jasper-aec-bridge` is reconciler-managed. The XVF software-AEC path uses
+outputd's final-speaker UDP monitor as the WebRTC AEC3 reference. The chip-AEC
+path forwards the selected chip beam with AEC3 bypassed. Both feed
+`jasper-voice` over UDP localhost; direct capture bypasses the bridge. See the
+[microphone reference](jasper/mics/README.md) for capture support and evidence limits.
 
 Management surfaces are stdlib HTTP wizards behind nginx, socket-activated
 so they cost nothing resident between admin sessions. `deploy/nginx-jasper.conf`
@@ -213,40 +218,32 @@ The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
 
 ## Acoustic echo cancellation (AEC)
 
-A speaker that plays music and listens for a wake word in one box hears its
-own output 20–40 dB louder than the user. Without AEC the detector fires on
-the music, or on the TTS it just synthesised. There are three places to
-address it: the mic chip's DSP (cheapest and best, but only in topologies
-its firmware supports), software on the host (topology-agnostic, costs
-CPU/RAM), or design around it (push-to-talk, isolation, ducking to silence).
+A speaker that plays music and listens for a wake word hears its own
+output. AEC uses a playback reference to reduce that echo before wake
+detection and speech capture.
 
-Fresh installs default to `JASPER_AUDIO_INPUT_PROFILE=auto`. On 6-channel
-XVF3800 hardware with a supported output DAC profile — and after the
-installation passes `sudo jasper-aec-commission` — `auto` resolves to the
-chip-AEC profile: `jasper-outputd` fans the final speaker buffer out to the
+Fresh installs default to `JASPER_AUDIO_INPUT_PROFILE=auto`. With a
+registered production chip beam plan and a supported output DAC profile,
+`sudo jasper-aec-commission` measures the alignment. Then `auto` resolves to
+the chip-AEC profile: `jasper-outputd` fans the final speaker buffer out to the
 XVF3800 USB-IN reference, the chip emits its fixed AEC beams, and the bridge
 forwards the selected beam to `jasper-voice` with WebRTC AEC3 bypassed. If
 chip-AEC cannot be armed, the managed XVF keeps hearing on the best leg its
 mic can carry and discloses the reason and action rather than parking or
-falling back silently. Software AEC3 remains the normal path for non-XVF
-microphones.
+falling back silently.
 
-The chip's beamforming, noise suppression, and AGC run either way; the rule
-is not to double-process, so chip-AEC profiles do not also arm software
-raw/DTLN wake legs. `/assistant/wake/` exposes the household-level profile
+Chip processing depends on the active profile; the software fallback uses
+`SHF_BYPASS=1`. Chip-AEC profiles do not also arm software raw/DTLN wake
+legs. `/assistant/wake/` exposes the household-level profile
 choice (`auto`, `xvf_chip_aec`, `xvf_software_aec3`, `direct_mic`) and keeps the
 per-leg toggles as advanced custom controls. Changing either runs
 `jasper-aec-reconcile`, which restarts the affected services and updates
 `/state`, doctor, and the dashboard.
 
-The bridge transport is UDP localhost, not a second snd-aloop card:
-snd-aloop's kernel-side `loopback_cable` wedges when a consumer is
-SIGKILL'd, which cost a reboot in production. The bridge also needs the
-6-channel XVF firmware variant, because it opens the 6-channel USB capture
-endpoint; the 2-channel firmware Seeed ships by default does not match that
-capture shape. Flashing procedure:
-[BRINGUP.md](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu);
-version constants live in [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
+The bridge opens a 6-channel XVF capture endpoint; 2-channel firmware uses
+direct capture. Firmware and beam-plan support are owned by the
+[microphone reference](jasper/mics/README.md). Flashing procedure:
+[BRINGUP.md](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
 
 `jasper/xvf/xvf_host.py` is a JTS-owned USB control helper for the command
 subset JTS uses, and is a useful standalone diagnostic:
