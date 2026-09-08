@@ -84,13 +84,13 @@ from ..voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
-    ContentActivityTracker,
     WakeLoop,
     LegRuntime,
     cancel_tracked_tasks,
     configured_wake_legs,
     track_task,
 )
+from .content_activity import ContentActivityTracker
 from .push_to_talk import ManualMicRuntime
 from ..logging_setup import configure_logging
 
@@ -732,11 +732,6 @@ async def run() -> None:
     if conversation_settings.capture_enabled:
         conversation_store = ConversationStore(conversation_settings.db_path)
 
-    # One exit stack owns every teardown here: each resource registers its
-    # release (through _release / _arelease / _aenter) at the site that
-    # creates or starts it, so the unwind is the exact reverse of
-    # construction — which is dependency order, since each resource is
-    # built from the ones above it.
     async with contextlib.AsyncExitStack() as stack:
         # No release registered for the controller: it caches its websocket
         # for the process lifetime by design, and close() can spend
@@ -755,17 +750,6 @@ async def run() -> None:
             setup_url=f"{cfg.hostname}/assistant/weather/",
         )
         _arelease(stack, "weather", weather.aclose)
-        # Transit (subway / bus / Citi Bike today; future city packs add more).
-        # One call builds every provider in the household's ENABLED city packs
-        # (JASPER_TRANSIT_CITIES; unset = all packs, non-breaking) and returns a
-        # managed ActiveTransit: the flat tool list, a `configured` flag for the
-        # system-prompt nudge, and an `aclose()` that releases any client owning a
-        # pool. Each provider self-gates on its own config, so an
-        # enabled-but-unconfigured mode produces no tool — `transit_configured`
-        # is exactly "at least one transit tool registered", the same gate as
-        # before. Adding a city needs no edit here; see
-        # jasper.transit.active_transit. os.environ carries
-        # JASPER_TRANSIT_CITIES via transit.env, sourced by jasper-voice.service.
         transit_active = transit.active_transit(os.environ)
         _arelease(stack, "transit", transit_active.aclose)
         transit_tools = transit_active.tools
@@ -781,10 +765,6 @@ async def run() -> None:
             "google_routes: %s",
             "enabled" if travel_routes_configured else "disabled",
         )
-        # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
-        # is unset; the tool factory short-circuits to [] in that case so
-        # the model never sees a tool whose every call would fail. The
-        # client owns a long-lived httpx.AsyncClient for the daemon's lifetime.
         ha = build_ha_client(cfg)
         if ha is not None:
             _arelease(stack, "ha", ha.aclose)
@@ -796,22 +776,12 @@ async def run() -> None:
                 "or visit http://%s/assistant/ha/ to configure)",
                 cfg.hostname,
             )
-        # Volume coordinator: owns the canonical listening_level (0-100),
-        # follows mux's effective source, and dispatches voice/accessory-driven
-        # changes to the right volume carrier (Camilla-master for
-        # AirPlay/USB/idle, push-mode for Spotify/BT). Boot path applies
-        # a safety regression to extreme stale values.
         volume_persistence = VolumePersistence(cfg.volume_state_path)
         # Build the multi-account Spotify router once; reused by both the
         # coordinator (for outbound volume control via Web API) and the
         # voice tool registry (transport / spotify_play). Same instance,
         # one OAuth refresh cycle per account.
         volume_spotify_router = _build_router(cfg)
-        # Google Calendar + Gmail clients — built once, used by the tool
-        # registry AND captured by the system-instruction lambda so the
-        # model knows which household members have linked accounts. None
-        # if Google's CLIENT_ID/SECRET aren't configured (the tools are
-        # gated and never appear to the model in that case).
         google_clients = build_google_clients(cfg)
         if google_clients is not None:
             names = google_clients.list_account_names()
@@ -866,11 +836,6 @@ async def run() -> None:
                 "in-memory default", e,
             )
 
-        # Inbound source-volume observers: poll shairport (DBus),
-        # librespot (state file written by --onevent hook), and bluez-alsa
-        # (DBus) once per second so iPhone slider movements / Spotify app
-        # slider drags / BT volume button presses sync into the
-        # coordinator's listening_level.
         volume_observer = VolumeObserver(
             volume_coordinator,
             librespot_state_path=cfg.librespot_state_path,
@@ -878,18 +843,8 @@ async def run() -> None:
         await volume_observer.start()
         _arelease(stack, "volume_observer", volume_observer.stop)
 
-        # Timer scheduler — owns persistence + asyncio task lifecycle for
-        # kitchen timers. Constructed BEFORE _build_registry so set_timer
-        # / list_timers / cancel_timer are visible to the model from the
-        # very first session.start. The on_fire announcement callback is
-        # wired after WakeLoop exists (it can't fire before then anyway —
-        # SQLite restore happens in scheduler.start() further down).
         timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
 
-        # Research scheduler — same lifecycle shape as timers. Constructed
-        # before tool registration so research(query) is visible from the first
-        # model session when a text provider key is configured; the WakeLoop
-        # announcement callback is wired after WakeLoop exists.
         active_research = active_research_provider(os.environ)
         research_scheduler: ResearchScheduler | None = None
         if active_research is not None:
@@ -1191,9 +1146,6 @@ async def run() -> None:
         )
         tts = await _aenter(stack, "tts", TtsPlayout(
             socket_path=cfg.tts_outputd_socket,
-            # outputd owns the final gain decision; this initial value
-            # only matters for chirps that play before the first real
-            # gain update lands.
             gain_db=0.0,
             drain_tail_sec=cfg.tts_drain_tail_sec,
             provider=cfg.voice_provider,
@@ -1207,15 +1159,7 @@ async def run() -> None:
         _arelease(stack, "content_activity", content_activity.stop)
         await content_activity.start()
 
-        # Wire the playout into the cue manager that was already
-        # constructed up top so timer tools could register with a
-        # working pre-render path. From here on cues.play() and
-        # cues.speak_text() can write audio out.
         cues_manager.attach_tts(tts)
-        # Kick off background regen for any missing/stale cues.
-        # Doesn't block daemon "ready" — if regen fails (no
-        # internet / bad API key), cues silently won't play; the
-        # daemon's other voice paths still work.
         _schedule_cue_regen(cues_manager, startup_fire_and_forget)
         _schedule_assistant_loudness_seed(cfg, startup_fire_and_forget)
         _arelease(
@@ -1233,9 +1177,6 @@ async def run() -> None:
         heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
         heartbeat.start()
         _release(stack, "heartbeat", heartbeat.stop)
-        # `wake_event_store` was opened at the top of run() —
-        # see the comment block above `_build_registry` for the
-        # timing rationale. We just hand it to WakeLoop here.
         wake_loop = WakeLoop(
             cfg, tts, connection, ducker,
             content_activity, usage_store, spend_cap, stop_event,
