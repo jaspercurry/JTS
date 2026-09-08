@@ -53,6 +53,19 @@ _ENV_ASSIGN_RE = re.compile(
 
 _BEARER_RE = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
 
+# The rest of an `Authorization` value: `Basic <base64>`, a bare token, and
+# whatever scheme a proxy invents. The lookahead spares a value `_BEARER_RE`
+# already took, which would otherwise redact a second time.
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(authorization['\"]?[ \t]*[=:][ \t]*)"
+    r"(?!(?:[A-Za-z]+[ \t]+)?<redacted>)"
+    rf"(?:{_QUOTED}|(?:[A-Za-z]+[ \t]+)?[^\s'\"]+)",
+)
+
+# URL user-info: a failed fetch echoes the whole remote back, credentials
+# included.
+_URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@")
+
 # NetworkManager names a *property* `802-11-wireless-security.psk`, and the
 # wizard puts its "property is invalid" error in the banner. Only that
 # prose is spared; NM's own echo shape `.psk: <value>` still redacts.
@@ -101,6 +114,8 @@ _KEY_PREFIX_RE = re.compile(
 
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (_BEARER_RE, r"\1 <redacted>"),
+    (_AUTHORIZATION_RE, r"\1<redacted>"),
+    (_URL_CREDENTIAL_RE, r"\1<redacted>@"),
     (_ENV_LINE_RE, r"\1<redacted>"),
     (_ENV_QUOTED_RE, r"\1\2<redacted>\1"),
     (_ENV_ASSIGN_RE, r"\1<redacted>"),
