@@ -343,6 +343,32 @@ async def test_drain_unchanged_after_empty_write():
     assert p.expected_drain_at() == 0.0
 
 
+@pytest.mark.parametrize("state", ["empty", "closed", "unavailable", "refused", "accepted"])
+async def test_write_segment_reports_transport_acceptance(monkeypatch, state):
+    p = _make_outputd()
+    observed = []
+
+    async def first_write():
+        observed.append(p.expected_drain_at())
+
+    if state == "closed":
+        p._stream = None
+    elif state == "unavailable":
+        async def unavailable():
+            return None
+        monkeypatch.setattr(p, "_current_outputd_stream", unavailable)
+    elif state == "refused":
+        p.set_emission_admission(lambda: "measurement")
+    accepted = await p.write_segment(
+        b"" if state == "empty" else _silence_pcm(sec=0.01),
+        on_first_write=first_write,
+    )
+    assert accepted is (state == "accepted")
+    assert len(observed) == int(accepted)
+    if observed:
+        assert observed[0] > 0
+
+
 async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
@@ -418,13 +444,51 @@ async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
     p._stream = stream  # type: ignore[assignment]
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
-    with pytest.raises(OSError):
-        await p.write(mono.tobytes())
+    accepted = []
 
+    async def first_write():
+        accepted.append(len(stream.writes))
+
+    with pytest.raises(OSError):
+        await p.write_segment(mono.tobytes(), on_first_write=first_write)
+
+    assert accepted == [1]
     assert stream.attempts == 2
     assert len(stream.writes) == 1
     assert p._ring_end_monotonic is not None
     assert p.expected_drain_at() > time.monotonic()
+
+
+async def test_cancelled_write_observes_accepted_chunk_before_exit():
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    release = threading.Event()
+
+    class BlockedStream(_CaptureOutputdStream):
+        def write(self, data):
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(1)
+            super().write(data)
+
+    p = _make_outputd()
+    p._stream = stream = BlockedStream()
+    observed = []
+
+    async def first_write():
+        observed.append(len(stream.writes))
+
+    writing = asyncio.create_task(p.write_segment(
+        _silence_pcm(sec=0.01), on_first_write=first_write,
+    ))
+    try:
+        await wait_signalled(entered, "transport write", producer=writing)
+        writing.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await writing
+    assert observed == [1]
+    assert p.expected_drain_at() > 0
 
 
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
