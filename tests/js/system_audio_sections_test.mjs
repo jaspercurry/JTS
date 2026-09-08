@@ -126,7 +126,7 @@ const PARKED = {
 };
 const parkedStreamText = strings(api.currentStreamBody({ overall: PARKED })).join(" | ");
 assert.match(parkedStreamText, /Sound cannot come out/);
-assert.match(parkedStreamText, /\/sound\/setup\//);
+assert.match(parkedStreamText, /\/sound\/speaker\//);
 assert.doesNotMatch(parkedStreamText, /No active stream/,
   "a speaker that cannot reach its drivers never renders as confident idle");
 
