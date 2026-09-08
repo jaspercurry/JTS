@@ -1528,13 +1528,13 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
         fresh = await conn.acquire_turn()
         assert factory.configs[-1].session_resumption.handle is None
         capture_before = fresh.capture()
-        usage_before = dict(conn._cumulative_usage)
+        usage_before = fresh.usage()
         resume.set()
         await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert calls == [True]
         assert all(not session.sent_tool_responses for session in factory.sessions)
         assert fresh.capture() == capture_before
-        assert conn._cumulative_usage == usage_before
+        assert fresh.usage() == usage_before
         assert not fresh.server_turn_complete()
     finally:
         resume.set()
@@ -1772,5 +1772,63 @@ async def test_input_transcript_owner_outlives_response_turn(tail_at, finished):
         )))
         await _wait_until(recovered.server_turn_complete)
         assert recovered.capture().user_text == "after reset"
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("usage_on_completion", [False, True])
+@pytest.mark.parametrize("incomplete", ["interrupted", "disconnect"])
+async def test_gemini_usage_keeps_whole_response_snapshots(usage_on_completion, incomplete):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        session = factory.sessions[0]
+        totals = [0, 0]
+        for index, counts in enumerate([(1000, 500), (2500, 1300), (3000, 1500), (200, 100), None]):
+            turn = await conn.acquire_turn()
+            await turn.send_audio(b"\x01\x00")
+            await turn.end_input()
+            final_usage = None
+            if counts is not None:
+                prompt, output = counts
+                partial = types.UsageMetadata(prompt_token_count=prompt, response_token_count=output // 2)
+                session.feed(types.LiveServerMessage(usage_metadata=partial))
+                session.feed(types.LiveServerMessage(usage_metadata=partial))
+                marker = f"partial-{index}"
+                session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle=marker)))
+                await _wait_until(lambda: conn._resumption_handle == marker)
+                assert (turn.usage().input_tokens, turn.usage().output_tokens) == (prompt, output // 2)
+                final_usage = types.UsageMetadata(prompt_token_count=prompt, response_token_count=output)
+            if not usage_on_completion:
+                session.feed(types.LiveServerMessage(usage_metadata=final_usage))
+            session.feed(types.LiveServerMessage(
+                usage_metadata=final_usage if usage_on_completion else None,
+                server_content=types.LiveServerContent(turn_complete=True),
+            ))
+            await _wait_until(turn.server_turn_complete)
+            session.feed(types.LiveServerMessage(usage_metadata=types.UsageMetadata(
+                prompt_token_count=99999, response_token_count=99999,
+            )))
+            marker = f"closed-{index}"
+            session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle=marker)))
+            await _wait_until(lambda: conn._resumption_handle == marker)
+            usage = turn.usage()
+            assert (usage.input_tokens, usage.output_tokens) == (counts or (0, 0))
+            totals[0] += usage.input_tokens
+            totals[1] += usage.output_tokens
+            await turn.release()
+        assert totals == [6700, 3400]
+
+        turn = await conn.acquire_turn()
+        session.feed(types.LiveServerMessage(
+            usage_metadata=types.UsageMetadata(prompt_token_count=600, response_token_count=70),
+            server_content=types.LiveServerContent(interrupted=True),
+        ))
+        await asyncio.wait_for(turn.wait_for_interrupt(), DEFAULT_SIGNAL_TIMEOUT_S)
+        if incomplete == "disconnect":
+            session.feed_error(ConnectionError("offline test"))
+            await _wait_until(turn.turn_lost)
+        assert not turn.server_turn_complete()
+        assert (turn.usage().input_tokens, turn.usage().output_tokens) == (600, 70)
     finally:
         await conn.stop()

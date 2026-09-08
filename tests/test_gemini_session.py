@@ -16,10 +16,7 @@ import pytest
 
 from jasper.voice._base import BaseLiveConnection
 from tests._gemini_fakes import GoAway as _GoAway
-from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import Response as _GoAwayResp
-from tests._gemini_fakes import ServerContent as _SC
-from tests._gemini_fakes import Usage as _Usage
 
 try:
     from google.genai import types
@@ -79,22 +76,6 @@ def test_secret_literals_reports_the_api_key():
     assert BaseLiveConnection._secret_literals(conn) == ()
 
 
-async def _run_turn(conn: "GeminiLiveConnection", cum_in: int, cum_out: int):
-    """Open a fresh turn on `conn`, feed it one server message carrying
-    the cumulative usage counter + turn_complete, and return the turn.
-    Mirrors how acquire_turn snapshots the connection's cumulative as the
-    turn's baseline."""
-    turn = GeminiLiveTurn(
-        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
-    )
-    conn._active_turn = turn
-    await turn._on_response(_Resp(
-        usage_metadata=_Usage(cum_in, cum_out),
-        server_content=_SC(turn_complete=True),
-    ))
-    return turn
-
-
 class _FakeReceiveSession:
     """Drives GeminiLiveConnection._receive_loop with a scripted sequence
     of responses, then raises CancelledError so the loop exits cleanly
@@ -125,9 +106,7 @@ async def test_goaway_mid_turn_with_ample_time_defers_reconnect():
     the turn is released."""
     import datetime
     conn = GeminiLiveConnection(api_key="fake", model="fake")
-    turn = GeminiLiveTurn(
-        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
-    )
+    turn = GeminiLiveTurn(conn, started_at=0.0)
     conn._active_turn = turn
 
     ample = datetime.timedelta(
@@ -168,9 +147,7 @@ async def test_goaway_mid_turn_with_little_time_reconnects_immediately():
     do not set the pending flag."""
     import datetime
     conn = GeminiLiveConnection(api_key="fake", model="fake")
-    turn = GeminiLiveTurn(
-        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
-    )
+    turn = GeminiLiveTurn(conn, started_at=0.0)
     conn._active_turn = turn
 
     little = datetime.timedelta(
@@ -187,9 +164,7 @@ async def test_goaway_mid_turn_with_unparseable_time_reconnects_immediately():
     reconnect-immediately behaviour rather than deferring on a value we
     can't reason about."""
     conn = GeminiLiveConnection(api_key="fake", model="fake")
-    turn = GeminiLiveTurn(
-        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
-    )
+    turn = GeminiLiveTurn(conn, started_at=0.0)
     conn._active_turn = turn
 
     await _run_receive_loop_with(
@@ -214,58 +189,6 @@ def test_goaway_defer_threshold_covers_hard_recording_cap():
     from jasper.voice_daemon import HARD_RECORDING_CAP_SEC
 
     assert GOAWAY_DEFER_MIN_TIME_LEFT_SEC >= HARD_RECORDING_CAP_SEC
-
-
-async def test_gemini_usage_is_per_turn_delta_not_cumulative():
-    """Gemini's usage_metadata is cumulative for the WebSocket's lifetime.
-    Each per-turn usage row must hold THIS turn's delta, not the running
-    total — otherwise SUM() across rows multi-counts (a 3-turn connection
-    would over-report ~2x). Regression for the cumulative-double-count
-    bug (per-turn rows storing the lifetime cumulative)."""
-    conn = GeminiLiveConnection(api_key="fake", model="fake")
-
-    t1 = await _run_turn(conn, 1000, 500)
-    assert (t1.usage().input_tokens, t1.usage().output_tokens) == (1000, 500)
-
-    # Cumulative grows; this turn's delta is the increment only.
-    t2 = await _run_turn(conn, 2500, 1300)
-    assert (t2.usage().input_tokens, t2.usage().output_tokens) == (1500, 800)
-
-    t3 = await _run_turn(conn, 3000, 1500)
-    assert (t3.usage().input_tokens, t3.usage().output_tokens) == (500, 200)
-
-    # The property that makes SUM(cost) across per-turn rows correct:
-    # the deltas telescope to the final cumulative, NOT 1000+2500+3000.
-    total_in = sum(t.usage().input_tokens for t in (t1, t2, t3))
-    total_out = sum(t.usage().output_tokens for t in (t1, t2, t3))
-    assert (total_in, total_out) == (3000, 1500)
-
-
-async def test_gemini_usage_delta_handles_counter_reset_on_reconnect():
-    """If the server-side counter resets (a fresh session after a
-    reconnect restarts it), the observed value is below the captured
-    baseline. The delta must then be the observed post-reset total, not
-    a negative number."""
-    conn = GeminiLiveConnection(api_key="fake", model="fake")
-    conn._cumulative_usage = {"input_tokens": 5000, "output_tokens": 3000}
-    t = await _run_turn(conn, 200, 100)
-    assert (t.usage().input_tokens, t.usage().output_tokens) == (200, 100)
-
-
-async def test_gemini_turn_without_usage_metadata_reports_zero():
-    """A turn that receives audio but no usage_metadata (silent-failure
-    or lost turn) attributes zero tokens to itself rather than a negative
-    delta off the connection's cumulative."""
-    conn = GeminiLiveConnection(api_key="fake", model="fake")
-    conn._cumulative_usage = {"input_tokens": 1000, "output_tokens": 500}
-    turn = GeminiLiveTurn(
-        conn, started_at=0.0, usage_baseline=conn._cumulative_usage,
-    )
-    conn._active_turn = turn
-    await turn._on_response(_Resp(
-        data=b"audio", server_content=_SC(turn_complete=True),
-    ))
-    assert (turn.usage().input_tokens, turn.usage().output_tokens) == (0, 0)
 
 
 async def test_acquire_turn_rolls_back_active_turn_when_activity_start_fails():
