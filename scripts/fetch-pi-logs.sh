@@ -284,6 +284,41 @@ journalctl -b 0 -k -p warning..alert --no-pager --output=short-iso 2>/dev/null
 true
 REMOTE
 
+# Live daemon truth. Every audio-health verdict in the journals above was
+# derived from these three, and none of them survives in a log line: the
+# control daemon's /state, each audio daemon's STATUS reply, and the doctor's
+# machine-readable report.
+fetch_remote_bash "audio-runtime" "txt" <<'REMOTE'
+set +e
+JASPER_PYTHON=/opt/jasper/.venv/bin/python
+echo "== jasper-control /state =="
+curl -fsS --max-time 10 http://127.0.0.1:8780/state 2>&1
+echo
+for sock in /run/jasper-fanin/control.sock /run/jasper-outputd/control.sock; do
+    echo "== STATUS ${sock} =="
+    sudo -n "$JASPER_PYTHON" - "$sock" 2>&1 <<'PY'
+import json, sys
+from jasper.platform.status_socket import read_status_socket_or_none
+print(json.dumps(read_status_socket_or_none(sys.argv[1]), indent=2, sort_keys=True))
+PY
+    echo
+done
+# The rate-storm forensic artifact (jasper/control/airplay_health.py writes it
+# and nothing else reads it) — newest capture only, tail-bounded.
+newest_storm="$(ls -1t /var/lib/jasper/rate-storms/storm-*.csv 2>/dev/null | head -1)"
+if [ -n "$newest_storm" ]; then
+    echo "== ${newest_storm} (tail) =="
+    sudo -n tail -200 "$newest_storm" 2>&1
+fi
+true
+REMOTE
+
+fetch_remote_bash "doctor" "json" <<'REMOTE'
+set +e
+sudo -n /opt/jasper/.venv/bin/jasper-doctor --json 2>/dev/null
+true
+REMOTE
+
 # Configs and runtime state — secrets redacted before write. The file
 # list is the shared JASPER_SECRET_ENV_FILES array (_diagnostic_redaction.sh).
 remote "sudo sh -c 'for f in ${JASPER_SECRET_ENV_FILES[*]}; do \
