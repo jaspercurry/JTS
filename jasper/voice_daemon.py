@@ -2057,8 +2057,8 @@ class WakeLoop:
             return "no_speech_abort"
         return label
 
-    async def _handle_manual_session_frame(self, frame) -> None:
-        now = asyncio.get_event_loop().time()
+    async def _handle_manual_session_frame(self, frame, *, captured_at: float | None = None) -> None:
+        now = time.monotonic() if captured_at is None else captured_at
         if self._push_to_talk.hold_cap_exceeded(
             now - self._turn_started_at_loop, self._cfg.idle_timeout_sec,
         ):
@@ -2080,7 +2080,7 @@ class WakeLoop:
                 await self._handle_playback_frame(frame, captured_at=captured_at)
             return
         if self._manual_endpoint_this_turn:
-            await self._handle_manual_session_frame(frame)
+            await self._handle_manual_session_frame(frame, captured_at=captured_at)
             return
 
         speech_prob = self._vad.predict(frame)
