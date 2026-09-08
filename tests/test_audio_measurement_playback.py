@@ -1104,7 +1104,7 @@ async def test_wav_cancel_reports_observed_child_cleanup(tmp_path, monkeypatch, 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(playback, "_PROCESS_CLEANUP_TIMEOUT_S", 0.01)
     task = asyncio.create_task(playback.play_wav(wav, alsa_device="null", timeout_s=10))
-    await started.wait()
+    await wait_signalled(started, "process wait() started", producer=task)
     task.cancel()
     with pytest.raises(playback.WavPlaybackCancelled) as error:
         await task
