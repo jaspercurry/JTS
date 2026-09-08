@@ -91,7 +91,7 @@ def stub_backends(monkeypatch):
             "_usbsink_capability",
             lambda: (usb_ready, "" if usb_ready else "USB output DAC uses the shared port"),
         )
-        monkeypatch.setattr(status.os.path, "isdir", lambda path: usb_card)
+        monkeypatch.setattr(status, "_uac2_card_present", lambda: usb_card)
         monkeypatch.setattr(
             status,
             "probe_bluetooth_availability",

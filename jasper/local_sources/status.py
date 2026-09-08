@@ -234,12 +234,13 @@ async def _bt_state() -> tuple[bool, bool]:
     a wireless remote (volume knob etc.) is paired — the wizard surfaces this
     as a confirm-before-off prompt so toggling BT doesn't silently kill the
     remote."""
-    # Both lazy: dbus-next costs ~11 MB RSS, and jasper-control imports this
-    # module at startup; only a Bluetooth probe should pay for it.
-    from ..bluetooth.adapter import has_paired_hid  # lazy: import cost
-    from ..bluetooth.adapter import state as _bt_adapter_state  # lazy: import cost
-
     try:
+        # Both lazy: dbus-next costs ~11 MB RSS, and jasper-control imports this
+        # module at startup; only a Bluetooth probe should pay for it. Inside
+        # the guard so a broken dbus-next degrades to off like a wedged BlueZ.
+        from ..bluetooth.adapter import has_paired_hid  # lazy: import cost
+        from ..bluetooth.adapter import state as _bt_adapter_state  # lazy: import cost
+
         s = await _bt_adapter_state()
         powered = bool(s.get("powered", False))
         hid = False
