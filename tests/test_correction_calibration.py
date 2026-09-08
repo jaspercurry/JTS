@@ -594,21 +594,29 @@ def test_fetch_vendor_calibration_reuses_stored_record(tmp_path: Path):
     assert r2.calibration_id == r1.calibration_id
 
 
-def test_find_stored_calibration_respects_orientation(tmp_path: Path):
-    # miniDSP ships 0deg + 90deg files; a 0deg store must not satisfy 90deg.
+@pytest.mark.parametrize(("provider", "model"), [
+    ("minidsp", "minidsp_umik1"), ("minidsp", "minidsp_umik2"),
+    ("dayton_audio", "dayton_imm6"), ("manual_upload", "minidsp_umik2"),
+    ("minidsp", "other_mic"),
+])
+def test_find_stored_calibration_respects_orientation(tmp_path: Path, provider, model):
     calibration.store_calibration(
-        text="20 -1\n1000 0\n20000 1\n", provider="minidsp",
-        model="minidsp_umik1", label="UMIK-1", source="vendor",
-        serial="7001234", orientation="0deg", root=tmp_path,
+        text="20 -1\n1000 0\n20000 1\n", provider=provider,
+        model=model, source="vendor",
+        serial="700-1234", orientation="0deg", root=tmp_path,
     )
     assert calibration.find_stored_calibration(
-        provider="minidsp", model_key="minidsp_umik1", serial="7001234",
+        provider=provider, model_key=model, serial="700-1234",
         orientation="0deg", root=tmp_path,
     ) is not None
     assert calibration.find_stored_calibration(
-        provider="minidsp", model_key="minidsp_umik1", serial="7001234",
+        provider=provider, model_key=model, serial="700-1234",
         orientation="90deg", root=tmp_path,
     ) is None
+    compact = calibration.find_stored_calibration(
+        provider=provider, model_key=model, serial="7001234", root=tmp_path,
+    )
+    assert (compact is not None) == (provider == "minidsp" and model.startswith("minidsp_umik"))
 
 
 def test_find_stored_calibration_unknown_query_matches_any_stored_orientation(
