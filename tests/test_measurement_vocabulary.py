@@ -127,20 +127,10 @@ SWEPT_SURFACES: tuple[str, ...] = (
 ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # --- Wire / protocol vocabulary. Renaming these is a wire protocol change,
     # not a copy change, and both sides of the transport already agree on them.
-    "phone_feed_lost": "canonical snake_case refusal code (reason= log key)",
     "phone_never_armed": "canonical snake_case refusal code",
     "cancelled_before_phone_armed": "canonical snake_case refusal code",
     "phone_aborted": "abort reason the capture page posts",
-    # --- Raw ramp error strings: the KEYS of the refusal tables, i.e. the
-    # verbatim `error` the audio-measurement ramp emits, pinned by
-    # tests/test_audio_measurement_ramp.py. Only their VALUES are household copy.
-    "no usable phone samples": "raw ramp error string (refusal-table key)",
-    # The ONE fragment with reach beyond a single string: it also covers the
-    # CaptureTimeout detail "phone never armed within {n}s". Both are non-copy
-    # (table key / log detail), so one entry is the honest shape — see
-    # FRAGMENT_REACH_EXCEPTIONS and the test that pins it.
-    "phone never armed": "raw ramp error string (refusal-table key)",
-    "phone feed lost": "raw ramp error string (refusal-table-prefix key)",
+    "phone never armed": "raw ramp error string",
 }
 
 
@@ -161,8 +151,6 @@ ALLOWED_PHONE_LITERALS: dict[str, str] = {
 # quietly grows into a licence. Only entries listed here may exempt more than
 # one, and the count is pinned so growth has to be deliberate.
 FRAGMENT_REACH_EXCEPTIONS: dict[str, int] = {
-    # Also covers the CaptureTimeout detail "phone never armed within {n}s" —
-    # the ramp's refusal-table key is a prefix of it. Both are non-copy.
     "phone never armed": 2,
 }
 
