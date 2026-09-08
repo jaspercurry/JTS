@@ -398,35 +398,24 @@ class SystemRoutes(ControlHandlerMixin):
             no_block=True,
             timeout=5.0,
         )
-        if not refresh.get("ok"):
-            self._send_broker_result(
-                refresh,
-                error=(
-                    "Conversion quality was saved, but the music "
-                    "renderer restart could not be scheduled."
-                ),
-                code="audio_quality_restart_failed",
-                intent_saved=True,
-                action="audio-quality",
-                try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-                audio_quality=state,
-            )
+        if not self._send_broker_result(
+            refresh,
+            error=(
+                "Conversion quality was saved, but the music "
+                "renderer restart could not be scheduled."
+            ),
+            code="audio_quality_restart_failed",
+            intent_saved=True,
+            action="audio-quality",
+            try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
+            audio_quality=state,
+        ):
             return
         log_event(
             logger,
             "audio_quality.set",
             converter=converter,
             client=self.address_string(),
-        )
-        self._send_json(
-            {
-                "ok": True,
-                "status": "accepted",
-                "action": "audio-quality",
-                "try_restart_units": _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-                "audio_quality": state,
-            },
-            status=202,
         )
         return
 
