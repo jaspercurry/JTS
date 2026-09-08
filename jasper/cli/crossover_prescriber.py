@@ -34,6 +34,7 @@ from ._refusal import (
 # session bundle is daemon-owned, so a view defaulting inside it raises
 # PermissionError for the operator (#3498).
 from .round_views import default_out
+from .round_views._common import ARTIFACT_BY_VIEW, context_artifacts
 
 from jasper.active_speaker.angle_capture import (
     LateralWalkRefused,
@@ -210,11 +211,7 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
     )
 
 
-#: What ``packet`` writes when no ``--out`` names somewhere else. Deliberately
-#: NOT a :data:`~jasper.cli.round_views.ARTIFACT_BY_VIEW` row: that table is
-#: keyed by ``jasper-round-views`` subcommand, and its ``inventory`` verb
-#: renders every key as that tool's own producer.
-PACKET_ARTIFACT = "packet.json"
+PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
 
 
 def _cmd_packet(args: argparse.Namespace) -> int:
@@ -998,19 +995,9 @@ def _next_commands(
     # Nothing that would fail for the reason already reported: these two read
     # the same evidence this verb just could not.
     if session_dir and not packet_error:
-        # Runnable AS PRINTED, so ``--state`` appears only when one was named:
-        # this verb's own placeholder would be a path that does not exist, and
-        # the packet it emits already reports the flow state's absence.
-        commands.append(shlex.join([
-            PROG, "packet", *evidence, *(["--state", state] if state else []),
-        ]))
+        commands.append(shlex.join(["jasper-round-views", "inventory", session_dir]))
         banked = sections["banked"]
         if banked["available"] and not banked["classification"]["available"]:
-            # Without it no per-driver filter can be shown to be aimed at a
-            # driver defect, so the per-driver door discloses every filter
-            # unvouched. That verb takes the BUNDLE directory, which this one
-            # resolves from a banked round tree — so the path is resolved
-            # through the reader the packet used, not echoed back.
             try:
                 bundle = str(round_inputs(Path(session_dir)).session_dir)
             except (CrossoverEvidencePacketError, OSError):
@@ -1018,6 +1005,9 @@ def _next_commands(
             commands.append(
                 shlex.join(["jasper-round-views", "classify-features", bundle])
             )
+        commands.append(shlex.join([
+            PROG, "packet", *evidence, *(["--state", state] if state else []),
+        ]))
     measurable = _measurable_fingerprints(sections["banked"]["candidates"])
     # One candidate is not a comparison: a tournament exists to put two of them
     # at one pose, adjacent, so the microphone moves once.
@@ -1039,16 +1029,13 @@ def _next_commands(
     return commands
 
 
-#: Tier 0's front door (ADR-0204): the reading order an SSH-only agent lands on
-#: before any of the three operator docs. Names only — `_doc_path` resolves
-#: each to wherever it actually is on this box.
 _READING_ORDER: tuple[tuple[str, str, str], ...] = (
-    ("methodology guide", "tuning-methodology.md",
-     "sequence, traps, adjudicated thresholds"),
-    ("runbook, per tool", "tuning-operator-runbook.md",
-     "tool mechanics, contracts, exit codes"),
-    ("doctrine", "measurement-loop-doctrine.md",
-     "binds everything: what is allowed, who decides"),
+    ("entry and tool menu", "tuning-operator-runbook.md",
+     "short entry contract, tool discovery and optional examples"),
+    ("optional methodology", "tuning-methodology.md",
+     "measurement science and traps"),
+    ("optional doctrine", "measurement-loop-doctrine.md",
+     "roles and physical constraints"),
 )
 
 #: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
@@ -1072,13 +1059,7 @@ def _doc_path(filename: str) -> str:
 
 
 def _reading_order() -> list[dict[str, Any]]:
-    """The cold-start front door, in order, each doc sized where it was found.
-
-    Orientation only — the doctrine's hard stops are enforced in code
-    regardless of whether anyone reads them (ADR-0204 point 3). The size is
-    published so a reader can budget the read instead of opening the longest
-    document on the box blind; a name that resolved to no file carries nulls.
-    """
+    """Entry contract, then optional references, with each document's size."""
     order: list[dict[str, Any]] = []
     for label, filename, gives in _READING_ORDER:
         path = _doc_path(filename)
@@ -1113,6 +1094,21 @@ def status_document(
     is reported truthfully regardless.
     """
     sections = _status_sections(packet, packet_error)
+    context: dict[str, Any] = {
+        "frozen_packet": None, "latest_agent_note": None, "context_error": None,
+    }
+    try:
+        if session_dir:
+            context.update(context_artifacts(round_inputs(Path(session_dir)), Path(session_dir)))
+            frozen = context["frozen_packet"]
+            if frozen["present"]:
+                fingerprint = _read_packet_file(Path(frozen["path"])).get("packet_fingerprint")
+                frozen["packet_fingerprint"] = fingerprint
+                frozen["matches_current_evidence"] = (
+                    fingerprint == packet.get("packet_fingerprint") if packet else None
+                )
+    except (CrossoverEvidencePacketError, OSError) as exc:
+        context["context_error"] = str(exc)
     # A level nobody measured is what a session rides without one, so the
     # banked value itself is published rather than a warning about its absence.
     seat_level_db = seat_level_reference_volume_db()
@@ -1125,6 +1121,7 @@ def status_document(
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "packet_error": packet_error or None,
         **sections,
+        **context,
         "seat_level_reference_volume_db": seat_level_db,
         "reading_order": _reading_order(),
         "next": _next_commands(

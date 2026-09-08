@@ -23,6 +23,8 @@ real on-disk shape reaches this suite too.
 from __future__ import annotations
 
 import json
+import shlex
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,7 @@ from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
 from jasper.cli import crossover_prescriber as cli
+from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_session_volume_plan import _bank_reference
@@ -122,6 +125,52 @@ def _tree(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+@pytest.mark.parametrize("banked", [False, True])
+def test_status_and_inventory_find_notes_and_disclose_a_stale_snapshot(
+    tmp_path, capsys, monkeypatch, banked
+):
+    monkeypatch.chdir(tmp_path)
+    source, _ = _speaker_dirs(tmp_path / "source")
+    sessions = []
+    for index in (1, 2):
+        destination = tmp_path / "rounds" / f"r{index}"
+        bundle = destination / "bundle" / f"s{index}" if banked else destination
+        shutil.copytree(source, bundle)
+        info_path = bundle / "info.json"
+        info = json.loads(info_path.read_text())
+        info["started_at"] = index
+        info["session_id"] = bundle.name
+        info_path.write_text(json.dumps(info))
+        sessions.append((destination, bundle))
+    note = sessions[0][0] / "agent_notes.md"
+    note.write_text("Question and next human action; evidence: r1/packet.json")
+    current, bundle = sessions[1]
+    assert cli.main(["packet", str(current)]) == cli.EXIT_OK
+    packet_path = Path(json.loads(capsys.readouterr().out)["out"])
+
+    _, status = _status([str(current)], capsys)
+    assert status["frozen_packet"]["path"] == str(packet_path)
+    assert status["frozen_packet"]["matches_current_evidence"] is True
+    assert status["latest_agent_note"] == {
+        "path": str(note), "present": True, "bytes": note.stat().st_size,
+    }
+    assert [shlex.split(command)[1] for command in status["next"][:3]] == [
+        "inventory", "classify-features", "packet",
+    ]
+    assert round_views.main(["inventory", str(current)]) == 0
+    inventory = json.loads(capsys.readouterr().out)
+    assert inventory["latest_agent_note"] == status["latest_agent_note"]
+    assert inventory["frozen_packet"]["path"] == str(packet_path)
+
+    artifacts = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
+    (artifacts / "feature_classification.json").write_text(json.dumps(_classification()))
+    _, enriched = _status([str(current)], capsys)
+    assert enriched["banked"]["classification"]["available"] is True
+    assert enriched["frozen_packet"]["matches_current_evidence"] is False
+    assert enriched["packet_fingerprint"] != status["packet_fingerprint"]
+    assert json.loads(packet_path.read_text())["packet_fingerprint"] == status["packet_fingerprint"]
 
 
 # --------------------------------------------------------------------------- #
@@ -241,25 +290,25 @@ def test_the_reading_order_prefers_the_on_box_install_when_present(
     monkeypatch.chdir(tmp_path)
     _, before = _status([str(session)], capsys)
     # Structural: a parents[N] shift after a file move fails here directly.
-    assert (cli._REPO_DOCS_DIR / "tuning-methodology.md").is_file()
+    assert (cli._REPO_DOCS_DIR / "tuning-operator-runbook.md").is_file()
     assert before["reading_order"][0]["path"] == str(
-        cli._REPO_DOCS_DIR / "tuning-methodology.md"
+        cli._REPO_DOCS_DIR / "tuning-operator-runbook.md"
     )
 
     installed = tmp_path / "installed-docs"
     installed.mkdir()
-    (installed / "tuning-methodology.md").write_text("x")
+    (installed / "tuning-operator-runbook.md").write_text("x")
     monkeypatch.setattr(cli, "_INSTALLED_DOCS_DIR", installed)
     monkeypatch.setattr(cli, "_REPO_DOCS_DIR", tmp_path / "no-checkout-here")
 
     _, after = _status([str(session)], capsys)
     assert after["reading_order"][0]["path"] == str(
-        installed / "tuning-methodology.md"
+        installed / "tuning-operator-runbook.md"
     )
     assert after["reading_order"][0]["bytes"] == 1
     # The other two were seeded into neither directory, so each carries the
     # bare identifier and no size -- one doc's absence never fakes another's.
-    assert after["reading_order"][1]["path"] == "docs/tuning-operator-runbook.md"
+    assert after["reading_order"][1]["path"] == "docs/tuning-methodology.md"
     assert after["reading_order"][1]["bytes"] is None
     assert after["reading_order"][1]["lines"] is None
 
@@ -867,7 +916,7 @@ def test_both_prescription_classes_are_offered_when_both_have_a_bound(
     assert payload["banked"]["classification"]["available"] is True
     # The next verb, carrying the flag this report was read with: a rebuild
     # without it resolves --drivers against the machine and answers differently.
-    assert payload["next"][0] == f"{cli.PROG} packet {session} --drivers {draft}"
+    assert f"{cli.PROG} packet {session} --drivers {draft}" in payload["next"]
 
 
 def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
@@ -995,8 +1044,8 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
 
     # Runnable as printed: the flag carries the file that was named, and is
     # absent when none was — a placeholder path would refuse on the read.
-    assert without["next"][0] == f"{cli.PROG} packet {session}"
-    assert with_state["next"][0] == f"{cli.PROG} packet {session} --state {state}"
+    assert f"{cli.PROG} packet {session}" in without["next"]
+    assert f"{cli.PROG} packet {session} --state {state}" in with_state["next"]
 
 
 def test_the_banked_seat_level_reference_is_published_either_way(
@@ -1040,6 +1089,9 @@ _STATUS_DOCUMENT_KEYS = {
     "speaker",
     "packet_fingerprint",
     "packet_error",
+    "frozen_packet",
+    "latest_agent_note",
+    "context_error",
     "declared",
     "banked",
     "staged",
@@ -1076,3 +1128,19 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
     assert set(doc_payload) == set(cli_payload)
     for name in ("declared", "banked", "staged", "applied"):
         assert set(doc_payload[name]) == set(cli_payload[name])
+
+
+def test_banking_preserves_discovery_of_a_live_rationale_note(tmp_path):
+    from jasper.active_speaker.round_bank import bank_round
+    from jasper.cli.round_views._common import context_artifacts
+    from tests.test_crossover_v2_evidence_packet import _sibling_bundle
+
+    session = _sibling_bundle(tmp_path / "sessions", "r1", started_at=1.0)
+    note = session / "agent_notes.md"
+    note.write_text("Question and next action; no copied measurements.\n")
+    bank = bank_round(session, campaign_root=tmp_path / "campaigns")
+    inputs = round_inputs_mod.round_inputs(bank.path)
+    found = context_artifacts(inputs, bank.path)["latest_agent_note"]
+    assert found["present"] is True
+    assert Path(found["path"]).read_text() == note.read_text()
+    assert found["bytes"] == note.stat().st_size

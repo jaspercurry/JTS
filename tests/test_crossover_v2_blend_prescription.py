@@ -3076,6 +3076,24 @@ def test_propose_judges_a_document_against_a_saved_packet_FILE(tmp_path, monkeyp
 
     assert code == cli.EXIT_OK
     assert json.loads(out)["accepted"] is True
+    staged = []
+
+    def _stage(payload, prescription, **kwargs):
+        staged.append(prescription.packet_fingerprint)
+        destination = tmp_path / "staged.json"
+        destination.write_bytes(payload)
+        return destination
+
+    monkeypatch.setattr(cli, "stage_prescription", _stage)
+    state = tmp_path / "state.json"
+    state.write_text("{}")
+    code, out, _ = _run_cli([
+        "stage", "--packet", str(packet_path), "--prescription", str(document),
+        "--state", str(state),
+    ])
+    assert code == cli.EXIT_OK
+    assert json.loads(out)["staged"] is True
+    assert staged == [packet["packet_fingerprint"]]
 
 
 def test_a_document_echoing_another_packet_still_refuses_against_the_file(
