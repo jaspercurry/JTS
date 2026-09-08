@@ -1239,7 +1239,7 @@ def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, 
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
 
 
-def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
+async def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
     """The decimating mic path resamples on `jasper.dsp_numpy`.
 
     scipy is ~58 MB resident for the life of jasper-voice, whose
@@ -1252,10 +1252,7 @@ def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
     cap = audio_io_mod.MicCapture(
         "hw:1,0", capture_rate=48_000, capture_channels=2,
     )
-    delivered: list[np.ndarray] = []
-    cap._loop = SimpleNamespace(
-        call_soon_threadsafe=lambda _fn, chunk: delivered.append(chunk),
-    )
+    cap._queue = audio_io_mod._CaptureQueue()
     frames = audio_io_mod.MicCapture.OUTPUT_FRAME_SAMPLES * 3
     indata = np.random.default_rng(7).integers(
         -20_000, 20_000, size=(frames, 2), dtype=np.int16,
@@ -1263,7 +1260,7 @@ def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
 
     cap._callback(indata, frames, None, None)
 
-    (chunk,) = delivered
+    chunk = await cap._queue.get()
     assert chunk.dtype == np.int16
     assert chunk.shape == (audio_io_mod.MicCapture.OUTPUT_FRAME_SAMPLES,)
     assert audio_io_mod.resample_poly.__module__ == "jasper.dsp_numpy"

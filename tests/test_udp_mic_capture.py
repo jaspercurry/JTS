@@ -173,3 +173,43 @@ async def test_udp_capture_frame_size_constant_matches_micapture():
     these stay in sync."""
     assert UdpMicCapture.OUTPUT_FRAME_SAMPLES == MicCapture.OUTPUT_FRAME_SAMPLES
     assert UdpMicCapture.OUTPUT_RATE == MicCapture.OUTPUT_RATE
+
+
+@pytest.mark.parametrize("transport", ["portaudio", "udp"])
+async def test_capture_overload_keeps_recent_order_and_bounds_notifications(transport):
+    from types import SimpleNamespace
+    from jasper.audio_io import CAPTURE_MAX_FRAMES, _CaptureQueue, _UdpMicProtocol
+
+    queue = _CaptureQueue()
+    notifications = []
+    queue._loop = SimpleNamespace(call_soon_threadsafe=notifications.append)
+    cap = MicCapture("unused")
+    cap._queue = queue
+    protocol = _UdpMicProtocol(queue)
+    for tag in range(CAPTURE_MAX_FRAMES + 6):
+        pcm = np.full((1280, 1), tag, dtype=np.int16)
+        if transport == "portaudio":
+            cap._callback(pcm, 1280, None, None)
+        else:
+            protocol.datagram_received(pcm.tobytes(), None)
+    assert len(notifications) == 1
+    assert queue.dropped_frames == 6
+    assert int((await queue.get())[0]) == 6
+    assert queue.last_frame.discontinuity
+    assert int((await queue.get())[0]) == 7
+    assert not queue.last_frame.discontinuity
+
+
+async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
+    from jasper.audio_io import _CaptureQueue
+
+    queue = _CaptureQueue()
+    now = [10.0]
+    monkeypatch.setattr("jasper.audio_io.time.monotonic", lambda: now[0])
+    queue.put_nowait(np.array([1], dtype=np.int16))
+    now[0] = 12.0
+    queue.put_nowait(np.array([2], dtype=np.int16))
+    assert (await queue.get()).tolist() == [2]
+    assert queue.last_frame.captured_at == 12.0
+    assert queue.last_frame.discontinuity
+    assert queue.dropped_frames == 1
