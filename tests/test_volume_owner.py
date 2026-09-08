@@ -20,6 +20,8 @@ import logging
 
 import pytest
 
+from ._async_wait import wait_signalled
+
 from jasper.active_speaker.volume_latch import READBACK_TOLERANCE_DB
 from jasper.volume_owner import (
     ClaimKind,
@@ -870,7 +872,7 @@ async def test_interrupted_relevel_retains_the_callers_claim(failure):
 
     fader.set = interrupted_set
     move = asyncio.create_task(owner.relevel(claim, -36.0))
-    await entered.wait()
+    await wait_signalled(entered, "relevel write entered", producer=move)
     if failure == "cancel":
         move.cancel()
     with pytest.raises(asyncio.CancelledError if failure == "cancel" else _DoorRaised):
