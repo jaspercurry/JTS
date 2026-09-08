@@ -23,8 +23,7 @@ FakeRouter = partial(_SharedFakeRouter, populate_clients=False)
 
 
 class FakeSpotify:
-    def __init__(self, active_id="dev1") -> None:
-        self._active_id = active_id
+    def __init__(self) -> None:
         self.next_track = MagicMock()
         self.previous_track = MagicMock()
         self.pause_playback = MagicMock()
@@ -96,55 +95,76 @@ def test_detect_source(renderer_kwargs, expected):
     assert asyncio.run(_detect_source(renderer)) == expected
 
 
-# --- AirPlay dispatch: title-match path ---
-
-
-def test_dispatch_airplay_title_match_routes_to_account():
-    renderer = FakeRenderer(renderers={"aplactive": True})
+@pytest.mark.parametrize("source", ["spotify", "airplay"])
+@pytest.mark.parametrize(
+    ("tool_name", "method", "playback"),
+    [
+        ("next_track", "next_track", None),
+        ("previous_track", "previous_track", None),
+        ("pause", "pause_playback", None),
+        ("resume", "start_playback", None),
+        ("toggle", "pause_playback", {"is_playing": True}),
+        ("toggle", "start_playback", {"is_playing": False}),
+        ("toggle", "start_playback", None),
+        ("toggle", "start_playback", OSError("unavailable")),
+    ],
+)
+def test_spotify_transport_commands(source, tool_name, method, playback):
+    renderer = FakeRenderer(selected_source=source)
     sp = FakeSpotify()
-    matched = FakeAccountClient("jasper", sp)
-    router = FakeRouter(transport_match=matched)
+    sp.current_playback = MagicMock(
+        return_value=playback,
+        side_effect=playback if isinstance(playback, Exception) else None,
+    )
+    account = FakeAccountClient("jasper", sp)
+    router = FakeRouter(
+        transport_match=account if source == "airplay" else None,
+        active_account=account if source == "spotify" else None,
+    )
     tools = _by_name(make_transport_tools(renderer, router))
-
+    dispatch = make_transport_dispatcher(renderer, router)
     with patch(
         "jasper.tools.transport.airplay_client_name",
-        new=AsyncMock(return_value="Jasper's Mac Studio"),
-    ), patch(
-        "jasper.tools.transport._mpris_now_playing",
-        new=AsyncMock(return_value={"title": "Hey Jude", "artist": "X", "album": "Y"}),
-    ):
-        result = asyncio.run(tools["next_track"]())
-
-    sp.next_track.assert_called_once_with(device_id="dev1")
-    assert result == {"ok": True, "source": "airplay+spotify", "account": "jasper"}
-
-
-def test_dispatch_airplay_pause_routes_to_account():
-    renderer = FakeRenderer(renderers={"aplactive": True})
-    sp = FakeSpotify()
-    matched = FakeAccountClient("jasper", sp)
-    router = FakeRouter(transport_match=matched)
-    tools = _by_name(make_transport_tools(renderer, router))
-
-    with patch(
-        "jasper.tools.transport.airplay_client_name",
-        new=AsyncMock(return_value="Jasper's iPhone"),
+        new=AsyncMock(return_value="Jasper's Mac"),
     ), patch(
         "jasper.tools.transport._mpris_now_playing",
         new=AsyncMock(return_value={"title": "Hey Jude"}),
-    ):
-        asyncio.run(tools["pause"]())
-    sp.pause_playback.assert_called_once_with(device_id="dev1")
+    ), patch(
+        "jasper.tools.transport._mpris_call", new=AsyncMock(),
+    ) as mpris:
+        result = asyncio.run(
+            dispatch("toggle") if tool_name == "toggle" else tools[tool_name]()
+        )
+    for name in ("next_track", "previous_track", "pause_playback", "start_playback"):
+        if name == method:
+            getattr(sp, name).assert_called_once_with(device_id="dev1")
+        else:
+            getattr(sp, name).assert_not_called()
+    assert sp.current_playback.call_count == (tool_name == "toggle")
+    mpris.assert_not_awaited()
+    assert result == {
+        "ok": True,
+        "source": "airplay+spotify" if source == "airplay" else "spotify",
+        "account": "jasper",
+    }
 
 
-# --- AirPlay dispatch: no title match → DACP fallback ---
-
-
-def test_dispatch_airplay_no_match_falls_back_to_dacp_when_available():
-    renderer = FakeRenderer(renderers={"aplactive": True})
+@pytest.mark.parametrize("source", ["airplay", "bluetooth"])
+@pytest.mark.parametrize(
+    ("tool_name", "method"),
+    [
+        ("next_track", "Next"),
+        ("previous_track", "Previous"),
+        ("pause", "Pause"),
+        ("resume", "Play"),
+        ("toggle", "PlayPause"),
+    ],
+)
+def test_native_transport_commands(source, tool_name, method):
+    renderer = FakeRenderer(selected_source=source)
     router = FakeRouter(transport_match=None)
     tools = _by_name(make_transport_tools(renderer, router))
-
+    dispatch = make_transport_dispatcher(renderer, router)
     with patch(
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Some Mac"),
@@ -154,12 +174,23 @@ def test_dispatch_airplay_no_match_falls_back_to_dacp_when_available():
     ), patch(
         "jasper.tools.transport._airplay_remote_available",
         new=AsyncMock(return_value=True),
-    ), patch(
+    ) as available, patch(
         "jasper.tools.transport._mpris_call", new=AsyncMock(),
-    ) as mpris:
-        result = asyncio.run(tools["next_track"]())
-    mpris.assert_awaited_once_with("Next")
-    assert result == {"ok": True, "source": "airplay"}
+    ) as mpris, patch(
+        "jasper.tools.transport._bluetooth_call", new=AsyncMock(),
+    ) as bluetooth:
+        result = asyncio.run(
+            dispatch("toggle") if tool_name == "toggle" else tools[tool_name]()
+        )
+    if source == "airplay":
+        mpris.assert_awaited_once_with(method)
+        available.assert_awaited_once_with()
+        bluetooth.assert_not_awaited()
+    else:
+        bluetooth.assert_awaited_once_with(method)
+        available.assert_not_awaited()
+        mpris.assert_not_awaited()
+    assert result == {"ok": True, "source": source}
 
 
 def test_dispatch_airplay_no_match_no_dacp_returns_error():
@@ -201,18 +232,6 @@ def test_dispatch_airplay_no_router_falls_back_to_dacp():
 
 
 # --- Other source dispatches ---
-
-
-def test_dispatch_spotify_targets_active_device():
-    renderer = FakeRenderer(renderers={"spotactive": True})
-    sp = FakeSpotify(active_id="dev1")
-    active = FakeAccountClient("jasper", sp)
-    router = FakeRouter(active_account=active)
-    tools = _by_name(make_transport_tools(renderer, router))
-
-    result = asyncio.run(tools["next_track"]())
-    sp.next_track.assert_called_once_with(device_id="dev1")
-    assert result == {"ok": True, "source": "spotify", "account": "jasper"}
 
 
 def test_dispatch_spotify_revoked_returns_signed_out_message_with_name():
@@ -270,7 +289,7 @@ def test_dispatch_spotify_lazy_rebuild_recovers():
     This is the "no daemon restart required after re-link" promise
     applied to the transport tool path."""
     renderer = FakeRenderer(renderers={"spotactive": True})
-    sp = FakeSpotify(active_id="dev1")
+    sp = FakeSpotify()
     rebuilt = FakeAccountClient("jasper", sp)
     router = FakeRouter(
         active_account=None,
@@ -324,18 +343,6 @@ def test_bluetooth_player_path_falls_back_to_first_player():
         )
 
 
-def test_dispatch_bluetooth_routes_to_bluez_avrcp():
-    renderer = FakeRenderer(renderers={"btactive": True})
-    tools = _by_name(make_transport_tools(renderer, None))
-    with patch(
-        "jasper.tools.transport._bluetooth_call",
-        new=AsyncMock(),
-    ) as bt_call:
-        result = asyncio.run(tools["next_track"]())
-    bt_call.assert_awaited_once_with("Next")
-    assert result == {"ok": True, "source": "bluetooth"}
-
-
 def test_bluetooth_playpause_uses_status_to_call_pause_when_playing():
     captured = []
 
@@ -365,24 +372,6 @@ def test_bluetooth_playpause_uses_status_to_call_pause_when_playing():
     assert captured[0][-1] == "Pause"
 
 
-def test_resume_aliases_play_action():
-    renderer = FakeRenderer(renderers={"aplactive": True})
-    sp = FakeSpotify()
-    matched = FakeAccountClient("jasper", sp)
-    router = FakeRouter(transport_match=matched)
-    tools = _by_name(make_transport_tools(renderer, router))
-
-    with patch(
-        "jasper.tools.transport.airplay_client_name",
-        new=AsyncMock(return_value="Jasper's Mac"),
-    ), patch(
-        "jasper.tools.transport._mpris_now_playing",
-        new=AsyncMock(return_value={"title": "Hey Jude"}),
-    ):
-        asyncio.run(tools["resume"]())
-    sp.start_playback.assert_called_once_with(device_id="dev1")
-
-
 def test_dispatch_failures_return_error_dict():
     renderer = FakeRenderer(renderers={"aplactive": True})
     sp = FakeSpotify()
@@ -410,90 +399,6 @@ def test_toggle_no_source_returns_error():
     result = asyncio.run(dispatch("toggle"))
     assert "error" in result
     assert result["source"] == "none"
-
-
-def test_toggle_spotify_pauses_when_playing():
-    renderer = FakeRenderer(renderers={"spotactive": True})
-    sp = FakeSpotify()
-    sp.current_playback = MagicMock(return_value={"is_playing": True})
-    matched = FakeAccountClient("jasper", sp)
-    router = FakeRouter(active_account=matched)
-    dispatch = make_transport_dispatcher(renderer, router)
-    result = asyncio.run(dispatch("toggle"))
-    sp.pause_playback.assert_called_once_with(device_id="dev1")
-    sp.start_playback.assert_not_called()
-    assert result["ok"] is True
-    assert result["source"] == "spotify"
-
-
-def test_toggle_spotify_resumes_when_paused():
-    renderer = FakeRenderer(renderers={"spotactive": True})
-    sp = FakeSpotify()
-    sp.current_playback = MagicMock(return_value={"is_playing": False})
-    matched = FakeAccountClient("jasper", sp)
-    router = FakeRouter(active_account=matched)
-    dispatch = make_transport_dispatcher(renderer, router)
-    result = asyncio.run(dispatch("toggle"))
-    sp.start_playback.assert_called_once_with(device_id="dev1")
-    sp.pause_playback.assert_not_called()
-    assert result["ok"] is True
-
-
-def test_toggle_airplay_with_spotify_match_routes_to_account():
-    renderer = FakeRenderer(renderers={"aplactive": True})
-    sp = FakeSpotify()
-    sp.current_playback = MagicMock(return_value={"is_playing": True})
-    matched = FakeAccountClient("jasper", sp)
-    router = FakeRouter(transport_match=matched)
-    dispatch = make_transport_dispatcher(renderer, router)
-    with patch(
-        "jasper.tools.transport.airplay_client_name",
-        new=AsyncMock(return_value="Jasper's Mac"),
-    ), patch(
-        "jasper.tools.transport._mpris_now_playing",
-        new=AsyncMock(return_value={"title": "Hey Jude"}),
-    ):
-        result = asyncio.run(dispatch("toggle"))
-    sp.pause_playback.assert_called_once_with(device_id="dev1")
-    assert result["source"] == "airplay+spotify"
-
-
-def test_toggle_airplay_no_match_uses_mpris_playpause():
-    """Non-Spotify AirPlay senders → MPRIS PlayPause is the native
-    single-call toggle. Beats query+dispatch for browser tabs / Apple
-    Music / podcast apps that don't expose is-playing introspection."""
-    renderer = FakeRenderer(renderers={"aplactive": True})
-    router = FakeRouter(transport_match=None)
-    dispatch = make_transport_dispatcher(renderer, router)
-    mpris_call = AsyncMock()
-    with patch(
-        "jasper.tools.transport.airplay_client_name",
-        new=AsyncMock(return_value="Some Mac"),
-    ), patch(
-        "jasper.tools.transport._mpris_now_playing",
-        new=AsyncMock(return_value={"title": "Hey Jude"}),
-    ), patch(
-        "jasper.tools.transport._airplay_remote_available",
-        new=AsyncMock(return_value=True),
-    ), patch(
-        "jasper.tools.transport._mpris_call",
-        new=mpris_call,
-    ):
-        result = asyncio.run(dispatch("toggle"))
-    mpris_call.assert_awaited_once_with("PlayPause")
-    assert result == {"ok": True, "source": "airplay"}
-
-
-def test_toggle_bluetooth_routes_to_bluez_playpause():
-    renderer = FakeRenderer(renderers={"btactive": True})
-    dispatch = make_transport_dispatcher(renderer, None)
-    with patch(
-        "jasper.tools.transport._bluetooth_call",
-        new=AsyncMock(),
-    ) as bt_call:
-        result = asyncio.run(dispatch("toggle"))
-    bt_call.assert_awaited_once_with("PlayPause")
-    assert result == {"ok": True, "source": "bluetooth"}
 
 
 def test_dispatch_bluetooth_avrcp_failure_returns_error():
