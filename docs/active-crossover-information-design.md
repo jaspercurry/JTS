@@ -236,12 +236,14 @@ The common session is
 graph, volume, records, and playback. CLI and web entry points are adapters;
 analysis and candidate tools own their outputs outside the capture lifetime.
 
-The old `play_admitted_wav` runner still exists in
-[admitted_playback.py](../jasper/audio_measurement/admitted_playback.py).
-Its one-use, persisted before-audio receipt protocol is distinct from the live
-program player. Retaining that API and old generated-excitation readers does
-not mean the deleted commissioning hosts remain available. The live player is
-[program_playback.py](../jasper/active_speaker/program_playback.py).
+[GeneratedExcitationWav](../jasper/audio_measurement/admitted_playback.py)
+keeps stored generation/WAV identities and their integrity checks readable.
+The one-use `play_admitted_wav` control adapter is retired. Current measurement
+access uses `TuningSession.measure` through
+[program_playback.py](../jasper/active_speaker/program_playback.py), with fresh
+program admission and verified WAV playback. The live transaction records
+emission and cleanup observations; it does not need the retired runner's
+persisted before-audio receipt protocol.
 
 ### Slice 0: measurement-validity substrate
 
