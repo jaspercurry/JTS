@@ -185,7 +185,7 @@ class BaseLiveTurn:
             self._audio_dropped_bytes += size
             if first_drop:
                 log_event(
-                    self._conn._logger,
+                    logger,
                     "turn.audio_overflow",
                     queued_bytes=self._queued_bytes,
                     dropped_bytes=self._audio_dropped_bytes,
