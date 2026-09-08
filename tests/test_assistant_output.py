@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 
 class _FakeTts:
     def __init__(self) -> None:
@@ -16,8 +18,10 @@ class _FakeTts:
     def set_emission_admission(self, _admission) -> None:
         return None
 
-    async def write_segment(self, pcm: bytes, **kwargs) -> None:
+    async def write_segment(self, pcm: bytes, on_first_write=None, **kwargs) -> None:
         self.calls.append((pcm, kwargs))
+        if on_first_write is not None:
+            await on_first_write()
 
     async def wait_drained(self) -> None:
         return None
@@ -34,7 +38,7 @@ class _FakeDucker:
         return None
 
 
-def _output(tts: _FakeTts, *, stamped: list[str] | None = None):
+def _output(tts: _FakeTts):
     from jasper.voice.assistant_output import AssistantOutput
 
     return AssistantOutput(
@@ -43,7 +47,6 @@ def _output(tts: _FakeTts, *, stamped: list[str] | None = None):
         _FakeDucker(),  # type: ignore[arg-type]
         None,
         SimpleNamespace(),  # type: ignore[arg-type]
-        stamp_stage=(stamped if stamped is None else stamped.append),
     )
 
 
@@ -103,7 +106,7 @@ async def test_listening_chirp_uses_matched_chirp_path():
     )
     tts = _FakeTts()
     stamped: list[str] = []
-    output = _output(tts, stamped=stamped)
+    output = _output(tts)
     # STATED, not inherited — see the mute-click test above.
     output._earcon_wide = False
     output._chirp_on_pcm = b"wake"
@@ -111,7 +114,13 @@ async def test_listening_chirp_uses_matched_chirp_path():
     output._chirp_on_profile = profile
     output._chirp_off_profile = object()
 
-    await output.listening_chirp(going_on=True)
+    async def attempt():
+        stamped.append("attempt")
+
+    async def accepted():
+        stamped.append("accepted")
+
+    await output.listening_chirp(going_on=True, on_attempt=attempt, on_first_write=accepted)
 
     assert tts.calls == [
         (
@@ -123,8 +132,7 @@ async def test_listening_chirp_uses_matched_chirp_path():
             },
         )
     ]
-    # The wake-side chirp stamps the turn timeline before it writes.
-    assert stamped == ["cue"]
+    assert stamped == ["attempt", "accepted"]
 
 
 async def test_admission_and_drain_are_open_while_the_gate_is_idle():
@@ -132,3 +140,33 @@ async def test_admission_and_drain_are_open_while_the_gate_is_idle():
 
     assert output.admission_refusal() is None
     assert await output.drain_inflight(timeout_sec=0.0) is True
+
+
+@pytest.mark.parametrize("result", ["refused", "accepted", "prefix_then_failure", "prefix_then_cancel"])
+async def test_chirp_markers_report_attempt_and_transport_acceptance(result):
+    import asyncio
+
+    markers = []
+    tts = _FakeTts()
+    async def attempt():
+        markers.append("attempt")
+    async def accepted():
+        markers.append("accepted")
+    async def write(_pcm, *, on_first_write, **_kwargs):
+        assert markers == ["attempt"]
+        if result == "refused":
+            return False
+        await on_first_write()
+        if result == "prefix_then_failure":
+            raise OSError()
+        if result == "prefix_then_cancel":
+            raise asyncio.CancelledError()
+        return True
+    tts.write_segment = write
+    play = _output(tts).listening_chirp(going_on=True, on_attempt=attempt, on_first_write=accepted)
+    if result == "prefix_then_cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await play
+    else:
+        await play
+    assert markers == (["attempt"] if result == "refused" else ["attempt", "accepted"])

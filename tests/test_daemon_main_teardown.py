@@ -112,7 +112,7 @@ class _FakeWakeLoop:
     def __init__(self, trace: _Trace, *_a, **_kw) -> None:
         self._trace = trace
         trace.append(("wake_loop", "enter"))
-        self.record_tool_dispatch_stage = lambda *a, **k: None
+        self.bind_tool_dispatch = lambda: None
         self.play_supervisor_cue = lambda *a, **k: None
         self.record_research_delivery = lambda *a, **k: None
         self.announce_timer = lambda *a, **k: None
@@ -270,7 +270,7 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     patch("_build_cues_manager", lambda *a, **k: _SpyCues())
 
     def _wake_event_store(*_a, **_kw):
-        store = _resource(trace, "wake_events", "close", is_async=False,
+        store = _resource(trace, "wake_events", "aclose", is_async=True,
                           enter=False)
         store.open = lambda: trace.append(("wake_events", "enter"))
         return store

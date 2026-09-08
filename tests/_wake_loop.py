@@ -81,7 +81,9 @@ def wake_loop_for_tests(
         def set_emission_admission(self, _admission) -> None:
             return None
 
-        async def write_segment(self, *_args, **_kwargs) -> bool:
+        async def write_segment(self, *_args, on_first_write=None, **_kwargs) -> bool:
+            if on_first_write is not None:
+                await on_first_write()
             return True
 
         async def resume_content_meter(self) -> None:

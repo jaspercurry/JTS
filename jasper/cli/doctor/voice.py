@@ -54,6 +54,11 @@ REASON_TOOL_PACKS_BUILD_FAILED = "tool_packs_build_failed"
 REASON_TOOL_PACKS_MISSING_FROM_RUNTIME = "tool_packs_missing_from_runtime"
 REASON_TOOL_PACKS_HEALTHY = "tool_packs_healthy"
 
+REASON_WAKE_STORAGE_UNAVAILABLE = "wake_event_storage_unavailable"
+REASON_WAKE_STORAGE_DISABLED = "wake_event_storage_disabled"
+REASON_WAKE_STORAGE_DEGRADED = "wake_event_storage_degraded"
+REASON_WAKE_STORAGE_HEALTHY = "wake_event_storage_healthy"
+
 REASON_SPEND_CAP_DISABLED = "spend_cap_disabled"
 REASON_SPEND_CAP_NO_USAGE = "spend_cap_no_usage_recorded"
 REASON_SPEND_CAP_REACHED = "spend_cap_reached"
@@ -358,23 +363,43 @@ def check_voice_provider_ids_manifest() -> CheckResult:
         reason=REASON_MANIFEST_STALE,
     )
 
-def _voice_tool_packs_runtime() -> "list[dict] | None":
-    """Per-pack tool-registration outcomes jasper-voice actually produced,
-    from jasper-control's /state.voice.tool_packs.
-
-    None when jasper-control is unreachable or the field is absent (older
-    daemon / voice down) — callers treat None as "can't tell" and report the
-    static registry alone rather than alarming."""
+def _voice_runtime() -> dict | None:
     payload = evidence.control_state().payload
-    if not isinstance(payload, dict):
-        return None
-    voice = payload.get("voice")
-    if not isinstance(voice, dict):
-        return None
-    packs = voice.get("tool_packs")
-    if not isinstance(packs, list):
-        return None
-    return packs
+    voice = payload.get("voice") if isinstance(payload, dict) else None
+    return voice if isinstance(voice, dict) else None
+
+
+def _voice_tool_packs_runtime() -> list[dict] | None:
+    voice = _voice_runtime()
+    packs = voice.get("tool_packs") if voice else None
+    return packs if isinstance(packs, list) else None
+
+
+@doctor_check(label="wake-event storage")
+def check_wake_event_storage() -> CheckResult:
+    label = "wake-event storage"
+    if (skip := _voice_gated_skip(label)) is not None:
+        return skip
+    voice = _voice_runtime()
+    if voice is None or "wake_event_store" not in voice:
+        return CheckResult(label, "skipped", "Runtime status unavailable.",
+                           reason=REASON_WAKE_STORAGE_UNAVAILABLE)
+    store = voice["wake_event_store"]
+    if not isinstance(store, dict) or not store.get("accepting"):
+        return CheckResult(label, "warn", "Wake events are not being recorded.",
+                           reason=REASON_WAKE_STORAGE_DISABLED)
+    discarded = store["discarded_work"]
+    errors = store["write_errors"]
+    pending, size = store["pending_work"], store["pending_bytes"]
+    pressure = (
+        pending >= store["max_pending_work"] or size >= store["max_pending_bytes"] * 0.75
+    )
+    degraded = discarded or errors or pressure
+    return CheckResult(
+        label, "warn" if degraded else "ok",
+        f"{pending} pending ({size} bytes); {discarded} discarded; {errors} storage errors.",
+        reason=REASON_WAKE_STORAGE_DEGRADED if degraded else REASON_WAKE_STORAGE_HEALTHY,
+    )
 
 
 def _assess_tool_packs(

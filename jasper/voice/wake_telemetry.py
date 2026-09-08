@@ -2,23 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-voice's wake-event telemetry: every `WakeEventStore` write the
-daemon makes, and sole ownership of the in-flight event id.
-
-Fail-soft throughout: the wake and session paths are never blocked by
-telemetry trouble. The loop hands in what it observed; nothing here reads
-loop state.
-"""
+"""Wake-event admission and observers bound to the active event."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..audio_io import MicCapture
 from ..aec_sweep import (
     AGC1_ENABLED_ENV,
     AGC1_MAX_GAIN_DB_ENV,
@@ -37,10 +32,6 @@ from ..wake_events import (
 logger = logging.getLogger("jasper.voice_daemon")
 
 
-# Per-leg wake_events column mapping. The peak_score column is irregular for
-# back-compat with the existing corpus (aec_on/aec_off vs dtln_aec), so the
-# columns are listed explicitly rather than derived from the token. A new leg
-# adds an entry here plus the matching additive columns in jasper.wake_events.
 LEG_DB: dict[str, dict[str, str]] = {
     "on": {
         "trigger_kind": "fire_aec_on", "peak_score": "peak_score_aec_on",
@@ -94,16 +85,10 @@ class WakeTelemetry:
         self.store = store
         self._wake_model = wake_model
         self._voice_provider = voice_provider
-        # The wake event currently in flight, or None when no event is
-        # pending. Set by `on_fire`; cleared by `outcome` after the final
-        # write. The funnel-stage hooks consult it to know which row to
-        # UPDATE.
         self._current_event_id: str | None = None
 
     @property
     def current_event_id(self) -> str | None:
-        """The in-flight event id, for the turn-teardown write that has to
-        capture it before `outcome` clears it."""
         return self._current_event_id
 
     async def on_fire(
@@ -118,23 +103,12 @@ class WakeTelemetry:
         condition: ConditionContext,
         mic_muted: bool,
     ) -> str | None:
-        """Open a wake-event row for the funnel hooks to update as the event
-        progresses. One SQLite INSERT in WAL mode; failure is logged but
-        never blocks wake response.
-
-        Returns the new event id, or None when the INSERT failed."""
         store = self.store
         if store is None:
             return None
         event_id = make_event_id()
         self._current_event_id = event_id
         trigger_kind = LEG_DB[leg]["trigger_kind"]
-        # Pre-seed every per-leg column to None, derived from LEG_DB
-        # so a new leg's columns are included automatically.
-        # begin_event requires peak_score_aec_on/off; configured legs
-        # overwrite their own columns below.
-        # Any, not object: the values splat into begin_event's per-column
-        # float/int/str keyword parameters.
         tel: dict[str, Any] = {
             col: None
             for _db in LEG_DB.values()
@@ -145,22 +119,11 @@ class WakeTelemetry:
             tel[_cols["peak_score"]] = (
                 score if _name == leg else _fire.score
             )
-            # Offset is against the caller's canonical fire-time `now_loop`,
-            # NOT a fresh clock read — that would fold in the
-            # detector.reset() latency and skew the firing leg's offset.
-            # Semantics: 0 = leg's last score == fire frame (the firing
-            # leg); negative N = that leg last scored N ms before fire.
             tel[_cols["peak_offset"]] = (
                 int((_fire.score_at - now_loop) * 1000)
                 if _fire.score_at else None
             )
             tel[_cols["mic_rms"]] = _fire.mic_rms_dbfs
-        # Bridge config snapshot — env-var-driven knobs as seen by the
-        # bridge at startup, so post-hoc analysis can ask "what NS
-        # level was this event captured under?". Read here rather than
-        # from the bridge (a separate process): /etc/jasper/jasper.env
-        # is the source of truth, and the bridge is restarted after
-        # any change to it.
         bridge_config = {
             "ns_enabled": os.environ.get(NS_ENABLED_ENV, "1"),
             "ns_level": os.environ.get(NS_LEVEL_ENV, "low"),
@@ -173,7 +136,7 @@ class WakeTelemetry:
             "chip_hpf_hz": os.environ.get("JASPER_AEC_CHIP_HPF_HZ", "125"),
         }
         try:
-            await store.begin_event(
+            accepted = await store.begin_event(
                 event_id=event_id,
                 trigger_kind=trigger_kind,
                 threshold=firing_threshold,
@@ -187,6 +150,8 @@ class WakeTelemetry:
                 fired_legs=fired_legs,
                 **tel,
             )
+            if not accepted:
+                self._current_event_id = None
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "wake_events: begin_event failed (will skip telemetry "
@@ -201,25 +166,14 @@ class WakeTelemetry:
         *,
         snapshot: Callable[[str, int], bytes | None],
     ) -> None:
-        """Wait the post-fire collection window, then snapshot each configured
-        capture ring — via the loop's `snapshot(leg, n_frames)` — and persist
-        WAV files through the store.
-
-        Fire-and-forget: failure logs WARN and does not propagate. Truncation
-        on daemon shutdown is acceptable — the row keeps its NULL
-        audio_*_path, which queries can filter out."""
         store = self.store
         if store is None:
             return
         try:
             await asyncio.sleep(CAPTURE_POST_SEC)
-            # Snapshot count = pre + post window in frames. Rings may hold
-            # slightly more than this thanks to the slack in the maxlen
-            # sizing.
-            from ..audio_io import MicCapture as _MC
             n_frames = int(
                 (CAPTURE_PRE_SEC + CAPTURE_POST_SEC)
-                * _MC.OUTPUT_RATE / _MC.OUTPUT_FRAME_SAMPLES
+                * MicCapture.OUTPUT_RATE / MicCapture.OUTPUT_FRAME_SAMPLES
             )
             await store.attach_audio(
                 event_id=event_id,
@@ -239,14 +193,12 @@ class WakeTelemetry:
         stage: str,
         *,
         tool_name: str | None = None,
+        event_id: str | None = None,
     ) -> None:
-        """Best-effort funnel-stage update for the in-flight wake event.
-
-        No-op when telemetry is disabled, no event is in flight, or the store
-        write fails: the wake and session paths are never blocked by
-        telemetry trouble."""
         store = self.store
-        event_id = self._current_event_id
+        if event_id is not None and event_id != self._current_event_id:
+            return
+        event_id = event_id or self._current_event_id
         if store is None or event_id is None:
             return
         try:
@@ -260,40 +212,24 @@ class WakeTelemetry:
                 "wake_events: update_stage(%s) failed: %s", stage, e,
             )
 
-    async def record_tool_dispatch_stage(self, stage: str, name: str) -> None:
-        """Translate the shared dispatch observer into wake-funnel stages.
+    def bind_tool_dispatch(self) -> Callable[[str, str], Awaitable[None]]:
+        event_id = self._current_event_id
 
-        ``dispatch_tool`` is the only producer, so this observes Gemini,
-        OpenAI, and Grok without provider branches. Manual / research turns
-        naturally no-op because they have no in-flight wake event id.
-        """
-        funnel_stage = {
-            "called": "tool_called",
-            "completed": "tool_completed",
-        }.get(stage)
-        if funnel_stage is None:
-            raise ValueError(f"unknown tool dispatch stage {stage!r}")
-        await self.stage(
-            funnel_stage,
-            tool_name=name,
-        )
+        async def observe(stage: str, name: str) -> None:
+            funnel_stage = {"called": "tool_called", "completed": "tool_completed"}[stage]
+            if event_id is not None:
+                await self.stage(funnel_stage, tool_name=name, event_id=event_id)
+
+        return observe
 
     async def outcome(
         self, outcome: str, detail: str | None = None,
     ) -> None:
-        """Best-effort terminal-outcome UPDATE for the in-flight wake
-        event. Same fail-soft pattern as `stage`. Clears
-        `current_event_id` after the write so subsequent funnel hooks
-        for the next wake start clean."""
         store = self.store
         event_id = self._current_event_id
         if store is None or event_id is None:
-            # Still clear the id (if it exists) so the next wake
-            # starts from a clean state.
             self._current_event_id = None
             return
-        # Clear early so subsequent stray funnel-hook calls don't keep
-        # writing against a finalised row.
         self._current_event_id = None
         try:
             await store.set_outcome(event_id, outcome, detail)
@@ -315,11 +251,6 @@ class WakeTelemetry:
         music_playing_at_turn: bool,
         music_db_at_turn: float | None,
     ) -> None:
-        """Shadow telemetry: what each stream's Silero saw, so the weekly
-        review can cross-tab scores.
-
-        Takes the event id explicitly — the caller captures it before the
-        terminal outcome clears it."""
         store = self.store
         if store is None:
             return

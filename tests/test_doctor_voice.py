@@ -541,6 +541,7 @@ def _gated_check_rows(monkeypatch, tmp_path: Path):
         doctor_voice, "read_active_provider_state", lambda: _state("missing"),
     )
     monkeypatch.setattr(doctor_voice, "_voice_tool_packs_runtime", lambda: None)
+    monkeypatch.setattr(doctor_voice, "_voice_runtime", lambda: None)
     manifest = tmp_path / "voice_provider_ids"
     manifest.write_text(provider_ids_manifest_text())
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_IDS_FILE", str(manifest))
@@ -549,6 +550,8 @@ def _gated_check_rows(monkeypatch, tmp_path: Path):
          "ok", doctor_voice.REASON_PROVIDER_IMPORTS_NOT_CONFIGURED),
         (doctor_voice.check_tool_packs,
          "skipped", doctor_voice.REASON_TOOL_PACKS_RUNTIME_UNAVAILABLE),
+        (doctor_voice.check_wake_event_storage,
+         "skipped", "wake_event_storage_unavailable"),
         (doctor_voice.check_pricing,
          "ok", doctor_voice.REASON_PRICING_MODEL_NOT_CONFIGURED),
         (doctor_voice.check_voice_provider_ids_manifest,
@@ -587,3 +590,30 @@ def test_voice_checks_gate_on_streambox_without_accessory(
             ("skipped", gate_reason) if gate_reason else (off_status, off_reason)
         )
         assert (result.status, result.reason) == expected, check.__name__
+
+
+@pytest.mark.parametrize("changes, status, reason", [
+    ({}, "ok", "wake_event_storage_healthy"),
+    ({"discarded_work": 1}, "warn", "wake_event_storage_degraded"),
+    ({"write_errors": 1, "last_error": "OperationalError"}, "warn", "wake_event_storage_degraded"),
+    ({"pending_work": 64}, "warn", "wake_event_storage_degraded"),
+    ({"pending_bytes": 2 * 1024 * 1024}, "warn", "wake_event_storage_degraded"),
+    ({"accepting": False}, "warn", "wake_event_storage_disabled"),
+])
+def test_doctor_reports_actual_wake_storage_pressure(monkeypatch, changes, status, reason):
+    store = dict(accepting=True, pending_work=0, pending_bytes=0, max_pending_work=64,
+                 max_pending_bytes=2 * 1024 * 1024, discarded_work=0, write_errors=0, last_error=None)
+    monkeypatch.setattr(doctor_voice, "_voice_runtime", lambda: {"wake_event_store": store | changes})
+    result = doctor_voice.check_wake_event_storage()
+    assert (result.status, result.reason) == (status, reason)
+
+
+@pytest.mark.parametrize("voice, status, reason", [
+    (None, "skipped", "wake_event_storage_unavailable"),
+    ({}, "skipped", "wake_event_storage_unavailable"),
+    ({"wake_event_store": None}, "warn", "wake_event_storage_disabled"),
+])
+def test_doctor_distinguishes_disabled_storage_from_missing_status(monkeypatch, voice, status, reason):
+    monkeypatch.setattr(doctor_voice, "_voice_runtime", lambda: voice)
+    result = doctor_voice.check_wake_event_storage()
+    assert (result.status, result.reason) == (status, reason)
