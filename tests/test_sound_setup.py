@@ -5351,6 +5351,9 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         # The module boots in follower mode (tabs + plot absent) and renders
         # the local driver/crossover UI without fetching /state.
         "followerModeRendersLocalDriverUi",
+        # A graph that cannot host EQ is the page's state (no tabs, no editor),
+        # and an unprobed /state keeps the editor.
+        "blockedEqCarrierIsThePageState",
         "confirmedOutputKeepsResetPreconditions",
         "resetPartialCleanupSurfacesWarning",
         "driverResearchImportPreservesOperatorInstalledConfiguration",
@@ -5571,6 +5574,61 @@ def test_state_filter_count_signals_effective_eq_for_initial_view():
     cuts_only = sound_setup._state_payload(SoundProfile(simple_eq=SimpleEq(mid_db=-3.0)))
     assert cuts_only["headroom_db"] == 0
     assert cuts_only["filter_count"] > 0
+
+
+@pytest.mark.parametrize(
+    "config_name, expected",
+    [
+        ("foreign.yml", {"status": "blocked", "reason_code": "unknown_config"}),
+        ("sound_current.yml", {"status": "ok"}),
+    ],
+)
+def test_state_reports_whether_the_loaded_graph_can_host_eq(
+    tmp_path: Path, monkeypatch, config_name: str, expected: dict,
+):
+    """/sound/eq/ opens on the refusal instead of discovering it at save time,
+    so /state says whether the LOADED graph can carry preference EQ."""
+    import jasper.camilla
+
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / config_name
+    current.write_text(
+        "devices: {}\n" if config_name == "foreign.yml" else _room_config()
+    )
+    monkeypatch.setattr(
+        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
+    )
+
+    with sound_server(tmp_path) as base:
+        payload = json.loads(
+            urllib.request.urlopen(f"{base}/state").read().decode("utf-8")
+        )
+
+    carrier = payload["eq_carrier"]
+    assert {k: carrier[k] for k in expected} == expected
+    if carrier["status"] == "blocked":
+        assert carrier["message"]
+
+
+def test_state_falls_open_when_camilla_cannot_be_read(tmp_path: Path, monkeypatch):
+    """The POST refusal is the fail-closed gate; an unreachable CamillaDSP must
+    not blank the editor."""
+    import jasper.camilla
+
+    class _Unreachable:
+        async def get_config_file_path(self, *, best_effort: bool = False):
+            return None
+
+    monkeypatch.setattr(jasper.camilla, "primary_controller", _Unreachable)
+
+    with sound_server(tmp_path) as base:
+        payload = json.loads(
+            urllib.request.urlopen(f"{base}/state").read().decode("utf-8")
+        )
+
+    assert payload["eq_carrier"] == {"status": "unknown"}
 
 
 async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):

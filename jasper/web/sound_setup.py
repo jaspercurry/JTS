@@ -117,6 +117,7 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
 from .sound_active_speaker import apply_measured_crossover_geometry  # noqa: F401
 from .sound_profile_apply import audition_profile  # noqa: F401
 from .sound_profile_apply import (
+    _EQ_CARRIER_NOT_PROBED,
     _apply_profile,
     _apply_settings,
     _audition_profile,
@@ -254,7 +255,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
         return _follower_sound_html(csrf_token, page_mode=page_mode)
     title = "EQ" if page_mode == "eq" else "Sound setup"
     eq_tabs_html = (
-        '<div><div class="segmented" role="tablist" aria-label="Sound source">'
+        '<div id="eq-tabs"><div class="segmented" role="tablist" aria-label="Sound source">'
         '<button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>'
         '<button class="segmented__btn" id="tab-saved" data-view="saved" aria-pressed="false">Saved</button>'
         '<button class="segmented__btn" id="tab-draft" data-view="draft" aria-pressed="false">Draft</button>'
@@ -267,7 +268,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
         )
         + """
 <main class="page">
-  <section class="now-playing">
+  <section class="now-playing" id="now-playing">
     <div class="row-between">
       <h2 class="eyebrow">Now playing</h2>
       <span class="now-playing__label" id="live-label">Bypass</span>
@@ -370,6 +371,34 @@ def _json_route_payload(builder: str) -> dict[str, Any]:
     return fn()
 
 
+def _eq_carrier_block(
+    profile: SoundProfile,
+    *,
+    config_dir: str | Path,
+    camilla_factory: Callable[[], Any],
+) -> Any:
+    """Probe the LOADED graph for /state: a refusal, ``None``, or "not probed".
+
+    Fail-OPEN: an unreachable CamillaDSP, an empty path, or a probe that blows
+    up returns "not probed" and the page keeps its editor. The /apply and
+    /settings refusals stay the fail-closed gate.
+    """
+    from jasper.sound.graph_carrier import eq_block_for_loaded_config
+
+    try:
+        current_path = asyncio.run(
+            camilla_factory().get_config_file_path(best_effort=True)
+        )
+        if not current_path:
+            return _EQ_CARRIER_NOT_PROBED
+        return eq_block_for_loaded_config(
+            profile, current_path=current_path, config_dir=config_dir,
+        )
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        logger.warning("sound: eq-carrier probe unavailable", exc_info=True)
+        return _EQ_CARRIER_NOT_PROBED
+
+
 def _make_handler(
     *,
     profile_path: str | Path,
@@ -426,11 +455,17 @@ def _make_handler(
                 )
                 return
             if path == "/state":
+                profile = load_profile(profile_path)
                 self._send_json(
                     _state_payload(
-                        load_profile(profile_path),
+                        profile,
                         library_path=library_path,
                         include_library=True,
+                        eq_block=_eq_carrier_block(
+                            profile,
+                            config_dir=config_dir,
+                            camilla_factory=camilla_factory,
+                        ),
                     )
                 )
                 return

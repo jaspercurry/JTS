@@ -308,7 +308,10 @@ async def load_profile_config(
         sound_audition_config_path,
         sound_config_path,
     )
-    from jasper.sound.graph_carrier import carrier_for_loaded_config
+    from jasper.sound.graph_carrier import (
+        carrier_for_loaded_config,
+        eq_block_for_loaded_config,
+    )
     from jasper.sound.live_edit import does_live_edits, plan_live_edit_for
 
     config_path = Path(config_dir)
@@ -343,15 +346,14 @@ async def load_profile_config(
             else sound_config_path(config_path)
         )
     )
-    pre_carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
-    if (
-        not pre_carrier.can_host_eq
-        or pre_carrier.kind in {"active", "active_leader_program_bake"}
-    ):
-        pre_carrier.reemit(
-            profile,
-            output_trim_db=output_trim_db,
-        )
+    pre_block = eq_block_for_loaded_config(
+        profile,
+        current_path=pre_path,
+        config_dir=config_path,
+        output_trim_db=output_trim_db,
+    )
+    if pre_block is not None:
+        raise pre_block
 
     # SHARED fan-in→Camilla coupling: resolve the capture/playback-device kwargs
     # ONCE. ONE transport (ADR-0100) — unconditionally the ring, never {}.

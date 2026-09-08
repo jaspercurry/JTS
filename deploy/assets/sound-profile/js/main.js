@@ -215,6 +215,9 @@ import {
     volume_floor_db: volumeFloorDefault()
   };  // global output settings
   var soundSettingsBlocked = false;  // ./settings: the graph refused to carry EQ
+  // The loaded graph's EQ refusal ({reason_code, message}) from /state, or null
+  // when it can host EQ (or nothing probed it). Page state, not a status line.
+  var eqCarrierBlock = null;
   var i2sHat = null;
   var volumeFloorDraftDb = null;
   var volumeFloorSaving = false;
@@ -528,6 +531,17 @@ import {
       status(statusText, statusErr);
       return;
     }
+    // The tab strip and the now-playing plot describe an editor this page is
+    // not showing, and the plot would sit empty, so both go with it.
+    ['eq-tabs', 'now-playing'].forEach(function(id) {
+      var node = el(id);
+      if (node) node.hidden = !!eqCarrierBlock;
+    });
+    if (eqCarrierBlock) {
+      renderEqCarrierBlocked();
+      status(statusText, statusErr);
+      return;
+    }
     renderTabs();
     renderLiveGraph();
     if (view === 'off') renderOff();
@@ -591,6 +605,19 @@ import {
           'before installing or removing the HAT. Never power the Pi through the HAT and another power input at the same time. ' +
           'Never hot-plug. Start the first playback at a very low level.</p>' +
       '</div></section>';
+  }
+
+  // The whole page when the loaded graph cannot host EQ: the editor would only
+  // offer edits every save refuses, so it is replaced by the reason and the
+  // one page that can change it.
+  function renderEqCarrierBlocked() {
+    el('view-body').innerHTML =
+      '<div class="saved-stack"><section class="info-card" role="status">' +
+        '<p>' + escapeHtml(eqCarrierBlock.message || EQ_BLOCKED_MESSAGE) + '</p>' +
+        '<div class="form-actions">' +
+          '<a class="btn btn--primary" href="/sound/setup/">Open Sound setup</a>' +
+        '</div>' +
+      '</section></div>';
   }
 
   function renderOff() {
@@ -3255,6 +3282,10 @@ import {
     if (payload.profile_library) library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
     if (payload.sound_settings) soundSettings = payload.sound_settings;
+    // Every /state and every successful apply carries the field, so a fixed
+    // layout drops the block at the next render instead of needing a reload.
+    var carrier = payload.eq_carrier;
+    if (carrier) eqCarrierBlock = carrier.status === 'blocked' ? carrier : null;
     applied = normalizeProfile(payload.profile || {});
   }
 

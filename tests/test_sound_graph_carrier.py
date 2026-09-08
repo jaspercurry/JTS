@@ -45,6 +45,7 @@ from jasper.sound.graph_carrier import (
     CarrierCannotHostEq,
     ReemitResult,
     carrier_for_loaded_config,
+    eq_block_for_loaded_config,
 )
 from jasper.sound.profile import (
     SimpleEq,
@@ -635,6 +636,33 @@ def test_program_bake_carrier_requires_pipe_sink(tmp_path):
 
     assert exc.value.reason_code == "program_bake_pipe_unavailable"
     emit.assert_not_called()
+
+
+def test_eq_block_probe_sees_what_can_host_eq_alone_misses(tmp_path):
+    """A program bake reports ``can_host_eq`` True and still refuses at reemit,
+    so the probe must be the dry-run emit, not the flag."""
+    from jasper.sound.profile import SoundProfile
+
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "grouping_active_leader_bake.yml"
+    path.write_text(_program_bake_yaml(), encoding="utf-8")
+
+    with mock.patch(
+        "jasper.multiroom.member_config.member_camilla_kwargs",
+        return_value={"playback_pipe_path": None},
+    ):
+        assert carrier_for_loaded_config(
+            str(path), config_dir=config_dir,
+        ).can_host_eq is True
+        block = eq_block_for_loaded_config(
+            SoundProfile(enabled=False),
+            current_path=str(path),
+            config_dir=config_dir,
+        )
+
+    assert block is not None
+    assert block.reason_code == "program_bake_pipe_unavailable"
 
 
 def test_reemit_defaults_to_disk_read_member_kwargs(tmp_path):

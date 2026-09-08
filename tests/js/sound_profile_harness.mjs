@@ -630,7 +630,7 @@ function setupHarness(fetchHandler, options = {}) {
   const elements = new Map();
   const absent = new Set();
   for (const id of [
-    "tab-off", "tab-saved", "tab-draft", "back", "view-body",
+    "tab-off", "tab-saved", "tab-draft", "eq-tabs", "back", "view-body",
     "plot", "plot-summary", "live-label", "status",
     "copy-driver-research-prompt-control",
   ]) {
@@ -661,7 +661,7 @@ function setupHarness(fetchHandler, options = {}) {
     // Setup and follower pages omit the content-EQ chrome. Making those ids
     // resolve to null exercises the module's mode guards as the browser does.
     // islandText lets a test inject malformed renderer data.
-    for (const id of ["tab-off", "tab-saved", "tab-draft", "plot", "plot-summary", "live-label"]) {
+    for (const id of ["tab-off", "tab-saved", "tab-draft", "eq-tabs", "plot", "plot-summary", "live-label"]) {
       elements.delete(id);
       absent.add(id);
     }
@@ -1131,6 +1131,59 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
     });
   }
   return { blockedSettingsSaveRendersOnTheCard: true };
+}
+
+// A graph that cannot host EQ is the PAGE's state, not a status line after the
+// user edits something the save will refuse: no tab strip, no editor body, and
+// the reason plus the page that can change it.
+async function testBlockedEqCarrierIsThePageState() {
+  const blocked = setupHarness(baseFetch({
+    "./state": () => Promise.resolve(response({
+      ...basePayload,
+      profile: { ...flatProfile, enabled: false },
+      filter_count: 0,
+      dsp_write_epoch: "state-0",
+      eq_carrier: {
+        status: "blocked",
+        reason_code: "unknown_config",
+        message: "CamillaDSP is running a configuration JTS did not generate.",
+      },
+    })),
+  }), { mode: "eq" });
+  await blocked.flush(); await blocked.flush();
+
+  const html = blocked.elements.get("view-body").innerHTML;
+  for (const expected of [
+    "info-card", "a configuration JTS did not generate", 'href="/sound/setup/"',
+  ]) {
+    if (!html.includes(expected)) {
+      fail("a blocked EQ carrier should render the refusal as the page", {
+        expected, html,
+      });
+    }
+  }
+  if (html.includes("off-card") || html.includes("profile-row")) {
+    fail("a blocked EQ carrier must not render the editor body", { html });
+  }
+  if (blocked.elements.get("eq-tabs").hidden !== true) {
+    fail("a blocked EQ carrier should hide the tab strip", {
+      hidden: blocked.elements.get("eq-tabs").hidden,
+    });
+  }
+
+  // Fail-open half: /state without a probe (or with a hostable graph) keeps the
+  // editor, so an unreachable CamillaDSP never blanks the page.
+  const open = setupHarness(baseFetch(), { mode: "eq" });
+  await open.flush(); await open.flush();
+  if (!open.elements.get("view-body").innerHTML.includes("off-card")) {
+    fail("an unprobed EQ carrier should keep the editor", {
+      html: open.elements.get("view-body").innerHTML,
+    });
+  }
+  if (open.elements.get("eq-tabs").hidden) {
+    fail("an unprobed EQ carrier should keep the tab strip", {});
+  }
+  return { blockedEqCarrierIsThePageState: true };
 }
 
 // An unsaved Draft is live in CamillaDSP and persisted nowhere, so leaving the
@@ -8818,6 +8871,7 @@ results.push(liveTabResult);
 results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
 results.push(await testVolumeFloorRequiresExplicitSaveButAuditionsDraft());
 results.push(await testBlockedSettingsSaveRendersOnTheCard());
+results.push(await testBlockedEqCarrierIsThePageState());
 results.push(await testLeavingAnUnsavedDraftRestoresThePersistedProfile());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
 results.push(await testQuietTestSurfaceSurvivesStartupActions());
