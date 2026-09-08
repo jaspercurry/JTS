@@ -72,6 +72,7 @@ export function buildDebugCard() {
       if (!r.ok && data.intent_saved === true) {
         console.error("system: debug toggle failed", data.error);
         status.textContent = "Saved; restart refused: " + data.error;
+        cb.disabled = false;
         return;
       }
       if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
