@@ -168,7 +168,7 @@ async def test_announce_timer_suppressed_during_measurement(caplog) -> None:
         async def prerender_text(self, _text: str) -> bool:
             return True
 
-        async def speak_text(self, _text: str) -> None:
+        async def speak_text(self, _text: str, _should_play=None) -> None:
             raise AssertionError(
                 "timer must not speak during a measurement window"
             )
@@ -216,7 +216,7 @@ async def test_prerender_race_cannot_admit_timer_after_pause() -> None:
             await finish_prerender.wait()
             return True
 
-        async def speak_text(self, text: str) -> None:
+        async def speak_text(self, text: str, _should_play=None) -> None:
             spoke.append(text)
 
     wl = wake_loop_for_tests()

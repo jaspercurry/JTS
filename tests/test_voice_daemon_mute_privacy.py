@@ -214,7 +214,7 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
         async def prerender_text(self, _text: str) -> bool:
             return True
 
-        async def speak_text_guarded(self, text: str, should_play) -> bool:
+        async def speak_text(self, text: str, should_play=None) -> bool:
             if not should_play():
                 return False
             events.append(("speak", text))
@@ -255,7 +255,7 @@ async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
         async def prerender_text(self, _text: str) -> bool:
             return True
 
-        async def speak_text_guarded(self, text: str, should_play) -> bool:
+        async def speak_text(self, text: str, should_play=None) -> bool:
             return bool(should_play())
 
     class _Owner:
@@ -303,7 +303,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
             events.append(f"turn_active={wl._output_gate.active_kind}")
             return True
 
-        async def speak_text_guarded(self, _text: str, _should_play) -> bool:
+        async def speak_text(self, _text: str, _should_play=None) -> bool:
             raise AssertionError("stale dynamic text must not write")
 
     wl = wake_loop_for_tests()

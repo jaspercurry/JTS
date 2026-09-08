@@ -869,7 +869,7 @@ async def test_cancelled_cue_tail_retains_output_episode(
             await tts.write_segment(b"\x01\x00" * 5, segment_kind="cue")
             return True
 
-        async def speak_text_guarded(self, _text: str, should_play) -> bool:
+        async def speak_text(self, _text: str, should_play=None) -> bool:
             if not should_play():
                 return False
             await tts.write_segment(b"\x01\x00" * 5, segment_kind="cue")
@@ -941,7 +941,7 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
         async def prerender_text(self, _text: str) -> bool:
             return True
 
-        async def speak_text_guarded(self, _text: str, should_play) -> bool:
+        async def speak_text(self, _text: str, should_play=None) -> bool:
             return should_play()
 
     class _FanInDuck(FanInDucker):
@@ -1108,7 +1108,7 @@ async def test_cancelled_fanin_duck_on_lands_then_cleanup_sends_off(
             self.calls += 1
             return True
 
-        async def speak_text_guarded(self, _text: str, should_play) -> bool:
+        async def speak_text(self, _text: str, should_play=None) -> bool:
             if not should_play():
                 return False
             self.calls += 1

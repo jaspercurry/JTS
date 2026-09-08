@@ -366,7 +366,7 @@ def _speak_text_stale_pre_synth(tmp_path):
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
     )
-    return mgr, lambda: mgr.speak_text_guarded("hello", should_play=lambda: False)
+    return mgr, lambda: mgr.speak_text("hello", should_play=lambda: False)
 
 
 def _speak_text_synthesis_error(tmp_path):
@@ -400,7 +400,7 @@ def _speak_text_stale_post_synth(tmp_path):
         calls["n"] += 1
         return calls["n"] == 1  # true pre-synth, false post-synth
 
-    return mgr, lambda: mgr.speak_text_guarded("hello", should_play=should_play)
+    return mgr, lambda: mgr.speak_text("hello", should_play=should_play)
 
 
 def _speak_text_write_error(tmp_path):
