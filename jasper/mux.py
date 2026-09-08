@@ -888,10 +888,6 @@ class Mux:
                 ),
                 "last": self._last_reconcile,
             },
-            "usbsink": {
-                # Always true: fan-in DIRECT-captures the gadget on every box.
-                "combo": True,
-            },
         }
 
     def _source_status_payload(
@@ -1528,18 +1524,6 @@ class Mux:
         (1 Hz, no storm)."""
         if self._usbsink_preempted == silenced:
             return
-        await self._usbsink_set_preempt_fanin(silenced, reason=reason)
-
-    async def _usbsink_set_preempt_fanin(
-        self, silenced: bool, *, reason: str,
-    ) -> None:
-        """Preempt transport: MUTE/UNMUTE the fan-in usbsink lane.
-
-        The mute is applied at fan-in's mix stage only; the lane's capture and
-        per-lane telemetry (frames_read / rms_dbfs) are untouched, so combo
-        liveness still reads the host's true activity. NOT persisted by fan-in
-        — a fan-in restart comes up unmuted, and
-        ``_reassert_usbsink_preempt_mute`` re-mutes on the next tick."""
         try:
             await self._fanin_lane_mute(USBSINK_FANIN_LABEL, silenced)
         except Exception as e:  # noqa: BLE001

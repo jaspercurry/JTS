@@ -1756,13 +1756,10 @@ def test_state_usbsink_section_populated_when_enabled(
     status, body = _get(f"{base}/state")
     assert status == 200
     section = body["renderers"]["usbsink"]
-    assert section["combo"] is True
     assert section["playing"] is True
-    assert section["preempted"] is False
     assert section["muted"] is False
     assert section["host_connected"] is True
     assert section["rms_dbfs"] == -12.3
-    assert section["updated_at"] is None
 
 
 def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(

@@ -1025,7 +1025,6 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     assert payload["active_source"] == "usbsink"
     assert payload["winner"] == "usbsink"
     assert payload["sources"]["usbsink"]["playing"] is True
-    assert payload["usbsink"]["combo"] is True
 
     await mux._tick()
     assert mux._winner is Source.USBSINK
@@ -1415,48 +1414,36 @@ async def test_test_fanin_release_restores_manual_source(mux):
     assert status["active_source"] == "airplay"
 
 
-async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(mux):
-    mux._fanin_select_label = AsyncMock(return_value={})
-
-    first = await mux.select_test_fanin_label(
-        "correction", "correction-measurement",
-    )
-    retry = await mux.select_test_fanin_label(
-        "correction", "correction-measurement",
-    )
-    busy = await mux.select_test_fanin_label(
-        "correction", "active-speaker-commissioning",
-    )
-    wrong_release = await mux.release_test_fanin_label(
-        "active-speaker-commissioning",
-    )
-
-    assert first["test_owner"] == "correction-measurement"
-    assert retry["test_owner"] == "correction-measurement"
-    assert "owned by" in busy["error"]
-    assert "owned by" in wrong_release["error"]
-    assert mux._test_fanin_owner == "correction-measurement"
-    assert mux._fanin_select_label.await_count == 2
-
-
 def test_aec_doctor_has_a_distinct_declared_test_gate_owner():
     assert "doctor-aec-probe" in mux_module.FANIN_TEST_OWNERS
     assert "doctor-aec-probe" != "correction-measurement"
 
 
-async def test_aec_doctor_gate_refuses_foreign_owner_and_release(mux):
+@pytest.mark.parametrize(
+    ("holder", "other"),
+    [
+        ("correction-measurement", "active-speaker-commissioning"),
+        ("doctor-aec-probe", "correction-measurement"),
+    ],
+)
+async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(
+    mux, holder, other,
+):
+    """The lease is per-owner: the holder may renew, anyone else is refused
+    both the gate and the release, and no foreign call reaches fan-in."""
     mux._fanin_select_label = AsyncMock(return_value={})
 
-    held = await mux.select_test_fanin_label("correction", "doctor-aec-probe")
-    busy = await mux.select_test_fanin_label(
-        "correction", "correction-measurement"
-    )
-    wrong_release = await mux.release_test_fanin_label("correction-measurement")
+    first = await mux.select_test_fanin_label("correction", holder)
+    retry = await mux.select_test_fanin_label("correction", holder)
+    busy = await mux.select_test_fanin_label("correction", other)
+    wrong_release = await mux.release_test_fanin_label(other)
 
-    assert held["test_owner"] == "doctor-aec-probe"
-    assert "doctor-aec-probe" in busy["error"]
-    assert "doctor-aec-probe" in wrong_release["error"]
-    assert mux._test_fanin_owner == "doctor-aec-probe"
+    assert first["test_owner"] == holder
+    assert retry["test_owner"] == holder
+    assert holder in busy["error"]
+    assert holder in wrong_release["error"]
+    assert mux._test_fanin_owner == holder
+    assert mux._fanin_select_label.await_count == 2
 
 
 async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
@@ -1483,33 +1470,23 @@ async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_manual_select_is_rejected_without_mutation_during_test_gate(
-    mux, patched_probes,
+@pytest.mark.parametrize("action", ["manual", "auto"])
+async def test_source_selection_is_rejected_before_probe_during_test_gate(
+    mux, patched_probes, action,
 ):
+    """A held test lease refuses both selection paths before any mutation:
+    no fan-in call, no coordinator event, no source probe."""
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
     mux._test_fanin_expires_at = 100.0
 
-    result = await mux.select_source(Source.AIRPLAY)
+    if action == "manual":
+        result = await mux.select_source(Source.AIRPLAY)
+    else:
+        result = await mux.auto_select()
 
     assert "correction-measurement" in result["error"]
     mux._fanin_select.assert_not_awaited()
-    assert mux._volume_coordinator.events == []
-    for probe in vars(patched_probes).values():
-        probe.assert_not_awaited()
-    assert mux._test_fanin_owner == "correction-measurement"
-
-
-async def test_auto_select_is_rejected_before_probe_during_test_gate(
-    mux, patched_probes,
-):
-    mux._test_fanin_label = "correction"
-    mux._test_fanin_owner = "correction-measurement"
-    mux._test_fanin_expires_at = 100.0
-
-    result = await mux.auto_select()
-
-    assert "correction-measurement" in result["error"]
     mux._fanin_none.assert_not_awaited()
     assert mux._volume_coordinator.events == []
     for probe in vars(patched_probes).values():
