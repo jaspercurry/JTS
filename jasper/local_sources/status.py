@@ -42,7 +42,7 @@ from ..install_profile import (
 )
 from ..music_sources import SOURCE_SPECS, Source
 from ..output_hardware import current_usb_data_role
-from ..service_units import read_unit_states
+from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
 from ..source_intent import read_source_intents
 from .markers import local_sources_allowed
 from .registry import local_source_lifecycle
@@ -92,6 +92,16 @@ SOURCE_UNAVAILABLE = {
     ),
 }
 
+# read_unit_states() returning None means systemctl itself is unreachable,
+# timed out, or answered nothing -- not that no JTS units are installed.
+# Every systemd-backed source (AirPlay, Spotify, USB, and Bluetooth's
+# activation-unit check) reports this distinct reason instead of the
+# per-source SOURCE_UNAVAILABLE message, so the UI suggests retrying rather
+# than re-running install.sh on a speaker that is actually fine.
+UNIT_STATE_UNAVAILABLE_REASON = (
+    "systemd unit state is unavailable right now; retry shortly."
+)
+
 # The ALSA card the composite gadget's uac2 function registers. Its presence
 # is the host-visible "USB audio device is advertised" signal now that the
 # gadget unit can outlive audio (it also carries the USB management network),
@@ -127,21 +137,6 @@ def _usbsink_capability() -> tuple[bool, str]:
         logger.debug("USB data-role probe failed: %s", exc)
         return False, "USB hardware capability state is unavailable."
     return state.gadget_available, gadget_unavailable_detail(state)
-
-
-def _unit_loaded(records: Mapping[str, dict[str, Any]], unit: str) -> bool:
-    record = records.get(unit)
-    return record is not None and record.get("load_state") == "loaded"
-
-
-def _unit_running(records: Mapping[str, dict[str, Any]], unit: str) -> bool:
-    record = records.get(unit)
-    return record is not None and record.get("active_state") == "active"
-
-
-def _unit_activating(records: Mapping[str, dict[str, Any]], unit: str) -> bool:
-    record = records.get(unit)
-    return record is not None and record.get("active_state") == "activating"
 
 
 def _profile_allows_local_sources() -> bool:
@@ -193,7 +188,7 @@ def _source_state(
 def _source_availability(
     source: Source,
     *,
-    records: Mapping[str, dict[str, Any]] | None = None,
+    records: Mapping[str, dict[str, Any]] | None,
     profile_allows: bool | None = None,
     bluetooth: BluetoothAvailability | None = None,
 ) -> tuple[bool, str]:
@@ -202,34 +197,36 @@ def _source_availability(
     One derivation for the status snapshot (which passes its unit-record batch,
     profile verdict and Bluetooth probe) and for the turn-on precondition
     (which probes only what its one source needs). Precedence: install profile,
-    then the source's units (USB: main unit, then gadget unit), then hardware
-    (USB data role; Bluetooth adapter and units together).
+    then the unit-state read itself (``records`` is None when systemctl was
+    unreachable or answered nothing: that is not "not installed"), then the
+    source's units (USB: main unit, then gadget unit), then hardware (USB data
+    role; Bluetooth adapter and units together).
     """
     wizard_key = SOURCE_SPECS[source].wizard_key
     if profile_allows is None:
         profile_allows = _profile_allows_local_sources()
     if not profile_allows:
         return False, SOURCE_UNAVAILABLE[wizard_key]
+    if records is None:
+        return False, UNIT_STATE_UNAVAILABLE_REASON
     if source == Source.BLUETOOTH:
         if bluetooth is None:
             bluetooth = _bluetooth_availability(records)
         if not bluetooth.available:
             return False, bluetooth_unavailable_reason(bluetooth)
         return True, ""
-    lifecycle = local_source_lifecycle(source)
-    if records is None:
-        records = read_unit_states(lifecycle.health_units, timeout=5.0) or {}
     if source == Source.USBSINK:
-        if not _unit_loaded(records, USBSINK_UNIT):
+        if not unit_loaded(records.get(USBSINK_UNIT)):
             return False, SOURCE_UNAVAILABLE[wizard_key]
-        if not _unit_loaded(records, USBSINK_GADGET_UNIT):
+        if not unit_loaded(records.get(USBSINK_GADGET_UNIT)):
             return False, (
                 "USB Audio Input is missing its composite gadget unit. Re-run "
                 "install.sh to repair the local renderer stack."
             )
         gadget_available, reason = _usbsink_capability()
         return gadget_available, ("" if gadget_available else reason)
-    if not all(_unit_loaded(records, unit) for unit in lifecycle.health_units):
+    lifecycle = local_source_lifecycle(source)
+    if not all(unit_loaded(records.get(unit)) for unit in lifecycle.health_units):
         return False, SOURCE_UNAVAILABLE[wizard_key]
     return True, ""
 
@@ -239,15 +236,20 @@ def _systemd_source_state(
     *,
     desired: bool,
     parked: bool,
-    records: Mapping[str, dict[str, Any]],
+    records: Mapping[str, dict[str, Any]] | None,
     profile_allows: bool,
 ) -> dict[str, bool | str]:
     lifecycle = local_source_lifecycle(source)
     available, unavailable_reason = _source_availability(
         source, records=records, profile_allows=profile_allows,
     )
+    # ``records`` is None when the shared batch read was unavailable:
+    # _source_availability already turned that into UNIT_STATE_UNAVAILABLE_REASON
+    # above, so every unit here reads as "not observed active" -- unknown,
+    # never a fabricated "still active" degradation.
+    records_map = records or {}
     active = {
-        unit: _unit_running(records, unit) for unit in lifecycle.health_units
+        unit: unit_active(records_map.get(unit)) for unit in lifecycle.health_units
     }
     observed = all(active.values()) if desired else any(active.values())
     inactive = [unit for unit, running in active.items() if not running]
@@ -300,22 +302,18 @@ async def _bt_state() -> tuple[bool, bool]:
         return False, False
 
 
-def _bluetooth_availability(
-    records: Mapping[str, dict[str, Any]] | None = None,
-) -> BluetoothAvailability:
-    """Shared adapter + complete activation-unit availability snapshot.
-
-    ``records`` lets a caller that already ran one ``read_unit_states`` probe
-    (:func:`read_source_status`) reuse it; a caller with none (a single-source
-    :func:`enable_blocker` check) gets one dedicated probe.
-    """
-
+def _bluetooth_units() -> tuple[str, ...]:
+    """The units Bluetooth's activation-availability check reads."""
     lifecycle = local_source_lifecycle(Source.BLUETOOTH)
-    units = (BLUETOOTH_CONTROL_PLANE_UNIT, *lifecycle.runtime_units)
-    live_records = (
-        records if records is not None else (read_unit_states(units, timeout=5.0) or {})
-    )
-    return probe_bluetooth_availability(lambda unit: _unit_loaded(live_records, unit))
+    return (BLUETOOTH_CONTROL_PLANE_UNIT, *lifecycle.runtime_units)
+
+
+def _bluetooth_availability(
+    records: Mapping[str, dict[str, Any]],
+) -> BluetoothAvailability:
+    """Adapter and activation-unit availability over one ``read_unit_states``
+    batch that covers ``_bluetooth_units()``."""
+    return probe_bluetooth_availability(lambda unit: unit_loaded(records.get(unit)))
 
 
 def sources_parked() -> bool:
@@ -336,7 +334,13 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
     asyncio task because dbus-next is async-only; the rest share one
     ``systemctl show`` batch via :func:`jasper.service_units.read_unit_states`."""
     intents = read_source_intents()
-    records = read_unit_states(_STATE_UNITS, timeout=5.0) or {}
+    # None (not {}) is preserved past this point: it means the batch itself
+    # is unavailable (systemctl unreachable/timed out), which every
+    # systemd-backed source must report as UNIT_STATE_UNAVAILABLE_REASON, not
+    # as "every unit not-found". ``records_map`` below is the None-safe {}
+    # fallback for direct .get() reads of observed (not availability) state.
+    records = read_unit_states(_STATE_UNITS, timeout=5.0)
+    records_map = records or {}
     try:
         bt_powered, bt_has_hid = asyncio.run(asyncio.wait_for(
             _bt_state(),
@@ -353,13 +357,13 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
     usbsink_available, usbsink_reason = _source_availability(
         Source.USBSINK, records=records, profile_allows=profile_allows,
     )
-    usbsink_main_active = _unit_running(records, USBSINK_UNIT)
+    usbsink_main_active = unit_active(records_map.get(USBSINK_UNIT))
     # Host-visible audio device presence is the uac2 ALSA card, NOT gadget-unit
     # activity: the composite gadget can outlive audio (it also carries the USB
     # management network), so its being active no longer implies audio is
     # advertised. The card exists iff the uac2 function is composed.
     usbsink_card_present = _uac2_card_present()
-    usbsink_starting = _unit_activating(records, USBSINK_UNIT)
+    usbsink_starting = unit_activating(records_map.get(USBSINK_UNIT))
     fanin_status = read_fanin_status()
     usbsink_direct_sample = extract_direct_sample(fanin_status)
     usbsink_direct_present = usbsink_direct_sample is not None
@@ -414,16 +418,19 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
                 "USB Audio Input's direct fan-in capture lane is not healthy "
                 f"({usbsink_direct_sample.health or 'unknown'})."
             )
-    bt_availability = _bluetooth_availability(records)
+    bt_availability = _bluetooth_availability(records_map)
     bt_any_soft_blocked = bt_availability.any_soft_blocked
     bt_all_soft_blocked = bt_availability.all_soft_blocked
     bt_rfkill_error = bt_availability.error
     bt_unit_active = {
-        unit: _unit_running(records, unit) for unit in BLUETOOTH_RUNTIME_UNITS
+        unit: unit_active(records_map.get(unit)) for unit in BLUETOOTH_RUNTIME_UNITS
     }
     bt_runtime_active = all(bt_unit_active.values())
     bt_available_for_role, bt_unavailable_reason = _source_availability(
-        Source.BLUETOOTH, profile_allows=profile_allows, bluetooth=bt_availability,
+        Source.BLUETOOTH,
+        records=records,
+        profile_allows=profile_allows,
+        bluetooth=bt_availability,
     )
     bt_desired = intents[Source.BLUETOOTH]
     bt_observed_on = (
@@ -491,7 +498,13 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
 def enable_blocker(source: Source) -> str:
     """Return "" when ``source`` may be turned on now, else the reason the
     /sources/ wizard raises as a ``RuntimeError`` on a blocked ``POST /set``."""
-    available, reason = _source_availability(source)
+    units = (
+        _bluetooth_units() if source == Source.BLUETOOTH
+        else local_source_lifecycle(source).health_units
+    )
+    available, reason = _source_availability(
+        source, records=read_unit_states(units, timeout=5.0),
+    )
     return "" if available else reason
 
 
