@@ -2,10 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""P6 correction advisor — packet composition, interpret, propose, provenance.
+"""Room-advisor behavior using replayed or hand-authored provider fixtures.
 
-All fixture-driven: the OpenAI transport is mocked with real-SHAPE
-captured payloads under tests/fixtures/. ZERO paid calls.
+No provider calls occur; these tests are not fresh model evaluations.
 """
 from __future__ import annotations
 
@@ -38,11 +37,7 @@ def _transport_from_fixture(name: str):
 
 
 def _live_check_demo_session():
-    """The demo session the LIVE fixtures were captured against, loaded
-    from scripts/tuning-llm-live-check.py itself (not mirrored here) so
-    the test packet and the captured model output stay in provenance
-    lockstep by construction — a number cited by the live model must be
-    in this exact packet."""
+    """Use the original fixture context, not a second copy."""
     import importlib.util
 
     path = Path(__file__).parents[1] / "scripts" / "tuning-llm-live-check.py"
@@ -141,49 +136,24 @@ def test_packet_carries_server_computed_evidence():
     assert len(rs["sample_points"]) <= 9
 
 
-# --- provenance guard -------------------------------------------------
-
-def test_provenance_ok_when_numbers_in_packet():
-    ctx = ca.build_correction_advisor_context(_fake_session())
-    text = "Your room has an 8.1 dB peak near 62 Hz; the correction handled it."
-    result = ca.check_number_provenance(text, ctx)
-    assert result["ok"] is True
-    assert result["unverified"] == []
-
-
-def test_provenance_flags_hallucinated_numbers():
-    ctx = ca.build_correction_advisor_context(_fake_session())
-    text = "There is a peak at 95.5 Hz and a deep null at 210 Hz."
-    result = ca.check_number_provenance(text, ctx)
-    assert result["ok"] is False
-    assert 95.5 in result["unverified"]
-    assert 210.0 in result["unverified"]
-
-
-def test_provenance_exempts_small_counts():
-    ctx = ca.build_correction_advisor_context(_fake_session())
-    text = "You measured 3 positions and JTS placed 1 filter."
-    result = ca.check_number_provenance(text, ctx)
-    assert result["ok"] is True
-
-
-def test_provenance_small_integer_with_unit_is_not_exempt():
-    """Unit-aware exemption: a small integer immediately followed by a
-    measurement unit ('a 25 dB peak', '18Hz rumble') is a claimed
-    measurement fact, not a count — it gets checked against the packet."""
-    ctx = ca.build_correction_advisor_context(_fake_session())
-    result = ca.check_number_provenance("There is a 25 dB peak at 40 Hz.", ctx)
-    assert result["ok"] is False
-    assert 25.0 in result["unverified"]
-    assert 40.0 in result["unverified"]
-    # No-space unit form is caught too.
-    result2 = ca.check_number_provenance("an 18Hz rumble", ctx)
-    assert result2["ok"] is False
-    assert 18.0 in result2["unverified"]
-    # A small unit-suffixed number that IS in the packet stays verified
-    # (8.1 dB / 62 Hz are packet facts on this session).
-    result3 = ca.check_number_provenance("the 8.1 dB peak near 62 Hz", ctx)
-    assert result3["ok"] is True
+@pytest.mark.parametrize(("text", "missing"), [
+    ("An 8.1 dB peak near 62 Hz.", []),
+    ("A peak at 95.5 Hz and null at 210 Hz.", [95.5, 210.0]),
+    ("3 positions and 1 filter.", []),
+    ("A 25 dB peak at 40 Hz.", [25.0, 40.0]),
+    ("An 18Hz rumble.", [18.0]),
+    ("A 62 dB peak at 8.1 Hz.", []),
+])
+def test_number_overlap_discloses_limits(text, missing):
+    result = ca.check_number_provenance(
+        text, ca.build_correction_advisor_context(_fake_session()),
+    )
+    assert result == {
+        "kind": "number_overlap",
+        "verifies_claims": False,
+        "ok": not missing,
+        "unverified": missing,
+    }
 
 
 def test_narration_text_is_clamped_to_text_limit():
@@ -204,9 +174,6 @@ def test_narration_text_is_clamped_to_text_limit():
 # --- interpret (read-only) --------------------------------------------
 
 def test_interpret_uses_live_fixture_and_passes_provenance():
-    # The LIVE-captured fixture (scripts/tuning-llm-live-check.py) against
-    # the exact session it was captured from — real gpt-5.4 wire shape,
-    # and every number the real model cited must be in this packet.
     sess = _live_check_demo_session()
     out = ca.interpret(
         sess,
@@ -292,14 +259,8 @@ def test_propose_multikind_fixture_renders_every_kind():
 
 
 def test_propose_discloses_a_ringing_correction_without_withholding_apply():
-    """A model that proposes a ringing boost: validation may pass bounds
-    (if cuts_only allowed a boost), and the simulation DISCLOSES the ring
-    note while the proposal stays offerable behind the user's confirm.
-
-    **Mutation guard.** Re-deriving ``applicable`` from a sim verdict
-    flips it back to False and fails the first assertion."""
+    """Simulated ringing does not veto a valid experiment."""
     sess = _fake_session()
-    ctx = ca.build_correction_advisor_context(sess)
     validation = {
         "kind": "jts_advisor_response_validation",
         "accepted": True,
@@ -310,7 +271,7 @@ def test_propose_discloses_a_ringing_correction_without_withholding_apply():
             "rationale": "boost it",
         }],
     }
-    reviewed = ca._review_actions(sess, ctx, validation)
+    reviewed = ca._review_actions(sess, validation)
     assert reviewed[0]["applicable"] is True
     assert any(
         i["code"] == "boost_would_ring"

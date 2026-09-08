@@ -2,21 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The P6 tuning-LLM surfaced in the ``/sound/room/`` flow.
+"""Room-advisor narration and bounded proposals; never writes CamillaDSP.
 
-:func:`interpret` is a read-only narration of the SERVER-computed result;
-:func:`propose` is the confirm-gated proposer, whose every correction proposal
-is validated against the strategy caps (:mod:`.response`) and then simulated
-(:mod:`.proposal_sim`). The model authors no number a tool computed
-(:func:`check_number_provenance`). The packet carries derived curves and
-summaries only — never raw audio or device identifiers. This module NEVER
-writes CamillaDSP.
+The packet contains summaries, not raw audio or device identifiers. Simulation
+informs a proposal. The numeric overlap check cannot verify a model's claims.
 """
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
+from jasper.correction import strategy as _strategy
 from jasper.log_event import log_event
 
 from . import key_provisioning, model_client, prompt, response
@@ -65,17 +62,19 @@ _PROPOSE_SYSTEM = prompt._SYSTEM_INSTRUCTIONS + """
 You may additionally propose, when the evidence supports it:
 - propose_correction_peq_adjustment: a bounded alternative room-
   correction filter set (freq_hz/q/gain_db), within the active strategy
-  caps in the packet. JTS will SIMULATE it and reject it if it would ring
-  or make the room measurably worse, then require the user to confirm
-  before applying. Cuts-only is the default. Propose filter VALUES only.
+  caps in the packet. JTS discloses simulated ringing and predicted worsening;
+  simulation does not veto a valid experiment or establish a measured result.
+  Applying requires user confirmation. Cuts-only is the default.
 - propose_target_move: a bounded suggestion to move the shared
   house-curve target (a named target id, or a warmth value in range).
   Taste, not correction — pair it with a question. It is surfaced as a
   suggestion only; the household changes the target themselves in the
   correction flow. JTS never applies it automatically.
 
-Every number you state MUST come from the evidence packet. Never author
-a frequency, dB, Q, or verdict a tool computed.
+Cite measured numbers from the packet with their meaning and units. Proposed
+filter values are hypotheses within the bounds, not measured facts. Keep
+predictions, observations, and taste separate; a numeric overlap check cannot
+verify that a claim has the right source, units, or meaning.
 """
 
 
@@ -141,8 +140,6 @@ def _strategy_bounds(session: Any) -> dict[str, Any]:
     ``resolve_correction_strategy`` falls back to the default strategy for an
     unknown id and never raises, so this always returns a real cap set.
     """
-    from jasper.correction import strategy as _strategy
-
     strat = _strategy.resolve_correction_strategy(
         getattr(session, "strategy_choice", None)
         or _strategy.DEFAULT_CORRECTION_STRATEGY_ID
@@ -316,10 +313,7 @@ def _round_opt(value: Any, digits: int = 2) -> float | None:
 
 
 def _packet_numbers(context: dict[str, Any]) -> set[float]:
-    """Every numeric fact in the packet the model is allowed to cite.
-
-    A user-facing number in the model's prose must round-match one of these.
-    """
+    """Rounded scalar values, without field or unit identity."""
     numbers: set[float] = set()
 
     def _walk(value: Any) -> None:
@@ -338,31 +332,8 @@ def _packet_numbers(context: dict[str, Any]) -> set[float]:
     return numbers
 
 
-_NUMBER_RE = None
-
-
-def _number_regex():
-    global _NUMBER_RE
-    if _NUMBER_RE is None:
-        import re
-
-        # A signed decimal; the unit (if any) is inspected separately.
-        _NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
-    return _NUMBER_RE
-
-
-_UNIT_RE = None
-
-
-def _unit_regex():
-    global _UNIT_RE
-    if _UNIT_RE is None:
-        import re
-
-        # A measurement unit immediately following a number ("25 dB", "1.2 kHz")
-        # marks it a claimed measurement fact, never an exempt count/ordinal.
-        _UNIT_RE = re.compile(r"\s*k?(?:dB|Hz)\b", re.IGNORECASE)
-    return _UNIT_RE
+_NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+_UNIT_RE = re.compile(r"\s*k?(?:dB|Hz)\b", re.IGNORECASE)
 
 
 def check_number_provenance(
@@ -371,18 +342,16 @@ def check_number_provenance(
     *,
     tolerance: float = 0.5,
 ) -> dict[str, Any]:
-    """Verify user-facing numerics in ``text`` trace to the packet.
+    """Flag numbers absent from the packet, without verifying their claims.
 
-    Decimals in the model's prose must round-match (within ``tolerance``) a
-    number in the evidence packet. Small integers (0..30) are exempt as
-    ordinary prose UNLESS followed by a unit (dB / Hz / kHz). Returns
-    ``{ok, unverified: [floats]}`` — advisory surface state; the deterministic
-    apply gate does not depend on it.
+    Matching ignores source fields, units, and meaning. Small integers without
+    units are exempt. Legacy ``ok``/``unverified`` fields describe only this
+    overlap heuristic; they confer no measurement or apply authority.
     """
     allowed = _packet_numbers(context)
     unverified: list[float] = []
     source = text or ""
-    for match in _number_regex().finditer(source):
+    for match in _NUMBER_RE.finditer(source):
         try:
             value = float(match.group(0))
         except ValueError:
@@ -390,13 +359,18 @@ def check_number_provenance(
         rounded = round(value, 1)
         # Exempt small counts and ordinals, but a unit suffix makes it a
         # measurement claim and never exempt.
-        has_unit = bool(_unit_regex().match(source, match.end()))
+        has_unit = bool(_UNIT_RE.match(source, match.end()))
         if not has_unit and abs(value) <= 30 and float(value).is_integer():
             continue
         if any(abs(rounded - a) <= tolerance for a in allowed):
             continue
         unverified.append(value)
-    return {"ok": not unverified, "unverified": unverified}
+    return {
+        "kind": "number_overlap",
+        "verifies_claims": False,
+        "ok": not unverified,
+        "unverified": unverified,
+    }
 
 
 
@@ -503,7 +477,7 @@ def propose(
     )
     advisor = call.get("advisor_response") or {}
     validation = response.validate_advisor_response(advisor, advisor_context=packet)
-    reviewed = _review_actions(session, context, validation)
+    reviewed = _review_actions(session, validation)
     narration = _narration_text(advisor)
     provenance = check_number_provenance(narration, context)
     log_event(
@@ -532,16 +506,9 @@ def propose(
 
 def _review_actions(
     session: Any,
-    context: dict[str, Any],
     validation: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Turn each validated action into a user-facing proposal card.
-
-    Correction PEQ proposals are simulated and judged; only a simulate-accepted
-    one is marked ``applicable``. Target moves have no apply path and are
-    marked ``suggestion_only``. Preference/explain/remeasure pass through as
-    read-only notes.
-    """
+    """Offer valid correction proposals with simulation as disclosure."""
     reviewed: list[dict[str, Any]] = []
     for action in validation.get("validated_action_plan") or []:
         atype = action.get("type")
@@ -550,8 +517,6 @@ def _review_actions(
         elif atype == response.ACTION_PROPOSE_TARGET_MOVE:
             reviewed.append({
                 "type": atype,
-                # No apply/execute path exists for a target move; the household
-                # acts on it in the flow's own target picker.
                 "applicable": False,
                 "suggestion_only": True,
                 "target_id": action.get("target_id"),
@@ -583,8 +548,6 @@ def _review_correction_peq(session: Any, action: dict[str, Any]) -> dict[str, An
     )
     return {
         "type": response.ACTION_PROPOSE_CORRECTION_PEQ,
-        # Unlike a target move, this kind HAS an apply path behind the user's
-        # confirm. The simulation below is disclosure, not a veto.
         "applicable": True,
         "requires_user_confirmation": True,
         "correction_peqs": peqs,
@@ -595,14 +558,7 @@ def _review_correction_peq(session: Any, action: dict[str, Any]) -> dict[str, An
 
 
 def _advisor_packet_for_model(context: dict[str, Any]) -> dict[str, Any]:
-    """Fold the correction context into the shape the validator and prompt
-    builder expect: a ``correction`` block carrying the live strategy bounds
-    every proposed filter set is checked against.
-
-    There is deliberately no hand-written ``advisor_policy`` permission list;
-    what bounds a proposal is the strategy caps, then simulate / acceptance /
-    confirm / apply (``docs/measurement-loop-doctrine.md``).
-    """
+    """Carry the live strategy bounds into the validator's correction block."""
     packet = dict(context)
     # response._correction_bounds reads advisor_context["correction"]["strategy_bounds"].
     packet["correction"] = {
