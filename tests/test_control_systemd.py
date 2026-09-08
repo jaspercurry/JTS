@@ -161,10 +161,12 @@ def test_readwritepaths_pins_control_write_contracts():
         "rate-limit at /var/lib/jasper/system_supervisor_reboot.json depends "
         f"on it. Got {paths!r}"
     )
-    assert "/var/lib/jasper-asound" in paths, (
+    assert "-/var/lib/jasper-asound" in paths, (
         "ReadWritePaths must include /var/lib/jasper-asound; the /system "
         "audio-quality control renders asound.conf there from inside "
-        f"jasper-control's sandbox. Got {paths!r}"
+        "jasper-control's sandbox. The `-` is required: a box without the "
+        "directory must lose the render, not the whole control plane. "
+        f"Got {paths!r}"
     )
     assert "/etc/avahi/services" in paths, (
         "ReadWritePaths must include /etc/avahi/services; wake-response "
