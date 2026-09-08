@@ -19,7 +19,9 @@ from openai.types.realtime import (
 )
 
 from jasper.audio_io import MicCapture, confirmed_tts_flush
+from jasper.openwakeword_guard import ensure_openwakeword_import_safe
 from jasper.tools import ToolRegistry
+from jasper.vad import SpeechVAD
 from jasper.voice.gemini_session import GeminiLiveConnection
 from jasper.voice.grok_session import GrokRealtimeConnection
 from jasper.voice.openai_session import OpenAIRealtimeConnection
@@ -94,7 +96,9 @@ def _reply(provider, pcm, text, *, complete=True):
 
 @pytest.mark.parametrize("scenario", ["quiet", "pause", "manual", "no_speech"])
 async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
-    scores = [0.6, 0.2, 0.2, 0.2]
+    ensure_openwakeword_import_safe()
+    vad_module = pytest.importorskip("openwakeword.vad")
+    scores = [0.65, 0.2, 0.2, 0.2]
     if scenario == "pause":
         scores += [0.0] * 5 + [0.2] * 4
     scores += [0.0] * (16 if scenario == "manual" else 12)
@@ -108,9 +112,31 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
     uploads = []
     for split in (0, 8 * repeats):
         sink = RecordingPlayout()
-        wl = wake_loop_for_tests(tts=sink)
+        class ScoreModel:
+            tag = None
+            chunk = 0
+
+            def run(self, _outputs, inputs):
+                tag = round(float(inputs["input"][0, 0]) * 32767)
+                if tag != self.tag:
+                    self.tag, self.chunk = tag, 0
+                score = scores[tag - 201]
+                # At 80 ms the three subchunks differ; using their maximum would
+                # falsely arm the no-speech tape whose aggregate stays at 0.5.
+                offset = (0.1, 0.0, -0.1)[self.chunk % 3] if score else 0.0
+                self.chunk += 1
+                return np.array([[score + offset]]), inputs["h"], inputs["c"]
+
+        # Keep the real openWakeWord chunk mean and SpeechVAD conversion. Only
+        # ONNX inference is replaced; no model assets or recognition are claimed.
+        model = vad_module.VAD.__new__(vad_module.VAD)
+        model.model = ScoreModel()
+        model.sample_rate = np.array(16000, dtype=np.int64)
+        model.reset_states()
+        vad = SpeechVAD.__new__(SpeechVAD)
+        vad._vad = model
+        wl = wake_loop_for_tests(tts=sink, vad=vad)
         wl._connection = provider[1]
-        wl._vad.predict = lambda frame: scores[int(frame[0]) - 201]
         wl._begin_turn_output_episode = AsyncMock()
         wl._prepare_assistant_loudness_context = AsyncMock()
         wl._content_activity.refresh_now = AsyncMock()
@@ -167,6 +193,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
                 await wl._handle_session_frame(frames[-1], captured_at=anchor + 5.1)
                 assert wl._turn is None
                 assert not sink.audio
+                assert _input_events(provider)[1] == closes
             else:
                 _reply(provider, b"\x07\x00" * 2400, "Captured reply")
                 await wait_until(lambda: sink.drained)
