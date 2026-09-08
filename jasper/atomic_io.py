@@ -63,7 +63,7 @@ import time
 from collections.abc import AsyncIterator, Iterable, Mapping
 from contextlib import ExitStack, asynccontextmanager, contextmanager
 from io import TextIOWrapper
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 import fcntl
 
@@ -80,6 +80,7 @@ __all__ = [
     "advisory_file_lock_async",
     "atomic_write_json",
     "atomic_write_text",
+    "env_key_action",
     "env_lock_path",
     "format_env_text",
     "fsync_directory",
@@ -92,6 +93,30 @@ __all__ = [
 #: One env-file mutation: ``(key, value)`` to state it, ``(key, None)`` to drop
 #: it.
 EnvKeyAction = tuple[str, "str | None"]
+
+
+class ReconcilerEnvAction(Protocol):
+    """The set/unset shape every reconciler's env action already has.
+
+    Structural on purpose: ``jasper.audio_runtime_plan.RuntimeEnvAction`` is
+    the one implementation, and naming it here would drag that policy layer
+    into this module's import graph — the audio-hardware pass keeps it lazy
+    (ADR-0226).
+    """
+
+    @property
+    def action(self) -> str: ...
+
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def value(self) -> str: ...
+
+
+def env_key_action(action: ReconcilerEnvAction) -> EnvKeyAction:
+    """One reconciler env action as an :data:`EnvKeyAction`."""
+    return action.key, action.value if action.action == "set" else None
 
 
 _UNSUPPORTED_DIR_FSYNC = frozenset(

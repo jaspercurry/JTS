@@ -46,6 +46,7 @@ from jasper.atomic_io import (
     ENV_FILE_LOCK_TIMEOUT_SECONDS,
     EnvKeyAction as EnvAction,
     advisory_file_lock,
+    env_key_action,
     env_lock_path,
     locked_upsert_env_file,
 )
@@ -128,12 +129,6 @@ def _log_token(value: str) -> str:
     if not value:
         return "direct"
     return _LOG_TOKEN_UNSAFE.sub("_", value)
-
-
-def _env_action(action: Any) -> EnvAction:
-    """One :class:`jasper.audio_runtime_plan.RuntimeEnvAction` as an
-    :data:`EnvAction`. Untyped so the plan module stays a lazy import."""
-    return action.key, action.value if action.action == "set" else None
 
 
 def _ensure_dir(path: Path, mode: int) -> None:
@@ -977,7 +972,7 @@ class Pass:
             self.log("route_env_skip", reason="audio_config_unavailable")
             return False
         changed = self.set_env_file_var(
-            self.fanin_env_file, [_env_action(action) for action in actions]
+            self.fanin_env_file, [env_key_action(action) for action in actions]
         )
         self.route_fanin_changed = changed
         self.log(
@@ -1023,7 +1018,7 @@ class Pass:
             )
             return
         self.latency_floor_changed = self.set_env_file_var(
-            self.outputd_env_target, [_env_action(action) for action in actions]
+            self.outputd_env_target, [env_key_action(action) for action in actions]
         )
         self.log(
             "latency_floor",

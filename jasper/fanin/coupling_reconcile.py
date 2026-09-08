@@ -48,9 +48,9 @@ from typing import IO
 from jasper.atomic_io import (
     CONFIG_FILE_MODE,
     ENV_FILE_LOCK_TIMEOUT_SECONDS,
-    EnvKeyAction,
     advisory_file_lock,
     atomic_write_text,
+    env_key_action,
     env_lock_path,
     locked_upsert_env_file,
 )
@@ -1785,14 +1785,10 @@ def _write_env_actions(
     """
     return locked_upsert_env_file(
         path,
-        lambda text: [_key_action(action) for action in build_actions(text)],
+        lambda text: [env_key_action(action) for action in build_actions(text)],
         mode=CONFIG_FILE_MODE,
         delete_when_empty=True,
     )
-
-
-def _key_action(action: RuntimeEnvAction) -> EnvKeyAction:
-    return action.key, action.value if action.action == "set" else None
 
 
 def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
