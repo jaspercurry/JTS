@@ -91,6 +91,11 @@ def assignments_for(unit_text: str, key: str) -> tuple[str, ...]:
     return tuple(values)
 
 
+def exec_argv_for(unit_text: str, key: str) -> tuple[list[str], ...]:
+    """Each command of an ``Exec*=`` directive as argv, systemd's prefix characters stripped."""
+    return tuple(shlex.split(command.lstrip("-@+!:")) for command in assignments_for(unit_text, key))
+
+
 def values_for(unit_text: str, key: str) -> tuple[str, ...]:
     """Resolve an accumulating, whitespace-tokenized systemd directive.
 

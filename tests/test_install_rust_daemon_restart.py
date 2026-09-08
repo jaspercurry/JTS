@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.systemd_unit_helpers import assignments_for
+from tests.systemd_unit_helpers import exec_argv_for
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_HELPERS = ROOT / "deploy/lib/install/rust-daemons.sh"
@@ -87,19 +87,17 @@ build_install_rust_daemon jasper-outputd 1 {shlex.quote(str(cache))}
 
 
 def test_each_workspace_binary_has_one_systemd_owner() -> None:
-    binaries = sorted(
-        target["name"]
-        for manifest in (ROOT / "rust").glob("*/Cargo.toml")
-        for target in tomllib.loads(manifest.read_text()).get("bin", [])
-    )
+    binaries: set[str] = set()
+    for manifest in (ROOT / "rust").glob("*/Cargo.toml"):
+        crate = tomllib.loads(manifest.read_text())
+        binaries.update(target["name"] for target in crate.get("bin", []))
+        if (manifest.parent / "src/main.rs").exists():
+            binaries.add(crate["package"]["name"])
     assert binaries
     programs = {
-        unit.name: [
-            shlex.split(command.lstrip("-@+!:"))[0]
-            for command in assignments_for(unit.read_text(), "ExecStart")
-        ]
+        unit.name: [argv[0] for argv in exec_argv_for(unit.read_text(), "ExecStart")]
         for unit in (ROOT / "deploy/systemd").glob("*.service")
     }
-    for binary in binaries:
-        owners = [name for name, argv0 in programs.items() if f"/opt/jasper/bin/{binary}" in argv0]
+    for binary in sorted(binaries):
+        owners = [name for name, started in programs.items() if f"/opt/jasper/bin/{binary}" in started]
         assert owners == [f"{binary}.service"], (binary, owners)
