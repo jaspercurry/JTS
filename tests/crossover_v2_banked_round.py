@@ -148,10 +148,10 @@ ENTRY_GRID_HZ = np.geomspace(280.0, 16000.0, 90)
 #: same-grid fixture.
 VERIFY_GRID_HZ = np.geomspace(SOLO_BAND_HZ[0], SOLO_BAND_HZ[1], 301)
 
-#: A seat take is the room's own measurement: full-band, and on its own grid
-#: so a reader handed one for a solo or a VERIFY curve cannot pass.
-SEAT_GRID_HZ = np.geomspace(20.0, 20000.0, 400)
-SEAT_BAND_HZ = (20.0, 20000.0)
+#: A seat take is the room's own measurement, full-band on the shared basis
+#: every retained pose curve is sampled onto.
+SEAT_BAND_HZ = spatial.LATERAL_EVIDENCE_BAND_HZ
+SEAT_GRID_HZ = spatial.lateral_evidence_grid_hz()
 
 #: Where the fixture's two synthetic branches cross. A SHAPE knob, not a
 #: measured corner: it only has to sit inside :data:`SOLO_BAND_HZ` so the

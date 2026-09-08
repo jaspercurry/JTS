@@ -41,7 +41,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
-from ..measurement_programs import POSE_KIND_BEARING, validated_pose_kind
+from ..measurement_programs import POSE_KIND_BEARING, validated_pose
 from .contracts import (
     DESIGN_AXIS_DEG,
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
@@ -659,7 +659,7 @@ class PositionGeometry:
                 f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
             )
         object.__setattr__(
-            self, "seat_offset_m", validated_pose_kind(self.kind, self.seat_offset_m),
+            self, "seat_offset_m", validated_pose(self.kind, self.seat_offset_m)[0],
         )
         # `bool` is an `int` and is never an elevation.
         if isinstance(self.vertical_deg, bool) or not isinstance(
@@ -678,8 +678,9 @@ def pose_kind_fields(
 
     Empty for a bearing at the mark, so every record banked before poses had
     a kind is byte-identical; a reader takes absence as that bearing. A seat
-    or close take says its kind, where it was stated from, and whether its
-    response was gated.
+    or close take says its kind, where it was stated from, and — from the
+    one caller that analyzed it — whether its response was gated; a caller
+    that does not know says nothing, so a merge over the record keeps it.
     """
     if geometry.kind == POSE_KIND_BEARING:
         return {}
@@ -690,7 +691,7 @@ def pose_kind_fields(
             if geometry.seat_offset_m is not None else None
         ),
         "mark_distance_m": geometry.mark_distance_m,
-        "gating_applied": gating_applied,
+        **({"gating_applied": gating_applied} if gating_applied is not None else {}),
     }
 
 

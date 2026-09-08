@@ -41,7 +41,7 @@ from .measurement_programs import (
     MeasurementProgram,
     off_the_mark,
     pose_place,
-    validated_pose_kind,
+    validated_pose,
 )
 from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
@@ -239,17 +239,11 @@ class AngleStop:
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
             )
         try:
-            offset = validated_pose_kind(self.kind, self.seat_offset_m)
+            offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
         object.__setattr__(self, "seat_offset_m", offset)
-        if self.distance_m is not None and not (
-            isinstance(self.distance_m, numbers.Real)
-            and math.isfinite(self.distance_m) and self.distance_m > 0
-        ):
-            raise CrossoverV2FlowError(
-                f"a pose distance is a positive length in metres, got {self.distance_m!r}"
-            )
+        object.__setattr__(self, "distance_m", distance)
 
     @property
     def place(self) -> tuple[object, ...]:

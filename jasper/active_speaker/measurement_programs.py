@@ -65,13 +65,16 @@ SEAT_OFFSET_M = 0.30
 CLOSE_DISTANCE_M = 0.30
 
 
-def validated_pose_kind(
-    kind: str, seat_offset_m: Sequence[float] | None,
-) -> tuple[float, float, float] | None:
+def validated_pose(
+    kind: str,
+    seat_offset_m: Sequence[float] | None,
+    distance_m: float | None = None,
+) -> tuple[tuple[float, float, float] | None, float | None]:
     """The one rule every carrier of a pose category checks: ``kind`` is one
-    of :data:`POSE_KINDS`, and exactly a seat states three finite metres
-    ``(right, forward, up)`` from the head. Returns the offset normalized to
-    floats; raises ``ValueError``."""
+    of :data:`POSE_KINDS`; exactly a seat states three finite metres
+    ``(right, forward, up)`` from the head; a distance, when stated, is a
+    positive length. Returns the offset and distance normalized to floats;
+    raises ``ValueError``."""
 
     if kind not in POSE_KINDS:
         raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}")
@@ -80,15 +83,20 @@ def validated_pose_kind(
             "a seat pose states its (right, forward, up) offset from the head; "
             "no other kind does"
         )
-    if seat_offset_m is None:
-        return None
-    try:
-        right, forward, up = (float(v) for v in seat_offset_m)
-    except (TypeError, ValueError):
-        raise ValueError(f"a seat offset is three finite metres, got {seat_offset_m!r}") from None
-    if not all(math.isfinite(v) for v in (right, forward, up)):
-        raise ValueError(f"a seat offset is three finite metres, got {seat_offset_m!r}")
-    return (right, forward, up)
+    offset = None
+    if seat_offset_m is not None:
+        try:
+            offset = tuple(float(v) for v in seat_offset_m)
+        except (TypeError, ValueError):
+            offset = ()
+        if len(offset) != 3 or not all(math.isfinite(v) for v in offset):
+            raise ValueError(f"a seat offset is three finite metres, got {seat_offset_m!r}")
+    distance = None
+    if distance_m is not None:
+        distance = float(distance_m) if isinstance(distance_m, (int, float)) else math.nan
+        if not math.isfinite(distance) or distance <= 0:
+            raise ValueError(f"a pose distance is a positive length in metres, got {distance_m!r}")
+    return offset, distance  # type: ignore[return-value]
 
 
 def pose_place(
@@ -120,9 +128,9 @@ class ProgramPose:
     seat_offset_m: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "seat_offset_m", validated_pose_kind(self.kind, self.seat_offset_m),
-        )
+        offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
+        object.__setattr__(self, "seat_offset_m", offset)
+        object.__setattr__(self, "distance_m", distance)
 
     @property
     def place(self) -> tuple[object, ...]:
