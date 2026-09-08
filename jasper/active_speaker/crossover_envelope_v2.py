@@ -1552,16 +1552,16 @@ def _attempt_floor_sentence(decision: Mapping[str, Any]) -> str:
     floor = _mapping(decision.get("floor"))
     floor_db = _attempt_db(floor.get("claim_floor_db"))
     if magnitude is None or floor_db is None:
-        return "Stopped because the instrument could not support another claim."
+        return "The instrument cannot resolve the change."
     return (
-        "Stopped: the change in prediction tracking from the previous attempt "
+        "The change in prediction tracking from the previous attempt "
         f"({magnitude} dB) is below what this instrument can distinguish "
         f"(floor {floor_db} dB)."
     )
 
 
 def _attempt_evidence_sentence(decision: Mapping[str, Any]) -> str:
-    return "Stopped because the latest attempt could not be compared reliably."
+    return "No reliable comparison is available for the latest attempt."
 
 
 def _attempt_sitting_sentence(decision: Mapping[str, Any]) -> str:
@@ -1595,18 +1595,18 @@ def _attempt_budget_sentence(decision: Mapping[str, Any]) -> str:
         if isinstance(attempts, int) and not isinstance(attempts, bool) else None
     )
     return (
-        f"Stopped after {count} attempts because the attempt budget was reached."
+        f"The earlier planning count of {count} attempts has been reached."
         if count is not None
-        else "Stopped because the attempt budget was reached."
+        else "The earlier planning count has been reached."
     )
 
 
 def _attempt_converged_sentence(decision: Mapping[str, Any]) -> str:
-    return "Stopped because no material improvement remains."
+    return "The model predicts little further improvement."
 
 
 def _attempt_in_spec_sentence(decision: Mapping[str, Any]) -> str:
-    return "Stopped because the latest result is already within the target."
+    return "The latest result meets the target."
 
 
 # The household sentence has one writer. It dispatches on the kernel's reason
