@@ -26,6 +26,7 @@ from .assistant_loudness import (
     update_profile_from_measurement,
     upsample_2x,
 )
+from .audio_buffer import AudioBuffer, InputFrame
 from .assistant_volume import EffectiveVolumeContext
 from .dsp_numpy import resample_poly
 from .log_event import log_event
@@ -146,6 +147,60 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
         logger.warning("audio open failed: dmesg snapshot failed: %s", e)
 
 
+# Capture consumers discard audio older than 1 s. Slow turn acquisition has
+# its own 20 s budget; it must not make idle wake detection replay a backlog.
+CAPTURE_MAX_AGE_SEC = 1.0
+CAPTURE_MAX_FRAMES = 64
+CAPTURE_GAP_SEC = 0.32  # Four normal 80 ms packets without input.
+
+
+class _CaptureQueue:
+    def __init__(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._ready = asyncio.Event()
+        self._lock = threading.Lock()
+        self._buffer = AudioBuffer(CAPTURE_MAX_FRAMES, CAPTURE_MAX_AGE_SEC)
+        self._notification_pending = False
+        self._last_received_at: float | None = None
+        self.last_frame: InputFrame | None = None
+
+    @property
+    def dropped_frames(self) -> int:
+        return self._buffer.dropped_frames
+
+    def put_nowait(
+        self, pcm, captured_at: float | None = None, *, discontinuity: bool = False,
+    ) -> None:
+        now = time.monotonic() if captured_at is None else captured_at
+        with self._lock:
+            discontinuity |= (
+                self._last_received_at is not None
+                and now - self._last_received_at > CAPTURE_GAP_SEC
+            )
+            self._last_received_at = now
+            self._buffer.append(pcm, now, discontinuity=discontinuity)
+            # PortAudio's thread retains at most one loop notification, not
+            # one scheduled callback (and PCM array) per captured frame.
+            if not self._notification_pending:
+                self._notification_pending = True
+                self._loop.call_soon_threadsafe(self._notify)
+
+    def _notify(self) -> None:
+        with self._lock:
+            self._notification_pending = False
+            self._ready.set()
+
+    async def get(self):
+        while True:
+            with self._lock:
+                frame = self._buffer.pop()
+                if frame is not None:
+                    self.last_frame = frame
+                    return frame.pcm
+                self._ready.clear()
+            await self._ready.wait()
+
+
 class MicCapture:
     """Continuous mono 16 kHz mic capture, exposed as an asyncio queue.
 
@@ -189,15 +244,15 @@ class MicCapture:
         self._capture_block = self.OUTPUT_FRAME_SAMPLES * self._decimation
         # Lazy queue init — see UdpMicCapture for rationale (construct
         # from sync code shouldn't fail on stale event-loop state).
-        self._queue: asyncio.Queue[np.ndarray] | None = None
+        self._queue: _CaptureQueue | None = None
         self._stream: sd.InputStream | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _callback(self, indata, frames, time_info, status):  # noqa: ARG002
         if status:
             logger.debug("mic status: %s", status)
-        if self._loop is None:
+        if self._queue is None:
             return
+        captured_at = time.monotonic()
         # Take channel 0 (mono). UMIK-2 et al. expose stereo, but the L
         # capsule is what we want for voice; R is silent or duplicate.
         ch0 = indata[:, 0]
@@ -209,24 +264,20 @@ class MicCapture:
             # above 8 kHz back into the audible band.
             resampled = resample_poly(ch0, up=1, down=self._decimation)
             chunk = np.clip(resampled, -32768, 32767).astype(np.int16)
-        # call_soon_threadsafe schedules _enqueue to run on the loop thread,
-        # which is the only place asyncio.Queue.put_nowait can raise
-        # QueueFull. Catching it here in the callback would never fire.
-        self._loop.call_soon_threadsafe(self._enqueue, chunk)
+        self._queue.put_nowait(chunk, captured_at, discontinuity=bool(status))
 
-    def _enqueue(self, chunk: np.ndarray) -> None:
-        if self._queue is None:
-            return  # callback fired before __aenter__ completed; drop
-        try:
-            self._queue.put_nowait(chunk)
-        except asyncio.QueueFull:
-            logger.warning("mic queue full, dropping frame")
+    @property
+    def last_frame(self) -> InputFrame | None:
+        return self._queue.last_frame if self._queue is not None else None
+
+    @property
+    def dropped_frames(self) -> int:
+        return self._queue.dropped_frames if self._queue is not None else 0
 
     async def __aenter__(self) -> "MicCapture":
         import sounddevice as sd  # Pi-side dep, lazy — see module top.
 
-        self._loop = asyncio.get_running_loop()
-        self._queue = asyncio.Queue(maxsize=64)
+        self._queue = _CaptureQueue()
         try:
             self._stream = sd.InputStream(
                 device=self._device,
@@ -262,24 +313,8 @@ class MicCapture:
 
 
 class UdpMicCapture:
-    """Mic capture that receives mono 16 kHz int16 frames over UDP.
-
-    Same `frames()` async-generator contract as `MicCapture` so
-    voice_daemon's WakeLoop is transport-agnostic. Pairs with
-    jasper-aec-bridge sending UDP packets of `OUTPUT_FRAME_SAMPLES`
-    int16 samples to `127.0.0.1:<port>` (the AEC'd mic stream).
-
-    Why UDP instead of snd-aloop LoopbackAEC: snd-aloop's
-    `loopback_cable` struct persists in kernel state across consumer
-    death; a SIGKILL'd consumer leaves the cable half-bound with the
-    internal timer wedged (`hw_ptr=0`), and only `rmmod && modprobe
-    snd_aloop` (after stopping every consumer) or a reboot can
-    recover. Hit in production 2026-05-11.  UDP localhost has no
-    kernel-side state to corrupt: either side can crash without
-    affecting the other, `sendto()` is non-blocking (eliminates the
-    bridge SIGTERM-observability issue), and there's no module to
-    reload.  ~256 kbps loopback traffic is effectively zero-loss on
-    Linux's `lo`.  Standard pattern in Mumble, VoIP gateways, Snapcast.
+    """Mono 16 kHz int16 UDP input. Timestamps measure application ingress;
+    the unsequenced PCM carrier cannot expose sender or kernel queue age.
     """
 
     OUTPUT_RATE = MicCapture.OUTPUT_RATE
@@ -290,19 +325,20 @@ class UdpMicCapture:
     ) -> None:
         self._host = host
         self._port = port
-        # Queue is lazily created in __aenter__ so the class is safe
-        # to construct from sync code (e.g. unit tests that just
-        # assert factory dispatch). In Python 3.9 `asyncio.Queue()`
-        # calls `get_event_loop()` at construction; if there's a
-        # stale-closed loop in the thread (a real-world scenario in
-        # test suites), it raises. Deferring keeps the class
-        # construct-anywhere.
-        self._queue: asyncio.Queue[np.ndarray] | None = None
+        self._queue: _CaptureQueue | None = None
         self._transport: asyncio.BaseTransport | None = None
+
+    @property
+    def last_frame(self) -> InputFrame | None:
+        return self._queue.last_frame if self._queue is not None else None
+
+    @property
+    def dropped_frames(self) -> int:
+        return self._queue.dropped_frames if self._queue is not None else 0
 
     async def __aenter__(self) -> "UdpMicCapture":
         loop = asyncio.get_running_loop()
-        self._queue = asyncio.Queue(maxsize=64)
+        self._queue = _CaptureQueue()
         try:
             self._transport, _ = await loop.create_datagram_endpoint(
                 lambda: _UdpMicProtocol(self._queue),
@@ -333,15 +369,7 @@ class UdpMicCapture:
 
 
 class _UdpMicProtocol(asyncio.DatagramProtocol):
-    """Translates UDP datagrams of int16 PCM into queue items.
-
-    Each datagram is one mic frame (`OUTPUT_FRAME_SAMPLES` int16
-    samples = 2 * 1280 = 2560 bytes by default). Out-of-order /
-    lost packets are effectively impossible on `lo` at our rate, so
-    no sequence number / reordering buffer.
-    """
-
-    def __init__(self, queue: asyncio.Queue[np.ndarray]) -> None:
+    def __init__(self, queue: _CaptureQueue) -> None:
         self._queue = queue
 
     def datagram_received(self, data: bytes, _addr) -> None:
@@ -357,10 +385,7 @@ class _UdpMicProtocol(asyncio.DatagramProtocol):
             )
             return
         chunk = np.frombuffer(data, dtype=np.int16)
-        try:
-            self._queue.put_nowait(chunk)
-        except asyncio.QueueFull:
-            logger.warning("UdpMicCapture queue full, dropping frame")
+        self._queue.put_nowait(chunk)
 
 
 def parse_udp_device(device: str) -> tuple[str, int] | None:
