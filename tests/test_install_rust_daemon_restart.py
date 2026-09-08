@@ -81,3 +81,14 @@ build_install_rust_daemon jasper-outputd 1 {shlex.quote(str(cache))}
         else:
             assert installed.read_bytes() == (repo / "rust" / name / "src/main.rs").read_bytes()
             assert installed.stat().st_mode & 0o777 == 0o755
+
+
+def test_each_workspace_binary_has_one_systemd_owner() -> None:
+    for main in sorted((ROOT / "rust").glob("*/src/main.rs")):
+        daemon = main.parents[1].name
+        needle = f"ExecStart=/opt/jasper/bin/{daemon}"
+        owners = [
+            unit.name for unit in (ROOT / "deploy/systemd").glob("*.service")
+            if needle in unit.read_text()
+        ]
+        assert owners == [f"{daemon}.service"], (daemon, owners)

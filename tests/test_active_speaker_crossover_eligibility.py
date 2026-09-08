@@ -495,9 +495,8 @@ def test_level_check_restart_invalidates_stale_completed_insufficient_evidence(
 
     old_comparison = comparison("1")
 
-    # Drive the repeat ledger to "completed" with an insufficient median,
-    # the same shape `_finalize_driver_repeat_set` persists for 3/3 accepted
-    # repeats whose aggregate SNR never cleared the floor.
+    # Drive the repeat ledger to "completed" with an insufficient median:
+    # 3/3 accepted repeats whose aggregate SNR never cleared the floor.
     repeat_admission.activate(old_comparison, path=repeat_path)
     for attempt in (1, 2, 3):
         reservation = repeat_admission.reserve(
@@ -678,11 +677,10 @@ def _real_sweep_capture(
     now,
     role="woofer",
 ):
-    """Record one WINNER acoustic capture through the real write path --
-    mirrors what ``web_measurement._finalize_driver_repeat_set`` durably
-    persists for an accepted 3/3 repeat set, including the sweep's own
-    (necessarily different) playback id relative to the floor confirmation
-    (see ``crossover_eligibility._FLOOR_REPLAY_MISMATCH_ISSUE_CODE``).
+    """Record one WINNER acoustic capture through the real write path for
+    an accepted 3/3 repeat set, including the sweep's own (necessarily
+    different) playback id relative to the floor confirmation (see
+    ``crossover_eligibility._FLOOR_REPLAY_MISMATCH_ISSUE_CODE``).
     """
     from jasper.active_speaker.measurement import (
         _target_lookup,
