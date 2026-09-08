@@ -1,83 +1,31 @@
 # Active Speaker DSP
 
-> **Status: current concept note.** This page is the calibration-agent corpus summary.
+Speaker tuning, room correction, and preference voicing answer different
+questions. The [doctrine](../../../../docs/measurement-loop-doctrine.md#1a-the-layering-rule--what-a-measurement-plays-through)
+owns their graph boundaries. The [runbook](../../../../docs/tuning-operator-runbook.md#entry-contract)
+is the current entry; tool help owns supported calls and physical limits.
 
-## Core Model
+## Complementary Measurements
 
-Active speaker commissioning is Layer A: the speaker baseline. It is
-separate from Layer B room correction and Layer C preference voicing.
+- A solo capture reveals one driver's response. Near-field placement can
+  reduce room influence, but its useful band and relation to the full speaker
+  require care; it does not by itself establish the far-field sum.
+- A reverse null can test delay and polarity near a crossover. Branch level
+  mismatch limits its depth. Read the [alignment guidance](../../../../docs/tuning-methodology.md#4-time-alignment)
+  before treating a shallow null as a timing error or a deep null as proof of
+  the best alignment.
+- A gated summed capture tests how drivers combine above the window's valid
+  frequency floor. Complex solo responses can predict a sum; adding only their
+  magnitudes cannot establish delay or polarity effects.
 
-- **Layer A speaker baseline**: per-driver linearization, baffle-step
-  compensation, acoustic-target crossover, polarity, time alignment,
-  gain trim, and per-driver limiters. This is commissioned once per
-  hardware build or unit and stored as a versioned speaker profile.
-- **Layer B room correction**: listening-position or listening-area
-  correction, mostly modal-region and spatial-average behavior. This
-  is re-run when the room or placement changes.
-- **Layer C preference voicing**: house curve, target tilt, bass/treble
-  taste, and subjective "brighter / warmer / more bass" adjustments.
-  This is reversible user preference, not accuracy.
+These measurements are options for different questions, not required steps.
+Below the gate's validity floor, disclose the unverified band. A single in-room
+seat cannot separate room modes from the speaker's response. See the
+[low-frequency guidance](../../../../docs/tuning-methodology.md#9-below-the-gate-floor)
+for the limits of that evidence and the current toolbox scope.
 
-The important rule for future agents: do not use room correction to
-hide a speaker-baseline problem, and do not bake preference voicing
-into the baseline.
+## Sources
 
-## Measurement Triad
-
-The proposed consumer wizard uses three complementary measurements:
-
-1. **Near-field per-driver capture** catches individual driver and
-   assembly deviations while overwhelming room reflections.
-2. **Null-depth optimization** verifies polarity and delay through each
-   crossover by maximizing the inverted-polarity null.
-3. **Gated at-position summed measurement** validates the direct
-   acoustic sum through the crossover region above the gate-derived
-   low-frequency limit.
-
-Below roughly 300 Hz, single-position in-room data is not a clean
-speaker-baseline measurement; hand that region to room correction.
-Around 300-500 Hz, especially for 3-way lower crossovers, confidence
-depends on the available gate length and the engineering preset.
-
-## DSP Shape
-
-CamillaDSP templates should be bounded and preset-driven:
-
-```text
-stereo input
-  -> room correction / preference layers when enabled
-  -> baseline pre-split filters such as BSC
-  -> split_2way or split_3way mixer
-  -> per-driver crossover(s)
-  -> per-driver EQ
-  -> per-driver delay
-  -> per-driver gain trim
-  -> per-driver limiter
-  -> physical outputs
-```
-
-Polarity belongs in the mixer mapping (`inverted: true`). Limiters
-belong last in each per-driver chain. The active baseline profile must
-be stored separately from room-correction bundles and preference
-profiles.
-
-Implementation note, 2026-06-01: the first active-speaker substrate
-lives in `jasper.active_speaker`. It validates presets, output channel
-maps, safety envelopes, crossover regions, and baseline acceptance
-evidence, and emits muted/protected startup templates for manual
-inspection. As of 2026-06-04, the product load path is still separate and
-guarded: `/sound/active-speaker/load-startup-config` may reload only a
-staged protected startup graph whose metadata still matches the saved
-topology, whose path-safety evidence is hardware-probe-backed, and whose
-prior CamillaDSP config exists as a rollback anchor. It does not emit
-audio or grant playback authority.
-
-## LLM Boundary
-
-An LLM can explain why a null test failed, ask whether timing
-reference and calibration were valid, and recommend which deterministic
-check to run next. It must not invent filter taps, remove tweeter
-protection, write arbitrary CamillaDSP YAML, or call magnitude-only
-data valid for phase alignment.
-
-Last verified: 2026-06-04
+- [Active-speaker research archive](../../../../docs/research/2026-05-25-calibration-agent/README.md)
+- [Alignment and structure research](../../../../docs/research/2026-08-31-tuning-methodology-deep-research/04-structure-alignment-and-automation-prior-art.md)
+- [Gating and low-frequency research](../../../../docs/research/2026-08-31-tuning-methodology-deep-research/03-gating-windowing-and-low-frequency-truth.md)

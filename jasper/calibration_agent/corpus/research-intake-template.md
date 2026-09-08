@@ -36,7 +36,6 @@ What did the research change about the JTS plan?
 | `filter-design/fir-room-correction.md` |  |
 | `filter-design/preference-eq.md` |  |
 | `targets/house-curves.md` |  |
-| `jts-specific/runtime-context-schema.md` |  |
 
 ## Raw Notes
 

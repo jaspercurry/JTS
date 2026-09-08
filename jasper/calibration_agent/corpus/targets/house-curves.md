@@ -14,16 +14,12 @@ Room correction asks how to move a measured response toward a target
 without violating acoustic limits. The target itself is a design and
 preference choice.
 
-## What JTS Does Today
+## Current Target Contract
 
-The `/sound/room/` wizard's `target_choice` accepts four values —
-`flat`, `neutral`, `warm`, `bright` — resolved by
-`jasper.correction.strategy.resolve_target_profile`'s `TARGET_PROFILES`
-(`flat` and `neutral` are both zero-tilt entries; `flat` has no
-`warmth` value, while `neutral` is the distinct named `warmth=0.0`
-option in the four-choice selector). The current PEQ designer only acts
-in the modal/bass region, so target differences above that range are
-mostly visual guidance until future FIR/preference layers exist.
+[`strategy.TARGET_PROFILES`](../../../correction/strategy.py) owns supported
+Room targets. The [Room contract](../../../../docs/room-correction-information-design.md)
+owns their use. A displayed target outside the corrected band does not prove
+that the filters changed that band.
 
 ## Research Consensus
 
