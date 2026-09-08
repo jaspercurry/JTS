@@ -53,13 +53,21 @@ _ENV_ASSIGN_RE = re.compile(
 
 _BEARER_RE = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
 
-# The rest of an `Authorization` value: `Basic <base64>`, a bare token, and
-# whatever scheme a proxy invents. The lookahead spares a value `_BEARER_RE`
-# already took, which would otherwise redact a second time.
+# The rest of an `Authorization` value, as ordered branches: a quoted value;
+# `Digest`, whose credential is comma-separated parameters running to end of
+# line; a named scheme carrying one value, quoted or bare; a scheme nobody
+# named whose value clears `_SECRET_WORD_RE`'s 8-character WPA floor, below
+# which a diagnostic sentence ("authorization: user is not authorized to
+# …") would lose its prose; a bare value. The lookahead spares a value
+# `_BEARER_RE` already took, which would otherwise redact a second time.
 _AUTHORIZATION_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])(authorization['\"]?[ \t]*[=:][ \t]*)"
     r"(?!(?:[A-Za-z]+[ \t]+)?<redacted>)"
-    rf"(?:{_QUOTED}|(?:[A-Za-z]+[ \t]+)?[^\s'\"]+)",
+    rf"(?:{_QUOTED}"
+    r"|digest[ \t]+.*"
+    rf"|(?:basic|bearer|token|negotiate|ntlm)[ \t]+(?:{_QUOTED}|[^\s'\"]+)"
+    r"|[A-Za-z]+[ \t]+[^\s'\"]{8,}"
+    r"|[^\s'\"]+)",
 )
 
 # URL user-info: a failed fetch echoes the whole remote back, credentials

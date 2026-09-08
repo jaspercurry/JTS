@@ -136,6 +136,21 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     # no KEY=value shape the bash redactor guards holds an HTTP header line.
     ("authorization_basic_header", "Authorization: Basic FAKE-B64-VALUE==",
      "Authorization: <redacted>", False),
+    # A scheme and a *quoted* credential: the value run stops at the quote,
+    # so the scheme alone would redact and leave the credential behind.
+    ("authorization_basic_quoted_value", 'Authorization: Basic "FAKE-B64=="',
+     "Authorization: <redacted>", False),
+    # RFC 7616 spends its credential over comma-separated parameters, so the
+    # value is the rest of the line — one token takes `username=` and leaves
+    # every parameter after it, the response digest included.
+    ("authorization_digest_parameters",
+     'Authorization: Digest username="alice", response="FAKEDIGEST"',
+     "Authorization: <redacted>", False),
+    # NetworkManager and OAuth both answer a refused mutation with a sentence
+    # the wizard puts in its banner. One word goes; the sentence survives.
+    ("authorization_refusal_prose",
+     "authorization: user is not authorized to control networking",
+     "authorization: <redacted> is not authorized to control networking", False),
     # No newline to stop at (unlike `authorization_assignment` above), so the
     # value run reaches end of string and over-redacts the trailing word —
     # accepted, over-redaction is the safe direction.
