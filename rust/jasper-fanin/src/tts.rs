@@ -200,6 +200,14 @@ impl TtsMetrics {
         self.dropped_commands.load(Ordering::Relaxed)
     }
 
+    pub fn connections_rejected(&self) -> u64 {
+        self.connections_rejected.load(Ordering::Relaxed)
+    }
+
+    pub fn frame_timeouts(&self) -> u64 {
+        self.frame_timeouts.load(Ordering::Relaxed)
+    }
+
     pub fn dropped_audio_frames(&self) -> u64 {
         self.dropped_audio_frames.load(Ordering::Relaxed)
     }
@@ -1852,7 +1860,7 @@ mod tests {
         client.flush().unwrap();
         handle.join().unwrap();
 
-        assert_eq!(metrics.frame_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.frame_timeouts(), 1);
         assert_eq!(metrics.protocol_errors(), 0);
         drop(client);
     }

@@ -1197,6 +1197,10 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "dropped_commands", metrics.dropped_commands());
                 buf.push(',');
+                push_kv_u64(buf, "connections_rejected", metrics.connections_rejected());
+                buf.push(',');
+                push_kv_u64(buf, "frame_timeouts", metrics.frame_timeouts());
+                buf.push(',');
                 push_kv_u64(buf, "dropped_audio_frames", metrics.dropped_audio_frames());
                 buf.push(',');
                 push_kv_u64(
@@ -1774,6 +1778,8 @@ mod tests {
         assert!(j.contains(r#""tts":{"enabled":true"#));
         assert!(j.contains(r#""budget_frames":96000"#));
         assert!(j.contains(r#""protocol_errors":0"#));
+        assert!(j.contains(r#""connections_rejected":0"#));
+        assert!(j.contains(r#""frame_timeouts":0"#));
         assert!(j.contains(r#""stale_commands_dropped":0"#));
         assert!(j.contains(r#""program_duck_active":false"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));
