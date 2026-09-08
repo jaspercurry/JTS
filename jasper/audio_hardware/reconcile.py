@@ -182,6 +182,9 @@ class Pass:
         self.env_file = env.get("JASPER_ENV_FILE") or BASE_ENV_PATH
         self.outputd_env_file = env.get("JASPER_OUTPUTD_ENV_FILE") or OUTPUTD_ENV_PATH
         self.outputd_env_stage: str | None = None
+        # The asound-template render candidate, from mkstemp until os.replace
+        # consumes it. Recorded so main()'s cleanup sweeps one a signal left.
+        self.asound_template_temp: str | None = None
         self.outputd_env_stage_rejected = False
         self._stage_hold = ExitStack()
         self.fanin_env_file = env.get("JASPER_FANIN_ENV_FILE") or FANIN_ENV_PATH
@@ -1346,6 +1349,7 @@ class Pass:
             prefix=destination.name + ".", dir=destination.parent
         )
         os.close(handle)
+        self.asound_template_temp = tmp
         # Render and validate BEFORE replacing the live template: a card-less
         # recognized DAC makes the shared renderer fail closed, and an ignored
         # failure would clobber the working source with an empty file.
@@ -1997,6 +2001,8 @@ def main(argv: list[str] | None = None) -> int:
         status = exc.code if isinstance(exc.code, int) else 1
     finally:
         run.cleanup_outputd_env_stage()
+        if run.asound_template_temp:
+            Path(run.asound_template_temp).unlink(missing_ok=True)
         run.log("exit", signal=run.signalled or "none", status=status)
         for signum, disposition in previous.items():
             signal.signal(signum, disposition)

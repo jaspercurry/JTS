@@ -1767,6 +1767,37 @@ def _signal_self(signum: int):
     return _probe
 
 
+def test_a_signal_between_render_and_publish_leaves_no_template_debris(
+    tmp_path: Path,
+) -> None:
+    """/etc/jasper is not tmpfs, so a candidate leaked here survives reboots
+    and accumulates one file per killed pass — nothing else sweeps this prefix
+    the way the outputd.env stage sweeps its own."""
+    template = tmp_path / "asoundrc.jasper.template"
+    real_replace = os.replace
+
+    def _signal_at_the_template_publish(src, dst, *args: Any, **kwargs: Any):
+        if str(dst) == str(template):
+            os.kill(os.getpid(), signal.SIGTERM)
+            raise AssertionError("the signal did not interrupt the pass")
+        return real_replace(src, dst, *args, **kwargs)
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        patches={
+            "jasper.audio_hardware.reconcile.os.replace": (
+                _signal_at_the_template_publish
+            )
+        },
+    )
+
+    assert result.returncode == 143, result.stderr
+    assert list(tmp_path.glob("asoundrc.jasper.template.*")) == []
+
+
 @pytest.mark.parametrize(
     ("signum", "name", "status"),
     [
