@@ -478,6 +478,14 @@ async def _torn_down_mid_hold(
              "turn_lost": True},
             "internal_error", 1, None, id="lost_mid_reply",
         ),
+        # The link went mid-utterance, before anything ended input — a
+        # `send_audio` failure reaches `_end_turn` this way. `silent` is
+        # False once the turn is lost, so every silence arm skips it.
+        pytest.param(
+            {"chunks": 2, "input_ended": False, "user_speech": True,
+             "turn_lost": True, "event_reason": "connection_lost"},
+            "internal_error", 1, None, id="lost_before_input_ended",
+        ),
         # A button press proves intent, and nothing scores a button turn's
         # frames — a deaf press is exactly the symptom the cue exists for.
         pytest.param(
@@ -532,9 +540,12 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     and spoken about — unless the ending was one the household or the daemon
     chose, which is neither a fault nor news to anyone, and which the
     journal records at INFO instead."""
+    params = dict(turn)
+    # The diagnosis the line carries, where it is not the end reason.
+    event_reason = params.pop("event_reason", params.get("reason", "test"))
     wl = _teardown_loop()
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        await _torn_down_mid_hold(wl=wl, **{"manual": False, **turn})
+        await _torn_down_mid_hold(wl=wl, **{"manual": False, **params})
 
     assert wl._silent_responses_session == counted
     assert wl.session_status()["silent_responses_session"] == counted
@@ -558,7 +569,7 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert records[0].levelno == logging.WARNING
     assert int(fields["bytes_sent"]) == 4096
     assert int(fields["count"]) == counted
-    assert fields["reason"] == turn.get("reason", "test")
+    assert fields["reason"] == event_reason
 
 
 @pytest.mark.parametrize("dropped, reason, suppressed", [

@@ -3147,6 +3147,30 @@ class WakeLoop:
                         endpointer=self._endpointer_label(),
                         level=logging.WARNING,
                     )
+                else:
+                    # The link dropped mid-utterance, before anything ended
+                    # input: `silent` is False by construction once the turn
+                    # is lost, so no branch above owns this and the turn
+                    # would otherwise end with no line and no cue. Nobody
+                    # chose the ending, so it counts and it is spoken about.
+                    suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                    if not suppressed:
+                        self._silent_responses_session += 1
+                    log_event(
+                        logger,
+                        "turn.silent_response",
+                        provider=self._cfg.voice_provider,
+                        model=model,
+                        reason="connection_lost",
+                        bytes_sent=bytes_sent,
+                        chunks_received=chunks_received,
+                        turn_lost=lost_mid_reply,
+                        count=self._silent_responses_session,
+                        endpointer=self._endpointer_label(),
+                        **({"suppressed": reason} if suppressed else {}),
+                        level=logging.INFO if suppressed else logging.WARNING,
+                    )
+                    play_no_answer_cue = not suppressed
             elif (
                 bytes_sent > 0
                 and self._turn.audio_dropped_bytes() > 0
