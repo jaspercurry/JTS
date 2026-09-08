@@ -177,9 +177,6 @@ _PY_TO_JSON = {
 # the Pi's event loop with wake inference, audio and the provider socket.
 # Slower backends override this through @tool(timeout=...).
 DEFAULT_TOOL_TIMEOUT_SEC = 12.0
-# Observability must never become a tool-execution dependency. The production
-# callback is a local SQLite update and normally completes in well under a
-# millisecond; this bound only cuts off a wedged lock/callback.
 _DISPATCH_OBSERVER_TIMEOUT_SEC = 0.1
 
 
