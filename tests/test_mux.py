@@ -973,19 +973,22 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
 # ----------------------------------------------------------------------
 
 
-def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
-    # Combo tests exercise the real fan-in liveness method rather than the
-    # per-test fixture's simple USB boolean stub.
+def _make_combo_box(mux: Mux, monkeypatch, streaming_seq):
+    """Drive the real fan-in liveness method with one per-tick STATUS.
+
+    Each element is fan-in's ``direct.streaming`` edge for that tick; ``None``
+    is a STATUS miss (no snapshot at all). The last element repeats.
+    """
     monkeypatch.setattr(
         mux,
         "_usbsink_playing",
         Mux._usbsink_playing.__get__(mux, Mux),
     )
-    frames = list(frames_seq)
+    streaming = list(streaming_seq)
     idx = {"i": 0}
 
     async def _fanin():
-        value = frames[min(idx["i"], len(frames) - 1)]
+        value = streaming[min(idx["i"], len(streaming) - 1)]
         idx["i"] += 1
         if value is None:
             return None
@@ -995,10 +998,7 @@ def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
                 {
                     "label": "usbsink",
                     "source": "direct",
-                    # The captured broken shape: direct lane-level frames_read
-                    # can stay frozen while resampler.input_frames advances.
-                    "frames_read": 0,
-                    "resampler": {"input_frames": value},
+                    "direct": {"streaming": value},
                 },
             ],
         }
@@ -1013,7 +1013,7 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000])
+    _make_combo_box(mux, monkeypatch, [False, True, True])
 
     await mux._tick()
     assert mux._winner is None
@@ -1031,40 +1031,11 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     assert mux._winner is Source.USBSINK
 
 
-async def test_fanin_streaming_edge_promotes_usb_without_two_patrol_baseline(
-    mux, patched_probes, monkeypatch,
-):
-    _stub_pauses(mux)
-    _stub_usbsink_preempt(mux)
-    _stub_probes(patched_probes, usbsink=False)
-    monkeypatch.setattr(
-        mux,
-        "_usbsink_playing",
-        Mux._usbsink_playing.__get__(mux, Mux),
-    )
-
-    async def fanin_status():
-        return {
-            "inputs": [{
-                "label": "usbsink",
-                "source": "direct",
-                "resampler": {"input_frames": 48_000},
-                "direct": {"streaming": True},
-            }],
-        }
-
-    mux._fanin_status_best_effort = fanin_status
-    await mux._tick()
-
-    assert mux._winner is Source.USBSINK
-    assert mux._state.playing[Source.USBSINK] is True
-
-
 async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 0, 0, 0])
+    _make_combo_box(mux, monkeypatch, [False])
 
     for _ in range(4):
         await mux._tick()
@@ -1078,7 +1049,7 @@ async def test_combo_usb_preempted_by_newly_started_source(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False, airplay=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     await mux._tick()
@@ -1096,7 +1067,7 @@ async def test_combo_usb_survives_single_fanin_status_miss(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, None, 96_000])
+    _make_combo_box(mux, monkeypatch, [False, True, None, True])
 
     await mux._tick()
     await mux._tick()
@@ -1121,7 +1092,7 @@ async def test_usb_streaming_preempts_active_airplay(
     _stub_usbsink_preempt(mux)
     # AirPlay is established; a later USB frame-flow edge must take the speaker.
     _stub_probes(patched_probes, usbsink=False, airplay=True)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     assert mux._winner is Source.AIRPLAY
@@ -1438,7 +1409,7 @@ async def test_tick_preempt_reaches_fanin_mute(
     fanin_mute = AsyncMock(return_value={})
     mux._fanin_lane_mute = fanin_mute
     _stub_probes(patched_probes, usbsink=False, airplay=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()  # baseline frames
     await mux._tick()  # USB advances → wins
@@ -1461,7 +1432,7 @@ async def test_tick_muted_host_stays_playing_for_liveness(
     mux._fanin_lane_mute = AsyncMock(return_value={})
     _stub_probes(patched_probes, usbsink=False, airplay=False)
     # Frames keep advancing across every tick — a streaming (even if muted) host.
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000, 192_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     await mux._tick()

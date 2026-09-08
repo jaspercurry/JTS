@@ -219,52 +219,15 @@ async def usbsink_playing() -> bool:
     return usbsink_direct_playing(status) is True
 
 
-def _nonnegative_int_counter(value: Any) -> int | None:
-    """Return a JSON u64-ish counter value, rejecting bools and bad shapes."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
-
-
-def usbsink_direct_frames_read(
-    fanin_status: dict[str, Any] | None,
-) -> int | None:
-    """Cumulative liveness counter on fan-in's USB DIRECT lane, else None.
-
-    Returns a counter only when the usbsink lane is in direct mode
-    (``source == "direct"``), meaning fan-in owns the live gadget capture.
-
-    Prefer ``resampler.input_frames``: direct capture accounts host input there
-    on builds where the lane-level ``frames_read`` can remain frozen at 0.
-    Fall back to lane-level ``frames_read`` for older/no-resampler snapshots.
-    A single snapshot is not enough; the value becomes a liveness signal only as
-    a delta across mux ticks.
-    """
-    lane = fanin_usbsink_input(fanin_status)
-    if not (
-        isinstance(lane, dict)
-        and lane.get("source") == FANIN_INPUT_SOURCE_DIRECT
-    ):
-        return None
-
-    resampler = lane.get("resampler")
-    if isinstance(resampler, dict):
-        frames = _nonnegative_int_counter(resampler.get("input_frames"))
-        if frames is not None:
-            return frames
-    return _nonnegative_int_counter(lane.get("frames_read"))
-
-
 def usbsink_direct_streaming(
     fanin_status: dict[str, Any] | None,
 ) -> bool | None:
-    """Fan-in's edge-detected USB streaming state, when available.
+    """Fan-in's edge-detected USB streaming state.
 
-    New fan-in builds sample their existing host-input counter on a lightweight
-    helper thread and publish this boolean in ``direct.streaming``. Older builds
-    omit it; mux then falls back to comparing the cumulative frame counter across
-    patrols. ``None`` also covers a missing/malformed STATUS response, allowing
-    the arbiter to retain its last known state rather than invent a stop.
+    Fan-in samples its host-input counter on a lightweight helper thread and
+    publishes this boolean in ``direct.streaming``. ``None`` covers a
+    missing/malformed STATUS response or a non-direct lane, allowing the arbiter
+    to retain its last known state rather than invent a stop.
     """
     lane = fanin_usbsink_input(fanin_status)
     if not (
@@ -293,8 +256,7 @@ def usbsink_direct_rms_dbfs(
     """Most-recent-period content level (dBFS) on fan-in's USB DIRECT lane, else
     ``None``.
 
-    Mirrors :func:`usbsink_direct_frames_read`: a value is returned only when the
-    usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
+    A value is returned only when the usbsink lane is in direct mode (``source == "direct"``), i.e. fan-in owns the
     live gadget capture and reports its pre-mute level directly.
     ``None`` when there is no direct lane, the STATUS is missing / malformed, or
     the lane carries no numeric ``rms_dbfs`` (an older fan-in build predating the
@@ -333,8 +295,7 @@ def usbsink_direct_playing(
     """Current USB activity from fan-in's DIRECT lane, or ``None`` if absent.
 
     ``direct.health`` proves capture is flowing now; ``rms_dbfs`` rejects a
-    host that is merely streaming digital silence. Older direct snapshots that
-    predate the health field fall back to the same RMS gate.
+    host that is merely streaming digital silence.
     """
 
     lane = fanin_usbsink_input(fanin_status)
@@ -347,8 +308,8 @@ def usbsink_direct_playing(
     if audible is None:
         return False
     direct = lane.get("direct")
-    if not isinstance(direct, dict) or "health" not in direct:
-        return audible
+    if not isinstance(direct, dict):
+        return False
     return direct.get("health") == "capturing" and audible
 
 

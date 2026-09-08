@@ -102,7 +102,6 @@ from .source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
     spotify_playing_observed as spotify_playing,
-    usbsink_direct_frames_read,
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
@@ -172,11 +171,6 @@ def _usbsink_preempt_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
-# Combo-mode USB streaming debounce, in mux ticks (POLL_INTERVAL_SEC = 1 Hz).
-# Rides through a brief delivery gap (a status miss / a momentary stall) so the
-# source doesn't flap; a real pause stops the frames and macOS tears the stream
-# down, so the counter genuinely stalls and USB releases after this many ticks.
-USBSINK_COMBO_STOP_TICKS = 2
 ALERT_COALESCE_SEC = 0.05
 # A transient unreadable probe must not synthesize stop/start flutter, but a
 # permanently dead adapter must not pin a vanished winner forever. Hold an
@@ -202,53 +196,6 @@ def event_backed_probes() -> dict[Source, Callable[[], Any]]:
         Source.AIRPLAY: airplay_playing,
         Source.BLUETOOTH: bluetooth_playing,
     }
-
-
-@dataclass(frozen=True)
-class ComboLiveness:
-    """Temporal state for combo-mode USB frames-flowing detection.
-
-    ``streaming`` is "is the host feeding us frames right now" — there is NO
-    audio-LEVEL component. A faint sound and a loud one both stream frames and
-    therefore produce the same authoritative source-start edge; level is
-    display-only and does not participate in arbitration, so a quiet passage
-    keeps the counter advancing rather than reading "stopped". New fan-in builds
-    publish a 20 Hz-derived streaming edge; this state machine remains the
-    rolling-upgrade fallback for older STATUS shapes. A host that actually tears
-    the stream down stops frames and releases after the stop hysteresis.
-    """
-
-    prev_frames: int | None = None
-    idle_ticks: int = 0
-    streaming: bool = False
-
-
-def step_combo_liveness(
-    state: ComboLiveness,
-    frames: int | None,
-    *,
-    stop_ticks: int,
-) -> ComboLiveness:
-    """Advance the combo-USB streaming state by one mux tick.
-
-    A combo box is ``streaming`` on a tick iff the fan-in DIRECT-lane counter
-    ``frames`` grew since the previous tick. A first reading or counter reset
-    re-baselines without inventing a delta; flat frames drop after
-    ``stop_ticks`` consecutive non-advancing patrols; missing frames are
-    unknown and retain the complete prior state, because a STATUS miss is not
-    evidence that a stream stopped.
-    """
-    prev = state.prev_frames
-    if frames is None:
-        return state
-    advanced = frames is not None and prev is not None and frames > prev
-    new_prev = frames if frames is not None else prev
-    if advanced:
-        return ComboLiveness(new_prev, 0, True)
-    if not state.streaming:
-        return ComboLiveness(new_prev, 0, False)
-    idle = state.idle_ticks + 1
-    return ComboLiveness(new_prev, idle, idle < stop_ticks)
 
 
 @dataclass
@@ -308,7 +255,6 @@ class Mux:
         # before USB becomes the winner and once all other sources go idle, so
         # source selection and the lane mute cannot disagree.
         self._usbsink_preempted = False
-        self._usbsink_combo = ComboLiveness()
         self._volume_coordinator = volume_coordinator
         self._last_handoff: dict[str, Any] | None = None
         self._handoff_seq = 0
@@ -555,36 +501,12 @@ class Mux:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 
-        New fan-in builds publish an edge-detected ``direct.streaming`` boolean
-        from their existing frame counter; older builds fall back to counter
-        deltas across patrols. There is NO audio-level gate. A missing or
+        Fan-in publishes an edge-detected ``direct.streaming`` boolean from its
+        host-input frame counter. There is NO audio-level gate. A missing or
         non-direct snapshot is unknown and retains the arbiter's last-known
         state; do not issue a second STATUS probe.
         """
-        fanin = await self._fanin_status_best_effort()
-        streaming = usbsink_direct_streaming(fanin)
-        if streaming is not None:
-            # Keep fallback state coherent for rolling upgrades/downgrades.
-            frames = usbsink_direct_frames_read(fanin)
-            self._usbsink_combo = ComboLiveness(
-                prev_frames=(
-                    frames
-                    if frames is not None
-                    else self._usbsink_combo.prev_frames
-                ),
-                idle_ticks=0,
-                streaming=streaming,
-            )
-            return streaming
-        frames = usbsink_direct_frames_read(fanin)
-        if frames is None:
-            return None
-        self._usbsink_combo = step_combo_liveness(
-            self._usbsink_combo,
-            frames,
-            stop_ticks=USBSINK_COMBO_STOP_TICKS,
-        )
-        return self._usbsink_combo.streaming
+        return usbsink_direct_streaming(await self._fanin_status_best_effort())
 
     async def _fanin_status_best_effort(self) -> dict[str, Any] | None:
         return await local_status_json(
