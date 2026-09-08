@@ -640,7 +640,7 @@ class PositionGeometry:
     a vertical walk is performed by hand, and the automation that cannot swing
     in elevation refuses at ``capture_plan.position_angle_deg``.
 
-    ``kind`` categorizes the pose (ADR-0260, Wave 0b). A ``seat`` pose is
+    ``kind`` categorizes the pose (ADR-0260). A ``seat`` pose is
     stated from the listener's head as ``seat_offset_m`` ``(right, forward,
     up)``, not from the mark, so its ``mark_distance_m`` is ``None``; a
     ``close`` pose states its own standoff there.
@@ -674,7 +674,7 @@ class PositionGeometry:
 def pose_kind_fields(
     geometry: PositionGeometry, *, gating_applied: bool | None = None,
 ) -> dict[str, Any]:
-    """The take-record keys a categorized pose adds (ADR-0260, Wave 0b).
+    """The take-record keys a categorized pose adds (ADR-0260).
 
     Empty for a bearing at the mark, so every record banked before poses had
     a kind is byte-identical; a reader takes absence as that bearing. A seat
@@ -1431,7 +1431,7 @@ POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
 # The mark distance the CHECK screen asks for ("about 1 m in front of the
 # speaker") — the reference length that turns this flow's lateral OFFSETS into
 # the BEARINGS a positioner can act on. A default, not a pin: a categorized
-# pose states its own distance (ADR-0260, Wave 0b).
+# pose states its own distance (ADR-0260).
 MARK_DISTANCE_M = 1.0
 
 #: The pose a capture with no prompted move of its own was taken at.

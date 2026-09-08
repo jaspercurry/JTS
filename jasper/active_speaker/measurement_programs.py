@@ -11,7 +11,7 @@ Free-form geometry is not a program: the only caller-supplied bearing is
 The numbers come from ``docs/tuning-master-plan.md``, section "Measurement
 program constants"; this table is where they live.
 
-A pose is CATEGORIZED (ADR-0260, Wave 0b): a ``bearing`` is an absolute
+A pose is CATEGORIZED (ADR-0260): a ``bearing`` is an absolute
 azimuth and elevation at the mark in whole degrees, a ``seat`` is an offset
 from the listener's head centre, a ``close`` take sits on the design axis at
 its own distance. Mover reach is the staging layer's to enforce: a program
@@ -41,7 +41,7 @@ ANCHOR_REPEATS = 4
 
 #: The pose kinds. A ``bearing`` is gated to the direct sound; a ``seat`` take
 #: is the room's own measurement and keeps its reflections
-#: (docs/measurement-loop-doctrine.md 1a; ADR-0260, Wave 0b); a ``close`` take
+#: (docs/measurement-loop-doctrine.md 1a; ADR-0260); a ``close`` take
 #: is the room-suppressed reference, gated like a bearing.
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
@@ -60,7 +60,7 @@ def off_the_mark(kind: str) -> bool:
     return kind != POSE_KIND_BEARING
 
 #: The cube's half-edge and the close reference's standoff, both in metres.
-#: See ADR-0260 (Wave 0b).
+#: See ADR-0260.
 SEAT_OFFSET_M = 0.30
 CLOSE_DISTANCE_M = 0.30
 

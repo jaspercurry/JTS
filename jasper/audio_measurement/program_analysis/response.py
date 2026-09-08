@@ -274,7 +274,7 @@ def _driver_response(
 
     ``gate_exempt_reason`` keeps the room in: the response is the arrival
     window ungated, with :func:`gating.exempt_gating_block` saying why and no
-    validity floor claimed (a seat take, ADR-0260 Wave 0b).
+    validity floor claimed (a seat take, ADR-0260).
 
     ``radiated_band_hz`` is the band this capture's excitation actually drove —
     the caller's segment sweep bounds. It is the ONLY input the pre/post-gate

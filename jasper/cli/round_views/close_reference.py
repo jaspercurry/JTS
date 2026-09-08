@@ -22,7 +22,7 @@
 
 Both offline: no audio plays and no device is opened. Distances are DECLARED
 here, not read from the sidecar, which states one only for a categorized pose
-(ADR-0260, Wave 0b); both values are published. What a room-dominated band MEANS
+(ADR-0260); both values are published. What a room-dominated band MEANS
 for a tune is the reader's judgement: nothing here decides anything about a
 graph.
 """

@@ -866,7 +866,7 @@ def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
     ids=["bearing", "seat", "close"],
 )
 def test_a_categorized_pose_adds_its_keys_and_a_bearing_adds_none(geometry, fields):
-    """The take-record keys a kind carries (ADR-0260, Wave 0b): none for the
+    """The take-record keys a kind carries (ADR-0260): none for the
     bearing every earlier record was, so those stay byte-identical."""
     assert spatial.pose_kind_fields(geometry, gating_applied=False) == fields
 

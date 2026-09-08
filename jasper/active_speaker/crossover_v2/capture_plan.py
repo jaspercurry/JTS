@@ -166,7 +166,7 @@ class CloudPositionPrompt:
     #: distances at once (the second geometry-retake rung goes 75 cm sideways
     #: AND 30 cm up). ``0`` means the row asks for no raise.
     vertical_offset_cm: float = 0.0
-    #: The pose's category (ADR-0260, Wave 0b); a ``seat`` row states
+    #: The pose's category (ADR-0260); a ``seat`` row states
     #: ``seat_offset_m`` ``(right, forward, up)`` from the head centre, a
     #: ``close`` row its own ``distance_m``; ``None`` is the mark.
     kind: str = POSE_KIND_BEARING

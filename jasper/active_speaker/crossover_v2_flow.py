@@ -1972,7 +1972,7 @@ class CrossoverV2Session:
         """The session's geometry with THIS capture's window.
 
         A seat take is the room's own measurement, so it is analyzed ungated
-        (docs/measurement-loop-doctrine.md 1a; ADR-0260, Wave 0b).
+        (docs/measurement-loop-doctrine.md 1a; ADR-0260).
         """
         exemption = (
             GATE_EXEMPTION_BY_POSE_KIND.get(self._prompt_shown_for(phase, index).kind)

@@ -35,7 +35,7 @@ banks ONE stage, and:
 * :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state
   carrying ``verify_priors.verify_measured``. No per-driver solos: a verify
   stage walks none.
-* :func:`bank_seat_round` — the ``seat/cube`` walk (ADR-0260, Wave 0b): one
+* :func:`bank_seat_round` — the ``seat/cube`` walk (ADR-0260): one
   ungated summed take per pose of the shipped program's own resolved walk, so
   a reader of categorized poses gets seven takes that differ only in where the
   microphone was. No solos and no VERIFY curve — a seat walk measures neither.
