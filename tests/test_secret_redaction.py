@@ -132,6 +132,16 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "authorization=<redacted>\nnetwork stalled", False),
     ("authorization_json_basic_scheme", '{"authorization": "Basic FAKE=="}',
      '{"authorization": <redacted>}', False),
+    # The bare header form of the scheme above, not JSON-embedded. Python-only:
+    # no KEY=value shape the bash redactor guards holds an HTTP header line.
+    ("authorization_basic_header", "Authorization: Basic FAKE-B64-VALUE==",
+     "Authorization: <redacted>", False),
+    # No newline to stop at (unlike `authorization_assignment` above), so the
+    # value run reaches end of string and over-redacts the trailing word —
+    # accepted, over-redaction is the safe direction.
+    ("authorization_assignment_to_end_of_string",
+     "authorization=FAKESWORDFISHTOKEN rejected",
+     "authorization=<redacted>", False),
     ("url_user_info", "https://alice:FAKE-PW-xyz@example.test/repo.git",
      "https://<redacted>@example.test/repo.git", False),
     ("bare_openai_prefix", "Incorrect API key provided: sk-abcd1234efgh.",
