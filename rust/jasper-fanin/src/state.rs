@@ -627,7 +627,7 @@ impl StateServer {
         buf.push(',');
 
         // Global (not per-input) drop count on the shared xrun-forwarding
-        // channel — see `Mixer::xrun_events_dropped`.
+        // channel — see [`crate::mixer::XrunSink`].
         push_kv_u64(
             &mut buf,
             "xrun_events_dropped",

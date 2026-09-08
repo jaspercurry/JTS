@@ -36,10 +36,16 @@ consumer into unbounded growth on a 1 GB box:
    (drop-newest: tail truncation, the same shape as a barge-in flush),
    `audio_dropped_bytes()` counts it, and `event=turn.audio_overflow` is
    logged once per turn. The terminal `None` sentinel is never subject to
-   the bound, so the consumer always ends the turn. The idle watchdog defers
-   on playout *progress* — a change in `(chunks pending, expected drain
-   deadline)` — and ends the turn with `event=turn.playout_stalled` when
-   nothing moves for `response_stall_timeout`. A truncated turn plays the
+   the bound, so the consumer always ends the turn. A barge-in flush drains
+   the whole queue (a chunk can land behind the sentinel) and resets the
+   dropped-byte count with it: a truncation the household caused by talking
+   over the model is not the overflow the cue below is for. The idle watchdog
+   defers on playout *progress* — the turn's own pending count, which falls
+   exactly when the consumer dequeues; the shared drain deadline is consulted
+   only once the queue is empty, because another writer can advance it and
+   mask a wedged consumer — and ends the turn with
+   `event=turn.playout_stalled` when nothing moves for
+   `response_stall_timeout`. A truncated turn plays the
    `internal_error` cue at end of turn, journalled as
    `event=turn.truncated_response`; a stalled playout cannot be made audible
    through the pipe that stalled, so the WARN event and the cue-outcome
@@ -47,20 +53,28 @@ consumer into unbounded growth on a 1 GB box:
    *Rejected:* backpressure (the producer is the provider's shared receive
    loop — tool calls, `turn_complete` and close frames ride it); drop-oldest
    (cuts the start of the answer, the most audible loss); a tuning knob.
-2. **Fan-in xrun channel.** `sync_channel(256)` (the tap channel's depth),
-   `try_send` from the mixer thread; `Full` increments `xrun_events_dropped`,
-   published on the STATUS socket. Live `xrun_count` is bumped before the
-   send, so a full channel loses only forensic JSONL lines, never the count.
-   This channel and the impulse tap's share one `send_drop_counted` helper;
-   it counts `Full` only, because `Disconnected` means the writer thread is
-   gone and nothing reads the counter past shutdown.
+2. **Fan-in xrun channel.** `sync_channel(EVENT_CHANNEL_CAPACITY)` — 256,
+   one definition shared with the impulse tap's channel — and `try_send` from
+   the mixer thread, the sender and its `xrun_events_dropped` gauge bundled as
+   `XrunSink`. The gauge is published on the STATUS socket; live `xrun_count`
+   is bumped before the send, so a full channel loses only forensic JSONL
+   lines, never the count. Both channels share one `send_drop_counted`
+   helper, and it counts EVERY failed send: `Disconnected` is not only
+   shutdown — the writer thread returns early when its log file will not
+   open, and a gauge reading zero while every event is lost is the wrong
+   answer.
 3. **TTS servers.** No idle deadline. `TTS_FRAME_DEADLINE = 30 s` runs from
    the first byte of a command to the end of that command (header and
    payload); a healthy client writes a 2 MiB frame in well under 100 ms, and
    30 s (not 5) because a false trigger drops the daemon's lifetime
-   connection. `TTS_MAX_CLIENTS = 8` concurrent connections (one lifetime
-   plus at most two transient in practice); an excess connection is closed
-   on accept. Both live once in `jasper-tts-protocol` and both servers
+   connection. The same deadline is armed as a WRITE timeout once per
+   accepted connection, so a client that stops reading its `FLUSH_SYNC` ack
+   cannot pin its slot inside `write_all`. `TTS_MAX_CLIENTS = 16` concurrent
+   connections against a real load of one lifetime plus at most two
+   transient; the headroom is over leaked idle connections, which are
+   legitimate here, so that a handful of them cannot refuse the daemon its
+   reconnect. An excess connection is closed on accept. All three live once
+   in `jasper-tts-protocol` and both servers
    consume them; `frame_timeouts` and `connections_rejected` publish beside
    `dropped_commands`. `TtsPlayout` reconnects on a server-closed socket, so
    a false deadline costs one reconnect, not deafness.
@@ -73,7 +87,7 @@ consumer into unbounded growth on a 1 GB box:
 Memory is bounded per turn, per channel and per server, and every drop is
 counted where an operator already looks (`/state`, STATUS, the journal).
 What this gives up: the tail of an answer past 600 s of unplayed audio,
-xrun log lines during a storm, and a ninth TTS client. These bounds are
+xrun log lines during a storm, and a seventeenth TTS client. These bounds are
 permanent machinery: their tie is non-negotiable #6 (a turn that cannot end
 keeps the speaker from answering the next wake) and the Pi's RAM budget.
 Code points here with `# See ADR-0254` / `// See ADR-0254`.
