@@ -18,16 +18,12 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
-    DEFAULT_CAMILLA2_STATEFILE_PATH,
-    DEFAULT_CAMILLA_STATEFILE_PATH,
     OUTPUTD_LATENCY_KEYS,
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
     outputd_env_buffer_pair_error,
     output_endpoint_devices_from_statefiles,
     outputd_latency_floor_actions,
-    route_owned_env_actions,
-    resolve_audio_route_profile,
 )
 from jasper.transport_coherence import transport_coherence_report
 from jasper.camilla_config_contract import (
@@ -155,23 +151,6 @@ def outputd_floor_plan(
     return summary, actions
 
 
-def _cmd_outputd_floor_actions(args: argparse.Namespace) -> int:
-    summary, actions = outputd_floor_plan(
-        profile_id=args.profile_id,
-        base_env=args.base_env,
-        outputd_env=args.outputd_env,
-        overrides=args.overrides,
-    )
-    for key, value in summary.items():
-        print(f"summary {key} {value}")
-    for action in actions:
-        if action.action == "set":
-            print(f"set {action.key} {action.value}")
-        else:
-            print(f"unset {action.key}")
-    return 0
-
-
 def _load_topology_for_ring_wire(path: str | None) -> tuple[object | None, str]:
     """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
 
@@ -265,22 +244,6 @@ def ring_conf_wire_report(
     report["topology"] = topology_reason
     report["conf"] = str(outcome.conf_d)
     return report
-
-
-def _cmd_render_ring_conf_wire(args: argparse.Namespace) -> int:
-    """Emit :func:`ring_conf_wire_report` as the shell caller's ``key value`` lines."""
-    try:
-        report = ring_conf_wire_report(
-            profile_id=args.profile_id,
-            conf_d=args.conf_d,
-            output_topology=args.output_topology,
-        )
-    except (OSError, ValueError) as exc:
-        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
-        return 1
-    for key, value in report.items():
-        print(f"{key} {value}")
-    return 0
 
 
 def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
@@ -572,22 +535,6 @@ def validate_outputd_env(
     return True, (*lines, "ok")
 
 
-def _cmd_validate_outputd_env(args: argparse.Namespace) -> int:
-    ok, lines = validate_outputd_env(
-        base_env=args.base_env,
-        outputd_env=args.outputd_env,
-        fanin_env=args.fanin_env,
-        camilla_statefile=args.camilla_statefile,
-        camilla2_statefile=args.camilla2_statefile,
-        output_topology=args.output_topology,
-        outputd_label=args.outputd_label,
-        overrides=args.overrides,
-    )
-    for line in lines:
-        print(line)
-    return 0 if ok else 1
-
-
 def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
     capture_device = outputd_capture_device_for_playback(args.playback_device)
     if capture_device is None:
@@ -597,18 +544,6 @@ def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
         )
         return 1
     print(capture_device)
-    return 0
-
-
-def _cmd_route_actions(args: argparse.Namespace) -> int:
-    base = read_env_file_state(args.base_env)
-    route = resolve_audio_route_profile(base.values)
-    print(f"summary route {route.route_id}")
-    for action in route_owned_env_actions(route):
-        if action.action == "set":
-            print(f"fanin set {action.key} {action.value}")
-        else:
-            print(f"fanin unset {action.key}")
     return 0
 
 
@@ -664,46 +599,6 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--output-hardware-state", default=None)
     explain.set_defaults(func=_cmd_explain)
 
-    outputd_floor = sub.add_parser(
-        "outputd-floor-actions",
-        help=(
-            "emit shell-readable outputd.env set/unset actions for the active "
-            "DAC latency floor"
-        ),
-    )
-    outputd_floor.add_argument("--profile-id", default="")
-    outputd_floor.add_argument("--base-env", default=BASE_ENV_PATH)
-    outputd_floor.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
-    outputd_floor.add_argument(
-        "--overrides",
-        default=runtime_overrides_path(),
-    )
-    outputd_floor.set_defaults(func=_cmd_outputd_floor_actions)
-
-    render_ring_conf = sub.add_parser(
-        "render-ring-conf-wire",
-        help=(
-            "render the shm-ring conf.d wire (slot period, format, per-ring "
-            "channels) from the DAC profile's declared latency floor and the "
-            "saved output topology (no declared floor leaves it untouched)"
-        ),
-    )
-    render_ring_conf.add_argument("--profile-id", default="")
-    render_ring_conf.add_argument(
-        "--conf-d",
-        default="",
-        help="override the ring conf.d path (default: the ring_assets SSOT)",
-    )
-    render_ring_conf.add_argument(
-        "--output-topology",
-        default=None,
-        help=(
-            "saved output topology the Ring B channel count is resolved "
-            "from (default: JASPER_OUTPUT_TOPOLOGY_PATH, else the SSOT)"
-        ),
-    )
-    render_ring_conf.set_defaults(func=_cmd_render_ring_conf_wire)
-
     renderer_lanes = sub.add_parser(
         "renderer-lanes",
         help=(
@@ -745,43 +640,12 @@ def build_parser() -> argparse.ArgumentParser:
     renderer_lanes.add_argument("--period-frames", type=int, default=None)
     renderer_lanes.set_defaults(func=_cmd_renderer_lanes)
 
-    validate_outputd = sub.add_parser(
-        "validate-outputd-env",
-        help="validate reconciler-owned outputd.env before installing it",
-    )
-    validate_outputd.add_argument("--base-env", default=BASE_ENV_PATH)
-    validate_outputd.add_argument("--outputd-env", default=OUTPUTD_ENV_PATH)
-    validate_outputd.add_argument("--fanin-env", default=FANIN_ENV_PATH)
-    # The path to NAME in refusals when it differs from the path to READ. The
-    # reconciler validates a staged candidate under a temp name that is deleted
-    # on exit; unset means the two are the same file.
-    validate_outputd.add_argument("--outputd-label", default="")
-    # Same default as outputd-floor-actions: the store is read whether or not a
-    # caller names it, because the floor pass writes store values into
-    # outputd.env and this refusal has to be able to say so.
-    validate_outputd.add_argument("--overrides", default=runtime_overrides_path())
-    validate_outputd.add_argument(
-        "--camilla-statefile", default=DEFAULT_CAMILLA_STATEFILE_PATH
-    )
-    validate_outputd.add_argument(
-        "--camilla2-statefile", default=DEFAULT_CAMILLA2_STATEFILE_PATH
-    )
-    validate_outputd.add_argument("--output-topology", default=None)
-    validate_outputd.set_defaults(func=_cmd_validate_outputd_env)
-
     capture_device = sub.add_parser(
         "outputd-capture-device",
         help="resolve outputd's paired capture PCM for a CamillaDSP playback PCM",
     )
     capture_device.add_argument("--playback-device", required=True)
     capture_device.set_defaults(func=_cmd_outputd_capture_device)
-
-    route_actions = sub.add_parser(
-        "route-actions",
-        help="emit shell-readable fanin env actions for the audio route",
-    )
-    route_actions.add_argument("--base-env", default=BASE_ENV_PATH)
-    route_actions.set_defaults(func=_cmd_route_actions)
 
     overrides_list = sub.add_parser(
         "overrides-list",

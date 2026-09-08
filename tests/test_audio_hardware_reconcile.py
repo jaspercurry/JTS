@@ -3092,7 +3092,6 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
     # making this contract vacuous.
     rc, out = _run_validate_outputd_env(
         tmp_path,
-        capsys,
         graph_yaml=_emit_active_baseline(
             _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE
         ),
@@ -3149,16 +3148,15 @@ def _drifted_ring_conf(tmp_path: Path, period_frames: int = 1024) -> Path:
     return conf
 
 
-def _render_ring_conf(conf: Path, topology: Path | None = None) -> int:
-    from jasper.cli.audio_config import main as audio_config_main
+def _render_ring_conf(conf: Path, topology: Path | None = None) -> dict[str, str]:
+    """The renderer the reconciler itself calls, over the same two inputs."""
+    from jasper.cli.audio_config import ring_conf_wire_report
 
-    args = [
-        "render-ring-conf-wire", "--profile-id", "hifiberry_dac8x",
-        "--conf-d", str(conf),
-    ]
-    if topology is not None:
-        args += ["--output-topology", str(topology)]
-    return audio_config_main(args)
+    return ring_conf_wire_report(
+        profile_id="hifiberry_dac8x",
+        conf_d=str(conf),
+        output_topology=str(topology) if topology is not None else None,
+    )
 
 
 @pytest.fixture
@@ -3245,11 +3243,10 @@ def test_render_subcommand_renders_for_any_profile_declaring_the_slot_floor(
     conf = _drifted_ring_conf(tmp_path)
     declare_slot_floor()
 
-    assert _render_ring_conf(conf) == 0
-    out = capsys.readouterr().out
-    assert "result rendered" in out
-    assert f"period_frames {RING_SLOT_FRAMES}" in out
-    assert "previous_period_frames 1024" in out
+    report = _render_ring_conf(conf)
+    assert report["result"] == "rendered"
+    assert report["period_frames"] == str(RING_SLOT_FRAMES)
+    assert report["previous_period_frames"] == "1024"
 
     from jasper import ring_assets
 
@@ -3277,10 +3274,9 @@ def test_render_subcommand_refuses_a_floor_the_ring_slot_cannot_carry(
     before_mtime = conf.stat().st_mtime_ns
     declare_slot_floor(2 * RING_SLOT_FRAMES)
 
-    assert _render_ring_conf(conf) == 0
-    out = capsys.readouterr().out
-    assert "result skipped" in out
-    assert f"reason ring_slot_fixed_{RING_SLOT_FRAMES}" in out
+    report = _render_ring_conf(conf)
+    assert report["result"] == "skipped"
+    assert report["reason"] == f"ring_slot_fixed_{RING_SLOT_FRAMES}"
     assert conf.read_bytes() == before_bytes
     assert conf.stat().st_mtime_ns == before_mtime
 
@@ -3317,13 +3313,11 @@ def test_render_subcommand_is_idempotent(
     conf = _drifted_ring_conf(tmp_path)
     declare_slot_floor()
 
-    assert _render_ring_conf(conf) == 0
-    capsys.readouterr()
+    assert _render_ring_conf(conf)["result"] == "rendered"
     settled_bytes = conf.read_bytes()
     settled_mtime = conf.stat().st_mtime_ns
 
-    assert _render_ring_conf(conf) == 0
-    assert "result unchanged" in capsys.readouterr().out
+    assert _render_ring_conf(conf)["result"] == "unchanged"
     assert conf.read_bytes() == settled_bytes
     assert conf.stat().st_mtime_ns == settled_mtime
 
@@ -3335,8 +3329,8 @@ def test_render_subcommand_reports_a_torn_conf_instead_of_inventing_one(
     conf.write_text("pcm.jts_ring_capture { type jts_ring }\n", encoding="utf-8")
     declare_slot_floor()
 
-    assert _render_ring_conf(conf) == 1
-    assert "no period_frames" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="no period_frames"):
+        _render_ring_conf(conf)
     assert conf.read_text(encoding="utf-8") == (
         "pcm.jts_ring_capture { type jts_ring }\n"
     )
@@ -3345,11 +3339,10 @@ def test_render_subcommand_reports_a_torn_conf_instead_of_inventing_one(
 @pytest.mark.parametrize(
     ("topology_json", "expected"),
     [
-        # Every axis the renderer resolved is emitted for the shell to log. A
-        # key the CLI does not print is a key the journal reports as `none`,
-        # which is how a per-box wire becomes invisible at the exact moment it
-        # starts differing between boxes.
-        pytest.param(None, "", id="no-topology-argument"),
+        # No argument resolves the SSOT path, and an absent file there is a
+        # loaded empty draft — "not configured yet" is a ring-eligible shape,
+        # not an unreadable one.
+        pytest.param(None, "loaded", id="no-topology-argument"),
         # Fail-safe direction for a RENDERER: a topology it cannot read must
         # never move the conf.d off what the box is already running. Refusing
         # to ARM on one is the preflights' job. CORRUPT, not absent —
@@ -3377,12 +3370,11 @@ def test_render_subcommand_reports_the_wire_and_the_topology_it_resolved(
             encoding="utf-8",
         )
 
-    assert _render_ring_conf(conf, topology_path) == 0
-    out = capsys.readouterr().out
-    assert f"topology {expected}" in out
-    assert "sample_format S32_LE" in out
-    assert "ring_a_channels 2" in out
-    assert "ring_b_channels 2" in out
+    report = _render_ring_conf(conf, topology_path)
+    assert report["topology"] == expected
+    assert report["sample_format"] == "S32_LE"
+    assert report["ring_a_channels"] == "2"
+    assert report["ring_b_channels"] == "2"
     assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
     for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
         assert ring_assets.ring_conf_format(pcm, str(conf)) == "S32_LE"

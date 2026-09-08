@@ -363,20 +363,16 @@ def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path, capsys)
     """The floor's real payoff, pinned at the command that consumes it: an
     absent floor short-circuits to ``no_declared_floor`` BEFORE the wire is
     resolved, so the ACTIVE block would keep the ioplug default forever."""
-    from jasper.cli import audio_config
+    from jasper.cli.audio_config import ring_conf_wire_report
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(Path(RING_CONF_D_SOURCE).read_text(encoding="utf-8"), "utf-8")
     before = conf.read_text(encoding="utf-8")
 
-    rc = audio_config.main(
-        ["render-ring-conf-wire", "--profile-id", "", "--conf-d", str(conf)]
-    )
+    report = ring_conf_wire_report(profile_id="", conf_d=str(conf))
 
-    assert rc == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert "result skipped" in lines
-    assert "reason no_declared_floor" in lines
+    assert report["result"] == "skipped"
+    assert report["reason"] == "no_declared_floor"
     assert conf.read_text(encoding="utf-8") == before
 
 

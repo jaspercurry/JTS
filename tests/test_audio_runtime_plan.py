@@ -535,18 +535,23 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
         encoding="utf-8",
     )
 
-    from jasper.cli.audio_config import main as audio_config_main
+    from jasper.audio_runtime_plan import (
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        DEFAULT_CAMILLA_STATEFILE_PATH,
+    )
+    from jasper.cli.audio_config import validate_outputd_env
 
-    result = audio_config_main([
-        "validate-outputd-env",
-        "--base-env", str(base_env),
-        "--outputd-env", str(outputd_env),
-        "--fanin-env", str(fanin_env),
-        "--overrides", str(store),
-    ])
+    ok, lines = validate_outputd_env(
+        base_env=str(base_env),
+        outputd_env=str(outputd_env),
+        fanin_env=str(fanin_env),
+        camilla_statefile=DEFAULT_CAMILLA_STATEFILE_PATH,
+        camilla2_statefile=DEFAULT_CAMILLA2_STATEFILE_PATH,
+        overrides=str(store),
+    )
 
-    assert result == 1
-    printed = capsys.readouterr().out
+    assert ok is False
+    printed = "\n".join(lines)
     assert "minimum ALSA jitter margin" in printed
     assert str(store) in printed
     assert "created_at=2026-07-02T00:00:00Z" in printed
@@ -556,9 +561,9 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
 
 
 def test_audio_config_import_does_not_load_runtime_contract():
-    """`jasper.cli.audio_config` is spawned six times per boot reconcile pass;
-    `runtime_contract` is only needed on the active-endpoint branch of
-    `validate-outputd-env`, so it must stay a call-site import (ADR-0226).
+    """The audio-hardware reconcile pass imports `jasper.cli.audio_config`;
+    `runtime_contract` is only needed on `validate_outputd_env`'s
+    active-endpoint branch, so it must stay a call-site import (ADR-0226).
     """
     import subprocess
     import sys

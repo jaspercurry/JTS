@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The CLI the shell evals: resolve/reconcile the USB data-port role and emit
-its ``--env`` contract (ADR-0235).
+"""Resolve or reconcile the USB data-port role (ADR-0235).
+
+Every `event=` line goes to stderr (ADR-0235 R4), which is what reaches the
+journal on every invocation; the shell callers read only the exit status.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shlex
 import sys
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
@@ -24,46 +25,6 @@ from jasper.audio_hardware.usb_port_role import (
 )
 from jasper.log_event import render_logfmt
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
-
-
-def _flag(value: object) -> str:
-    return "true" if value else "false"
-
-
-def _env_lines(
-    state: UsbPortRoleState,
-    *,
-    boot_config_changed: bool,
-    hat_profile: str,
-    hat_changed: bool,
-    durability_failed: bool,
-    hat_collision: I2sHatCollision | None,
-) -> str:
-    """The boot-config CLI's whole shell contract (ADR-0235 R2).
-
-    Emitted whether or not ``--reconcile-boot`` ran, so a caller evaling this
-    never hits an unset variable: the HAT-only keys read as empty/false when
-    there was nothing to reconcile.
-    """
-    values = {
-        "JASPER_BOOT_BOARD_TOPOLOGY": state.board_topology,
-        "JASPER_BOOT_USB_DESIRED_ROLE": state.desired_role,
-        "JASPER_BOOT_USB_ACTIVE_ROLE": state.active_role,
-        "JASPER_BOOT_REBOOT_REQUIRED": _flag(state.reboot_required),
-        "JASPER_BOOT_CONFIG_CHANGED": _flag(boot_config_changed),
-        "JASPER_BOOT_I2S_HAT_PROFILE": hat_profile,
-        "JASPER_BOOT_I2S_HAT_CHANGED": _flag(hat_changed),
-        "JASPER_BOOT_CONFIG_PUBLISHED_NOT_DURABLE": _flag(durability_failed),
-        "JASPER_BOOT_I2S_HAT_COLLISION_MANAGED_OVERLAY": (
-            hat_collision.managed_overlay if hat_collision is not None else ""
-        ),
-        "JASPER_BOOT_I2S_HAT_COLLISION_COLLIDING_OVERLAYS": (
-            ",".join(hat_collision.colliding_overlays)
-            if hat_collision is not None
-            else ""
-        ),
-    }
-    return "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items())
 
 
 def boot_role_events(
@@ -145,11 +106,6 @@ def main(argv: list[str] | None = None) -> int:
         "--udc-class-dir",
         default=os.environ.get("JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR),
     )
-    parser.add_argument(
-        "--env",
-        action="store_true",
-        help="print the shell contract as shell-safe KEY=value assignments",
-    )
     args = parser.parse_args(argv)
     hat_changed = False
     desired_hat_profile: str | None = None
@@ -187,20 +143,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 0 if state.management_transport_available else 1
-    if args.env:
-        print(
-            _env_lines(
-                state,
-                boot_config_changed=changed,
-                hat_profile=desired_hat_profile or "",
-                hat_changed=hat_changed,
-                durability_failed=durability_failed,
-                hat_collision=hat_collision,
-            ),
-            end="",
-        )
-    # Every event= line goes to stderr (ADR-0235 R4): stdout carries the
-    # `--env` payload, stderr reaches the journal on every invocation.
     for name, fields in boot_role_events(
         state,
         boot_config_changed=changed,

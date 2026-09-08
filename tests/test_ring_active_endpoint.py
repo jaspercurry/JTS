@@ -2740,7 +2740,6 @@ def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():
 
 def _run_validate_outputd_env(
     tmp_path,
-    capsys,
     *,
     graph_yaml: str,
     topology,
@@ -2750,16 +2749,14 @@ def _run_validate_outputd_env(
     content_bridge: str | None = None,
     dac_id: str = "hifiberry_dac8x",
 ) -> tuple[int, str]:
-    """Run the REAL validator `jasper-audio-hardware-reconcile` shells to.
+    """Run the REAL validator the audio-hardware reconciler runs.
 
-    The bash reconciler's ``validate_outputd_env_stage`` runs exactly
-    ``python -m jasper.cli.audio_config validate-outputd-env`` with these six
-    path flags; this drives that same entry point in-process. It is the layer
-    the ladder walks above do NOT touch — they call ``_outputd_actions`` and the
-    marker derivation directly — which is why all four of them passed while the
-    real ladder deadlocked at step 2 on jts3.
+    ``validate_outputd_env_stage`` calls exactly this function over these six
+    paths. It is the layer the ladder walks above do NOT touch — they call
+    ``_outputd_actions`` and the marker derivation directly — which is why all
+    four of them passed while the real ladder deadlocked at step 2 on jts3.
     """
-    from jasper.cli.audio_config import main as audio_config_main
+    from jasper.cli.audio_config import validate_outputd_env
     from jasper.output_topology import save_output_topology
 
     graph = tmp_path / "graph.yml"
@@ -2782,31 +2779,21 @@ def _run_validate_outputd_env(
         f"JASPER_FANIN_CAMILLA_COUPLING={coupling}\n", encoding="utf-8"
     )
 
-    capsys.readouterr()
-    rc = audio_config_main(
-        [
-            "validate-outputd-env",
-            "--base-env",
-            str(base_env),
-            "--outputd-env",
-            str(outputd_env),
-            "--fanin-env",
-            str(fanin_env),
-            "--camilla-statefile",
-            str(statefile),
-            "--camilla2-statefile",
-            str(tmp_path / "crossover-statefile.yml"),
-            "--output-topology",
-            str(topology_path),
-        ]
+    ok, lines = validate_outputd_env(
+        base_env=str(base_env),
+        outputd_env=str(outputd_env),
+        fanin_env=str(fanin_env),
+        camilla_statefile=str(statefile),
+        camilla2_statefile=str(tmp_path / "crossover-statefile.yml"),
+        output_topology=str(topology_path),
     )
-    return rc, capsys.readouterr().out
+    return (0 if ok else 1), "".join(f"{line}\n" for line in lines)
 
 
 def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     tmp_path, capsys, monkeypatch
 ):
-    """The missing layer: the walk goes THROUGH `validate-outputd-env`.
+    """The missing layer: the walk goes THROUGH `validate_outputd_env`.
 
     The four walks above drive the emit, marker-derivation, and coupling layers
     and all passed — while the real ladder deadlocked on jts3 (2026-08-11) at
@@ -2855,7 +2842,6 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # --- ARM-1: marker absent. The state step 1 leaves behind. -------------
     rc, out = _run_validate_outputd_env(
         tmp_path,
-        capsys,
         graph_yaml=ring_graph,
         topology=topology,
         coupling="loopback",
@@ -2871,7 +2857,6 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # --- ARM-2: marker set, coupling still loopback. The jts3 state. -------
     rc, out = _run_validate_outputd_env(
         tmp_path,
-        capsys,
         graph_yaml=ring_graph,
         topology=topology,
         coupling="loopback",
@@ -2944,7 +2929,6 @@ def test_the_stereo_ring_under_a_loopback_plan_still_fails_the_validator(
 
     rc, out = _run_validate_outputd_env(
         tmp_path,
-        capsys,
         graph_yaml=stereo_ring_graph,
         topology=_active_topology("mono", "active_2_way"),
         coupling="loopback",
@@ -2982,7 +2966,6 @@ def _first_arm_on_a_stereo_ring_box(tmp_path, capsys, monkeypatch, *, graph_yaml
         )
     return _run_validate_outputd_env(
         tmp_path,
-        capsys,
         graph_yaml=graph_yaml,
         topology=topology,
         coupling="shm_ring",
