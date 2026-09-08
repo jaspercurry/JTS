@@ -310,7 +310,7 @@ const PROBE_INJECT = [
     invalidateLoadedCalibration,
     checkCalibrationHonesty,
     resetCalibrationMismatchAlerted: function () {
-      micCalibration.calibrationMismatchAlerted = false;
+      calibrationSelection.mismatchAlerted = false;
     },
     // Gauge fix (2026-07-24): orientation label mapping for the loaded-
     // calibration status line.
@@ -2839,7 +2839,7 @@ await (async () => {
 
 // 38. The REAL boot dispatch order, not just a realistic fixture: main.js's
 //     landing sequence calls pollState() (fire-and-forget) BEFORE
-//     applyHouseholdMicPrefill() — so the prefill sets selectedCalibrationId
+//     applyHouseholdMicPrefill() — so the prefill sets calibrationSelection.id
 //     WHILE pollState's own fetchStatus() is still in flight, and only
 //     resolves afterward. Drives that exact interleaving (dispatch, then
 //     synchronously prefill, then await) rather than the tidier sequential
@@ -2891,7 +2891,7 @@ await (async () => {
 
 // 40. S1 (round-2 adversarial review): runTransportLocked alone is "a run is
 //     live", not "this tab started it". An observer tab that never called
-//     /start itself — its own selectedCalibrationId comes from its own
+//     /start itself — its own calibrationSelection.id comes from its own
 //     household prefill, unrelated to whatever a DIFFERENT tab/device's live
 //     run actually bound — must never alert, even when runTransportLocked
 //     correctly flips true (a real run IS in progress) and the reported
