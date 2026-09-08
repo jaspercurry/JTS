@@ -45,7 +45,6 @@ URL surface (after nginx strips /sources/):
 from __future__ import annotations
 
 import logging
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -62,6 +61,7 @@ from ._common import (
     canonical_page,
     reject_csrf,
     read_json_object,
+    route_path,
     send_html_response,
     send_json_response,
     toggle_html,
@@ -244,7 +244,8 @@ def _get_state(handler: BaseHTTPRequestHandler) -> None:
         send_json_response(handler, {"error": str(e)}, status=502)
 
 
-def _post_set(handler: BaseHTTPRequestHandler, body: dict[str, Any]) -> None:
+def _post_set(handler: BaseHTTPRequestHandler) -> None:
+    body = handler._read_json()
     source = str(body.get("source") or "")
     if source not in VALID_SOURCES:
         send_json_response(handler, {"error": f"unknown source {source!r}"}, status=400)
@@ -339,8 +340,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 return {}
 
         def do_GET(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -349,16 +349,14 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            body = self._read_json()
-            handler_fn(self, body)
+            handler_fn(self)
 
     return Handler
 

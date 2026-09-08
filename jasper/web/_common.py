@@ -918,6 +918,14 @@ def read_json_body(
         return None, _JSON_BODY_ERRORS.get(exc.code, fallback)
 
 
+def route_path(request_path: str) -> str:
+    """Normalise a request line into the key a wizard route table uses:
+    query string dropped, trailing slashes trimmed, "" mapped to "/".
+    Every wizard dispatcher looks its route up by this, so `/save`,
+    `/save/` and `/save?x=1` are one route (ADR-0253 §6)."""
+    return urllib.parse.urlparse(request_path).path.rstrip("/") or "/"
+
+
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     """Parse a urlencoded form body off a stdlib BaseHTTPRequestHandler
     request into a single-value dict. Empty values are preserved (so

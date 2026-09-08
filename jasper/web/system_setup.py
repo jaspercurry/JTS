@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import logging
 import os
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -56,6 +55,7 @@ from ._common import (
     proxy_get,
     proxy_post,
     reject_csrf,
+    route_path,
     send_html_response,
     send_proxy_json,
     guard_read_request,
@@ -102,13 +102,13 @@ def _make_handler(
     # (exact path -> handler callable). The tables stay local to this
     # closure (rather than module-level) so the handlers can close over
     # `control_base`, same as this function has always done.
-    def _get_index(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         send_html_response(
             handler,
             _render_page(
                 ctx["csrf_token"],
-                view="audio" if path == "/audio" else "system",
+                view="audio" if route_path(handler.path) == "/audio" else "system",
             ),
         )
 
@@ -128,7 +128,8 @@ def _make_handler(
         )
         send_proxy_json(handler, body, status=status)
 
-    def _post_proxy(handler: BaseHTTPRequestHandler, path: str) -> None:
+    def _post_proxy(handler: BaseHTTPRequestHandler) -> None:
+        path = route_path(handler.path)
         body = None
         if path in (
             "/audio-quality", "/usb-latency", "/usb-forensics",
@@ -165,9 +166,9 @@ def _make_handler(
     _GET_ROUTES = {
         "/": _get_index,
         "/audio": _get_index,
-        "/data.json": lambda h, p: _get_data(h),
-        "/diagnostics.json": lambda h, p: _get_diagnostics(h),
-        "/optional-features/enhanced-aec": lambda h, p: _get_enhanced_aec(h),
+        "/data.json": _get_data,
+        "/diagnostics.json": _get_diagnostics,
+        "/optional-features/enhanced-aec": _get_enhanced_aec,
     }
     _POST_ROUTES = {
         "/restart/voice": _post_proxy,
@@ -187,27 +188,23 @@ def _make_handler(
         def do_GET(self) -> None:  # noqa: N802
             # nginx strips the /system/ prefix so we see paths like
             # "/" and "/data.json".
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_read_request(self):
                 return
-            handler_fn(self, path)
+            handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
             if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not guard_mutating_request(self):
                 reject_csrf(self)
                 return
-            handler_fn(self, path)
+            handler_fn(self)
 
     return Handler
 

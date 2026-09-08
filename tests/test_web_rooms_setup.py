@@ -821,6 +821,22 @@ def test_post_unknown_path_404s_before_csrf(monkeypatch, path):
     assert h.status == 404
 
 
+@pytest.mark.parametrize("path", ["/bond", "/bond/", "/bond?x=1"])
+def test_post_bond_route_matches_regardless_of_slash_or_query(monkeypatch, path):
+    """Dispatch normalises the request path, so a trailing slash or a query
+    string still reaches the bond route instead of 404ing."""
+    reached = []
+    monkeypatch.setitem(
+        rooms_setup._POST_ROUTES, "/bond", lambda h: reached.append(h.path),
+    )
+    monkeypatch.setattr(rooms_setup, "guard_mutating_request", lambda *a, **k: True)
+    h, _ = make_real_handler(
+        rooms_setup._make_handler(), path, body=b"{}", content_type=None,
+    )
+    h.do_POST()
+    assert reached == [path]
+
+
 def test_post_peering_rejects_bad_csrf(monkeypatch, tmp_path):
     _seed_peering_env(tmp_path, monkeypatch, "JASPER_PEERING=off\n")
     h, restarts = _post("/peering", b'{"enabled":true,"primary":false}',
