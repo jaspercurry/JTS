@@ -80,7 +80,7 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MAX,
     ROOM_PEQ_Q_MIN,
 )
-from jasper.camilla_config_contract import PeqFilter
+from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
 from ._common import require_sha256_hex
@@ -92,6 +92,7 @@ from .camilla_yaml import (
 )
 from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
+from .crossover_v2.room_prescription import ROOM_CEILING_SOURCES, ROOM_MEDIAN_FIELD
 from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
 from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
@@ -144,9 +145,8 @@ _ROOM_CORRECTION_KEYS = frozenset({
     "boost_db_total",
     "level_cost_db",
 })
-_ROOM_BASIS_KEYS = frozenset({"round_id", "room_median_sha256", "admitted_boosts_hz"})
+_ROOM_BASIS_KEYS = frozenset({"round_id", ROOM_MEDIAN_FIELD, "admitted_boosts_hz"})
 _ROOM_FILTER_KEYS = frozenset({"freq", "q", "gain"})
-_ROOM_CEILING_SOURCES = frozenset({"applied_candidate", "fallback"})
 
 
 class MeasuredCrossoverCandidateError(ValueError):
@@ -190,9 +190,10 @@ def _validated_room_correction(
 
     if not raw:
         return {}
+    _ROOM_INVALID = "room_correction_invalid"
     if set(raw) != _ROOM_CORRECTION_KEYS:
         _refuse(
-            "room_correction_invalid",
+            _ROOM_INVALID,
             f"room_correction keys must be exactly {sorted(_ROOM_CORRECTION_KEYS)}",
         )
     ceiling_hz = finite_float(raw["ceiling_hz"])
@@ -201,44 +202,44 @@ def _validated_room_correction(
         or not ROOM_BOUNDARY_MIN_HZ <= ceiling_hz <= ROOM_BOUNDARY_MAX_HZ
     ):
         _refuse(
-            "room_correction_invalid",
+            _ROOM_INVALID,
             "ceiling_hz must be within "
             f"{ROOM_BOUNDARY_MIN_HZ}..{ROOM_BOUNDARY_MAX_HZ} Hz",
         )
-    if raw["ceiling_source"] not in _ROOM_CEILING_SOURCES:
+    if raw["ceiling_source"] not in ROOM_CEILING_SOURCES:
         _refuse(
-            "room_correction_invalid",
-            f"ceiling_source must be one of {sorted(_ROOM_CEILING_SOURCES)}",
+            _ROOM_INVALID,
+            f"ceiling_source must be one of {sorted(ROOM_CEILING_SOURCES)}",
         )
     basis = raw["basis"]
     if not isinstance(basis, Mapping) or set(basis) != _ROOM_BASIS_KEYS:
         _refuse(
-            "room_correction_invalid",
+            _ROOM_INVALID,
             f"basis keys must be exactly {sorted(_ROOM_BASIS_KEYS)}",
         )
     if not isinstance(basis["round_id"], str) or not basis["round_id"].strip():
-        _refuse("room_correction_invalid", "basis.round_id must be a non-empty string")
+        _refuse(_ROOM_INVALID, "basis.round_id must be a non-empty string")
     try:
         require_sha256_hex(
-            basis["room_median_sha256"], "basis.room_median_sha256", ValueError
+            basis[ROOM_MEDIAN_FIELD], f"basis.{ROOM_MEDIAN_FIELD}", ValueError
         )
     except ValueError as exc:
-        _refuse("room_correction_invalid", str(exc))
+        _refuse(_ROOM_INVALID, str(exc))
     if not isinstance(basis["admitted_boosts_hz"], list):
-        _refuse("room_correction_invalid", "basis.admitted_boosts_hz must be a list")
+        _refuse(_ROOM_INVALID, "basis.admitted_boosts_hz must be a list")
     admitted: list[float] = []
     for value in basis["admitted_boosts_hz"]:
         number = finite_float(value)
         if number is None:
             _refuse(
-                "room_correction_invalid",
+                _ROOM_INVALID,
                 "basis.admitted_boosts_hz must be finite numbers",
             )
         admitted.append(number)
     sides = raw["sides"]
     if not isinstance(sides, Mapping) or set(sides) != set(layout_sides):
         _refuse(
-            "room_correction_invalid",
+            _ROOM_INVALID,
             f"sides must cover exactly {sorted(layout_sides)}",
         )
     side_boosts: list[float] = []
@@ -246,15 +247,15 @@ def _validated_room_correction(
         filters = sides[side]
         if not isinstance(filters, list) or len(filters) > ROOM_MAX_FILTERS_PER_SIDE:
             _refuse(
-                "room_correction_invalid",
+                _ROOM_INVALID,
                 f"side {side!r} must be a list of at most "
                 f"{ROOM_MAX_FILTERS_PER_SIDE} filters",
             )
-        boost = 0.0
+        peqs: list[PeqFilter] = []
         for entry in filters:
             if not isinstance(entry, Mapping) or set(entry) != _ROOM_FILTER_KEYS:
                 _refuse(
-                    "room_correction_invalid",
+                    _ROOM_INVALID,
                     f"side {side!r} filter keys must be exactly "
                     f"{sorted(_ROOM_FILTER_KEYS)}",
                 )
@@ -263,38 +264,39 @@ def _validated_room_correction(
             gain = finite_float(entry["gain"])
             if freq is None or q is None or gain is None:
                 _refuse(
-                    "room_correction_invalid",
+                    _ROOM_INVALID,
                     f"side {side!r} filter values must be finite numbers",
                 )
             if not ROOM_F_LOW_HZ <= freq <= ceiling_hz:
                 _refuse(
-                    "room_correction_invalid",
+                    _ROOM_INVALID,
                     f"side {side!r} filter freq must be within "
                     f"{ROOM_F_LOW_HZ}..{ceiling_hz} Hz",
                 )
             if not ROOM_PEQ_Q_MIN <= q <= ROOM_PEQ_Q_MAX:
                 _refuse(
-                    "room_correction_invalid",
+                    _ROOM_INVALID,
                     f"side {side!r} filter q must be within "
                     f"{ROOM_PEQ_Q_MIN}..{ROOM_PEQ_Q_MAX}",
                 )
+            peqs.append(PeqFilter(freq=freq, q=q, gain=gain))
             if gain <= 0.0:
                 continue
             if gain > ROOM_MAX_FILTER_BOOST_DB:
                 _refuse(
-                    "room_correction_invalid",
+                    _ROOM_INVALID,
                     f"side {side!r} boost must not exceed "
                     f"{ROOM_MAX_FILTER_BOOST_DB} dB",
                 )
             if not any(math.isclose(freq, value) for value in admitted):
                 _refuse(
-                    "room_correction_invalid",
+                    _ROOM_INVALID,
                     f"side {side!r} boost at {freq} Hz is not an admitted boost",
                 )
-            boost += gain
+        boost = total_positive_boost_db(peqs)
         if boost > ROOM_MAX_TOTAL_BOOST_DB:
             _refuse(
-                "room_correction_invalid",
+                _ROOM_INVALID,
                 f"side {side!r} total boost must not exceed "
                 f"{ROOM_MAX_TOTAL_BOOST_DB} dB",
             )
@@ -304,14 +306,14 @@ def _validated_room_correction(
         boost_db_total, max(side_boosts), abs_tol=1e-9
     ):
         _refuse(
-            "room_correction_invalid",
+            _ROOM_INVALID,
             "boost_db_total must equal the largest per-side positive gain sum",
         )
     level_cost_db = finite_float(raw["level_cost_db"])
     if level_cost_db is None or not math.isclose(
         level_cost_db, boost_db_total, abs_tol=1e-9
     ):
-        _refuse("room_correction_invalid", "level_cost_db must equal boost_db_total")
+        _refuse(_ROOM_INVALID, "level_cost_db must equal boost_db_total")
     return dict(raw)
 
 

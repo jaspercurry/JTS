@@ -18,6 +18,7 @@ findings back.
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -220,17 +221,7 @@ class BoostAdmission:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe record of the finding."""
-        return {
-            "freq_hz": self.freq_hz,
-            "evaluated_at_hz": self.evaluated_at_hz,
-            "n_positions": self.n_positions,
-            "n_present": self.n_present,
-            "presence_fraction": self.presence_fraction,
-            "depth_db": self.depth_db,
-            "width_octaves": self.width_octaves,
-            "admitted": self.admitted,
-            "reason": self.reason,
-        }
+        return dataclasses.asdict(self)
 
 
 def _refusal_reason(

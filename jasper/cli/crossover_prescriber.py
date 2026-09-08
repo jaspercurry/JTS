@@ -212,17 +212,23 @@ def _room_median(path: Path) -> tuple[RoomMedian, str]:
     the door's own one reason.
     """
     try:
-        payload = path.read_bytes()
-        document = json.loads(payload.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        payload = read_source_bytes(str(path))
+        document = json.loads(payload)
+    except (OSError, ValueError, RecursionError) as exc:
         raise RoomPrescriptionRefused(
             ROOM_MEDIAN_UNAVAILABLE, f"{path}: {exc}"
         ) from exc
     return read_room_median(document), prescription_sha256(payload)
 
 
-def _room_median_path(args: argparse.Namespace) -> Path:
-    """``--room-median``, or the round's own copy beside the evidence."""
+def _room_median_path(args: argparse.Namespace, resolved: Path | None = None) -> Path:
+    """``--room-median``, or the round's own copy beside the evidence.
+
+    ``resolved`` is this invocation's own answer, threaded back from the gate
+    that already read it, so a later caller does not walk the round tree again.
+    """
+    if resolved is not None:
+        return resolved
     if args.room_median:
         return Path(args.room_median)
     if args.session_dir:
@@ -237,7 +243,7 @@ def _room_median_path(args: argparse.Namespace) -> Path:
 
 
 def _room_gate(
-    document: Mapping[str, Any], args: argparse.Namespace
+    document: Mapping[str, Any], args: argparse.Namespace, path: Path
 ) -> RoomPrescription:
     """The room door, against the median this invocation named.
 
@@ -245,7 +251,6 @@ def _room_gate(
     when one was given, else the median's own parent -- because the candidate
     field's basis names the round, and only the caller knows which one it is.
     """
-    path = _room_median_path(args)
     median, sha256 = _room_median(path)
     round_id = (
         Path(args.session_dir).name
@@ -270,7 +275,9 @@ def _composed_room(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     if not args.room_prescription:
         return {}, ""
     payload = read_source_bytes(args.room_prescription)
-    prescription = _room_gate(read_prescription_bytes(payload), args)
+    prescription = _room_gate(
+        read_prescription_bytes(payload), args, _room_median_path(args)
+    )
     return (
         room_prescription_to_candidate_fields(prescription),
         prescription_sha256(payload),
@@ -438,8 +445,9 @@ def _gate(
     BlendPrescription | DriverPrescription | RoomPrescription,
     dict[str, Any],
     tuple[FeatureVerdict, ...] | None,
+    Path | None,
 ]:
-    """The document, the validated prescription, what it becomes, what judged it.
+    """The document, the prescription, what it becomes, what judged it, where.
 
     Shared WHOLE by ``propose`` and ``stage``, which is what makes the first a
     true dry run of the second. The document's own ``kind`` picks the gate --
@@ -448,12 +456,23 @@ def _gate(
     round's spatial median and a packet it never answered must not be built,
     let alone required. Raises ``BlendPrescriptionRefused`` (``EXIT_REFUSED``)
     or ``CrossoverEvidencePacketError``/``OSError`` (``EXIT_UNREADABLE``).
+
+    The last member is the room median this invocation resolved, handed back so
+    the receipt's home and the printed next command do not resolve it a second
+    time; ``None`` for every other class, which is judged against a packet.
     """
     payload = read_source_bytes(args.prescription)
     document = read_prescription_bytes(payload)
     if document.get("kind") == ROOM_PRESCRIPTION_KIND:
-        room = _room_gate(document, args)
-        return payload, room, room_prescription_to_candidate_fields(room), None
+        median_path = _room_median_path(args)
+        room = _room_gate(document, args, median_path)
+        return (
+            payload,
+            room,
+            room_prescription_to_candidate_fields(room),
+            None,
+            median_path,
+        )
     packet = _load_packet(args)
     prescription: BlendPrescription | DriverPrescription | None
     classifications: tuple[FeatureVerdict, ...] | None = None
@@ -489,7 +508,7 @@ def _gate(
         )
     # Candidate fields are computed INSIDE the gate above, because each seam
     # re-asks its own route and can refuse with the contract's exit code.
-    return payload, prescription, candidate_fields, classifications
+    return payload, prescription, candidate_fields, classifications, None
 
 
 #: What ``propose`` writes when no ``--out`` names somewhere else: the accepted
@@ -558,7 +577,7 @@ def _evidence_words(args: argparse.Namespace) -> list[str]:
     ]
 
 
-def _compose_command(args: argparse.Namespace) -> str:
+def _compose_command(args: argparse.Namespace, median_path: Path | None) -> str:
     """The ``compose`` invocation a room prescription becomes.
 
     A room set is not an instruction for the next round: it is a candidate
@@ -569,7 +588,7 @@ def _compose_command(args: argparse.Namespace) -> str:
     return shlex.join([
         PROG, "compose", "--base", "<base candidate fingerprint>",
         "--room-prescription", args.prescription,
-        "--room-median", str(_room_median_path(args)),
+        "--room-median", str(_room_median_path(args, median_path)),
     ])
 
 
@@ -593,7 +612,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     if source_error is not None:
         return failed(EXIT_UNREADABLE, REASON_EVIDENCE_SOURCE, source_error)
     try:
-        payload, prescription, candidate_fields, _ = _gate(args)
+        payload, prescription, candidate_fields, _, median_path = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     except BlendPrescriptionRefused as exc:
@@ -609,7 +628,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         indent=2,
         sort_keys=True,
     ) + "\n"
-    out = Path(args.out) if args.out else _proposal_out(args)
+    out = Path(args.out) if args.out else _proposal_out(args, median_path)
     try:
         out.write_text(blob)
         size_bytes = out.stat().st_size
@@ -621,14 +640,14 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     return answered({
         **_admitted(prescription, candidate_fields, payload, out, size_bytes),
         "next": (
-            _compose_command(args)
+            _compose_command(args, median_path)
             if isinstance(prescription, RoomPrescription)
             else _stage_command(args)
         ),
     })
 
 
-def _proposal_out(args: argparse.Namespace) -> Path:
+def _proposal_out(args: argparse.Namespace, median_path: Path | None) -> Path:
     """Beside the packet this document was judged against.
 
     A ``--packet`` file is already somewhere the operator can write; a rebuild
@@ -640,8 +659,8 @@ def _proposal_out(args: argparse.Namespace) -> Path:
     if args.session_dir is None:
         # The room class's evidence is a file rather than a round, so the
         # receipt lands beside the median it was judged against. Reached only
-        # after that gate accepted, which is what named the median.
-        return _room_median_path(args).parent / PROPOSAL_RECEIPT_ARTIFACT
+        # after that gate accepted, which is what resolved ``median_path``.
+        return _room_median_path(args, median_path).parent / PROPOSAL_RECEIPT_ARTIFACT
     round_dir = Path(args.session_dir)
     return default_out(round_inputs(round_dir), round_dir, PROPOSAL_RECEIPT_ARTIFACT)
 
@@ -813,7 +832,9 @@ def _cmd_stage(args: argparse.Namespace) -> int:
             "command cannot see",
         )
     try:
-        payload, prescription, candidate_fields, classifications = _gate(args)
+        payload, prescription, candidate_fields, classifications, median_path = (
+            _gate(args)
+        )
         if isinstance(prescription, RoomPrescription):
             # BEFORE the ordinal: what refuses is the CLASS, not the round it
             # would have been staged for.
@@ -821,7 +842,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
                 ROOM_NOT_STAGEABLE,
                 "the spool carries what the next ROUND applies, and a room "
                 "correction is not that: it becomes a candidate through "
-                f"`{_compose_command(args)}`",
+                f"`{_compose_command(args, median_path)}`",
             )
         ordinal = _next_round_ordinal(args.state)
     except BlendPrescriptionRefused as exc:

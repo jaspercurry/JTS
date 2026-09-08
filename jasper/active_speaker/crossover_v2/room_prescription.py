@@ -4,29 +4,19 @@
 
 """ONE room-correction PEQ set, prescribed from outside this process.
 
-:mod:`.blend_prescription`'s shape and posture: one JSON document read as
-hostile data, a validated :class:`RoomPrescription` or a refusal naming which
-gate said no, by slug from :data:`ROOM_PRESCRIPTION_REFUSAL_REASONS` and never
-by prose. Nothing here applies anything, loads a graph, or grades a round. What
-the two doors share — the prohibited-key walk, the intake readers, the refusal
-values whose meaning is identical, and the exception class — is imported from
-that module rather than restated.
-
-What differs is the evidence and the band. A room proposal is measured against
-the round's own spatial median rather than a summed packet, so its bounds are
-per-FREQUENCY: the cut floor is the depth the cross-position spread supports,
-the boost cap is D5's, and BOTH are scaled by the taper that hands the band
-back to the direct-sound stage below the ceiling (`See ADR-0256` rules 1-2).
-Every one of those limits is
-:mod:`jasper.audio_measurement.room_limits`' — this module supplies the
-document, the median and the order the gates run in, never a second opinion
+This door owns the room class: the per-side filter sets, the round's own
+spatial median as the evidence they are measured against, and the order the
+gates run in. Every limit it applies — the per-frequency cut floor, the boost
+cap, the taper below the ceiling, and the evidence a boost must show — is
+:mod:`jasper.audio_measurement.room_limits`', never a second opinion here
 about the physics.
 
-A positive gain is not refused outright here, unlike the summed blend class: a
-modal shortfall that persists across seats can be filled, and
-:func:`~jasper.audio_measurement.room_limits.admit_boost` is what says which
-one does (`See docs/room-correction-regime-plan.md` D5). Its finding rides the
-receipt, and the boost's level cost rides the candidate.
+Shape and posture are :mod:`.blend_prescription`'s, and what the two doors
+share is imported from it rather than restated: the prohibited-key walk, the
+intake readers, the filter record, the composed grid, the refusal values whose
+meaning is identical, and the exception class.
+
+`See ADR-0256` rules 1-2 and `docs/room-correction-regime-plan.md` D5.
 """
 
 from __future__ import annotations
@@ -55,6 +45,7 @@ from jasper.audio_measurement.room_limits import (
     boost_cap_db,
     cut_floor_db,
 )
+from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
 from .blend_prescription import (
@@ -69,14 +60,15 @@ from .blend_prescription import (
     PROHIBITED_PRESCRIPTION_KEYS,
     RATIONALE_MAX_CHARS,
     BlendPrescriptionRefused,
+    composed_grid,
     find_prohibited_keys,
     # Renamed only to stay distinct from this module's own identifiers: the
     # VALUES are that door's, which is what makes one vocabulary cover both.
     BLEND_PRESCRIPTION_MALFORMED as PRESCRIPTION_MALFORMED,
     BLEND_PRESCRIPTION_PROVENANCE_MISSING as PRESCRIPTION_PROVENANCE_MISSING,
-    # Intake plumbing, imported rather than re-typed: this door raises the
-    # same exception class and refuses under both readers' own values, and a
-    # fourth copy of these three is what register R-120 already counts.
+    # Shared with the blend door rather than re-typed: this door raises the
+    # same exception class and refuses under both readers' own values.
+    _FILTER_FIELDS,
     _prescriber,
     _rationale,
     _refuse,
@@ -101,7 +93,6 @@ __all__ = [
     "read_room_median",
     "read_room_prescription",
     "room_prescription_response_format",
-    "room_prescription_route",
     "room_prescription_to_candidate_fields",
 ]
 
@@ -133,11 +124,6 @@ ROOM_CEILING_SOURCES = frozenset({"applied_candidate", "fallback"})
 #: zero, so an exact bound would refuse every filter placed near the ceiling
 #: for arithmetic that spends no audible level.
 ROOM_COMPOSED_TOLERANCE_DB = 0.5
-
-#: Points in the composed check's own log sweep. The bound must be a property
-#: of the FILTERS, so the denser of this and the median's own grid is used: a
-#: coarse axis steps over a narrow filter's peak.
-_COMPOSED_GRID_POINTS = 512
 
 
 # --------------------------------------------------------------------------- #
@@ -195,10 +181,6 @@ _PRESCRIPTION_FIELDS = frozenset({
     "sides",
     "rationale",
 })
-
-#: Fields ONE filter may carry. ``biquad_type`` is optional and Peaking-only:
-#: a shelf across the modal band re-levels it, which is the trim's fact.
-_FILTER_FIELDS = frozenset({"biquad_type", "freq", "q", "gain"})
 
 
 # --------------------------------------------------------------------------- #
@@ -620,7 +602,9 @@ def _checked_median(
 
 
 def _check_bounds(
-    sides: Mapping[str, tuple[dict[str, Any], ...]], median: RoomMedian
+    sides: Mapping[str, tuple[dict[str, Any], ...]],
+    median: RoomMedian,
+    floor_db: np.ndarray,
 ) -> str:
     """Every per-filter bound, and the class the gains add up to.
 
@@ -629,7 +613,6 @@ def _check_bounds(
     and both are already tapered toward the ceiling.
     """
     lo, hi = median.band_hz
-    floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
     boosts = 0
     for side, entries in sides.items():
         for position, entry in enumerate(entries):
@@ -717,16 +700,10 @@ def _check_boosts(
     return tuple(findings)
 
 
-def _composed_grid(median: RoomMedian) -> np.ndarray:
-    """The DENSER of the median's own grid and a log sweep over the band."""
-    lo, hi = median.band_hz
-    sweep = np.geomspace(lo, hi, _COMPOSED_GRID_POINTS)
-    inside = median.freqs_hz[(median.freqs_hz >= lo) & (median.freqs_hz <= hi)]
-    return inside if inside.size > sweep.size else sweep
-
-
 def _check_composed(
-    sides: Mapping[str, tuple[dict[str, Any], ...]], median: RoomMedian
+    sides: Mapping[str, tuple[dict[str, Any], ...]],
+    median: RoomMedian,
+    floor_db: np.ndarray,
 ) -> float:
     """Per side: the slot count, the boost spend, and the EVALUATED cascade.
 
@@ -736,12 +713,8 @@ def _check_composed(
     the cascade past a per-filter bound both filters cleared. Returns the
     largest per-side boost spend, which is what the level costs.
     """
-    grid = _composed_grid(median)
-    floor_db = np.interp(
-        grid,
-        median.freqs_hz,
-        cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz),
-    )
+    grid = composed_grid(median.band_hz, median.freqs_hz)
+    grid_floor_db = np.interp(grid, median.freqs_hz, floor_db)
     cap_db = boost_cap_db(grid, median.ceiling_hz)
     spend = 0.0
     for side, entries in sides.items():
@@ -753,7 +726,7 @@ def _check_composed(
                 n_filters=len(entries),
                 max_filters=ROOM_MAX_FILTERS_PER_SIDE,
             )
-        boost = sum(entry["gain"] for entry in entries if entry["gain"] > 0.0)
+        boost = total_positive_boost_db(PeqFilter(**entry) for entry in entries)
         if boost > ROOM_MAX_TOTAL_BOOST_DB:
             _refuse(
                 COMPOSED_BOOST_EXCEEDED,
@@ -769,17 +742,18 @@ def _check_composed(
             np.maximum(np.abs(np.asarray(chain_response(entries, grid))), 1e-12)
         )
         over = composed - cap_db
-        under = floor_db - composed
+        under = grid_floor_db - composed
         worst = int(np.argmax(np.maximum(over, under)))
         if max(over[worst], under[worst]) > ROOM_COMPOSED_TOLERANCE_DB:
             _refuse(
                 TAPER_VIOLATED,
                 f"side {side!r} composes to {composed[worst]:+.2f} dB at "
                 f"{grid[worst]:.1f} Hz, outside the "
-                f"{floor_db[worst]:+.2f}..{cap_db[worst]:+.2f} dB allowed there",
+                f"{grid_floor_db[worst]:+.2f}..{cap_db[worst]:+.2f} dB allowed "
+                "there",
                 freq_hz=float(grid[worst]),
                 composed_db=float(composed[worst]),
-                cut_floor_db=float(floor_db[worst]),
+                cut_floor_db=float(grid_floor_db[worst]),
                 boost_cap_db=float(cap_db[worst]),
                 tolerance_db=ROOM_COMPOSED_TOLERANCE_DB,
             )
@@ -809,9 +783,12 @@ def read_room_prescription(
         return None
     sides, echoed, model, operator, rationale, dropped = _parse_prescription(raw)
     median = _checked_median(room_median, room_median_sha256, echoed, round_id)
-    prescription_class = _check_bounds(sides, median)
+    # Built once: the per-filter bound and the composed one read the same
+    # per-bin floor, on the same grid the median declared it on.
+    floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
+    prescription_class = _check_bounds(sides, median, floor_db)
     admissions = _check_boosts(sides, median)
-    boost_db_total = _check_composed(sides, median)
+    boost_db_total = _check_composed(sides, median, floor_db)
     return RoomPrescription(
         sides=sides,
         prescription_class=prescription_class,
@@ -831,16 +808,6 @@ def read_room_prescription(
     )
 
 
-def room_prescription_route(prescription: RoomPrescription) -> str:
-    """Which candidate field this prescription lands in.
-
-    It never refuses, unlike the summed blend class's route: the room stage IS
-    a headroom term and an admitted boost is the whole point of this door, so
-    there is no seam for a positive gain to fall off.
-    """
-    return ROOM_CANDIDATE_FIELD
-
-
 def room_prescription_to_candidate_fields(
     prescription: RoomPrescription | None,
 ) -> dict[str, Any]:
@@ -855,7 +822,7 @@ def room_prescription_to_candidate_fields(
     if prescription is None:
         return {}
     return {
-        room_prescription_route(prescription): {
+        ROOM_CANDIDATE_FIELD: {
             "sides": {
                 side: [dict(entry) for entry in entries]
                 for side, entries in prescription.sides.items()

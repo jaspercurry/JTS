@@ -11,6 +11,7 @@ from typing import Any
 
 from .branch_chain import branch_headroom_db, sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal
+from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_room_peqs,
@@ -86,7 +87,7 @@ def compose_candidate(
     if room:
         analysis["room_source"] = {
             "prescription_sha256": room_prescription_sha256,
-            "room_median_sha256": room["basis"]["room_median_sha256"],
+            ROOM_MEDIAN_FIELD: room["basis"][ROOM_MEDIAN_FIELD],
         }
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND,
