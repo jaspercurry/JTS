@@ -11,25 +11,12 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from jasper.audio_hardware.dac import (
-    active_outputd_lane_channels_for,
-    latency_floor_for,
-)
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
-    OUTPUTD_LATENCY_KEYS,
-    RuntimeEnvAction,
-    build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
-    outputd_env_buffer_pair_error,
-    output_endpoint_devices_from_statefiles,
-    outputd_latency_floor_actions,
 )
-from jasper.transport_coherence import transport_coherence_report
 from jasper.camilla_config_contract import (
-    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     outputd_capture_device_for_playback,
 )
 from jasper.audio_runtime_overrides import (
@@ -43,26 +30,6 @@ from jasper.env_load import (
     FANIN_ENV_PATH,
     GROUPING_ENV_FILE,
     OUTPUTD_ENV_PATH,
-    read_env_file_state,
-)
-from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
-    RING_ACTIVE_PLAYBACK_DEVICE,
-    RING_SLOT_FRAMES,
-    resolve_ring_wire,
-)
-from jasper.ring_assets import RING_CONF_D, render_ring_conf_wire
-
-# lazy: import cost — jasper.output_topology is 2k lines this CLI reaches only
-# through the fail-safe loader below, or is handed already parsed.
-if TYPE_CHECKING:
-    from jasper.output_topology import OutputTopology
-
-# Both transports of the ONE active lane: the snd-aloop active PCM and the
-# ACTIVE RING. A graph naming either is an active-lane graph and must pass the
-# same hardware/topology proof before its pairing is enforced.
-_ACTIVE_ENDPOINT_DEVICES = frozenset(
-    (ACTIVE_OUTPUTD_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
 )
 
 
@@ -118,145 +85,6 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     return 0 if not plan.errors else 1
 
 
-def outputd_floor_plan(
-    *,
-    profile_id: str,
-    base_env: str,
-    outputd_env: str,
-    overrides: str | None = None,
-) -> tuple[dict[str, str], tuple[RuntimeEnvAction, ...]]:
-    """``(latency-key summary, outputd.env actions)`` for one DAC's declared floor.
-
-    Precedence (operator env > profile floor > packaged default) stays in this
-    one policy layer instead of being restated by each caller.
-    """
-    base = read_env_file_state(base_env)
-    outputd = read_env_file_state(outputd_env)
-    overrides_path = runtime_overrides_path() if overrides is None else overrides
-    store = load_runtime_overrides(
-        overrides_path,
-        allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
-    )
-    plan = build_audio_runtime_plan(
-        base_env=base.values,
-        outputd_env=outputd.values,
-        overrides=store.values(),
-        profile_id=profile_id,
-        route_mode="solo",
-        base_env_label=base.path,
-        outputd_env_label=outputd.path,
-        override_label=overrides_path,
-        plan_warnings=store.warnings,
-    )
-    summary = {key: str(plan.setting(key).value) for key in OUTPUTD_LATENCY_KEYS}
-    actions = outputd_latency_floor_actions(
-        profile_id=profile_id,
-        base_env=base.values,
-        outputd_env=outputd.values,
-        overrides=store.values(),
-    )
-    return summary, actions
-
-
-def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
-    """``(topology, reason_token)`` for the ring-wire resolution, fail-safe.
-
-    An ABSENT topology is not a failure: ``load_output_topology_strict`` returns
-    an empty draft for it, because "no saved topology" means "not configured
-    yet" — a ring-eligible shape in its own right, not an unknown one. Only a
-    CORRUPT or unreadable file yields ``None``, which resolves the
-    SHIPPED stereo ring wire — the geometry already on disk in the conf.d. That
-    is the fail-safe direction for a RENDERER: an indeterminate topology must
-    never move the conf.d off what the box is running, and the arm preflights
-    (which do read the topology, strictly) are what refuse to arm on one.
-    """
-    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
-
-    try:
-        return load_output_topology_strict(path), "loaded"
-    except (OutputTopologyError, OSError, ValueError):
-        return None, "topology_unreadable"
-
-
-def ring_conf_wire_report(
-    *,
-    profile_id: str,
-    conf_d: str = "",
-    output_topology: str | None = None,
-    topology: OutputTopology | None = None,
-) -> dict[str, str]:
-    """Render the shm-ring conf.d wire from a DAC's DECLARED floor + the topology.
-
-    The rule, and the whole of it: a per-box ring conf.d is rendered ONLY from a
-    declared ``LatencyFloor`` whose ``outputd_period_frames`` equals
-    ``RING_SLOT_FRAMES``. A profile that declares no floor (and an unrecognized
-    id) leaves the SHIPPED conf.d untouched and therefore keeps whatever
-    coupling that box has today — so this command is a no-op until floor data
-    exists for a profile.
-
-    The floor gates the render; the WIRE it renders comes from
-    ``jasper.fanin_coupling.resolve_ring_wire`` — format plus a per-ring channel
-    count, resolved from the saved output topology. Joining them here rather
-    than in either owner is why this command re-reads both instead of taking
-    values on the command line.
-
-    Why the second condition: Ring A's slot size is fan-in's COMPILE-TIME
-    ``RING_SLOT_FRAMES`` (``rust/jasper-ring/src/layout.rs``, no env override).
-    Rendering any other period would make CamillaDSP's ioplug attach against a
-    geometry fan-in never builds — a hard ``RING_ATTACH_FATAL`` that CRASHES
-    shm_ring at arm instead of refusing it. So a non-matching floor is REFUSED
-    here, with its own reason token so the reconcile journal names why. Such a
-    DAC still gets the floor's outputd period/buffer geometry through
-    ``outputd.env``, which is where most of the floor's value lives; teaching
-    the ring slot to follow the floor across
-    fan-in, the ioplug, the CamillaDSP emitter, and the negotiation model is
-    issue #2147.
-
-    The registry owns the floor and ``jasper.ring_assets`` owns the conf.d
-    format; this command only joins them, which is why it re-reads the floor
-    rather than taking a period on the command line.
-
-    ``topology`` is an already-parsed topology, so a caller holding one does
-    not pay a second read; ``None`` reads ``output_topology`` here.
-
-    Returns the resolved ``{key: value}`` report; raises ``OSError`` /
-    ``ValueError`` when the conf.d itself cannot be rendered.
-    """
-    resolved_conf_d = conf_d or RING_CONF_D
-    floor = latency_floor_for(profile_id) if profile_id else None
-    if floor is None:
-        return {
-            "result": "skipped",
-            "reason": "no_declared_floor",
-            "conf": str(resolved_conf_d),
-        }
-    if floor.outputd_period_frames != RING_SLOT_FRAMES:
-        return {
-            "result": "skipped",
-            "reason": f"ring_slot_fixed_{RING_SLOT_FRAMES}",
-            "period_frames": str(floor.outputd_period_frames),
-            "conf": str(resolved_conf_d),
-        }
-    topology_reason = "loaded"
-    if topology is None:
-        topology, topology_reason = _load_topology_for_ring_wire(output_topology)
-    # The floor gate above has already established that this box's declared
-    # period is RING_SLOT_FRAMES, and the renderer refuses any other; the wire
-    # carries the same axis, so it needs no second comparison here.
-    outcome = render_ring_conf_wire(resolve_ring_wire(topology), conf_d=resolved_conf_d)
-    report = {
-        "result": "rendered" if outcome.changed else "unchanged",
-        "period_frames": str(outcome.period_frames),
-    }
-    if outcome.previous_period_frames is not None:
-        report["previous_period_frames"] = str(outcome.previous_period_frames)
-    report["sample_format"] = str(outcome.sample_format)
-    report["ring_a_channels"] = str(outcome.ring_a_channels)
-    report["ring_b_channels"] = str(outcome.ring_b_channels)
-    report["ring_active_channels"] = str(outcome.ring_active_channels)
-    report["topology"] = topology_reason
-    report["conf"] = str(outcome.conf_d)
-    return report
 
 
 def _cmd_renderer_lanes(args: argparse.Namespace) -> int:
@@ -441,115 +269,6 @@ def _renderer_unit_user(unit: str) -> str | None:
     return None
 
 
-def validate_outputd_env(
-    *,
-    base_env: str,
-    outputd_env: str,
-    fanin_env: str,
-    camilla_statefile: str,
-    camilla2_statefile: str,
-    output_topology: str | None = None,
-    topology: OutputTopology | None = None,
-    outputd_label: str = "",
-    overrides: str | None = None,
-) -> tuple[bool, tuple[str, ...]]:
-    """Judge a candidate outputd.env: ``(ok, report lines)``.
-
-    The lines are what the CLI prints and what the audio-hardware reconciler
-    logs; an accepted candidate may still report ``ok note=...`` for a
-    coherent-but-transient state. ``topology`` is an already-parsed topology,
-    so a caller holding one does not pay a second read; ``None`` reads
-    ``output_topology`` in the decision below.
-    """
-    base = read_env_file_state(base_env)
-    outputd = read_env_file_state(outputd_env)
-    # Labels and the override store, not just values: this refusal is what the
-    # audio-hardware reconciler logs as `outputd_env_invalid detail=...`, and
-    # the operator reading it has to know WHICH layer holds the losing line.
-    # The store matters because the latency-floor pass COPIES its values into
-    # outputd.env, so a line that looks operator-written may be one that comes
-    # straight back after every reconcile.
-    #
-    # READ PATH AND REPORTED LABEL ARE SEPARATE. The reconciler validates a
-    # STAGED CANDIDATE (`mktemp` under /var/lib/jasper, removed on EXIT), so the
-    # path this command reads is a temp file that no longer exists by the time an
-    # operator reads the journal. Reporting it named a deleted file as the origin
-    # — the wrong-attribution failure this provenance exists to prevent — so the
-    # reconciler passes the REAL destination as --outputd-label and that is what
-    # the message names.
-    overrides_path = (
-        runtime_overrides_path() if overrides is None else overrides
-    )
-    store = load_runtime_overrides(
-        overrides_path,
-        allowed_keys=AUDIO_RUNTIME_OVERRIDE_KEYS,
-    )
-    # A malformed or unreadable store degrades attribution — the refusal would
-    # silently stop naming an origin it cannot parse. Say so rather than let the
-    # message get quietly less useful.
-    lines = list(store.warnings)
-    detail = outputd_env_buffer_pair_error(
-        base_env=base.values,
-        outputd_env=outputd.values,
-        base_label=base.path,
-        outputd_label=outputd_label or outputd.path,
-        override_entries={entry.key: entry for entry in store.entries},
-        override_label=overrides_path,
-    )
-    if detail is not None:
-        return False, (*lines, detail)
-    fanin = read_env_file_state(fanin_env)
-    devices = output_endpoint_devices_from_statefiles(
-        camilla_statefile,
-        camilla2_statefile,
-    )
-    # A graph that targets the active lane but fails the hardware/topology
-    # safety proof is intentionally demoted to the passive fail-closed route by
-    # the output-hardware reconciler. Only enforce the active pairing when the
-    # same canonical active-lane decision says that graph is legal for this DAC.
-    #
-    # MEMBERSHIP over every legal active endpoint, and the reason is that this
-    # guard FAILS OPEN on a device it does not recognize: an unlisted endpoint
-    # skips the decision entirely and is never demoted, so a graph targeting it
-    # would sail through on a DAC that fails the hardware proof. Adding the
-    # active ring is what keeps the demotion covering both transports of the one
-    # active lane rather than only the snd-aloop one.
-    if devices and devices.get("playback_device") in _ACTIVE_ENDPOINT_DEVICES:
-        active_cap = active_outputd_lane_channels_for(
-            str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
-        )
-        from jasper.active_speaker.runtime_contract import outputd_active_lane_decision
-
-        decision = (
-            outputd_active_lane_decision(
-                active_cap,
-                statefile_path=camilla_statefile,
-                crossover_statefile_path=camilla2_statefile,
-                topology=topology,
-                topology_path=output_topology,
-            )
-            if active_cap is not None
-            else None
-        )
-        if decision is None or not decision.ok:
-            devices = None
-    merged_outputd = {**base.values, **outputd.values}
-    report = transport_coherence_report(
-        coupling=fanin.values.get(COUPLING_ENV_VAR),
-        outputd_env=merged_outputd,
-        camilla_devices=devices,
-    )
-    if report.errors:
-        return False, (*lines, "; ".join(report.errors))
-    # A note is a coherent-but-transient state (today: the ACTIVE-ring arm
-    # waypoint), so this ACCEPTS — the reconciler must be allowed to derive the
-    # marker that is the ladder's own next step. Reported on the ok path so the
-    # caller carries it: `jasper-audio-hardware-reconcile` logs it as
-    # event=audio_hardware_reconcile.outputd_env_note, which is the journal line
-    # an operator standing mid-ladder actually reads.
-    if report.notes:
-        return True, (*lines, "ok note=" + "; ".join(report.notes))
-    return True, (*lines, "ok")
 
 
 def _cmd_outputd_capture_device(args: argparse.Namespace) -> int:
