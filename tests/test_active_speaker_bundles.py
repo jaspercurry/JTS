@@ -336,16 +336,17 @@ def test_attach_comparison_set_is_fail_soft_for_missing_bundle(
     assert "event=active_speaker.bundle_write_failed" in caplog.text
 
 
-def test_mark_state_validates_enum(tmp_path: Path) -> None:
+@pytest.mark.parametrize("state", ["proposal_ready", "closed"])
+def test_mark_state_validates_enum(tmp_path: Path, state: str) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
 
-    updated = bundles.mark_state(bundle_dir, "proposal_ready")
-    assert updated["state"] == "proposal_ready"
+    updated = bundles.mark_state(bundle_dir, state)
+    assert updated["state"] == state
 
     with_bad_state = bundles.mark_state(bundle_dir, "not_a_real_state")
     assert with_bad_state is None
-    assert bundles._read_info(bundle_dir)["state"] == "proposal_ready"
+    assert bundles._read_info(bundle_dir)["state"] == state
 
 
 # --------------------------------------------------------------------------

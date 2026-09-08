@@ -116,6 +116,7 @@ def compile_tuning_graph(
             playback_format=devices.playback_format,
             chunksize=devices.chunksize, target_level=devices.target_level,
             queuelimit=devices.queuelimit, enable_rate_adjust=devices.enable_rate_adjust,
+            protection_sections_by_role=profile.protection_sections_by_role,
         )
         prove_candidate_config(candidate, candidate_text)
         return candidate_text
@@ -151,6 +152,7 @@ def compile_tuning_graph(
         profile.topology, applied_profile=profile.applied_profile or {},
         playback_device=profile.playback_device, bass_extension_profile=None,
         drop_measured_correction=scope == "base",
+        protection_sections_by_role=profile.protection_sections_by_role,
     )
     if text is None:
         raise MeasurementGraphRefused("measurement_graph_unavailable", issues)

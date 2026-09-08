@@ -67,13 +67,16 @@ from .graph_safety import (
     output_hard_muted_and_wired,
     output_highpass_protected,
     pipeline_reference_closure_errors,
+    protection_requirement_present,
     tweeter_guard_present,
     unprotected_tweeter_outputs,
     view_from_emitted_text,
+    view_from_yaml_dict,
 )
 from .profile import (
     ADJACENT_PAIRS_BY_WAY,
     SUB_CROSSOVER_ORDER,
+    SUPPORTED_LR_ORDERS,
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     CrossoverRegion,
@@ -876,6 +879,58 @@ def _protective_tweeter_hp_name(role: str) -> str:
 
 def _program_protection_name(role: str, index: int) -> str:
     return f"as_{_name_token(role)}_program_protection_{index}"
+
+
+def baseline_protection_name(role: str, index: int, highpass: bool) -> str:
+    return f"as_{_name_token(role)}_declared_protection_{index}_{'hp' if highpass else 'lp'}"
+
+
+def _add_baseline_protection(
+    preset: ActiveSpeakerPreset,
+    filter_yaml: str,
+    pipeline_yaml: str,
+    sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None,
+) -> tuple[str, str]:
+    if sections_by_role is None:
+        return filter_yaml, pipeline_yaml
+    if set(sections_by_role) != set(required_driver_roles(preset.way_count)):
+        raise ActiveSpeakerConfigError("baseline protection must cover every driver role")
+    graph = yaml.safe_load(f"filters:\n{filter_yaml}\npipeline:\n{pipeline_yaml}")
+    for role, sections in sections_by_role.items():
+        channels = set(_channels_for_role(preset, role))
+        added = 0
+        for section in sections:
+            cutoff = _finite_float(section.fc_hz, "protection cutoff")
+            order = _positive_int(section.order, "protection order")
+            if cutoff <= 0 or order not in SUPPORTED_LR_ORDERS:
+                raise ActiveSpeakerConfigError("unsupported baseline protection section")
+            requirement = {
+                "kind": "highpass" if section.highpass else "lowpass",
+                "cutoff_hz": cutoff,
+                "minimum_slope_db_per_octave": order * 6.0,
+                "family_or_equivalent": "equivalent_or_steeper",
+            }
+            view = view_from_yaml_dict(graph)
+            if all(protection_requirement_present(
+                view, output_index=channel, allowed_channels=channels,
+                requirement=requirement,
+            ) for channel in channels):
+                continue
+            name = baseline_protection_name(role, added, section.highpass)
+            definition = "\n".join(emit_linkwitz_riley(
+                name, highpass=section.highpass, freq_hz=cutoff, order=order,
+            ))
+            graph["filters"].update(yaml.safe_load(definition))
+            filter_yaml += "\n" + definition
+            for step in graph["pipeline"]:
+                if step["type"] == "Filter" and set(step["channels"]) == channels:
+                    names = step["names"]
+                    if _driver_baseline_limiter_name(role) in names:
+                        original = f"names: [{', '.join(names)}]"
+                        names.insert(names.index(_driver_delay_name(role)), name)
+                        pipeline_yaml = pipeline_yaml.replace(original, f"names: [{', '.join(names)}]")
+            added += 1
+    return filter_yaml, pipeline_yaml
 
 
 # --- local-subwoofer + bass-management filter names ---------------------------
@@ -3514,6 +3569,7 @@ def emit_active_speaker_baseline_config(
     out_path: str | Path | None = None,
     baseline_id: str | None = None,
     bass_extension_profile: BassExtensionProfile | None = None,
+    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
@@ -3642,6 +3698,9 @@ def emit_active_speaker_baseline_config(
             _blend_correction_name(i)
             for i in range(1, len(safe_blend_correction) + 1)
         ],
+    )
+    filter_yaml, pipeline_yaml = _add_baseline_protection(
+        preset, filter_yaml, pipeline_yaml, protection_sections_by_role,
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
     if baseline_id:

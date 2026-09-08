@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-measure``: what the flags mean, and what one run leaves behind.
-
-Two altitudes, deliberately. The flag layer is exercised with no speaker at all
-— it is pure translation and one refusal — and the run is exercised with the
-REAL door, plan, session graph, engine and record store, doubling only the three
-things a hardware-free box cannot have: CamillaDSP, the isolation window, and
-the audio emission itself.
-"""
+"""CLI results through the real session and record store, with fake hardware."""
 
 from __future__ import annotations
 
@@ -28,6 +21,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus
+from jasper.active_speaker.round_bank import bank_round
 from jasper.cli import measure
 from jasper.cli.measure import (
     EXIT_OK,
@@ -417,14 +411,7 @@ def speaker(tmp_path, monkeypatch):
         install_volume_owner(None)
 
 
-def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys):
-    """The door's whole promise, end to end and asserted on structured fields.
-
-    A record id proves the bank happened THROUGH the real store; the entry
-    graph and the household fader prove the give-back happened after it. Both
-    halves matter: a door that banked and stranded the speaker would pass a
-    test that only counted records.
-    """
+def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys, tmp_path):
     cam = speaker["cam"]
 
     code = measure.main(["--kind", MEASURE_KIND_BASELINE, "--position", "0"])
@@ -452,6 +439,11 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
     # off the measurement level.
     assert cam.loaded[-1] == (cam.entry_path).read_text()
     assert cam.volume_db == pytest.approx(HOUSEHOLD_DB)
+    bundle = Path(payload["bundle_dir"])
+    assert json.loads((bundle / "info.json").read_text())["state"] == "closed"
+    banked = bank_round(bundle, campaign_root=tmp_path / "campaigns")
+    record = Path(ARTIFACTS) / payload["record_ids"][0]
+    assert (banked.path / "bundle" / bundle.name / record).read_bytes() == (bundle / record).read_bytes()
 
 
 def test_a_level_ladder_plays_every_rung_against_one_open_session(speaker, capsys):
@@ -845,16 +837,10 @@ def test_a_batch_measures_every_spec_against_one_open_session(
     assert cam.loaded.count(entry) == 1
 
 
-def test_a_spec_scoped_refusal_discloses_and_the_batch_carries_on(
-    speaker, monkeypatch, tmp_path, capsys,
+@pytest.mark.parametrize("spec_count", [1, 2])
+def test_incomplete_measurements_refuse_and_preserve_partial_results(
+    speaker, monkeypatch, tmp_path, capsys, spec_count,
 ):
-    """Arm B of the scope split: one refused take is not the placement's fault.
-
-    An admission refusal is a property of ONE stimulus — the play transaction
-    turns it into a typed ``incident`` and never raises — so the batch measures
-    the next spec. Giving the whole placement back over one refused take would
-    throw away the microphone move that the batch exists to amortize.
-    """
     from jasper.active_speaker.crossover_v2 import program_transaction
     from jasper.active_speaker.program_admission import ProgramAdmission
     from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -876,20 +862,34 @@ def test_a_spec_scoped_refusal_discloses_and_the_batch_carries_on(
     code = measure.main([
         "--kind", MEASURE_KIND_BASELINE,
         "--specs", _specs_file(
-            tmp_path, [{"candidate_id": "refused"}, {"candidate_id": "kept"}],
+            tmp_path, [{"candidate_id": "refused"}, {"candidate_id": "kept"}][:spec_count],
         ),
     ])
 
     payload = json.loads(capsys.readouterr().out)
-    assert code == EXIT_OK, "a spec-scoped refusal must not end the batch"
-    refused, kept = payload["specs"]
+    assert code == EXIT_REFUSED
+    assert payload["status"] == "refused"
+    assert payload["reason"] == measure.REFUSE_INCOMPLETE
+    report = payload["detail"]
+    bundle = Path(report["bundle_dir"])
+    assert json.loads((bundle / "info.json").read_text())["state"] == "closed"
+    assert report["n_takes"] == spec_count - 1
+    assert len(report["record_ids"]) == spec_count - 1
+    assert len(report["specs"]) == spec_count
+    refused = report["specs"][0]
     assert refused["n_takes"] == 0
-    # The one fact nothing else records: a refused stimulus banks NO record,
-    # so its sentence exists only here.
     assert refused["incidents"] == [
         program_transaction.STIMULUS_ADMISSION_REFUSED
     ]
-    assert kept["n_takes"], "the batch did not carry on to the next spec"
+    assert refused["playback"][0]["emission"] == "not_started"
+    if spec_count == 2:
+        assert report["specs"][1]["n_takes"] == 1
+        assert report["specs"][1]["incidents"] == []
+        banked = bank_round(bundle, campaign_root=tmp_path / "campaigns")
+        assert (banked.path / "bundle" / bundle.name / ARTIFACTS / report["record_ids"][0]).is_file()
+    cam = speaker["cam"]
+    assert cam.loaded[-1] == cam.entry_path.read_text()
+    assert cam.volume_db == pytest.approx(HOUSEHOLD_DB)
 
 
 @pytest.mark.parametrize("setup", ["graph", "compose"])

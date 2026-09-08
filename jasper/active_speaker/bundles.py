@@ -105,7 +105,8 @@ BUNDLE_FILE_MODE = 0o640
 CAPTURE_KIND_SEQUENTIAL = "sequential"
 _CAPTURE_KINDS = frozenset({"driver", "summed", CAPTURE_KIND_SEQUENTIAL})
 
-_VALID_STATES = frozenset({"open", "proposal_ready", "applied", "failed", "abandoned"})
+# ``closed`` ends a measurement session without claiming success or adoption.
+_VALID_STATES = frozenset({"open", "closed", "proposal_ready", "applied", "failed", "abandoned"})
 _UNFINISHED_STATES = frozenset({"open", "proposal_ready"})
 
 _BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
