@@ -1041,7 +1041,6 @@ class Mux:
             duck_active_probe=_make_duck_active_probe(),
             volume_context_publisher=volume_context_publisher_for_runtime(
                 os.environ,
-                dynamic_topology=True,
             ),
         )
         coordinator.load_persisted_level()

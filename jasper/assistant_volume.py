@@ -80,17 +80,6 @@ def _send_volume_context(
         sock.sendall(payload)
 
 
-def make_volume_context_publisher(
-    socket_path: str = FANIN_TTS_SOCKET,
-) -> VolumeContextPublisher:
-    """Return a best-effort async publisher for one fan-in TTS socket."""
-
-    async def publish(context: EffectiveVolumeContext) -> None:
-        await asyncio.to_thread(_send_volume_context, socket_path, context)
-
-    return publish
-
-
 def _resolved_route_consumes_volume_context(
     resolved: Mapping[str, str],
 ) -> bool:
@@ -113,38 +102,32 @@ def volume_context_publisher_for_runtime(
     env: Mapping[str, str],
     *,
     grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
-    dynamic_topology: bool = False,
-) -> VolumeContextPublisher | None:
-    """Build a publisher when the active TTS route interprets VolumeContext.
+) -> VolumeContextPublisher:
+    """Return a publisher that resolves the TTS route on every publish.
 
-    That is the pre-DSP fan-in mix (solo/leader) or the confirmed post-DSP
-    outputd mix (a reconciled passive member). Both receive the SAME absolute
-    wire message on the socket the route resolved. Routes whose mix stage is
-    unknown fail closed — publishing pre-DSP compensation into an uncertain
-    stage can create a large level error.
+    The route is reconciler-owned state in a ``/var/lib/jasper`` env file that
+    changes while these daemons run (a speaker joins or leaves a group), so it
+    is read fresh per publish rather than frozen at construction.
+
+    A publish reaches the pre-DSP fan-in mix (solo/leader) or the CONFIRMED
+    post-DSP outputd mix (a reconciled passive member); both receive the SAME
+    absolute wire message on the socket the route resolved. A route whose mix
+    stage is unknown publishes nothing — pre-DSP compensation into an
+    uncertain stage can create a large level error.
     """
     process_env = dict(env)
-    if dynamic_topology:
-        async def publish(context: EffectiveVolumeContext) -> None:
-            current = resolve_tts_routing_snapshot(
-                process_env,
-                grouping_env_path=grouping_env_path,
-            )
-            if not _resolved_route_consumes_volume_context(current):
-                return
-            await asyncio.to_thread(
-                _send_volume_context,
-                current.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
-                context,
-            )
 
-        return publish
-    resolved = resolve_tts_routing_snapshot(
-        process_env,
-        grouping_env_path=grouping_env_path,
-    )
-    if not _resolved_route_consumes_volume_context(resolved):
-        return None
-    return make_volume_context_publisher(
-        resolved.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
-    )
+    async def publish(context: EffectiveVolumeContext) -> None:
+        current = resolve_tts_routing_snapshot(
+            process_env,
+            grouping_env_path=grouping_env_path,
+        )
+        if not _resolved_route_consumes_volume_context(current):
+            return
+        await asyncio.to_thread(
+            _send_volume_context,
+            current.get(VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET),
+            context,
+        )
+
+    return publish
