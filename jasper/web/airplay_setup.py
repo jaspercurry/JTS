@@ -45,6 +45,7 @@ from jasper.airplay_mode import ENV_VAR, MODE_ENV_FILE, mode_from_env
 
 from ..control.restart_broker import manage_units
 from ..env_file import read_env_file, write_env_file
+from ..log_event import log_event
 from ._common import (
     begin_request,
     canonical_banner,
@@ -185,6 +186,43 @@ def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
+    # (exact path -> handler callable). The tables stay local to this
+    # closure (rather than module-level) so the handlers can close over
+    # `cfg`.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        ctx = begin_request(handler)
+        send_html_response(handler, _index_html(
+            _current_mode(cfg["state_path"]),
+            ctx["csrf_token"],
+            status_msg=ctx["flash"],
+        ))
+
+    def _post_save(handler: BaseHTTPRequestHandler, form: dict[str, str]) -> None:
+        mode, err = _apply_save(form)
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        value = "yes" if mode == "free-running" else "no"
+        try:
+            write_env_file(cfg["state_path"], {ENV_VAR: value}, mode=0o644)
+        except OSError as e:
+            logger.exception("could not write airplay mode env file")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        log_event(logger, "airplay.save", mode=mode, client=handler.address_string())
+        _restart_shairport()
+        send_see_other(
+            handler, "./",
+            flash=(
+                f"Saved. AirPlay is now in {mode} mode. "
+                "The setting applies whenever AirPlay is on."
+            ),
+        )
+
+    _GET_ROUTES = {"/": _get_index}
+    _POST_ROUTES = {"/save": _post_save}
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
@@ -192,52 +230,26 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                send_html_response(self, _index_html(
-                    _current_mode(cfg["state_path"]),
-                    ctx["csrf_token"],
-                    status_msg=ctx["flash"],
-                ))
+            handler_fn = _GET_ROUTES.get(path)
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            if not guard_read_request(self):
+                return
+            handler_fn(self)
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path != "/save":
+            handler_fn = _POST_ROUTES.get(path)
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
             if not guard_mutating_request(self, form):
                 reject_csrf(self)
                 return
-            if path == "/save":
-                mode, err = _apply_save(form)
-                if err is not None:
-                    send_see_other(self, "./", flash=err)
-                    return
-                value = "yes" if mode == "free-running" else "no"
-                try:
-                    write_env_file(
-                        cfg["state_path"], {ENV_VAR: value}, mode=0o644,
-                    )
-                except OSError as e:
-                    logger.exception("could not write airplay mode env file")
-                    send_see_other(self, "./", flash=f"Could not save: {e}")
-                    return
-                _restart_shairport()
-                send_see_other(
-                    self, "./",
-                    flash=(
-                        f"Saved. AirPlay is now in {mode} mode. "
-                        "The setting applies whenever AirPlay is on."
-                    ),
-                )
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+            handler_fn(self, form)
 
     return Handler
 

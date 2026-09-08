@@ -136,7 +136,6 @@ def test_migrated_json_object_readers_use_shared_helper_and_local_caps():
 
 def test_migrated_json_body_reads_remain_after_csrf_guard():
     direct_readers = {
-        "bluetooth_setup.py": ("guard_mutating_request", "body = self._read_json()"),
         "chat_setup.py": ("guard_mutating_request", "self._set_capture()"),
         "wifi_setup.py": ("guard_mutating_request", "body = self._read_json()"),
         "sources_setup.py": ("guard_mutating_request", "body = self._read_json()"),
@@ -169,6 +168,7 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
     ) < correction_handler.index("getattr(self, _POST_ROUTES[path])")
 
     delegated_readers = {
+        "bluetooth_setup.py": ("handler_fn(self)",),
         "wake_setup.py": (
             "self._handle_layer(",
             "self._handle_profile()",
