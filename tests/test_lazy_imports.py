@@ -1025,22 +1025,31 @@ def scoped_hardware_fake():
 
 
 def _dependency_stub_violations(root: Path) -> list[str]:
-    parsed = [
-        (
-            path,
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-        )
+    texts = {
+        path: path.read_text(encoding="utf-8")
         for path in sorted((root / "tests").rglob("*.py"))
-    ]
+    }
+    # Every predicate above keys on a ``sys.modules`` subscript/call or on a
+    # helper's name, so a file naming neither cannot violate; only the rest pay
+    # the ast.parse that dominates this scan.
+    trees = {
+        path: ast.parse(text, filename=str(path))
+        for path, text in texts.items()
+        if "modules" in text
+    }
     shared_helpers: set[str] = set()
-    for _, tree in parsed:
+    for tree in trees.values():
         shared_helpers.update(_mutating_helper_names(tree))
+    for path, text in texts.items():
+        if path not in trees and any(name in text for name in shared_helpers):
+            trees[path] = ast.parse(text, filename=str(path))
 
     return [
         f"{path.relative_to(root)}:{line}"
-        for path, tree in parsed
+        for path in texts
+        if path in trees
         for line in _import_time_dependency_stub_lines(
-            tree, mutating_helpers=shared_helpers,
+            trees[path], mutating_helpers=shared_helpers,
         )
     ]
 
