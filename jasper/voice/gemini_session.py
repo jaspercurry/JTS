@@ -152,7 +152,6 @@ class GeminiLiveTurn(BaseLiveTurn):
         )
         self._usage = dict(self._usage_baseline)
         self._activity_end_sent = False
-        self._cancel_requested = False
         self._user_transcript_parts: list[str] = []
         self._assistant_transcript_parts: list[str] = []
         self._tool_call_names: list[str] = []
@@ -200,6 +199,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         if self._released:
             return
         self._released = True
+        self._cancel_tools()
         elapsed_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
         self.drop_pending_audio()
         self._audio_q.put_nowait(None)
@@ -246,6 +246,7 @@ class GeminiLiveTurn(BaseLiveTurn):
                 or self._cancel_requested):
             return
         self._cancel_requested = True
+        self._cancel_tools()
         self.drop_pending_audio()
         if not self._server_turn_complete:
             try:
@@ -284,15 +285,10 @@ class GeminiLiveTurn(BaseLiveTurn):
                 )
             self._enqueue_audio(AudioOutChunk(pcm=data))
 
-        # Tool calls. The connection's dispatcher resets the idle anchor
-        # inside its loop too — covers slow / chained dispatches the
-        # initial reset here can't see.
         tool_call = getattr(response, "tool_call", None)
-        if tool_call is not None and not self._cancel_requested:
-            self._note_activity()
-            await self._conn._handle_tool_call(tool_call, self)
-            if not self._conn._owns_turn(self):
-                return
+        if tool_call is not None:
+            self._tool_round_pending = True
+            self._start_tool_round(lambda: self._conn._handle_tool_call(tool_call, self))
 
         # Server content: turn_complete + interrupted.
         turn_just_completed = False
@@ -307,6 +303,7 @@ class GeminiLiveTurn(BaseLiveTurn):
                     if isinstance(text, str) and text:
                         parts.append(text)
             if getattr(sc, "turn_complete", False) and not self._server_turn_complete:
+                self._cancel_tools()
                 self._note_activity()
                 self._server_turn_complete = True
                 self._audio_q.put_nowait(None)
@@ -315,6 +312,7 @@ class GeminiLiveTurn(BaseLiveTurn):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
                 self._cancel_requested = True
+                self._cancel_tools()
                 self.drop_pending_audio()
                 self._interrupt_event.set()
                 logger.info("model interrupted by user")
@@ -509,27 +507,23 @@ class GeminiLiveConnection(BaseLiveConnection):
 
     async def _send_realtime_input(self, turn: GeminiLiveTurn, **kwargs) -> bool:
         async with self._send_lock:
-            if not self._owns_turn(turn) or ("audio" in kwargs and turn._activity_end_sent):
+            if not self._owns_turn(turn) or (
+                ("audio" in kwargs or "text" in kwargs) and turn._activity_end_sent
+            ):
                 return False
             assert turn._session is not None
             await turn._session.send_realtime_input(**kwargs)
             return True
 
     async def _send_text_context(self, turn: GeminiLiveTurn, text: str) -> None:
-        async with self._send_lock:
-            if not self._owns_turn(turn) or turn._activity_end_sent:
-                return
-            assert turn._session is not None
-            await turn._session.send_client_content(
-                turns=types.Content(role="user", parts=[types.Part.from_text(text=text)]),
-                turn_complete=False,
-            )
+        await self._send_realtime_input(turn, text=text)
 
     async def _on_turn_released(self, turn: GeminiLiveTurn) -> None:
         async with self._send_lock:
             if (self._active_turn is turn and self._session is not None
                     and turn._session is self._session
-                    and (turn._cancel_requested or not turn._server_turn_complete)):
+                    and (turn._cancel_requested or not turn._server_turn_complete
+                         or turn._tool_round_pending)):
                 # Gemini has no client clear-buffer call. Reopen without the
                 # old handle so abandoned input and tool calls cannot resume.
                 self._on_context_reset()
@@ -674,8 +668,10 @@ class GeminiLiveConnection(BaseLiveConnection):
         t0 = _time.monotonic()
         session, cm = self._session, self._session_cm
         turn = self._active_turn
-        if turn is not None and (turn._cancel_requested or not turn._server_turn_complete):
-            self._on_context_reset()
+        if turn is not None:
+            turn._cancel_tools()
+            if turn._cancel_requested or not turn._server_turn_complete or turn._tool_round_pending:
+                self._on_context_reset()
         self._session = self._session_cm = None
         self._connected_event.clear()
         # Cancel the rotation watchdog first — it only makes sense against
@@ -828,19 +824,20 @@ class GeminiLiveConnection(BaseLiveConnection):
         responses = []
         t0 = _time.monotonic()
         for fc in tool_call.function_calls:
-            if not self._owns_turn(turn) or turn._cancel_requested:
+            if not self._owns_turn(turn) or turn._cancel_requested or turn._server_turn_complete:
                 return
             turn._record_tool_call_name(fc.name)
             payload = await dispatch_tool(self._registry, fc.name, dict(fc.args or {}))
-            if not self._owns_turn(turn) or turn._cancel_requested:
+            if not self._owns_turn(turn) or turn._cancel_requested or turn._server_turn_complete:
                 return
             responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=payload))
             turn._note_activity()
         async with self._send_lock:
-            if not self._owns_turn(turn) or turn._cancel_requested:
+            if not self._owns_turn(turn) or turn._cancel_requested or turn._server_turn_complete:
                 return
             assert turn._session is not None
             await turn._session.send_tool_response(function_responses=responses)
+            turn._tool_round_pending = False
         if self._owns_turn(turn):
             turn._note_activity()
             logger.info(

@@ -531,20 +531,16 @@ async def run_reconnect_with_backoff(conn: SupervisedConnection) -> None:
     conn._planned_rotate = False
     async with conn._state_lock:
         conn._set_state(ConnectionState.RECONNECTING)
+    if conn._active_turn is not None:
+        conn._active_turn._on_connection_lost()
     # Tear down the old session before opening a new one so we don't
     # leak a half-open WS through the SDK.
     await conn._teardown_session()
     # This reconnect subsumes any deferred one; clear the flag so a
     # later turn release doesn't fire a spurious second reconnect.
     conn._deferred_reconnect.clear()
-    # Mark the active turn (if any) as lost AND detach it. The daemon's
-    # idle watchdog will pick up `turn_lost()` and call `release()`, but
-    # in the meantime the connection's slot is free — clearing
-    # `_active_turn` lets a wake event after reconnect acquire a fresh
-    # turn rather than getting "a turn is already active" while the old
-    # one is still being torn down.
+    # Free the slot before reconnect so a wake need not wait for the daemon's release.
     if conn._active_turn is not None:
-        conn._active_turn._on_connection_lost()
         async with conn._turn_lock:
             conn._active_turn = None
 

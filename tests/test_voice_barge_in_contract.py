@@ -1,20 +1,29 @@
 """Provider turn conformance and absent-response tolerance."""
 from __future__ import annotations
 
-import pytest
+import asyncio
+import json
 
+import pytest
+from google.genai import types
+from openai.types.realtime import ResponseDoneEvent
+
+from jasper.tools import ToolRegistry, tool
 from jasper.voice.catalog import (
     PROVIDERS,
     InterruptReconcile,
     resolve_interrupt_reconcile,
 )
-from jasper.voice.gemini_session import GeminiLiveTurn
+from jasper.voice.gemini_session import GeminiLiveConnection, GeminiLiveTurn
 from jasper.voice.grok_session import GrokRealtimeConnection
 from jasper.voice.openai_session import (
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
 from jasper.voice.session import Interruptible, LiveTurn
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
+from tests.test_gemini_connection import _FakeConnect
+from tests.test_openai_session import _FakeConnectFactory
 
 
 # The turn class each catalog provider drives. Grok defines no turn class of
@@ -122,3 +131,101 @@ def test_grok_inherits_openai_seam():
         GrokRealtimeConnection.acquire_turn
         is OpenAIRealtimeConnection.acquire_turn
     )
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection, GeminiLiveConnection])
+@pytest.mark.parametrize("result_fails", [False, True])
+async def test_repeated_turns_bound_cancelled_tool_work_and_preserve_action_order(conn_cls, result_fails):
+    gemini = conn_cls is GeminiLiveConnection
+    factory = _FakeConnect() if gemini else _FakeConnectFactory()
+    conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory, backoff_schedule=(0.0,))
+    entered, cancelled, resume = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = []
+    registry = ToolRegistry()
+
+    @tool()
+    async def action(index: int) -> dict:
+        """Record an ordered action."""
+        calls.append(index)
+        if index == 0:
+            entered.set()
+            try:
+                await wait_signalled(resume, "release old executor")
+            except asyncio.CancelledError:
+                cancelled.set()
+                await wait_signalled(resume, "finish cancelled executor")
+        return {"index": index}
+
+    async def submit(turn, indices):
+        await turn.end_input()
+        if gemini:
+            factory.sessions[-1].feed(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
+                function_calls=[types.FunctionCall(id=f"call_{i}", name="action", args={"index": i}) for i in indices],
+            )))
+        else:
+            await wait_until(lambda: turn._response_id is not None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            factory.conns[-1]._inbox.put_nowait(ResponseDoneEvent.model_validate({
+                "type": "response.done", "event_id": f"done_{indices[0]}", "response": {
+                    "id": turn._response_id, "status": "completed", "output": [
+                        {"type": "function_call", "call_id": f"call_{i}", "name": "action", "arguments": json.dumps({"index": i})}
+                        for i in indices
+                    ],
+                },
+            }))
+        await wait_until(lambda: turn._tool_task is not None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+
+    registry.register(action)
+    await conn.start(registry, "")
+    try:
+        old = await conn.acquire_turn()
+        await submit(old, [0])
+        await wait_signalled(entered, "first tool running")
+        await old.cancel_response("barge_in")
+        await wait_signalled(cancelled, "executor delaying cancellation")
+        await old.release()
+        for index in range(1, 5):
+            turn = await conn.acquire_turn()
+            await submit(turn, [index])
+            for _ in range(3):
+                await turn.cancel_response("barge_in")
+            await turn.release()
+            await wait_until(lambda: len(conn._tool_tasks) == 1, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            assert calls == [0]
+
+        latest = await conn.acquire_turn()
+        if result_fails:
+            if gemini:
+                async def fail_result(**kwargs):
+                    raise ConnectionError("result send failed")
+                factory.sessions[-1].send_tool_response = fail_result
+            else:
+                send = factory.conns[-1].send
+
+                async def fail_result(event):
+                    if event.get("item", {}).get("type") == "function_call_output":
+                        raise ConnectionError("result send failed")
+                    await send(event)
+                factory.conns[-1].send = fail_result
+        await submit(latest, [5, 6])
+        assert len(conn._tool_tasks) == 2
+        assert not latest.server_turn_complete()
+        resume.set()
+        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        assert calls == ([0, 5] if result_fails and not gemini else [0, 5, 6])
+        assert not latest.server_turn_complete()
+        assert latest.turn_lost() is result_fails
+        if gemini:
+            assert all(not session.sent_tool_responses for session in factory.sessions[:-1])
+            results = factory.sessions[-1].sent_tool_responses
+            assert [[r.id for r in batch] for batch in results] == ([] if result_fails else [["call_5", "call_6"]])
+        else:
+            results = [
+                e["item"]["call_id"] for wire in factory.conns for e in wire.sent
+                if e.get("item", {}).get("type") == "function_call_output"
+            ]
+            assert results == ([] if result_fails else ["call_5", "call_6"])
+            assert sum(e["type"] == "response.create" for e in factory.conns[-1].sent) == (1 if result_fails else 2)
+    finally:
+        resume.set()
+        await conn.stop()
+        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
