@@ -50,17 +50,15 @@
 //! SEGMENT_END or DUCK_OFF corrupts state). The audio loop never blocks
 //! on any of it (inv-1: the DAC write stays the sole pacer).
 
-use std::fs;
-use std::io::{self, BufReader, Write as IoWrite};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{BufReader, Write as IoWrite};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::core::OutputCore;
 use crate::ledger::{PlayoutEvent, SegmentId};
@@ -69,8 +67,8 @@ use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsClientSlot, TtsClientSlots,
-    TtsCommand, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
+    command_name, is_frame_timeout, read_command_deadlined, TtsClientSlots, TtsCommand,
+    TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -229,10 +227,6 @@ pub type TtsChannelBundle = (
     Arc<AtomicU64>,
 );
 
-// ---------------------------------------------------------------------
-// Server half — ported from fanin (see module header).
-// ---------------------------------------------------------------------
-
 pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
     let (tx, rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
     let (flush_tx, flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
@@ -248,79 +242,25 @@ pub fn spawn_tts_server(
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating outputd TTS socket parent {}", parent.display()))?;
-    }
-    let _ = fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("binding outputd TTS socket {}", path.display()))?;
+    let slots = metrics.slots.clone();
+    jasper_tts_protocol::serve(
+        "outputd",
+        &path,
+        slots,
+        |line| eprintln!("{line}"),
+        move |stream| {
+            handle_tts_client(
+                stream,
+                tx.clone(),
+                flush_tx.clone(),
+                Arc::clone(&epoch),
+                metrics.clone(),
+                TTS_FRAME_DEADLINE,
+            )
+        },
+    )?;
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
-    thread::Builder::new()
-        .name("outputd-tts-ipc".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        // A client that stops reading its FLUSH_SYNC ack would
-                        // otherwise pin its slot forever inside `write_all`.
-                        // Best-effort: a socket that refuses the option is
-                        // still worth serving.
-                        let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
-                        let slot = match metrics.slots.try_acquire() {
-                            Ok(slot) => slot,
-                            // The pool counts every refusal for STATUS; only the
-                            // first and every 100th afterward are worth a
-                            // journal line, so a real ceiling stays visible past
-                            // one transient refusal at boot.
-                            Err(count) if count == 1 || count % 100 == 0 => {
-                                eprintln!(
-                                    "event=outputd.tts_socket.connection_rejected \
-                                     max_clients={TTS_MAX_CLIENTS} count={count}"
-                                );
-                                continue;
-                            }
-                            Err(_) => continue,
-                        };
-                        if let Err(e) = spawn_tts_client(
-                            stream,
-                            tx.clone(),
-                            flush_tx.clone(),
-                            Arc::clone(&epoch),
-                            metrics.clone(),
-                            slot,
-                        ) {
-                            eprintln!("event=outputd.tts_socket.spawn_failed detail={e}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("event=outputd.tts_socket.accept_failed detail={e}");
-                    }
-                }
-            }
-        })
-        .context("spawning outputd TTS IPC accept thread")?;
     Ok(())
-}
-
-fn spawn_tts_client(
-    stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    metrics: TtsMetrics,
-    slot: TtsClientSlot,
-) -> io::Result<()> {
-    thread::Builder::new()
-        .name("outputd-tts-client".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || {
-            // Held for the connection's life; released when this thread ends.
-            let _slot = slot;
-            handle_tts_client(stream, tx, flush_tx, epoch, metrics, TTS_FRAME_DEADLINE)
-        })
-        .map(|_| ())
 }
 
 fn handle_tts_client(
@@ -701,6 +641,8 @@ impl TtsBridge {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use crate::types::ProgramSample;
 
     /// One S16 sample at the program spine's scale. The TTS WIRE stays S16

@@ -12,17 +12,15 @@
 //! CamillaDSP performs crossover/protection.
 
 use std::collections::VecDeque;
-use std::fs;
-use std::io::{self, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use log::{info, warn};
 
 use crate::loudness::{
@@ -33,8 +31,8 @@ use crate::loudness::{
 use crate::mixer::CHANNELS;
 use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsAudioSamples, TtsClientSlot,
-    TtsClientSlots, TtsCommand, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
+    command_name, is_frame_timeout, read_command_deadlined, TtsAudioSamples, TtsClientSlots,
+    TtsCommand, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -1299,59 +1297,24 @@ pub fn spawn_tts_server(
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
 ) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating fanin TTS socket parent {}", parent.display()))?;
-    }
-    let _ = fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)
-        .with_context(|| format!("binding fanin TTS socket {}", path.display()))?;
+    let slots = metrics.slots.clone();
+    jasper_tts_protocol::serve(
+        "fanin",
+        &path,
+        slots,
+        |line| warn!("{line}"),
+        move |stream| {
+            handle_tts_client(
+                stream,
+                tx.clone(),
+                flush_tx.clone(),
+                Arc::clone(&epoch),
+                metrics.clone(),
+                TTS_FRAME_DEADLINE,
+            )
+        },
+    )?;
     info!("event=fanin.tts_socket.listening path={}", path.display());
-    thread::Builder::new()
-        .name("fanin-tts-ipc".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        // A client that stops reading its FLUSH_SYNC ack would
-                        // otherwise pin its slot forever inside `write_all`.
-                        // Best-effort: a socket that refuses the option is
-                        // still worth serving.
-                        let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
-                        let slot = match metrics.slots.try_acquire() {
-                            Ok(slot) => slot,
-                            // The pool counts every refusal for STATUS; only the
-                            // first and every 100th afterward are worth a
-                            // journal line, so a real ceiling stays visible past
-                            // one transient refusal at boot.
-                            Err(count) if count == 1 || count % 100 == 0 => {
-                                warn!(
-                                    "event=fanin.tts_socket.connection_rejected max_clients={} count={}",
-                                    TTS_MAX_CLIENTS, count
-                                );
-                                continue;
-                            }
-                            Err(_) => continue,
-                        };
-                        if let Err(e) = spawn_tts_client(
-                            stream,
-                            tx.clone(),
-                            flush_tx.clone(),
-                            Arc::clone(&epoch),
-                            metrics.clone(),
-                            slot,
-                        ) {
-                            warn!("event=fanin.tts_socket.spawn_failed detail={}", e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("event=fanin.tts_socket.accept_failed detail={}", e);
-                    }
-                }
-            }
-        })
-        .context("spawning fanin TTS IPC accept thread")?;
     Ok(())
 }
 
@@ -1361,25 +1324,6 @@ pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
     let metrics = TtsMetrics::new(max_pending_frames);
     let epoch = Arc::new(AtomicU64::new(0));
     (tx, rx, flush_tx, flush_rx, metrics, epoch)
-}
-
-fn spawn_tts_client(
-    stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    metrics: TtsMetrics,
-    slot: TtsClientSlot,
-) -> io::Result<()> {
-    thread::Builder::new()
-        .name("fanin-tts-client".to_string())
-        .stack_size(crate::HELPER_STACK_BYTES)
-        .spawn(move || {
-            // Held for the connection's life; released when this thread ends.
-            let _slot = slot;
-            handle_tts_client(stream, tx, flush_tx, epoch, metrics, TTS_FRAME_DEADLINE)
-        })
-        .map(|_| ())
 }
 
 fn handle_tts_client(
@@ -1693,7 +1637,9 @@ mod tests {
     use super::*;
 
     use std::cell::RefCell;
+    use std::io;
     use std::sync::Once;
+    use std::thread;
 
     use jasper_tts_protocol::read_command;
 
