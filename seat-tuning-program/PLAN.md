@@ -1,7 +1,8 @@
 # Seat-matched tuning — plan of record
 
-**Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258). Next: Wave 0b (two
-ADRs), then four lanes in parallel. **Owner:** jaspercurry. **Orchestrating
+**Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258); Wave 0b landed
+(PR #4517, ADR-0259/0260). Four lanes in parallel: A retire, B program, C room
+candidate, D bass. **Owner:** jaspercurry. **Orchestrating
 session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
 issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
@@ -12,7 +13,7 @@ the wave rows, the coordination rules and the status log.
 
 1. `git fetch origin main claude/loudspeaker-tuning-architecture-iephfa`; read this
    file from that branch; read `AGENTS.md` at HEAD.
-2. Read ADR-0255, 0256, 0257, 0258, and 0259/0260 once Wave 0b lands.
+2. Read ADR-0255, 0256, 0257, 0258, 0259, 0260.
 3. Find the next unstarted rows in §5. Each names its lane, tag, proof and gate.
 4. Every wave is one fresh session per lane, working from a brief the
    orchestrating session writes; that session reviews the merged diff before
@@ -313,6 +314,8 @@ knobs · any browser or relay capture · an operator-less wizard.
   D (bass) as fresh sessions from the kickoff snippets; each is working on its
   brief's first branch (`claude/seat-w1-1-4-seat-cube-program`,
   `claude/seat-w2-2-1-room-candidate`, `claude/seat-w3-3-1-bench-binding`).
+- 2026-09-08 21:42Z: Wave 0b LANDED: PR #4517 merged at `ddb9f51ec`. Lane A
+  unblocked; owner told to spawn it.
 - 2026-09-08 21:25Z: Wave 0b PR #4517 opened (ADR-0259, ADR-0260, pointer
   notes, `room_boundary.py` docstring). Reviewed against
   `briefs/wave-0b-decisions.md`: matches on every point; no changes requested;
