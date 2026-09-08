@@ -190,9 +190,52 @@ def _source_state(
     return state
 
 
+def _source_availability(
+    source: Source,
+    *,
+    records: Mapping[str, dict[str, Any]] | None = None,
+    profile_allows: bool | None = None,
+    bluetooth: BluetoothAvailability | None = None,
+) -> tuple[bool, str]:
+    """Whether ``source`` may run now, and the reason it may not ("" when it may).
+
+    One derivation for the status snapshot (which passes its unit-record batch,
+    profile verdict and Bluetooth probe) and for the turn-on precondition
+    (which probes only what its one source needs). Precedence: install profile,
+    then the source's units (USB: main unit, then gadget unit), then hardware
+    (USB data role; Bluetooth adapter and units together).
+    """
+    wizard_key = SOURCE_SPECS[source].wizard_key
+    if profile_allows is None:
+        profile_allows = _profile_allows_local_sources()
+    if not profile_allows:
+        return False, SOURCE_UNAVAILABLE[wizard_key]
+    if source == Source.BLUETOOTH:
+        if bluetooth is None:
+            bluetooth = _bluetooth_availability(records)
+        if not bluetooth.available:
+            return False, bluetooth_unavailable_reason(bluetooth)
+        return True, ""
+    lifecycle = local_source_lifecycle(source)
+    if records is None:
+        records = read_unit_states(lifecycle.health_units, timeout=5.0) or {}
+    if source == Source.USBSINK:
+        if not _unit_loaded(records, USBSINK_UNIT):
+            return False, SOURCE_UNAVAILABLE[wizard_key]
+        if not _unit_loaded(records, USBSINK_GADGET_UNIT):
+            return False, (
+                "USB Audio Input is missing its composite gadget unit. Re-run "
+                "install.sh to repair the local renderer stack."
+            )
+        gadget_available, reason = _usbsink_capability()
+        return gadget_available, ("" if gadget_available else reason)
+    if not all(_unit_loaded(records, unit) for unit in lifecycle.health_units):
+        return False, SOURCE_UNAVAILABLE[wizard_key]
+    return True, ""
+
+
 def _systemd_source_state(
     source: Source,
-    wizard_key: str,
     *,
     desired: bool,
     parked: bool,
@@ -200,8 +243,8 @@ def _systemd_source_state(
     profile_allows: bool,
 ) -> dict[str, bool | str]:
     lifecycle = local_source_lifecycle(source)
-    available = profile_allows and all(
-        _unit_loaded(records, unit) for unit in lifecycle.health_units
+    available, unavailable_reason = _source_availability(
+        source, records=records, profile_allows=profile_allows,
     )
     active = {
         unit: _unit_running(records, unit) for unit in lifecycle.health_units
@@ -220,7 +263,7 @@ def _systemd_source_state(
         observed=observed,
         available=available,
         parked=parked,
-        unavailable_reason=SOURCE_UNAVAILABLE[wizard_key],
+        unavailable_reason=unavailable_reason,
         degraded_reason=degraded_reason,
     )
 
@@ -307,32 +350,9 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
         bt_powered, bt_has_hid = False, False
     profile_allows = _profile_allows_local_sources()
     parked = sources_parked()
-    usbsink_main_unit_available = (
-        profile_allows and _unit_loaded(records, USBSINK_UNIT)
+    usbsink_available, usbsink_reason = _source_availability(
+        Source.USBSINK, records=records, profile_allows=profile_allows,
     )
-    usbsink_gadget_unit_available = (
-        profile_allows and _unit_loaded(records, USBSINK_GADGET_UNIT)
-    )
-    usbsink_units_available = (
-        usbsink_main_unit_available and usbsink_gadget_unit_available
-    )
-    usbsink_hardware_available, usbsink_hardware_reason = (
-        _usbsink_capability()
-        if usbsink_units_available
-        else (False, "")
-    )
-    usbsink_available = usbsink_units_available and usbsink_hardware_available
-    if not usbsink_main_unit_available:
-        usbsink_reason = SOURCE_UNAVAILABLE["usbsink"]
-    elif not usbsink_gadget_unit_available:
-        usbsink_reason = (
-            "USB Audio Input is missing its composite gadget unit. Re-run "
-            "install.sh to repair the local renderer stack."
-        )
-    elif not usbsink_hardware_available:
-        usbsink_reason = usbsink_hardware_reason
-    else:
-        usbsink_reason = ""
     usbsink_main_active = _unit_running(records, USBSINK_UNIT)
     # Host-visible audio device presence is the uac2 ALSA card, NOT gadget-unit
     # activity: the composite gadget can outlive audio (it also carries the USB
@@ -402,14 +422,9 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
         unit: _unit_running(records, unit) for unit in BLUETOOTH_RUNTIME_UNITS
     }
     bt_runtime_active = all(bt_unit_active.values())
-    bt_hardware_available = bt_availability.available
-    bt_available_for_role = profile_allows and bt_hardware_available
-    if not profile_allows:
-        bt_unavailable_reason = SOURCE_UNAVAILABLE["bluetooth"]
-    elif not bt_hardware_available:
-        bt_unavailable_reason = bluetooth_unavailable_reason(bt_availability)
-    else:
-        bt_unavailable_reason = ""
+    bt_available_for_role, bt_unavailable_reason = _source_availability(
+        Source.BLUETOOTH, profile_allows=profile_allows, bluetooth=bt_availability,
+    )
     bt_desired = intents[Source.BLUETOOTH]
     bt_observed_on = (
         bt_powered and bt_runtime_active and bt_any_soft_blocked is not True
@@ -441,7 +456,6 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
         "pair": {"parked": parked},
         "airplay": _systemd_source_state(
             Source.AIRPLAY,
-            "airplay",
             desired=intents[Source.AIRPLAY], parked=parked,
             records=records,
             profile_allows=profile_allows,
@@ -459,7 +473,6 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
         },
         "spotify_connect": _systemd_source_state(
             Source.SPOTIFY,
-            "spotify_connect",
             desired=intents[Source.SPOTIFY], parked=parked,
             records=records,
             profile_allows=profile_allows,
@@ -476,44 +489,10 @@ def read_source_status() -> dict[str, dict[str, bool | str]]:
 
 
 def enable_blocker(source: Source) -> str:
-    """Return "" when ``source`` may be turned on now, else the exact reason
-    string the /sources/ wizard raises as a ``RuntimeError`` on a blocked
-    ``POST /set``.
-
-    Precedence matches the wizard's former hand-written per-source checks:
-    profile, then unit availability, then hardware capability (USB adds the
-    gadget unit as a second unit check between the main unit and hardware);
-    profile, then combined adapter/unit availability (Bluetooth, reported via
-    :func:`bluetooth_unavailable_reason`).
-    """
-    wizard_key = SOURCE_SPECS[source].wizard_key
-    if not _profile_allows_local_sources():
-        return SOURCE_UNAVAILABLE[wizard_key]
-    if source == Source.BLUETOOTH:
-        availability = _bluetooth_availability()
-        if not availability.available:
-            return bluetooth_unavailable_reason(availability)
-        return ""
-    if source == Source.USBSINK:
-        records = read_unit_states(
-            (USBSINK_UNIT, USBSINK_GADGET_UNIT), timeout=5.0,
-        ) or {}
-        if not _unit_loaded(records, USBSINK_UNIT):
-            return SOURCE_UNAVAILABLE[wizard_key]
-        if not _unit_loaded(records, USBSINK_GADGET_UNIT):
-            return (
-                "USB Audio Input is missing its composite gadget unit. Re-run "
-                "install.sh to repair the local renderer stack."
-            )
-        usb_available, usb_reason = _usbsink_capability()
-        if not usb_available:
-            return usb_reason
-        return ""
-    lifecycle = local_source_lifecycle(source)
-    records = read_unit_states(lifecycle.health_units, timeout=5.0) or {}
-    if not all(_unit_loaded(records, unit) for unit in lifecycle.health_units):
-        return SOURCE_UNAVAILABLE[wizard_key]
-    return ""
+    """Return "" when ``source`` may be turned on now, else the reason the
+    /sources/ wizard raises as a ``RuntimeError`` on a blocked ``POST /set``."""
+    available, reason = _source_availability(source)
+    return "" if available else reason
 
 
 __all__ = ["read_source_status", "enable_blocker", "sources_parked"]
