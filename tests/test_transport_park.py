@@ -199,11 +199,11 @@ def _composite_stereo_plus_subwoofer() -> OutputTopology:
 
 
 def _classes(parks) -> set[str]:
-    return {park.park_class for park in parks}
+    return {park["park_class"] for park in parks}
 
 
 def _by_class(parks, park_class):
-    return next(park for park in parks if park.park_class == park_class)
+    return next(park for park in parks if park["park_class"] == park_class)
 
 
 # --- one pin per class -------------------------------------------------------
@@ -262,25 +262,16 @@ _PARK_CASES = (
 def test_each_class_parks_naming_its_issue_or_remedy(
     topology, env, park_class, issue, remedy
 ):
-    parks = transport_park.classify(topology, env)
-    assert park_class in _classes(parks)
-    park = _by_class(parks, park_class)
-    assert park.issue == issue
-    assert park.remedy == remedy
-    # Every class carries exactly one of the two: a rebuild issue to wait on,
-    # or a command to run. A class with neither would be a park an operator
-    # cannot act on and cannot track.
-    assert (park.issue is None) != (park.remedy is None)
-
-
-@pytest.mark.parametrize(
-    "topology,env,park_class,issue,remedy", _PARK_CASES
-)
-def test_each_class_is_loud(topology, env, park_class, issue, remedy):
     state = transport_park.snapshot(topology, env)
     assert state["status"] == "parked"
     assert state["parked"] is True
-    assert park_class in {park["park_class"] for park in state["parks"]}
+    park = _by_class(state["parks"], park_class)
+    assert park["issue"] == issue
+    assert park["remedy"] == remedy
+    # Every class carries exactly one of the two: a rebuild issue to wait on,
+    # or a command to run. A class with neither would be a park an operator
+    # cannot act on and cannot track.
+    assert (park["issue"] is None) != (park["remedy"] is None)
 
 
 # --- one kill test per class -------------------------------------------------
@@ -289,11 +280,9 @@ def test_each_class_is_loud(topology, env, park_class, issue, remedy):
 def test_ring_armed_roleful_composite_does_not_park():
     """THE kill test: jts.local's shape today — a ring-armed composite whose
     roleful program rides the ACTIVE ring. No class may bite it."""
-    parks = transport_park.classify(_composite_active_2way(), _ARMED)
-    assert parks == ()
-    assert transport_park.snapshot(
-        _composite_active_2way(), _ARMED
-    )["status"] == "ok"
+    state = transport_park.snapshot(_composite_active_2way(), _ARMED)
+    assert state["parks"] == []
+    assert state["status"] == "ok"
 
 
 def test_a_roleful_composite_with_no_active_ring_is_not_the_passive_park():
@@ -301,17 +290,17 @@ def test_a_roleful_composite_with_no_active_ring_is_not_the_passive_park():
     ring width, so it reaches the composite branch — and must still not be
     reported as the PASSIVE shape #2982 tracks. It is outside ADR-0178's four
     classes and this module names no park for it."""
-    parks = transport_park.classify(_composite_subwoofer_only(), {})
-    assert PARK_PASSIVE_STEREO_COMPOSITE not in _classes(parks)
-    assert parks == ()
+    state = transport_park.snapshot(_composite_subwoofer_only(), {})
+    assert state["status"] == "unclassified"
+    assert state["parks"] == []
 
 
 def test_a_roleful_non_composite_shape_is_not_the_mono_park():
     """A subwoofer-only box reaches the no-ring gate too. #3117 is the
     1-channel FULL-RANGE shape; anything else there gets no mono park."""
-    parks = transport_park.classify(_subwoofer_topology(), {})
-    assert PARK_MONO_FULL_RANGE not in _classes(parks)
-    assert parks == ()
+    state = transport_park.snapshot(_subwoofer_topology(), {})
+    assert state["status"] == "unclassified"
+    assert state["parks"] == []
 
 
 def test_a_clean_passive_mono_box_is_ring_eligible_and_does_not_park():
@@ -330,7 +319,7 @@ def test_a_clean_passive_mono_box_is_ring_eligible_and_does_not_park():
 
     assert ring_channels_for_topology(topology) == RING_STEREO_PROGRAM_CHANNELS
     assert topology_supports_shm_ring(topology) is True
-    assert transport_park.classify(topology, {}) == ()
+    assert transport_park.snapshot(topology, {})["status"] == "ok"
 
 
 def test_snapshot_separates_clean_mono_from_mono_with_issues():
@@ -352,25 +341,26 @@ def test_snapshot_separates_clean_mono_from_mono_with_issues():
 def test_active_crossover_mono_does_not_park_as_mono_full_range():
     """A roleful mono box is 2+ channels on the ACTIVE ring, not the
     1-channel full-range shape #3117 tracks."""
-    parks = transport_park.classify(_active_topology("mono", "active_2_way"), _ARMED)
-    assert PARK_MONO_FULL_RANGE not in _classes(parks)
-    assert parks == ()
+    state = transport_park.snapshot(_active_topology("mono", "active_2_way"), _ARMED)
+    assert state["status"] == "ok"
+    assert state["parks"] == []
 
 
 def test_a_passive_stereo_plus_subwoofer_box_does_not_park_on_the_endpoint():
     """`requires_roleful_graph` is True for a passive box that merely adds a
     sub, but there is no active-speaker baseline to re-emit — parking it would
     hand the household a remedy that cannot run."""
-    parks = transport_park.classify(_stereo_plus_subwoofer(), {})
-    assert PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED not in _classes(parks)
+    state = transport_park.snapshot(_stereo_plus_subwoofer(), {})
+    assert state["status"] == "ok"
+    assert state["parks"] == []
 
 
 def test_converged_active_endpoint_does_not_park():
-    parks = transport_park.classify(
+    state = transport_park.snapshot(
         _active_topology("stereo", "active_2_way"), _ARMED
     )
-    assert PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED not in _classes(parks)
-    assert parks == ()
+    assert state["status"] == "ok"
+    assert state["parks"] == []
 
 
 @pytest.mark.parametrize(
@@ -388,9 +378,9 @@ def test_the_legacy_fifo_spelling_arms_the_grouped_park(env):
     box is silent. A box carrying BOTH still parks: the FIFO is the half that
     cannot run.
     """
-    parks = transport_park.classify(_full_range_stereo(), env)
+    parks = transport_park.snapshot(_full_range_stereo(), env)["parks"]
     assert _classes(parks) == {PARK_GROUPED_DAC_CONTENT_LANE}
-    assert _by_class(parks, PARK_GROUPED_DAC_CONTENT_LANE).issue == "#3118"
+    assert _by_class(parks, PARK_GROUPED_DAC_CONTENT_LANE)["issue"] == "#3118"
 
 
 @pytest.mark.parametrize(
@@ -409,7 +399,7 @@ def test_a_marker_armed_member_is_served_and_does_not_park(env):
     sole content source. Parking that box would report a speaker that is audibly
     working, and hand its household "ungrouping it brings sound back".
     """
-    assert transport_park.classify(_full_range_stereo(), env) == ()
+    assert transport_park.snapshot(_full_range_stereo(), env)["status"] == "ok"
 
 
 def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
@@ -419,14 +409,14 @@ def test_the_marker_beside_a_declared_bridge_parks_under_its_own_name():
     bridge into the FIRST env layer on every pass, so a member whose grouping
     layer failed to clear it lands here (ADR-0220).
     """
-    parks = transport_park.classify(
+    parks = transport_park.snapshot(
         _full_range_stereo(),
         {"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring", _LANE_ENV: "1"},
-    )
+    )["parks"]
     assert _classes(parks) == {transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE}
     park = _by_class(parks, transport_park.PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE)
-    assert park.issue == "#3118"
-    assert park.remedy == transport_park.BRIDGE_BESIDE_MARKER_REMEDY
+    assert park["issue"] == "#3118"
+    assert park["remedy"] == transport_park.BRIDGE_BESIDE_MARKER_REMEDY
 
 
 @pytest.mark.parametrize(
@@ -447,7 +437,7 @@ def test_an_unarmed_lane_parks_under_neither_spelling(env):
     whitespace-only value is not a path and
     ``transport_park._assess`` — now the only reader of that key — strips it too.
     """
-    assert transport_park.classify(_full_range_stereo(), env) == ()
+    assert transport_park.snapshot(_full_range_stereo(), env)["status"] == "ok"
 
 
 def test_the_grouped_park_reads_the_key_the_ring_module_owns():
@@ -462,16 +452,12 @@ def test_the_grouped_park_reads_the_key_the_ring_module_owns():
     assert DAC_CONTENT_LANE_ENV == _LANE_ENV
 
 
-def test_ring_eligible_stereo_box_does_not_park():
-    assert transport_park.classify(_full_range_stereo(), {}) == ()
-
-
 def test_unconfigured_topology_does_not_park():
     """An undeclared box holds silence through the speaker-setup park
     (#2135); re-reporting it here would double-count one fact."""
     from tests.test_active_speaker_runtime_contract import _topology
 
-    assert transport_park.classify(_topology([]), {}) == ()
+    assert transport_park.snapshot(_topology([]), {})["status"] == "ok"
 
 
 # --- the honest silence ------------------------------------------------------
@@ -507,17 +493,17 @@ def test_unclassified_reaches_no_household_surface():
 def test_a_ring_eligible_box_still_reports_ok():
     """The ok arm must stay reachable — otherwise `unclassified` has quietly
     become the answer for everything."""
-    assert transport_park.snapshot(
-        _full_range_stereo(), {}
-    )["status"] == "ok"
+    state = transport_park.snapshot(_full_range_stereo(), {})
+    assert state["status"] == "ok"
+    assert state["parks"] == []
 
 
 def test_a_box_in_two_classes_reports_both():
     """A bonded mono speaker waits on #3117 AND #3118; a first-match verdict
     would hide one of them from the operator who has to clear both."""
-    parks = transport_park.classify(
+    parks = transport_park.snapshot(
         _mono_awaiting_its_output(), {_FIFO_ENV: "/run/x.fifo"}
-    )
+    )["parks"]
     assert _classes(parks) == {PARK_MONO_FULL_RANGE, PARK_GROUPED_DAC_CONTENT_LANE}
 
 
