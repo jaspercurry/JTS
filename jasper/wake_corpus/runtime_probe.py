@@ -9,7 +9,6 @@ import this module, and it imports neither.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
@@ -49,7 +48,7 @@ from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )
-from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV, read_bridge_stats
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.mics.xvf3800 import (
@@ -787,10 +786,7 @@ def read_bridge_stats_snapshot() -> dict[str, Any] | None:
     as `capture_health.status=unknown` instead of pretending the clip is
     clean.
     """
-    try:
-        data = json.loads(BRIDGE_STATS_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
+    data = read_bridge_stats(path=BRIDGE_STATS_PATH)
     if not isinstance(data, dict):
         return None
     counters = data.get("counters")

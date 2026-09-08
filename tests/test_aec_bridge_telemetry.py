@@ -17,18 +17,21 @@ import time
 
 import pytest
 
+from jasper.aec import bridge_telemetry
 from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,
     LegEmitter,
     TimestampedLegEmitter,
     _BridgeStats,
 )
+from jasper.cli.doctor import aec as doctor_aec
 from jasper.usb_mic import (
     USB_MIC_HEADER_BYTES,
     USB_MIC_HEADER_STRUCT,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
 )
+from jasper.wake_corpus import runtime_probe
 from tests._aec_bridge_helpers import IDENTITY
 
 ON_DEST = ("127.0.0.1", 9876)
@@ -278,3 +281,93 @@ def test_drop_log_debouncer_aggregates_one_second_windows():
     drops, window_sec = debouncer.record(11.10)
     assert drops == 3
     assert window_sec == pytest.approx(1.1)
+
+
+def _read_via_shared(path, monkeypatch):
+    del monkeypatch
+    return bridge_telemetry.read_bridge_stats(path=path)
+
+
+def _read_via_doctor(path, monkeypatch):
+    monkeypatch.setenv(bridge_telemetry.BRIDGE_STATS_PATH_ENV, str(path))
+    return doctor_aec._read_bridge_stats_snapshot()
+
+
+def _read_via_wake_corpus(path, monkeypatch):
+    monkeypatch.setattr(runtime_probe, "BRIDGE_STATS_PATH", path)
+    return runtime_probe.read_bridge_stats_snapshot()
+
+
+_READERS = {
+    "shared": _read_via_shared,
+    "doctor": _read_via_doctor,
+    "wake_corpus": _read_via_wake_corpus,
+}
+
+# `None` means "leave the file missing"; every other value is written as
+# raw bytes so an undecodable file is exercised, not just malformed JSON.
+_UNREADABLE_CASES = [
+    ("missing_file", None),
+    ("invalid_utf8", b"\xff\xfe{"),
+    ("invalid_json", b"{"),
+    ("non_dict_json", b"[1,2]"),
+]
+
+_UNREADABLE_PARAMS = [
+    pytest.param(reader, content, id=f"{reader}-{case_id}")
+    for reader in _READERS
+    for case_id, content in _UNREADABLE_CASES
+] + [
+    # Only the wake-corpus reader additionally requires a `counters` dict.
+    pytest.param("wake_corpus", b'{"x": 1}', id="wake_corpus-no_counters"),
+]
+
+
+@pytest.mark.parametrize("reader, content", _UNREADABLE_PARAMS)
+def test_bridge_stats_readers_return_none_on_unreadable_snapshot(
+    monkeypatch, tmp_path, reader, content,
+) -> None:
+    """The shared reader, jasper-doctor, and the wake-corpus recorder each
+    read `/run/jasper/aec_bridge_stats.json` independently; all three must
+    degrade a missing, undecodable, malformed, or wrongly-shaped snapshot to
+    `None` rather than raising, since every caller maps `None` to unknown
+    health instead of crashing."""
+    path = tmp_path / "aec_bridge_stats.json"
+    if content is not None:
+        path.write_bytes(content)
+
+    assert _READERS[reader](path, monkeypatch) is None
+
+
+def test_read_bridge_stats_path_arg_overrides_env(monkeypatch, tmp_path) -> None:
+    env_path = tmp_path / "env.json"
+    env_path.write_text(json.dumps({"which": "env"}), encoding="utf-8")
+    arg_path = tmp_path / "arg.json"
+    arg_path.write_text(json.dumps({"which": "arg"}), encoding="utf-8")
+    monkeypatch.setenv(bridge_telemetry.BRIDGE_STATS_PATH_ENV, str(env_path))
+
+    assert bridge_telemetry.read_bridge_stats(path=arg_path) == {"which": "arg"}
+
+
+def test_read_bridge_stats_env_overrides_default_and_is_stripped(
+    monkeypatch, tmp_path,
+) -> None:
+    env_path = tmp_path / "env.json"
+    env_path.write_text(json.dumps({"which": "env"}), encoding="utf-8")
+    monkeypatch.setattr(
+        bridge_telemetry, "BRIDGE_STATS_PATH", tmp_path / "unused_default.json",
+    )
+    monkeypatch.setenv(bridge_telemetry.BRIDGE_STATS_PATH_ENV, f"  {env_path}  ")
+
+    assert bridge_telemetry.read_bridge_stats() == {"which": "env"}
+
+
+def test_read_bridge_stats_round_trips_a_valid_dict(tmp_path) -> None:
+    path = tmp_path / "aec_bridge_stats.json"
+    path.write_text(
+        json.dumps({"counters": {"frames_processed": 3}}), encoding="utf-8",
+    )
+
+    assert bridge_telemetry.read_bridge_stats(path=path) == {
+        "counters": {"frames_processed": 3},
+    }
