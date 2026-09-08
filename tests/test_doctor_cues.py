@@ -87,52 +87,39 @@ def test_check_cue_cache_classifies_the_registry(
 # --- check_cue_delivery ---
 
 
-def test_check_cue_delivery_skips_when_state_unavailable(monkeypatch):
-    monkeypatch.setattr(cues, "_read_cue_delivery_state", lambda: None)
+def _delivery_state(*, failed: int, outcome: str, reason: str) -> dict:
+    """A /state cue block, counts taken from a real manager's snapshot so a
+    new outcome in the closed set can't silently drift out of this fixture."""
+    state = AudioCueManager("/nonexistent", "jts.local", "Aoede").snapshot()
+    state["counts"].update({"delivered": 3, "failed": failed})
+    state["last"] = {
+        "outcome": outcome, "reason": reason, "slug": "wake_ack",
+        "age_seconds": 5.0,
+    }
+    return state
+
+
+@pytest.mark.parametrize(
+    "state, status, reason",
+    [
+        (None, "skipped", cues.REASON_CUE_DELIVERY_UNAVAILABLE),
+        (
+            _delivery_state(failed=2, outcome="failed", reason="no_cache"),
+            "warn", cues.REASON_CUE_DELIVERY_FAILED,
+        ),
+        (
+            _delivery_state(failed=0, outcome="delivered", reason="ok"),
+            "ok", "",
+        ),
+    ],
+    ids=["state_unavailable", "failures_recorded", "no_failures"],
+)
+def test_check_cue_delivery_classifies_the_snapshot(
+    monkeypatch, state, status, reason,
+):
+    monkeypatch.setattr(cues, "_read_cue_delivery_state", lambda: state)
 
     result = cues.check_cue_delivery()
 
-    assert result.status == "skipped"
-    assert result.reason == cues.REASON_CUE_DELIVERY_UNAVAILABLE
-
-
-def test_check_cue_delivery_warns_on_recorded_failures(monkeypatch):
-    monkeypatch.setattr(
-        cues, "_read_cue_delivery_state",
-        lambda: {
-            "counts": {
-                "delivered": 3, "fallback": 0, "stale": 0, "skipped": 0,
-                "failed": 2,
-            },
-            "last": {
-                "outcome": "failed", "reason": "no_cache", "slug": "wake_ack",
-                "age_seconds": 5.0,
-            },
-        },
-    )
-
-    result = cues.check_cue_delivery()
-
-    assert result.status == "warn"
-    assert result.reason == cues.REASON_CUE_DELIVERY_FAILED
-
-
-def test_check_cue_delivery_ok_when_no_failures_recorded(monkeypatch):
-    monkeypatch.setattr(
-        cues, "_read_cue_delivery_state",
-        lambda: {
-            "counts": {
-                "delivered": 3, "fallback": 0, "stale": 0, "skipped": 0,
-                "failed": 0,
-            },
-            "last": {
-                "outcome": "delivered", "reason": "ok", "slug": "wake_ack",
-                "age_seconds": 1.0,
-            },
-        },
-    )
-
-    result = cues.check_cue_delivery()
-
-    assert result.status == "ok"
-    assert result.reason == ""
+    assert result.status == status
+    assert result.reason == reason

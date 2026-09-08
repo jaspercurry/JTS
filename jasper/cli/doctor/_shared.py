@@ -397,8 +397,10 @@ def _loopback_playback_active() -> bool:
         for index, status in evidence.loopback_substreams().items()
     )
 
+
 def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
-    """Drill a nested dict out of a jasper-control HTTP payload along ``keys``, fail-soft to None on any shape mismatch."""
+    """Drill a nested dict out of a jasper-control HTTP payload along
+    ``keys``, fail-soft to None on any shape mismatch."""
     for key in keys:
         payload = payload.get(key) if isinstance(payload, dict) else None
     return payload if isinstance(payload, dict) else None
