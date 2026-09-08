@@ -511,21 +511,31 @@ def _crossover_fc_hz(
     return fc
 
 
-def _bind_measure_captures(dumps_dir: Path) -> list[dict[str, Any]]:
-    """Keep every readable MEASURE sidecar, including one whose WAV is lost."""
+def _bind_measure_captures(
+    dumps_dir: Path, *, unscoped_omissions: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Bind MEASURE sidecars and disclose omissions without a round identity."""
     bound: list[dict[str, Any]] = []
+    unscoped = unscoped_omissions if unscoped_omissions is not None else []
     for sidecar_path in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
         try:
             doc = json.loads(sidecar_path.read_text())
-        except (OSError, UnicodeDecodeError, ValueError):
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            unscoped.append({"sidecar": sidecar_path.name,
+                             "reason": "sidecar_unreadable" if isinstance(exc, OSError) else "sidecar_malformed"})
             continue
-        if not isinstance(doc, Mapping) or doc.get("phase") != PHASE_MEASURE:
+        if not isinstance(doc, Mapping) or not isinstance(doc.get("phase"), str) or not doc["phase"]:
+            unscoped.append({"sidecar": sidecar_path.name, "reason": "sidecar_malformed"})
+            continue
+        if doc["phase"] != PHASE_MEASURE:
             continue
         sha = doc.get("wav_sha256")
         sha = sha if isinstance(sha, str) else ""
         wav_path = sidecar_path.parent.parent / "wav" / f"{sidecar_path.stem}.wav"
         identity = doc.get(SESSION_IDENTITY_KEY)
         banked = identity.get("session_id") if isinstance(identity, Mapping) else None
+        if not isinstance(banked, str) or not banked:
+            unscoped.append({"sidecar": sidecar_path.name, "reason": "session_identity_missing"})
         bound.append({
             "wav": wav_path,
             "take_id": doc.get("take_id") or sidecar_path.stem,
@@ -952,9 +962,15 @@ def read_round_harmonics(
     applied_profile, profile_reason = _applied_profile_source(applied_profile_path)
     fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
     program, downstream_db, prelude = rebuild_measure_program(state, bands)
-    captures, scope = _scope_captures(
-        _bind_measure_captures(dumps_dir), session_id
-    )
+    unscoped_omissions: list[dict[str, str]] = []
+    banked = _bind_measure_captures(dumps_dir, unscoped_omissions=unscoped_omissions)
+    omissions = {"n_unscoped_omissions": len(unscoped_omissions),
+                 "unscoped_omissions": unscoped_omissions}
+    try:
+        captures, scope = _scope_captures(banked, session_id)
+    except HarmonicEvidenceRefused as exc:
+        exc.evidence.update(omissions)
+        raise
     if not captures:
         raise HarmonicEvidenceRefused(
             NO_ADMISSIBLE_CAPTURES,
@@ -962,6 +978,7 @@ def read_round_harmonics(
                 "phase": PHASE_MEASURE,
                 "dumps_dir": dumps_dir.name,
                 "scope": scope,
+                **omissions,
                 "note": (
                     "harmonics are read from the per-driver MEASURE program, "
                     "whose sweeps are one driver at a time; a summed VERIFY "
@@ -989,8 +1006,9 @@ def read_round_harmonics(
     blocks: list[dict[str, Any]] = []
     read: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     disclosures: list[dict[str, str]] = []
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     for capture in captures:
         sha12 = capture["wav_sha256"][:12]
         take = {
@@ -1012,6 +1030,7 @@ def read_round_harmonics(
                                 "fidelity_fields_compared": 0, "failures": [reason]})
                 continue
             if actual in seen:
+                skipped.append({**take, "reason": "duplicate_wav", "duplicate_of": seen[actual]})
                 continue
             samples = _read_mono(capture["wav"], sample_rate_hz=program.sample_rate_hz)
             readings, failures, disclosure, compared = _read_one_capture(
@@ -1032,7 +1051,7 @@ def read_round_harmonics(
                 "fidelity_fields_compared": compared, "failures": failures,
             })
             continue
-        seen.add(actual)
+        seen[actual] = capture["take_id"]
         # The count rides on a PASS too, not only on a refusal: a capture whose
         # sidecar carried one of the five gate fields passed a much weaker gate
         # than one that carried all five.
@@ -1060,6 +1079,7 @@ def read_round_harmonics(
             {
                 "n_captures": len(captures),
                 "refused": refused,
+                **omissions,
                 "note": (
                     "every MEASURE capture in the ring failed a gate, so no "
                     "reading is reportable. A capture whose analysis does not "
@@ -1089,6 +1109,9 @@ def read_round_harmonics(
             "scope": scope,
             "n_read": len(read),
             "n_refused": len(refused),
+            "n_skipped": len(skipped),
+            "skipped": skipped,
+            **omissions,
             "read": read,
             "refused": refused,
             "integrity_disclosures": disclosures,

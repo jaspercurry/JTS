@@ -1341,7 +1341,13 @@ def test_reading_a_capture_ring_never_raises_on_a_hand_edited_sidecar(tmp_path):
     (ring / "sidecar" / "2_measure_b.json").write_text(json.dumps(["a list"]))
     (ring / "sidecar" / "3_measure_c.json").write_text(json.dumps({"phase": 7}))
 
-    assert he._bind_measure_captures(ring) == []
+    omissions = []
+    captures = he._bind_measure_captures(ring, unscoped_omissions=omissions)
+    assert captures == []
+    assert omissions == [
+        {"sidecar": f"{index}_measure_{letter}.json", "reason": "sidecar_malformed"}
+        for index, letter in enumerate("abc", 1)
+    ]
 
 
 def test_a_median_over_nothing_is_nan_not_zero():
@@ -1474,9 +1480,9 @@ def harmonic_capture(tmp_path, monkeypatch):
     profile = _write_applied_profile(tmp_path, fc_hz=1800.0)
     monkeypatch.setattr(he, "_DOWNSTREAM_GRID_DB", (-20.0,))
 
-    def read(supplied_state=state):
+    def read(supplied_state=state, *, scope="c2a1812b849e"):
         return he.read_round_harmonics(round_dir, ring, supplied_state, bands,
-                                       session_id="c2a1812b849e", applied_profile_path=profile)
+                                       session_id=scope, applied_profile_path=profile)
 
     return read, compose, sidecar, wav, document
 
@@ -1547,3 +1553,45 @@ def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic
         assert historical["drive"]["stimulus_peak_dbfs"] is None
         assert historical["drive"]["effective_peak_dbfs"] is None
         assert historical["drive"]["capture_peak_dbfs"] == original["drive"]["capture_peak_dbfs"]
+
+
+@pytest.mark.parametrize("scope", ["c2a1812b849e", None])
+def test_harmonics_accounts_for_unscoped_omissions_and_duplicate_takes(harmonic_capture, scope, monkeypatch):
+    read, _, sidecar, wav, document = harmonic_capture
+    for stem, take_id in (("2_measure_duplicate", "take-copy"), ("3_measure_missing", "take-lost")):
+        sidecar.with_name(f"{stem}.json").write_text(json.dumps({**document, "take_id": take_id}))
+    wav.with_name("2_measure_duplicate.wav").write_bytes(wav.read_bytes())
+    sidecar.with_name("4_unknown.json").write_text("{bad json")
+    unreadable = sidecar.with_name("5_unknown.json")
+    unreadable.write_text("{}")
+    original_read = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path == unreadable:
+            raise PermissionError()
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    expected_unscoped = [
+        {"sidecar": "4_unknown.json", "reason": "sidecar_malformed"},
+        {"sidecar": "5_unknown.json", "reason": "sidecar_unreadable"},
+    ]
+    if scope is not None:
+        sidecar.with_name("6_measure_other_round.json").write_text(json.dumps({
+            **document, "jts_session_identity": {"session_id": "other-round"},
+        }))
+        unattributed = {key: value for key, value in document.items() if key != "jts_session_identity"}
+        sidecar.with_name("7_measure_unattributed.json").write_text(json.dumps(unattributed))
+        expected_unscoped.append({"sidecar": "7_measure_unattributed.json", "reason": "session_identity_missing"})
+    artifact = read(scope=scope)
+    captures = artifact["captures"]
+    assert captures["n_read"] == captures["n_refused"] == captures["n_skipped"] == 1
+    assert captures["refused"][0]["take_id"] == "take-lost"
+    assert captures["refused"][0]["reason"] == "capture_wav_missing"
+    assert captures["skipped"][0]["take_id"] == "take-copy"
+    assert captures["skipped"][0]["duplicate_of"] == "take-a"
+    assert captures["skipped"][0]["reason"] == "duplicate_wav"
+    assert captures["n_unscoped_omissions"] == len(expected_unscoped)
+    assert captures["unscoped_omissions"] == expected_unscoped
+    assert captures["scope"]["session_id"] == "c2a1812b849e"
+    assert len(artifact["roles"]) == 2
