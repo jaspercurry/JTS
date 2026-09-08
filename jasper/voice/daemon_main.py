@@ -57,10 +57,10 @@ from ..usage import (
     BillableActivityMeter,
     SpendCap,
     UsageStore,
-    household_usage_reader,
     load_pricing_overrides,
     pricing_for_model,
 )
+from ..usage_writer import VoiceUsageStore
 from ..vad import SpeechVAD, SpeechVADSetupError
 from ..voice import control_socket as control_socket_mod
 from ..voice.assistant_output import FanInDucker
@@ -701,29 +701,20 @@ async def run() -> None:
             ),
             level=logging.WARNING,
         )
-    usage_store = UsageStore(
-        cfg.usage_db,
-        pricing=pricing,
-        pricing_overrides=pricing_overrides,
-    )
-    # The cap reads HOUSEHOLD spend: this daemon's own voice ledger plus the
-    # tuning-surface sibling ledger (jasper-correction-web's paid tuning
-    # calls). Passing the live writer store as main_store means spend this
-    # daemon just recorded is visible without a read-only reopen; the tuning
-    # sibling is summed as a path, picked up lazily even if created later. So
-    # voice sessions and hold-to-talk refuse once tuning spend has exhausted
-    # the shared cap.
-    spend_cap = SpendCap(
-        household_usage_reader(cfg.usage_db, main_store=usage_store),
-        cfg.daily_spend_cap_usd,
-        cfg.daily_spend_cap_safety_multiplier,
-    )
     conversation_settings = read_conversation_settings()
     conversation_store: ConversationStore | None = None
     if conversation_settings.capture_enabled:
         conversation_store = ConversationStore(conversation_settings.db_path)
 
     async with contextlib.AsyncExitStack() as stack:
+        usage_store = await VoiceUsageStore.start(
+            cfg.usage_db, pricing=pricing, pricing_overrides=pricing_overrides,
+        )
+        _arelease(stack, "usage", usage_store.aclose)
+        spend_cap = SpendCap(
+            usage_store,
+            cfg.daily_spend_cap_usd, cfg.daily_spend_cap_safety_multiplier,
+        )
         # No release registered for the controller: it caches its websocket
         # for the process lifetime by design, and close() can spend
         # CAMILLA_ATTEMPT_BUDGET_S on a wedged socket inside the 14 s stop

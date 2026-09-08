@@ -2,66 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-session usage / cost accounting for the voice loop.
+"""Voice usage estimates and the household spend cap.
 
-The spend cap is a coarse circuit breaker, not a billing source of
-truth: Google, OpenAI, and xAI each compute final invoices on their
-side. We log token counts and a USD estimate so the daemon can refuse
-new wakes once a daily ceiling is hit.
+Pricing is model-specific. Rich token details use modality rates; aggregate
+counts use an all-audio estimate. Time billing covers active voice turns,
+excluding warm idle connections. Rates are snapshotted at receipt; SpendCap
+alone applies the configured headroom multiplier.
 
-Pricing is per-model AND modality-aware. ``UsageStore`` is constructed
-with a ``Pricing`` snapshot for whichever model is active; estimated
-cost goes into the row at session-close time, so the 24-hour spend sum
-naturally aggregates across models/providers if the user switches
-mid-window. Default rates ship dated in
-``jasper/data/model_pricing.json`` (see ``load_default_pricing`` /
-``pricing_for_model``); there is no provider-level price.
-
-Modality split (OpenAI Realtime 2 specifically): the ``response.usage``
-object on each ``response.done`` carries an ``input_token_details``
-sub-object with ``audio_tokens``, ``text_tokens``, and ``cached_tokens``
-counts (and the same for output, minus cached). Those map to four
-distinct USD-per-1M-tokens rates on OpenAI's pricing page:
-$32 audio in, $4 text in, $0.40 cached input, $64 audio out, $24
-text out. **Pricing all input as audio** — which is what we did
-before — overstated cost by ~50× because the bulk of input on a
-tool-using turn is the cached system prompt + tool defs (text), not
-the user's audio. The ``Pricing.estimate_cost`` method below splits
-correctly when the breakdown is present and falls back to flat audio
-rates when it isn't (Gemini, which doesn't surface a breakdown).
-
-Time-billed providers (``grok``): Grok Voice publishes a flat realtime
-hourly rate, not per-token, so its token rows price to $0. JTS records
-billable realtime-activity intervals into the legacy-named
-``connection_intervals`` table when a voice turn is active; warm idle
-WebSocket uptime is not counted because the xAI dashboard does not bill
-that like active conversation time. A schema discriminator tags old
-connection-uptime rows as legacy so they no longer false-trip the cap after
-upgrade. The spend queries fold active intervals in at the flat rate, so
-Grok's cost shows up in spend-cap status and counts against the cap. See
-``BillableActivityMeter`` and ``UsageStore._time_billed_spend``.
-
-Display vs. circuit-breaker: the stored ``cost_usd`` is a best-effort
-TRUE estimate (provider list rates). The spend cap stays conservative
-without inflating the displayed number by applying a read-time
-``safety_multiplier`` in ``SpendCap`` — so the status card reads honest
-while the breaker keeps headroom.
-
-Override file: the bundled rates are defaults. An optional
-``/var/lib/jasper/pricing.json`` (``JASPER_PRICING_FILE``) overlays them
-per MODEL ID using the ``Pricing`` field names as keys — see
-``load_pricing_overrides``. Missing/malformed file falls back to the
-bundled defaults (fail-soft).
-
-Per-surface ledger files, one writer per file: spend is recorded into a
-separate SQLite DB per writing surface — the voice daemon owns
-``usage.db``; root ``jasper-correction-web`` owns the sibling
-``usage-tuning.db`` (it must never touch ``usage.db``, whose owner is
-jasper-voice — a root-created file or ``-journal`` sidecar would wedge the
-voice ledger, the 2026-06-19 "readonly database" class). ``household_usage_reader``
-is the single definition of "household spend": it sums every member file at
-read time, so the cap and every display surface see one total while each file
-keeps exactly one writer.
+Each surface owns its disk ledger. Status processes must open them read-only:
+creating a voice ledger or journal as root can prevent the daemon's writes.
+``household_usage_reader`` owns the member list. ``usage_writer.VoiceUsageStore`` keeps
+live calls in memory and persists through one bounded worker; ordinary stores
+serve disk readers and the separate tuning writer.
 """
 from __future__ import annotations
 
@@ -84,16 +36,7 @@ DEFAULT_USAGE_DB = "/var/lib/jasper/usage.db"
 
 
 def tuning_usage_db_path(usage_db_path: str) -> str:
-    """The tuning-surface ledger file: a sibling of the voice usage DB in
-    the same directory, named ``usage-tuning.db``.
-
-    Derived (not a separate env var) so the two ledgers always live side by
-    side and a future consolidation is a one-function edit. ``jasper-correction-web``
-    is its SOLE writer; every cap/display reader sums it with ``usage_db_path``
-    through ``household_usage_reader``. It is a SEPARATE file on purpose: the
-    root correction-web daemon must never open the jasper-voice-owned
-    ``usage.db`` read-write, since a root-created file or ``-journal`` sidecar
-    wedges the voice daemon's own writes (the 2026-06-19 outage class)."""
+    """Sibling ledger owned by correction-web, separate from the voice user."""
     parent = Path(usage_db_path).parent
     return str(parent / "usage-tuning.db")
 
@@ -102,38 +45,13 @@ def tuning_usage_db_path(usage_db_path: str) -> str:
 # DEFAULT_USAGE_DB moves both.
 DEFAULT_TUNING_USAGE_DB = tuning_usage_db_path(DEFAULT_USAGE_DB)
 
-# Sentinel session id returned by ``UsageStore.open_session`` when the
-# accounting INSERT fails (e.g. usage.db ends up owned by the wrong user
-# and writes raise "attempt to write a readonly database"). Negative so it
-# can never collide with a real AUTOINCREMENT rowid (those start at 1).
-# ``close_session`` treats it as a no-op. See ``open_session``.
+# Reserved outside both disk AUTOINCREMENT IDs and buffered session IDs.
 _UNRECORDED_SESSION = -1
 
 
 @dataclass(frozen=True)
 class Pricing:
-    """USD-per-1M-tokens snapshot for a single voice provider.
-
-    Numbers come from each provider's public pricing page at the time
-    of writing (early May 2026). They drift; treat as advisory and
-    re-check before relying on the spend cap for anything serious.
-
-    The four input rates capture the typical Realtime price card:
-      audio_input_per_million_usd:   user-microphone audio (typically the
-                                     most expensive bucket per token)
-      text_input_per_million_usd:    text history, system instructions,
-                                     tool definitions (cheaper)
-      cached_input_per_million_usd:  prompt-caching hits — usually the
-                                     stable prefix (system prompt +
-                                     tool defs), 80× cheaper than fresh
-      audio_output_per_million_usd:  TTS output
-      text_output_per_million_usd:   transcript output that accompanies
-                                     audio under output_modalities=["audio"]
-
-    Providers that don't surface a breakdown (Gemini Live as of May
-    2026) leave text/cached at 0 and rely on the audio_input rate as
-    a conservative all-in estimate via ``estimate_token_cost``.
-    """
+    """USD per million tokens, plus an optional flat hourly activity rate."""
     audio_input_per_million_usd: float
     audio_output_per_million_usd: float
     text_input_per_million_usd: float = 0.0
@@ -145,16 +63,7 @@ class Pricing:
     label: str = ""
 
     def estimate_cost(self, usage: dict | None) -> float:
-        """Estimate USD cost from a usage dict.
-
-        When the dict carries ``input_token_details`` and/or
-        ``output_token_details`` (OpenAI Realtime), split tokens by
-        modality and apply the four-bucket rate card. When it doesn't
-        (Gemini Live, legacy fallbacks), treat all tokens as audio at
-        the audio rate — that's what the original implementation did
-        and it remains a sensible conservative estimate for providers
-        that only emit aggregates.
-        """
+        """Price modality details when present; estimate aggregates as audio."""
         if not usage:
             return 0.0
         input_details = usage.get("input_token_details") or {}
@@ -169,9 +78,7 @@ class Pricing:
     def estimate_token_cost(
         self, input_tokens: int, output_tokens: int,
     ) -> float:
-        """Flat all-audio cost — kept as a back-compat path for callers
-        that only have aggregate token counts (Gemini, legacy tests).
-        New code prefers ``estimate_cost`` with a breakdown."""
+        """All-audio estimate for aggregate token counts."""
         return (
             input_tokens * self.audio_input_per_million_usd / 1_000_000
             + output_tokens * self.audio_output_per_million_usd / 1_000_000
@@ -437,6 +344,25 @@ _CONNECTION_INTERVALS_TABLE_DDL = f"""
 """
 
 
+_USAGE_COLUMNS = {
+    "sessions": "id, started_at, ended_at, input_tokens, output_tokens, cost_usd, provider",
+    "connection_intervals": "id, provider, opened_at, closed_at, rate_per_hour_usd, kind",
+}
+_USAGE_READS = (
+    "spend_last_24h_usd", "spend_month_to_date_usd", "session_count_today_utc",
+)
+
+
+@dataclass(frozen=True)
+class _UsageRow:
+    key: tuple[str, int]
+    values: tuple
+
+    @property
+    def closed(self) -> bool:
+        return self.values[2 if self.key[0] == "sessions" else 3] is not None
+
+
 @dataclass
 class WriteHealth:
     """Write-failure health for a single ``UsageStore`` writer instance.
@@ -454,45 +380,23 @@ class UsageStore:
     def __init__(
         self, db_path: str, pricing: Pricing | None = None,
         *, read_only: bool = False, pricing_overrides: dict | None = None,
+        timeout: float = 5.0,
     ) -> None:
-        # Status surfaces (the /voice spend-cap card, jasper-doctor) read
-        # this DB but run as root, NOT as jasper-voice. They MUST pass
-        # read_only=True: a read-WRITE open auto-creates the file and runs
-        # the CREATE TABLE DDL below — which can leave usage.db owned
-        # by the wrong user (root/jasper-mux, mode 644). Once that
-        # happens jasper-voice can no longer write its own DB, open_session()
-        # raises "attempt to write a readonly database" on EVERY wake, and
-        # the daemon plays the cant_connect cue instead of answering (the
-        # 2026-06-16 outage). mode=ro never creates the file and never
-        # writes, so a reader cannot corrupt ownership. Callers gate on
-        # os.path.exists() and fail soft, so an absent DB is handled
-        # upstream rather than silently created here.
+        # A reader must not create root-owned files or journals in the
+        # voice user's ledger. mode=ro also prevents accidental DDL writes.
         if read_only:
             self._conn = sqlite3.connect(
-                f"file:{db_path}?mode=ro", uri=True, isolation_level=None,
+                f"file:{db_path}?mode=ro", uri=True, isolation_level=None, timeout=timeout,
             )
         else:
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(db_path, isolation_level=None)
-        # sqlite3.connect is lazy: a corrupt/non-sqlite file only surfaces on
-        # the FIRST real statement, which happens in the post-connect probes /
-        # DDL below. Close the connection before re-raising: leaving it on the
-        # half-built instance traps the FD in the exception→traceback cycle
-        # until a GC pass — on the voice daemon's wake path a permanently
-        # corrupt aggregate member would otherwise hold one FD per cap check
-        # until collection (review-proven with gc disabled).
+            if db_path != ":memory:":
+                Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(db_path, isolation_level=None, timeout=timeout)
+        # Corrupt files fail on the first statement, after connect succeeds.
+        # Close explicitly so exception tracebacks cannot retain their FDs.
         try:
             if not read_only:
                 self._conn.execute(_SESSIONS_TABLE_DDL)
-                # Billable realtime-activity intervals for time-billed providers
-                # (Grok). The table name is historical; each active turn is a row,
-                # and cost = duration × rate snapshot. Separate from `sessions`
-                # because sessions close with token usage while these rows cover
-                # active realtime duration for flat-rate providers.
-                # Do NOT clean up dangling intervals here — UsageStore is also
-                # constructed read-only by status surfaces, and closing the live
-                # connection's open interval from a reader would be wrong. Crash cleanup
-                # lives in BillableActivityMeter (daemon startup only).
                 self._conn.execute(_CONNECTION_INTERVALS_TABLE_DDL)
                 self._ensure_connection_interval_kind_column()
             self._connection_intervals_have_kind = (
@@ -501,38 +405,18 @@ class UsageStore:
         except sqlite3.Error:
             self._conn.close()
             raise
-        # Callers that don't pass `pricing=` (the dashboard read path, which
-        # never computes cost, and tests) fall back to the cheapest current
-        # model's rates. Production always passes the active model's pricing.
         self._pricing: Pricing = pricing or pricing_for_model(
             _DEFAULT_DISPLAY_MODEL
         )
         self._pricing_overrides = pricing_overrides or {}
-        # Write-failure health — only meaningful on the writable voice store
-        # (read-only surfaces never write). Drives the
-        # /state.voice.usage_tracking_degraded signal via ``write_degraded``.
         self._write_health = WriteHealth()
 
     def open_session(self, provider: str | None = None) -> int:
-        """Insert a new session row and return its id.
-
-        Fail-soft: a usage-accounting write must NEVER break the voice
-        turn (this mirrors ``BillableActivityMeter`` and the module
-        contract). The voice loop calls this on the turn-open hot path,
-        before the connection is even acquired. If the INSERT raises —
-        chiefly ``sqlite3.OperationalError: attempt to write a readonly
-        database`` when usage.db is owned by the wrong user — we log and
-        return ``_UNRECORDED_SESSION`` instead of propagating. The caller
-        stores that id and serves the turn anyway; ``close_session``
-        no-ops on it. This turn's cost goes unrecorded, which is fine for
-        disposable spend telemetry — far better than aborting the turn
-        and playing a failure cue (the 2026-06-19 outage, where this
-        raising on every wake made the daemon say "I can't connect"
-        instead of answering)."""
+        """Return a session ID, or the unrecorded sentinel on write failure."""
         try:
             cur = self._conn.execute(
-                "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
-                (datetime.now(timezone.utc).isoformat(), provider),
+                "INSERT INTO sessions (id, started_at, provider) VALUES (?, ?, ?)",
+                (self._new_row_id(), datetime.now(timezone.utc).isoformat(), provider),
             )
         except sqlite3.Error as e:
             logger.warning(
@@ -543,6 +427,9 @@ class UsageStore:
             return _UNRECORDED_SESSION
         self._note_write_ok()
         return int(cur.lastrowid)
+
+    def _new_row_id(self) -> int | None:
+        return None
 
     def close_session(
         self,
@@ -557,8 +444,7 @@ class UsageStore:
         ``input_token_details`` / ``output_token_details`` for
         modality-aware billing (OpenAI Realtime). When None, falls back
         to the scalar all-audio estimate via the ``input_tokens`` /
-        ``output_tokens`` arguments — this is the path Gemini Live and
-        the legacy unit tests take.
+        ``output_tokens`` arguments.
         """
         return self._close_session_with_pricing(
             session_id,
@@ -702,14 +588,7 @@ class UsageStore:
         return "kind" in self._connection_interval_columns()
 
     def _ensure_connection_interval_kind_column(self) -> None:
-        """Mark pre-fix uptime rows as legacy so they stop counting as spend.
-
-        Before 2026-06-24 this table represented warm WebSocket uptime.
-        After the Grok billing investigation it represents active realtime
-        turn duration. Existing rows have the old meaning, so a value-preserving
-        migration would preserve the bug; instead we keep the rows for
-        forensics and tag them out of spend queries.
-        """
+        """Exclude legacy warm-connection uptime from active-turn billing."""
         if self._connection_interval_kind_column_exists():
             return
         self._conn.execute(
@@ -728,8 +607,9 @@ class UsageStore:
         rate change doesn't retroactively re-price past activity time."""
         self._conn.execute(
             "INSERT INTO connection_intervals "
-            "(provider, opened_at, rate_per_hour_usd, kind) VALUES (?, ?, ?, ?)",
+            "(id, provider, opened_at, rate_per_hour_usd, kind) VALUES (?, ?, ?, ?, ?)",
             (
+                self._new_row_id(),
                 provider,
                 datetime.now(timezone.utc).isoformat(),
                 float(rate_per_hour_usd),
@@ -754,7 +634,7 @@ class UsageStore:
         read. Run once at daemon start (BillableActivityMeter), never
         from the read-only dashboard path."""
         self._conn.execute(
-            "UPDATE connection_intervals SET closed_at = opened_at "
+            "UPDATE main.connection_intervals SET closed_at = opened_at "
             "WHERE closed_at IS NULL AND kind = ?",
             (_BILLABLE_ACTIVITY_KIND,),
         )
@@ -833,6 +713,52 @@ class UsageStore:
         return int(row[0]) if row else 0
 
 
+    def _row(self, table: str, row_id: int) -> _UsageRow | None:
+        values = self._conn.execute(
+            f"SELECT {_USAGE_COLUMNS[table]} FROM {table} WHERE id = ?", (row_id,),
+        ).fetchone()
+        return _UsageRow((table, row_id), values) if values is not None else None
+
+    def _discard_rows(self, keys: list[tuple[str, int]]) -> None:
+        for table, row_id in keys:
+            self._conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+
+    def _save_row(self, row: _UsageRow) -> None:
+        table = row.key[0]
+        columns = _USAGE_COLUMNS[table].split(", ")
+        self._conn.execute(
+            f"INSERT INTO main.{table} ({','.join(columns)}) "
+            f"VALUES ({','.join('?' for _ in columns)}) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            + ",".join(f"{c}=excluded.{c}" for c in columns[1:]), row.values,
+        )
+
+    def _open_activity_ids(self) -> list[int]:
+        return [row[0] for row in self._conn.execute(
+            "SELECT id FROM connection_intervals WHERE closed_at IS NULL",
+        )]
+
+    def _snapshot(self, excluded: list[tuple[str, int]]) -> dict[str, float | int]:
+        # TEMP views keep the existing spend queries as the sole window/cost
+        # owner. Writes use main explicitly; filters never alter the ledger.
+        self._conn.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS usage_pending (ledger TEXT, id INTEGER)",
+        )
+        for table in _USAGE_COLUMNS:
+            self._conn.execute(
+                f"CREATE TEMP VIEW IF NOT EXISTS {table} AS SELECT * FROM main.{table} "
+                "WHERE id NOT IN (SELECT id FROM usage_pending "
+                f"WHERE ledger = '{table}')",
+            )
+        self._conn.execute("DELETE FROM usage_pending")
+        self._conn.executemany("INSERT INTO usage_pending VALUES (?, ?)", excluded)
+        self._conn.execute("BEGIN")
+        try:
+            return {name: getattr(self, name)() for name in _USAGE_READS}
+        finally:
+            self._conn.execute("ROLLBACK")
+
+
 class AggregateUsageReader:
     """Sums the reader trio across every per-surface ledger file.
 
@@ -844,7 +770,7 @@ class AggregateUsageReader:
 
     Members are a mix of already-open stores (the voice daemon passes its own
     live writer, so its just-recorded spend is visible without a re-open) and
-    paths (opened READ-ONLY, LAZILY, on EVERY read). A missing or unopenable
+    paths (opened read-only on each read). A missing or unopenable
     path-member contributes zero — logged at DEBUG, never WARN — because the
     voice daemon runs for weeks and MUST pick up a tuning DB that
     ``jasper-correction-web`` creates later without a restart. A failed open is
@@ -855,18 +781,23 @@ class AggregateUsageReader:
     def __init__(
         self,
         *,
-        stores: "list[UsageStore] | None" = None,
+        stores: "list[UsageStore | AggregateUsageReader] | None" = None,
         paths: list[str] | None = None,
+        timeout: float = 5.0,
     ) -> None:
         self._stores = list(stores or [])
         self._paths = list(paths or [])
+        self._timeout = timeout
+        self.read_degraded = False
 
     def _read_all(self, method_name: str) -> "list[float | int]":
         values: list[float | int] = []
+        self.read_degraded = False
         for store in self._stores:
             try:
                 values.append(getattr(store, method_name)())
             except sqlite3.Error as e:
+                self.read_degraded = True
                 logger.debug(
                     "usage aggregate: open store %s failed (%s: %s); "
                     "counting zero",
@@ -885,12 +816,13 @@ class AggregateUsageReader:
                 # reader cannot re-own another surface's DB. Open fresh per
                 # read and close immediately — never cache a handle (or a
                 # failed open).
-                store = UsageStore(path, read_only=True)
+                store = UsageStore(path, read_only=True, timeout=self._timeout)
                 try:
                     values.append(getattr(store, method_name)())
                 finally:
                     store._conn.close()
             except sqlite3.Error as e:
+                self.read_degraded = True
                 logger.debug(
                     "usage aggregate: member %s unreadable (%s: %s); "
                     "counting zero", path, type(e).__name__, e,
@@ -908,7 +840,8 @@ class AggregateUsageReader:
 
 
 def household_usage_reader(
-    usage_db_path: str, *, main_store: "UsageStore | None" = None,
+    usage_db_path: str, *, main_store: "UsageStore | AggregateUsageReader | None" = None,
+    timeout: float = 5.0,
 ) -> AggregateUsageReader:
     """THE definition of "household spend": the voice usage DB + the tuning
     sibling, summed at read time.
@@ -925,8 +858,8 @@ def household_usage_reader(
     (the /voice card, doctor) pass both as paths."""
     tuning_db = tuning_usage_db_path(usage_db_path)
     if main_store is not None:
-        return AggregateUsageReader(stores=[main_store], paths=[tuning_db])
-    return AggregateUsageReader(paths=[usage_db_path, tuning_db])
+        return AggregateUsageReader(stores=[main_store], paths=[tuning_db], timeout=timeout)
+    return AggregateUsageReader(paths=[usage_db_path, tuning_db], timeout=timeout)
 
 
 class SpendReader(Protocol):
