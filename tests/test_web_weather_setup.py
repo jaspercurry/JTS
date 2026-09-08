@@ -156,8 +156,8 @@ def test_render_saved_weather_location_card():
     }
     out = _render(weather_state=state)
     assert "Brooklyn, NY" in out
-    assert 'class="info-card info-card--accent info-card--ok"' in out
-    assert ">Saved<" in out
+    assert 'class="info-card info-card--accent"' in out
+    assert 'class="badge badge--ok">Saved<' in out
 
 
 def test_render_transit_fallback_card():

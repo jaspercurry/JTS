@@ -924,7 +924,7 @@ to this Home Assistant instance.</p>
   </div>
 </details>
 
-<div class="info-card info-card--danger">
+<div class="info-card">
   <p class="form-hint"><strong>Disconnect.</strong> Removes the URL and token from this
   speaker. Smart-home commands will stop working until you reconnect.
   Doesn't change anything in Home Assistant itself.</p>

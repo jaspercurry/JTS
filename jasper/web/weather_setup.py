@@ -238,21 +238,21 @@ def _current_location_html(
     if loc is not None:
         if source == "weather":
             source_text = "Saved weather location."
-            tone_class = "info-card--ok"
+            badge_class = "badge--ok"
             badge = "Saved"
         else:
             source_text = (
                 "Using the transit location until a "
                 "weather-specific location is saved."
             )
-            tone_class = "info-card--idle"
+            badge_class = "badge--idle"
             badge = "From transit"
         display = loc.display_name or "(saved location)"
         return f"""
-<div class="info-card info-card--accent {tone_class}">
+<div class="info-card info-card--accent">
   <div class="loc-head">
     <strong class="loc-name">{html.escape(display)}</strong>
-    <span class="badge">{badge}</span>
+    <span class="badge {badge_class}">{badge}</span>
   </div>
   <p class="loc-coords">{loc.lat:.3f}, {loc.lon:.3f} (~110&nbsp;m precision)</p>
   <p class="info-card__hint">{html.escape(source_text)}</p>
@@ -261,10 +261,10 @@ def _current_location_html(
     legacy = _value_for(weather_state, DEFAULT_LOCATION_ENV).strip()
     if legacy:
         return f"""
-<div class="info-card info-card--accent info-card--warn">
+<div class="info-card info-card--accent">
   <div class="loc-head">
     <strong class="loc-name">{html.escape(legacy)}</strong>
-    <span class="badge">Legacy</span>
+    <span class="badge badge--warn">Legacy</span>
   </div>
   <p class="info-card__hint">Legacy place-name default. Save this page to
   store rounded coordinates for faster, more reliable bare weather
