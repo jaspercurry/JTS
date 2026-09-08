@@ -91,7 +91,7 @@ from .playback_route import (
     resolve_active_playback_device,
 )
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
-from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
+from .profile import LEVEL_MATCH_AXIS, declared_role_delays, snapshot_declares_single_branch
 from . import passive_profile as _passive
 from .revalidation import applied_profile_revalidation_satisfies_driver_target_proof
 from .startup_hold import release_staged_startup_hold
@@ -831,12 +831,10 @@ def _derive_corrections(
         if inverted and role in corrections:
             corrections[role]["inverted"] = True
             inverted_provenance[role] = PROVENANCE_MANUAL
-    for region in preset.crossover_regions:
-        if region.delay_ms is not None and region.delay_target_driver in corrections:
-            corrections[region.delay_target_driver]["delay_ms"] = max(
-                0.0, min(region.delay_ms, 20.0)
-            )
-            delay_provenance[region.delay_target_driver] = PROVENANCE_MANUAL
+    for role, delay_ms in declared_role_delays(preset).items():
+        if role in corrections:
+            corrections[role]["delay_ms"] = delay_ms
+            delay_provenance[role] = PROVENANCE_MANUAL
 
     drivers = crossover_preview.get("drivers")
     pinned_gain_roles: set[str] = set()

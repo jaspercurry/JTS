@@ -96,6 +96,15 @@ class ActiveSpeakerConfigError(ValueError):
     """Raised when an active-speaker preset or baseline is unsafe/invalid."""
 
 
+def declared_role_delays(preset: ActiveSpeakerPreset) -> dict[str, float]:
+    """Declared branch delays in milliseconds, after preset validation."""
+    return {
+        region.delay_target_driver: region.delay_ms
+        for region in preset.crossover_regions
+        if region.delay_ms is not None and region.delay_target_driver is not None
+    }
+
+
 def required_driver_roles(way_count: int) -> tuple[str, ...]:
     try:
         return DRIVER_ROLES_BY_WAY[int(way_count)]

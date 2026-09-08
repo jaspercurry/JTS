@@ -18,16 +18,27 @@ names would pin the test's spelling instead of the product's.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
 from typing import Sequence
 
 import pytest
+import yaml
 
 from jasper.active_speaker.commissioning_admission import (
     ActiveCommissioningAdmissionError,
     running_graph_fingerprint,
 )
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
-from jasper.camilla_config_contract import FilterSpec
+from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
+from jasper.active_speaker.measurement_emit import (
+    MeasurementGraphProfile,
+    MeasurementGraphRefused,
+    compile_tuning_graph,
+)
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.camilla_config_contract import FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_gain_filter
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.sound.profile import (
@@ -39,7 +50,11 @@ from jasper.sound.profile import (
     build_sound_filter_slots,
     build_sound_filters,
     sound_filter_slot_names,
+    load_profile,
+    save_profile,
 )
+from tests.test_active_speaker_audition import ACTIVE_PCM, LINEARIZATION, _applied_profile
+from tests.test_active_speaker_runtime_contract import _active_topology
 
 FLAT = SoundProfile()
 #: One household save: a bass lift on a Simple band, one advanced band taken
@@ -205,3 +220,119 @@ def test_the_exclusion_set_covers_every_name_the_emitter_can_produce():
 
     assert emitted, "the sweep emitted nothing — it would pass vacuously"
     assert emitted <= names
+
+
+@pytest.fixture
+def tuning_profile():
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_profile(topology)
+    preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
+    region = replace(preset.crossover_regions[0], delay_target_driver="woofer", delay_ms=0.4)
+    preset = replace(preset, crossover_regions=(region,))
+    applied["recomposition_snapshot"]["preset"] = preset.to_dict()
+    return MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        applied_profile=applied,
+    )
+
+
+@pytest.mark.parametrize("scope", ["base", "speaker_tune"])
+def test_tuning_layers_exclude_saved_household_processing(tuning_profile, tmp_path, scope):
+    preference_path = tmp_path / "sound.json"
+    save_profile(SAVED, preference_path)
+    saved_bytes = preference_path.read_bytes()
+    source = deepcopy(tuning_profile.applied_profile)
+    household, issues = recompose_applied_baseline_yaml(
+        tuning_profile.topology, applied_profile=source,
+        preference_filters=build_sound_filter_slots(load_profile(preference_path)),
+        room_peqs=[PeqFilter(freq=80.0, q=2.0, gain=3.0)],
+        output_trim_db=-2.0, bass_extension_profile=None,
+    )
+    assert household and not issues
+    graph = yaml.safe_load(compile_tuning_graph(tuning_profile, scope=scope))
+    clean, issues = recompose_applied_baseline_yaml(
+        tuning_profile.topology, applied_profile=source, bass_extension_profile=None,
+        drop_measured_correction=scope == "base",
+    )
+    assert not issues and graph == yaml.safe_load(clean)
+    assert graph != yaml.safe_load(household)
+    filters = graph["filters"]
+    assert bool(any("linearization" in name for name in filters)) == (scope == "speaker_tune")
+    assert bool(any(name.startswith("as_blend_") for name in filters)) == (scope == "speaker_tune")
+    assert filters["as_woofer_delay"]["parameters"]["delay"] == 0.4
+    assert filters["as_tweeter_baseline_gain"]["parameters"]["gain"] == -4.25
+    assert filters["as_tweeter_baseline_gain"]["parameters"]["inverted"] is True
+    assert graph["devices"]["volume_limit"] == 0.0
+    assert tuning_profile.applied_profile == source
+    assert preference_path.read_bytes() == saved_bytes
+
+
+def _trial_candidate(profile, *, trim=-3.0, gain=-2.0):
+    return MeasuredCrossoverCandidate(
+        program_id="trial", analysis={"source": "prescribed"},
+        source_preset=profile.preset,
+        role_attenuations_db={"woofer": 0.0, "tweeter": trim},
+        linearization={"woofer": {"filters": [
+            {"biquad_type": "Peaking", "freq": 420.0, "q": 3.0, "gain": gain},
+        ]}},
+        blend_correction=({"biquad_type": "Peaking", "freq": 1900.0, "q": 2.0, "gain": -1.0},),
+    )
+
+
+def test_candidate_compilation_carries_all_parts_and_its_own_identity(tuning_profile):
+    a = _trial_candidate(tuning_profile)
+    b = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
+    text_a = compile_tuning_graph(tuning_profile, candidate=a)
+    text_b = compile_tuning_graph(tuning_profile, candidate=b)
+    filters_a = yaml.safe_load(text_a)["filters"]
+    filters_b = yaml.safe_load(text_b)["filters"]
+    for filters, trim, gain in ((filters_a, -3.0, -2.0), (filters_b, -5.0, 4.0)):
+        assert filters["as_tweeter_baseline_gain"]["parameters"]["gain"] == trim
+        assert filters["as_woofer_linearization_peak_1"]["parameters"]["gain"] == gain
+        assert filters["as_blend_1"]["parameters"]["gain"] == -1.0
+        assert filters["as_woofer_delay"]["parameters"]["delay"] == 0.4
+        assert not set(filters) & sound_filter_slot_names()
+    assert filters_b["active_baseline_headroom"] != filters_a["active_baseline_headroom"]
+    assert running_graph_fingerprint(text_a) != running_graph_fingerprint(text_b)
+    assert a.fingerprint != b.fingerprint
+    assert tuning_profile.applied_profile["recomposition_snapshot"]["linearization"] == LINEARIZATION
+
+
+@pytest.mark.parametrize("problem, reason", [
+    ("topology", "measurement_profile_unavailable"),
+    ("crossover", "measurement_candidate_base_mismatch"),
+    ("unknown_role", "measurement_filters_invalid"),
+    ("malformed_filter", "measurement_filters_invalid"),
+])
+def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem, reason):
+    candidate = _trial_candidate(tuning_profile)
+    if problem == "topology":
+        tuning_profile.applied_profile["recomposition_snapshot"]["topology_fingerprint"] = "other"
+    elif problem == "crossover":
+        preset = candidate.source_preset
+        candidate = replace(candidate, source_preset=replace(
+            preset, crossover_regions=(replace(preset.crossover_regions[0], fc_hz=2300.0),),
+        ))
+    else:
+        candidate = replace(candidate, linearization={
+            "other" if problem == "unknown_role" else "woofer": {"filters": [
+                "broken" if problem == "malformed_filter" else
+                {"biquad_type": "Peaking", "freq": 420.0, "q": 3.0, "gain": -2.0},
+            ]},
+        })
+    with pytest.raises(MeasurementGraphRefused) as exc:
+        compile_tuning_graph(tuning_profile, candidate=candidate)
+    assert exc.value.reason == reason
+
+
+@pytest.mark.parametrize("scope", ["base", "speaker_tune"])
+@pytest.mark.parametrize("field, value", [
+    ("gain_db", "broken"), ("gain_db", True), ("gain_db", 1.0),
+    ("delay_ms", float("nan")), ("delay_ms", -1.0), ("delay_ms", 21.0),
+    ("inverted", "false"), ("inverted", None),
+])
+def test_saved_corrections_refuse_instead_of_becoming_defaults(tuning_profile, scope, field, value):
+    tuning_profile.applied_profile["recomposition_snapshot"]["corrections"]["tweeter"][field] = value
+    with pytest.raises(MeasurementGraphRefused) as exc:
+        compile_tuning_graph(tuning_profile, scope=scope)
+    assert exc.value.reason == "measurement_corrections_invalid"
