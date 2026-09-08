@@ -221,6 +221,8 @@ class LiveTurn(Interruptible, Protocol):
 
         An abandoned response must not reach a later turn. The adapter
         clears input or reopens the session before another turn can start.
+        Pending tool work is cancelled without waiting for its executor;
+        its results are discarded and its next actions cannot reach a later turn.
         """
         ...
 

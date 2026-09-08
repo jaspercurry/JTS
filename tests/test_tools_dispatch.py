@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
+import pytest
 
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from jasper.tools import (
     DEFAULT_TOOL_TIMEOUT_SEC,
     Tool,
@@ -211,6 +214,65 @@ async def test_timeout_returns_error_and_respects_per_tool_budget():
     out = await asyncio.wait_for(dispatch_tool(reg, "slow", {}), timeout=2)
     assert out == {"error": "slow timed out"}
     assert events == [("called", "slow"), ("completed", "slow")]
+
+
+@pytest.mark.parametrize("retirement", ["cancel", "timeout"])
+async def test_retired_executor_consumes_late_failure_without_repeating_observer(retirement):
+    entered = asyncio.Event()
+    finish = threading.Event()
+    loop = asyncio.get_running_loop()
+    failures, events = [], []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: failures.append(context))
+
+    def fail_later():
+        loop.call_soon_threadsafe(entered.set)
+        assert finish.wait(DEFAULT_SIGNAL_TIMEOUT_S)
+        raise RuntimeError("late executor failure")
+
+    @tool(timeout=0.01 if retirement == "timeout" else DEFAULT_SIGNAL_TIMEOUT_S)
+    async def slow() -> dict:
+        """Fail after the caller retires."""
+        return await asyncio.to_thread(fail_later)
+
+    @tool(timeout=0.01)
+    async def fast() -> dict:
+        """Never run after its queued deadline expires."""
+        raise AssertionError("expired queued executor started")
+
+    async def observe(stage, name):
+        events.append((stage, name))
+
+    registry = _registry(slow, fast)
+    registry.set_dispatch_observer(lambda: observe)
+    caller = asyncio.create_task(dispatch_tool(registry, "slow", {}))
+    try:
+        await wait_signalled(entered, "executor thread entered", producer=caller)
+        executor = registry._execution_task
+        if retirement == "cancel":
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+        else:
+            assert await caller == {"error": "slow timed out"}
+        expected = [("called", "slow")] + ([("completed", "slow")] if retirement == "timeout" else [])
+        assert events == expected
+        assert registry._execution_task is executor and not executor.done()
+        assert await asyncio.wait_for(
+            dispatch_tool(registry, "fast", {}), timeout=DEFAULT_SIGNAL_TIMEOUT_S,
+        ) == {"error": "fast timed out"}
+        expected += [("called", "fast"), ("completed", "fast")]
+        assert events == expected
+        assert registry._execution_task is executor and not executor.done()
+        finish.set()
+        await wait_until(lambda: registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        del executor
+        assert failures == []
+        assert events == expected
+    finally:
+        finish.set()
+        await wait_until(lambda: registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        loop.set_exception_handler(previous_handler)
 
 
 async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):

@@ -191,8 +191,6 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         self._response_id: str | None = None
         self._response_item_ids: set[str] = set()
         self._input_item_id: str | None = None
-        self._cancel_requested = False
-        self._tool_round_pending = False
         # Text transcript of the user audio / assistant audio streamed by
         # Realtime. Production still uses audio for interaction; the strings
         # are retained on the turn only so WakeLoop can write opt-in
@@ -334,6 +332,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         if self._released:
             return
         self._released = True
+        self._cancel_tools()
         elapsed_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
         self.drop_pending_audio()
         self._audio_q.put_nowait(None)
@@ -418,6 +417,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         if self._released or self._turn_lost or not self._committed or self._cancel_requested:
             return
         self._cancel_requested = True
+        self._cancel_tools()
         log_event(logger, "barge.cancel", reason=reason)
         if not self._server_turn_complete:
             if self._tool_round_pending:
@@ -535,6 +535,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 self._usage_breakdown["output_token_details"][k] += v
 
     async def _on_response_done(self, usage: dict | None) -> None:
+        self._cancel_tools()
         self._note_activity()
         self._server_turn_complete = True
         self._record_usage(usage)
@@ -733,7 +734,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         )
 
     def _can_respond(self, turn: OpenAIRealtimeTurn) -> bool:
-        return self._owns_turn(turn) and not turn._cancel_requested
+        return self._owns_turn(turn) and not turn._cancel_requested and not turn._server_turn_complete
 
     async def _send_event(self, event: dict, *, turn: OpenAIRealtimeTurn | None = None) -> bool:
         async with self._send_lock:
@@ -1017,6 +1018,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
         conn, cm = self._conn, self._conn_cm
+        if self._active_turn is not None:
+            self._active_turn._cancel_tools()
         self._conn = self._conn_cm = None
         self._connected_event.clear()
         self._pending_commit = self._pending_response = None
@@ -1202,7 +1205,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if not function_calls or turn._cancel_requested:
             await turn._on_response_done(None)
             return
-        turn._note_activity()
+        turn._start_tool_round(lambda: self._run_tool_round(function_calls, turn))
+
+    async def _run_tool_round(self, function_calls: list, turn: OpenAIRealtimeTurn) -> None:
         for fc in function_calls:
             if not self._can_respond(turn):
                 return
@@ -1216,12 +1221,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 turn._on_connection_lost()
 
     async def _dispatch_function_call(self, fc, turn: OpenAIRealtimeTurn) -> bool:
-        """Run one function_call from a response.done's output[]:
-        invoke the registered tool, send the result as a
-        function_call_output. The caller in `_handle_response_done`
-        sends a single ``response.create`` after all function_calls in
-        the round have been dispatched (NOT once per call — that would
-        produce overlapping response.creates which the server rejects)."""
+        """Dispatch one call and send its output; `_run_tool_round` requests the next response."""
         assert self._registry is not None
         name = _event_field(fc, "name") or ""
         call_id = _event_field(fc, "call_id") or ""

@@ -13,12 +13,14 @@ from typing import Any
 
 import pytest
 
+
 from jasper.voice._base import close_code_and_reason
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     request_planned_reopen,
     run_reconnect_with_backoff,
 )
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
@@ -313,24 +315,36 @@ async def test_successful_connect_and_turn_cycle():
     assert conn._state is ConnectionState.CLOSED
 
 
-async def test_send_text_context_adds_uncompleted_client_content():
-    """One-shot daemon instructions should enter the turn as text context
-    without ending the turn or asking Gemini to respond."""
+@pytest.mark.parametrize("model", [
+    "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-preview-12-2025",
+])
+async def test_confirmation_context_uses_manual_realtime_input_after_a_completed_turn(model):
     conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "system")
+    conn._model = model
+    await conn.start(ToolRegistry(), "system")
     try:
         sess = factory.sessions[0]
+        previous = await conn.acquire_turn()
+        await previous.end_input()
+        sess.feed(types.LiveServerMessage(server_content=types.LiveServerContent(turn_complete=True)))
+        await _wait_until(previous.server_turn_complete)
+        await previous.release()
+        sess.sent_realtime.clear()
+
         turn = await conn.acquire_turn()
+        context = "Answer yes or no about research job abc."
+        await turn.send_text_context(context)
+        await turn.send_audio(b"\x00\x00")
 
-        await turn.send_text_context("Answer yes or no about research job abc.")
-
-        assert len(sess.sent_client_content) == 1
-        sent = sess.sent_client_content[0]
-        assert sent["turn_complete"] is False
-        content = sent["turns"]
-        assert content.role == "user"
-        assert content.parts[0].text == "Answer yes or no about research job abc."
+        assert len(factory.sessions) == 1
+        assert sess.sent_client_content == []
+        assert [list(message) for message in sess.sent_realtime] == [["activity_start"], ["text"], ["audio"]]
+        assert sess.sent_realtime[1] == {"text": context}
+        await turn.end_input()
+        await turn.end_input()
+        assert [list(message) for message in sess.sent_realtime] == [
+            ["activity_start"], ["text"], ["audio"], ["activity_end"],
+        ]
         await turn.release()
     finally:
         await conn.stop()
@@ -1450,7 +1464,7 @@ async def test_sdk_setup_acknowledgement_is_required(accepted):
     await conn.stop()
 
 
-@pytest.mark.parametrize("boundary", ["release", "reconnect"])
+@pytest.mark.parametrize("boundary", ["release", "reconnect", "interrupt", "complete", "close", "cancel", "overlap"])
 async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
     conn, factory = _make_conn()
     entered, resume = asyncio.Event(), asyncio.Event()
@@ -1462,35 +1476,61 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
         """Run an action."""
         calls.append(True)
         entered.set()
-        await resume.wait()
+        try:
+            await resume.wait()
+        except asyncio.CancelledError:
+            await resume.wait()
         return {"ok": True}
 
     registry.register(action)
     await conn.start(registry, "")
-    dispatch = None
     try:
         old = await conn.acquire_turn()
+        await old.end_input()
         old_session = factory.sessions[0]
         old_session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="old-context")))
-        await _wait_until(lambda: conn._resumption_handle == "old-context")
-        dispatch = asyncio.create_task(old._on_response(_Resp(
+        await wait_until(lambda: conn._resumption_handle == "old-context", timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        old_session.feed(types.LiveServerMessage(
             tool_call=types.LiveServerToolCall(function_calls=[
                 types.FunctionCall(id=f"call_{i}", name="action", args={}) for i in range(2)
             ]),
             usage_metadata=types.UsageMetadata(prompt_token_count=100, response_token_count=50),
-        )))
-        await asyncio.wait_for(entered.wait(), 1)
-        if boundary == "release":
-            await old.release()
-        else:
+        ))
+        await wait_signalled(entered, "tool executor entered")
+        if boundary == "reconnect":
             old_session.feed_error(ConnectionError("disconnected"))
-            await _wait_until(lambda: len(factory.sessions) == 2 and conn._connected_event.is_set())
+            await wait_until(lambda: old.turn_lost(), timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        elif boundary == "overlap":
+            old_session.feed(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
+                function_calls=[types.FunctionCall(id="overlap", name="action", args={})],
+            )))
+            await wait_until(lambda: old.turn_lost(), timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        elif boundary == "close":
+            await asyncio.wait_for(conn.stop(), DEFAULT_SIGNAL_TIMEOUT_S)
+            assert old.turn_lost()
+            resume.set()
+            await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            assert calls == [True]
+            assert old_session.sent_tool_responses == []
+            return
+        elif boundary in ("interrupt", "complete"):
+            old_session.feed(types.LiveServerMessage(server_content=types.LiveServerContent(
+                interrupted=boundary == "interrupt", turn_complete=boundary == "complete",
+            )))
+            if boundary == "interrupt":
+                await asyncio.wait_for(old.wait_for_interrupt(), DEFAULT_SIGNAL_TIMEOUT_S)
+            else:
+                await wait_until(old.server_turn_complete, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        elif boundary == "cancel":
+            await asyncio.wait_for(old.cancel_response("barge_in"), DEFAULT_SIGNAL_TIMEOUT_S)
+            await old.cancel_response("again")
+        await asyncio.wait_for(old.release(), DEFAULT_SIGNAL_TIMEOUT_S)
         fresh = await conn.acquire_turn()
         assert factory.configs[-1].session_resumption.handle is None
         capture_before = fresh.capture()
         usage_before = dict(conn._cumulative_usage)
         resume.set()
-        await dispatch
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert calls == [True]
         assert all(not session.sent_tool_responses for session in factory.sessions)
         assert fresh.capture() == capture_before
@@ -1498,9 +1538,8 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
         assert not fresh.server_turn_complete()
     finally:
         resume.set()
-        if dispatch is not None:
-            await dispatch
         await conn.stop()
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
 @pytest.mark.parametrize("send", ["audio", "text", "end_input", "cancel"])

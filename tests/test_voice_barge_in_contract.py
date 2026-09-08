@@ -1,20 +1,30 @@
 """Provider turn conformance and absent-response tolerance."""
 from __future__ import annotations
 
-import pytest
+import asyncio
+import json
+import threading
 
+import pytest
+from google.genai import types
+from openai.types.realtime import ResponseDoneEvent
+
+from jasper.tools import ToolRegistry, tool
 from jasper.voice.catalog import (
     PROVIDERS,
     InterruptReconcile,
     resolve_interrupt_reconcile,
 )
-from jasper.voice.gemini_session import GeminiLiveTurn
+from jasper.voice.gemini_session import GeminiLiveConnection, GeminiLiveTurn
 from jasper.voice.grok_session import GrokRealtimeConnection
 from jasper.voice.openai_session import (
     OpenAIRealtimeConnection,
     OpenAIRealtimeTurn,
 )
 from jasper.voice.session import Interruptible, LiveTurn
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
+from tests.test_gemini_connection import _FakeConnect
+from tests.test_openai_session import _FakeConnectFactory
 
 
 # The turn class each catalog provider drives. Grok defines no turn class of
@@ -122,3 +132,139 @@ def test_grok_inherits_openai_seam():
         GrokRealtimeConnection.acquire_turn
         is OpenAIRealtimeConnection.acquire_turn
     )
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection, GeminiLiveConnection])
+@pytest.mark.parametrize("boundary,result_fails", [
+    ("cancel", False), ("cancel", True), ("timeout", False), ("close", False), ("other_connection", False),
+])
+async def test_repeated_turns_bound_cancelled_tool_work_and_preserve_action_order(conn_cls, boundary, result_fails):
+    gemini = conn_cls is GeminiLiveConnection
+    factory = _FakeConnect() if gemini else _FakeConnectFactory()
+    conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory, backoff_schedule=(0.0,))
+    entered, completed = asyncio.Event(), asyncio.Event()
+    finish_thread = threading.Event()
+    loop = asyncio.get_running_loop()
+    calls = []
+    registry = ToolRegistry()
+    connections = [conn]
+    factories = [factory]
+
+    def threaded_action():
+        loop.call_soon_threadsafe(entered.set)
+        assert finish_thread.wait(DEFAULT_SIGNAL_TIMEOUT_S)
+        calls.append(0)
+        loop.call_soon_threadsafe(completed.set)
+
+    @tool(timeout=0.01 if boundary == "timeout" else DEFAULT_SIGNAL_TIMEOUT_S)
+    async def first_action(index: int) -> dict:
+        """Run the old action on a thread."""
+        await asyncio.to_thread(threaded_action)
+        return {"index": index}
+
+    @tool()
+    async def action(index: int) -> dict:
+        """Record an ordered action."""
+        calls.append(index)
+        return {"index": index}
+
+    async def submit(turn, indices):
+        await turn.end_input()
+        if gemini:
+            factory.sessions[-1].feed(types.LiveServerMessage(tool_call=types.LiveServerToolCall(
+                function_calls=[types.FunctionCall(id=f"call_{i}", name="first_action" if i == 0 else "action", args={"index": i}) for i in indices],
+            )))
+        else:
+            await wait_until(lambda: turn._response_id is not None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            factory.conns[-1]._inbox.put_nowait(ResponseDoneEvent.model_validate({
+                "type": "response.done", "event_id": f"done_{indices[0]}", "response": {
+                    "id": turn._response_id, "status": "completed", "output": [
+                        {"type": "function_call", "call_id": f"call_{i}", "name": "first_action" if i == 0 else "action", "arguments": json.dumps({"index": i})}
+                        for i in indices
+                    ],
+                },
+            }))
+        await wait_until(lambda: turn._tool_task is not None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+
+    registry.register(action)
+    registry.register(first_action)
+    await conn.start(registry, "")
+    try:
+        old = await conn.acquire_turn()
+        await submit(old, [0])
+        await wait_signalled(entered, "first tool running")
+        executor = registry._execution_task
+        if boundary == "timeout":
+            await wait_until(lambda: old._tool_task.done(), timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        await old.cancel_response("barge_in")
+        await old.release()
+        if boundary == "other_connection":
+            factory = _FakeConnect() if gemini else _FakeConnectFactory()
+            conn = conn_cls(api_key="fake", model="fake-model", connect_factory=factory, backoff_schedule=(0.0,))
+            connections.append(conn)
+            factories.append(factory)
+            await conn.start(registry, "")
+        for index in range(1, 5):
+            turn = await conn.acquire_turn()
+            await submit(turn, [index])
+            for _ in range(3):
+                await turn.cancel_response("barge_in")
+            await turn.release()
+            await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            assert calls == []
+            assert registry._execution_task is executor and not executor.done()
+
+        latest = await conn.acquire_turn()
+        if result_fails:
+            if gemini:
+                async def fail_result(**kwargs):
+                    raise ConnectionError("result send failed")
+                factory.sessions[-1].send_tool_response = fail_result
+            else:
+                send = factory.conns[-1].send
+
+                async def fail_result(event):
+                    if event.get("item", {}).get("type") == "function_call_output":
+                        raise ConnectionError("result send failed")
+                    await send(event)
+                factory.conns[-1].send = fail_result
+        await submit(latest, [5, 6])
+        assert len(conn._tool_tasks) == 1
+        assert not latest.server_turn_complete()
+        if boundary == "close":
+            await asyncio.wait_for(conn.stop(), DEFAULT_SIGNAL_TIMEOUT_S)
+            assert calls == []
+            assert registry._execution_task is not None
+            finish_thread.set()
+            await wait_signalled(completed, "thread completed after connection close")
+            await wait_until(lambda: registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            assert calls == [0]
+            return
+        finish_thread.set()
+        await wait_signalled(completed, "old thread completed")
+        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        assert registry._execution_task is None
+        assert calls == ([0, 5] if result_fails and not gemini else [0, 5, 6])
+        assert not latest.server_turn_complete()
+        assert latest.turn_lost() is result_fails
+        if gemini:
+            if boundary != "timeout":
+                assert all(not session.sent_tool_responses for f in factories for session in f.sessions if session is not factory.sessions[-1])
+            results = factory.sessions[-1].sent_tool_responses
+            assert [[r.id for r in batch] for batch in results] == ([] if result_fails else [["call_5", "call_6"]])
+        else:
+            results = [
+                e["item"]["call_id"] for f in factories for wire in f.conns for e in wire.sent
+                if e.get("item", {}).get("type") == "function_call_output" and e["item"]["call_id"] != "call_0"
+            ]
+            assert results == ([] if result_fails else ["call_5", "call_6"])
+            assert sum(e["type"] == "response.create" for e in factory.conns[-1].sent) == (1 if result_fails else 2)
+    finally:
+        finish_thread.set()
+        await wait_signalled(completed, "release test thread")
+        for connection in connections:
+            await connection.stop()
+        await wait_until(
+            lambda: all(not connection._tool_tasks for connection in connections) and registry._execution_task is None,
+            timeout=DEFAULT_SIGNAL_TIMEOUT_S,
+        )

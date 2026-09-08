@@ -23,6 +23,7 @@ import json
 import logging
 
 import pytest
+from openai.types.realtime import ResponseDoneEvent
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base
@@ -39,6 +40,7 @@ from jasper.voice.openai_session import (
     _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests._live_turn_fake import drain_audio_chunks
 from tests._log_events import event_fields, event_records
 
@@ -2801,6 +2803,8 @@ async def test_response_status_controls_completion_and_tool_execution(conn_cls, 
         }}
         await conn._dispatch_event("response.done", event)
         await conn._dispatch_event("response.done", event)
+        if status == "completed" and with_tools:
+            await _wait_until(lambda: any(e["type"] == "response.create" for e in wire.sent))
         assert calls == ([True] if status == "completed" and with_tools else [])
         assert turn.server_turn_complete() is (status == "completed" and not with_tools)
         assert turn.turn_lost() is (status in ("failed", "cancelled", "incomplete"))
@@ -2827,7 +2831,8 @@ async def test_requested_cancellation_is_terminal_without_a_failure():
 
 
 @pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
-async def test_release_during_tool_await_discards_results_and_next_tools(conn_cls):
+@pytest.mark.parametrize("boundary", ["release", "disconnect", "close", "cancel"])
+async def test_pending_tool_cannot_block_or_cross_a_turn_boundary(conn_cls, boundary):
     factory = _FakeConnectFactory()
     conn = conn_cls(api_key="fake", connect_factory=factory, backoff_schedule=(0.0,))
     registry = ToolRegistry()
@@ -2839,30 +2844,47 @@ async def test_release_during_tool_await_discards_results_and_next_tools(conn_cl
         """Run an action."""
         calls.append(True)
         entered.set()
-        await resume.wait()
+        try:
+            await resume.wait()
+        except asyncio.CancelledError:
+            await resume.wait()
         return {"ok": True}
 
     registry.register(action)
     await conn.start(registry, "")
-    dispatch = None
     try:
         wire = factory.conns[0]
         old = await conn.acquire_turn()
         await _begin_response(conn, wire)
-        dispatch = asyncio.create_task(conn._dispatch_event("response.done", {"response": {
+        wire._inbox.put_nowait(ResponseDoneEvent.model_validate({"type": "response.done", "event_id": "done_1", "response": {
             "id": "resp_1", "status": "completed", "output": [
                 {"type": "function_call", "call_id": f"call_{i}", "name": "action", "arguments": "{}"}
                 for i in range(2)
             ],
         }}))
-        await asyncio.wait_for(entered.wait(), 1)
-        await old.release()
+        await wait_signalled(entered, "tool executor entered")
+        if boundary == "disconnect":
+            wire.feed_error(ConnectionError("disconnected"))
+            await wait_until(lambda: old.turn_lost(), timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        elif boundary == "close":
+            await asyncio.wait_for(conn.stop(), DEFAULT_SIGNAL_TIMEOUT_S)
+            assert old.turn_lost()
+            resume.set()
+            await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            assert calls == [True]
+            assert not any(e.get("item", {}).get("type") == "function_call_output" for e in wire.sent)
+            return
+        elif boundary == "cancel":
+            await asyncio.wait_for(old.cancel_response("barge_in"), DEFAULT_SIGNAL_TIMEOUT_S)
+            await old.cancel_response("again")
+            assert old.server_turn_complete()
+        await asyncio.wait_for(old.release(), DEFAULT_SIGNAL_TIMEOUT_S)
         fresh = await conn.acquire_turn()
         fresh_wire = factory.conns[-1]
         assert fresh_wire is not wire
         baseline = list(fresh_wire.sent)
         resume.set()
-        await dispatch
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert calls == [True]
         assert fresh_wire.sent == baseline
         assert not any(e.get("item", {}).get("type") == "function_call_output" for e in wire.sent)
@@ -2870,9 +2892,8 @@ async def test_release_during_tool_await_discards_results_and_next_tools(conn_cl
         assert not fresh.server_turn_complete()
     finally:
         resume.set()
-        if dispatch is not None:
-            await dispatch
         await conn.stop()
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
 @pytest.mark.parametrize("blocked_event", ["input_audio_buffer.append", "input_audio_buffer.commit"])

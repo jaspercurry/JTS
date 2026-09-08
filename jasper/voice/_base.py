@@ -124,6 +124,36 @@ class BaseLiveTurn:
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
+        self._cancel_requested = False
+        self._tool_task: asyncio.Task[None] | None = None
+        self._tool_round_pending = False
+
+    def _start_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
+        if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
+            return
+        if self._tool_task is not None and not self._tool_task.done():
+            raise RuntimeError("provider started overlapping blocking tool rounds")
+        self._note_activity()
+        task = asyncio.create_task(self._run_tool_round(run))
+        self._tool_task = task
+        self._conn._tool_tasks.add(task)
+        task.add_done_callback(self._conn._tool_tasks.discard)
+
+    async def _run_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
+        try:
+            if self._conn._active_turn is self and not (
+                self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete
+            ):
+                await run()
+        except Exception as exc:  # noqa: BLE001
+            if self._conn._active_turn is self and not (self._released or self._turn_lost):
+                self._on_connection_lost()
+                self._conn._on_receive_loop_error(exc)
+
+    def _cancel_tools(self) -> None:
+        task = self._tool_task
+        if task is not None and not task.done() and not task.cancelling():
+            task.cancel()
 
     async def audio_out(self) -> AsyncIterator[bytes]:
         async for chunk in self.audio_out_chunks():
@@ -234,6 +264,7 @@ class BaseLiveTurn:
 
     def _on_connection_lost(self) -> None:
         """The WebSocket dropped while this turn was active."""
+        self._cancel_tools()
         if self._released or self._turn_lost:
             return
         self._turn_lost = True
@@ -304,6 +335,7 @@ class BaseLiveConnection:
         self._last_turn_end_at: float = 0.0
 
         self._receive_task: asyncio.Task | None = None
+        self._tool_tasks: set[asyncio.Task[None]] = set()
         self._proactive_watchdog_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -346,6 +378,8 @@ class BaseLiveConnection:
         if self._state is ConnectionState.CLOSED:
             return
         self._stopping.set()
+        if self._active_turn is not None:
+            self._active_turn._on_connection_lost()
         # Cancel every background task first so none of them fights the
         # teardown, then collect them.
         tasks = (
@@ -362,9 +396,7 @@ class BaseLiveConnection:
         self._proactive_watchdog_task = None
         self._receive_task = None
         await self._teardown_session()
-        if self._active_turn is not None:
-            self._active_turn._on_connection_lost()
-            self._active_turn = None
+        self._active_turn = None
         async with self._state_lock:
             self._set_state(ConnectionState.CLOSED)
 
