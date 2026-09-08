@@ -62,11 +62,7 @@ class RepeatProgress:
     accepted: int
     target: int
     failure: Mapping[str, Any]
-    # The ledger's terminal "completed" status, distinct from `failure`: a
-    # repeat set can complete every bounded attempt and still produce no USABLE
-    # acoustic evidence. Once completed no further repeat can be reserved
-    # (repeat_admission.reserve() raises), so a caller MUST stop offering
-    # "repeat N+1" rather than loop on an action that fails at reservation.
+    # A completed repeat set can still have insufficient acoustic evidence.
     completed: bool
     # The most recent per-attempt result, carrying the accepted median's own
     # SNR evidence even when that attempt was `accepted: True` — repeat
