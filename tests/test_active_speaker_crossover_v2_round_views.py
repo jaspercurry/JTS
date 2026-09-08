@@ -520,7 +520,7 @@ def _bank_verify_measured(
         (freqs_hz, measured_db, np.zeros_like(np.asarray(measured_db, dtype=float)))
     )
     path = round_dir / "state.json"
-    path.write_text(json.dumps({"verify_priors": {"verify_measured": record}}))
+    _write_state(round_dir, {"verify_priors": {"verify_measured": record}})
     return path
 
 
@@ -1880,7 +1880,10 @@ def test_the_cli_entry_verb_exits_0_when_there_is_nothing_to_grade(tmp_path):
 
 
 def _write_state(round_dir: Path, payload: dict[str, Any]) -> None:
-    (round_dir / "state.json").write_text(json.dumps(payload))
+    bundle = round_inputs_mod.round_inputs(round_dir).session_dir
+    capture, _ = round_inputs_mod.round_artifact_dir(bundle)
+    assert capture is not None
+    (round_dir / "state.json").write_text(json.dumps({"session_id": capture.name, **payload}))
 
 
 def test_the_entry_grade_attributes_the_round_and_its_ordinal_epoch(tmp_path):
