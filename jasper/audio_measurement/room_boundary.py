@@ -75,9 +75,8 @@ floor — but the two layers' deliberate overlap can narrow, and on a room whose
 gate tops out at 7 ms it closes: the trusted floor is 357.14 Hz against a
 350 Hz room ceiling, so 350-357 Hz is owned by neither layer. That gap is
 disclosed, not introduced: the gate never had authority at 350 Hz in such a
-room, and grading there was the thing #2551 stopped. ADR-0256 answers the
-question that gap raised: the room ceiling IS the applied tune's trusted
-floor, clamped (:func:`room_ceiling_hz`), so the gap closes by construction.
+room, and grading there was the thing #2551 stopped. ADR-0256 closes that
+gap by construction (the paragraph at the end of this docstring).
 
 What is NOT owned here
 ----------------------
