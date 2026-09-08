@@ -15,8 +15,8 @@
 //! It also owns the shared K-weighted assistant loudness policy used by
 //! fan-in and outputd, and the versioned on-disk record that carries a
 //! learned assistant reference across restarts ([`assistant_reference`]).
-//! Queueing policy, epochs, metrics, the per-daemon
-//! playout LEDGERS behind the flush-ack — and the VALUES they report
+//! Queue capacity and the pending-frame budget, epochs, metrics, the
+//! per-daemon playout LEDGERS behind the flush-ack — and the VALUES they report
 //! (fan-in's pre-DSP mix-commit estimate vs outputd's DAC-true one) — and
 //! final mixing engines stay per-daemon; they may legitimately diverge
 //! without breaking compatibility. Wire vocabulary may not: that means the
@@ -30,6 +30,7 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -953,6 +954,75 @@ where
     Ok(())
 }
 
+/// One command a reader thread took off the wire, stamped with the flush
+/// epoch current when it was read. Consumers gate on that stamp to discard
+/// what a later flush superseded.
+#[derive(Debug)]
+pub struct QueuedTtsCommand {
+    pub epoch: u64,
+    pub command: TtsCommand,
+}
+
+/// Hand one command to a daemon's playout queue.
+///
+/// AUDIO that finds the queue full is DROPPED and counted — late speech is
+/// worse than lost speech, and a reader thread parked on a send cannot read
+/// the FLUSH that ends the turn. Every other verb waits instead: losing a
+/// `SEGMENT_END` or a `PROGRAM_DUCK_OFF` corrupts consumer state that no
+/// later command repairs. Only the hand-off rule lives here; the queue's
+/// capacity and any pending-frame budget stay with the daemon that owns the
+/// consumer. See ADR-0254.
+///
+/// `daemon` and `log` name the owner and journal at its level, exactly as
+/// [`serve`] takes them. False only when the consumer is gone.
+pub fn try_enqueue_command(
+    daemon: &str,
+    tx: &SyncSender<QueuedTtsCommand>,
+    queued: QueuedTtsCommand,
+    counters: &TtsServerCounters,
+    log: impl Fn(String),
+) -> bool {
+    if !queued.command.is_audio() {
+        return enqueue_reliable_command(daemon, tx, queued, log);
+    }
+    match tx.try_send(queued) {
+        Ok(()) => true,
+        Err(TrySendError::Full(queued)) => {
+            let frames = queued.command.audio_frames();
+            counters.mark_dropped_audio(frames);
+            log(format!(
+                "event={daemon}.tts_command_dropped reason=queue_full command=audio \
+                 epoch={} frames={frames}",
+                queued.epoch
+            ));
+            true
+        }
+        Err(TrySendError::Disconnected(_)) => false,
+    }
+}
+
+/// Wait for room, journaling the squeeze: a consumer that has stopped
+/// draining shows up here before the turn stalls on it.
+fn enqueue_reliable_command(
+    daemon: &str,
+    tx: &SyncSender<QueuedTtsCommand>,
+    queued: QueuedTtsCommand,
+    log: impl Fn(String),
+) -> bool {
+    match tx.try_send(queued) {
+        Ok(()) => true,
+        Err(TrySendError::Full(queued)) => {
+            log(format!(
+                "event={daemon}.tts_command_backpressure reason=queue_full command={} epoch={}",
+                command_name(&queued.command),
+                queued.epoch
+            ));
+            tx.send(queued).is_ok()
+        }
+        Err(TrySendError::Disconnected(_)) => false,
+    }
+}
+
 fn validate_token(value: &str, field: &str) -> io::Result<()> {
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(io::Error::new(
@@ -1567,5 +1637,101 @@ mod tests {
         assert_eq!(slots.rejected(), 1, "readmission counted as a refusal");
         drop(third);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The hand-off rule both daemons share: a full queue SHEDS audio at
+    /// either wire width, counts the command and its frames together, and
+    /// leaves the connection alive. Blocking here would stall the reader
+    /// thread that has to read the FLUSH ending the turn.
+    #[test]
+    fn a_full_queue_sheds_audio_and_counts_it() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let counters = TtsServerCounters::default();
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let log = |line: String| log_tx.send(line).unwrap();
+
+        let queue = |epoch, command| {
+            try_enqueue_command(
+                "test",
+                &tx,
+                QueuedTtsCommand { epoch, command },
+                &counters,
+                log,
+            )
+        };
+        assert!(queue(1, TtsCommand::Audio(vec![0; 8])), "the only slot");
+        assert!(
+            queue(2, TtsCommand::AudioWide(vec![0; 12])),
+            "a shed frame must not close the connection"
+        );
+
+        assert_eq!(counters.dropped_commands(), 1);
+        assert_eq!(
+            counters.dropped_audio_frames(),
+            6,
+            "12 samples / 2 channels"
+        );
+        let dropped = log_rx.try_recv().expect("the drop went unjournaled");
+        assert!(
+            dropped.contains("event=test.tts_command_dropped")
+                && dropped.contains("epoch=2")
+                && dropped.contains("frames=6"),
+            "unexpected log line: {dropped}"
+        );
+
+        assert_eq!(rx.try_recv().unwrap().epoch, 1);
+        assert!(rx.try_recv().is_err(), "the shed command was queued anyway");
+    }
+
+    /// A control verb never drops: the reader waits for the consumer to make
+    /// room, because losing a `SEGMENT_END` or a `PROGRAM_DUCK_OFF` corrupts
+    /// state that no later command repairs.
+    #[test]
+    fn a_control_verb_waits_for_room_instead_of_dropping() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let counters = TtsServerCounters::default();
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![0; 8]),
+        })
+        .unwrap();
+
+        let sender = {
+            let counters = counters.clone();
+            thread::spawn(move || {
+                try_enqueue_command(
+                    "test",
+                    &tx,
+                    QueuedTtsCommand {
+                        epoch: 0,
+                        command: TtsCommand::ProgramDuckOff,
+                    },
+                    &counters,
+                    |line| log_tx.send(line).unwrap(),
+                )
+            })
+        };
+
+        let squeezed = log_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            squeezed.contains("event=test.tts_command_backpressure")
+                && squeezed.contains("command=program_duck_off"),
+            "unexpected log line: {squeezed}"
+        );
+
+        // Freeing the slot is the ONLY way the verb can arrive; had it been
+        // shed like audio, this second read would time out.
+        assert!(rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .command
+            .is_audio());
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap().command,
+            TtsCommand::ProgramDuckOff
+        );
+        assert!(sender.join().unwrap(), "a landed command reported failure");
+        assert_eq!(counters.dropped_commands(), 0, "control counted as a drop");
     }
 }
