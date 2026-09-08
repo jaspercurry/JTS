@@ -2763,6 +2763,26 @@ async def _busctl_set_property(
     return True
 
 
+async def env_canonical_target_db() -> float:
+    """Read current household intent through the active source coordinator."""
+    from jasper.camilla import primary_controller
+    from jasper import librespot_state
+    from jasper.renderer import RendererClient
+
+    coord = VolumeCoordinator(
+        camilla=primary_controller(),
+        persistence=VolumePersistence(volume_state_path()),
+        backend=RendererClient(
+            librespot_state_path=librespot_state.configured_path(),
+        ),
+    )
+    try:
+        coord.load_persisted_level()
+        return await coord.get_camilla_target_db()
+    finally:
+        await coord.aclose()
+
+
 def install_env_canonical_target_provider() -> None:
     """Register this process's canonical main_volume target AND its fader owner.
 
@@ -2800,24 +2820,7 @@ def install_env_canonical_target_provider() -> None:
 
     from .volume_owner import install_volume_owner
 
-    async def canonical_target_db() -> float:
-        from jasper import librespot_state
-        from jasper.renderer import RendererClient
-
-        coord = VolumeCoordinator(
-            camilla=primary_controller(),
-            persistence=VolumePersistence(volume_state_path()),
-            backend=RendererClient(
-                librespot_state_path=librespot_state.configured_path(),
-            ),
-        )
-        try:
-            coord.load_persisted_level()
-            return await coord.get_camilla_target_db()
-        finally:
-            await coord.aclose()
-
-    set_canonical_target_db_provider(canonical_target_db)
+    set_canonical_target_db_provider(env_canonical_target_db)
 
     # Bound with best_effort=True: the owner's doors must report failure, not
     # raise it (``volume_latch.FADER_IO_ERRORS`` states that contract, and

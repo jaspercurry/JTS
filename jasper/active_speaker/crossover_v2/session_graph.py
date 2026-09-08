@@ -7,18 +7,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
+import yaml
+
+from jasper.active_speaker.commissioning_admission import parse_running_graph
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from .measure_spec import GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
 
 logger = logging.getLogger(__name__)
+_TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
 
-__all__ = ["MeasurementSessionGraph", "SessionGraphError"]
+__all__ = ["MeasurementSessionGraph", "SessionGraphError", "temporary_graph_anchor"]
 
 #: ``(inverted_roles, measurement_delays_us, level_trims_db) -> yaml``. The
 #: three axes of the measurement VARIANT: each makes a different graph with a
@@ -51,6 +57,41 @@ def _fingerprint(yaml_text: str) -> str:
     return hashlib.sha256(yaml_text.encode("utf-8")).hexdigest()[:16]
 
 
+def _graph_body_fingerprint(graph: Mapping[str, Any]) -> str:
+    return json_fingerprint({
+        key: value for key, value in graph.items() if key != "description"
+    })
+
+
+async def temporary_graph_anchor(cam: Any, live_yaml: str | None) -> Path | None:
+    """Recognize a scoped measurement only with its unchanged graph and anchor."""
+    if not live_yaml or _TEMPORARY_GRAPH_DESCRIPTION not in live_yaml:
+        return None
+    graph = parse_running_graph(live_yaml)
+    description = graph.get("description")
+    if not isinstance(description, str) or not description.startswith(_TEMPORARY_GRAPH_DESCRIPTION):
+        return None
+    try:
+        held = json.loads(description.removeprefix(_TEMPORARY_GRAPH_DESCRIPTION))
+    except ValueError:
+        return None
+    if (
+        not isinstance(held, dict)
+        or held.get("scope") not in GRAPH_SCOPES
+        or held.get("scope") == GRAPH_SCOPE_DRIVERS
+        or not isinstance(held.get("anchor_path"), str)
+        or not held["anchor_path"]
+        or held.get("graph_sha256") != _graph_body_fingerprint(graph)
+    ):
+        return None
+    if await cam.get_config_file_path(best_effort=False) != held["anchor_path"]:
+        return None
+    anchor = Path(held["anchor_path"])
+    if hashlib.sha256(anchor.read_bytes()).hexdigest() != held.get("anchor_sha256"):
+        return None
+    return anchor
+
+
 class MeasurementSessionGraph:
     """The measure stage's graph: installed once, proven per stimulus, put back.
 
@@ -76,6 +117,7 @@ class MeasurementSessionGraph:
         self._confirm_live = confirm_live
         self._yaml: dict[_VariantKey, str] = {}
         self._installed_yaml: str | None = None
+        self._submitted_yaml: dict[str, str] = {}
         self._entry_config_path: str | None = None
         self._entry_yaml: str | None = None
         self._entry_scope_fingerprint: str | None = None
@@ -146,7 +188,7 @@ class MeasurementSessionGraph:
     def installed_graph_yaml(self) -> str:
         if self._installed_yaml is None:
             raise SessionGraphError("no measurement graph is installed")
-        return self._installed_yaml
+        return self._submitted_yaml.get(self._installed_yaml, self._installed_yaml)
 
     async def install(
         self,
@@ -345,6 +387,7 @@ class MeasurementSessionGraph:
         self._entry_config_path = None
         self._entry_yaml = None
         self._installed_yaml = None
+        self._submitted_yaml.clear()
         log_event(
             logger,
             "active_speaker.session_graph",
@@ -362,15 +405,32 @@ class MeasurementSessionGraph:
         would measure the next stimulus through a graph nobody proved.
         """
         try:
-            await self._confirm_live(cam, yaml_text)
+            await self._confirm_live(cam, self._submitted_yaml.get(yaml_text, yaml_text))
         except (CamillaUnavailable, OSError, RuntimeError, TimeoutError, ValueError):
             return False
         return True
 
     async def _load(self, cam: Any, yaml_text: str) -> None:
+        submitted = self._submitted_yaml.get(yaml_text)
+        if submitted is None:
+            submitted = yaml_text
+            if self._scope != GRAPH_SCOPE_DRIVERS:
+                normalized = parse_running_graph(await cam.normalize_config_raw(
+                    yaml_text, best_effort=False,
+                ))
+                graph = parse_running_graph(yaml_text)
+                assert self._entry_yaml is not None
+                graph["description"] = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
+                    "scope": self._scope,
+                    "anchor_path": self._entry_config_path,
+                    "anchor_sha256": hashlib.sha256(self._entry_yaml.encode("utf-8")).hexdigest(),
+                    "graph_sha256": _graph_body_fingerprint(normalized),
+                }, sort_keys=True)
+                submitted = yaml.safe_dump(graph, sort_keys=False)
+            self._submitted_yaml[yaml_text] = submitted
         loaded = await cam.set_active_config_raw(
-            yaml_text, best_effort=False, duck=False,
+            submitted, best_effort=False, duck=False,
         )
         if not loaded:
             raise SessionGraphError("the measurement graph load was not confirmed")
-        await self._confirm_live(cam, yaml_text)
+        await self._confirm_live(cam, submitted)

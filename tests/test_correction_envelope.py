@@ -45,6 +45,7 @@ ENVELOPE_KEYS = {
     "next_action",
     "blocker",
     "failure",
+    "startup_recovery",
     "progress",
     "tuning_llm",
 }
@@ -295,9 +296,15 @@ def test_tuning_llm_not_offered_before_measurement():
     assert env["tuning_llm"]["offered"] is False
 
 
-def test_envelope_top_level_shape_is_pinned():
-    env = envelope.build_envelope(_FakeSession())
+@pytest.mark.parametrize("recovery", [
+    None, {"required": True, "graph": "failed", "volume": "landed"},
+])
+def test_envelope_top_level_shape_is_pinned(recovery):
+    session = _FakeSession()
+    session.startup_recovery = recovery
+    env = envelope.build_envelope(session)
     assert set(env) == ENVELOPE_KEYS
+    assert env["startup_recovery"] == recovery
 
 
 def test_run_defaults_disclose_server_owned_choices_and_lock_active_run():
@@ -1233,6 +1240,7 @@ def test_envelope_endpoint_end_to_end_over_http(tmp_path, monkeypatch):
         server.server_close()
 
     assert set(body) == ENVELOPE_KEYS
+    assert body["startup_recovery"] is None
     assert body["schema_version"] == 9
     assert body["screen"] == "review"
     assert body["state"] == "ready"

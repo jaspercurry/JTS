@@ -1251,16 +1251,11 @@ def _idle_exit_restore_capture_entry() -> None:
 
 
 async def _restore_protected_neutral_program_graph() -> None:
-    """Converge an abandoned inline R15 program graph to its boot anchor.
-
-    ``protected_neutral_program_origin`` is a tri-state and BOTH positive
-    answers are ours (True = the emitted shape, False = our namespace MUTATED);
-    the persisted config is the SSOT either way. None is left alone. Distinct
-    events so a mutated graph reads as drift.
-    """
+    """Restore an owned temporary graph while its retained anchor still matches."""
 
     from jasper.active_speaker.camilla_yaml import protected_neutral_program_origin
     from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
+    from jasper.active_speaker.crossover_v2.session_graph import temporary_graph_anchor
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.dsp_apply import dsp_writer_lock
 
@@ -1269,12 +1264,15 @@ async def _restore_protected_neutral_program_graph() -> None:
         DEFAULT_CAMILLA_CONFIG_DIR,
         source="crossover_v2_program_startup_recovery",
     ):
-        origin = protected_neutral_program_origin(
-            await cam.get_active_config_raw(best_effort=True)
-        )
-        if origin is None:
+        live = await cam.get_active_config_raw(best_effort=True)
+        origin = protected_neutral_program_origin(live)
+        scoped_anchor = await temporary_graph_anchor(cam, live) if origin is None else None
+        if origin is None and scoped_anchor is None:
             return
-        config_path = await cam.get_config_file_path(best_effort=False)
+        config_path = (
+            str(scoped_anchor) if scoped_anchor
+            else await cam.get_config_file_path(best_effort=False)
+        )
         # "None" is the STRING that reader returns for a null path.
         if not isinstance(config_path, str) or config_path in ("", "None"):
             raise RuntimeError("protected-neutral recovery anchor is unavailable")
@@ -1283,7 +1281,7 @@ async def _restore_protected_neutral_program_graph() -> None:
         await confirm_graph_is_live(cam, expected)
         log_event(
             logger,
-            "correction.crossover_v2_program_recovered" if origin
+            "correction.crossover_v2_program_recovered" if origin is not False
             else "correction.crossover_v2_program_mutated_recovered",
             config_path=config_path,
         )
@@ -1308,6 +1306,14 @@ def _claim_crossover_state_owners() -> None:
             "correction.capture_entry_restore_unavailable",
             _restore_capture_entry,
         ),
+        (
+            "correction.room_startup_recovery_unavailable",
+            lambda: correction_capture._run_async(
+                correction_handlers.recover_room_startup_state(
+                    correction_capture._get_or_create_session(), correction_capture._camilla(),
+                ), timeout=15.0,
+            ),
+        ),
     )
     for event, claim in claims:
         try:
@@ -1319,14 +1325,6 @@ def _claim_crossover_state_owners() -> None:
                 level=logging.ERROR,
                 reason=type(exc).__name__,
             )
-    # Fail-closed once the active graph identifies R15's inline program shape.
-    # It does NOT stop audio (other sources reach CamillaDSP through fan-in) —
-    # it buys "do not open a NEW session on a bad graph". Second layer:
-    # set_active_config_raw never repoints the persisted path, so a restart
-    # reloads the anchor anyway (panel nits 1/2).
-    # Raising leaves main() before the socket is served, which systemd bounds
-    # at StartLimitBurst=20 / StartLimitIntervalSec=600 — bounded, not a loop.
-    # Logged structurally first so the journal names the cause.
     from jasper.camilla import CamillaUnavailable
 
     try:

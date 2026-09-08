@@ -103,6 +103,147 @@ def _stable_no_bass_graph_authority(monkeypatch, tmp_path):
 # ---------- parse_current_correction ---------------------------------------
 
 
+@pytest.mark.parametrize("outcome", [
+    "restored", "volume_failed", "volume_deferred", "graph_failed", "readback_failed",
+    "later_graph", "later_path", "missing_snapshot", "unreadable",
+])
+async def test_room_startup_recovers_owned_graph_and_current_household_intent(
+    monkeypatch, tmp_path, outcome,
+):
+    from jasper.correction.envelope import build_envelope
+    from jasper.volume_owner import ClaimKind, VolumeOwner, install_volume_owner
+
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    original = _make_session(tmp_path)
+    original.cfg.config_dir.mkdir(parents=True)
+    household = original.cfg.config_dir / "correction_before_123.yml"
+    before = emit_sound_config(
+        SoundProfile(enabled=False), room_peqs=[PeqFilter(freq=45, q=3, gain=-6)],
+    )
+    household.write_text(before)
+
+    class Cam:
+        current = str(household)
+        raw = before
+        db = -48.0
+        volume_ok = True
+        graph_ok = True
+        readback_ok = True
+        path_readable = True
+        writes = []
+
+        async def get_config_file_path(self, **_kwargs):
+            if not self.path_readable:
+                raise RuntimeError("unavailable")
+            return self.current
+
+        async def get_active_config_raw(self, **_kwargs):
+            return self.raw
+
+        async def normalize_config_raw(self, raw, **_kwargs):
+            return raw
+
+        async def set_config_file_path(self, path, **_kwargs):
+            if not self.graph_ok:
+                return False
+            self.current = str(path)
+            if self.readback_ok:
+                self.raw = Path(path).read_text()
+            return True
+
+        async def get_volume_db(self, **_kwargs):
+            return self.db
+
+        async def set_volume_db(self, db):
+            self.writes.append(db)
+            if self.volume_ok:
+                self.db = db
+            return self.volume_ok
+
+    async def authority(*_args):
+        return {"authority_valid": True, "runtime_block_required": False}
+
+    async def current_target():
+        return -18.0
+
+    cam = Cam()
+    monkeypatch.setattr(correction_capture, "_assert_room_authority_current", authority)
+    monkeypatch.setattr(correction_handlers, "env_canonical_target_db", current_target)
+    owner = VolumeOwner(set_fader_db=cam.set_volume_db, get_fader_db=cam.get_volume_db)
+    install_volume_owner(owner)
+    await correction_handlers._load_measurement_baseline(
+        original, cam, expected_authority_binding=(False, "passive_not_required", None),
+    )
+    snapshot = original.pre_measurement_restore_path
+    saved = snapshot.read_text()
+    if outcome == "volume_failed":
+        cam.volume_ok = False
+    elif outcome == "volume_deferred":
+        claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -36.0)
+        cam.writes.clear()
+    elif outcome == "graph_failed":
+        cam.graph_ok = False
+    elif outcome == "readback_failed":
+        cam.readback_ok = False
+    elif outcome == "later_graph":
+        cam.raw = before
+    elif outcome == "later_path":
+        cam.current = str(household)
+    elif outcome == "missing_snapshot":
+        snapshot.unlink()
+    elif outcome == "unreadable":
+        cam.path_readable = False
+    fresh = _make_session(tmp_path)
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: fresh)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    await correction_handlers.recover_room_startup_state(fresh, cam)
+
+    if outcome.startswith("later"):
+        assert fresh.startup_recovery is None
+        assert not cam.writes
+        return
+    if outcome == "unreadable":
+        assert fresh.startup_recovery["required"] is False
+        assert fresh.startup_recovery["graph"] == "unknown"
+        assert fresh.state is SessionState.IDLE
+        assert not cam.writes
+        return
+    status = correction_handlers._handle_status(None)
+    envelope = build_envelope(fresh, readiness_blocker=None)
+    assert status["startup_recovery"] == envelope["startup_recovery"]
+    if outcome != "restored":
+        assert status["startup_recovery"]["required"]
+        assert envelope["state"] == "failed"
+        assert envelope["screen"] == "result"
+        assert envelope["blocker"] is None
+        assert envelope["failure"]["code"] == "correction_restore_failed"
+        assert envelope["next_action"]["endpoint"] == "/reset"
+        if outcome == "volume_failed":
+            assert cam.current == str(original.measurement_config_path)
+            cam.path_readable = False
+            await correction_handlers._run_locked_room_reset(fresh, cam)
+            retry = build_envelope(fresh, readiness_blocker=None)
+            assert retry["startup_recovery"]["required"]
+            assert retry["state"] == "failed"
+            assert retry["next_action"]["endpoint"] == "/reset"
+            assert cam.current == str(original.measurement_config_path)
+            cam.path_readable = True
+        elif outcome == "volume_deferred":
+            assert status["startup_recovery"]["volume"] == "deferred"
+            assert cam.db == -36.0
+            assert not cam.writes
+            await owner.release(claim)
+        elif outcome == "missing_snapshot":
+            assert not cam.writes
+            snapshot.write_text(saved)
+        cam.volume_ok = cam.graph_ok = cam.readback_ok = True
+        await correction_handlers._run_locked_room_reset(fresh, cam)
+    assert fresh.startup_recovery == {"required": False, "graph": "restored", "volume": "landed"}
+    assert cam.current == str(snapshot)
+    assert cam.raw == saved
+    assert cam.db == -18.0
+
+
 def test_current_correction_presentation_owns_copy_and_reset_authority():
     applied = correction_status.current_correction_presentation({
         "kind": "correction",
@@ -420,6 +561,7 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "acceptance",
         "auto_revert_outcome",
         "autolevel",
+        "startup_recovery",
             "local_capture_setup_bound",
             "level_match",
             "events",
@@ -464,6 +606,7 @@ def test_status_serializers_pin_snapshot_info_and_result_shapes(
         "position_analysis",
         "current_correction_at_start",
         "autolevel",
+        "startup_recovery",
         "level_match",
         "sweep_meta",
         "peqs",

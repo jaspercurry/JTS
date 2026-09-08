@@ -318,6 +318,7 @@ class MeasurementSession:
         # must load this, never the predecessor NAME (which may be rewritten).
         self.pre_measurement_restore_path: Path | None = None
         self.measurement_config_path: Path | None = None
+        self.startup_recovery: dict[str, Any] | None = None
         # Opaque Active-owned admission sampled at /start, revalidated at each
         # DSP-writer boundary. The session never interprets it.
         self.room_authority_binding: (
@@ -2362,3 +2363,11 @@ class MeasurementSession:
 
     def snapshot(self) -> dict[str, Any]:
         return session_snapshot(self)
+
+    async def note_startup_recovery(self, outcome: Mapping[str, Any]) -> None:
+        self.startup_recovery = dict(outcome)
+        self.error = (
+            "reset reload failed: Room startup recovery is incomplete"
+            if outcome["required"] else None
+        )
+        await self._set_state(SessionState.FAILED if outcome["required"] else SessionState.IDLE)
