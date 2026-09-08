@@ -314,15 +314,20 @@ class AudioCueManager:
         on success, False on any error (no TtsPlayout, no cached
         file, IO error). Never raises — failure-path callers must
         be able to call this without further error handling."""
+        outcome, reason, ok = await self._play_inner(slug)
+        self._record(outcome, reason, slug)
+        return ok
+
+    async def _play_inner(self, slug: str) -> tuple[str, str, bool]:
+        """One play attempt as (outcome, reason, ok), fallback delegation
+        included, so `play()` writes exactly one record per attempt."""
         cue = find_cue(slug)
         if cue is None:
             logger.warning("cue play: unknown slug %r", slug)
-            self._record(OUTCOME_FAILED, REASON_UNKNOWN_SLUG, slug)
-            return False
+            return OUTCOME_FAILED, REASON_UNKNOWN_SLUG, False
         if self._tts is None:
             logger.warning("cue play: no TtsPlayout configured (slug=%s)", slug)
-            self._record(OUTCOME_FAILED, REASON_NO_PLAYOUT, cue.slug)
-            return False
+            return OUTCOME_FAILED, REASON_NO_PLAYOUT, False
 
         # Prefer the current-hash file. If missing, fall back to ANY
         # cached version under the same slug — stale audio beats
@@ -338,16 +343,17 @@ class AudioCueManager:
                 log_event(
                     logger, "cue.play_fallback", slug=slug, fallback=cue.fallback,
                 )
-                self._record(OUTCOME_FALLBACK, REASON_OK, cue.slug)
-                return await self.play(cue.fallback)
+                outcome, reason, ok = await self._play_inner(cue.fallback)
+                if ok:
+                    return OUTCOME_FALLBACK, REASON_OK, True
+                return outcome, reason, False
             if stale is None:
                 logger.warning(
                     "cue play: no cached file for %s and no stale "
                     "fallback; user gets silence. Run "
                     "`jasper-cues regenerate` to fix.", slug,
                 )
-                self._record(OUTCOME_FAILED, REASON_NO_CACHE, cue.slug)
-                return False
+                return OUTCOME_FAILED, REASON_NO_CACHE, False
             logger.info(
                 "cue play: expected file missing, using stale %s",
                 os.path.basename(stale),
@@ -359,41 +365,24 @@ class AudioCueManager:
             pcm, audio_duration_sec = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue play: could not read %s: %s", path, e)
-            self._record(OUTCOME_FAILED, REASON_READ_ERROR, cue.slug)
-            return False
+            return OUTCOME_FAILED, REASON_READ_ERROR, False
 
         try:
-            write_segment = getattr(self._tts, "write_segment", None)
-            if callable(write_segment):
-                await write_segment(
-                    pcm,
-                    segment_kind="cue",
-                    source_profile=_cue_source_profile(
-                        model=f"cue-{cue.slug}",
-                        voice=self._voice,
-                        pcm=pcm,
-                    ),
-                )
-            else:
-                await self._tts.write(pcm)
+            await self._write_pcm(self._tts, pcm, model=f"cue-{cue.slug}")
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "cue play: TtsPlayout.write failed (slug=%s): %s",
-                slug,
-                e,
+                "cue play: TtsPlayout.write failed (slug=%s): %s", slug, e,
             )
-            self._record(OUTCOME_FAILED, REASON_WRITE_ERROR, cue.slug)
-            return False
+            return OUTCOME_FAILED, REASON_WRITE_ERROR, False
         finally:
             await _wait_tts_drained(self._tts)
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
             slug, len(pcm), audio_duration_sec,
         )
-        self._record(
-            OUTCOME_STALE if stale_used else OUTCOME_DELIVERED, REASON_OK, cue.slug,
+        return (
+            OUTCOME_STALE if stale_used else OUTCOME_DELIVERED, REASON_OK, True,
         )
-        return True
 
     async def prerender_text(self, text: str) -> bool:
         """Synthesise + cache `text` ahead of time without playing it.
@@ -457,22 +446,33 @@ class AudioCueManager:
         on any error (no backend, no TtsPlayout, network failure, IO
         error). Callers should not need extra error handling.
         """
+        outcome, reason, ok = await self._speak_inner(
+            text, should_play=should_play,
+        )
+        self._record(outcome, reason, _DYNAMIC_TEXT_SLUG)
+        return ok
+
+    async def _speak_inner(
+        self,
+        text: str,
+        *,
+        should_play: Callable[[], bool] | None,
+    ) -> tuple[str, str, bool]:
+        """One speak_text attempt as (outcome, reason, ok) — see
+        `_play_inner`."""
         if self._tts is None:
             logger.warning("cue speak_text: no TtsPlayout configured")
-            self._record(OUTCOME_FAILED, REASON_NO_PLAYOUT, _DYNAMIC_TEXT_SLUG)
-            return False
+            return OUTCOME_FAILED, REASON_NO_PLAYOUT, False
         if self._backend is None:
             logger.warning("cue speak_text: no TTS backend configured")
-            self._record(OUTCOME_FAILED, REASON_NO_BACKEND, _DYNAMIC_TEXT_SLUG)
-            return False
+            return OUTCOME_FAILED, REASON_NO_BACKEND, False
 
         path = dynamic_text_path(
             self._sounds_dir, text, self._voice, self._model,
         )
         if should_play is not None and not should_play():
             logger.info("cue speak_text: skipped stale dynamic text")
-            self._record(OUTCOME_SKIPPED, REASON_STALE_TEXT, _DYNAMIC_TEXT_SLUG)
-            return False
+            return OUTCOME_SKIPPED, REASON_STALE_TEXT, False
         if not os.path.isfile(path):
             try:
                 await asyncio.to_thread(
@@ -481,40 +481,22 @@ class AudioCueManager:
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue speak_text: synthesis failed: %s", e)
-                self._record(
-                    OUTCOME_FAILED, REASON_SYNTHESIS_ERROR, _DYNAMIC_TEXT_SLUG,
-                )
-                return False
+                return OUTCOME_FAILED, REASON_SYNTHESIS_ERROR, False
 
         try:
             pcm, audio_duration_sec = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue speak_text: could not read %s: %s", path, e)
-            self._record(OUTCOME_FAILED, REASON_READ_ERROR, _DYNAMIC_TEXT_SLUG)
-            return False
+            return OUTCOME_FAILED, REASON_READ_ERROR, False
         if should_play is not None and not should_play():
             logger.info("cue speak_text: skipped stale dynamic text")
-            self._record(OUTCOME_SKIPPED, REASON_STALE_TEXT, _DYNAMIC_TEXT_SLUG)
-            return False
+            return OUTCOME_SKIPPED, REASON_STALE_TEXT, False
 
         try:
-            write_segment = getattr(self._tts, "write_segment", None)
-            if callable(write_segment):
-                await write_segment(
-                    pcm,
-                    segment_kind="cue",
-                    source_profile=_cue_source_profile(
-                        model="dynamic-text",
-                        voice=self._voice,
-                        pcm=pcm,
-                    ),
-                )
-            else:
-                await self._tts.write(pcm)
+            await self._write_pcm(self._tts, pcm, model="dynamic-text")
         except Exception as e:  # noqa: BLE001
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
-            self._record(OUTCOME_FAILED, REASON_WRITE_ERROR, _DYNAMIC_TEXT_SLUG)
-            return False
+            return OUTCOME_FAILED, REASON_WRITE_ERROR, False
         finally:
             await _wait_tts_drained(self._tts)
         # Dynamic cue text (research results, timer labels) can be personal and
@@ -525,8 +507,22 @@ class AudioCueManager:
             _preview(text), len(text), len(pcm), audio_duration_sec,
         )
         logger.debug("cue speak_text full text: %r", text)
-        self._record(OUTCOME_DELIVERED, REASON_OK, _DYNAMIC_TEXT_SLUG)
-        return True
+        return OUTCOME_DELIVERED, REASON_OK, True
+
+    async def _write_pcm(self, tts: Any, pcm: bytes, *, model: str) -> None:
+        """Hand cue PCM to `tts`, preferring the profiled segment API where
+        the playout offers one. Raises on write failure."""
+        write_segment = getattr(tts, "write_segment", None)
+        if callable(write_segment):
+            await write_segment(
+                pcm,
+                segment_kind="cue",
+                source_profile=_cue_source_profile(
+                    model=model, voice=self._voice, pcm=pcm,
+                ),
+            )
+        else:
+            await tts.write(pcm)
 
     def find_any_cached(self, cue: CueDef) -> str | None:
         """A cached WAV for `cue`'s slug at any hash, if one exists — the

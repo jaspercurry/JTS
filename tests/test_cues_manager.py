@@ -247,6 +247,17 @@ def test_status_reports_cached_and_not_cached(tmp_path):
 # --- play ---
 
 
+def _assert_outcome(mgr, outcome, reason, *, slug, count=1):
+    """The whole `last` record plus that outcome's count — one play()
+    attempt records exactly once, whatever path it took."""
+    snap = mgr.snapshot()
+    assert snap["last"] == {
+        "outcome": outcome, "reason": reason, "slug": slug,
+        "age_seconds": snap["last"]["age_seconds"],
+    }
+    assert snap["counts"][outcome] == count
+
+
 def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     backend = _FakeBackend(samples_24k=240)
     tts = _FakeTtsPlayout()
@@ -264,12 +275,7 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     # TtsPlayout upsamples to 48k internally; the manager doesn't.
     assert len(tts.writes[0]) == 480
 
-    last = mgr.snapshot()["last"]
-    assert last == {
-        "outcome": "delivered", "reason": "ok", "slug": "spend_cap_reached",
-        "age_seconds": last["age_seconds"],
-    }
-    assert mgr.snapshot()["counts"]["delivered"] == 1
+    _assert_outcome(mgr, "delivered", "ok", slug="spend_cap_reached")
 
 
 def test_play_passes_measured_cue_source_profile(tmp_path):
@@ -470,10 +476,7 @@ def test_play_returns_false_with_no_tts_playout(tmp_path):
     mgr.regenerate()
     assert asyncio.run(mgr.play("spend_cap_reached")) is False
 
-    last = mgr.snapshot()["last"]
-    assert last["outcome"] == "failed"
-    assert last["reason"] == "no_playout"
-    assert mgr.snapshot()["counts"]["failed"] == 1
+    _assert_outcome(mgr, "failed", "no_playout", slug="spend_cap_reached")
 
 
 def test_play_unknown_slug_returns_false(tmp_path):
@@ -483,11 +486,7 @@ def test_play_unknown_slug_returns_false(tmp_path):
     )
     assert asyncio.run(mgr.play("not_a_real_slug")) is False
 
-    last = mgr.snapshot()["last"]
-    assert last["outcome"] == "failed"
-    assert last["reason"] == "unknown_slug"
-    assert last["slug"] == "not_a_real_slug"
-    assert mgr.snapshot()["counts"]["failed"] == 1
+    _assert_outcome(mgr, "failed", "unknown_slug", slug="not_a_real_slug")
 
 
 def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
@@ -511,10 +510,7 @@ def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
     assert len(tts.writes) == 1
     assert tts.waits == 1
 
-    last = mgr.snapshot()["last"]
-    assert last["outcome"] == "stale"
-    assert last["reason"] == "ok"
-    assert mgr.snapshot()["counts"]["stale"] == 1
+    _assert_outcome(mgr, "stale", "ok", slug="spend_cap_reached")
 
 
 def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
@@ -530,10 +526,7 @@ def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
     assert ok is False
     assert tts.writes == []
 
-    last = mgr.snapshot()["last"]
-    assert last["outcome"] == "failed"
-    assert last["reason"] == "no_cache"
-    assert mgr.snapshot()["counts"]["failed"] == 1
+    _assert_outcome(mgr, "failed", "no_cache", slug="spend_cap_reached")
 
 
 def test_play_swallows_tts_write_exception(tmp_path):
@@ -550,10 +543,7 @@ def test_play_swallows_tts_write_exception(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is False
 
-    last = mgr.snapshot()["last"]
-    assert last["outcome"] == "failed"
-    assert last["reason"] == "write_error"
-    assert mgr.snapshot()["counts"]["failed"] == 1
+    _assert_outcome(mgr, "failed", "write_error", slug="spend_cap_reached")
 
 
 def test_play_records_failed_on_wav_read_error(tmp_path):
@@ -571,10 +561,7 @@ def test_play_records_failed_on_wav_read_error(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
 
     assert ok is False
-    last = mgr.snapshot()["last"]
-    assert last["outcome"] == "failed"
-    assert last["reason"] == "read_error"
-    assert mgr.snapshot()["counts"]["failed"] == 1
+    _assert_outcome(mgr, "failed", "read_error", slug="spend_cap_reached")
 
 
 @pytest.mark.parametrize("operation", ["play", "speak_text"])
@@ -725,13 +712,23 @@ def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(tmp_path):
     assert asyncio.run(mgr.play("provider_out_of_credit")) is True
     assert len(tts.writes) == 1
 
-    snap = mgr.snapshot()
-    assert snap["counts"]["fallback"] == 1
-    assert snap["counts"]["delivered"] == 1
-    # The recursive play(cue.fallback) records its own, later outcome —
-    # "last" reflects that, not the fallback decision itself.
-    assert snap["last"]["outcome"] == "delivered"
-    assert snap["last"]["slug"] == "cant_connect"
+    # One user-visible attempt, one record: the delegated cue is not
+    # counted a second time as "delivered".
+    _assert_outcome(mgr, "fallback", "ok", slug="provider_out_of_credit")
+    assert mgr.snapshot()["counts"]["delivered"] == 0
+
+
+def test_play_reports_the_delegates_failure_when_the_fallback_is_unbaked(tmp_path):
+    """Nothing baked at all: the attempt is one silent failure, reported
+    with the delegate's reason rather than a delivered-looking fallback."""
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    assert asyncio.run(mgr.play("provider_out_of_credit")) is False
+
+    _assert_outcome(mgr, "failed", "no_cache", slug="provider_out_of_credit")
+    assert mgr.snapshot()["counts"]["fallback"] == 0
 
 
 def test_regenerate_prunes_wavs_of_retired_slugs(tmp_path):
