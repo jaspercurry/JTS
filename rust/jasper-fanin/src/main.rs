@@ -16,8 +16,6 @@
 //!   - `watchdog` — progress-sentinel heartbeat (sd_notify pattern).
 //!   - `mixer`    — ALSA read/sum/write loop.
 //!   - `state`    — UDS STATUS endpoint for /state aggregation.
-//!   - `xrun_log` — append-only ring of xrun events at
-//!                  /var/lib/jasper/fanin/xrun_history.jsonl.
 //!
 //! The mux preempt path means simultaneous sources should not happen
 //! in steady state. If future measurement shows audible source-handover
@@ -34,11 +32,9 @@ mod source_notify;
 mod state;
 mod tts;
 mod watchdog;
-mod xrun_log;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -48,10 +44,9 @@ use log::{error, info, warn};
 
 use crate::config::Config;
 use crate::mixer::Mixer;
-use crate::state::{StateServer, StateServerConfig};
+use crate::state::{sched_policy_name, StateServer, StateServerConfig};
 use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
 use crate::watchdog::Heartbeat;
-use crate::xrun_log::XrunLog;
 
 pub(crate) use jasper_daemon::{ConfigClassError, EXIT_CONFIG, HELPER_STACK_BYTES};
 
@@ -161,33 +156,6 @@ fn run() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     install_signal_handlers(&shutdown)?;
 
-    // Bounded so the SCHED_FIFO mixer thread can never block on the xrun
-    // writer's per-event fdatasync. See ADR-0254.
-    let (xrun_tx, xrun_rx) = sync_channel(mixer::EVENT_CHANNEL_CAPACITY);
-    let xrun_log_path = config.xrun_log_path.clone();
-    let xrun_writer = std::thread::Builder::new()
-        .name("fanin-xrun-writer".into())
-        .stack_size(HELPER_STACK_BYTES)
-        .spawn(move || {
-            let mut log = match XrunLog::new(&xrun_log_path) {
-                Ok(l) => l,
-                Err(e) => {
-                    warn!(
-                        "event=fanin.xrun_log.init_failed path={} detail={:#}",
-                        xrun_log_path, e,
-                    );
-                    return;
-                }
-            };
-            // Receiver loops until all senders drop (which happens
-            // when main exits and mixer is dropped).
-            while let Ok(event) = xrun_rx.recv() {
-                log.record(&event);
-            }
-            info!("event=fanin.xrun_log.writer_stopped");
-        })
-        .context("spawning xrun-log writer thread")?;
-
     let (tts_input, tts_metrics, assistant_reference_writer) =
         if let Some(socket_path) = &config.tts_socket_path {
             let assistant_reference = assistant_reference::load(
@@ -252,7 +220,7 @@ fn run() -> Result<()> {
     // required in the production fan-in topology; a missing lane means
     // one renderer can silently play without entering the summed music
     // reference.
-    let mut mixer = Mixer::new(&config, xrun_tx, tts_input).context("opening ALSA PCMs")?;
+    let mut mixer = Mixer::new(&config, tts_input).context("opening ALSA PCMs")?;
     info!(
         "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
         mixer.input_count(),
@@ -398,14 +366,21 @@ fn run() -> Result<()> {
     // comment above. mlockall's MCL_FUTURE locks future mmaps, which
     // collides with pthread_create's stack mmap if RLIMIT_MEMLOCK is
     // small. By the time we get here, the heartbeat thread is up;
-    // the state-server and xrun-writer threads spawn next; mlockall
-    // moves to after those.
+    // the state-server thread spawns next; mlockall moves to after those.
     // (Continued below.)
 
     // UDS STATUS endpoint — surfaces daemon state for jasper-control's
     // /state aggregator and for jasper-doctor's check_fanin_service.
     // The server moves into its own thread; we share `shutdown` via
     // Arc clone.
+    // The unit asks for SCHED_FIFO process-wide (CPUSchedulingPolicy=fifo) and
+    // the work loop runs on this thread; a box that lost RT scheduling says so
+    // in STATUS instead of only in its xrun rate.
+    let sched_policy = unsafe { libc::sched_getscheduler(0) };
+    info!(
+        "event=fanin.sched_policy policy={}",
+        sched_policy_name(sched_policy)
+    );
     let state_server = StateServer::new(
         &mixer,
         Arc::clone(&heartbeat),
@@ -416,6 +391,7 @@ fn run() -> Result<()> {
             input_buffer_frames: config.input_buffer_frames,
             tts_metrics,
             host_clock_fragment: Arc::clone(&host_clock_fragment),
+            sched_policy,
         },
     );
     let state_server_shutdown = Arc::clone(&shutdown);
@@ -442,16 +418,14 @@ fn run() -> Result<()> {
     // wait out the systemd watchdog instead of restarting promptly.
     shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // Drop the mixer (and its xrun_tx Sender) so the writer thread's
-    // recv loop terminates. Then join the helper threads with a
-    // best-effort timeout — if either hangs, systemd's
-    // TimeoutStopSec=5s will SIGKILL us anyway.
+    // Drop the mixer (and its tap sender) so the writer thread's recv loop
+    // terminates. Then join the helper threads with a best-effort timeout — if
+    // either hangs, systemd's TimeoutStopSec=5s will SIGKILL us anyway.
     drop(mixer);
     if let Some(handle) = assistant_reference_writer {
         let _ = handle.join();
     }
     let _ = state_thread.join();
-    let _ = xrun_writer.join();
     let _ = tap_writer.join();
     if let Some(handle) = source_notify_thread {
         let _ = handle.join();
