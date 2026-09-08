@@ -35,6 +35,7 @@ from typing import Any, Callable
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
 from ..audio_io import wait_tts_drained_owned
+from ..json_fields import age_seconds
 from ..log_event import log_event
 from .generator import (
     backend_model,
@@ -204,9 +205,7 @@ class AudioCueManager:
                 "outcome": self._last_outcome["outcome"],
                 "reason": self._last_outcome["reason"],
                 "slug": self._last_outcome["slug"],
-                "age_seconds": max(
-                    0.0, round(time.time() - self._last_outcome["at"], 1),
-                ),
+                "age_seconds": age_seconds(self._last_outcome["at"]),
             }
         return {"counts": dict(self._outcome_counts), "last": last}
 
