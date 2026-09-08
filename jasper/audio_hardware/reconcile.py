@@ -53,6 +53,7 @@ from jasper.cli.output_hardware import ObservedOutput
 from jasper.env_file import read_env_file, read_env_file_text
 from jasper.env_file import remove as env_remove
 from jasper.env_file import upsert as env_upsert
+from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from jasper.output_hardware import (
@@ -219,16 +220,12 @@ class Pass:
         self.no_restart = no_restart
         self.signalled = ""
 
-        self.env_file = env.get("JASPER_ENV_FILE") or "/etc/jasper/jasper.env"
-        self.outputd_env_file = (
-            env.get("JASPER_OUTPUTD_ENV_FILE") or "/var/lib/jasper/outputd.env"
-        )
+        self.env_file = env.get("JASPER_ENV_FILE") or BASE_ENV_PATH
+        self.outputd_env_file = env.get("JASPER_OUTPUTD_ENV_FILE") or OUTPUTD_ENV_PATH
         self.outputd_env_stage: str | None = None
         self.outputd_env_stage_rejected = False
         self._stage_hold = ExitStack()
-        self.fanin_env_file = (
-            env.get("JASPER_FANIN_ENV_FILE") or "/var/lib/jasper/fanin.env"
-        )
+        self.fanin_env_file = env.get("JASPER_FANIN_ENV_FILE") or FANIN_ENV_PATH
         self.asound_source_template = (
             env.get("JASPER_ASOUND_SOURCE_TEMPLATE")
             or "/etc/jasper/asoundrc.jasper.source"
@@ -456,8 +453,13 @@ class Pass:
     def reconcile_i2s_hat_boot(self) -> None:
         # lazy: patch target — the tests replace it on the source module, which
         # only a per-call import sees.
-        from jasper.audio_hardware.usb_port_role import reconcile_boot_config
+        from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
+        from jasper.audio_hardware.usb_port_role import (
+            DEFAULT_MODEL_PATH,
+            reconcile_boot_config,
+        )
         from jasper.cli.usb_port_role import boot_role_events  # lazy: with its sibling
+        from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
         try:
             (
@@ -469,12 +471,14 @@ class Pass:
                 hat_collision,
             ) = reconcile_boot_config(
                 model_path=os.environ.get(
-                    "JASPER_PI_MODEL_FILE", "/proc/device-tree/model"
+                    "JASPER_PI_MODEL_FILE", DEFAULT_MODEL_PATH
                 ),
                 boot_config_path=os.environ.get(
-                    "JTS_BOOT_CONFIG_FILE", "/boot/firmware/config.txt"
+                    "JTS_BOOT_CONFIG_FILE", DEFAULT_BOOT_CONFIG_PATH
                 ),
-                udc_class_dir=os.environ.get("JASPER_UDC_CLASS_DIR", "/sys/class/udc"),
+                udc_class_dir=os.environ.get(
+                    "JASPER_UDC_CLASS_DIR", DEFAULT_UDC_CLASS_DIR
+                ),
                 i2s_hat_intent_path=self.i2s_hat_intent_file,
             )
         # noqa reason: any failure here means the boot config was NOT applied, and
