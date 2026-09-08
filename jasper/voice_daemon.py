@@ -460,9 +460,6 @@ class _ResearchTurnHost:
             connection_paused=loop._connection.is_paused(),
         )
 
-    def turn_episode_active(self) -> bool:
-        return self._loop._turn_output_episode is not None
-
     def hold_wake_refractory(self, sec: float) -> None:
         loop = self._loop
         loop._refractory_until = max(
@@ -501,9 +498,6 @@ class _ResearchTurnHost:
 
     async def end_turn(self, reason: str) -> None:
         await self._loop._end_turn(reason)
-
-    async def cleanup_after_failed_begin(self) -> None:
-        await self._loop._cleanup_after_failed_begin()
 
     async def play_cancel_timeout_cue(self) -> None:
         """Transfer the stalled opener's output and duck to its refusal cue."""
@@ -2459,12 +2453,7 @@ class WakeLoop:
             completed = True
         finally:
             if not completed:
-                cleanup_error = await capture_cleanup_error(
-                    lambda: await_output_cleanup_owned(
-                        self._cleanup_after_failed_begin(),
-                        task_name="turn-begin-cleanup",
-                    ),
-                )
+                cleanup_error = await capture_cleanup_error(self._cleanup_after_failed_begin)
                 if acquiring_at_begin:
                     self._acquiring = False
                 if isinstance(cleanup_error, asyncio.CancelledError) and not isinstance(
@@ -2605,6 +2594,17 @@ class WakeLoop:
         )
 
     async def _cleanup_after_failed_begin(self) -> None:
+        if self._ending:
+            return
+        self._ending = True
+        try:
+            await await_output_cleanup_owned(
+                self._release_failed_turn(), task_name="turn-begin-cleanup",
+            )
+        finally:
+            self._ending = False
+
+    async def _release_failed_turn(self) -> None:
         first_base_error: BaseException | None = None
 
         def record_failure(phase: str, error: BaseException) -> None:
@@ -2640,6 +2640,10 @@ class WakeLoop:
             "turn_timeline",
             lambda: self._emit_turn_timeline("aborted"),
         )
+        await run_phase(
+            "peering_end", lambda: self._peering.session_ended("acquire_error"),
+        )
+        await run_phase("background_stop", lambda: cancel_tracked_tasks(self._bg_tasks))
         if turn is not None:
             await run_phase("turn_release", turn.release)
         await run_phase(
@@ -2718,6 +2722,7 @@ class WakeLoop:
             )
         finally:
             self._ending = False
+        await self._research.drain()
 
     async def _end_turn_inner(self, reason: str = "ended") -> None:
         episode = self._turn_output_episode
@@ -2741,7 +2746,6 @@ class WakeLoop:
                         raise error
             finally:
                 self._reset_turn()
-        await self._research.drain()
 
     async def _record_turn_outcome(self, reason: str) -> None:
         self._emit_turn_timeline("complete")

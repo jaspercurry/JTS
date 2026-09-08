@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from jasper.voice.research_announcer import (
     RESEARCH_READY_CONFIRMATION_TEXT,
     ResearchWindow,
 )
+from tests._cue_spy import SpyCues
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
 from tests._log_events import event_records
 from tests._turn_host_fake import _job, _MarkingScheduler
@@ -88,40 +90,35 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert not event_records(caplog, "turn.silent_response")
 
 
-async def test_research_announced_in_session_is_spoken_by_end_turn_drain():
-    """Pins `_end_turn_inner`'s trailing `await self._research.drain()`
-    through the real loop, not the announcer directly: a job announced
-    mid-SESSION is held (nothing spoken yet), and only reaches the speaker
-    because teardown drains the announcer after flipping back to WAKE.
-    Stubbing `drain()` to a no-op would leave this red while every
-    announcer-level drain test (which calls `announcer.drain()` directly)
-    stays green."""
-    wl = _wake_loop()
-    _put_in_session(wl)
+async def test_queued_research_reads_fallback_after_confirmation_acquire_fails():
+    cues = SpyCues()
+    wl = wake_loop_for_tests(cues=cues)
+    turn = _put_in_session(wl)
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    usage = wl._usage_store
+    usage.open_session = Mock(return_value=8)
+    usage.close_session = Mock(wraps=usage.close_session)
+    wl._content_activity.refresh_now = AsyncMock()
+    wl._connection.acquire_turn = AsyncMock(side_effect=RuntimeError("acquire failed"))
     scheduler = _MarkingScheduler()
     wl.set_research_scheduler(scheduler)  # type: ignore[arg-type]
-    spoken: list[str] = []
+    job = _job()
+    await wl.announce_research_ready(job)
 
-    async def _play(text: str) -> bool:
-        spoken.append(text)
-        return True
-
-    async def _begin_turn(*, pre_roll: bool, text_context: str | None) -> None:
-        # The confirmation window this opens is not under test here — only
-        # that the drain reaches `_speak` at all.
-        return None
-
-    wl._play_dynamic_text = _play
-    wl._begin_turn = _begin_turn
-
-    await wl.announce_research_ready(_job())
-
-    assert spoken == []
+    assert cues.spoken == []
     assert wl._research.status()["pending_announcements"] == 1
 
-    await wl._end_turn_inner("test")
+    await wl._end_turn("test")
 
-    assert spoken == [RESEARCH_READY_CONFIRMATION_TEXT]
+    wl._connection.acquire_turn.assert_awaited_once()
+    assert turn.release_calls == 1
+    assert [call.args[0] for call in usage.close_session.call_args_list] == [7, 8]
+    assert wl._session_id is None
+    assert wl._state.name == "WAKE"
+    assert wl._output_gate.active_kind is None
+    assert cues.spoken == [RESEARCH_READY_CONFIRMATION_TEXT, job.result]
+    assert scheduler.read == [job.id]
+    assert not wl._research.window_active
     assert wl._research.status()["pending_announcements"] == 0
 
 

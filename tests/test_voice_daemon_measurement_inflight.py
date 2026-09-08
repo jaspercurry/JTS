@@ -1676,7 +1676,7 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
     wl._turn_output_episode = await gate.begin_turn()
     wl._turn = turn
     wl._session_id = 42
-    wl._bg_tasks = {object()}  # type: ignore[assignment]
+    wl._bg_tasks = {asyncio.create_task(asyncio.sleep(60))}
     wl._bg_end_scheduled = True
     wl._push_to_talk.active_source = "test_remote"
     wl._acquiring = True

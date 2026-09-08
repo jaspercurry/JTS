@@ -418,3 +418,102 @@ def test_capture_gap_resets_wake_history_and_reports_input_age():
     assert status["gaps"] == 1
     assert status["capture_dropped_frames"] == 7
     assert status["last_age_ms"] >= 500
+
+
+@pytest.mark.parametrize("path", ["wake", "manual"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_acquire_drain_failure_releases_started_resources(monkeypatch, path, cancel):
+    from unittest.mock import AsyncMock
+
+    from jasper import voice_daemon
+    from jasper.voice_daemon import State
+    from tests._async_wait import wait_signalled
+    from tests._live_turn_fake import FakeLiveTurn
+    from tests.usage_store_fixtures import FakeUsageStore
+
+    wl = wake_loop_for_tests()
+    turn = FakeLiveTurn()
+    wl._connection.acquire_turn = AsyncMock(return_value=turn)
+    wl._content_activity.refresh_now = AsyncMock()
+    wl._usage_store = usage = FakeUsageStore()
+    usage.open_session = lambda **_kwargs: 7
+    wl._assistant_output.listening_chirp = AsyncMock()
+    wl._play_cue = AsyncMock(return_value=True)
+    workers_started, release_started, finish_release = (asyncio.Event() for _ in range(3))
+    workers = []
+    peer_commands = []
+
+    async def worker(*_args, **_kwargs):
+        workers.append(asyncio.current_task())
+        if len(workers) == 2:
+            workers_started.set()
+        await asyncio.Event().wait()
+
+    async def send(command, **_kwargs):
+        peer_commands.append(command)
+        if command.startswith("ARBITRATE "):
+            return {"result": "WIN", "epoch": "test-wake"}
+        return {}
+
+    async def release():
+        turn.release_calls += 1
+        release_started.set()
+        await finish_release.wait()
+
+    async def fail_drain():
+        await workers_started.wait()
+        if path == "wake":
+            assert "SESSION_STARTED test-wake" in peer_commands
+        raise RuntimeError("acquired input drain failed")
+
+    monkeypatch.setattr(voice_daemon, "play_responses", worker)
+    monkeypatch.setattr(voice_daemon, "idle_watchdog", worker)
+    wl._peering._send = send
+    wl._drain_acquire_audio = fail_drain
+    turn.release = release
+    if path == "wake":
+        wl._acquiring = True
+        starting = wl._arbitrate_acquire_drain(
+            score=0.9, rms_dbfs=-30.0, spend_allowed=True,
+            conn_paused=False, can_serve=True,
+        )
+    else:
+        starting = wl.manual_session_start()
+    task = asyncio.create_task(starting)
+    try:
+        await wait_signalled(release_started, "failed startup provider release", producer=task)
+        assert len(workers) == 2
+        assert all(worker.done() for worker in workers)
+        if cancel:
+            for _ in range(3):
+                task.cancel()
+                await asyncio.sleep(0)
+            assert not task.done()
+            assert wl._state is State.SESSION
+            assert wl._output_gate.active_kind == "turn"
+        finish_release.set()
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            await task
+            await wl._cancel_fire_and_forget_tasks()
+            wl._play_cue.assert_awaited_once_with("internal_error")
+        assert turn.release_calls == 1
+        assert usage.close_calls == 1
+        assert wl._state is State.WAKE
+        assert not wl._output_gate.is_active
+        assert wl._turn is None
+        assert not wl._bg_tasks
+        assert not wl._acquiring
+        assert wl._push_to_talk.active_source is None
+        assert wl._assistant_output.listening_chirp.await_count == 1
+        if path == "wake":
+            assert peer_commands.count("SESSION_ENDED test-wake acquire_error") == 1
+    finally:
+        finish_release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        for worker_task in workers:
+            worker_task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        await wl._cancel_fire_and_forget_tasks()
