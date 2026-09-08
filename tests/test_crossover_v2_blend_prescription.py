@@ -256,7 +256,7 @@ def _bundle(
     state_path = None
     if state is not None:
         state_path = tmp_path / "state.json"
-        state_path.write_text(json.dumps(state))
+        state_path.write_text(json.dumps({"session_id": round_dir.name, **state}))
     return session, state_path
 
 

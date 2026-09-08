@@ -2,14 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Where one round's evidence inputs are, for the two shapes a round comes in.
+"""Resolve one round's captures, matching state and separate bank-time context.
 
-A round's packet is built from the commissioning bundle plus five siblings: the
-flow state, the design draft, the applied baseline profile, the repeat floor
-and the declared rig geometry. **live**: the bundle IS the session directory
-and the five are the on-Pi SSOT paths their owning modules declare. **banked**:
-the bundle is copied to ``<round-dir>/bundle/<session>/`` and the five are
-frozen beside it under the filenames below.
+The capture owner's snapshot lives in the bundle. Legacy live or banked state
+is usable only when its capture ID matches the round's artifact directory.
+Design, applied profile, repeat floor and declared geometry retain their own
+current/bank-time meanings.
 """
 
 from __future__ import annotations
@@ -43,6 +41,7 @@ from jasper.active_speaker.repeat_floor import (
 __all__ = [
     "APPLIED_PROFILE_DEFAULT_PATH",
     "APPLIED_PROFILE_FILENAME",
+    "CAPTURE_STATE_FILENAME",
     "DECLARED_GEOMETRY_DEFAULT_PATH",
     "DECLARED_GEOMETRY_FILENAME",
     "DESIGN_DRAFT_FILENAME",
@@ -55,12 +54,15 @@ __all__ = [
     "STATE_FILENAME",
     "STATE_SESSION_UNKNOWN",
     "banked_round_of",
+    "matching_state_path",
     "recent_round_sessions",
+    "state_matches_capture",
     "round_inputs",
 ]
 
 #: The five names ``bank-crossover-round.sh`` writes beside the copied bundle.
 STATE_FILENAME = "state.json"
+CAPTURE_STATE_FILENAME = "crossover-v2-state.json"
 DESIGN_DRAFT_FILENAME = "design-draft.json"
 APPLIED_PROFILE_FILENAME = "applied-profile.json"
 REPEAT_FLOOR_FILENAME = "repeat-floor.json"
@@ -70,8 +72,6 @@ DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 #: ``jasper-declare-geometry set``.
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 
-#: Why a LIVE session resolves to no flow state. One slug for every such case;
-#: it reaches an operator through the published ``verify_pose.reason`` field.
 STATE_SESSION_UNKNOWN = "state_session_unknown"
 
 
@@ -105,13 +105,7 @@ class RoundViewsError(CrossoverEvidencePacketError):
 
 @dataclass(frozen=True)
 class RoundInputs:
-    """The six paths one round's evidence packet is built from.
-
-    A path is ``None`` where a banked round did not bank that sibling, and
-    :attr:`state_path` is also ``None`` for a live round whose flow state
-    belongs to another session — :attr:`state_reason` carries the code for that
-    second case and is empty otherwise.
-    """
+    """Paths for a round; unavailable matching state carries a reason code."""
 
     session_dir: Path
     state_path: Path | None
@@ -123,31 +117,30 @@ class RoundInputs:
     state_reason: str = ""
 
 
-def _live_state_path(session_dir: Path) -> tuple[Path | None, str]:
-    """The speaker's flow state, but only when it is THIS session's.
+def state_matches_capture(state: object, capture_id: str) -> bool:
+    return isinstance(state, Mapping) and state.get("session_id") == capture_id
 
-    One flow state exists per speaker against up to twelve retained session
-    directories. The two ids are compared in the one namespace they share: the
-    state's ``session_id`` is a CAPTURE id, and the bundle files its round
-    artifacts under that same id (:func:`~.evidence_packet.round_artifact_dir`).
-    An absent or unreadable state file is not refused here — nothing claims it
-    belongs to another round.
-    """
+
+def matching_state_path(
+    session_dir: Path, fallback: Path | None,
+) -> tuple[Path | None, str]:
+    """Prefer the capture owner's snapshot; accept older state only by capture ID."""
     round_dir, _reason = round_artifact_dir(session_dir)
     if round_dir is None:
         return None, STATE_SESSION_UNKNOWN
-    try:
-        state = json.loads(STATE_DEFAULT_PATH.read_text())
-    except (OSError, UnicodeDecodeError, ValueError):
-        return STATE_DEFAULT_PATH, ""
-    if not isinstance(state, Mapping):
-        return STATE_DEFAULT_PATH, ""
-    session_id = state.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        return None, STATE_SESSION_UNKNOWN
-    if session_id != round_dir.name:
-        return None, STATE_SESSION_UNKNOWN
-    return STATE_DEFAULT_PATH, ""
+    reason = ""
+    for path in (session_dir / CAPTURE_STATE_FILENAME, fallback):
+        if path is None or not path.is_file():
+            continue
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, UnicodeDecodeError, ValueError):
+            reason = STATE_SESSION_UNKNOWN
+            continue
+        if state_matches_capture(state, round_dir.name):
+            return path, ""
+        reason = STATE_SESSION_UNKNOWN
+    return None, reason
 
 
 def _sibling(round_dir: Path, name: str) -> Path | None:
@@ -169,17 +162,19 @@ def round_inputs(path: Path) -> RoundInputs:
                 f"{bundle_dir}: expected exactly one session directory, "
                 f"found {len(children)}"
             )
+        state_path, state_reason = matching_state_path(children[0], _sibling(path, STATE_FILENAME))
         return RoundInputs(
             session_dir=children[0],
-            state_path=_sibling(path, STATE_FILENAME),
+            state_path=state_path,
             design_draft_path=_sibling(path, DESIGN_DRAFT_FILENAME),
             applied_profile_path=_sibling(path, APPLIED_PROFILE_FILENAME),
             repeat_floor_path=_sibling(path, REPEAT_FLOOR_FILENAME),
             declared_geometry_path=_sibling(path, DECLARED_GEOMETRY_FILENAME),
             banked=True,
+            state_reason=state_reason,
         )
     if (path / "info.json").is_file():
-        state_path, state_reason = _live_state_path(path)
+        state_path, state_reason = matching_state_path(path, STATE_DEFAULT_PATH)
         return RoundInputs(
             session_dir=path,
             state_path=state_path,

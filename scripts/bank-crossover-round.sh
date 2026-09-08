@@ -4,77 +4,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Bank one crossover-v2 round's evidence from the Pi into a directory YOU
-# name.
-#
-# Every measurement campaign has re-invented this as throwaway shell in
-# captures/<campaign>/tools/ — most recently night_bank.sh + pull_dumps.sh +
-# integrity_summary.py in
-# captures/linearization-night-2026-08-19/tools/. This is the product
-# version: same pulls, same clean-run definition, but the destination is an
-# argument, never a hardcoded campaign path.
-#
-# Usage:
-#   bash scripts/bank-crossover-round.sh <dest-dir>
-#   SINCE='2026-08-20 21:00:00' bash scripts/bank-crossover-round.sh <dest-dir>
-#   PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>
-#
-# A caller-exported PI_HOST / PI_USER always wins over whatever
-# .env.local sets — scripts/_lib.sh owns that precedence for every
-# laptop-side script. <dest-dir> must not already exist non-empty: re-running
-# into a used directory is refused rather than silently truncating a prior
-# pull.
-#
-# Pulls into <dest-dir>/:
-#   provenance.json         the host/user actually banked, in UTC, plus this
-#                           script's own commit — written FIRST, so a banked
-#                           tree names its source even if every other pull
-#                           below fails
-#   bundle/<session>/...    the newest active-speaker session bundle (evidence
-#                           packet's info.json + evidence/v1/artifacts/...)
-#   state.json              the crossover-v2 flow state
-#                           (/var/lib/jasper/active_speaker_crossover_v2_state.json)
-#   design-draft.json       the active-speaker design draft
-#                           (/var/lib/jasper/active_speaker_design_draft.json)
-#   applied-profile.json    the applied baseline profile — what the speaker is
-#                           PLAYING, which the flow state cannot say
-#                           (/var/lib/jasper/active_speaker_baseline_profile.json)
-#   repeat-floor.json       the banked repeat floor — this rig's measured
-#                           touched-nothing repeat spread, which the evidence
-#                           packet's in_capture_repeat_floor reads
-#                           (/var/lib/jasper/active_speaker_repeat_floor.json)
-#   declared-geometry.json  the household's declared rig geometry, which the
-#                           packet's session.declared_geometry reports and the
-#                           offline entanglement floor is derived from
-#                           (/var/lib/jasper/measurement_geometry.json)
-#   journal/<unit>.log      journal window for the units that speak during a
-#                           round, plus journal/combined.log
-#   power.txt               vcgencmd get_throttled + under-voltage grep counts
-#
-# Every pull above is best-effort and independently reported to stderr, and
-# a per-artifact summary prints at the end regardless of outcome — no silent
-# failure paths. Two things can make this script refuse the run, and neither
-# ever deletes a file that was already pulled (the refusal is the exit code
-# plus the printed findings, forensics stay on disk). Each has its own exit
-# code so a caller scripting a retry loop can tell them apart without
-# parsing stderr:
-#
-#   * exit 4 — <dest-dir> already exists and is non-empty. Nothing was
-#     pulled; pick a fresh directory or remove the old one.
-#   * exit 3 — the round's own identity, the session BUNDLE or the flow
-#     STATE, failed to pull. A bank that can't say which round it banked is
-#     not a bank.
-#   * exit 0 — bundle and state both pulled.
-#
-# This script used to pull the speaker's capture-dump ring and grade the
-# round on `jasper.audio_measurement.capture_integrity` over its sidecars.
-# That ring is gone, so there is nothing to pull and nothing to grade here.
-# The checker is unchanged and still runs standalone over any directory of
-# sidecars, including corpora banked before the removal.
+# Bank a named session, or the newest when no session ID is supplied.
+# Usage: bank-crossover-round.sh <dest-dir> [bundle-session-id]
+# Optional state belongs to the captured round; other configuration is bank-time context.
+# Exit 4: nonempty destination. Exit 3: bundle unavailable. Partial evidence is retained.
 
 set -uo pipefail
 
-DEST="${1:?usage: bank-crossover-round.sh <dest-dir>}"
+DEST="${1:?usage: bank-crossover-round.sh <dest-dir> [bundle-session-id]}"
 SINCE="${SINCE:-1 hour ago}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -126,7 +63,11 @@ echo "Banking crossover-v2 round from ${PI_USER}@${PI_HOST} -> ${DEST}/" >&2
 # --------------------------------------------------------------------- #
 bundle_ok=0
 bundle_status="no session bundles found on the Pi"
-BUNDLE="$(remote "sudo ls -t /var/lib/jasper/active_speaker/sessions 2>/dev/null | head -1")"
+BUNDLE="${2:-$(remote "sudo ls -t /var/lib/jasper/active_speaker/sessions 2>/dev/null | head -1")}"
+if [[ -n "$BUNDLE" && ! "$BUNDLE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    echo "bundle: invalid session ID" >&2
+    exit 3
+fi
 if [[ -n "$BUNDLE" ]]; then
     mkdir -p "$DEST/bundle"
     if remote "sudo tar -C /var/lib/jasper/active_speaker/sessions -cf - '$BUNDLE'" \
@@ -142,21 +83,37 @@ else
     echo "bundle: no session bundles found on the Pi" >&2
 fi
 
-# --------------------------------------------------------------------- #
-# 2. Crossover-v2 flow state — per-claim verdicts live only here.
-#    Gates exit 3 below: this IS the round's identity.
-# --------------------------------------------------------------------- #
-state_ok=0
-state_status="FAILED or not present"
-if remote "sudo cat /var/lib/jasper/active_speaker_crossover_v2_state.json 2>/dev/null" \
-        > "$DEST/state.json" && [[ -s "$DEST/state.json" ]]; then
-    state_ok=1
-    state_status="ok ($(wc -c < "$DEST/state.json") bytes)"
-    echo "state -> $DEST/state.json ($(wc -c < "$DEST/state.json") bytes)" >&2
-else
-    rm -f "$DEST/state.json"
-    echo "state: FAILED or not present" >&2
+# Resolve the state after the bundle pull, so a later live state cannot label it.
+remote "sudo cat /var/lib/jasper/active_speaker_crossover_v2_state.json 2>/dev/null" \
+    > "$DEST/.current-state.json"
+state_status="unavailable"
+python_bin="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
+[[ -x "$python_bin" ]] || python_bin=python3
+if resolved="$(PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$python_bin" - "$DEST" "$BUNDLE" <<'PYTHON'
+import json
+import shutil
+import sys
+from pathlib import Path
+from jasper.active_speaker.crossover_v2.round_inputs import matching_state_path
+
+destination = Path(sys.argv[1])
+state, reason = matching_state_path(
+    destination / "bundle" / sys.argv[2], destination / ".current-state.json",
+)
+if state is not None:
+    shutil.copy2(state, destination / "state.json")
+provenance = destination / "provenance.json"
+record = json.loads(provenance.read_text())
+record["missing"] = [] if state is not None else ["state.json"]
+record["state_reason"] = reason
+provenance.write_text(json.dumps(record, indent=2) + "\n")
+print("ok" if state is not None else reason or "source_absent")
+PYTHON
+)"; then
+    state_status="$resolved"
 fi
+rm -f "$DEST/.current-state.json"
+echo "state: $state_status" >&2
 
 # Pull one optional on-Pi artifact into $DEST/<name>; reported, never gated.
 # Prints the status line the summary shows.
@@ -240,7 +197,7 @@ fi
 journal_status="${journal_ok_count}/${#units[@]} unit logs, combined=${combined_ok}"
 
 # --------------------------------------------------------------------- #
-# 5. Power re-check. Any sign of under-voltage VOIDS the attestation.
+# 5. Power diagnostics.
 # --------------------------------------------------------------------- #
 remote 'vcgencmd get_throttled 2>&1; \
     echo -n "dmesg under-voltage: "; sudo dmesg -T 2>/dev/null | grep -ci "under-voltage"; \
@@ -248,9 +205,7 @@ remote 'vcgencmd get_throttled 2>&1; \
     | tee "$DEST/power.txt" | sed 's/^/  power: /' >&2
 
 # --------------------------------------------------------------------- #
-# 6. Per-artifact summary, then the final verdict. A bank that never
-#    pulled its own round identity (bundle and/or flow state) is not a
-#    bank.
+# 6. Per-artifact summary. Missing state does not discard valid captures.
 # --------------------------------------------------------------------- #
 echo "" >&2
 echo "=== artifact pull summary ===" >&2
@@ -262,9 +217,9 @@ echo "  repeat-floor:    $repeat_floor_status" >&2
 echo "  declared-geom:   $declared_geometry_status" >&2
 echo "  journal:         $journal_status" >&2
 
-if (( bundle_ok == 0 )) || (( state_ok == 0 )); then
+if (( bundle_ok == 0 )); then
     echo "" >&2
-    echo "bank-crossover-round: INCOMPLETE (exit 3) -- the round bundle and/or flow state could not be pulled; a bank without its own round identity is not a bank. Every pulled file is kept under $DEST for forensics." >&2
+    echo "bank-crossover-round: INCOMPLETE (exit 3) -- the round bundle could not be pulled. Every pulled file is kept under $DEST for forensics." >&2
     exit 3
 fi
 

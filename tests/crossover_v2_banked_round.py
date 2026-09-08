@@ -259,6 +259,7 @@ def _state(
     a stage that measured no VERIFY actually banks.
     """
     return {
+        "session_id": _CAPTURE_SESSION_ID,
         "round_receipt": {"round_ordinal": round_ordinal},
         "round_ordinal_epoch": 1,
         "verify_priors": {"verify_measured": verify_measured},

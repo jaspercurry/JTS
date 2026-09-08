@@ -2,33 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pins scripts/bank-crossover-round.sh's non-empty-<dest-dir> refusal.
-
-This is the ONE outcome the script can produce with no Pi, no SSH, and no
-network reachable: refusing to bank into a directory that already has
-something in it (exit 4). The check runs before the script's first
-`remote()` call, so it is safe to exercise as a real subprocess here. The
-rest of the contract (exit 0/3, both gated on a live Pi round-trip) is not
-exercised by this file.
-
-Exit 4 exists at all because exit 1 was ambiguous WHEN IT WAS ADDED: the
-script then graded the round with the capture-integrity checker, which
-returns 1 for "nothing to check yet", and a caller scripting a retry loop
-that hits a failed bank and retries into the SAME destination needs to tell
-"this destination is unusable" apart from "there was nothing to grade"
-without parsing stderr. The capture-dump ring that grading read is gone and
-the script no longer calls the checker, so 1 is now only bash's own failure
--- but 4 stays, because the retry-loop caller still needs the distinction
-from a bank that failed for any other reason. The literal integer is what
-is pinned here, not a symbol -- a caller's `$?` is an integer, and a future
-renumbering that quietly moved this refusal back onto 1 (or onto 3, next to
-the incomplete-bank exit) would not be caught by anything that only asserts
-"not zero".
-"""
+"""Laptop banking through fake SSH, retaining valid captures and matching state."""
 
 from __future__ import annotations
 
 import os
+import json
+import sys
+import tarfile
+import pytest
 import subprocess
 from pathlib import Path
 
@@ -99,3 +81,42 @@ def test_non_empty_dest_dir_refusal_is_distinct_from_a_missing_argument():
     # must stay numerically distinct from each other.
     missing_arg = _run()
     assert missing_arg.returncode == 1
+
+
+@pytest.mark.parametrize("snapshot", [True, False])
+def test_named_bundle_keeps_its_state_after_a_later_round(tmp_path, snapshot):
+    from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME
+    from jasper.active_speaker.crossover_v2.round_views import load_banked_round
+    from tests.crossover_v2_banked_round import bank_measure_round
+
+    source = bank_measure_round(tmp_path / "source")
+    bundle = next((source / "bundle").iterdir())
+    if snapshot:
+        (bundle / CAPTURE_STATE_FILENAME).write_text((source / "state.json").read_text())
+    archive = tmp_path / "bundle.tar"
+    with tarfile.open(archive, "w") as writer:
+        writer.add(bundle, arcname=bundle.name)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text(f"""#!/bin/sh
+case "$*" in
+  *'tar -C'*) cat '{archive}' ;;
+  *'active_speaker_crossover_v2_state.json'*) echo '{{"session_id":"capture-B","verify":{{"outcome":"pass"}}}}' ;;
+  *) exit 0 ;;
+esac
+""")
+    ssh.chmod(0o755)
+    destination = tmp_path / "banked"
+    proc = _run(str(destination), bundle.name, env={**os.environ,
+        "PI_HOST": "jts9.invalid", "PYTHON": sys.executable,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+    })
+    assert proc.returncode == 0, proc.stderr
+    packet = load_banked_round(destination).packet
+    assert packet["session"]["capture_session_id"] == "capture-1"
+    assert packet["entry_baseline"]["available"] is True
+    assert packet["verify"]["available"] is False
+    assert (destination / "state.json").is_file() is snapshot
+    provenance = json.loads((destination / "provenance.json").read_text())
+    assert provenance["missing"] == ([] if snapshot else ["state.json"])

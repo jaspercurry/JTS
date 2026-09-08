@@ -48,6 +48,8 @@ from .journey import (
 )
 from .record_index import Measurement, bundle_measurements
 from .round_inputs import (
+    STATE_SESSION_UNKNOWN,
+    state_matches_capture,
     CrossoverEvidencePacketError, NO_ROUND_ARTIFACTS_REASON,
     recent_round_sessions, round_artifact_dir,
 )
@@ -2739,6 +2741,8 @@ def build_crossover_evidence_packet(
         state_raw, read_reason = _read_json(state_path)
         state_reason = read_reason
     state = _mapping(state_raw)
+    if state and not state_matches_capture(state, round_dir.name):
+        state, state_reason = {}, STATE_SESSION_UNKNOWN
     state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
 
     applied_profile, applied_profile_reason = _applied_profile_source(

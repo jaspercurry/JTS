@@ -2241,6 +2241,18 @@ def persist_conductor_state(
         and prior.get("session_id") == session_id else ""
     )
     save_v2_state(built.state, durable=built.durable)
+    from jasper.active_speaker.bundles import sessions_dir  # lazy: capture-only bundle lookup
+    from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
+
+    bundle_id = (built.state.get("evidence") or {}).get("bundle_session_id")
+    if isinstance(bundle_id, str) and Path(bundle_id).name == bundle_id:
+        bundle = sessions_dir() / bundle_id
+        if (bundle / "info.json").is_file():
+            atomic_write_text(
+                bundle / CAPTURE_STATE_FILENAME,
+                json.dumps(built.state, allow_nan=False, sort_keys=True) + "\n",
+                mode=0o640, durable=built.durable,
+            )
     from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 
     grade = (crossover_v2_status_block() or {}).get("post_apply_grade")

@@ -86,22 +86,25 @@ class RoundBankError(Exception):
 
 
 def _ssot_documents(
+    session_dir: Path,
     state_path: Path | None,
     design_draft_path: Path | None,
     applied_profile_path: Path | None,
     repeat_floor_path: Path | None,
     declared_geometry_path: Path | None,
-) -> tuple[tuple[str, Path], ...]:
+) -> tuple[tuple[str, Path | None], ...]:
     """``(banked filename, source path)`` for the five documents beside the
     bundle, defaulting to each document's own on-box SSOT constant.
 
     Both halves come from ``round_inputs``, the reader that opens them, so
     writer and reader cannot drift apart silently.
     """
-    from .crossover_v2 import round_inputs as reader
+    from .crossover_v2 import round_inputs as reader  # lazy: reader imports this module
 
     return (
-        (reader.STATE_FILENAME, state_path or reader.STATE_DEFAULT_PATH),
+        (reader.STATE_FILENAME, reader.matching_state_path(
+            session_dir, state_path or reader.STATE_DEFAULT_PATH,
+        )[0]),
         (
             reader.DESIGN_DRAFT_FILENAME,
             design_draft_path or reader.DRIVERS_DEFAULT_PATH,
@@ -252,6 +255,7 @@ def bank_round(
         raise RoundBankError(REASON_ALREADY_BANKED, f"{target} is already banked")
 
     documents = _ssot_documents(
+        session_dir,
         state_path,
         design_draft_path,
         applied_profile_path,
@@ -267,7 +271,7 @@ def bank_round(
         )
         missing: list[str] = []
         for name, source in documents:
-            if source.is_file():
+            if source is not None and source.is_file():
                 shutil.copy2(source, target / name)
             else:
                 missing.append(name)

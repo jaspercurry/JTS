@@ -25,7 +25,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     read_position_cycle,
     takes_by_position,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.round_bank import (
     REASON_ALREADY_BANKED,
@@ -363,3 +363,37 @@ def test_cli_refusal_carries_the_reason_slug(tmp_path, capsys):
         "reason": REASON_NOT_A_BUNDLE,
         "detail": payload["detail"],
     }
+
+
+@pytest.mark.parametrize("snapshot", [True, False])
+def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
+    tmp_path, monkeypatch, snapshot,
+):
+    from jasper.web import correction_crossover_v2 as host
+
+    session, state_path = _live_session(tmp_path)
+    if snapshot:
+        monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: session.parent)
+        from tests.crossover_v2_fixtures import FakeSeams, _conductor
+
+        conductor = _conductor(FakeSeams())
+        conductor.session_id = "capture-1"
+        conductor._set_verify_outcome("pass", None, {})
+        host.set_state_path_for_tests(state_path)
+        try:
+            host.persist_conductor_state(conductor, failure_code=None, evidence={"bundle_session_id": session.name})
+        finally:
+            host.set_state_path_for_tests(None)
+        assert json.loads((session / CAPTURE_STATE_FILENAME).read_text())["session_id"] == "capture-1"
+    state_path.write_text(json.dumps({"session_id": "capture-B", "verify": {"outcome": "fail"}}))
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state_path)
+    packet = load_banked_round(banked.path).packet
+    assert packet["session"]["capture_session_id"] == "capture-1"
+    assert packet["entry_baseline"]["available"] is True
+    assert packet["verify"]["available"] is snapshot
+    if snapshot:
+        assert packet["verify"]["outcome"] == "pass"
+    else:
+        assert "state.json" in banked.provenance["missing"]
+    (banked.path / "state.json").write_text(state_path.read_text())
+    assert load_banked_round(banked.path).packet["verify"]["available"] is snapshot

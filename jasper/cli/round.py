@@ -11,6 +11,7 @@ the existing wizard apply path owns graph admission, installation and restore.
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -75,23 +76,23 @@ def _answer(verb: str, human: str, **fields: Any) -> int:
     )
 
 
-def _round_session_dir() -> str:
-    """The bundle ``bank`` takes: the newest under the sessions root, the rule
-    ``scripts/bank-crossover-round.sh`` already banks by.
+def _round_session_dir(capture_id: str) -> str:
+    from jasper.active_speaker.bundles import sessions_dir  # lazy: wait-only measurement imports
+    from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir  # lazy: wait-only
 
-    The wizard's ``session_id`` is the capture provider's and never names this
-    directory, so no reader of the receipt can compose it.
-    """
-    # The bundle store pulls the measurement import graph in: an open must not
-    # pay for a door only a finished wait carries (ADR-0226). A sessions root
-    # this operator cannot read costs the answer a path, never its exit code.
-    from jasper.active_speaker.bundles import latest_bundle, sessions_dir
-
+    found = ""
     try:
-        found = latest_bundle(sessions_dir())
+        for bundle in sessions_dir().iterdir():
+            if not (bundle / "info.json").is_file():
+                continue
+            round_dir, _ = round_artifact_dir(bundle)
+            if round_dir is not None and round_dir.name == capture_id:
+                if found:
+                    return ""
+                found = str(bundle)
     except OSError:
         return ""
-    return str(found["bundle_dir"]) if found else ""
+    return found
 
 
 def _prescription_doors(args: argparse.Namespace) -> dict[str, Any]:
@@ -181,7 +182,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
              "failure": result["failure"],
              "waited_s": args.timeout_s if status == "timed_out" else None},
         )
-    session_dir = _round_session_dir()
+    session_dir = _round_session_dir(str(result["session_id"]))
     return _answer(
         "wait",
         f"session {result['session_id']} stopped at {result['phase']}",
@@ -189,7 +190,8 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
         session_id=result["session_id"],
         candidate_fingerprint=result["candidate_fingerprint"],
         session_dir=session_dir,
-        next=f"{PROG} bank {session_dir}" if session_dir else "",
+        next=f"{PROG} bank {shlex.quote(session_dir)}" if session_dir else "",
+        session_dir_reason="" if session_dir else "capture_bundle_unavailable",
     )
 
 
