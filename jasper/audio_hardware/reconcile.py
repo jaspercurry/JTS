@@ -55,7 +55,11 @@ from jasper.env_file import remove as env_remove
 from jasper.env_file import upsert as env_upsert
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
-from jasper.output_hardware import DEFAULT_TOPOLOGY_PATH
+from jasper.output_hardware import (
+    DEFAULT_TOPOLOGY_PATH,
+    degraded_marker_path,
+    state_path,
+)
 from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
@@ -200,12 +204,15 @@ def _resolve_asound_render_lib() -> str:
     return "/usr/local/lib/jasper/jasper-asound-render.sh"
 
 
+#: ALSA card ids are not stable across a re-enumeration, so the Apple mixer
+#: units bake in "resolve it yourself" rather than a card this pass observed.
+APPLE_SERVICE_CARD_AUTO = "auto"
+
+
 class Pass:
     """One reconcile pass over the box's owned output-hardware state."""
 
     def __init__(self, *, reason: str, print_env: bool, no_restart: bool) -> None:
-        from jasper.output_hardware import degraded_marker_path, state_path
-
         env = os.environ
         self.reason = reason
         self.print_env = print_env
@@ -216,7 +223,6 @@ class Pass:
         self.outputd_env_file = (
             env.get("JASPER_OUTPUTD_ENV_FILE") or "/var/lib/jasper/outputd.env"
         )
-        self.outputd_env_target = self.outputd_env_file
         self.outputd_env_stage: str | None = None
         self.outputd_env_stage_rejected = False
         self._stage_hold = ExitStack()
@@ -234,6 +240,7 @@ class Pass:
             env.get("JASPER_RENDER_ASOUND_CONF")
             or "/usr/local/sbin/jasper-render-asound-conf"
         )
+        self.asound_render_lib = _resolve_asound_render_lib()
         self.systemctl = env.get("JASPER_SYSTEMCTL") or "systemctl"
         self.state_path = str(state_path())
         self.degraded_marker = degraded_marker_path()
@@ -266,13 +273,13 @@ class Pass:
         self.camilla_conf_dir = env.get("JASPER_CAMILLA_CONF_DIR") or "/etc/camilladsp"
         self.ring_conf_d = env.get("JASPER_RING_CONF_D") or ""
 
-        self.apple_dongle_present = "0"
-        self.apple_dongle_service_card = "auto"
+        self.apple_dongle_present = False
+        self.apple_dongle_service_card = APPLE_SERVICE_CARD_AUTO
         self.dongle_card = "A"
         self.output_dac_card = "A"
         self.output_dac_id = "unknown"
         self.output_dac_recognized = False
-        self.outputd_active_mode = "0"
+        self.outputd_active_mode = False
         self.outputd_active_channels = ""
         # Set when this pass WROTE a record naming a different profile or card
         # than the one it replaced. The mixer pin reads that record, so it is
@@ -286,7 +293,9 @@ class Pass:
         # NO ring marker (the pair below fails closed by positive equality).
         self.dual_apple_active_endpoint_device = ""
         self.i2s_hat_desired_profile = ""
-        self.i2s_hat_boot_changed = ""
+        # None until reconcile_i2s_hat_boot decides; then whether THIS pass
+        # moved the managed boot block.
+        self.i2s_hat_boot_changed: bool | None = None
         self.i2s_hat_apply_error = False
         self.latency_floor_changed = False
         self.route_fanin_changed = False
@@ -383,8 +392,8 @@ class Pass:
     # -- the observed record ------------------------------------------------
 
     def observe_output_hardware_state(self, *, write: bool) -> None:
-        # lazy: patch target — tests/test_audio_hardware_reconcile.py replaces
-        # `observe` on the source module, which only a per-call import sees.
+        # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
         from jasper.cli.output_hardware import observe, observed_output
 
         action = "written" if write else "observed"
@@ -411,10 +420,7 @@ class Pass:
             self.record_changed = True
         if observed.apple_card_ids:
             self.dongle_card = observed.apple_card_ids[0]
-            self.apple_dongle_present = "1"
-            # apple_dongle_service_card stays "auto": ALSA card ids are not
-            # stable across a re-enumeration and the mixer units bake this
-            # value in at install.
+            self.apple_dongle_present = True
         if write:
             # Never fatal: a full /run must not skip the DAC-role policy the
             # caller runs next. --print-env promises no mutations, which is why
@@ -448,8 +454,10 @@ class Pass:
     # -- I2S HAT boot intent ------------------------------------------------
 
     def reconcile_i2s_hat_boot(self) -> None:
+        # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
         from jasper.audio_hardware.usb_port_role import reconcile_boot_config
-        from jasper.cli.usb_port_role import boot_role_events
+        from jasper.cli.usb_port_role import boot_role_events  # lazy: with its sibling
 
         try:
             (
@@ -490,7 +498,7 @@ class Pass:
                 "i2s_hat_apply", result="unavailable", board_topology="unsupported"
             )
             return
-        self.i2s_hat_boot_changed = "true" if hat_changed else "false"
+        self.i2s_hat_boot_changed = bool(hat_changed)
         if self.i2s_hat_apply_error:
             self.log(
                 "i2s_hat_apply",
@@ -511,7 +519,7 @@ class Pass:
         profile, not just InnoMaker: a HAT can be the composite's child device
         rather than the top-level profile_id."""
         desired = self.i2s_hat_desired_profile
-        if not self.i2s_hat_boot_changed or not self.observed.valid:
+        if self.i2s_hat_boot_changed is None or not self.observed.valid:
             return
         observed = self.observed.profile_id
         children = self.observed.child_device_ids
@@ -523,13 +531,19 @@ class Pass:
             return
         # No HAT desired: whatever DAC is attached is not a pending boot
         # change, so only this pass having cleared the managed block pends one.
-        if not desired and self.i2s_hat_boot_changed != "true":
+        if not desired and not self.i2s_hat_boot_changed:
             return
         _ensure_dir(marker.parent, 0o755)
         marker.write_text("", encoding="utf-8")
         os.chmod(marker, 0o644)
 
     # -- outputd.env staging ------------------------------------------------
+
+    @property
+    def outputd_env_target(self) -> str:
+        """Where this pass's outputd.env writes LAND: the staged candidate
+        while one is open, the live file otherwise."""
+        return self.outputd_env_stage or self.outputd_env_file
 
     def stage_outputd_env(self) -> None:
         directory = Path(self.outputd_env_file).parent
@@ -571,7 +585,6 @@ class Pass:
             except OSError:
                 pass
             os.chmod(stage, ENV_FILE_MODE)
-        self.outputd_env_target = stage
 
     def cleanup_outputd_env_stage(self) -> None:
         """End the stage: drop the candidate, its own lock, and the live hold."""
@@ -584,9 +597,10 @@ class Pass:
     def finish_outputd_env_stage(self) -> None:
         self.cleanup_outputd_env_stage()
         self.outputd_env_stage = None
-        self.outputd_env_target = self.outputd_env_file
 
     def validate_outputd_env_stage(self) -> bool:
+        # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
         from jasper.cli.audio_config import validate_outputd_env
 
         stage = self.outputd_env_stage
@@ -836,6 +850,8 @@ class Pass:
         if not dac_id:
             return None, False
         try:
+            # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
             from jasper.audio_hardware.dac import (
                 active_outputd_lane_channels_for,
                 is_known_profile_id,
@@ -865,6 +881,8 @@ class Pass:
         if not dac_id:
             return "", ""
         try:
+            # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
             from jasper.audio_hardware.dac import by_id, final_edge_format_for
 
             fmt = final_edge_format_for(dac_id)
@@ -920,6 +938,8 @@ class Pass:
         with its own declaration, and the two legitimately differ.
         """
         try:
+            # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
             from jasper.fanin_coupling import content_lane_format_for_coupling
 
             return content_lane_format_for_coupling()
@@ -932,11 +952,13 @@ class Pass:
 
     def apply_route_env(self) -> bool:
         """Apply the route-owned fan-in env actions. Returns whether it moved."""
+        # lazy: import cost — the route plan is a policy layer the --print-env
+        # path never reaches (ADR-0226).
         from jasper.audio_runtime_plan import (
             resolve_audio_route_profile,
             route_owned_env_actions,
         )
-        from jasper.env_load import read_env_file_state
+        from jasper.env_load import read_env_file_state  # lazy: with the plan
 
         self.route_fanin_changed = False
         try:
@@ -968,6 +990,8 @@ class Pass:
         profile floor > packaged default, in one policy layer); this only
         performs the requested mutations and reports whether the file moved.
         """
+        # lazy: import cost — the floor plan and its CLI are a policy layer the
+        # --print-env path never reaches (ADR-0226).
         from jasper.audio_runtime_plan import OUTPUTD_LATENCY_KEYS, RuntimeEnvAction
         from jasper.cli.audio_config import outputd_floor_plan
 
@@ -1025,8 +1049,8 @@ class Pass:
         self.output_dac_id = self.observed.profile_id
         self.output_dac_card = ""
         self.output_dac_recognized = False
-        self.apple_dongle_present = "1"
-        self.apple_dongle_service_card = "auto"
+        self.apple_dongle_present = True
+        self.apple_dongle_service_card = APPLE_SERVICE_CARD_AUTO
         if self.observed.status != "ready":
             self.log(
                 "dual_apple_detected",
@@ -1141,7 +1165,7 @@ class Pass:
 
     def _apply_composite_runtime_env(self, content_format: str) -> bool:
         target = self.outputd_env_target
-        self.outputd_active_mode = "0"
+        self.outputd_active_mode = False
         self.outputd_active_channels = ""
         actions: list[EnvAction] = [
             ("JASPER_OUTPUTD_BACKEND", "alsa"),
@@ -1225,7 +1249,7 @@ class Pass:
         )
         actions += format_actions
         if active_mode:
-            self.outputd_active_mode = "1"
+            self.outputd_active_mode = True
             self.outputd_active_channels = active_channels
             actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", active_channels))
             changed = self.set_env_file_var(target, actions)
@@ -1250,7 +1274,7 @@ class Pass:
                 changed=int(changed),
             )
             return changed
-        self.outputd_active_mode = "0"
+        self.outputd_active_mode = False
         self.outputd_active_channels = ""
         # Clear the width knob so outputd defaults to stereo, and the lane PAIR
         # so a stale =1 cannot keep the stereo-only features fenced off on an
@@ -1270,7 +1294,7 @@ class Pass:
         return changed
 
     def _apply_parked_runtime_env(self, content_format: str) -> bool:
-        self.outputd_active_mode = "0"
+        self.outputd_active_mode = False
         self.outputd_active_channels = ""
         changed = self.set_env_file_var(
             self.outputd_env_target,
@@ -1323,7 +1347,7 @@ class Pass:
                 "-c",
                 'source "$1"; jasper_asound_render_template "$2" "$3"',
                 "jasper-asound-render",
-                _resolve_asound_render_lib(),
+                self.asound_render_lib,
                 str(source),
                 tmp,
             ],
@@ -1376,7 +1400,7 @@ class Pass:
             "asound_rendered",
             output_dac_id=self.output_dac_id,
             output_dac_card=self.output_dac_card,
-            outputd_active_mode=self.outputd_active_mode,
+            outputd_active_mode=int(self.outputd_active_mode),
             outputd_active_channels=_log_token(self.outputd_active_channels),
         )
         return True
@@ -1390,6 +1414,7 @@ class Pass:
         Triggers NO restart and feeds no restart flag: ALSA reads the conf.d at
         the next PCM open, and arming is owned by the coupling reconciler.
         """
+        # lazy: import cost — the --print-env path never reaches it (ADR-0226).
         from jasper.cli.audio_config import ring_conf_wire_report
 
         if not self.output_dac_recognized:
@@ -1436,6 +1461,8 @@ class Pass:
         sandbox, which has no /etc/camilladsp write path (WS1-deliberate).
         Write-on-change; a failed render leaves the previous bytes.
         """
+        # lazy: import cost — the YAML emitters are the pass's second heaviest
+        # import and the --print-env path never reaches them (ADR-0226).
         from jasper.output_topology import OutputTopologyError
         from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
@@ -1510,6 +1537,18 @@ class Pass:
 
     # -- unit gating and restarts -------------------------------------------
 
+    def bounce(self, unit: str, verb: str, *, quiet: bool = True) -> None:
+        """Clear a parked unit's failure state, then ask systemd for the
+        transition WITHOUT waiting on it.
+
+        --no-block throughout: this runs from udev and from install, where a
+        blocking transition can deadlock against the jobs it waits on. The two
+        BLOCKING starts in :meth:`gate_role_services` are deliberately not this
+        (see their own note) and stay written out.
+        """
+        self.systemctl_call("reset-failed", unit, quiet=True)
+        self.systemctl_call("--no-block", verb, unit, quiet=quiet)
+
     def restart_dac_init_for_record_change(self) -> None:
         """Restart the mixer pin only when the record it reads CHANGED.
 
@@ -1522,8 +1561,7 @@ class Pass:
         """
         if not self.record_changed:
             return
-        self.systemctl_call("reset-failed", DAC_INIT_UNIT, quiet=True)
-        self.systemctl_call("--no-block", "restart", DAC_INIT_UNIT)
+        self.bounce(DAC_INIT_UNIT, "restart", quiet=False)
         self.log("dac_init_restarted", output_dac_id=self.output_dac_id or "unknown")
 
     def gate_role_services(self) -> None:
@@ -1599,15 +1637,15 @@ class Pass:
         profile = self.install_profile()
         if profile == "full":
             self.systemctl_call("stop", VOICE_UNIT, quiet=True)
-        self.systemctl_call("reset-failed", OUTPUTD_UNIT, quiet=True)
-        # These are SEPARATE --no-block transactions, deliberately unordered:
-        # this runs from udev and from install, where a blocking restart can
-        # deadlock against the jobs it waits on. Correctness does not depend on
-        # winning the race with jasper-aec-init: it refuses to certify a STATUS
-        # older than outputd.env and the AEC reconciler drops to software AEC3,
-        # keeping hearing until a later pass re-arms the chip (ADR-0101).
-        self.systemctl_call("--no-block", "restart", OUTPUTD_UNIT, quiet=True)
+        # These are SEPARATE transactions, deliberately unordered. Correctness
+        # does not depend on winning the race with jasper-aec-init: it refuses
+        # to certify a STATUS older than outputd.env and the AEC reconciler
+        # drops to software AEC3, keeping hearing until a later pass re-arms the
+        # chip (ADR-0101).
+        self.bounce(OUTPUTD_UNIT, "restart")
         if profile == "full":
+            # Not `bounce`: this oneshot declares no start-rate limit, so it has
+            # no parked state a reset-failed would have to clear first.
             self.systemctl_call(
                 "--no-block", "restart", AEC_RECONCILE_UNIT, quiet=True
             )
@@ -1635,8 +1673,7 @@ class Pass:
                 no_restart=1,
             )
             return
-        self.systemctl_call("reset-failed", OUTPUTD_UNIT, quiet=True)
-        self.systemctl_call("--no-block", "restart", OUTPUTD_UNIT, quiet=True)
+        self.bounce(OUTPUTD_UNIT, "restart")
         self.log(
             "outputd_only_restarted",
             output_dac_id=self.output_dac_id,
@@ -1647,8 +1684,7 @@ class Pass:
         if self.no_restart:
             return
         if self.route_fanin_changed:
-            self.systemctl_call("reset-failed", FANIN_UNIT, quiet=True)
-            self.systemctl_call("--no-block", "restart", FANIN_UNIT, quiet=True)
+            self.bounce(FANIN_UNIT, "restart")
         self.log(
             "route_runtime_restarted",
             fanin_env=self.fanin_env_file,
@@ -1687,8 +1723,7 @@ class Pass:
                 no_restart=1,
             )
             return
-        self.systemctl_call("reset-failed", OUTPUTD_UNIT, quiet=True)
-        self.systemctl_call("--no-block", "start", OUTPUTD_UNIT, quiet=True)
+        self.bounce(OUTPUTD_UNIT, "start")
         self.log(
             "outputd_start_requested",
             output_dac_id=self.output_dac_id,
@@ -1698,10 +1733,20 @@ class Pass:
 
     # -- the pass -----------------------------------------------------------
 
+    def rejected_stage_exit(self, name: str, **fields: Any) -> int:
+        """The one way a REFUSED candidate ends a pass: name the refusal, then
+        restart the mixer pin this pass's own changed record earned before
+        failing the unit at 78. The exit precedes every render and every stop,
+        so the box keeps running the configuration an earlier pass of this same
+        validator accepted."""
+        self.log(name, **fields)
+        self.restart_dac_init_for_record_change()
+        return 78
+
     def print_role_env(self) -> None:
         for key, value in (
             ("DONGLE_CARD", self.dongle_card),
-            ("APPLE_DONGLE_PRESENT", self.apple_dongle_present),
+            ("APPLE_DONGLE_PRESENT", "1" if self.apple_dongle_present else "0"),
             ("APPLE_DONGLE_SERVICE_CARD", self.apple_dongle_service_card),
             ("OUTPUT_DAC_CARD", self.output_dac_card),
             ("OUTPUT_DAC_ID", self.output_dac_id),
@@ -1716,6 +1761,17 @@ class Pass:
             self.apply_observed_composite_policy()
             self.print_role_env()
             return 0
+        if not os.access(self.asound_render_lib, os.R_OK):
+            # LOUD and before any mutation. Unreadable, the `bash -c source` in
+            # render_asound_if_needed exits 127 — which preserves the template
+            # but lets the pass go on to restart jasper-outputd against an
+            # asound.conf naming a different DAC than the outputd.env it just
+            # committed. The shell reconciler exited 66 here for the same reason.
+            self.log(
+                "asound_render_lib_missing",
+                lib=_log_token(self.asound_render_lib),
+            )
+            raise _Abort(66)
         self.reconcile_i2s_hat_boot()
         self.observe_output_hardware_state(write=True)
         self.sync_i2s_hat_reboot_marker()
@@ -1725,6 +1781,8 @@ class Pass:
         self.apply_observed_single_policy()
         self.apply_observed_composite_policy()
 
+        # lazy: patch target — the tests replace it on the source module, which
+        # only a per-call import sees.
         from jasper.camilla_config_contract import outputd_capture_device_for_playback
 
         if not outputd_capture_device_for_playback(DEFAULT_OUTPUTD_PLAYBACK_DEVICE):
@@ -1772,25 +1830,16 @@ class Pass:
         else:
             self.finish_outputd_env_stage()
         if self.outputd_env_stage_rejected:
-            # A REFUSED reconcile leaves the box running exactly as it was
-            # found. The candidate was rejected, so outputd.env is
-            # byte-unchanged and this exit precedes every render and every
-            # stop: the box is still running a configuration an earlier pass of
-            # THIS validator accepted. Stopping anything here would convert a
-            # healthy box into a silent one on behalf of a change that never
-            # landed (jts3 2026-08-11 lost the assistant that way, with no cue
-            # and no journal line saying so). The loud signal is unchanged:
-            # exit 78 fails the unit and outputd_env_invalid names the
-            # contradiction.
-            self.log(
+            # Stopping anything here would convert a healthy box into a silent
+            # one on behalf of a change that never landed (jts3 2026-08-11 lost
+            # the assistant that way, with no cue and no journal line saying so).
+            return self.rejected_stage_exit(
                 "outputd_candidate_rejected",
                 action="preserve_runtime_env",
                 services="unchanged",
                 output_dac_id=self.output_dac_id,
                 output_dac_card=self.output_dac_card,
             )
-            self.restart_dac_init_for_record_change()
-            return 78
         self.repair_generated_env_permissions()
 
         render_changed = 1 if self.render_asound_if_needed() else 0
@@ -1801,10 +1850,16 @@ class Pass:
         # enable final output.
         self.render_flat_cutover_if_needed()
         runtime_converge_failed = 0
-        if self.converge_runtime_graph():
+        if not self.converge_runtime_graph():
+            # A live topology-replacement caller already parked before saving,
+            # so keep the preliminary non-active candidate rather than deriving
+            # an active lane from an old graph. At boot the statefile may still
+            # be stale; jasper-camilla Requires this oneshot and therefore
+            # cannot start after this nonzero result.
+            runtime_converge_failed = 1
+        else:
             self.stage_outputd_env()
-            if self.apply_audio_runtime_env():
-                outputd_env_changed = 1
+            self.apply_audio_runtime_env()
             if self.commit_outputd_env_stage():
                 env_changed = 1
                 outputd_committed = 1
@@ -1812,21 +1867,12 @@ class Pass:
                 # Keep the previously validated preliminary candidate. Do not
                 # restart any service against a lane the final graph failed to
                 # validate.
-                self.log(
+                return self.rejected_stage_exit(
                     "runtime_graph",
                     result="failed",
                     reason="post_convergence_outputd_env_rejected",
                     action="preserve_preliminary_env",
                 )
-                self.restart_dac_init_for_record_change()
-                return 78
-        else:
-            # A live topology-replacement caller already parked before saving,
-            # so keep the preliminary non-active candidate rather than deriving
-            # an active lane from an old graph. At boot the statefile may still
-            # be stale; jasper-camilla Requires this oneshot and therefore
-            # cannot start after this nonzero result.
-            runtime_converge_failed = 1
         self.gate_role_services()
         if self.output_dac_recognized:
             # A DAC-identity or asound change can move the mic/input profile,
@@ -1853,7 +1899,7 @@ class Pass:
             "complete",
             output_dac_id=self.output_dac_id,
             output_dac_card=self.output_dac_card,
-            outputd_active_mode=self.outputd_active_mode,
+            outputd_active_mode=int(self.outputd_active_mode),
             outputd_active_channels=_log_token(self.outputd_active_channels),
             recognized=int(self.output_dac_recognized),
             env_changed=env_changed,
