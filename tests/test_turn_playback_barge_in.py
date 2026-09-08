@@ -9,7 +9,7 @@ import pytest
 from jasper.voice import turn_playback
 from jasper.voice._base import BaseLiveTurn
 from jasper.voice.session import AudioOutChunk
-from jasper.voice.turn_playback import idle_watchdog
+from jasper.voice.turn_playback import PlaybackReport, idle_watchdog
 from tests._log_events import event_fields, event_records
 
 
@@ -175,18 +175,6 @@ class _DrainBargeTts(_BaseTts):
         await asyncio.sleep(0.02)
 
 
-class _RefusedFirstWriteTts(_BaseTts):
-    """The admission seam refuses the first chunk — an armed correction
-    window drops the PCM rather than queueing it (see
-    ``TtsPlayout.set_emission_admission``)."""
-
-    async def write_segment(self, *_a, **_k) -> bool:
-        if self.write_calls == 0:
-            self.write_calls += 1
-            return False
-        return await super().write_segment(*_a, **_k)
-
-
 class _FlushRaisesTts(_ChunkBargeTts):
     async def flush(self):
         self.flush_calls += 1
@@ -223,22 +211,38 @@ def test_response_started_observed_once_before_first_playout_write():
     assert tts.write_calls == 3
 
 
-def test_first_write_waits_for_a_write_the_playout_accepted():
-    """`first_write` is the hand-off to fan-in, so a refused write must not
-    stamp it: those bytes are dropped, not queued, and nobody heard them.
-    Stamping on the attempt would time a chunk that never reached a
-    speaker."""
-    turn = _FakeTurn(n_chunks=3)
-    tts = _RefusedFirstWriteTts()
-    first_write_counts: list[int] = []
+@pytest.mark.parametrize("mode", ["refused", "error", "partial_error", "measurement", "empty"])
+async def test_playback_reports_acceptance_and_stops_after_a_failed_write(mode):
+    turn, tts, report = _FakeTurn(), _BaseTts(), PlaybackReport()
+    if mode == "empty":
+        turn._chunks = [b""]
+    first_write = []
 
-    async def first_write() -> None:
-        first_write_counts.append(tts.write_calls)
+    async def write(*args, on_first_write, **kwargs):
+        tts.write_calls += 1
+        if mode == "partial_error":
+            await on_first_write()
+        if mode in {"error", "partial_error"}:
+            raise OSError("output unavailable")
+        return False
 
-    asyncio.run(_play_responses(turn, tts, on_first_write=first_write))
+    async def accepted():
+        first_write.append(tts.write_calls)
 
-    assert first_write_counts == [2]
-    assert tts.write_calls == 3
+    tts.write_segment = write
+    playback = _play_responses(
+        turn, tts, report=report, on_first_write=accepted,
+        admission_refusal=lambda: "measurement_active" if mode == "measurement" else None,
+    )
+    if mode in {"empty", "measurement"}:
+        await playback
+    else:
+        with pytest.raises(OSError):
+            await playback
+    assert report.accepted_audio == (mode == "partial_error")
+    assert first_write == ([1] if report.accepted_audio else [])
+    assert report.stop_reason == ("measurement_active" if mode == "measurement" else None)
+    assert tts.write_calls == (0 if mode == "empty" else 1)
 
 
 def test_response_observer_failure_does_not_block_playout():
@@ -257,36 +261,17 @@ def test_response_observer_failure_does_not_block_playout():
     assert tts.write_calls == 2
 
 
-async def test_first_write_callback_survives_a_later_write_failure():
-    events = []
-
-    class PartialTts(_BaseTts):
-        async def write_segment(self, *args, **kwargs):
-            await kwargs["on_first_write"]()
-            raise OSError("later AUDIO command failed")
-
-    async def response():
-        events.append("response")
-
-    async def accepted():
-        events.append("accepted")
-
-    with pytest.raises(OSError):
-        await _play_responses(
-            _FakeTurn(), PartialTts(), on_response_started=response, on_first_write=accepted,
-        )
-    assert events == ["response", "accepted"]
-
-
 async def test_received_response_is_observed_even_when_interrupt_prevents_its_write():
-    turn, tts = _FakeTurn(), _BaseTts()
+    turn, tts, report = _FakeTurn(), _BaseTts(), PlaybackReport()
     turn.request_local_interrupt()
     events = []
 
     async def response():
         events.append("response")
 
-    await _play_responses(turn, tts, on_response_started=response)
+    await _play_responses(turn, tts, report=report, on_response_started=response)
+    assert report.stop_reason == "barge_in"
+    assert not report.accepted_audio
     assert events == ["response"]
     assert tts.write_calls == 0
 

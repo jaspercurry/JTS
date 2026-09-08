@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 from contextlib import aclosing
+from dataclasses import dataclass
 from typing import AsyncGenerator, Awaitable, Callable
 
 from ..audio_io import TtsPlayout, confirmed_tts_flush
@@ -17,6 +18,12 @@ from .session import AudioOutChunk, LiveTurn
 logger = logging.getLogger("jasper.voice_daemon")
 
 _WATCHDOG_POLL_SEC = 0.25
+
+
+@dataclass
+class PlaybackReport:
+    accepted_audio: bool = False
+    stop_reason: str | None = None
 
 
 async def _turn_audio_chunks(turn: LiveTurn) -> AsyncGenerator[AudioOutChunk, None]:
@@ -69,18 +76,19 @@ async def play_responses(
     tts: TtsPlayout,
     *,
     barge_in_enabled: bool = False,
+    report: PlaybackReport | None = None,
+    admission_refusal: Callable[[], str | None] | None = None,
     on_response_started: Callable[[], Awaitable[None]] | None = None,
     on_first_write: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Race provider gaps, output writes and the enabled drain tail against
     interruption. An interrupted response never resumes its audio iterator.
     """
-    first_write_seen = False
+    report = report if report is not None else PlaybackReport()
 
     async def first_write() -> None:
-        nonlocal first_write_seen
-        if not first_write_seen:
-            first_write_seen = True
+        if not report.accepted_audio:
+            report.accepted_audio = True
             if on_first_write is not None:
                 await on_first_write()
 
@@ -88,7 +96,9 @@ async def play_responses(
         response_started = False
         async with aclosing(_turn_audio_chunks(turn)) as chunks:
             async for chunk in chunks:
-                if not response_started and chunk.pcm:
+                if not chunk.pcm:
+                    continue
+                if not response_started:
                     response_started = True
                     if on_response_started is not None:
                         try:
@@ -97,12 +107,17 @@ async def play_responses(
                             logger.warning("turn response observer failed: %s", e)
                 if interrupt.done():
                     return
-                await tts.write_segment(
+                accepted = await tts.write_segment(
                     chunk.pcm,
                     provider_item_id=chunk.provider_item_id,
                     segment_kind=chunk.kind,
                     on_first_write=first_write,
                 )
+                if not accepted:
+                    report.stop_reason = admission_refusal() if admission_refusal else None
+                    if report.stop_reason is None:
+                        raise OSError("assistant output refused nonempty audio")
+                    return
         await tts.end_segment()
         if barge_in_enabled:
             await tts.wait_drained()
@@ -113,19 +128,24 @@ async def play_responses(
         done, _ = await asyncio.wait(
             {playback, interrupt}, return_when=asyncio.FIRST_COMPLETED,
         )
-        if interrupt in done:
-            await interrupt
-            playback.cancel()
-            await asyncio.gather(playback, return_exceptions=True)
-            await _flush_for_interrupt(turn, tts)
-        else:
+        if interrupt not in done:
             await playback
-            if not barge_in_enabled:
-                await tts.wait_drained()
     finally:
-        for task in (playback, interrupt):
-            task.cancel()
-        await asyncio.gather(playback, interrupt, return_exceptions=True)
+        playback.cancel()
+        await asyncio.gather(playback, return_exceptions=True)
+        try:
+            if interrupt.done() and not interrupt.cancelled():
+                await interrupt
+                report.stop_reason = "barge_in"
+                await _flush_for_interrupt(turn, tts)
+        finally:
+            interrupt.cancel()
+            await asyncio.gather(interrupt, return_exceptions=True)
+        if not playback.cancelled():
+            playback.result()
+    if not barge_in_enabled and report.stop_reason != "barge_in":
+        await tts.wait_drained()
+
 
 
 async def idle_watchdog(
