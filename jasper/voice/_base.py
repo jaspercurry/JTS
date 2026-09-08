@@ -121,7 +121,6 @@ class BaseLiveTurn:
         # Playout-queue byte accounting for AUDIO_OUT_QUEUE_MAX_BYTES.
         self._queued_bytes: int = 0
         self._audio_dropped_bytes: int = 0
-        self._overflow_logged = False
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
@@ -182,9 +181,9 @@ class BaseLiveTurn:
         """
         size = len(chunk.pcm)
         if self._queued_bytes + size > AUDIO_OUT_QUEUE_MAX_BYTES:
+            first_drop = self._audio_dropped_bytes == 0
             self._audio_dropped_bytes += size
-            if not self._overflow_logged:
-                self._overflow_logged = True
+            if first_drop:
                 log_event(
                     self._conn._logger,
                     "turn.audio_overflow",
