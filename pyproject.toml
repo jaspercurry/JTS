@@ -447,6 +447,7 @@ containers = ["jasper"]
 broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
 layers = [
   "cli : web",
+  "usage_writer",
   "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_fusion : wake_models : weather",
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : enhanced_aec : route_latency : volume_diagnostics",
   "aec_engines : bluealsa_probe : identity.speaker_name : identity.speaker_name_discovery : mics : usb_network : usbgadget : xvf",
