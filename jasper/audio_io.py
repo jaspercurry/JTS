@@ -475,6 +475,8 @@ _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
 _OUTPUTD_IPC_CONNECT_TIMEOUT_SEC = 1.0
 _OUTPUTD_IPC_IO_TIMEOUT_SEC = 1.0
 _OUTPUTD_IPC_LOCK_TIMEOUT_SEC = 1.0
+# A closed socket may not wake another thread's select on macOS.
+_OUTPUTD_IPC_CANCEL_POLL_SEC = 0.05
 # MEASURE_PAUSE is a rare safety-control request, not an audio hot path. Its
 # canonical adapter call runs synchronously so it cannot outlive the reply;
 # 250 ms matches one IPC audio chunk and leaves ample room inside the daemon's
@@ -660,33 +662,35 @@ def tts_wire_is_wide() -> bool:
         return False
 
 
-async def _send_outputd_audio_chunk(stream, chunk: bytes) -> bool:
-    """Wait for one thread-backed write to reach a known outcome.
+async def _outputd_io(stream, method: str, *args, on_accepted=None, **kwargs):
+    """Own a socket operation through cancellation and observe completed writes.
 
-    ``asyncio.to_thread`` cancellation cannot stop a blocking ``sendall``.
-    Defer cancellation until that worker returns so the caller can commit the
-    accepted chunk to its physical-drain ledger before cancellation unwinds.
-    Returns whether cancellation arrived while the worker was in flight.
+    Cancellation closes the socket; bounded I/O slices let the worker observe
+    that close. The worker must finish before another flush/write.
     """
-
-    write_task = asyncio.create_task(asyncio.to_thread(stream.write, chunk))
+    worker = asyncio.create_task(asyncio.to_thread(getattr(stream, method), *args, **kwargs))
     cancelled = False
     current = asyncio.current_task()
-    while not write_task.done():
+    while not worker.done():
         try:
-            await asyncio.wait({write_task})
+            await asyncio.wait({worker})
         except asyncio.CancelledError:
             cancelled = True
+            if isinstance(stream, _OutputdStreamAdapter):
+                stream._poison(reason=None)
             if current is not None:
                 current.uncancel()
-    if write_task.cancelled():
-        raise asyncio.CancelledError
-    error = write_task.exception()
-    if error is not None:
+    try:
+        result = worker.result()
+    except Exception:  # noqa: BLE001
         if cancelled:
             raise asyncio.CancelledError from None
-        raise error
-    return cancelled
+        raise
+    if on_accepted is not None:
+        await on_accepted()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 async def wait_tts_drained_owned(
@@ -817,9 +821,13 @@ class _OutputdStreamAdapter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
-            readable, _, _ = select.select([self._sock], [], [], remaining)
+            if self._closed:
+                raise BrokenPipeError("TTS IPC socket is closed")
+            readable, _, _ = select.select(
+                [self._sock], [], [], min(remaining, _OUTPUTD_IPC_CANCEL_POLL_SEC),
+            )
             if not readable:
-                raise TimeoutError
+                continue
             chunk = self._sock.recv(4096)
             if not chunk:
                 return b""
@@ -844,7 +852,7 @@ class _OutputdStreamAdapter:
         reason: str | None,
         timeout_sec: float | None = None,
     ) -> None:
-        """Close from any thread and wake a blocked socket operation."""
+        """Close from any thread; blocked operations check closure each slice."""
 
         if self._closed:
             return
@@ -852,8 +860,6 @@ class _OutputdStreamAdapter:
         self._active_segment = None
         self._recv_buffer.clear()
         try:
-            # close() alone does not reliably wake a sendall blocked in a
-            # different thread on every supported kernel. shutdown() does.
             self._sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
@@ -906,9 +912,8 @@ class _OutputdStreamAdapter:
             raise
         acquired = self._lock.acquire(timeout=timeout_sec)
         if not acquired:
-            # Do not release a lock this waiter never acquired. Poisoning the
-            # socket wakes the owning thread's bounded sendall; that owner
-            # releases its own lock in its finally block.
+            # Only the owning worker can release this lock. Closing the
+            # socket makes that worker fail within its current I/O slice.
             self._poison(reason="lock", timeout_sec=timeout_sec)
             raise TimeoutError(
                 "TTS IPC adapter lock timed out after "
@@ -936,12 +941,22 @@ class _OutputdStreamAdapter:
             self._poison(reason="send", timeout_sec=0.0)
             raise
         try:
-            # Every operation sets its own bound while holding the adapter
-            # lock. A measurement command may carry a tighter aggregate
-            # deadline than the ordinary one-second IPC ceiling; the next
-            # operation resets the socket timeout from its own budget.
-            self._sock.settimeout(timeout_sec)
-            self._sock.sendall(data)
+            deadline = time.monotonic() + timeout_sec
+            remaining_data = memoryview(data)
+            while remaining_data:
+                if self._closed:
+                    raise BrokenPipeError("TTS IPC socket is closed")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                self._sock.settimeout(min(remaining, _OUTPUTD_IPC_CANCEL_POLL_SEC))
+                try:
+                    sent = self._sock.send(remaining_data)
+                except TimeoutError:
+                    continue
+                if sent == 0:
+                    raise BrokenPipeError("TTS IPC socket stopped accepting bytes")
+                remaining_data = remaining_data[sent:]
         except TimeoutError as e:
             self._poison(reason="send", timeout_sec=timeout_sec)
             raise TimeoutError(
@@ -1091,6 +1106,40 @@ class _OutputdStreamAdapter:
             return
         with self._bounded_lock():
             self._close_unlocked(send_close=True)
+
+
+def confirmed_tts_flush(ack: object) -> bool:
+    """Validate the shared fan-in/outputd stop and segment ledger reply."""
+    if not isinstance(ack, dict) or ack.get("ok") is not True:
+        return False
+    for key in ("requests", "pending_frames", "segments", "flushed_frames", "max_audio_played_ms"):
+        value = ack.get(key)
+        if type(value) is not int or value < 0:
+            return False
+    events = ack.get("events")
+    if ack["requests"] == 0 or not isinstance(events, list) or len(events) != ack["segments"]:
+        return False
+    segments = set()
+    for event in events:
+        if not isinstance(event, dict):
+            return False
+        for key in ("segment", "queued_frames", "written_frames", "drained_frames", "flushed_frames"):
+            value = event.get(key)
+            if type(value) is not int or value < 0:
+                return False
+        if event["segment"] in segments:
+            return False
+        segments.add(event["segment"])
+        item = event.get("provider_item_id")
+        if "provider_item_id" not in event or not (item is None or isinstance(item, str) and item):
+            return False
+        if event.get("kind") not in {"assistant", "cue", "chirp"}:
+            return False
+        if not 0 <= event["drained_frames"] <= event["written_frames"] <= event["queued_frames"]:
+            return False
+        if event["flushed_frames"] > event["queued_frames"]:
+            return False
+    return True
 
 
 class TtsPlayout:
@@ -1609,13 +1658,13 @@ class TtsPlayout:
         for attempt in range(2):
             try:
                 if hasattr(stream, "set_gain_db"):
-                    await asyncio.to_thread(stream.set_gain_db, self.gain_db)
+                    await _outputd_io(stream, "set_gain_db", self.gain_db)
                 if hasattr(stream, "start_segment"):
                     profile = self._profile_for_segment(
                         segment_kind, source_profile=source_profile,
                     )
-                    await asyncio.to_thread(
-                        stream.start_segment,
+                    await _outputd_io(
+                        stream, "start_segment",
                         kind=segment_kind,
                         provider_item_id=provider_item_id,
                         profile=profile,
@@ -1642,18 +1691,31 @@ class TtsPlayout:
                 raise
         paced_sec = 0.0
         accepted = False
+
+        async def commit_chunk() -> None:
+            nonlocal accepted
+            sent_at = time.monotonic()
+            committed_end = max(self._ring_end_monotonic or sent_at, sent_at)
+            self._ring_end_monotonic = committed_end + len(chunk) / (
+                _OUTPUTD_SAMPLE_RATE * self._frame_bytes
+            )
+            if not accepted:
+                accepted = True
+                if on_first_write is not None:
+                    try:
+                        await on_first_write()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("TTS acceptance observer failed: %s", e)
+
         for chunk in _outputd_audio_chunks(stereo.tobytes(), self._frame_bytes):
             now = time.monotonic()
-            queued_end = self._ring_end_monotonic
-            if queued_end is None or queued_end < now:
-                queued_end = now
-            pace_excess = (queued_end - now) - _OUTPUTD_PACE_AHEAD_SEC
+            pace_excess = (self._ring_end_monotonic or now) - now - _OUTPUTD_PACE_AHEAD_SEC
             if pace_excess > 0:
                 await _pace_sleep(pace_excess)
                 paced_sec += pace_excess
                 self._paced_total_sec += pace_excess
             try:
-                cancelled = await _send_outputd_audio_chunk(stream, chunk)
+                await _outputd_io(stream, "write", chunk, on_accepted=commit_chunk)
             except OSError:
                 if isinstance(stream, _OutputdStreamAdapter) and stream.closed:
                     log_event(
@@ -1663,26 +1725,6 @@ class TtsPlayout:
                         level=logging.WARNING,
                     )
                 raise
-            # Commit only after this AUDIO command was accepted, and commit
-            # every accepted command independently. A later command can fail
-            # after this one is already queued at the IPC owner; deferring the
-            # ledger until the whole write returns would then advertise idle
-            # while that accepted prefix is still physically audible.
-            sent_at = time.monotonic()
-            committed_end = self._ring_end_monotonic
-            if committed_end is None or committed_end < sent_at:
-                committed_end = sent_at
-            committed_end += len(chunk) / (_OUTPUTD_SAMPLE_RATE * self._frame_bytes)
-            self._ring_end_monotonic = committed_end
-            if not accepted:
-                accepted = True
-                if on_first_write is not None:
-                    try:
-                        await on_first_write()
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("TTS acceptance observer failed: %s", e)
-            if cancelled:
-                raise asyncio.CancelledError
         queued_at = time.monotonic()
         # Exclude deliberate pacing sleeps so the warning keeps meaning
         # "the IPC itself is slow", not "the writer paced as designed".
@@ -1726,7 +1768,7 @@ class TtsPlayout:
         end = getattr(stream, "end_segment", None)
         if end is not None:
             try:
-                await asyncio.to_thread(end)
+                await _outputd_io(stream, "end_segment")
             except OSError as e:
                 logger.warning("fan-in TTS IPC segment end failed: %s", e)
         self._schedule_assistant_source_profile_save()
@@ -1778,7 +1820,7 @@ class TtsPlayout:
             self._profile_cache = None
 
     async def flush(self) -> dict | None:
-        stream = self._stream
+        stream = await self._current_outputd_stream()
         if stream is None:
             await self._save_assistant_source_profile(self._pop_assistant_meter())
             return None
@@ -1786,14 +1828,14 @@ class TtsPlayout:
         try:
             flush_sync = getattr(stream, "flush_sync", None)
             if flush_sync is not None:
-                ack = await asyncio.to_thread(flush_sync)
+                ack = await _outputd_io(stream, "flush_sync")
             else:
-                await asyncio.to_thread(stream.abort)
-                await asyncio.to_thread(stream.start)
+                await _outputd_io(stream, "abort")
+                await _outputd_io(stream, "start")
         except Exception as e:  # noqa: BLE001
             logger.warning("fan-in TTS IPC flush failed: %s", e)
-        self._ring_end_monotonic = None
-        if ack is not None:
+        if confirmed_tts_flush(ack):
+            self._ring_end_monotonic = None
             log_event(
                 logger,
                 "tts_flush.ack",
@@ -1803,7 +1845,9 @@ class TtsPlayout:
                 flushed_frames=ack.get("flushed_frames"),
                 max_audio_played_ms=ack.get("max_audio_played_ms"),
             )
-        await self._save_assistant_source_profile(self._pop_assistant_meter())
+        else:
+            ack = None
+        self._schedule_assistant_source_profile_save()
         return ack
 
     async def __aexit__(self, *exc) -> None:

@@ -604,188 +604,34 @@ async def test_release_after_commit_cancels_unfinished_response():
         await conn.stop()
 
 
-# ---------------------------------------------------------------------------
-# Barge-in capability seam (OpenAI reference pack — PR-4).
-#
-# cancel_response -> response.cancel (guarded to an in-progress response);
-# truncate_assistant_audio -> conversation.item.truncate with the playout
-# ledger's played-ms as audio_end_ms, guarded to never truncate on a 0/None
-# played-ms (which would over-count vs. what was heard and error server-side).
-# ---------------------------------------------------------------------------
-
-
-async def test_truncate_assistant_audio_sends_item_truncate_with_played_ms():
-    """The reference-pack truncate sends conversation.item.truncate with
-    content_index 0 and audio_end_ms == the played-ms it was handed (the
-    flush ack's max_audio_played_ms). audio_end_ms is the heard boundary;
-    OpenAI deletes the unspoken transcript past it so context stays aligned."""
+@pytest.mark.parametrize("item, played, complete, expected", [
+    ("owned", 4321, False, 4321),
+    ("owned", 3200, True, 3200),
+    ("owned", 0, False, 0),
+    ("owned", 9000, False, 5000),
+    ("foreign", 1000, False, None),
+    (None, 1500, False, None),
+    ("owned", -1, False, None),
+    ("owned", "12", False, None),
+])
+async def test_truncate_requires_owned_item_and_explicit_boundary(item, played, complete, expected):
     conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
+    await conn.start(ToolRegistry(), "")
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
-
+        turn._received_ms_by_item["owned"] = 5000
+        turn._server_turn_complete = complete
         baseline = len(sess.sent)
-        await turn.truncate_assistant_audio("item_xyz", 4321)
-
-        trunc = _find_event(sess.sent[baseline:], "conversation.item.truncate")
-        assert trunc is not None, (
-            "truncate_assistant_audio did not send conversation.item.truncate"
-        )
-        assert trunc["item_id"] == "item_xyz"
-        assert trunc["content_index"] == 0
-        assert trunc["audio_end_ms"] == 4321
-    finally:
-        await conn.stop()
-
-
-async def test_truncate_falls_back_to_last_assistant_item_id():
-    """When the daemon spine passes provider_item_id=None (it carries no
-    provider id), the adapter targets its own `_last_assistant_item_id`,
-    captured from response.output_item.added. This is the production path —
-    `_flush_for_interrupt` always passes None."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        await _begin_response(conn, sess)
-        # The connection's receive loop sets _last_assistant_item_id from
-        # this event in production.
-        sess.feed({
-            "type": "response.output_item.added",
-            "item": {"type": "message", "id": "item_from_server"},
-        })
-        await _wait_until(
-            lambda: turn._last_assistant_item_id == "item_from_server",
-        )
-
-        baseline = len(sess.sent)
-        await turn.truncate_assistant_audio(None, 1500)
-
-        trunc = _find_event(sess.sent[baseline:], "conversation.item.truncate")
-        assert trunc is not None
-        assert trunc["item_id"] == "item_from_server"
-        assert trunc["audio_end_ms"] == 1500
-    finally:
-        await conn.stop()
-
-
-async def test_truncate_fires_even_after_server_turn_complete():
-    """The most common OpenAI barge-in window: burst delivery finishes the
-    response server-side (server_turn_complete True) while audio is still
-    draining locally, then the user talks over the tail. Truncate MUST still
-    align history to the heard boundary — unlike cancel, it does NOT gate on
-    completion (there is nothing to *cancel*, but there is still unspoken
-    transcript to *trim*)."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        turn._last_assistant_item_id = "item_drain"
-        turn._server_turn_complete = True  # response already done server-side
-
-        baseline = len(sess.sent)
-        await turn.truncate_assistant_audio(None, 3200)
-
-        trunc = _find_event(sess.sent[baseline:], "conversation.item.truncate")
-        assert trunc is not None, (
-            "truncate must fire during the drain tail even after the server "
-            "completed the response — this is the primary barge-in window"
-        )
-        assert trunc["item_id"] == "item_drain"
-        assert trunc["audio_end_ms"] == 3200
-    finally:
-        await conn.stop()
-
-
-async def test_truncate_noop_and_warns_on_zero_played_ms(caplog):
-    """CRITICAL GUARD: a 0 played-ms (the production fan-in ack can return
-    max_audio_played_ms=0) means the ledger saw no rendered audio. Truncating
-    on bytes-received instead would push audio_end_ms past the heard boundary
-    and the server errors. So 0 is a no-op + WARN, never a guess."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        turn._last_assistant_item_id = "item_present"  # a real target exists
-
-        baseline = len(sess.sent)
-        with caplog.at_level(
-            logging.WARNING, logger="jasper.voice.openai_session",
-        ):
-            await turn.truncate_assistant_audio(None, 0)
-
-        assert _find_event(
-            sess.sent[baseline:], "conversation.item.truncate",
-        ) is None, "must NOT truncate when the ledger reports 0 played-ms"
-        fields = event_fields(caplog, "barge.truncate_skipped")
-        assert fields["reason"] == "zero_played_ms", (
-            "a 0-played-ms truncate must WARN once, never silently no-op"
-        )
-    finally:
-        await conn.stop()
-
-
-async def test_truncate_clamps_to_item_received_ms(caplog):
-    """C1: the playout ledger reports a turn-WIDE max played-ms. On a
-    multi-segment (tool-using) turn an earlier item can out-play the
-    in-flight one, so the max would exceed THIS item's duration — the
-    out-of-range case OpenAI rejects. truncate clamps audio_end_ms to what
-    this item actually received."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        turn._last_assistant_item_id = "item_short"
-        # This item received only 1000 ms of audio...
-        turn._received_ms_by_item["item_short"] = 1000.0
-        baseline = len(sess.sent)
-        with caplog.at_level(
-            logging.DEBUG, logger="jasper.voice.openai_session",
-        ):
-            # ...but the turn-wide ledger max is 5000 ms (an earlier item
-            # out-played this one).
-            await turn.truncate_assistant_audio(None, 5000)
-        ev = _find_event(sess.sent[baseline:], "conversation.item.truncate")
-        assert ev is not None, "truncate must still be sent (clamped, not skipped)"
-        assert ev["audio_end_ms"] == 1000, (
-            "audio_end_ms must be clamped to the item's received duration, "
-            f"not the turn-wide max; got {ev['audio_end_ms']}"
-        )
-        assert len(event_records(caplog, "barge.truncate_clamped")) == 1, (
-            "a clamp must be observable"
-        )
-    finally:
-        await conn.stop()
-
-
-async def test_truncate_noop_when_no_item_id():
-    """No assistant item observed yet (barge-in raced
-    response.output_item.added) and no id passed in → nothing to align, so
-    no conversation.item.truncate is sent."""
-    conn, factory = _make_conn()
-    registry = ToolRegistry()
-    await conn.start(registry, "")
-    try:
-        sess = factory.conns[0]
-        turn = await conn.acquire_turn()
-        assert turn._last_assistant_item_id is None  # nothing captured yet
-
-        baseline = len(sess.sent)
-        await turn.truncate_assistant_audio(None, 2000)
-
-        assert _find_event(
-            sess.sent[baseline:], "conversation.item.truncate",
-        ) is None
+        await turn.truncate_assistant_audio(item, played)
+        event = _find_event(sess.sent[baseline:], "conversation.item.truncate")
+        if expected is None:
+            assert event is None
+        else:
+            assert event == {
+                "type": "conversation.item.truncate", "item_id": "owned",
+                "content_index": 0, "audio_end_ms": expected,
+            }
     finally:
         await conn.stop()
 
@@ -805,7 +651,7 @@ async def test_truncate_failure_redacts_the_connections_own_key(caplog):
     try:
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
-        turn._last_assistant_item_id = "item_present"
+        turn._received_ms_by_item["item_present"] = 1000
 
         async def _raise(event: dict) -> None:
             raise RuntimeError('rejected: {"key":"plainvalue123"}')
@@ -815,7 +661,7 @@ async def test_truncate_failure_redacts_the_connections_own_key(caplog):
         with caplog.at_level(
             logging.WARNING, logger="jasper.voice.openai_session",
         ):
-            await turn.truncate_assistant_audio(None, 1000)
+            await turn.truncate_assistant_audio("item_present", 1000)
 
         fields = event_fields(caplog, "barge.truncate_failed")
         assert "plainvalue123" not in fields["detail"]

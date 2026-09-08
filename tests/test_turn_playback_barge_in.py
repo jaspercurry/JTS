@@ -1,28 +1,10 @@
-"""_play_responses barge-in flush behaviour (PR-2 spine).
-
-Covers the two interrupt windows and the no-silent-failure contract:
-
-  * chunk-loop window — interrupt while chunks are still being written
-    (the path that already existed; pinned here against the local-barge
-    trigger);
-  * drain-tail window — interrupt after the last chunk, while
-    ``wait_drained`` is pending. This is the new race, and the most
-    common barge-in moment for burst-delivery providers (OpenAI/Grok
-    stream every chunk before playout finishes). It only fires when
-    ``barge_in_enabled`` is True; with it False the function is
-    byte-identical to its pre-barge-in shape.
-  * flush failure emits ``event=barge.flush_failed`` (WARN) and the turn
-    still ends — never silently.
-
-Plus the other half of the same "never silently" contract: ``idle_watchdog``
-defers the post-turn_complete close on playout PROGRESS, so a wedged
-consumer ends the turn instead of holding it (and the wake loop) open.
-"""
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+
+import pytest
 
 from jasper.voice import turn_playback
 from jasper.voice._base import BaseLiveTurn
@@ -146,6 +128,10 @@ class _BaseTts:
 
     async def write_segment(self, *_a, **_k) -> bool:
         self.write_calls += 1
+        callback = _k.get("on_first_write")
+        if callback is not None:
+            await callback()
+        await asyncio.sleep(0)
         return True
 
     async def end_segment(self) -> None:
@@ -156,7 +142,7 @@ class _BaseTts:
 
     async def flush(self):
         self.flush_calls += 1
-        return {"max_audio_played_ms": 0, "segments": 0, "flushed_frames": 0}
+        return _flush_ack()
 
     def expected_drain_at(self) -> float:
         return 0.0
@@ -172,8 +158,7 @@ class _ChunkBargeTts(_BaseTts):
     async def write_segment(self, *_a, **_k) -> bool:
         if self.write_calls == 0:
             self._turn.request_local_interrupt()
-        self.write_calls += 1
-        return True
+        return await super().write_segment(*_a, **_k)
 
 
 class _DrainBargeTts(_BaseTts):
@@ -196,8 +181,10 @@ class _RefusedFirstWriteTts(_BaseTts):
     ``TtsPlayout.set_emission_admission``)."""
 
     async def write_segment(self, *_a, **_k) -> bool:
-        self.write_calls += 1
-        return self.write_calls > 1
+        if self.write_calls == 0:
+            self.write_calls += 1
+            return False
+        return await super().write_segment(*_a, **_k)
 
 
 class _FlushRaisesTts(_ChunkBargeTts):
@@ -270,28 +257,38 @@ def test_response_observer_failure_does_not_block_playout():
     assert tts.write_calls == 2
 
 
-def test_response_observer_timeout_does_not_block_playout(monkeypatch):
-    turn = _FakeTurn(n_chunks=2)
-    tts = _BaseTts()
+async def test_first_write_callback_survives_a_later_write_failure():
+    events = []
 
-    async def stuck_observer() -> None:
-        await asyncio.Event().wait()
+    class PartialTts(_BaseTts):
+        async def write_segment(self, *args, **kwargs):
+            await kwargs["on_first_write"]()
+            raise OSError("later AUDIO command failed")
 
-    monkeypatch.setattr(
-        turn_playback,
-        "_RESPONSE_OBSERVER_TIMEOUT_SEC",
-        0.01,
-    )
-    asyncio.run(asyncio.wait_for(
-        _play_responses(
-            turn,
-            tts,
-            on_response_started=stuck_observer,
-        ),
-        timeout=0.2,
-    ))
+    async def response():
+        events.append("response")
 
-    assert tts.write_calls == 2
+    async def accepted():
+        events.append("accepted")
+
+    with pytest.raises(OSError):
+        await _play_responses(
+            _FakeTurn(), PartialTts(), on_response_started=response, on_first_write=accepted,
+        )
+    assert events == ["response", "accepted"]
+
+
+async def test_received_response_is_observed_even_when_interrupt_prevents_its_write():
+    turn, tts = _FakeTurn(), _BaseTts()
+    turn.request_local_interrupt()
+    events = []
+
+    async def response():
+        events.append("response")
+
+    await _play_responses(turn, tts, on_response_started=response)
+    assert events == ["response"]
+    assert tts.write_calls == 0
 
 
 # --- chunk-loop window -------------------------------------------------
@@ -396,18 +393,8 @@ def test_flush_failure_warns_and_ends_turn(caplog):
         asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
 
     assert tts.flush_calls == 1
-    assert tts.end_segment_calls == 1
+    assert tts.end_segment_calls == 0
     assert len(event_records(caplog, "barge.flush_failed")) == 1
-
-
-# --- provider reconcile seam wiring (PR-4) -----------------------------
-#
-# After a successful local flush the spine drives the active provider's
-# barge-in pack: cancel_response THEN truncate_assistant_audio, the latter
-# with the flush ack's played-ms. Both are `Interruptible` members, so every
-# turn that can reach the spine has them (pinned in
-# tests/test_voice_barge_in_contract.py); a provider with nothing to
-# reconcile ships them as no-ops.
 
 
 class _SeamTurn(_FakeTurn):
@@ -427,79 +414,111 @@ class _SeamTurn(_FakeTurn):
         self.seam_calls.append(("truncate", provider_item_id, audio_played_ms))
 
 
-class _LedgerTts(_BaseTts):
-    """Trips a barge-in on the first chunk and reports a real played-ms in
-    the flush ack — the production fan-in DAC-clock ledger value."""
-
-    def __init__(self, turn: _FakeTurn, *, played_ms: int) -> None:
-        super().__init__()
-        self._turn = turn
-        self._played_ms = played_ms
-
-    async def write_segment(self, *_a, **_k) -> bool:
-        if self.write_calls == 0:
-            self._turn.request_local_interrupt()
-        self.write_calls += 1
-        return True
-
-    async def flush(self):
-        self.flush_calls += 1
-        return {
-            "max_audio_played_ms": self._played_ms,
-            "segments": 1,
-            "flushed_frames": 2,
-        }
+def _flush_ack(events=()):
+    return {
+        "ok": True, "requests": 1, "pending_frames": 0,
+        "segments": len(events), "flushed_frames": 0,
+        "max_audio_played_ms": 9999, "events": list(events),
+    }
 
 
-def test_flush_drives_cancel_then_truncate_with_ledger_ms():
-    turn = _SeamTurn(n_chunks=3)
-    tts = _LedgerTts(turn, played_ms=2750)
+def _segment(item="a", frames=0, segment=1, kind="assistant"):
+    return {
+        "segment": segment, "kind": kind, "provider_item_id": item,
+        "queued_frames": 480000, "written_frames": frames,
+        "drained_frames": frames, "flushed_frames": 0,
+    }
 
-    asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
 
-    assert tts.flush_calls == 1
-    # cancel first (stop generation), then truncate with the ack's
-    # played-ms as the heard boundary. The spine carries no provider id,
-    # so it passes None (the OpenAI pack falls back to its own item id).
-    assert turn.seam_calls == [
-        ("cancel", "barge_in"),
-        ("truncate", None, 2750),
+@pytest.mark.parametrize("ack, confirmed, boundaries", [
+    (None, False, []),
+    ({"ok": False}, False, []),
+    ({"ok": True}, False, []),
+    ([], False, []),
+    (_flush_ack([dict(_segment(), drained_frames="480")]), False, []),
+    (_flush_ack([dict(_segment(), drained_frames=True)]), False, []),
+    (_flush_ack([dict(_segment(), drained_frames=-1)]), False, []),
+    (_flush_ack(), True, []),
+    (_flush_ack([_segment()]), True, [("a", 0)]),
+    (_flush_ack([_segment("a", 96000), _segment("b", 24000, 2)]),
+     True, [("a", 2000), ("b", 500)]),
+    (_flush_ack([_segment("a", 480, 1), _segment("a", 960, 2),
+                 _segment("cue", 24000, 3, "cue")]), True, [("a", 30)]),
+])
+async def test_interrupt_stop_and_item_boundary_are_distinct(ack, confirmed, boundaries):
+    turn = _SeamTurn()
+    tts = _BaseTts()
+
+    async def flush():
+        return ack
+
+    tts.flush = flush
+    assert await turn_playback._flush_for_interrupt(turn, tts) is confirmed
+    assert turn.seam_calls == [("cancel", "barge_in")] + [
+        ("truncate", item, ms) for item, ms in boundaries
     ]
 
 
-class _SeamFlushRaisesTts(_BaseTts):
-    """Trips a barge-in on the first chunk, then the flush itself errors."""
+@pytest.mark.parametrize("phase", ["gap", "write", "drain"])
+async def test_interrupt_owns_gap_write_and_drain_helpers(phase):
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
+    source_closed = asyncio.Event()
+    live_helpers = set()
 
-    def __init__(self, turn: _FakeTurn) -> None:
-        super().__init__()
-        self._turn = turn
+    async def block():
+        task = asyncio.current_task()
+        live_helpers.add(task)
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            live_helpers.remove(task)
+            stopped.set()
 
-    async def write_segment(self, *_a, **_k) -> bool:
-        if self.write_calls == 0:
-            self._turn.request_local_interrupt()
-        self.write_calls += 1
-        return True
+    class Turn(_SeamTurn):
+        async def audio_out_chunks(self):
+            try:
+                yield AudioOutChunk(b"first", "a")
+                if phase == "gap":
+                    await block()
+                yield AudioOutChunk(b"stale", "a")
+            finally:
+                source_closed.set()
 
-    async def flush(self):
-        self.flush_calls += 1
-        raise RuntimeError("fan-in socket gone")
+    class Tts(_BaseTts):
+        async def write_segment(self, *args, **kwargs):
+            await super().write_segment(*args, **kwargs)
+            if phase == "write":
+                await block()
+            return True
+
+        async def wait_drained(self):
+            if phase == "drain":
+                await block()
+
+    turn, tts = Turn(), Tts()
+    playing = asyncio.create_task(_play_responses(turn, tts, barge_in_enabled=True))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        turn.request_local_interrupt()
+        await asyncio.wait_for(playing, 1)
+        assert stopped.is_set()
+        assert not live_helpers
+        assert source_closed.is_set()
+        assert tts.write_calls == (2 if phase == "drain" else 1)
+        assert tts.flush_calls == 1
+        assert turn.seam_calls == [("cancel", "barge_in")]
+    finally:
+        playing.cancel()
+        await asyncio.gather(playing, return_exceptions=True)
 
 
-def test_flush_failure_skips_provider_reconcile(caplog):
-    """A failed local flush has no trustworthy played boundary, so the spine
-    must NOT cancel/truncate the provider — doing so could truncate against a
-    guessed ms. The turn still ends, and the failure is logged (not silent)."""
-    turn = _SeamTurn(n_chunks=3)
-    tts = _SeamFlushRaisesTts(turn)
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        asyncio.run(_play_responses(turn, tts, barge_in_enabled=True))
-
-    assert tts.flush_calls == 1
-    assert turn.seam_calls == [], (
-        "a failed flush must not drive the provider reconcile seam"
-    )
-    assert len(event_records(caplog, "barge.flush_failed")) == 1
+async def test_flush_exception_still_cancels_generation():
+    turn = _SeamTurn()
+    tts = _FlushRaisesTts(turn)
+    assert not await turn_playback._flush_for_interrupt(turn, tts)
+    assert turn.seam_calls == [("cancel", "barge_in")]
 
 
 # ---------------------------------------------------------------------------

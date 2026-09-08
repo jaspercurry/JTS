@@ -108,6 +108,11 @@ class _CaptureOutputdStream:
     def flush_sync(self) -> dict:
         ack = {
             "ok": True,
+            "requests": 1,
+            "pending_frames": 2400,
+            "events": [{"segment": 1, "kind": "assistant", "provider_item_id": None,
+                        "queued_frames": 8400, "written_frames": 6000,
+                        "drained_frames": 6000, "flushed_frames": 2400}],
             "segments": 1,
             "flushed_frames": 2400,
             "max_audio_played_ms": 125,
@@ -491,6 +496,48 @@ async def test_cancelled_write_observes_accepted_chunk_before_exit():
     assert p.expected_drain_at() > 0
 
 
+@pytest.mark.parametrize("method", ["set_gain_db", "start_segment", "end_segment", "flush_sync"])
+async def test_cancelled_output_control_owns_its_thread(method):
+    loop = asyncio.get_running_loop()
+    entered, completed = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    p = _make_outputd()
+
+    def control(*args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(1)
+        loop.call_soon_threadsafe(completed.set)
+
+    setattr(p._stream, method, control)
+    operation = (p.flush() if method == "flush_sync" else
+                 p.end_segment() if method == "end_segment" else
+                 p.write_segment(_silence_pcm(sec=0.01)))
+    pending = asyncio.create_task(operation)
+    try:
+        await wait_signalled(entered, method, producer=pending)
+        pending.cancel()
+        await asyncio.sleep(0)
+        assert not pending.done()
+        pending.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert completed.is_set()
+    assert p._stream.writes == []
+
+
+@pytest.mark.parametrize("ack", [None, {}, [], {"ok": False}, {"ok": True}])
+async def test_unconfirmed_flush_preserves_the_drain_deadline(ack):
+    p = _make_outputd()
+    await p.write(_silence_pcm(sec=0.01))
+    deadline = p.expected_drain_at()
+    p._stream.flush_sync = lambda: ack
+    assert await p.flush() is None
+    assert p.expected_drain_at() == deadline
+    await asyncio.gather(*p._profile_save_tasks)
+
+
 async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     p = TtsPlayout(
@@ -634,6 +681,7 @@ async def test_outputd_flush_silences_before_saving_profile(monkeypatch):
 
     await p.flush()
 
+    await asyncio.gather(*p._profile_save_tasks)
     assert events == ["flush", "save"]
 
 
@@ -969,12 +1017,12 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
     child.close()
 
 
+@pytest.mark.parametrize("accepted_prefix", [False, True])
 async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
-    monkeypatch,
-    caplog,
+    monkeypatch, accepted_prefix,
 ) -> None:
 
-    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 0.2)
+    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 5)
     monkeypatch.setattr(audio_io_mod, "upsample_2x", lambda arr: arr)
     parent, child = socket.socketpair()
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
@@ -986,15 +1034,26 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
         drain_tail_sec=0.0,
     )
     p._stream = adapter  # type: ignore[assignment]
+    observed = []
+
+    async def first_write():
+        observed.append(True)
+
     writing = asyncio.create_task(
-        p.write_segment(b"\x01\x00" * 200_000, segment_kind="cue")
+        p.write_segment(b"\x01\x00" * 200_000, segment_kind="cue", on_first_write=first_write)
     )
 
     def read_to_audio_header() -> bytes:
-        received = b""
-        while b"AUDIO " not in received:
-            received += child.recv(512)
-        return received
+        with child.makefile("rb") as incoming:
+            remaining_commands = int(accepted_prefix)
+            while True:
+                header = incoming.readline()
+                if header.startswith(b"AUDIO "):
+                    if not remaining_commands:
+                        return header
+                    length = int(header.split()[1])
+                    assert len(incoming.read(length)) == length
+                    remaining_commands -= 1
 
     received = await asyncio.to_thread(read_to_audio_header)
     assert b"AUDIO " in received
@@ -1005,8 +1064,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
         await asyncio.wait_for(writing, timeout=0.75)
 
     assert adapter.closed
-    assert "event=tts_fanin.adapter_timeout" in caplog.text
-    assert "phase=send" in caplog.text
+    assert len(observed) == int(accepted_prefix)
 
     replacement = _CaptureOutputdStream()
 
