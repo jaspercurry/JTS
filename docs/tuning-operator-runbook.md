@@ -2,9 +2,10 @@
 
 ## Entry contract
 
-1. Read `jasper-crossover-prescriber status`, then
-   `jasper-round-views inventory <round-dir>`. Follow the artifact paths and
-   latest rationale note; request deeper analysis only for a question it answers.
+1. For a known round, read `jasper-crossover-prescriber status <round-dir>`,
+   then `jasper-round-views inventory <round-dir>`. Follow its paths
+   and latest rationale note. Bare `status` does not discover retained rounds;
+   use the measurement catalog at `/sound/measurements/` to inspect history.
 2. Code owns calculations, graph composition, protected capture, and evidence.
    The LLM chooses experiments and interprets results. The human places the mic,
    starts each pose batch, reports physical changes, and judges listening.
@@ -29,12 +30,10 @@ in artifacts; stdout is the compact answer.
 
 ## One possible flow
 
-These steps are a useful starting method, not a workflow engine. Reuse the same
-round and analysis tools in another order when the evidence calls for it.
+Choose the order from the evidence and the next question.
 
-1. **Orient.** `jasper-crossover-prescriber status` reports declared, banked,
-   staged, and applied state. Read its concrete paths and next commands.
-   Confirm the speaker identity and the base design being tested.
+1. **Orient.** Read `jasper-crossover-prescriber status <round-dir>` for a known
+   round. Confirm the speaker, base design, and returned paths.
 2. **Plan the question.** For an initial baseline, use the base tune without
    inherited corrections. For a comparison, name the candidate fingerprints
    and required poses. `jasper-angle-capture plan` previews the program and
@@ -149,9 +148,10 @@ After cancellation, a lost answer, or a physical interruption:
 
 ## The tool menu
 
-This block is generated from CLI help. `stage`, `withdraw`, and `bank` change
-stored state even when they do not change sound. `plan`, `show`, and evidence
-views are reads; capture emits sound; apply persists a tune.
+This block is generated from CLI help. Offline does not mean read-only:
+`stage`, `withdraw`, and `bank` change stored state; evidence views can write
+artifacts, and `classify-features` also projects results into the bundle.
+Angle `plan`/`show` are reads; capture emits sound; apply persists a tune.
 
 <!-- BEGIN GENERATED TOOL MENU (scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->
 | Tool | Does | Authority | Where |
@@ -187,17 +187,16 @@ Regenerate with `PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu
 | What is predicted from banked complex solos? | `forward-model`; simulation is not a new capture |
 | Show a curve or compare two takes? | `frequency <A> [<B>]` |
 
-The household chart at `/sound/measurements/` uses retained live session bundles;
-a banked round may be absent there. `frequency` can read a banked round, bundle,
-or take file directly.
+The catalog at `/sound/measurements/` includes banked rounds and retained live
+sessions. `frequency` can read a banked round, bundle, or take file directly.
 
 ## URLs and access
 
 Use the tool's `handoff_url`; it derives from the selected speaker's hostname.
-The public measurement entry is `https://<speaker>/sound/room/`, with the
-crossover surface at `/sound/speaker/crossover/`. Phone capture needs HTTPS and
-trust in the speaker's local CA. Wired capture records on the Pi; do not infer
-its state from the browser's mic indicator.
+Room browser capture is at `https://<speaker>/sound/room/`; it needs HTTPS and
+trust in the speaker's local CA. The crossover surface is
+`/sound/speaker/crossover/` and records with the wired Pi microphone. Its state
+is separate from the browser's mic indicator; the phone relay is retired.
 
 Backend paths in tool output use `127.0.0.1:8770` on the Pi. Through nginx,
 prefix crossover paths with `/sound/speaker`, for example
