@@ -199,6 +199,17 @@ const fn direct_narrow_scratch_samples() -> usize {
 /// thread's `try_send` non-blocking.
 const TAP_CHANNEL_CAPACITY: usize = 256;
 
+/// Forward one event to an off-thread writer with `try_send`, dropping and
+/// counting into `dropped` past capacity rather than blocking the SCHED_FIFO
+/// work loop on the writer's I/O. `Disconnected` (writer thread gone, shutdown
+/// in progress) is not counted — nothing reads the counter past that point.
+/// See ADR-0254.
+fn send_drop_counted<T>(tx: &SyncSender<T>, dropped: &AtomicU64, event: T) {
+    if let Err(TrySendError::Full(_)) = tx.try_send(event) {
+        dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// USB DIRECT reopen retry cadence, in render PERIODS (~2 s at 256/48k = 375).
 /// While the gadget is Absent, the lane attempts a reopen at most once per this
 /// many periods it renders — a period-counted cadence so the hot loop never
@@ -765,7 +776,7 @@ pub struct Mixer {
     /// Channel for forwarding xrun events to the off-thread log writer. Bounded
     /// (`main`'s `XRUN_CHANNEL_CAPACITY`) so a producer storm can never block
     /// the SCHED_FIFO work loop on the writer's per-event fdatasync;
-    /// `send_xrun_event` uses `try_send` and drops-and-counts past capacity.
+    /// `send_drop_counted` uses `try_send` and drops-and-counts past capacity.
     xrun_tx: SyncSender<XrunEvent>,
     /// Events dropped from `xrun_tx` when the writer thread falls behind
     /// (`TrySendError::Full`). The per-lane `xrun_count` gauges are bumped
@@ -2733,9 +2744,7 @@ impl DirectTapHook {
             ring_fill_frames,
             peak: hit.peak,
         };
-        if self.sender.try_send(event).is_err() {
-            self.state.note_dropped();
-        }
+        send_drop_counted(&self.sender, self.state.dropped_counter(), event);
     }
 }
 
@@ -2752,17 +2761,6 @@ fn monotonic_ns() -> i128 {
     }
     let ts = unsafe { ts.assume_init() };
     (ts.tv_sec as i128) * 1_000_000_000 + (ts.tv_nsec as i128)
-}
-
-/// Forward one xrun event to the off-thread log writer with `try_send`,
-/// dropping and counting into `dropped` on `Full` rather than blocking the
-/// SCHED_FIFO work loop on the writer's per-event fdatasync. `Disconnected`
-/// (writer thread gone, shutdown in progress) is not counted — nothing reads
-/// `xrun_events_dropped` past that point either.
-fn send_xrun_event(tx: &SyncSender<XrunEvent>, dropped: &AtomicU64, event: XrunEvent) {
-    if let Err(TrySendError::Full(_)) = tx.try_send(event) {
-        dropped.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 /// Read up to `requested_frames` from `input`. Returns the number of
@@ -2830,7 +2828,7 @@ fn read_input(
                     "event=fanin.xrun source=input label={} count={}",
                     input.label, count,
                 );
-                send_xrun_event(
+                send_drop_counted(
                     xrun_tx,
                     xrun_events_dropped,
                     XrunEvent {
@@ -2883,7 +2881,7 @@ fn recover_resampler_input_xrun(
         "event=fanin.xrun source=input label={} count={} op={} (resampler lane)",
         input.label, count, operation,
     );
-    send_xrun_event(
+    send_drop_counted(
         xrun_tx,
         xrun_events_dropped,
         XrunEvent {
@@ -3196,7 +3194,7 @@ mod tests {
     // ---- Bounded xrun channel (must never block the SCHED_FIFO work loop) ----
 
     #[test]
-    fn send_xrun_event_drops_and_counts_past_channel_capacity() {
+    fn send_drop_counted_drops_and_counts_past_channel_capacity() {
         // No receiver draining: the bound-2 channel fills on the first two
         // sends, so the third must find TrySendError::Full and drop-and-count
         // rather than block this (the calling) thread.
@@ -3208,9 +3206,9 @@ mod tests {
             frames: 256,
             count: 1,
         };
-        send_xrun_event(&tx, &dropped, event());
-        send_xrun_event(&tx, &dropped, event());
-        send_xrun_event(&tx, &dropped, event());
+        send_drop_counted(&tx, &dropped, event());
+        send_drop_counted(&tx, &dropped, event());
+        send_drop_counted(&tx, &dropped, event());
         assert_eq!(dropped.load(Ordering::Relaxed), 1);
     }
 

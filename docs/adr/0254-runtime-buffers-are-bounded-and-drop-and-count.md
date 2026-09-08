@@ -51,6 +51,9 @@ consumer into unbounded growth on a 1 GB box:
    `try_send` from the mixer thread; `Full` increments `xrun_events_dropped`,
    published on the STATUS socket. Live `xrun_count` is bumped before the
    send, so a full channel loses only forensic JSONL lines, never the count.
+   This channel and the impulse tap's share one `send_drop_counted` helper;
+   it counts `Full` only, because `Disconnected` means the writer thread is
+   gone and nothing reads the counter past shutdown.
 3. **TTS servers.** No idle deadline. `TTS_FRAME_DEADLINE = 30 s` runs from
    the first byte of a command to the end of that command (header and
    payload); a healthy client writes a 2 MiB frame in well under 100 ms, and

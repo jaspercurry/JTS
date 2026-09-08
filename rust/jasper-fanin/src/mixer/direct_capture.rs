@@ -832,7 +832,7 @@ fn recover_direct_xrun(
         "event=fanin.xrun source=input label={} count={} op={} (usb_direct lane)",
         input.label, count, operation,
     );
-    send_xrun_event(
+    send_drop_counted(
         xrun_tx,
         xrun_events_dropped,
         XrunEvent {
