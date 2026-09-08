@@ -63,6 +63,30 @@ FEATURE_AGREEMENT_DB = 3.0
 #: baseline the way a power mean would nor hides in a dip.
 TREND_HALF_WIDTH_OCTAVES = 0.5
 
+#: Where the room band splits: modes below 60 Hz, the modal-to-transition
+#: region to 120 Hz, the rest to the ceiling.
+ROOM_BAND_SPLITS_HZ = (60.0, 120.0)
+
+
+def band_edges(ceiling_hz: float) -> tuple[tuple[float, float], ...]:
+    """The room bands, :data:`ROOM_FLOOR_HZ` to ``ceiling_hz``; the ceiling tops the last."""
+    lows = (ROOM_FLOOR_HZ, *ROOM_BAND_SPLITS_HZ)
+    highs = (*ROOM_BAND_SPLITS_HZ, ceiling_hz)
+    return tuple(zip(lows, highs))
+
+
+def band_masks(
+    freqs_hz: Any, ceiling_hz: float,
+) -> tuple[tuple[float, float, np.ndarray], ...]:
+    """Each band's bins on ``freqs_hz``: half-open below a split and closed at
+    the ceiling, so a bin sitting on a split is counted once."""
+    freqs = np.asarray(freqs_hz, dtype=float)
+    edges = band_edges(ceiling_hz)
+    return tuple(
+        (lo, hi, (freqs >= lo) & ((freqs <= hi) if index == len(edges) - 1 else (freqs < hi)))
+        for index, (lo, hi) in enumerate(edges)
+    )
+
 
 @dataclass(frozen=True)
 class Ceiling:

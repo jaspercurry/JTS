@@ -36,6 +36,7 @@ from tests.crossover_v2_banked_round import (
     bank_seat_round,
     bank_verify_round,
 )
+from tests.room_median_fixture import write_room_median
 
 CLI_DIR = Path(_refusal.__file__).resolve().parent
 
@@ -238,6 +239,14 @@ def _fixture_round(root: Path) -> _FixtureRound:
     )
 
 
+def _room_grade_argv(round_: _FixtureRound) -> list[str]:
+    """The one view whose input is another view's artifact: the seat-cube
+    median is written beside the round first, as ``room-median`` writes it."""
+
+    write_room_median(round_.measured)
+    return ["room-grade", str(round_.measured)]
+
+
 #: How each view is run against that round -- or, for a view this fixture
 #: cannot feed, why not.
 _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
@@ -260,6 +269,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "distortion": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
     "findings": lambda r: ["findings", str(r.measured)],
+    "room-grade": _room_grade_argv,
     "close-reference": _NO_CAPTURES,
     "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
     "room-median": lambda r: ["room-median", str(r.seat)],
