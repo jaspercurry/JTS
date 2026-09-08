@@ -313,6 +313,12 @@ knobs · any browser or relay capture · an operator-less wizard.
   D (bass) as fresh sessions from the kickoff snippets; each is working on its
   brief's first branch (`claude/seat-w1-1-4-seat-cube-program`,
   `claude/seat-w2-2-1-room-candidate`, `claude/seat-w3-3-1-bench-binding`).
+- 2026-09-08 21:25Z: Wave 0b PR #4517 opened (ADR-0259, ADR-0260, pointer
+  notes, `room_boundary.py` docstring). Reviewed against
+  `briefs/wave-0b-decisions.md`: matches on every point; no changes requested;
+  merges when its test lane is green. Lane A brief written:
+  `briefs/wave-1-retire.md` (four PRs: move shared pieces; retire the room
+  product; retire the calibration agent; retire the bass wizard).
 - 2026-09-08 21:06Z: Wave 0b session started ("JTS 0b"). Lane A (retire) waits
   for its PR; lane B's docs row 1.7 also waits for it (it replaces 0b's
   methodology stub).
