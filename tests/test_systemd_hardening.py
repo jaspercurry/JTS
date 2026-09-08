@@ -30,7 +30,7 @@ from jasper.accessories import status as accessory_status
 from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
 from tests.systemd_unit_helpers import (
-    assignments_for,
+    exec_argv_for,
     never_stays_complete,
     pulled_ordered_dependencies,
     seconds_for,
@@ -327,8 +327,7 @@ def test_accessory_parallel_budget_matches_owner_and_caller_barriers():
 def _units_started_by(unit_text: str) -> list[str]:
     """Unit names an ExecStart chain blocks on, in the order it starts them."""
     started: list[str] = []
-    for command in assignments_for(unit_text, "ExecStart"):
-        argv = shlex.split(command.lstrip("-@+!:"))
+    for argv in exec_argv_for(unit_text, "ExecStart"):
         if not argv or PurePosixPath(argv[0]).name != "systemctl":
             continue
         if "--no-block" in argv:
@@ -338,7 +337,7 @@ def _units_started_by(unit_text: str) -> list[str]:
             continue
         for name in words[1:]:
             assert (SYSTEMD_UNIT_DIR / name).is_file(), (
-                f"`{command}` starts {name}, which ships no unit file under "
+                f"`{shlex.join(argv)}` starts {name}, which ships no unit file under "
                 "deploy/systemd/, so its start budget cannot be derived here"
             )
             started.append(name)
