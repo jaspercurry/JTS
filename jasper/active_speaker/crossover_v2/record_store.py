@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.restore_wait import resilient_restore
+from jasper.audio_measurement.bundles import record_artifact
 
 from jasper.attribution.findings import FINDING_SET_SCHEMA
 from jasper.attribution.session_identity import (
@@ -262,6 +263,13 @@ class BankedRecordStore:
         self, relative: str, payload: Mapping[str, Any], route: _Route,
     ) -> None:
         artifact = self.evidence.publish_json_artifact(relative, payload)
+        if _measure_kind(payload) is not None and payload.get("wav_path"):
+            record_artifact(
+                self.evidence.bundle_dir, artifact.relative_path,
+                kind=POSITION_EVIDENCE_KIND, sensitivity="derived",
+                recomputable=False, generated_by=__name__,
+                dependencies=(str(payload["wav_path"]),),
+            )
         if route.verify is not None:
             # The PAYLOAD, not the record it came from: a route's verify asks
             # whether what was written comes back, and the two differ wherever
