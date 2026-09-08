@@ -57,14 +57,14 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
         store.close()
 
 
-async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
+async def test_queued_tools_preserve_first_call_and_completion_milestones(
     tmp_path,
 ):
     store = WakeEventStore(tmp_path)
     store.open()
-    release_first = asyncio.Event()
+    release_first, release_second = asyncio.Event(), asyncio.Event()
     first_running = asyncio.Event()
-    first_task: asyncio.Task | None = None
+    tasks: list[asyncio.Task] = []
     try:
         await store.begin_event(
             event_id="evt-concurrent",
@@ -80,13 +80,14 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
         )
 
         async def slow_first() -> dict:
-            """Wait until the later tool has completed."""
+            """Return the first result after release."""
             first_running.set()
             await release_first.wait()
             return {"first": True}
 
         async def fast_second() -> dict:
-            """Complete while the first tool is still running."""
+            """Return the second result after release."""
+            await release_second.wait()
             return {"second": True}
 
         registry = ToolRegistry()
@@ -99,29 +100,31 @@ async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
         first_task = asyncio.create_task(
             dispatch_tool(registry, "slow_first", {}),
         )
+        tasks.append(first_task)
         await wait_signalled(
             first_running,
             "first tool entering its body",
             producer=first_task,
         )
-        assert await dispatch_tool(registry, "fast_second", {}) == {
-            "second": True,
-        }
+        second_task = asyncio.create_task(dispatch_tool(registry, "fast_second", {}))
+        tasks.append(second_task)
+        release_first.set()
+        assert await first_task == {"first": True}
 
         row = await store.get_event("evt-concurrent")
         assert row["tool_name"] == "slow_first"
         first_completion = row["ts_tool_completed"]
         assert first_completion is not None
 
-        release_first.set()
-        assert await first_task == {"first": True}
+        release_second.set()
+        assert await second_task == {"second": True}
         row = await store.get_event("evt-concurrent")
         assert row["tool_name"] == "slow_first"
         assert row["ts_tool_completed"] == first_completion
     finally:
         release_first.set()
-        if first_task is not None and not first_task.done():
-            await asyncio.gather(first_task, return_exceptions=True)
+        release_second.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
         store.close()
 
 
