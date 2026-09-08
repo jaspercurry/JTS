@@ -294,50 +294,27 @@ class SystemSupervisor:
             )
 
     async def _run_all_probes(self) -> tuple[bool, str | None]:
-        """Run all three probes. Returns (all_succeeded, name_of_first_failed).
-
-        Returns on first failure — we don't need a full failure
-        attribution, just "is the system healthy or not"."""
-        if await self.should_probe_sshd():
+        """Return on the first failed probe, preserving its reason code."""
+        for name, probe in (
+            ("sshd", self.probe_sshd),
+            ("jasper_control", self.probe_jasper_control),
+            ("loadavg", self.probe_loadavg),
+        ):
+            if name == "sshd" and not await self.should_probe_sshd():
+                continue
             try:
-                ok = await self.probe_sshd()
+                ok = await probe()
             except Exception:  # noqa: BLE001
                 log_event(
                     logger,
                     "system_supervisor.probe_crash",
-                    probe="sshd",
+                    probe=name,
                     level=logging.ERROR,
                     exc_info=True,
                 )
                 ok = False
             if not ok:
-                return False, "sshd"
-        try:
-            ok = await self.probe_jasper_control()
-        except Exception:  # noqa: BLE001
-            log_event(
-                logger,
-                "system_supervisor.probe_crash",
-                probe="jasper_control",
-                level=logging.ERROR,
-                exc_info=True,
-            )
-            ok = False
-        if not ok:
-            return False, "jasper_control"
-        try:
-            ok = await self.probe_loadavg()
-        except Exception:  # noqa: BLE001
-            log_event(
-                logger,
-                "system_supervisor.probe_crash",
-                probe="loadavg",
-                level=logging.ERROR,
-                exc_info=True,
-            )
-            ok = False
-        if not ok:
-            return False, "loadavg"
+                return False, name
         return True, None
 
     # ---- overridable IO ----
