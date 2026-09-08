@@ -47,7 +47,6 @@ const siblingDir = dirname(modulePath);
 const SIBLING_MODULES = [
   "api.js", "capture.js", "chart.js", "format.js", "quality.js", "report.js",
 ];
-const STRIP_EXPORT = [/^export /gm, ""];
 
 // ---- classList stub ----
 function makeClassList(initial) {
@@ -484,12 +483,13 @@ const runner = buildFunction(
   [
     ...SIBLING_MODULES.map((name, index) => ({
       path: join(siblingDir, name),
-      rewrite: index === 0 ? [STRIP_EXPORT, PREPEND_PREAMBLE] : [STRIP_EXPORT],
+      rewrite: index === 0 ? [PREPEND_PREAMBLE] : [],
     })),
     { path: modulePath, rewrite: [PROBE_INJECT] },
   ],
   {
     stripImports: true,
+    stripExports: true,
     guardNoImports: true,
     params: [
       "document", "window", "fetch", "globalThis", "console",

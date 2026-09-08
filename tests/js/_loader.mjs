@@ -17,7 +17,7 @@
 // module has no side effects at import time.
 
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -51,9 +51,33 @@ function applyRewrite(source, rewrite) {
 const STRIP_NAMED_IMPORT = [/^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']+["'];\s*/gm, ""];
 const STRIP_DEFAULT_IMPORT = [/^import\s+[^;\n]+\s+from\s+["'][^"']+["'];\s*/gm, ""];
 
-function transform(path, { rewrite, stripImports, guardNoImports }) {
+// Bare re-export lists incl. `export { a as b };` and multi-line
+// `export {\n a,\n b,\n};`, then whatever plain `export` keyword remains.
+const STRIP_EXPORT_LIST = [/^\s*export\s*\{[^}]*\}\s*;?\s*$/gm, ""];
+const STRIP_EXPORT_KEYWORD = [/^export\s+/gm, ""];
+
+function importSpecifiers(source) {
+  const specifiers = [];
+  const pattern = /from\s+["']([^"']+)["']/g;
+  let match;
+  while ((match = pattern.exec(source))) specifiers.push(match[1]);
+  return specifiers;
+}
+
+function transform(path, {
+  rewrite, stripImports, guardNoImports,
+  stripExports = false, strictImports = false, sourceBasenames,
+}) {
   let source = readFileSync(path, "utf8");
   source = applyRewrite(source, rewrite);
+  if (stripExports) source = applyRewrite(source, [STRIP_EXPORT_LIST, STRIP_EXPORT_KEYWORD]);
+  if (strictImports) {
+    for (const spec of importSpecifiers(source)) {
+      if (!sourceBasenames.has(basename(spec))) {
+        throw new Error(`unhandled import ${spec} in ${path} — add it to sources or stub it with a rewrite`);
+      }
+    }
+  }
   if (stripImports) source = applyRewrite(source, [STRIP_NAMED_IMPORT, STRIP_DEFAULT_IMPORT]);
   if (guardNoImports && /^import\s/m.test(source)) {
     throw new Error(`unhandled import in ${path} — add a strip rule`);
@@ -136,23 +160,31 @@ function returnClause(names) {
  *              declare.
  *   async      use AsyncFunction instead of Function, for a source with a
  *              top-level `await`.
+ *   stripExports  strip `export` syntax from every entry before stripImports.
  *
  * Returns the constructed Function; the caller invokes it.
  */
 export function buildFunction(sources, {
   rewrite = [],
   stripImports = false,
+  stripExports = false,
+  strictImports = false,
   guardNoImports = false,
   params = [],
   returns = [],
   async: isAsync = false,
 } = {}) {
   const entries = Array.isArray(sources) ? sources : [sources];
+  const sourceBasenames = strictImports
+    ? new Set(entries.map((entry) => basename(typeof entry === "string" ? entry : entry.path)))
+    : undefined;
   const body = entries
     .map((entry) => {
       const path = typeof entry === "string" ? entry : entry.path;
       const entryRewrite = typeof entry === "string" ? rewrite : (entry.rewrite ?? rewrite);
-      return transform(path, { rewrite: entryRewrite, stripImports, guardNoImports });
+      return transform(path, {
+        rewrite: entryRewrite, stripImports, guardNoImports, stripExports, strictImports, sourceBasenames,
+      });
     })
     .join("\n");
   const Ctor = isAsync ? Object.getPrototypeOf(async function () {}).constructor : Function;

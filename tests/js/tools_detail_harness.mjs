@@ -86,10 +86,11 @@ const toolDetail = () => "";
 const current = makeEditor();
 const api = buildFunction(
   [
-    { path: actionsPath, rewrite: [[/^\s*import\s.*$/gm, ""], [/\bexport\s+/g, ""]] },
+    { path: actionsPath, rewrite: [[/^\s*import\s.*$/gm, ""]] },
     { path: detailPath, rewrite: [[/^\s*import\s.*$/gm, ""], [/\nload\(\);\s*$/m, "\n"]] },
   ],
   {
+    stripExports: true,
     params: [
       "document", "CSS", "getJSON", "postJSON", "jtsAlert", "escapeHtml",
       "packDetail", "toolDetail",

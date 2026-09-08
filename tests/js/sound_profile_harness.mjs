@@ -13,22 +13,6 @@ import { buildFunction, repoPath } from "./_loader.mjs";
 const modulePath = process.argv[2];
 const siblingDir = dirname(modulePath);
 
-// The page is one entry module plus the siblings it imports, in dependency
-// order: state.js reads the JSON island at module-evaluation time, exactly
-// as it does on the page, so it (and everything after it) must run in this
-// order. buildFunction concatenates them into a single Function body:
-// siblings ahead of the entry with their `export` keyword stripped (so their
-// top-level declarations land in the shared scope the entry reads them
-// from), then every source's import lines stripped alike.
-// A bare re-export list (`export { a, b, ... };`, escape.js's aliasing
-// `export { escapeHtml as escapeAttr };` included) isn't valid once
-// "export " is stripped — its trailing comma makes it a dangling comma
-// expression. The names it lists are already declared (as `function`/`var`/
-// `const`) earlier in the same file, so the list itself is redundant ESM
-// wiring — drop it outright rather than repair it.
-const DROP_EXPORT_LIST = [/^export \{[^}]*\};\s*$/gm, ""];
-const STRIP_EXPORT = [/^export /gm, ""];
-const SIBLING_REWRITE = [DROP_EXPORT_LIST, STRIP_EXPORT];
 // http.js's promptForControlToken (behind a lazy dialog.js import) parses but
 // never runs — main.js only calls the two header helpers, neither of which
 // hits the token-prompt path.
@@ -37,29 +21,25 @@ const JTSCONFIRM_STUB = [
   "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n",
 ];
 
+// Sibling order is load-bearing: state.js reads the JSON island at eval time.
 const runner = buildFunction(
   [
-    { path: repoPath("deploy/assets/shared/js/escape.js"), rewrite: SIBLING_REWRITE },
-    { path: repoPath("deploy/assets/shared/js/http.js"), rewrite: SIBLING_REWRITE },
+    { path: repoPath("deploy/assets/shared/js/escape.js") },
+    { path: repoPath("deploy/assets/shared/js/http.js") },
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "driver-fields.js",
-    ].map((name) => ({ path: join(siblingDir, name), rewrite: SIBLING_REWRITE })),
+    ].map((name) => ({ path: join(siblingDir, name) })),
     { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
   ],
   {
     stripImports: true,
+    stripExports: true,
+    strictImports: true,
     guardNoImports: true,
-    // fetch is deliberately NOT a param here (unlike correction_render_harness):
-    // main.js's commission auto-ramp retry loop keeps its own fetch calls
-    // alive across a real setTimeout(900ms)/(80ms) pulse cycle, and a stale
-    // pulse from an earlier scenario that no test cancelled resolves those
-    // calls against whichever scenario's mock is CURRENT when it fires. A
-    // properly-scoped `fetch` param instead keeps that stale pulse faithful
-    // to its own scenario's mock, which answers "still armed" indefinitely
-    // and inflates this harness from ~2s to minutes. globalThis.fetch below
-    // (matching every scenario's later reassignment) reproduces the original
-    // loader's behavior, including this teardown quirk — see pr_body_notes.
+    // fetch stays on globalThis, not a runner param: setupHarness() reassigns
+    // it every scenario, and a per-runner param would pin a stale mock for any
+    // continuation outliving its scenario (main.js's commission auto-ramp loop).
     params: ["document", "window", "globalThis", "console", "setTimeout", "clearTimeout"],
   },
 );

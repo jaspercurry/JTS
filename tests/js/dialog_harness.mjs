@@ -54,7 +54,7 @@ globalThis.document = doc;
 
 // ---- load the implementation (strip ESM `export` so one path loads both) ----
 const { jtsConfirm, jtsAlert, jtsConfirmSubmit } = buildFunction(process.argv[2], {
-  rewrite: [[/\bexport\s+/g, ""]],
+  stripExports: true,
   returns: ["jtsConfirm", "jtsAlert", { name: "jtsConfirmSubmit", optional: true }],
 })();
 
