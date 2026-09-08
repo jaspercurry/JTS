@@ -199,7 +199,11 @@ def _upward_imports(
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
-                names = [_imported_module(path, node)]
+                module = _imported_module(path, node)
+                names = [module]
+                # A from-list inside a restricted module may name ordinary symbols.
+                if tuple(module.split(".")[:2]) not in forbidden:
+                    names.extend(f"{module}.{alias.name}" for alias in node.names)
             for name in names:
                 if tuple(name.split(".")[:2]) not in forbidden:
                     continue
@@ -208,6 +212,39 @@ def _upward_imports(
                     continue
                 offenders.append(f"{rel}:{node.lineno}: imports {name}")
     return offenders, used
+
+
+@pytest.mark.parametrize(
+    "source,offender_count,uses_allowlist",
+    [
+        ("import jasper.active_speaker", 1, False),
+        ("def probe():\n    import jasper.active_speaker", 1, False),
+        ("from jasper.active_speaker import flat_spec", 1, False),
+        ("from ..active_speaker import flat_spec", 1, False),
+        ("from jasper import active_speaker as engine", 1, False),
+        ("from .. import active_speaker", 1, False),
+        ("import jasper.active_speaker.runtime_contract as contract", 0, True),
+        ("from jasper.active_speaker.runtime_contract import DriverRuntimeContract", 0, True),
+        ("from ..active_speaker.runtime_contract import DriverRuntimeContract, Caps", 0, True),
+        ("from jasper.active_speaker.runtime_contract import *", 0, True),
+        ("from jasper import audio_measurement", 0, False),
+        ("from ..audio_measurement import active_speaker", 0, False),
+        ("from jasper import __version__", 0, False),
+    ],
+)
+def test_upward_import_forms(tmp_path, monkeypatch, source, offender_count, uses_allowlist):
+    relative = "jasper/correction/runtime_safety.py"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(f"{__name__}.REPO_ROOT", tmp_path)
+
+    offenders, used = _upward_imports("jasper/correction", (("jasper", "active_speaker"),))
+
+    assert len(offenders) == offender_count
+    assert used == (
+        {(relative, "jasper.active_speaker.runtime_contract")} if uses_allowlist else set()
+    )
 
 
 @pytest.mark.parametrize("relative", ROUTED_FILES)
