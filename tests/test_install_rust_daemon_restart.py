@@ -9,6 +9,7 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -86,14 +87,19 @@ build_install_rust_daemon jasper-outputd 1 {shlex.quote(str(cache))}
 
 
 def test_each_workspace_binary_has_one_systemd_owner() -> None:
-    exec_starts = {
-        unit.name: assignments_for(unit.read_text(), "ExecStart")
+    binaries = sorted(
+        target["name"]
+        for manifest in (ROOT / "rust").glob("*/Cargo.toml")
+        for target in tomllib.loads(manifest.read_text()).get("bin", [])
+    )
+    assert binaries
+    programs = {
+        unit.name: [
+            shlex.split(command.lstrip("-@+!:"))[0]
+            for command in assignments_for(unit.read_text(), "ExecStart")
+        ]
         for unit in (ROOT / "deploy/systemd").glob("*.service")
     }
-    for main in sorted((ROOT / "rust").glob("*/src/main.rs")):
-        daemon = main.parent.parent.name
-        owners = [
-            name for name, starts in exec_starts.items()
-            if f"/opt/jasper/bin/{daemon}" in starts
-        ]
-        assert owners == [f"{daemon}.service"], (daemon, owners)
+    for binary in binaries:
+        owners = [name for name, argv0 in programs.items() if f"/opt/jasper/bin/{binary}" in argv0]
+        assert owners == [f"{binary}.service"], (binary, owners)
