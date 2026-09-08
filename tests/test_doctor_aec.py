@@ -474,7 +474,7 @@ def test_check_aec_output_health_skips_when_journal_unreadable_and_no_stats(
     not warn."""
     monkeypatch.setattr(aec, "_parked_follower_result", lambda _label: None)
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    _evidence.evidence.seed("bridge_stats", None)
+    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
     monkeypatch.setattr(
         aec, "_run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
     )
@@ -498,8 +498,10 @@ def _stage_bridge_journal(monkeypatch, journal: str) -> None:
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
     monkeypatch.setattr(aec, "_run", fake_run)
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
-    _evidence.evidence.seed(
-        "bridge_stats", _bridge_reference_stats("outputd_udp", now=1_000.0),
+    monkeypatch.setattr(
+        aec,
+        "_read_bridge_stats_snapshot",
+        lambda: _bridge_reference_stats("outputd_udp", now=1_000.0),
     )
     monkeypatch.setattr(aec.time, "time", lambda: 1_000.0)
 
@@ -1493,7 +1495,7 @@ def test_check_dtln_skips_when_journal_unreadable(monkeypatch, tmp_path: Path):
     (tmp_path / "dtln_aec_256_1.onnx").write_bytes(b"model")
     (tmp_path / "dtln_aec_256_2.onnx").write_bytes(b"model")
     _stub_unit_active_states(monkeypatch, {"jasper-aec-bridge.service": "active"})
-    _evidence.evidence.seed("bridge_stats", None)
+    monkeypatch.setattr(aec, "_read_bridge_stats_snapshot", lambda: None)
     monkeypatch.setattr(
         aec, "_run", lambda *a, **k: _fake_journalctl_failure(),  # noqa: ARG005
     )

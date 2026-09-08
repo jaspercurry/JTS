@@ -231,13 +231,6 @@ class Evidence:
     def loopback_substreams(self) -> dict[int, str]:
         return self.get("loopback_substreams", _loopback_substreams)
 
-    def bridge_stats(self) -> dict[str, Any] | None:
-        """The AEC bridge's live stats snapshot; None when it is absent or
-        unreadable."""
-        from ...aec.bridge_telemetry import read_bridge_stats
-
-        return self.get("bridge_stats", read_bridge_stats)
-
     def parked_bonded_follower(self) -> bool:
         from ._shared import _parked_as_bonded_follower
 

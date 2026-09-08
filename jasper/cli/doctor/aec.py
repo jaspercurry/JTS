@@ -49,6 +49,7 @@ from ...aec.bridge_config import (
     REF_SOURCE_ENV,
 )
 from ...aec.bridge_engines import DTLN_ENABLED_ENV
+from ...aec.bridge_telemetry import read_bridge_stats
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -1221,7 +1222,7 @@ def check_aec_bridge_output_health() -> CheckResult:
         f"{os.environ.get(OUTPUTD_REF_UDP_HOST_ENV, '127.0.0.1').strip()}:"
         f"{os.environ.get(OUTPUTD_REF_UDP_PORT_ENV, '9891').strip()}"
     )
-    bridge_stats = evidence.bridge_stats()
+    bridge_stats = _read_bridge_stats_snapshot()
     # EITHER end saying `outputd_udp` enables the authoritative v4 freshness
     # contract (the fail-closed direction): the env states intent, the
     # bridge's own snapshot states what it applied, and the two diverge on a
@@ -1331,6 +1332,11 @@ def check_aec_bridge_output_health() -> CheckResult:
     if stats_assessment is not None:
         journal_result.detail += f"; {stats_assessment[0].detail}"
     return journal_result
+
+
+def _read_bridge_stats_snapshot() -> dict | None:
+    """Read the bridge's one live stats snapshot source."""
+    return read_bridge_stats()
 
 
 def _applied_reference_source(stats: dict | None) -> str | None:
@@ -1650,7 +1656,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     # Prefer the bridge's live stats snapshot — authoritative and not
     # journal-window-limited (a load failure at a bridge start >10 min
     # ago is invisible to the journal path below).
-    stats = evidence.bridge_stats()
+    stats = _read_bridge_stats_snapshot()
     if stats is not None:
         result = _assess_dtln_engine_from_stats(stats, time.time())
         if result is not None:

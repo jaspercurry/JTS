@@ -24,7 +24,7 @@ from jasper.aec.bridge_telemetry import (
     TimestampedLegEmitter,
     _BridgeStats,
 )
-from jasper.cli.doctor import _evidence as doctor_evidence
+from jasper.cli.doctor import aec as doctor_aec
 from jasper.usb_mic import (
     USB_MIC_HEADER_BYTES,
     USB_MIC_HEADER_STRUCT,
@@ -290,7 +290,7 @@ def _read_via_shared(path, monkeypatch):
 
 def _read_via_doctor(path, monkeypatch):
     monkeypatch.setenv(bridge_telemetry.BRIDGE_STATS_PATH_ENV, str(path))
-    return doctor_evidence.evidence.bridge_stats()
+    return doctor_aec._read_bridge_stats_snapshot()
 
 
 def _read_via_wake_corpus(path, monkeypatch):
