@@ -3097,6 +3097,7 @@ def recompose_applied_baseline_yaml(
         _DEFAULT_PERSISTED_BASS_PROFILE
     ),
     drop_measured_correction: bool = False,
+    protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
 
@@ -3272,6 +3273,7 @@ def recompose_applied_baseline_yaml(
         ),
         linearization=linearization,
         blend_correction=blend_correction,
+        protection_sections_by_role=protection_sections_by_role,
     )
     return yaml, []
 

@@ -61,6 +61,7 @@ from .camilla_yaml import (
     MAX_LINEARIZATION_BOOST_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
+    baseline_protection_name,
 )
 from .graph_evidence import (
     bass_management_hp_name as _bass_management_hp_name,
@@ -2075,6 +2076,22 @@ def _baseline_output_chain(
         ):
             return None
         cursor += 2
+    protection_index = 0
+    while cursor < len(chain):
+        direction = next((
+            direction for direction in ("highpass", "lowpass")
+            if chain[cursor] == baseline_protection_name(
+                assignment.role, protection_index, direction == "highpass",
+            )
+        ), None)
+        if direction is None:
+            break
+        if not _crossover_filter_safe(
+            payload, name=chain[cursor], role=assignment.role, direction=direction,
+        ):
+            return None
+        cursor += 1
+        protection_index += 1
     expected_tail = (
         _driver_delay_name(assignment.role),
         _baseline_gain_name(assignment.role),

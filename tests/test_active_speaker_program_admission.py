@@ -11,12 +11,20 @@ play-time re-admission catching tampered WAV bytes.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
+
 import numpy as np
 import pytest
+import yaml
 from scipy.io import wavfile
 
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
     ProgramAdmissionError,
     ProgramAdmissionRefusal,
@@ -24,6 +32,7 @@ from jasper.active_speaker.program_admission import (
     readmit_summed_program_from_wav,
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
+from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     RoleBand,
@@ -33,6 +42,8 @@ from jasper.audio_measurement.program import (
     write_program_wav,
 )
 from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
+from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
 
 def _profile_and_targets(
@@ -41,6 +52,7 @@ def _profile_and_targets(
     tweeter_peak: float = -65.0,
     max_sweep_duration_s: float = 6,
     woofer_floor: float = 500,
+    woofer_highpass: float | None = None,
 ):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
@@ -69,6 +81,7 @@ def _profile_and_targets(
                 "target_id": "mono:woofer",
                 "role": "woofer",
                 "model": "W",
+                **({"recommended_highpass_hz": woofer_highpass} if woofer_highpass else {}),
                 "required_protection_filters": [
                     {"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}
                 ],
@@ -675,3 +688,85 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     else:
         assert not admission.allowed
         assert refusal in admission.refusals
+
+
+@pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate"])
+@pytest.mark.parametrize("damage", [
+    None, "missing", "wrong_output", "low_corner", "shallow_slope", "gain", "after_limiter",
+])
+def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, scope, damage):
+    topology, safety, targets = _profile_and_targets(
+        woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+    )
+    applied = _applied_profile(topology)
+    preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
+    preset = replace(preset, crossover_regions=(replace(preset.crossover_regions[0], fc_hz=2500),))
+    applied["recomposition_snapshot"]["preset"] = preset.to_dict()
+    saved = deepcopy(applied)
+    measurement = MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+        applied_profile=applied,
+    )
+    text = compile_tuning_graph(
+        measurement, scope="base" if scope == "candidate" else scope,
+        candidate=_trial_candidate(measurement) if scope == "candidate" else None,
+    )
+    graph = yaml.safe_load(text)
+    highpasses = {
+        name: value for name, value in graph["filters"].items()
+        if value.get("parameters", {}).get("type") == "LinkwitzRileyHighpass"
+    }
+    assert sorted(value["parameters"]["freq"] for value in highpasses.values()) == [40, 2500]
+    assert not any(name.startswith("bass_ext_") for name in graph["filters"])
+    assert graph["devices"]["volume_limit"] == 0.0
+    assert applied == saved
+    name = next(name for name, value in highpasses.items() if value["parameters"]["freq"] == 40)
+    step = next(step for step in graph["pipeline"] if name in step.get("names", []))
+    assert step["channels"] == [0]
+    limiter = next(value for value in step["names"] if graph["filters"][value]["type"] == "Limiter")
+    assert step["names"].index(name) < step["names"].index(limiter)
+    original_graph = deepcopy(graph)
+    if damage in {"missing", "wrong_output", "after_limiter"}:
+        step["names"].remove(name)
+        if damage == "wrong_output":
+            next(step for step in graph["pipeline"] if step.get("channels") == [1])["names"].append(name)
+        elif damage == "after_limiter":
+            step["names"].append(name)
+    elif damage == "low_corner":
+        graph["filters"][name]["parameters"]["freq"] = 30
+    elif damage == "shallow_slope":
+        graph["filters"][name]["parameters"]["order"] = 2
+    elif damage == "gain":
+        graph["filters"][name] = {"type": "Gain", "parameters": {"gain": 6}}
+    for original, changed in zip(original_graph["pipeline"], graph["pipeline"]):
+        if "names" in original:
+            text = text.replace(
+                f"names: [{', '.join(original['names'])}]",
+                f"names: [{', '.join(changed['names'])}]",
+            )
+    if damage in {"low_corner", "shallow_slope", "gain"}:
+        replacement = (
+            emit_gain_filter(name, 6) if damage == "gain" else emit_linkwitz_riley(
+                name, highpass=True, freq_hz=30 if damage == "low_corner" else 40,
+                order=2 if damage == "shallow_slope" else 4,
+            )
+        )
+        text = text.replace(
+            "\n".join(emit_linkwitz_riley(name, highpass=True, freq_hz=40, order=4)),
+            "\n".join(replacement),
+        )
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
+        session_volume_db=-20, fc_hz=2500,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    wav = tmp_path / "summed.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=text, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+    )
+    assert admission.allowed is (damage is None), admission.to_dict()
+    if damage:
+        assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
