@@ -6,7 +6,7 @@
 
 Three readers over the ungated seat-kind lateral takes a round banked
 (``seat/cube`` in :mod:`~jasper.active_speaker.measurement_programs`; the
-room is the measurement, ADR-0260 Wave 0b), each one artifact of
+room is the measurement, ADR-0260), each one artifact of
 ``jasper-round-views``:
 
 * :func:`room_ceiling` — where the room layer stops: the applied candidate's
@@ -33,7 +33,11 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.room_boundary import room_ceiling_hz
+from jasper.audio_measurement.room_boundary import (
+    ROOM_BOUNDARY_MAX_HZ,
+    ROOM_BOUNDARY_MIN_HZ,
+    room_ceiling_hz,
+)
 
 from ..measurement_programs import POSE_KIND_SEAT
 from .evidence_packet import applied_profile_source
@@ -75,11 +79,6 @@ class Ceiling:
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
-        from jasper.audio_measurement.room_boundary import (  # lazy: the two bounds only
-            ROOM_BOUNDARY_MAX_HZ,
-            ROOM_BOUNDARY_MIN_HZ,
-        )
-
         return {
             "ceiling_hz": self.ceiling_hz,
             "ceiling_source": self.source,
@@ -251,16 +250,24 @@ class _Feature:
 
 
 def _features(freqs: np.ndarray, residual: np.ndarray, ceiling_hz: float) -> list[_Feature]:
-    """One position's excursions against its local level, wide enough to count."""
+    """One position's excursions against its local level, wide enough to count.
+
+    Searched over the margin the grid carries so an extremum on the band's
+    own edge bin is judged against real neighbours; only centres inside the
+    band count.
+    """
     found = []
     for centre, lo, hi in local_features(
-        freqs, residual, lo_hz=ROOM_FLOOR_HZ, hi_hz=ceiling_hz, feature_db=FEATURE_DEPTH_DB,
+        freqs, residual, lo_hz=float(freqs[0]), hi_hz=float(freqs[-1]), feature_db=FEATURE_DEPTH_DB,
     ):
         feature = _Feature(
             "peak" if residual[centre] > 0 else "dip",
             float(freqs[lo]), float(freqs[hi]), float(freqs[centre]), float(residual[centre]),
         )
-        if feature.width_octaves >= FEATURE_MIN_WIDTH_OCTAVES:
+        if (
+            ROOM_FLOOR_HZ <= feature.centre_hz <= ceiling_hz
+            and feature.width_octaves >= FEATURE_MIN_WIDTH_OCTAVES
+        ):
             found.append(feature)
     return found
 

@@ -76,14 +76,15 @@ def _out(args: argparse.Namespace, inputs: RoundInputs) -> Path:
 def _cmd_room_ceiling(args: argparse.Namespace) -> int:
     inputs = _inputs(args)
     ceiling = room_ceiling(inputs.applied_profile_path)
-    written = _write(ceiling.to_dict(), args.out, _out(args, inputs))
+    doc = ceiling.to_dict()
+    written = _write(doc, args.out, _out(args, inputs))
+    lo, hi = doc["clamp_hz"]
     origin = (
-        f"trusted floor {ceiling.trusted_floor_hz:g} Hz clamped to "
-        f"[{ceiling.to_dict()['clamp_hz'][0]:g}, {ceiling.to_dict()['clamp_hz'][1]:g}]"
+        f"trusted floor {ceiling.trusted_floor_hz:g} Hz clamped to [{lo:g}, {hi:g}]"
         if ceiling.trusted_floor_hz is not None else ceiling.reason
     )
     return answer(
-        args.command, out=written, **ceiling.to_dict(),
+        args.command, out=written, **doc,
         line=(
             f"room-ceiling: {ceiling.ceiling_hz:g} Hz ({ceiling.source}: {origin})"
             f"{f' -> {written}' if written else ''}"
