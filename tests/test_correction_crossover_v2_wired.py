@@ -2079,6 +2079,8 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path, a
                 return False
             self.live = yaml_text
             return True
+        async def normalize_config_raw(self, text, **kwargs):
+            return text
     cam = Cam()
     async def confirm_live(device, yaml_text):
         assert device.live == yaml_text
