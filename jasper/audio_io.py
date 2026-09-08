@@ -46,7 +46,7 @@ from .tts_routing import FANIN_TTS_SOCKET
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     import sounddevice as sd
 
@@ -1218,12 +1218,11 @@ class TtsPlayout:
         segment_kind: str = "assistant",
         source_profile=None,
         pcm_wide: bool = False,
+        on_first_write: Callable[[], Awaitable[None]] | None = None,
     ) -> bool:
-        """Sole emission seam: every assistant byte passes through here —
-        cues, earcons, announcements and live-session TTS, directly or via
-        `write`. False means the admission authority refused: the bytes are
-        dropped, not queued, so drain accounting is untouched and an episode
-        holding output still releases it."""
+        """Return whether PCM reached the transport. Observe the first accepted
+        chunk even if a later chunk fails or the write is cancelled.
+        """
         admission = self._emission_admission
         refusal = admission() if admission is not None else None
         if refusal is not None:
@@ -1240,14 +1239,14 @@ class TtsPlayout:
                 )
             return False
         self._emission_refusal_logged = False
-        await self._write_segment(
+        return await self._write_segment(
             pcm,
             provider_item_id=provider_item_id,
             segment_kind=segment_kind,
             source_profile=source_profile,
             pcm_wide=pcm_wide,
+            on_first_write=on_first_write,
         )
-        return True
 
     def expected_drain_at(self) -> float:
         """Monotonic deadline at which the last-queued sample's tail
@@ -1549,7 +1548,8 @@ class TtsPlayout:
         segment_kind: str = "assistant",
         source_profile=None,
         pcm_wide: bool = False,
-    ) -> None:
+        on_first_write: Callable[[], Awaitable[None]] | None = None,
+    ) -> bool:
         """Send un-gained 48 kHz stereo PCM to the TTS IPC owner.
 
         Gain is sent as metadata and enforced by fan-in's final mix
@@ -1565,7 +1565,7 @@ class TtsPlayout:
         everything downstream of this line is one code path at one scale.
         """
         if not pcm:
-            return
+            return False
         if self._stream is None:
             if not self._closed_stream_warned:
                 logger.warning(
@@ -1576,10 +1576,10 @@ class TtsPlayout:
                     len(pcm),
                 )
                 self._closed_stream_warned = True
-            return
+            return False
         stream = await self._current_outputd_stream()
         if stream is None:
-            return
+            return False
 
         if pcm_wide:
             # /2^16 is exact in binary floating point (it changes the exponent
@@ -1637,10 +1637,11 @@ class TtsPlayout:
                     )
                     stream = await self._current_outputd_stream()
                     if stream is None:
-                        return
+                        return False
                     continue
                 raise
         paced_sec = 0.0
+        accepted = False
         for chunk in _outputd_audio_chunks(stereo.tobytes(), self._frame_bytes):
             now = time.monotonic()
             queued_end = self._ring_end_monotonic
@@ -1673,6 +1674,13 @@ class TtsPlayout:
                 committed_end = sent_at
             committed_end += len(chunk) / (_OUTPUTD_SAMPLE_RATE * self._frame_bytes)
             self._ring_end_monotonic = committed_end
+            if not accepted:
+                accepted = True
+                if on_first_write is not None:
+                    try:
+                        await on_first_write()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("TTS acceptance observer failed: %s", e)
             if cancelled:
                 raise asyncio.CancelledError
         queued_at = time.monotonic()
@@ -1686,6 +1694,7 @@ class TtsPlayout:
                 "(%d frames @ %d Hz)",
                 write_ms, chunk_ms, len(mono), _OUTPUTD_SAMPLE_RATE,
             )
+        return accepted
 
     def _profile_for_segment(self, segment_kind: str, *, source_profile=None):
         if source_profile is not None:
