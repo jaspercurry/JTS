@@ -293,7 +293,7 @@ class MicCapture:
         if stream is not None:
             try:
                 stream.stop()
-            except BaseException:
+            except BaseException:  # noqa: BLE001
                 with suppress(Exception):
                     stream.close()
                 raise
