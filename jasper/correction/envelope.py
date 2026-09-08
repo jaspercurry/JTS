@@ -1218,6 +1218,7 @@ def build_envelope(
             blocker = dict(readiness_blocker)
     if blocker is not None:
         next_action = None
+    recovery = getattr(session, "startup_recovery", None)
     failure = None
     if session.state.value == "failed":
         from .failures import (
@@ -1235,6 +1236,8 @@ def build_envelope(
             failure = public_failure(CORRECTION_AUTO_REVERT_FAILED)
         else:
             failure = session_failure(getattr(session, "error", None))
+        if isinstance(recovery, dict) and recovery.get("required"):
+            next_action = {"label": "Retry recovery", "endpoint": "/reset"}
     tuning_llm = _tuning_llm(screen)
     if failure is not None or session.state.value == "analyzing":
         tuning_llm["offered"] = False
@@ -1266,6 +1269,7 @@ def build_envelope(
         "next_action": dict(next_action) if next_action is not None else None,
         "blocker": blocker,
         "failure": failure,
+        "startup_recovery": dict(recovery) if isinstance(recovery, dict) else None,
         "progress": _progress(screen),
         "tuning_llm": tuning_llm,
     }

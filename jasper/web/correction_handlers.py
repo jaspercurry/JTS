@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.audio_measurement import room_boundary
+from jasper.camilla import CamillaUnavailable
 from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
 from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
 from jasper.active_speaker.commissioning_admission import running_graph_fingerprint
@@ -35,6 +36,8 @@ from jasper.correction.status import _MEASUREMENT_FILENAME_RE, _SOUND_FILENAME_R
 from jasper.dsp_apply import config_file_sha256, last_dsp_apply_state, same_config_file
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.active_speaker.session_volume_plan import RestoreOutcome
+from jasper.volume_coordinator import env_canonical_target_db
+from jasper.volume_owner import volume_owner
 
 from ..log_event import log_event
 from . import correction_tuning
@@ -212,6 +215,12 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         cam = correction_capture._camilla()
         prior_session = correction_capture._get_or_create_session()
+        if (getattr(prior_session, "startup_recovery", None) or {}).get("required"):
+            correction_capture._run_graph_mutation(
+                recover_room_startup_state(prior_session, cam),
+            )
+            if prior_session.startup_recovery["required"]:
+                raise RequestConflict("Room recovery is incomplete; retry Reset")
         if not correction_capture._run_async(
             prior_session._restore_listening_volume_if_ramped(), timeout=5.0,
         ):
@@ -1929,6 +1938,12 @@ async def _pre_measurement_restore_target(
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     if not prior or not restore:
         candidate = Path(current)
+        if candidate.name.startswith("sound_snapshot_"):
+            candidate = candidate.with_name(
+                candidate.name.replace("sound_snapshot_", "correction_measurement_", 1)
+            )
+            if not candidate.is_file():
+                return None
         config_dir = getattr(getattr(sess, "cfg", None), "config_dir", None)
         match = _MEASUREMENT_FILENAME_RE.fullmatch(candidate.name)
         if not match or not config_dir or not same_config_file(candidate.parent, config_dir):
@@ -2117,6 +2132,9 @@ async def _run_locked_room_reset(
     operation = sess.auto_revert if automatic else sess.reset
     source = "correction_auto_revert" if automatic else "correction_reset"
     async with dsp_writer_lock(config_dir, source=source):
+        if (getattr(sess, "startup_recovery", None) or {}).get("required"):
+            await _recover_room_startup_state_locked(sess, cam)
+            return
         # Restoration must not depend on fresh Room authority: its purpose is
         # to recover from a stale/failed Room session.  It does need to resolve
         # the no-Room carrier after admission so a legal Active writer cannot
@@ -2128,6 +2146,55 @@ async def _run_locked_room_reset(
             else {}
         )
         return await operation(_set, **kwargs)
+
+
+async def recover_room_startup_state(sess: Any, cam: Any) -> None:
+    """Recover only the paired graph still owned by an abandoned Room run."""
+    from jasper.dsp_apply import dsp_writer_lock
+
+    async with dsp_writer_lock(sess.cfg.config_dir, source="correction_startup_recovery"):
+        await _recover_room_startup_state_locked(sess, cam)
+
+
+async def _recover_room_startup_state_locked(sess: Any, cam: Any) -> None:
+    recovery = {"required": False, "graph": "unknown", "volume": "unknown"}
+    try:
+        current = await cam.get_config_file_path(best_effort=False)
+        if not current or current == "None":
+            return
+        recovery["required"] = True
+        target = await _pre_measurement_restore_target(sess, cam, current_path=current)
+        if target is None:
+            if getattr(sess, "startup_recovery", None):
+                sess.startup_recovery = {"required": False, "graph": "superseded", "volume": "unchanged"}
+            return
+        sess.startup_recovery = recovery
+        recovery["graph"] = "pending"
+        owner = volume_owner()
+        if owner is None:
+            raise RuntimeError("the volume owner is unavailable")
+        door = OwnerVolumeDoor(owner, read_fader=lambda: cam.get_volume_db(best_effort=False))
+        # Keep the paired measurement graph until volume confirms, so process
+        # loss cannot consume the only durable recovery association first.
+        result = await door.restore_household_level_db(await env_canonical_target_db())
+        recovery["volume"] = result.value
+        if result is not RestoreOutcome.LANDED:
+            return
+        if not await cam.set_config_file_path(str(target), best_effort=False):
+            raise RuntimeError("Room predecessor could not be restored")
+        await confirm_graph_is_live(cam, target.read_text(encoding="utf-8"))
+        recovery.update(required=False, graph="restored")
+    except (OSError, RuntimeError, ValueError, CamillaUnavailable) as exc:
+        recovery["error"] = type(exc).__name__
+        sess.startup_recovery = recovery
+    finally:
+        if getattr(sess, "startup_recovery", None):
+            await sess.note_startup_recovery(sess.startup_recovery)
+            log_event(
+                logger, "correction.startup_recovery",
+                level=logging.WARNING if sess.startup_recovery["required"] else logging.INFO,
+                **sess.startup_recovery,
+            )
 
 
 def _maybe_auto_revert(sess: Any) -> bool:

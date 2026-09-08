@@ -2277,6 +2277,22 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
     assert coord.get_listening_level() == 80
 
 
+async def test_env_target_and_registered_provider_read_current_persisted_intent(
+    tmp_path, monkeypatch,
+):
+    from jasper import camilla, renderer
+
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    monkeypatch.setattr(vc_mod, "volume_state_path", lambda: persistence.path)
+    monkeypatch.setattr(camilla, "primary_controller", lambda: _FakeCamilla())
+    monkeypatch.setattr(renderer, "RendererClient", lambda **_: _FakeBackend(active={"aplactive": True}))
+    vc_mod.install_env_canonical_target_provider()
+    for level in (35, 71):
+        persistence.save_listening_level(level)
+        assert await vc_mod.env_canonical_target_db() == pytest.approx(percent_to_db(level))
+        assert await camilla._canonical_target_db_provider() == pytest.approx(percent_to_db(level))
+
+
 async def test_transition_refreshes_from_disk(tmp_path):
     """The same cross-process staleness guard on the transition path, which
     is observer-triggered and so never refreshes as a side effect."""

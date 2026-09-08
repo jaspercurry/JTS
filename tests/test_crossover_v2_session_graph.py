@@ -14,19 +14,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from pathlib import Path
 
 import pytest
+import yaml
 
 from jasper.active_speaker.crossover_v2.session_graph import (
     MeasurementSessionGraph,
     SessionGraphError,
+    temporary_graph_anchor,
 )
 from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDARY
 from jasper.camilla import CamillaUnavailable
 from jasper.sound.profile import build_sound_filters
 from tests.test_crossover_v2_tuning_scope import FLAT, SAVED, household_graph
+from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile
 
 ENTRY_PATH_NAME = "entry.yml"
 GRAPH = "program: graph\n"
@@ -59,6 +63,9 @@ class FakeCam:
     async def patch_config(self, patch, *, best_effort=False):
         self.ops.append(("patch", patch))
         return True
+
+    async def normalize_config_raw(self, text, *, best_effort=False):
+        return text
 
 
 def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
@@ -398,7 +405,11 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
         graph.select_scope(scope, candidate_id)
         fingerprint = asyncio.run(graph.install())
         assert fingerprint == fingerprints.setdefault((scope, candidate_id), fingerprint)
-        assert graph.installed_graph_yaml() == cam.live
+        emitted_graph = yaml.safe_load(graph.installed_graph_yaml())
+        submitted_graph = yaml.safe_load(cam.live)
+        if scope != "drivers":
+            submitted_graph.pop("description")
+        assert emitted_graph == submitted_graph
     assert len(set(fingerprints.values())) == len(scopes)
     assert emitted == scopes[1:]
     assert cam.ops.count("get_path") == 1
@@ -407,6 +418,61 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     assert cam.live == "entry: graph\n"
     with pytest.raises(SessionGraphError):
         graph.installed_graph_yaml()
+
+
+@pytest.mark.parametrize("scope", ["base", "speaker_tune", "candidate"])
+@pytest.mark.parametrize("change", ["none", "path", "anchor", "live", "unmarked"])
+async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
+    tmp_path, tuning_profile, scope, change, monkeypatch,
+):
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph
+    from jasper.web import correction_capture, correction_setup
+    from jasper import dsp_apply
+    from tests.test_crossover_v2_tuning_scope import _trial_candidate
+
+    text = compile_tuning_graph(
+        tuning_profile, scope="base" if scope == "candidate" else scope,
+        candidate=_trial_candidate(tuning_profile) if scope == "candidate" else None,
+    )
+    cam = FakeCam(entry_path=_entry(tmp_path))
+
+    async def live(**_kwargs):
+        return await normalize(cam.live)
+
+    async def normalize(text, **_kwargs):
+        normalized = yaml.safe_load(text)
+        normalized.setdefault("title", None)
+        return yaml.safe_dump(normalized)
+
+    cam.get_active_config_raw = live
+    cam.normalize_config_raw = normalize
+    graph = _graph(cam, tmp_path=tmp_path, emit_scoped=lambda *_: text)
+    graph.select_scope(scope, "candidate" if scope == "candidate" else "")
+    fingerprint = await graph.install()
+    assert graph.installed_graph_yaml() == text
+    assert await temporary_graph_anchor(cam, await live()) == Path(cam.entry_path)
+    if change == "path":
+        Path(cam.entry_path).unlink()
+        cam.entry_path = str(tmp_path / "later.yml")
+    elif change == "anchor":
+        Path(cam.entry_path).write_text("entry: changed\n")
+    elif change == "live":
+        changed = yaml.safe_load(cam.live)
+        changed["filters"]["as_tweeter_baseline_gain"]["parameters"]["gain"] = -30.0
+        cam.live = yaml.safe_dump(changed)
+    elif change == "unmarked":
+        cam.live = text
+    before = cam.live
+
+    @contextlib.asynccontextmanager
+    async def lock(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lock)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: cam)
+    await correction_setup._restore_protected_neutral_program_graph()
+    assert cam.live == ("entry: graph\n" if change == "none" else before)
+    assert fingerprint == hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def test_scope_refusal_cannot_load_an_unrequested_graph(tmp_path):

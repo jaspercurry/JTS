@@ -384,6 +384,7 @@ def _session_common_payload(session: Any) -> dict[str, Any]:
         "acceptance": getattr(session, "acceptance", None),
         "auto_revert_outcome": getattr(session, "auto_revert_outcome", None),
         "autolevel": session.autolevel.snapshot(),
+        "startup_recovery": getattr(session, "startup_recovery", None),
         "level_match": session.level_match_snapshot(),
     }
 

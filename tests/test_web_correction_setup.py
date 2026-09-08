@@ -956,10 +956,14 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_restore_protected_neutral_program_graph", recover_program,
     )
+    async def recover_room(*_args):
+        claims.append("room")
+
+    monkeypatch.setattr(correction_handlers, "recover_room_startup_state", recover_room)
 
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "commissioning", "capture_entry", "program"]
+    assert claims == ["repeat", "commissioning", "capture_entry", "room", "program"]
 
 
 def test_program_graph_startup_recovery_is_exact_and_fail_closed(
