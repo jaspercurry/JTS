@@ -32,7 +32,7 @@ from .evidence_packet import (
     HARMONICS_ARTIFACT,
     NO_ROUND_ARTIFACTS_REASON,
     RING_SIDECAR_GLOB,
-    _applied_profile_source,
+    applied_profile_source,
     round_artifact_dir,
 )
 from .journey import PHASE_MEASURE
@@ -958,7 +958,7 @@ def read_round_harmonics(
 ) -> dict[str, Any]:
     """Read valid takes and disclose every omitted take and unbound legacy drive."""
     orders = tuple(int(order) for order in orders)
-    applied_profile, profile_reason = _applied_profile_source(applied_profile_path)
+    applied_profile, profile_reason = applied_profile_source(applied_profile_path)
     fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
     program, downstream_db, prelude = rebuild_measure_program(state, bands)
     unscoped_omissions: list[dict[str, str]] = []
