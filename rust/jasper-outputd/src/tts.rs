@@ -270,12 +270,14 @@ pub fn spawn_tts_server(
                         let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
                         let slot = match metrics.slots.try_acquire() {
                             Ok(slot) => slot,
-                            // The pool counts every refusal for STATUS; only
-                            // the first is worth a journal line.
-                            Err(1) => {
+                            // The pool counts every refusal for STATUS; only the
+                            // first and every 100th afterward are worth a
+                            // journal line, so a real ceiling stays visible past
+                            // one transient refusal at boot.
+                            Err(count) if count == 1 || count % 100 == 0 => {
                                 eprintln!(
                                     "event=outputd.tts_socket.connection_rejected \
-                                     max_clients={TTS_MAX_CLIENTS}"
+                                     max_clients={TTS_MAX_CLIENTS} count={count}"
                                 );
                                 continue;
                             }

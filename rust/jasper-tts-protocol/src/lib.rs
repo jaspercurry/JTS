@@ -771,8 +771,8 @@ impl TtsClientSlots {
     }
 
     /// A slot, or `Err` carrying this pool's refusal count INCLUDING this
-    /// one — so a caller journals `Err(1)` and lets the counter carry the
-    /// rest.
+    /// one — so a caller journals `Err(1)` and every Nth refusal after,
+    /// letting the counter carry the rest.
     pub fn try_acquire(&self) -> Result<TtsClientSlot, u64> {
         let capacity = self.capacity;
         match self
