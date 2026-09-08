@@ -24,6 +24,7 @@ from jasper.output_topology import (
     output_topology_mutation,
     topology_path,
 )
+from jasper.service_units import read_unit_states, unit_activating
 
 logger = logging.getLogger("jasper.output_topology_runtime")
 
@@ -62,7 +63,6 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
     """Synchronously ask both topology consumers to apply saved state."""
 
     from jasper.control.restart_broker import manage_units
-    from jasper.web._unit_snapshot import probe_unit_snapshot
 
     result: dict[str, Any] = {"ok": True}
     for unit in RECONCILE_UNITS:
@@ -76,7 +76,9 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
             )
         except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        if not result.get("ok") and probe_unit_snapshot([unit]).state(unit).activating:
+        if not result.get("ok") and unit_activating(
+            (read_unit_states([unit], timeout=5.0) or {}).get(unit)
+        ):
             # The blocking start above gave up at its 15s budget, but this
             # reconciler measures 25.5-26s on a Pi Zero 2 W
             # (restart_broker.py's _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC

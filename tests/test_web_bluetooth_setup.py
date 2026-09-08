@@ -71,23 +71,18 @@ def _availability(
 
 @pytest.fixture(autouse=True)
 def _hardware_free_availability_and_pair_cleanup(monkeypatch):
-    class _Snapshot:
-        error = ""
-
-        @staticmethod
-        def available(_unit):
-            return True
-
-        @staticmethod
-        def active(unit):
-            return bluetooth_setup._unit_active(unit)
-
-        @staticmethod
-        def activating(_unit):
-            return False
-
+    # Every requested unit loaded (installed) but not active by default --
+    # the same fail-soft answer real systemctl gives in a container with no
+    # systemd. probe_bluetooth_availability is separately stubbed below and
+    # ignores its unit_available callback, so only "active" (feeding
+    # _effective_bluetooth_state's per-unit dict) matters for most tests.
     monkeypatch.setattr(
-        bluetooth_setup, "probe_unit_snapshot", lambda _units: _Snapshot(),
+        bluetooth_setup,
+        "read_unit_states",
+        lambda units, **_kwargs: {
+            unit: {"load_state": "loaded", "active_state": "inactive"}
+            for unit in units
+        },
     )
     monkeypatch.setattr(
         bluetooth_setup,
@@ -1688,7 +1683,14 @@ def test_get_state_exposes_desired_and_effective_source_state(
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
     monkeypatch.setattr(bluetooth_setup, "adapter_state", read_adapter_state)
     monkeypatch.setattr(bluetooth_setup, "source_intent_enabled", intent_reads)
-    monkeypatch.setattr(bluetooth_setup, "_unit_active", lambda _unit: desired)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "read_unit_states",
+        lambda units, **_kwargs: {
+            unit: {"active_state": "active" if desired else "inactive"}
+            for unit in units
+        },
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "probe_bluetooth_availability",
@@ -1721,30 +1723,26 @@ def test_get_state_uses_one_batched_systemd_snapshot(monkeypatch):
             "discovering": False,
         }
 
-    class _Snapshot:
-        error = ""
-
-        @staticmethod
-        def available(_unit):
-            return True
-
-        @staticmethod
-        def active(_unit):
-            return False
-
-    probe = mock.Mock(return_value=_Snapshot())
+    probe = mock.Mock(
+        return_value={
+            unit: {"load_state": "loaded", "active_state": "inactive"}
+            for unit in bluetooth_setup._STATE_UNITS
+        },
+    )
     monkeypatch.setattr(bluetooth_setup, "DISPATCH", fake)
     monkeypatch.setattr(bluetooth_setup, "adapter_state", read_adapter_state)
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=False),
     )
-    monkeypatch.setattr(bluetooth_setup, "probe_unit_snapshot", probe)
+    monkeypatch.setattr(bluetooth_setup, "read_unit_states", probe)
 
     h = _make_request("/state")
     h.do_GET()
 
     assert h.status == int(http.HTTPStatus.OK)
-    probe.assert_called_once_with(bluetooth_setup._STATE_UNITS)
+    probe.assert_called_once_with(
+        bluetooth_setup._STATE_UNITS, timeout=bluetooth_setup.STATE_PROBE_TIMEOUT_SEC,
+    )
 
 
 def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
@@ -1765,8 +1763,11 @@ def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
     )
     monkeypatch.setattr(
         bluetooth_setup,
-        "_unit_active",
-        lambda unit: unit != "bt-agent.service",
+        "read_unit_states",
+        lambda units, **_kwargs: {
+            unit: {"active_state": "inactive" if unit == "bt-agent.service" else "active"}
+            for unit in units
+        },
     )
 
     state, status = bluetooth_setup._bluetooth_state_snapshot()
@@ -1781,7 +1782,7 @@ def test_get_state_is_not_on_while_pairing_agent_is_inactive(monkeypatch):
 
 
 def test_pairing_verdict_reads_only_units_the_snapshot_probes():
-    """`UnitSnapshot.active` answers False for a unit it never looked at.
+    """``unit_active`` answers False for a unit outside the probed batch.
 
     So an advertise unit outside the probed set would read as stopped and
     disable pairing on every healthy speaker, with no other test failing.
@@ -1809,11 +1810,7 @@ def test_failed_unit_probe_does_not_claim_pairing_is_blocked(monkeypatch):
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
     monkeypatch.setattr(
-        bluetooth_setup,
-        "probe_unit_snapshot",
-        lambda _units: bluetooth_setup.UnitSnapshot(
-            states={}, error="systemctl show timed out",
-        ),
+        bluetooth_setup, "read_unit_states", lambda units, **_kwargs: None,
     )
 
     state, status = bluetooth_setup._bluetooth_state_snapshot()
@@ -1842,7 +1839,14 @@ def test_get_state_preserves_desired_intent_when_adapter_read_fails(
         "source_intent_enabled",
         mock.Mock(return_value=desired),
     )
-    monkeypatch.setattr(bluetooth_setup, "_unit_active", lambda _unit: desired)
+    monkeypatch.setattr(
+        bluetooth_setup,
+        "read_unit_states",
+        lambda units, **_kwargs: {
+            unit: {"active_state": "active" if desired else "inactive"}
+            for unit in units
+        },
+    )
     monkeypatch.setattr(
         bluetooth_setup,
         "probe_bluetooth_availability",
@@ -1893,11 +1897,6 @@ def test_state_reports_parked_without_rewriting_desired(monkeypatch, park_reason
     monkeypatch.setattr(
         bluetooth_setup, "bonded_follower_park_reason", lambda: park_reason,
     )
-    monkeypatch.setattr(
-        bluetooth_setup,
-        "_unit_active",
-        lambda _unit: pytest.fail("parked state must not probe source units"),
-    )
 
     h = _make_request("/state")
     h.do_GET()
@@ -1927,7 +1926,6 @@ def test_state_preserves_desired_while_adapter_is_unavailable(monkeypatch, desir
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=desired),
     )
-    monkeypatch.setattr(bluetooth_setup, "_unit_active", lambda _unit: False)
     monkeypatch.setattr(
         bluetooth_setup,
         "probe_bluetooth_availability",
@@ -2020,7 +2018,6 @@ def test_failed_power_apply_returns_durable_intent_readback(monkeypatch):
     monkeypatch.setattr(
         bluetooth_setup, "source_intent_enabled", mock.Mock(return_value=True),
     )
-    monkeypatch.setattr(bluetooth_setup, "_unit_active", lambda _unit: False)
     h = _make_request(
         "/power",
         body=b'{"on":true}',

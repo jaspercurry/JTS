@@ -131,6 +131,32 @@ def unit_unstable(record: Mapping[str, Any] | None) -> bool:
     return str(record.get("active_state") or "") in {"activating", "deactivating"}
 
 
+def unit_loaded(record: Mapping[str, Any] | None) -> bool:
+    """Whether a ``read_unit_states`` record says the unit is installed
+    (systemd could load its unit file). ``None`` (missing from the batch,
+    or systemctl unavailable) is not loaded — same fail-soft rule as
+    :func:`unit_failed`."""
+    if not record:
+        return False
+    return str(record.get("load_state") or "") == "loaded"
+
+
+def unit_active(record: Mapping[str, Any] | None) -> bool:
+    """Whether a ``read_unit_states`` record says the unit is currently
+    running. ``None`` is not active."""
+    if not record:
+        return False
+    return str(record.get("active_state") or "") == "active"
+
+
+def unit_activating(record: Mapping[str, Any] | None) -> bool:
+    """Whether a ``read_unit_states`` record says the unit is starting up.
+    ``None`` is not activating."""
+    if not record:
+        return False
+    return str(record.get("active_state") or "") == "activating"
+
+
 def systemd_int(value: str | None) -> int | None:
     """An integer property, or None for unset: an empty value, a bracketed
     placeholder such as ``[not set]``, or UINT64_MAX (systemd's unset

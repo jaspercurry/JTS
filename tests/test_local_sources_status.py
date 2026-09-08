@@ -360,6 +360,46 @@ def test_read_source_status_probes_unit_states_once(stub_backends, monkeypatch):
     assert set(calls[0]) == set(status._STATE_UNITS)
 
 
+def test_read_source_status_reports_unit_state_unavailable_not_not_installed(
+    stub_backends, monkeypatch,
+):
+    """systemd unit state unavailable (systemctl unreachable/timed out) is
+    not the same as "no JTS units are installed" -- every systemd-backed
+    source (including Bluetooth's activation-unit check, which reuses the
+    same batch) must say so distinctly, and never read as degraded (there is
+    no observed state to compare against a desired one)."""
+    stub_backends()
+    monkeypatch.setattr(status, "read_unit_states", lambda units, timeout=5.0: None)
+
+    state = status.read_source_status()
+
+    for key in ("airplay", "spotify_connect"):
+        assert state[key]["available"] is False
+        assert state[key]["effective"] == "unavailable"
+        assert state[key]["unavailableReason"] == status.UNIT_STATE_UNAVAILABLE_REASON
+    # bluetooth is desired-on by DEFAULT_INTENTS -> unavailable, same as above.
+    assert state["bluetooth"]["available"] is False
+    assert state["bluetooth"]["effective"] == "unavailable"
+    assert state["bluetooth"]["unavailableReason"] == status.UNIT_STATE_UNAVAILABLE_REASON
+    # usbsink is desired-off by DEFAULT_INTENTS -> unavailable but off, not degraded.
+    assert state["usbsink"]["available"] is False
+    assert state["usbsink"]["effective"] == "off"
+    assert state["usbsink"]["unavailableReason"] == status.UNIT_STATE_UNAVAILABLE_REASON
+
+
+@pytest.mark.parametrize(
+    "source",
+    [Source.AIRPLAY, Source.SPOTIFY, Source.BLUETOOTH, Source.USBSINK],
+)
+def test_enable_blocker_reports_unit_state_unavailable(
+    monkeypatch, source,
+):
+    monkeypatch.setattr(status, "_profile_allows_local_sources", lambda: True)
+    monkeypatch.setattr(status, "read_unit_states", lambda units, timeout=5.0: None)
+
+    assert status.enable_blocker(source) == status.UNIT_STATE_UNAVAILABLE_REASON
+
+
 # ---- sources_parked -----------------------------------------------------------
 
 
