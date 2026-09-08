@@ -34,6 +34,7 @@ import pytest
 # fixture token drifts from what the test sends).
 TEST_CSRF_TOKEN = "test-token"
 
+from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.wake_corpus import runtime_probe
 from jasper.wake_corpus.capture_plan import PlanConformance
 from jasper.wake_corpus import recording_backend
@@ -193,10 +194,8 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
     test exit. All 4 leg ports configured — matches the production
     default. Tests that exercise 3-leg mode just don't opt into
     include_raw_mic_0."""
-    monkeypatch.setattr(
-        runtime_probe,
-        "BRIDGE_STATS_PATH",
-        tmp_path / "missing_aec_bridge_stats.json",
+    monkeypatch.setenv(
+        BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
     b = wake_corpus_setup.RecordingBackend(
@@ -338,10 +337,8 @@ def _mute_path_fixture(tmp_path: Path) -> Path:
 @pytest.fixture(name="mute_backend")
 def _mute_backend_fixture(monkeypatch, tmp_path: Path, mute_path: Path):
     """Backend wired to a tmp mic_mute.env (same shape as `backend`)."""
-    monkeypatch.setattr(
-        runtime_probe,
-        "BRIDGE_STATS_PATH",
-        tmp_path / "missing_aec_bridge_stats.json",
+    monkeypatch.setenv(
+        BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
     b = wake_corpus_setup.RecordingBackend(

@@ -48,7 +48,7 @@ from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )
-from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV, read_bridge_stats
+from jasper.aec.bridge_telemetry import read_bridge_stats
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.mics.xvf3800 import (
@@ -161,10 +161,6 @@ AEC_MODE_PATH = Path(os.environ.get(
 BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "/var/lib/jasper/wake_corpus_bridge.env",
-))
-BRIDGE_STATS_PATH = Path(os.environ.get(
-    BRIDGE_STATS_PATH_ENV,
-    "/run/jasper/aec_bridge_stats.json",
 ))
 AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
@@ -786,7 +782,7 @@ def read_bridge_stats_snapshot() -> dict[str, Any] | None:
     as `capture_health.status=unknown` instead of pretending the clip is
     clean.
     """
-    data = read_bridge_stats(path=BRIDGE_STATS_PATH)
+    data = read_bridge_stats()
     if not isinstance(data, dict):
         return None
     counters = data.get("counters")

@@ -294,7 +294,7 @@ def _read_via_doctor(path, monkeypatch):
 
 
 def _read_via_wake_corpus(path, monkeypatch):
-    monkeypatch.setattr(runtime_probe, "BRIDGE_STATS_PATH", path)
+    monkeypatch.setenv(bridge_telemetry.BRIDGE_STATS_PATH_ENV, str(path))
     return runtime_probe.read_bridge_stats_snapshot()
 
 
