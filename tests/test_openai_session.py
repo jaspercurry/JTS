@@ -2816,7 +2816,14 @@ async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch)
 async def test_dropping_pending_audio_frees_the_ceiling(monkeypatch):
     """A barge-in flush clears the queue, so the accounting the ceiling
     reads must clear with it — otherwise the turn stays permanently full
-    and the model's next words are dropped."""
+    and the model's next words are dropped.
+
+    The dropped-byte count clears too. One turn spans several barge-in
+    episodes (``play_responses`` keeps going after a flush), and the
+    daemon cues ``internal_error`` at teardown on a non-zero count; a
+    truncation the household caused by talking over the model must not
+    end the turn with that cue. The first drop's ``turn.audio_overflow``
+    WARN stays as the journal record."""
     monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 10)
     conn, _factory = _make_conn()
     await conn.start(ToolRegistry(), "")
@@ -2830,6 +2837,27 @@ async def test_dropping_pending_audio_frees_the_ceiling(monkeypatch):
         await turn._on_audio_delta(_b64(b"after"))
 
         assert turn.audio_chunks_pending() == 1
-        assert turn.audio_dropped_bytes() == 1, "the flush is not a drop"
+        assert turn.audio_dropped_bytes() == 0
+    finally:
+        await conn.stop()
+
+
+async def test_dropping_pending_audio_drains_behind_the_sentinel():
+    """A chunk can be queued BEHIND the terminal sentinel: the socket
+    drops mid-reply (``_on_connection_lost`` queues the sentinel) and a
+    late audio delta still lands. A drain that stopped at the first
+    sentinel would re-queue it AHEAD of that chunk, and the consumer
+    would play post-barge audio as if it were pre-interrupt."""
+    conn, _factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        turn._on_connection_lost()
+        await turn._on_audio_delta(_b64(b"late"))
+        assert turn.audio_chunks_pending() == 2
+
+        assert turn.drop_pending_audio() == 1
+        played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
+        assert played == []
     finally:
         await conn.stop()

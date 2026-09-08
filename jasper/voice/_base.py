@@ -196,19 +196,31 @@ class BaseLiveTurn:
         self._audio_q.put_nowait(chunk)
 
     def drop_pending_audio(self) -> int:
+        """Drop the whole backlog, keeping the terminal sentinel last.
+
+        A chunk can sit BEHIND the sentinel (a late provider event after
+        `_on_connection_lost` queued one), so the drain reads the queue
+        to empty rather than stopping at the first `None` — stopping
+        there would replay that chunk ahead of the sentinel as
+        pre-interrupt audio. The dropped-byte count resets with it: a
+        barge-in truncation is the household's own doing, not the
+        overflow `turn.truncated_response` cues about. See ADR-0254.
+        """
         dropped = 0
+        saw_sentinel = False
         try:
             while True:
                 item = self._audio_q.get_nowait()
                 if item is None:
-                    # Preserve the terminal sentinel so the consumer
-                    # still ends the turn.
-                    self._audio_q.put_nowait(None)
-                    break
-                dropped += 1
+                    saw_sentinel = True
+                else:
+                    dropped += 1
         except asyncio.QueueEmpty:
             pass
+        if saw_sentinel:
+            self._audio_q.put_nowait(None)
         self._queued_bytes = 0
+        self._audio_dropped_bytes = 0
         return dropped
 
     def _note_activity(self) -> None:
