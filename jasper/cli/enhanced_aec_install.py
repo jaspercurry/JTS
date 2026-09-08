@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -365,8 +367,6 @@ def _build_v2_wheel(
 
 
 def _extract_v2_extension(wheel: Path, destination: Path) -> Path:
-    import zipfile
-
     destination.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(wheel) as bundle:
         candidates = [
@@ -685,8 +685,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"jasper-enhanced-aec-install: {exc}", file=sys.stderr)
         return 1
     if args.json:
-        import json
-
         print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
