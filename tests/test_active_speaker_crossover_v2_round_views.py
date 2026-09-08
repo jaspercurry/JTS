@@ -37,6 +37,7 @@ from jasper.active_speaker.crossover_v2.forward_model import (
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
+from jasper.active_speaker.crossover_v2.room_views import ROOM_FLOOR_HZ
 from jasper.active_speaker.crossover_v2.round_views import (
     CLOUD_BINDING_FIT_INPUTS_NOT_BANKED,
     ENTRY_STATE_UNREADABLE,
@@ -1720,6 +1721,20 @@ def test_cli_boundary_prior_reads_a_ceiling_from_the_argument_and_the_room_media
     assert max(
         json.loads((round_dir / "boundary_prior.json").read_text())["freqs_hz"]
     ) <= 80.0
+
+
+def test_cli_boundary_prior_refuses_a_ceiling_at_the_grid_floor(tmp_path, capsys):
+    from jasper.cli import round_views as cli
+
+    round_dir = bank_measure_round(tmp_path)
+    _declare_walls(round_dir, front_wall_m=0.85)
+
+    assert cli.main(
+        ["boundary-prior", str(round_dir), "--ceiling-hz", str(ROOM_FLOOR_HZ)]
+    ) == cli.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == (
+        "boundary_prior_ceiling_invalid"
+    )
 
 
 def test_cli_boundary_prior_reports_an_unparseable_geometry_as_unreadable(

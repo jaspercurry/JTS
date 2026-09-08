@@ -287,7 +287,8 @@ def test_the_boundary_prior_states_the_image_source_sum_for_a_declared_wall():
 
 
 def test_wall_curves_add_in_db_and_no_wall_is_no_curve():
-    """Walls are summed as independent; no wall is no claim, not a flat one."""
+    """Adding the per-wall dB curves multiplies their magnitudes -- the corner
+    image-source sum; no wall is no claim, not a flat one."""
     grid_hz = [30.0, 60.0, 120.0]
     front = boundary_prior(grid_hz, walls={"front": 0.85})
     side = boundary_prior(grid_hz, walls={"side": 1.4})

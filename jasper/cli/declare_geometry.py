@@ -20,6 +20,7 @@ from typing import Callable, Sequence
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
     METERS_PER_INCH,
+    WALL_FIELD_BY_KEY,
     DeclaredGeometry,
     load_declared_geometry,
 )
@@ -50,11 +51,10 @@ def _both_units(meters: float) -> str:
 
 
 #: The optional lengths, in the order both verbs print them: printed label and
-#: the field it is read from.
+#: the field it is read from. The walls come from the model's own table.
 _OPTIONAL = (
     ("ceiling height", "ceiling_height_m"),
-    ("front wall", "front_wall_m"),
-    ("side wall", "side_wall_m"),
+    *((f"{key} wall", field) for key, field in WALL_FIELD_BY_KEY.items()),
 )
 
 

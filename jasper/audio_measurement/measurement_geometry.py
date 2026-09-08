@@ -186,10 +186,7 @@ class DeclaredGeometry:
 
 
 def boundary_prior(
-    freqs_hz: Iterable[float],
-    *,
-    walls: Mapping[str, float],
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
+    freqs_hz: Iterable[float], *, walls: Mapping[str, float]
 ) -> dict[str, Any]:
     """Advisory boundary gain over ``freqs_hz`` for the declared walls.
 
@@ -198,14 +195,18 @@ def boundary_prior(
     is +6 dB as ``f -> 0`` (2*pi loading) and nulls at ``c / (4 d)``.
     ``f_half_gain_hz`` is where the rise is at +3 dB.
 
-    The per-wall dB curves are SUMMED: an approximation that treats the walls
-    as independent, ignoring their cross terms and the corner image sources.
-    Each wall's curve is clamped at :data:`BOUNDARY_PRIOR_NULL_FLOOR_DB`.
+    Summing the per-wall dB curves IS the rigid corner image-source sum, not
+    an independence approximation: adding logs multiplies the magnitudes, and
+    ``(1 + exp(-j th_front))(1 + exp(-j th_side))`` expands to exactly the
+    four sources -- direct, one image per wall, and the corner image. What it
+    does approximate is equal image amplitudes (no ``1/r`` spreading loss) and
+    perpendicular rigid walls; each wall's curve is then clamped at
+    :data:`BOUNDARY_PRIOR_NULL_FLOOR_DB`, which the product no longer models.
 
     No declared wall is not a flat 0 dB claim, it is no claim: the returned
     grid and curve are then empty.
     """
-    speed = float(sound_speed_m_s)
+    speed = DEFAULT_SOUND_SPEED_M_S
     grid = [float(hz) for hz in freqs_hz]
     declared: dict[str, dict[str, float]] = {}
     curves: list[list[float]] = []
@@ -226,9 +227,7 @@ def boundary_prior(
         ])
     return {
         "sound_speed_m_s": speed,
-        "sound_speed_source": (
-            "default" if speed == DEFAULT_SOUND_SPEED_M_S else "argument"
-        ),
+        "sound_speed_source": "default",
         "walls": declared,
         "freqs_hz": grid if curves else [],
         "prior_db": [sum(wall_db) for wall_db in zip(*curves)],

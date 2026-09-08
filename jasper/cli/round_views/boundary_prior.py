@@ -14,7 +14,9 @@ reads no capture, grades nothing, and decides nothing about a graph.
 
 An undeclared wall is a DISCLOSED unknown, never a refusal: the view still
 answers, naming what it was not told in ``unknown`` and publishing an empty
-curve. Only a geometry file that exists and cannot be read is unreadable.
+curve. Unreadable is reserved for a file that exists and does not parse --
+the declared geometry, or the ``room-median`` artifact the ceiling is read
+from when a round carries one.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import math
 from collections.abc import Mapping
 from pathlib import Path
 
+from jasper.active_speaker.crossover_v2.room_views import ROOM_FLOOR_HZ
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.attribution.position_evidence import log_grid_hz
 from jasper.audio_measurement.measurement_geometry import (
@@ -51,16 +54,10 @@ BOUNDARY_PRIOR_KIND = "jts_boundary_prior"
 
 MODEL = (
     "rigid image-source pressure sum per declared wall, |1 + exp(-j 2*pi*f * "
-    "2d/c)|, the per-wall dB curves summed as independent and each clamped at "
-    "the null floor"
+    "2d/c)|; summing the per-wall dB curves is the rigid corner image-source "
+    "sum itself, up to the per-wall null-floor clamp, and approximates equal "
+    "image amplitudes (no 1/r loss) and perpendicular rigid walls"
 )
-
-#: The room layer's own median curve, when a round carries one beside it: its
-#: ``ceiling_hz`` is the band this prior is worth stating over.
-ROOM_MEDIAN_ARTIFACT = "room_median.json"
-
-#: The grid's floor; ``log_grid_hz`` runs 1/12 octave from here to the ceiling.
-GRID_LO_HZ = 20.0
 
 
 def _ceiling_hz(
@@ -69,7 +66,7 @@ def _ceiling_hz(
     """The top of the grid and where that number came from."""
     if args.ceiling_hz is not None:
         return float(args.ceiling_hz), "argument"
-    path = default_out(inputs, round_dir, ROOM_MEDIAN_ARTIFACT)
+    path = default_out(inputs, round_dir, ARTIFACT_BY_VIEW["room-median"].artifact)
     if path.is_file():
         document = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
         stated = (
@@ -118,15 +115,15 @@ def _cmd_boundary_prior(args: argparse.Namespace) -> int:
         named=bool(args.geometry),
     )
     ceiling_hz, ceiling_source = _ceiling_hz(args, inputs, round_dir)
-    if not (math.isfinite(ceiling_hz) and ceiling_hz > GRID_LO_HZ):
+    if not (math.isfinite(ceiling_hz) and ceiling_hz > ROOM_FLOOR_HZ):
         return refused_by_name(
             "boundary_prior_ceiling_invalid",
             {"ceiling_hz": ceiling_hz, "ceiling_source": ceiling_source,
-             "grid_lo_hz": GRID_LO_HZ},
+             "grid_lo_hz": ROOM_FLOOR_HZ},
             code=EXIT_REFUSED,
         )
     prior = boundary_prior(
-        log_grid_hz(GRID_LO_HZ, ceiling_hz) if walls else (), walls=walls,
+        log_grid_hz(ROOM_FLOOR_HZ, ceiling_hz) if walls else (), walls=walls,
     )
     written = _write(
         {
@@ -173,8 +170,9 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     prior.add_argument(
         "--ceiling-hz", type=float, default=None, metavar="HZ",
-        help=f"top of the grid; default is a {ROOM_MEDIAN_ARTIFACT} beside the "
-             f"round, else {ROOM_BOUNDARY_DEFAULT_HZ:g} Hz",
+        help=f"top of the grid; default is a "
+             f"{ARTIFACT_BY_VIEW['room-median'].artifact} beside the round, "
+             f"else {ROOM_BOUNDARY_DEFAULT_HZ:g} Hz",
     )
     prior.add_argument("--out", default=None, help="write the result here (- for stdout)")
     prior.set_defaults(func=_cmd_boundary_prior)
