@@ -913,7 +913,7 @@ async def _get_state(
         volume_state, sound_profile, airplay_playing, aec_status, audio_health,
         usb_forensics, audition_state, bass_extension_state, transit_state,
         output_hardware_state, service_states, tools_state, chat_state,
-        grouping_state, active_speaker_setup, research_state, cues_state,
+        grouping_state, active_speaker_setup, research_state,
     ) = await asyncio.gather(
         _soft_read("volume", _read_persisted_volume, exc=(OSError, ValueError)),
         _soft_read("sound_profile", _read_sound_profile),
@@ -967,10 +967,6 @@ async def _get_state(
             lambda: _research_state(voice_status.get("research")),
             exc=(ImportError, OSError, RuntimeError, ValueError),
         ),
-        # AudioCueManager.snapshot() verbatim — no reshaping, unlike research
-        # above (which re-derives from its own store). None when jasper-voice
-        # runs no cue manager.
-        _soft_read("cues", lambda: voice_status.get("cues")),
     )
     listening_level, persisted_main_volume_db = volume_state or (None, None)
 
@@ -1170,9 +1166,8 @@ async def _get_state(
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
         "research": research_state,
-        # AudioCueManager's delivery-outcome counters. null when jasper-voice
-        # runs no cue manager; never the cue/dynamic text itself.
-        "cues": cues_state,
+        # AudioCueManager.snapshot() verbatim; never the cue/dynamic text.
+        "cues": voice_status.get("cues"),
         # The open measurement window as this process sees it — an in-memory
         # read of its own self-expiring copy, not a probe. `held_for_s` is
         # what jasper-doctor's check_measurement_hold reads: `expires_in_s`
