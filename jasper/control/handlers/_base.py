@@ -54,6 +54,27 @@ class ControlHandlerMixin(BaseHTTPRequestHandler):
     ) -> None:
         raise NotImplementedError
 
+    def _send_broker_result(
+        self,
+        result: dict[str, Any],
+        *,
+        error: str,
+        code: str,
+        **extra: Any,
+    ) -> bool:
+        """Answer a `restart_broker` result with the shared envelope.
+
+        Refused: 502 `{"error", "code", **extra}`. Ok: 202
+        `{"ok": True, "status": "accepted", **extra}`. `extra` lands in
+        both bodies, so a caller whose ok body must differ (extra fields,
+        another status) calls this only from its own refused branch.
+        """
+        if not result.get("ok"):
+            self._send_json({"error": error, "code": code, **extra}, status=502)
+            return False
+        self._send_json({"ok": True, "status": "accepted", **extra}, status=202)
+        return True
+
     def _voice_cmd_or_error(
         self,
         cmd: str,

@@ -389,19 +389,17 @@ class SystemRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not refresh.get("ok"):
-            self._send_json(
-                {
-                    "error": (
-                        "Conversion quality was saved, but the music "
-                        "renderer restart could not be scheduled."
-                    ),
-                    "code": "audio_quality_restart_failed",
-                    "intent_saved": True,
-                    "action": "audio-quality",
-                    "try_restart_units": _server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
-                    "audio_quality": state,
-                },
-                status=502,
+            self._send_broker_result(
+                refresh,
+                error=(
+                    "Conversion quality was saved, but the music "
+                    "renderer restart could not be scheduled."
+                ),
+                code="audio_quality_restart_failed",
+                intent_saved=True,
+                action="audio-quality",
+                try_restart_units=_server.LOCAL_SOURCE_AUDIO_REFRESH_UNITS,
+                audio_quality=state,
             )
             return
         log_event(
@@ -564,15 +562,13 @@ class SystemRoutes(ControlHandlerMixin):
                 *targets, verb=verb, reason=action, no_block=True, timeout=5.0,
             )
             if not result.get("ok"):
-                self._send_json(
-                    {
-                        "error": "The restart could not be scheduled.",
-                        "code": "system_restart_failed",
-                        "action": action,
-                        "failed_verb": verb,
-                        "failed_units": targets,
-                    },
-                    status=502,
+                self._send_broker_result(
+                    result,
+                    error="The restart could not be scheduled.",
+                    code="system_restart_failed",
+                    action=action,
+                    failed_verb=verb,
+                    failed_units=targets,
                 )
                 return
         self._send_json(

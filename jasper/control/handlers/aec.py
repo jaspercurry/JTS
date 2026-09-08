@@ -94,18 +94,16 @@ class AecRoutes(ControlHandlerMixin):
             return
         kick = aec_endpoints._kick_aec_reconciler(reason="aec_leg")
         if not kick.get("ok"):
-            self._send_json(
-                {
-                    "error": (
-                        "The wake-detection change was saved, but the "
-                        "reconciler restart could not be scheduled."
-                    ),
-                    "code": "leg_reconcile_failed",
-                    "intent_saved": True,
-                    "requested_leg": leg,
-                    "requested_enabled": enabled_val,
-                },
-                status=502,
+            self._send_broker_result(
+                kick,
+                error=(
+                    "The wake-detection change was saved, but the "
+                    "reconciler restart could not be scheduled."
+                ),
+                code="leg_reconcile_failed",
+                intent_saved=True,
+                requested_leg=leg,
+                requested_enabled=enabled_val,
             )
             return
         log_event(
@@ -149,17 +147,15 @@ class AecRoutes(ControlHandlerMixin):
             return
         kick = aec_endpoints._kick_aec_reconciler(reason="aec_profile")
         if not kick.get("ok"):
-            self._send_json(
-                {
-                    "error": (
-                        "The microphone profile was saved, but the "
-                        "reconciler restart could not be scheduled."
-                    ),
-                    "code": "profile_reconcile_failed",
-                    "intent_saved": True,
-                    "requested_profile": profile,
-                },
-                status=502,
+            self._send_broker_result(
+                kick,
+                error=(
+                    "The microphone profile was saved, but the "
+                    "reconciler restart could not be scheduled."
+                ),
+                code="profile_reconcile_failed",
+                intent_saved=True,
+                requested_profile=profile,
             )
             return
         log_event(
@@ -219,18 +215,16 @@ class AecRoutes(ControlHandlerMixin):
         )
         if not _server._schedule_usb_gadget_recompose():
             failed_status = aec_endpoints._aec_full_status()
-            self._send_json(
-                {
-                    "error": (
-                        "USB microphone preference was saved, but its "
-                        "hardware update could not be scheduled."
-                    ),
-                    "code": "usb_mic_recompose_schedule_failed",
-                    "intent_saved": True,
-                    "requested_enabled": enabled,
-                    "usb_mic": failed_status.get("usb_mic") or {},
-                },
-                status=502,
+            self._send_broker_result(
+                {"ok": False},
+                error=(
+                    "USB microphone preference was saved, but its "
+                    "hardware update could not be scheduled."
+                ),
+                code="usb_mic_recompose_schedule_failed",
+                intent_saved=True,
+                requested_enabled=enabled,
+                usb_mic=failed_status.get("usb_mic") or {},
             )
             return
         self._send_json(aec_endpoints._aec_full_status())
@@ -333,18 +327,16 @@ class AecRoutes(ControlHandlerMixin):
             )
             if not restart.get("ok"):
                 failed_status = aec_endpoints._aec_full_status()
-                self._send_json(
-                    {
-                        "error": (
-                            "Computer microphone source was saved, but the "
-                            "microphone bridge restart could not be scheduled."
-                        ),
-                        "code": "usb_mic_leg_restart_failed",
-                        "intent_saved": True,
-                        "requested_leg": leg,
-                        "usb_mic": failed_status.get("usb_mic") or {},
-                    },
-                    status=502,
+                self._send_broker_result(
+                    restart,
+                    error=(
+                        "Computer microphone source was saved, but the "
+                        "microphone bridge restart could not be scheduled."
+                    ),
+                    code="usb_mic_leg_restart_failed",
+                    intent_saved=True,
+                    requested_leg=leg,
+                    usb_mic=failed_status.get("usb_mic") or {},
                 )
                 return
             _server._usb_mic_leg_apply_pending = (leg, time.monotonic())
@@ -396,17 +388,15 @@ class AecRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not restart.get("ok"):
-            self._send_json(
-                {
-                    "error": (
-                        "Sensitivity was saved, but the assistant restart "
-                        "could not be scheduled."
-                    ),
-                    "code": "wake_threshold_restart_failed",
-                    "intent_saved": True,
-                    "threshold": threshold,
-                },
-                status=502,
+            self._send_broker_result(
+                restart,
+                error=(
+                    "Sensitivity was saved, but the assistant restart "
+                    "could not be scheduled."
+                ),
+                code="wake_threshold_restart_failed",
+                intent_saved=True,
+                threshold=threshold,
             )
             return
         log_event(
@@ -524,17 +514,15 @@ class AecRoutes(ControlHandlerMixin):
             timeout=5.0,
         )
         if not started.get("ok"):
-            self._send_json(
-                {
-                    "error": (
-                        "The preference was saved, but the background "
-                        "installer could not be started."
-                    ),
-                    "code": "enhanced_aec_start_failed",
-                    "intent_saved": True,
-                    "enhanced_aec": aec_endpoints._enhanced_aec_status(),
-                },
-                status=502,
+            self._send_broker_result(
+                started,
+                error=(
+                    "The preference was saved, but the background "
+                    "installer could not be started."
+                ),
+                code="enhanced_aec_start_failed",
+                intent_saved=True,
+                enhanced_aec=aec_endpoints._enhanced_aec_status(),
             )
             return
         log_event(
