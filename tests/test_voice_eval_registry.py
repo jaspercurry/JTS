@@ -2,43 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-free guard for the voice-eval tool-registry builder.
-
-`tests/voice_eval/harness.py::_build_test_registry` mirrors the daemon's
-`_build_registry`, but it is ONLY ever invoked behind a live, *paid*
-`harness.ask()` call. So a drifted client constructor — a wrong kwarg, or
-a `Config` attribute that no longer exists — is invisible to the
-hardware-free CI suite and only explodes when an operator spends money
-running the eval.
-
-That exact bug shipped: the bus and subway branches referenced
-`cfg.bus_stop_id` / `cfg.subway_lines` (neither exists on `Config`) and
-`BusClient(stop_id=…, configured_routes=…)` (neither is a real
-parameter), so every transit-enabled `harness.ask()` raised
-`AttributeError` before any assertion ran — silently disabling the
-bus-outage regression scenario it was supposed to guard.
-
-CI runs `pytest --ignore=tests/voice_eval`, so this guard deliberately
-lives in the top-level `tests/` package (which CI *does* collect) and
-imports the builder directly. It constructs the registry with every
-transit + Home Assistant backend enabled and asserts the build succeeds
-and registers the expected tools — catching the whole class of
-harness-vs-real-signature drift cheaply, with no network and no paid
-session. The clients store their config and create HTTP clients lazily,
-so construction is genuinely hardware-free.
-"""
+"""Offline harness checks. Connections and prompt synthesis are always replaced."""
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import pytest
+from jasper.audio_io import confirmed_tts_flush
 from jasper.config import Config
+from jasper.tools import ToolRegistry, dispatch_tool, tool
+from jasper.voice import trace
+from jasper.usage import UsageStore, pricing_for_model
+from jasper.voice.session import AudioOutChunk, TurnCapture, TurnUsage
+from tests._live_turn_fake import FakeLiveTurn
 from tests.voice_eval import harness as harness_mod
 from tests.voice_eval import tts
 from tests.voice_eval.harness import _build_test_registry
+from tests.voice_eval.trace_registry import traced_registry
+from tests.voice_eval.turn_trace import TurnTrace, reset_active, set_active
 
 # Synthetic but well-formed values — enough to flip the `*_enabled`
 # Config properties on. No network fires at construction.
@@ -172,8 +159,9 @@ def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
 
 
 def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
-    class FakeTurn:
+    class FakeTurn(FakeLiveTurn):
         def __init__(self) -> None:
+            super().__init__()
             self.released = False
 
         async def send_audio(self, _pcm: bytes) -> None:
@@ -182,7 +170,10 @@ def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
         async def end_input(self) -> None:
             return None
 
-        async def audio_out(self):
+        async def wait_for_interrupt(self):
+            await asyncio.Event().wait()
+
+        async def audio_out_chunks(self):
             while True:
                 await asyncio.sleep(0.1)
                 if False:  # pragma: no cover - keeps this an async generator
@@ -190,11 +181,6 @@ def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
 
         def server_turn_complete(self) -> bool:
             return False
-
-        def usage(self):
-            from jasper.voice.session import TurnUsage
-
-            return TurnUsage()
 
         async def release(self) -> None:
             self.released = True
@@ -211,13 +197,15 @@ def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
 
     transcript_calls: list[tuple[str, list[str], bytes]] = []
 
-    def fake_write_transcript(prompt, trace, audio, *, out_dir):
+    def fake_write_transcript(prompt, trace, audio, **kwargs):
         transcript_calls.append((prompt, [event.kind for event in trace.events], audio))
         return tmp_path / "turn.md", tmp_path / "turn.response.wav"
 
     turn = FakeTurn()
     harness = harness_mod.VoiceEvalHarness.__new__(harness_mod.VoiceEvalHarness)
-    harness.cfg = SimpleNamespace(voice_provider="gemini")
+    harness.cfg = SimpleNamespace(voice_provider="gemini", active_voice_model="gemini-3.1-flash-live-preview")
+    harness._pricing = pricing_for_model(harness.cfg.active_voice_model)
+    harness._usage_store = UsageStore(":memory:")
     harness.audio_cache_dir = tmp_path
     harness._session_id = "session-test"
 
@@ -275,3 +263,180 @@ def test_tts_cache_write_failure_does_not_publish_partial_file(monkeypatch, tmp_
 
     assert not path.exists()
     assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+
+@pytest.mark.parametrize("provider", ["gemini", "openai", "grok"])
+@pytest.mark.parametrize("outcome", ["answer", "no_audio", "no_transcript", "interrupt"])
+async def test_harness_shared_contract_and_evidence(monkeypatch, tmp_path, provider, outcome):
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", provider)
+    for key in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
+        monkeypatch.setenv(key, "offline-key")
+    cfg = Config.from_env()
+    pauses = []
+    sleep = asyncio.sleep
+
+    async def paced_sleep(seconds):
+        if seconds:
+            pauses.append(seconds)
+        await sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", paced_sleep)
+    pcm = b"\x01\0" * (harness_mod.MicCapture.OUTPUT_FRAME_SAMPLES + 17)
+    usage = TurnUsage(100, 50, {
+        "input_tokens": 100, "output_tokens": 50,
+        "input_token_details": {"text_tokens": 100},
+        "output_token_details": {"audio_tokens": 50},
+    })
+
+    class Turn(FakeLiveTurn):
+        def __init__(self):
+            super().__init__()
+            self.sent = []
+            self.interrupted = asyncio.Event()
+
+        def request_local_interrupt(self):
+            self.interrupted.set()
+
+        async def send_audio(self, chunk):
+            self.sent.append(chunk)
+
+        async def audio_out_chunks(self):
+            trace.emit("text_out", {"delta": "stale trace text"})
+            trace.emit("turn_complete", {"tokens": {"input_tokens": 999999}})
+            if outcome != "no_audio":
+                for _ in range(3 if outcome == "interrupt" else 1):
+                    yield AudioOutChunk(b"\x02\0" * 24, "answer")
+
+        async def wait_for_interrupt(self):
+            await self.interrupted.wait()
+
+        def capture(self):
+            return TurnCapture(assistant_text=None if outcome == "no_transcript" else "Final native text")
+
+        def usage(self):
+            return usage
+
+        async def release(self):
+            self.release_calls += 1
+            if connection.meter:
+                connection.meter.mark_ended()
+
+    class Connection:
+        meter = None
+
+        def set_billable_activity_meter(self, meter):
+            self.meter = meter
+
+        async def start(self, *args):
+            return None
+
+        def is_paused(self):
+            return False
+
+        async def acquire_turn(self):
+            if self.meter:
+                self.meter.mark_started()
+                # Seed one known billed interval, without waiting or using token proxies.
+                harness._usage_store._conn.execute(
+                    "UPDATE connection_intervals SET opened_at = ?",
+                    ((datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat(),),
+                )
+            return turn
+
+        async def stop(self):
+            return None
+
+    turn, connection = Turn(), Connection()
+    monkeypatch.setattr(harness_mod, "_build_test_registry", lambda *a, **k: ToolRegistry())
+    monkeypatch.setattr(harness_mod, "_make_connection", lambda _cfg: connection)
+    monkeypatch.setattr(harness_mod.tts, "synth", AsyncMock(return_value=tmp_path / "prompt.wav"))
+    monkeypatch.setattr(harness_mod, "_load_wav_pcm", lambda _path: pcm)
+    monkeypatch.setattr(harness_mod, "TRANSCRIPTS_DIR", tmp_path)
+    monkeypatch.setattr(harness_mod, "TRACES_DIR", tmp_path)
+    harness = harness_mod.VoiceEvalHarness(cfg)
+    try:
+        if outcome == "no_audio":
+            with pytest.raises(AssertionError):
+                await harness.ask("hello")
+        elif outcome == "interrupt":
+            assert confirmed_tts_flush(await harness.ask_with_barge_in("hello"))
+        else:
+            result = await harness.ask("hello")
+            result.trace.events.clear()
+            assert result.audio == b"\x02\0" * 24
+            assert result.usage == usage
+            if outcome == "no_transcript":
+                with pytest.raises(pytest.xfail.Exception):
+                    result.require_spoken_text()
+            else:
+                assert result.require_spoken_text() == "Final native text"
+            if provider == "grok":
+                assert result.estimated_cost_usd == pytest.approx(harness._pricing.flat_per_hour_usd / 60, abs=0.001)
+            else:
+                assert result.estimated_cost_usd == harness._pricing.estimate_cost(usage.breakdown)
+        assert pauses == [harness_mod.MicCapture.OUTPUT_FRAME_SAMPLES / 16000, 34 / 32000]
+        assert b"".join(turn.sent) == pcm
+        assert [len(chunk) for chunk in turn.sent] == [harness_mod.MicCapture.OUTPUT_FRAME_SAMPLES * 2, 34]
+        assert turn.end_input_calls == turn.release_calls == 1
+        assert len(list(tmp_path.glob("*.response.wav"))) == 1
+        events = [json.loads(line) for line in next(tmp_path.glob("*.jsonl")).read_text().splitlines()]
+        final = events[-1]["payload"]
+        assert final["estimated_cost_usd"] is not None
+        assert final["usage"]["input_tokens"] == 100
+        assert final["outcome"] == {"no_audio": "AssertionError", "interrupt": "interrupted"}.get(outcome, "complete")
+        if outcome == "interrupt":
+            assert len(final["simulated_flush"]["events"]) == 1
+    finally:
+        await harness.aclose()
+
+
+async def test_tool_records_come_from_execution_without_trace_events():
+    @tool()
+    async def echo(value: str) -> dict:
+        """Return the supplied value."""
+        if value == "second":
+            raise ValueError(value)
+        return {"value": value}
+
+    registry = ToolRegistry()
+    registry.register(echo)
+    records = []
+    wrapped = traced_registry(registry, records=lambda: records)
+    for value in ("first", "second"):
+        await dispatch_tool(wrapped, "echo", {"value": value})
+    assert [r.args for r in records] == [{"value": "first"}, {"value": "second"}]
+    assert records[0].result == {"value": "first"}
+    assert records[0].error is None
+    assert records[1].result is None
+    assert records[1].error is not None
+
+
+async def test_late_tool_evidence_stays_with_its_original_turn():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    @tool()
+    async def delayed() -> dict:
+        """Return after the test releases the executor."""
+        entered.set()
+        await release.wait()
+        return {"done": True}
+
+    registry = ToolRegistry()
+    registry.register(delayed)
+    wrapped = traced_registry(registry)
+    old = TurnTrace("old", "session", "test")
+    fresh = TurnTrace("fresh", "session", "test")
+    token = set_active(old)
+    pending = asyncio.create_task(dispatch_tool(wrapped, "delayed", {}))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        reset_active(token)
+        token = set_active(fresh)
+        release.set()
+        await pending
+        assert not fresh.events
+        assert old.tool_returns()[0].payload["result"] == {"done": True}
+    finally:
+        reset_active(token)
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)

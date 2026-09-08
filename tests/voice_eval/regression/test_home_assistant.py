@@ -132,11 +132,11 @@ async def test_lights_command_routes_to_home_assistant(harness, trial: int) -> N
     # conversational fallback (which only fires when the tool ISN'T
     # registered). Since the tool WAS called, a setup-redirect in the
     # speech means the model is confused about its own capability.
-    if result.spoken_text:
-        spoken = result.spoken_text.lower()
-        assert "jts.local/assistant/ha/" not in spoken and "isn't set up" not in spoken, (
-            f"[trial {trial}] model spoke a smart-home-setup redirect even "
-            f"though it called home_assistant — capability confusion. "
-            f"Spoken text: {result.spoken_text!r}. "
-            f"See transcript: {result.transcript_path}"
-        )
+    result.require_spoken_text()
+    spoken = result.spoken_text.lower()
+    assert "jts.local/assistant/ha/" not in spoken and "isn't set up" not in spoken, (
+        f"[trial {trial}] model spoke a smart-home-setup redirect even "
+        f"though it called home_assistant — capability confusion. "
+        f"Spoken text: {result.spoken_text!r}. "
+        f"See transcript: {result.transcript_path}"
+    )

@@ -132,14 +132,7 @@ async def test_next_train_d_uptown(harness, trial: int) -> None:
     # 6, that's a pure hallucination — the model ignored the data the
     # tool provided. tol=0 because the model should speak exactly what
     # the tool returned (rounded to the same minute we returned).
-    if not result.spoken_text:
-        # Provider didn't ship transcript deltas this turn. Surface
-        # but don't fail — listening to the WAV is still possible.
-        pytest.skip(
-            f"[trial {trial}] no spoken-text transcript captured "
-            f"(provider's text channel may be off). Listen to "
-            f"{result.response_audio_path} to verify by ear."
-        )
+    result.require_spoken_text()
     spoken_mins = harness.extract_minutes_from_text(result.spoken_text)
     # The spoken text often includes extra numbers ("D train", times
     # like "5 minutes" — but we want the FIRST `len(tool_mins)`

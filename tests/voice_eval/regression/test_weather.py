@@ -103,18 +103,14 @@ async def test_sunset_today(harness, trial: int) -> None:
         f"See transcript: {result.transcript_path}"
     )
 
-    # 4. Spoken reality — if the model spoke a time, it should be
-    # within 5 minutes of the truth. Looser tolerance than the tool
-    # assertion because the model might round ("around 8 PM" vs
-    # 8:14 PM). Skips if no transcript captured.
-    if result.spoken_text:
-        spoken_time = harness.extract_time_from_text(result.spoken_text)
-        if spoken_time is not None:
-            truth_t = truth.time()
-            spoken_dt = datetime.combine(truth.date(), spoken_time)
-            truth_dt = datetime.combine(truth.date(), truth_t)
-            assert oracles.time_within_seconds(spoken_dt, truth_dt, seconds=300), (
-                f"[trial {trial}] model spoke {spoken_time} but actual "
-                f"sunset is {truth_t}. Spoken text: {result.spoken_text!r}. "
-                f"See transcript: {result.transcript_path}"
-            )
+    result.require_spoken_text()
+    spoken_time = harness.extract_time_from_text(result.spoken_text)
+    assert spoken_time is not None, result.transcript_path
+    truth_t = truth.time()
+    spoken_dt = datetime.combine(truth.date(), spoken_time)
+    truth_dt = datetime.combine(truth.date(), truth_t)
+    assert oracles.time_within_seconds(spoken_dt, truth_dt, seconds=300), (
+        f"[trial {trial}] model spoke {spoken_time} but actual "
+        f"sunset is {truth_t}. Spoken text: {result.spoken_text!r}. "
+        f"See transcript: {result.transcript_path}"
+    )
