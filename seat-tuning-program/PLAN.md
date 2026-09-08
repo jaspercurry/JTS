@@ -309,6 +309,9 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-08 ~20:30Z: Owner spawned lanes B (program), C (room candidate) and
+  D (bass) as fresh sessions from the kickoff snippets. Lane A (retire) waits
+  for the Wave 0b PR (in flight in its own session).
 - 2026-09-08: Lane briefs written and verified against main `f84d7da`/`72bc347`
   by Sonnet fact-checkers: `briefs/wave-1-program.md` (lane B),
   `briefs/wave-2-room-candidate.md` (lane C), `briefs/wave-3-bass.md` (lane D).
