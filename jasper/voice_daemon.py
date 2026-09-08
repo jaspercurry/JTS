@@ -33,7 +33,6 @@ from .wake_legs import LegSpec, wake_input_legs
 from .wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from .wake_conditions import DEFAULT_CONDITION
 from .wake_fusion import WakeFuser
-from .camilla import CamillaController
 from .config import Config
 from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
@@ -44,6 +43,7 @@ from .usage import (
     UsageStore,
 )
 from .voice.session import LiveConnection, LiveTurn
+from .voice.content_activity import ContentActivityTracker
 from .voice.conversation_capture import ConversationCapture
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
@@ -296,77 +296,6 @@ class State(Enum):
     WAKE = "wake"
     SESSION = "session"
 
-
-CONTENT_ACTIVITY_POLL_SEC = 1.0
-CONTENT_ACTIVITY_THRESHOLD_DBFS = -55.0
-
-
-class ContentActivityTracker:
-    """Cheap observer for music/activity telemetry.
-
-    It never sets TTS gain. Outputd owns the final assistant loudness
-    decision; this tracker only keeps a recent best-effort playback RMS
-    value for ``/state`` and the wake-event columns.
-    """
-
-    def __init__(
-        self,
-        camilla: CamillaController,
-        *,
-        threshold_dbfs: float = CONTENT_ACTIVITY_THRESHOLD_DBFS,
-    ) -> None:
-        self._camilla = camilla
-        self._threshold_dbfs = float(threshold_dbfs)
-        self._last_dbfs: float | None = None
-        self._paused = False
-        self._task: asyncio.Task | None = None
-        self._stop_event = asyncio.Event()
-
-    @property
-    def music_dbfs(self) -> float | None:
-        return self._last_dbfs
-
-    def music_is_playing(self) -> bool:
-        return self._last_dbfs is not None and self._last_dbfs > self._threshold_dbfs
-
-    def pause(self) -> None:
-        self._paused = True
-
-    def resume(self) -> None:
-        self._paused = False
-
-    async def refresh_now(self) -> float | None:
-        if self._paused:
-            return self._last_dbfs
-        rms_pair = await self._camilla.get_playback_rms(best_effort=True)
-        if rms_pair is None:
-            return self._last_dbfs
-        self._last_dbfs = max(rms_pair)
-        return self._last_dbfs
-
-    async def start(self) -> None:
-        await self.refresh_now()
-        self._task = asyncio.create_task(self._loop())
-
-    async def stop(self) -> None:
-        self._stop_event.set()
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._task = None
-
-    async def _loop(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                await asyncio.sleep(CONTENT_ACTIVITY_POLL_SEC)
-            except asyncio.CancelledError:
-                return
-            if self._paused:
-                continue
-            await self.refresh_now()
 
 def _frame_rms_dbfs(frame) -> float | None:
     """Waveform RMS in dBFS for a single int16 mic frame.
