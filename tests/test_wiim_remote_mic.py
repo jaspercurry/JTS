@@ -705,16 +705,6 @@ async def test_ce_reservation_request_is_fail_soft_when_the_broker_raises(monkey
     await wiim_remote_mic._request_ce_reservation()
 
 
-# ---------------------------------------------------------------------------
-# `_run_subscription` — the wiring that makes the reservation actually happen.
-#
-# The four tests above cover `_request_ce_reservation` itself, and the CE
-# constants, HCI bytes, unit hardening, polkit rule and broker allowlist are
-# each pinned elsewhere. None of that pins the single `await` that causes any
-# of it to run. The fakes below exist so it can be.
-# ---------------------------------------------------------------------------
-
-
 class _FakeSink:
     def __init__(self, host: str, port: int) -> None:
         self.addr = (host, port)
@@ -772,14 +762,6 @@ class _SubscriptionProxy:
 
 
 class _SubscriptionBus:
-    """A BlueZ bus fake complete enough to drive `_run_subscription`.
-
-    `_FakeBus` above is a descriptor-read fake for `_find_voice_characteristic`
-    and deliberately hard-asserts that one interface; the subscription path
-    needs the ObjectManager, the characteristic, and two Properties interfaces,
-    so it gets its own object graph rather than loosening that assertion.
-    """
-
     def __init__(self, managed: dict, char_path: str, device_path: str) -> None:
         self.managed = managed
         self.char_path = char_path
@@ -787,6 +769,9 @@ class _SubscriptionBus:
         self.journal: list[str] = []
         self.handlers: dict = {}
         self._gone: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def connect(self):
+        return self
 
     async def wait_for_disconnect(self) -> None:
         await self._gone
@@ -840,30 +825,43 @@ def _subscription_harness(monkeypatch) -> tuple[_SubscriptionBus, _FakeSink]:
     bus = _SubscriptionBus(managed, chars[0], device)
     sink = _FakeSink("127.0.0.1", DEFAULT_UDP_PORT)
 
-    async def fake_connect():
-        return bus
-
-    monkeypatch.setattr(wiim_remote_mic, "_connect_bluez", fake_connect)
+    monkeypatch.setattr(wiim_remote_mic, "MessageBus", lambda **_kwargs: bus)
     monkeypatch.setattr(wiim_remote_mic, "UdpPcmSink", lambda host, port: sink)
     return bus, sink
+
+
+@pytest.mark.parametrize("stage", ["connect", "sink", "introspect", "reservation"])
+@pytest.mark.parametrize("error", [OSError, asyncio.CancelledError])
+async def test_subscription_setup_failure_releases_acquired_resources(
+    monkeypatch, stage, error,
+):
+    bus, sink = _subscription_harness(monkeypatch)
+
+    def fail(*_args, **_kwargs):
+        raise error()
+
+    async def fail_async(*args, **kwargs):
+        fail(*args, **kwargs)
+
+    if stage == "sink":
+        monkeypatch.setattr(wiim_remote_mic, "UdpPcmSink", fail)
+    elif stage == "reservation":
+        monkeypatch.setattr(wiim_remote_mic, "_request_ce_reservation", fail_async)
+    else:
+        monkeypatch.setattr(bus, stage, fail_async)
+
+    with pytest.raises(error):
+        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig())
+
+    expected = ["start_notify", "stop_notify"] if stage == "reservation" else []
+    assert bus.journal == [*expected, "bus_disconnect"]
+    assert sink.closed == (stage not in {"connect", "sink"})
 
 
 async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
     monkeypatch,
 ):
-    """The wiring guard for the whole feature.
-
-    Everything *around* the reservation is pinned hard, but the one line that
-    makes any of it run — `await _request_ce_reservation()` in
-    `_run_subscription` — was pinned by nothing: deleting it left the complete
-    candidate test set (53 tests) green while the mic silently returned to
-    ~24 % of realtime on a Pi Zero 2 W, which is the exact bug this feature
-    exists to fix.
-
-    Ordering is load-bearing, not decoration. The reservation acts on a live
-    link, so it has to follow `call_start_notify()`; asking before there is a
-    notifying connection reserves event time for nothing.
-    """
+    """The CE reservation acts on the live notifying link."""
     bus, sink = _subscription_harness(monkeypatch)
 
     def fake_manage_units(*units, **kwargs):
@@ -909,23 +907,7 @@ async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
 async def test_run_subscription_reports_the_final_hold_when_the_link_drops(
     monkeypatch, caplog
 ):
-    """The teardown wiring for the segment rate — pinned separately from the
-    method, because they are two different promises and only one of them was
-    guarded.
-
-    `close_segment` on a bare stream is covered above. This pins the *call* in
-    `_run_subscription`'s teardown, which is the only path that reports a hold
-    still running when the connection ends — a dying remote battery, a user
-    walking out of range, or simply the last hold before disconnect. Nothing
-    else reaches it: no >250 ms gap ever arrives to trigger `reset()`, so
-    without this call that hold is silently never reported, and the failure is
-    invisible by construction — which is the whole reason the rate line exists.
-
-    Deliberately asserts the packet count and not `rate_hz`: these packets
-    arrive at real `time.monotonic()` spacing, so the rate here is meaningless.
-    The rate arithmetic is pinned deterministically by the bare-stream tests
-    (62.5/s healthy, 14.8/s starved); this test's job is the wiring.
-    """
+    """A hold still active at disconnect has no gap to publish its rate."""
     caplog.set_level(logging.DEBUG, logger="jasper.accessories.wiim_remote_mic")
     bus, _sink = _subscription_harness(monkeypatch)
 

@@ -24,9 +24,12 @@ import socket
 import sys
 import time
 from array import array
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from dbus_next import BusType  # type: ignore
+from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.log_event import log_event
@@ -499,13 +502,6 @@ async def _find_voice_characteristic(
     raise DeviceNotReady("connected WiiM Remote 2 voice report not found")
 
 
-async def _connect_bluez():
-    from dbus_next import BusType  # type: ignore
-    from dbus_next.aio import MessageBus  # type: ignore
-
-    return await MessageBus(bus_type=BusType.SYSTEM).connect()
-
-
 @dataclass(frozen=True)
 class MicAdapterConfig:
     """Where the decoded stream goes and how fast reconnects are retried."""
@@ -518,11 +514,14 @@ class MicAdapterConfig:
 
 
 async def _run_subscription(config: MicAdapterConfig) -> None:
-    bus = await _connect_bluez()
-    sink = UdpPcmSink(config.udp_host, config.udp_port)
-    stream = WiimVoicePacketStream()
-    done = asyncio.Event()
-    try:
+    with ExitStack() as cleanup:
+        bus = MessageBus(bus_type=BusType.SYSTEM)
+        cleanup.callback(bus.disconnect)
+        await bus.connect()
+        sink = UdpPcmSink(config.udp_host, config.udp_port)
+        cleanup.callback(sink.close)
+        stream = WiimVoicePacketStream()
+        done = asyncio.Event()
         intro = await bus.introspect(BLUEZ_BUS, "/")
         om = bus.get_proxy_object(BLUEZ_BUS, "/", intro).get_interface(
             BLUEZ_OBJECT_MANAGER_IFACE,
@@ -580,14 +579,14 @@ async def _run_subscription(config: MicAdapterConfig) -> None:
         dev_props.on_properties_changed(on_device_properties)
 
         await char.call_start_notify()
-        log_event(
-            logger,
-            "wiim_remote_mic.notify_started",
-            source=config.source_id,
-            udp=f"{config.udp_host}:{config.udp_port}",
-        )
-        await _request_ce_reservation()
         try:
+            log_event(
+                logger,
+                "wiim_remote_mic.notify_started",
+                source=config.source_id,
+                udp=f"{config.udp_host}:{config.udp_port}",
+            )
+            await _request_ce_reservation()
             # Also wake on the BUS dying (a bluetoothd restart), not only on
             # the device's Connected property going false: on a dead bus no
             # property change can ever arrive, so waiting on `done` alone hangs
@@ -611,11 +610,6 @@ async def _run_subscription(config: MicAdapterConfig) -> None:
             bad_packets=stream.bad_packets,
             resets=stream.resets,
         )
-    finally:
-        sink.close()
-        disconnect = getattr(bus, "disconnect", None)
-        if callable(disconnect):
-            disconnect()
 
 
 async def run(config: MicAdapterConfig) -> None:
