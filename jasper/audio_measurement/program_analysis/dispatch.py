@@ -150,7 +150,7 @@ def analyze_program_capture(
     elif program.phase == PROGRAM_PHASE_VERIFY:
         analysis = _analyze_verify(
             program, capture, sample_rate, global_offset, locations,
-            calibration, priors, frame_ledger,
+            calibration, geometry, priors, frame_ledger,
         )
     else:
         raise ValueError(f"unknown phase: {program.phase!r}")
@@ -891,7 +891,7 @@ def _verify_absolute_result(
 
 def _analyze_verify(
     program, capture, sample_rate, global_offset, locations,
-    calibration, priors, frame_ledger,
+    calibration, geometry, priors, frame_ledger,
 ) -> ProgramAnalysis:
     fc_hz = float(priors.crossover_fc_hz) if priors.crossover_fc_hz else None
     seg = program.segment("sweep_verify")
@@ -903,6 +903,7 @@ def _analyze_verify(
         "summed", full_ir, sample_rate,
         calibration=calibration, ambient_report=None, fc_hz=fc_hz, n_fft=n_fft,
         radiated_band_hz=_radiated_band_hz(seg),
+        gate_exempt_reason=geometry.gate_exempt_reason,
     )
     # The tracking comparator below is deliberately NOT re-based onto the
     # spatial cloud's shared spec curve: "did apply do what the model

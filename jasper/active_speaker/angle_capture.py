@@ -36,7 +36,12 @@ from .crossover_v2.contracts import (
 )
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
-from .measurement_programs import MeasurementProgram
+from .measurement_programs import (
+    POSE_KIND_BEARING,
+    POSE_KIND_SEAT,
+    POSE_KINDS,
+    MeasurementProgram,
+)
 from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
@@ -208,13 +213,18 @@ class AngleStop:
     which mover may ask for non-zero is :data:`MOVER_MAX_ELEVATION_DEG`.
     ``candidate_id`` is the banked candidate fingerprint this stop measures
     (``""`` for the speaker as it stands); sits on the stop, not the walk,
-    since a candidate cycle is adjacent stops at one pose.
+    since a candidate cycle is adjacent stops at one pose. ``kind``,
+    ``distance_m`` and ``seat_offset_m`` are the pose's category and where it
+    is stated from (:class:`~.measurement_programs.ProgramPose`).
     """
 
     angle_deg: int
     regime: str
     elevation_deg: int = 0
     candidate_id: str = ""
+    kind: str = POSE_KIND_BEARING
+    distance_m: float | None = None
+    seat_offset_m: tuple[float, float, float] | None = None
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
@@ -227,6 +237,37 @@ class AngleStop:
             raise CrossoverV2FlowError(
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
             )
+        if self.kind not in POSE_KINDS:
+            raise CrossoverV2FlowError(
+                f"a pose kind must be one of {POSE_KINDS}, got {self.kind!r}"
+            )
+        if (self.seat_offset_m is not None) != (self.kind == POSE_KIND_SEAT):
+            raise CrossoverV2FlowError(
+                "a seat pose states its (right, forward, up) offset from the "
+                "head; no other kind does"
+            )
+        if self.seat_offset_m is not None:
+            offset = tuple(float(v) for v in self.seat_offset_m)
+            if len(offset) != 3 or not all(math.isfinite(v) for v in offset):
+                raise CrossoverV2FlowError(
+                    f"a seat offset is three finite metres, got {self.seat_offset_m!r}"
+                )
+            object.__setattr__(self, "seat_offset_m", offset)
+        if self.distance_m is not None and not (
+            isinstance(self.distance_m, numbers.Real)
+            and math.isfinite(self.distance_m) and self.distance_m > 0
+        ):
+            raise CrossoverV2FlowError(
+                f"a pose distance is a positive length in metres, got {self.distance_m!r}"
+            )
+
+    @property
+    def place(self) -> tuple[object, ...]:
+        """What distinguishes one microphone position from another."""
+        return (
+            self.kind, self.angle_deg, self.elevation_deg,
+            self.distance_m, self.seat_offset_m,
+        )
 
 
 @dataclass(frozen=True)
@@ -279,6 +320,15 @@ class AngleCaptureRequest:
             MOVER_MAX_ELEVATION_DEG[self.mover],
             tuple(stop.elevation_deg for stop in self.stops),
         )
+        off_the_mark = sorted({
+            stop.kind for stop in self.stops if stop.kind != POSE_KIND_BEARING
+        })
+        if off_the_mark and self.externally_positioned:
+            raise LateralWalkRefused(
+                WALK_OVER_MOVER_ENVELOPE,
+                f"mover={self.mover!r} turns bearings at the mark, so it cannot "
+                f"reach a {', '.join(off_the_mark)} pose",
+            )
 
     def _refuse_beyond_reach(
         self, axis: str, bound: int, asked: tuple[int, ...]
@@ -309,7 +359,14 @@ class AngleCaptureRequest:
 # --------------------------------------------------------------------------- #
 
 
-def pose_at_angle(angle_deg: int, elevation_deg: int = 0) -> CloudPositionPrompt:
+def pose_at_angle(
+    angle_deg: int,
+    elevation_deg: int = 0,
+    *,
+    kind: str = POSE_KIND_BEARING,
+    distance_m: float | None = None,
+    seat_offset_m: tuple[float, float, float] | None = None,
+) -> CloudPositionPrompt:
     """The pose at a stated bearing -- the exact inverse of :func:`position_angle_deg`.
 
     Returns a cm-primary pose rather than carrying the angle onward, since ``offset_cm``
@@ -332,7 +389,8 @@ def pose_at_angle(angle_deg: int, elevation_deg: int = 0) -> CloudPositionPrompt
     """
     degrees = _validated_angle(angle_deg)
     elevation = _validated_angle(elevation_deg)
-    offset_cm = _offset_cm_at(degrees)
+    distance = MARK_DISTANCE_M if distance_m is None else float(distance_m)
+    offset_cm = _offset_cm_at(degrees, distance)
     role = POSITION_ROLE_OFFAX if offset_cm >= WIDE_OFFSET_MIN_CM else POSITION_ROLE_ONAX
     geometric = CloudPositionPrompt(
         # Placeholder, immediately replaced: copy is derived from the geometry.
@@ -342,7 +400,10 @@ def pose_at_angle(angle_deg: int, elevation_deg: int = 0) -> CloudPositionPrompt
         role=role,
         lateral_sign=_sign_of(degrees),
         vertical_sign=_sign_of(elevation),
-        vertical_offset_cm=_offset_cm_at(elevation),
+        vertical_offset_cm=_offset_cm_at(elevation, distance),
+        kind=kind,
+        distance_m=distance_m,
+        seat_offset_m=seat_offset_m,
     )
     return remote_position_prompt(geometric)
 
@@ -351,11 +412,11 @@ def _sign_of(degrees: int) -> int:
     return 0 if degrees == 0 else (1 if degrees > 0 else -1)
 
 
-def _offset_cm_at(degrees: int) -> float:
+def _offset_cm_at(degrees: int, distance_m: float = MARK_DISTANCE_M) -> float:
     """The cm displacement one bearing names, in the mark's own plane. The tangent
     :func:`position_angle_deg`/:func:`position_elevation_deg` both invert, written once.
     """
-    return 100.0 * MARK_DISTANCE_M * math.tan(math.radians(abs(degrees)))
+    return 100.0 * distance_m * math.tan(math.radians(abs(degrees)))
 
 
 # --------------------------------------------------------------------------- #
@@ -413,7 +474,9 @@ def request_for_program(
     """The walk one named program asks for, in the table's own order.
 
     A nonempty candidate tuple uses summed captures; an empty id selects base.
-    Omit candidates for per-driver captures.
+    Omit candidates for per-driver captures. A seat or close pose is a SUMMED
+    capture whatever ``candidates`` says — the VERIFY shape through the applied
+    tune, since the room is measured through the speaker stage it sits on.
     A pose's ``repeats``
     become that many ADJACENT identical stops, so the microphone moves once per DISTINCT
     pose. The graph flags pass through untouched -- a program states POSE geometry only.
@@ -425,9 +488,16 @@ def request_for_program(
         stops=tuple(
             AngleStop(
                 pose.azimuth_deg,
-                REGIME_SUMMED if candidates else REGIME_PER_DRIVER,
+                (
+                    REGIME_SUMMED
+                    if candidates or pose.kind != POSE_KIND_BEARING
+                    else REGIME_PER_DRIVER
+                ),
                 pose.elevation_deg,
                 candidate,
+                kind=pose.kind,
+                distance_m=pose.distance_m,
+                seat_offset_m=pose.seat_offset_m,
             )
             for pose in program.poses
             for _ in range(pose.repeats)
@@ -457,7 +527,7 @@ def walk_price(
     is ``None`` for a surface pricing a walk before any tier is chosen.
     """
     return {
-        "mic_moves": len({(s.angle_deg, s.elevation_deg) for s in request.stops}),
+        "mic_moves": len({s.place for s in request.stops}),
         "captures": len(request.stops),
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(
@@ -518,7 +588,10 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
     """
     resolved: list[ResolvedStop] = []
     for offset, stop in enumerate(request.stops):
-        pose = pose_at_angle(stop.angle_deg, stop.elevation_deg)
+        pose = pose_at_angle(
+            stop.angle_deg, stop.elevation_deg, kind=stop.kind,
+            distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m,
+        )
         resolved.append(
             ResolvedStop(
                 index=offset + 1,

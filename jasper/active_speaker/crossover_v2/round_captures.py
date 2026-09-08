@@ -27,6 +27,8 @@ from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.sweep import read_wav_mono
 
+from ..measurement_programs import POSE_KIND_BEARING
+
 # --- refusals: every one names the input that was missing --------------------
 
 REFUSE_NO_CAPTURES = "round_no_captures"
@@ -68,11 +70,16 @@ class PoseCapture:
     sample_rate: int
     ir: np.ndarray
     peak_idx: int
+    pose_kind: str = POSE_KIND_BEARING
+    seat_offset_m: tuple[float, ...] | None = None
 
     @property
     def pose_key(self) -> str:
         """The FULL declared pose. Never a seat index (#3503)."""
-        return _pose_key(self.azimuth_deg, self.vertical_deg, self.mark_distance_m)
+        return _pose_key(
+            self.azimuth_deg, self.vertical_deg, self.mark_distance_m,
+            self.pose_kind, self.seat_offset_m,
+        )
 
 
 def doc_pose_key(doc: Mapping[str, Any]) -> str:
@@ -85,17 +92,41 @@ def doc_pose_key(doc: Mapping[str, Any]) -> str:
         _number(doc.get("position_deg")),
         _number(doc.get("vertical_deg")),
         _number(doc.get("mark_distance_m")),
+        _doc_pose_kind(doc),
+        _doc_seat_offset(doc),
     )
+
+
+def _doc_pose_kind(doc: Mapping[str, Any]) -> str:
+    """A doc banked before poses had a kind is the bearing it always was."""
+    kind = doc.get("pose_kind")
+    return kind if isinstance(kind, str) and kind else POSE_KIND_BEARING
+
+
+def _doc_seat_offset(doc: Mapping[str, Any]) -> tuple[float, ...] | None:
+    offset = doc.get("seat_offset_m")
+    if not isinstance(offset, Sequence) or isinstance(offset, str):
+        return None
+    numbers = [_number(v) for v in offset]
+    return None if any(v is None for v in numbers) else tuple(numbers)  # type: ignore[arg-type]
 
 
 def _pose_key(
     azimuth_deg: float | None,
     vertical_deg: float | None,
     mark_distance_m: float | None,
+    kind: str = POSE_KIND_BEARING,
+    seat_offset_m: tuple[float, ...] | None = None,
 ) -> str:
-    return "az{}_el{}_d{}".format(
+    key = "az{}_el{}_d{}".format(
         _pose_field(azimuth_deg), _pose_field(vertical_deg), _pose_field(mark_distance_m)
     )
+    # A bearing keys exactly as it did before poses had a kind (#3503).
+    if kind != POSE_KIND_BEARING:
+        key = f"{kind}_{key}"
+    if seat_offset_m is not None:
+        key += "_r{}_f{}_u{}".format(*(_pose_field(v) for v in seat_offset_m))
+    return key
 
 
 def _pose_field(value: float | None) -> str:
@@ -262,6 +293,8 @@ def discover_captures(
                 sample_rate=int(rate),
                 ir=ir,
                 peak_idx=int(np.argmax(np.abs(ir))),
+                pose_kind=_doc_pose_kind(doc),
+                seat_offset_m=_doc_seat_offset(doc),
             )
         )
     return tuple(sorted(captures, key=lambda cap: cap.capture_id))

@@ -80,8 +80,11 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITIES,
     POLARITY_NORMAL,
 )
-from jasper.active_speaker.crossover_v2_flow import TIER_EXPRESS, CrossoverV2FlowError
-from jasper.active_speaker.measurement_programs import MeasurementProgram
+from jasper.active_speaker.crossover_v2_flow import TIER_EXPRESS, TIERS, CrossoverV2FlowError
+from jasper.active_speaker.measurement_programs import (
+    POSE_KIND_BEARING,
+    MeasurementProgram,
+)
 from jasper.active_speaker.seat_level_reference import (
     LevelUnresolved,
     ResolvedLevel,
@@ -116,9 +119,6 @@ UNKNOWN_PROGRAM = "unknown_program"
 PROGRAM_IDS = tuple(sorted({
     pid for pid, _size in measurement_programs.available_programs()
 })) + ("spot",)
-PROGRAM_SIZES = tuple(sorted({
-    size for _pid, size in measurement_programs.available_programs()
-}))
 
 #: Authority tier for the generated tool-menu index
 #: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204). `stage`
@@ -129,14 +129,12 @@ AUTHORITY_TIER = (
 )
 
 
-def _size_phrase() -> str:
-    """``--size``'s choices with each tier's shape, read off the registry."""
+def _program_phrase() -> str:
+    """Every registry row with its cost, read off the registry."""
     return ", ".join(
-        f"{size} ({row.mic_move_count} spots, {row.capture_count} captures)"
-        for size, row in (
-            (size, measurement_programs.program("baseline", size))
-            for size in PROGRAM_SIZES
-        )
+        f"{pid}/{size} ({row.mic_move_count} spots, {row.capture_count} captures)"
+        for pid, size in measurement_programs.available_programs()
+        for row in (measurement_programs.program(pid, size),)
     )
 
 
@@ -357,6 +355,7 @@ def _walk_payload(
                 "prompt": stop.prompt.text,
                 "screen": dict(stop.screen),
                 "candidate_id": stop.candidate_id,
+                "kind": stop.prompt.kind,
             }
             for stop in stops
         ],
@@ -395,8 +394,12 @@ def _print_walk(payload: dict[str, Any]) -> None:
     )
     for stop in payload["stops"]:
         gate = stop["screen"].get("position_deg")
+        where = (
+            f"{stop['angle_deg']:>+4d} deg" if stop["kind"] == POSE_KIND_BEARING
+            else f"{stop['kind']}: {stop['prompt']}\n     "
+        )
         say(
-            f"  {stop['index']:>2}. {stop['angle_deg']:>+4d} deg  "
+            f"  {stop['index']:>2}. {where}  "
             f"{stop['regime']:<10}  plays {stop['program_phase']:<12} "
             f"advance {stop['screen']['auto_advance']}"
             + (f"  gate {gate} deg" if gate is not None else "")
@@ -516,6 +519,8 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
                 # ``None`` rather than ``""``: a walk that measures the speaker
                 # as it stands names no variant.
                 "candidate_id": stop["candidate_id"] or None,
+                # Only off the mark, so a bearing's receipt reads as it always did.
+                **({"kind": stop["kind"]} if stop["kind"] != POSE_KIND_BEARING else {}),
             }
             for stop in payload["stops"]
         ],
@@ -527,8 +532,11 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 
 def _open_round(size: str) -> str:
-    """The verb that RUNS a staged walk, at the tier its program was sized for."""
-    return f"jasper-round open --tier {size or TIER_EXPRESS}"
+    """The verb that RUNS a staged walk, at the tier its program was sized for.
+
+    A size that is not a session tier (``cube``, ``spot``) rides the smallest.
+    """
+    return f"jasper-round open --tier {size if size in TIERS else TIER_EXPRESS}"
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
@@ -691,10 +699,13 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         "--program",
         choices=PROGRAM_IDS,
         help=(
-            "the named measurement program to walk: baseline (the standard "
-            "pose table), tournament (the candidate cycle's few poses, "
-            "multiplied by --candidates), both sized by --size, or spot (one "
-            "pose, at --azimuth and --elevation). The program owns the geometry"
+            "the named measurement program to walk, sized by --size: baseline "
+            "(the standard pose table), tournament (the candidate cycle's few "
+            "poses, multiplied by --candidates), seat (the cube around the "
+            "listener's head, summed through the applied tune), close (one "
+            "summed take near the baffle), or spot (one pose, at --azimuth and "
+            f"--elevation). The rows and their costs: {_program_phrase()}. The "
+            "program owns the geometry"
         ),
     )
     source.add_argument(
@@ -712,8 +723,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         # No argparse ``choices``: the registry owns the valid set, so an
         # unknown size refuses in its own words and names the real pairs.
         help=(
-            f"which tier of a named program, one of {_size_phrase()} for "
-            "baseline. Ignored by --program spot, which is one pose either way"
+            "which tier of a named program (baseline and tournament: express "
+            "or full; seat: cube or express; close: spot). Ignored by "
+            "--program spot, which is one pose either way"
         ),
     )
     parser.add_argument(
@@ -941,6 +953,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  jasper-angle-capture plan --program baseline --size express\n"
             "  jasper-angle-capture stage --program baseline --size express\n"
             "  jasper-angle-capture stage --program spot --azimuth 22\n"
+            "  jasper-angle-capture plan --program seat --size cube\n"
             "  jasper-angle-capture stage --angles 0,7,-7 (operator escape\n"
             "    hatch: a free-form list no program names)\n"
             "  jasper-angle-capture show\n"

@@ -38,6 +38,7 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 from .angle_capture import AngleCaptureRequest, AngleStop
+from .measurement_programs import POSE_KIND_BEARING
 from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2_flow import CrossoverV2FlowError
 
@@ -214,6 +215,13 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
                 "regime": stop.regime,
                 "elevation_deg": stop.elevation_deg,
                 "candidate_id": stop.candidate_id,
+                # Only off the mark: a bearing's document stays as it always was.
+                **({"kind": stop.kind} if stop.kind != POSE_KIND_BEARING else {}),
+                **({"distance_m": stop.distance_m} if stop.distance_m is not None else {}),
+                **(
+                    {"seat_offset_m": list(stop.seat_offset_m)}
+                    if stop.seat_offset_m is not None else {}
+                ),
             }
             for stop in request.stops
         ],
@@ -413,6 +421,7 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     for entry in stops_raw:
         if not isinstance(entry, Mapping):
             _refuse(SPOOL_MALFORMED, "a staged stop is not a JSON object")
+        offset = entry.get("seat_offset_m")
         stops.append(
             AngleStop(
                 entry.get("angle_deg"),  # type: ignore[arg-type]
@@ -420,6 +429,9 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
                 # Pre-existing documents are a walk at mark height as-is.
                 entry.get("elevation_deg", 0),  # type: ignore[arg-type]
                 str(entry.get("candidate_id") or ""),
+                kind=str(entry.get("kind") or POSE_KIND_BEARING),
+                distance_m=entry.get("distance_m"),
+                seat_offset_m=tuple(offset) if isinstance(offset, list) else None,  # type: ignore[arg-type]
             )
         )
     return AngleCaptureRequest(

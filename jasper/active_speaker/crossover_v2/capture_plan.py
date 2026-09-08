@@ -35,6 +35,7 @@ from jasper.audio_measurement.program import (
 from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
+from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT
 from . import contracts as _contracts
 from . import spatial as _spatial
 from .contracts import CrossoverV2FlowError
@@ -165,6 +166,12 @@ class CloudPositionPrompt:
     #: distances at once (the second geometry-retake rung goes 75 cm sideways
     #: AND 30 cm up). ``0`` means the row asks for no raise.
     vertical_offset_cm: float = 0.0
+    #: The pose's category (ADR-0260, Wave 0b); a ``seat`` row states
+    #: ``seat_offset_m`` ``(right, forward, up)`` from the head centre, a
+    #: ``close`` row its own ``distance_m``; ``None`` is the mark.
+    kind: str = POSE_KIND_BEARING
+    distance_m: float | None = None
+    seat_offset_m: tuple[float, float, float] | None = None
 
     @property
     def wide(self) -> bool:
@@ -174,7 +181,16 @@ class CloudPositionPrompt:
     @property
     def at_mark(self) -> bool:
         """Whether the pose asks for no move at all — on EITHER axis."""
-        return float(self.offset_cm) == 0.0 and float(self.vertical_offset_cm) == 0.0
+        return (
+            self.kind == POSE_KIND_BEARING
+            and float(self.offset_cm) == 0.0
+            and float(self.vertical_offset_cm) == 0.0
+        )
+
+    @property
+    def mark_distance_m(self) -> float:
+        """The reference length this pose's bearings are derived against."""
+        return MARK_DISTANCE_M if self.distance_m is None else float(self.distance_m)
 
     @property
     def text(self) -> str:
@@ -434,7 +450,7 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
             "declares no side, so it has no signed bearing — build it through "
             "_pose (or set lateral_sign) rather than letting it read as 0°"
         )
-    radians = math.atan2(float(prompt.offset_cm) / 100.0, MARK_DISTANCE_M)
+    radians = math.atan2(float(prompt.offset_cm) / 100.0, prompt.mark_distance_m)
     return int(round(prompt.lateral_sign * math.degrees(radians)))
 
 
@@ -449,7 +465,7 @@ def position_elevation_deg(prompt: CloudPositionPrompt) -> int:
     """
     if prompt.vertical_sign == 0:
         return 0
-    radians = math.atan2(float(prompt.vertical_offset_cm) / 100.0, MARK_DISTANCE_M)
+    radians = math.atan2(float(prompt.vertical_offset_cm) / 100.0, prompt.mark_distance_m)
     return int(round(prompt.vertical_sign * math.degrees(radians)))
 
 
@@ -466,15 +482,18 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
         return _spatial.PositionGeometry(
             axis=_spatial.POSITION_AXIS_VERTICAL,
             degrees=None,
-            mark_distance_m=MARK_DISTANCE_M,
+            mark_distance_m=prompt.mark_distance_m,
             vertical_deg=elevation,
         )
     unsigned = float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0
     return _spatial.PositionGeometry(
         axis=_spatial.POSITION_AXIS_HORIZONTAL,
         degrees=None if unsigned else position_angle_deg(prompt),
-        mark_distance_m=MARK_DISTANCE_M,
+        # A seat pose is stated from the head, so no mark distance is true of it.
+        mark_distance_m=None if prompt.kind == POSE_KIND_SEAT else prompt.mark_distance_m,
         vertical_deg=elevation,
+        kind=prompt.kind,
+        seat_offset_m=prompt.seat_offset_m,
     )
 
 
@@ -492,21 +511,28 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     is the standoff :func:`position_elevation_deg` derives the degrees against
     (#2932: a bearing puts the capsule further out than that).
     """
+    if prompt.kind == POSE_KIND_SEAT:
+        return replace(prompt, headline=_seat_headline(prompt.seat_offset_m), detail=_SEAT_DETAIL)
+    distance = prompt.mark_distance_m
+    if prompt.kind == POSE_KIND_CLOSE:
+        return replace(
+            prompt,
+            headline=f"Put the microphone {distance:g} m from the baffle on the design axis.",
+            detail="Close enough that the room drops out of the read; pointed at the speaker.",
+        )
     degrees_ = position_angle_deg(prompt)
     elevation = position_elevation_deg(prompt)
     if degrees_ == 0:
         verb = "Leave" if elevation == 0 else "Keep"
         bearing = f"{verb} the microphone on the design axis (0°)"
-        detail = f"On the mark, {MARK_DISTANCE_M:g} m out, pointed at the speaker."
+        detail = f"On the mark, {distance:g} m out, pointed at the speaker."
     else:
         side = "LEFT" if degrees_ < 0 else "RIGHT"
         bearing = (
             f"Turn the microphone to {degrees_:+d}° "
             f"({abs(degrees_)}° {side} of the design axis)"
         )
-        detail = (
-            f"Keep it {MARK_DISTANCE_M:g} m from the speaker and pointed at it."
-        )
+        detail = f"Keep it {distance:g} m from the speaker and pointed at it."
     clause = elevation_clause(elevation)
     if not clause:
         return replace(prompt, headline=f"{bearing}.", detail=detail)
@@ -515,10 +541,34 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
         prompt,
         headline=(
             f"{bearing}, and {clause} — that is {height} "
-            f"at the declared {MARK_DISTANCE_M:g} m."
+            f"at the declared {distance:g} m."
         ),
         detail=detail,
     )
+
+
+_SEAT_DETAIL = "At the listening position, pointed at the speaker."
+
+#: The cube's three axes, worded from the listener's head: ``(sign, word)``.
+_SEAT_AXIS_WORDS = (
+    {1: "to the RIGHT of", -1: "to the LEFT of"},
+    {1: "FORWARD of", -1: "BEHIND"},
+    {1: "ABOVE", -1: "BELOW"},
+)
+
+
+def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
+    """One seat pose in plain words, stated from the head centre at ear height."""
+    right, forward, up = offset_m or (0.0, 0.0, 0.0)
+    moves = [
+        f"{format_position_distance(round(abs(v) * 100.0))} {words[1 if v > 0 else -1]}"
+        for v, words in zip((right, forward, up), _SEAT_AXIS_WORDS)
+        if v
+    ]
+    if not moves:
+        return "Hold the microphone at the head centre of the listening position, at ear height."
+    height = "" if up else ", at ear height"
+    return f"Move the microphone {' and '.join(moves)} the head centre{height}."
 
 # The apply hold's screen body. It carries a REPOSITION instruction because the
 # pre-apply cloud ends at a wide offset while VERIFY's tracking comparator is

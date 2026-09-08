@@ -178,6 +178,9 @@ ENTANGLEMENT_SOURCES = frozenset(
     }
 )
 NEAR_FIELD_EXEMPT = "near_field"
+#: A seat take is the room's own measurement, so its reflections stay in
+#: (ADR-0260, Wave 0b).
+SEAT_EXEMPT = "seat"
 
 
 @dataclass(frozen=True)

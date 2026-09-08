@@ -35,6 +35,10 @@ banks ONE stage, and:
 * :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state
   carrying ``verify_priors.verify_measured``. No per-driver solos: a verify
   stage walks none.
+* :func:`bank_seat_round` — the ``seat/cube`` walk (ADR-0260, Wave 0b): one
+  ungated summed take per pose of the shipped program's own resolved walk, so
+  a reader of categorized poses gets seven takes that differ only in where the
+  microphone was. No solos and no VERIFY curve — a seat walk measures neither.
 
 No round carries both a prediction basis and a measured VERIFY sum, which is
 issue #3482's root fact; no round carries both an entry baseline and a graded
@@ -69,7 +73,9 @@ from jasper.active_speaker.commissioning_evidence_store import (
     EVIDENCE_ROOT,
     CommissioningEvidenceStore,
 )
+from jasper.active_speaker import angle_capture, measurement_programs
 from jasper.active_speaker.crossover_v2 import spatial
+from jasper.active_speaker.crossover_v2.capture_plan import position_geometry
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     DRIVER_ROLE_WOOFER,
@@ -81,6 +87,7 @@ from jasper.active_speaker.crossover_v2.durable_state import (
 )
 from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
+    LATERAL_CONSUMER_FORWARD_MODEL,
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
@@ -107,12 +114,15 @@ __all__ = [
     "ENTRY_GRID_HZ",
     "MODE_TWO_WAY",
     "MODE_WAY1",
+    "SEAT_BAND_HZ",
+    "SEAT_GRID_HZ",
     "SOLO_BAND_HZ",
     "SOLO_GRID_HZ",
     "VERIFY_GRID_HZ",
     "bank_cloud_echo_band",
     "bank_findings",
     "bank_measure_round",
+    "bank_seat_round",
     "bank_verify_round",
 ]
 
@@ -137,6 +147,11 @@ ENTRY_GRID_HZ = np.geomspace(280.0, 16000.0, 90)
 #: frequencies, and a reader that handed one back for the other would pass a
 #: same-grid fixture.
 VERIFY_GRID_HZ = np.geomspace(SOLO_BAND_HZ[0], SOLO_BAND_HZ[1], 301)
+
+#: A seat take is the room's own measurement: full-band, and on its own grid
+#: so a reader handed one for a solo or a VERIFY curve cannot pass.
+SEAT_GRID_HZ = np.geomspace(20.0, 20000.0, 400)
+SEAT_BAND_HZ = (20.0, 20000.0)
 
 #: Where the fixture's two synthetic branches cross. A SHAPE knob, not a
 #: measured corner: it only has to sit inside :data:`SOLO_BAND_HZ` so the
@@ -316,7 +331,10 @@ def bank_measure_round(
                 prompt="", role="", offset_cm=0.0, at_mark=True,
                 curves=_tilted(_pose_curves(mode), float(rung)),
             ),
-            position_deg=7, lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
+            geometry=spatial.PositionGeometry(
+                spatial.POSITION_AXIS_HORIZONTAL, 7, spatial.MARK_DISTANCE_M,
+            ),
+            lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
             claim=spatial.TakeClaim(candidate_id=candidate_id), **stamp,
         )
         for rung, candidate_id in enumerate(candidates or ("",))
@@ -404,6 +422,68 @@ def bank_verify_round(
             (VERIFY_GRID_HZ, measured, np.zeros_like(measured))
         ),
     )))
+    return round_dir
+
+
+def bank_seat_round(
+    root: Path,
+    *,
+    name: str = "r3-seat",
+    magnitudes_db: Sequence[np.ndarray] | None = None,
+    round_ordinal: int = 3,
+) -> Path:
+    """One SEAT round directory: the ``seat/cube`` walk, as the flow banks it.
+
+    One lateral take per pose of the shipped program's OWN resolved walk, each
+    ungated (a seat take keeps its reflections) and stated from the head
+    rather than the mark, plus the round receipt and the flow state.
+
+    ``magnitudes_db`` defaults to seven flat -30 dB curves on
+    :data:`SEAT_GRID_HZ`, in the program's own pose order.
+    """
+    round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY)
+    stops = angle_capture.resolve_request(
+        angle_capture.request_for_program(measurement_programs.program("seat", "cube"))
+    )
+    magnitudes = (
+        [np.full(SEAT_GRID_HZ.shape, -30.0)] * len(stops)
+        if magnitudes_db is None
+        else [np.asarray(magnitude, dtype=float) for magnitude in magnitudes_db]
+    )
+    stamp = {
+        "session_id": session_id,
+        "graph_fingerprint": "fp-applied-graph",
+        "captured_at": "2026-09-01T00:00:00Z",
+        "wav_sha256": "d" * 64,
+    }
+    _bank(
+        store,
+        *(
+            spatial.lateral_pose_record(
+                spatial.LateralPose(
+                    pose_id=f"lateral_{stop.index:02d}", index=stop.index, attempt=1,
+                    prompt=stop.prompt.text, role=stop.prompt.role,
+                    offset_cm=0.0, at_mark=False,
+                    curves=(
+                        spatial.LateralPoseCurve(
+                            role="summed", freqs_hz=SEAT_GRID_HZ,
+                            complex_tf=10.0 ** (magnitude / 20.0),
+                            band_hz=SEAT_BAND_HZ,
+                        ),
+                    ),
+                ),
+                geometry=position_geometry(stop.prompt),
+                lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
+                gating_applied=False,
+                **stamp,
+            )
+            for stop, magnitude in zip(stops, magnitudes)
+        ),
+        _receipt("r3"),
+    )
+    (round_dir / "state.json").write_text(
+        json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
+    )
     return round_dir
 
 

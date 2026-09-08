@@ -406,6 +406,10 @@ class MeasurementGeometry:
     driver_spacing_m: float = 0.0
     mic_distance_m: float = 1.0
     speed_of_sound_m_s: float = DEFAULT_SOUND_SPEED_M_S
+    #: ``None`` gates the summed response to the direct sound; one of
+    #: :mod:`~jasper.audio_measurement.gating`'s exemption words
+    #: (``SEAT_EXEMPT``) analyzes it ungated and says so in its gating block.
+    gate_exempt_reason: str | None = None
 
     def parallax_us(self) -> float:
         """The deterministic mic-parallax term, in µs.

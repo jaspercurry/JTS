@@ -324,6 +324,9 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 
 
 from jasper.audio_measurement import measurement_geometry as _measurement_geometry
+from jasper.audio_measurement.gating import SEAT_EXEMPT
+
+from .measurement_programs import UNGATED_POSE_KINDS
 
 DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
 
@@ -1966,6 +1969,19 @@ class CrossoverV2Session:
             # the selector is pure and has no business knowing it.
             raise CrossoverV2FlowError(str(exc)) from exc
 
+    def _capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
+        """The session's geometry with THIS capture's window.
+
+        A seat take is the room's own measurement, so it is analyzed ungated
+        (docs/measurement-loop-doctrine.md 1a; ADR-0260, Wave 0b).
+        """
+        if (
+            phase in GROUP_PHASES
+            and self._prompt_shown_for(phase, index).kind in UNGATED_POSE_KINDS
+        ):
+            return replace(self._geometry, gate_exempt_reason=SEAT_EXEMPT)
+        return self._geometry
+
     def consume_capture(
         self, index: int, attempt: int, result: Any,
     ) -> dict[str, Any]:
@@ -2010,7 +2026,7 @@ class CrossoverV2Session:
         # The whole CaptureResult crosses the seam: the binding resolves mic calibration
         # from it. ``phase`` is the flow's own (#1855) — ``program.phase`` is not.
         analysis = self._seams.analyze(
-            program, result, priors, self._geometry, phase=phase,
+            program, result, priors, self._capture_geometry(phase, index), phase=phase,
         )
         verdict = consume(index, attempt, analysis, result)
         # THIS capture's pilot evidence, attached at ONE point rather than at each of
@@ -2685,16 +2701,19 @@ class CrossoverV2Session:
         analysis: ProgramAnalysis,
     ) -> None:
         """Bank one accepted pose's WAV + sidecar. Fail-soft; never a gate."""
+        summed = analysis.summed_response
         self._seams.bank_take(
             result,
             _spatial.lateral_pose_record(
                 pose,
-                position_deg=position_angle_deg(prompt),
-                vertical_deg=position_elevation_deg(prompt),
+                geometry=position_geometry(prompt),
                 lateral_consumer=self._lateral_consumer,
                 claim=replace(
                     self._lateral_claim(pose.index),
                     phase_composition=self._phase_composition(analysis),
+                ),
+                gating_applied=(
+                    bool((summed.gating or {}).get("applied")) if summed is not None else None
                 ),
                 **self._capture_stamp(result),
             ),
