@@ -750,17 +750,9 @@ docs = [
   "docs/room-correction-regime-plan.md",
   # Planning authority for the measurement/tuning program (supersessions listed in-doc).
   "docs/tuning-master-plan.md",
-  # The one operational map for the v2 commission session and the tuning loop
-  # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
-  # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
-  # when the session, a capture provider, a door's refusal vocabulary, or an
-  # exit-code contract changes.
+  # Entry route, generated tool menu, artifact effects, and diagnostic access.
   "docs/tuning-operator-runbook.md",
-  # The speaker-agnostic methodology a driving LLM follows: the order of
-  # operations (declare, plumbing, raw drivers, corner, alignment, level,
-  # linearize, verify, voice, iterate), the decision rule at each step, the
-  # failure catalog and the honesty rules. Scan it when a declared input, a
-  # verdict vocabulary, or a correction-envelope term changes.
+  # Optional science: evidence limits, interpretation, and measurement traps.
   "docs/tuning-methodology.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
@@ -771,8 +763,8 @@ docs = [
 requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
-  "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
-  "The v2 crossover commission session (open/measure/close lifecycle, four seam fields, excitation program, or phase state machine) or its session-volume, apply, verify, or republish contract changes — scan tuning-operator-runbook.md.",
+  "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, local browser capture, measured proof, acceptance authority, or target/headroom/latency promise changes.",
+  "The v2 crossover commission session (open/measure/close lifecycle, four seam fields, excitation program, or temporary trial scope) or its session-volume, apply, verify, or republish contract changes — scan tuning-operator-runbook.md.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",

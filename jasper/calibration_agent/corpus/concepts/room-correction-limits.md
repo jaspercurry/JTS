@@ -14,7 +14,7 @@ powerful filters.
 
 ## Correctable Vs Not Correctable
 
-| Observation | Usually safe to correct? | JTS handling |
+| Observation | EQ usefulness | Useful response |
 |---|---:|---|
 | Broad, repeatable bass peak | Yes | Cut toward target with bounded PEQ or FIR. |
 | Long-decay room mode | Often | Prefer cuts; show decay plot when available. |
@@ -33,7 +33,7 @@ the listener hears a mixture of direct sound, early reflections, and
 room power; narrow steady-state correction becomes increasingly
 position-sensitive.
 
-JTS should therefore default to:
+Useful starting choices are:
 
 - bass/modal correction first;
 - broad correction only through the transition region;
@@ -49,10 +49,10 @@ filter designer should flag likely nulls when a deep dip is narrow,
 varies strongly across positions, or is paired with non-minimum-phase
 behavior / excess group delay.
 
-## JTS Design Implications
+## Interpreting A Correction
 
 - Prefer cuts over boosts in the room-correction layer.
-- Cap boosts tightly and reject attempts to fill deep nulls.
+- Read boost/headroom limits; a deep null is a poor target for more gain.
 - Store enough measurement artifacts to distinguish modal peaks from
   cancellations: raw capture, impulse response, smoothed and
   unsmoothed response, phase/group delay when available, and
@@ -60,6 +60,11 @@ behavior / excess group delay.
 - Explain that acoustic placement can solve some problems DSP cannot.
 - Keep "sounds better to me" controls in preference EQ, not the
   physical correction bank.
+
+These are acoustic judgments, not new experiment gates. The
+[methodology](../../../../docs/tuning-methodology.md#6-linearize-per-driver)
+explains useful probes; the [Room contract](../../../../docs/room-correction-information-design.md)
+and tool code own supported filters and limits.
 
 ## Key Sources
 
@@ -69,14 +74,5 @@ behavior / excess group delay.
 - REW help: "Why can't I fix all my acoustic problems with EQ?"
 - HouseCurve documentation on broad correction and multi-position
   measurement.
-
-## Open Questions
-
-- What JTS-specific transition-frequency heuristic should we expose
-  when the user has not entered room dimensions?
-- How much boost is acceptable below 100 Hz when multiple positions
-  agree and the speaker has known headroom?
-- Which null detector should be used in v1: magnitude-only,
-  seat-variance, group-delay, or a composite confidence score?
 
 Last verified: 2026-05-25

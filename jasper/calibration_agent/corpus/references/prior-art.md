@@ -30,9 +30,9 @@ correction becomes unsafe.
 
 | Tool / source | What to learn | JTS posture |
 |---|---|---|
-| VituixCAD | Near/far merge, directivity, listening window, sound power, DI, active crossover simulation. | Canonical external design tool for early active-speaker workflow. |
+| VituixCAD | Near/far merge, directivity, listening window, sound power, DI, active crossover simulation. | External design reference. |
 | Linkwitz / Riley / Vanderkooy / Lipshitz literature | Non-coincident driver crossover behavior, lobing, polarity, delay, power response. | Preserve as design theory for active baseline work. |
-| Charlie Hughes / Voice Coil articles | Measurement geometry, rotation center, off-axis sampling density, directivity-first crossover optimization. | Important for acceptance gates. |
+| Charlie Hughes / Voice Coil articles | Measurement geometry, rotation center, off-axis sampling density, directivity-first crossover optimization. | Off-axis interpretation. |
 | Rod Elliott / Purifi acoustic-center cautions | Acoustic center is not just a static voice-coil coordinate. | Use measured delay/null validation, not geometry-only delay. |
 | miniDSP active-speaker notes | Tweeter protection capacitor and active-routing safety practice. | Hardware-safety reference. |
 | Klippel methodology | Protection logic, stimulus discipline, driver measurement rigor. | Methodology reference even without Klippel hardware. |

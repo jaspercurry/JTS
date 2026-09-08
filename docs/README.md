@@ -30,22 +30,19 @@ references describe how the repository works now.
 
 ## Tuning and measurement
 
-Read these current sources in order:
+Start with the [runbook entry contract](tuning-operator-runbook.md#entry-contract),
+then the selected tool's `--help`. Read further only for the question at hand:
 
-1. [Measurement loop doctrine](measurement-loop-doctrine.md)
-2. [Tuning methodology](tuning-methodology.md)
-3. [Tuning operator runbook](tuning-operator-runbook.md)
-4. [Active-crossover product contract](active-crossover-information-design.md)
-5. [Room-correction product contract](room-correction-information-design.md)
-6. [Tuning layers](active-speaker-tuning-layers-design.md)
+- [Doctrine](measurement-loop-doctrine.md): authority and layer boundaries.
+- [Methodology](tuning-methodology.md): optional scientific interpretation.
+- [Crossover](active-crossover-information-design.md) and
+  [Room](room-correction-information-design.md): their product boundaries.
+- [Layers](active-speaker-tuning-layers-design.md): fitting and composition rationale.
 
-The production tuning session uses `open` and `close` for its lifetime and
-exposes `measure` as its one tuning operation. Its four `EngineSeams` fields
-own the graph, volume claim, records, and playback transaction. Doors-and-banks
-tools analyze banked evidence, recommend the next action, and persist their own
-accounting; [ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md)
-records that boundary. Apply remains an explicit operator action followed by
-verification.
+The capture session owns `open`, `measure`, and `close`; separate tools analyze
+and bank evidence ([ADR-0198](adr/0198-the-unwired-engine-verb-half-is-deleted.md)).
+Adoption is explicit. Runtime readback checks the applied graph; a new acoustic
+capture is a separate experiment.
 
 [The bass-extension plan](HANDOFF-bass-extension-plan.md) remains the parked
 plan and authorization source under

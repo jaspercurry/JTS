@@ -9,13 +9,12 @@
 
 Room correction asks, "What repeatable speaker/room behavior should
 we compensate?" Preference EQ asks, "What does this listener want to
-hear?" A future JTS tuning flow should let the user play familiar
-music, describe what they hear, A/B changes, and keep every preference
-move reversible.
+hear?" Use familiar music, describe the difference, and compare reversible
+changes by listening.
 
 ## Subjective Language Map
 
-| User says | Likely area | Safe first action | Ask before changing |
+| User says | Likely area | Possible listening trial | Useful distinction |
 |---|---|---|---|
 | "More bass" | 20-120 Hz shelf, or 80-150 Hz punch | low-shelf +1 to +3 dB in preference layer | More rumble or more drum/bass-guitar punch? |
 | "Less boomy" | 60-200 Hz modal excess or decay | inspect room-correction peaks/decay; broad or modal cut only if measured | Lingering bass, or just too much bass overall? |
@@ -39,28 +38,15 @@ room-correction cause.
 - Do not call a preference curve "more accurate."
 - Do not stack preference EQ into the room-correction layer without
   recording the distinction in the bundle/profile metadata.
-- Emit high-level bounded intent, not filter coefficients. Example:
-  `{"action":"preference_low_shelf","corner_hz":100,"gain_db":1.5}`.
+- Use the response contract in the exported advisor prompt for supported
+  actions and fields; `jasper-calibration-agent --help` owns the call modes.
 - Let deterministic code clamp gains, Q, headroom, and ordering.
 - Ask a clarifying question when the phrase could mean two different
   frequency regions, such as "more bass" vs "more punch."
 
-## JTS Design Implication
-
-Use one DSP/profile backend with separate layers:
-
-1. base passthrough
-2. measurement-derived room correction
-3. target / house curve
-4. user preference EQ
-
-That stack lets the user reset taste without deleting room correction,
-or compare two target curves against the same measurement.
-
-Preference EQ should be chainable after room correction and before
-the always-on limiter/headroom guard. It should have its own profile
-ID, history, and bypass switch so "I liked it better before" is
-always recoverable.
+The [doctrine](../../../../docs/measurement-loop-doctrine.md#1a-the-layering-rule--what-a-measurement-plays-through)
+owns layer boundaries. Keep the source measurement and prior preference
+profile identifiable so a listening trial can be compared and reversed.
 
 ## Sources
 

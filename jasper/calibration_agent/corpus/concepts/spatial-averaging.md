@@ -1,8 +1,7 @@
 # Spatial Averaging
 
 > **Status: distilled from 2026-05-25 deep-research intake.**
-> This file captures measurement-area logic for future correction and
-> tuning flows.
+> This note explains averaging choices; tool help owns supported capture modes.
 
 ## Operational Summary
 
@@ -14,12 +13,12 @@ designed.
 
 ## Measurement Modes
 
-| Mode | What it preserves | What it loses | Best JTS use |
+| Mode | What it preserves | What it loses | Useful for |
 |---|---|---|---|
 | Single sweep | Magnitude, phase, impulse timing at one point | Spatial robustness | Setup smoke test, desk/single-seat mode, validation. |
-| Multi-position sweeps | Per-seat response and repeatability | More user effort | Default for living-room correction. |
+| Multi-position sweeps | Per-seat response; repeats when captured | More user effort | Listening-area correction. |
 | RMS / power average | Listening-area magnitude | Phase coherence | Magnitude EQ and target matching. |
-| Vector average | Complex magnitude + phase | High-frequency robustness across space | Subwoofer / low-frequency alignment only. |
+| Vector average | Complex magnitude + phase | Robustness when phase varies across space | Alignment with a suitable timing and spatial basis. |
 | Moving mic method | Fast spatial steady-state magnitude | Phase / impulse details | Consumer-friendly target/preference measurement. |
 
 ## Averaging Rules
@@ -33,18 +32,9 @@ designed.
 - Keep individual positions in the bundle even when the UI shows an
   average.
 
-## UX Implications
-
-For a phone-first JTS flow, multi-position should feel ordinary:
-
-1. Measure the main listening position.
-2. Move the microphone slightly left, right, forward, and back.
-3. Show whether the bass problems are shared across positions.
-4. Correct only what is repeatable enough to trust.
-
-The moving-mic method may become a useful later mode for quick
-steady-state preference tuning, but it cannot replace sweeps when JTS
-needs impulse response, phase, group delay, or excess-phase data.
+The moving-mic method can measure steady-state magnitude, but cannot replace
+sweeps when the question needs impulse response, phase, or group delay.
+This comparison does not imply that JTS has a moving-mic capture mode.
 
 ## Bundle Requirements
 
