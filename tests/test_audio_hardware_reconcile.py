@@ -761,6 +761,42 @@ def test_camilla_boot_requires_successful_runtime_graph_convergence(
     )
 
 
+def test_a_blocking_lifecycle_verb_is_bounded_by_the_unit_not_the_manager_cap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``stop jasper-voice.service`` must be allowed to take its own
+    ``TimeoutStopSec=14s`` — the window in which voice plays the mic-loss cue
+    (ADR-0239). Capped at the manager-liveness bound it would be KILLED, and
+    the pass would then restart jasper-outputd against a half-stopped voice.
+
+    The fake logs each verb AFTER doing its work, so the transcript's order is
+    completion order, and a killed stop leaves no line at all.
+    """
+    monkeypatch.setattr(reconcile_module, "SYSTEMCTL_TIMEOUT_SEC", 0.5)
+    slow = _script(
+        tmp_path,
+        "slow-systemctl",
+        'case "$*" in "stop jasper-voice.service") sleep 1 ;; esac\n'
+        'printf \'%s\\n\' "$*" >> "$JASPER_SYSTEMCTL_LOG"\n',
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_SYSTEMCTL": str(slow)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    transcript = _systemctl_log(tmp_path).splitlines()
+    assert "stop jasper-voice.service" in transcript, transcript
+    assert transcript.index("stop jasper-voice.service") < transcript.index(
+        "--no-block restart jasper-outputd.service"
+    ), transcript
+    _assert_omits(result.stderr, "event=audio_hardware_reconcile.systemctl_timeout")
+
+
 def test_runtime_convergence_only_writes_statefile(tmp_path: Path) -> None:
     """This hardware owner seeds the proved boot statefile; it never mutates a
     live CamillaDSP graph, which the web/coupling paths own."""

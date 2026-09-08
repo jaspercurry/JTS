@@ -87,6 +87,10 @@ ENV_DIR_MODE = 0o750
 _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
                  signal.SIGINT: (130, "INT")}
 
+#: ``systemctl_call(timeout=...)``'s "use SYSTEMCTL_TIMEOUT_SEC" default, read
+#: at CALL time rather than bound at import. Not a legal timeout itself.
+_MANAGER_BOUND = -1.0
+
 # jasper_env_quote_value's safe charset (deploy/lib/jasper-env-file.sh): a
 # value outside it is quoted for the shell.
 _SHELL_SAFE = re.compile(r"\A[A-Za-z0-9_./:@,+=-]+\Z")
@@ -286,13 +290,28 @@ class Pass:
 
     # -- systemd ------------------------------------------------------------
 
-    def systemctl_call(self, *args: str, quiet: bool = False) -> int:
+    def systemctl_call(
+        self, *args: str, quiet: bool = False, timeout: float | None = _MANAGER_BOUND
+    ) -> int:
+        """Run one systemctl verb. Returns its exit code, never raises.
+
+        ``timeout`` bounds only how long an UNRESPONSIVE MANAGER may stall the
+        pass; the default is :data:`SYSTEMCTL_TIMEOUT_SEC`, read at call time.
+        A BLOCKING lifecycle verb passes ``None`` and is bounded instead by
+        this unit's own ``TimeoutStartSec=50s``
+        (``deploy/systemd/jasper-audio-hardware-reconcile.service``), the way
+        the shell reconciler ran them: capping ``stop jasper-voice.service``
+        below that unit's ``TimeoutStopSec=14s`` would report a failure for a
+        stop that is merely finishing its mic-loss cue (ADR-0239), and capping
+        an ``enable`` would abort the pass mid-restart on a slow daemon-reload.
+        """
+        bound = SYSTEMCTL_TIMEOUT_SEC if timeout == _MANAGER_BOUND else timeout
         try:
             return subprocess.run(
                 [self.systemctl, *args],
                 stderr=subprocess.DEVNULL if quiet else None,
                 check=False,
-                timeout=SYSTEMCTL_TIMEOUT_SEC,
+                timeout=bound,
             ).returncode
         except OSError:
             return 127
@@ -302,12 +321,14 @@ class Pass:
             self.log(
                 "systemctl_timeout",
                 command=" ".join(args),
-                timeout_sec=SYSTEMCTL_TIMEOUT_SEC,
+                timeout_sec=bound,
             )
             return 124
 
-    def systemctl_required(self, *args: str) -> None:
-        rc = self.systemctl_call(*args)
+    def systemctl_required(
+        self, *args: str, timeout: float | None = _MANAGER_BOUND
+    ) -> None:
+        rc = self.systemctl_call(*args, timeout=timeout)
         if rc != 0:
             raise _Abort(rc)
 
@@ -1558,27 +1579,27 @@ class Pass:
         apple_output = bool(self.observed.headphone_control)
         # The pin is enabled on every box: which controls a DAC pins is the
         # registry's answer, and jasper-dac-init is where it is asked.
-        self.systemctl_required("enable", DAC_INIT_UNIT)
+        self.systemctl_required("enable", DAC_INIT_UNIT, timeout=None)
         if self.record_changed:
             self.restart_dac_init_for_record_change()
         else:
             self.systemctl_call("reset-failed", DAC_INIT_UNIT, quiet=True)
-            self.systemctl_call("start", DAC_INIT_UNIT)
+            self.systemctl_call("start", DAC_INIT_UNIT, timeout=None)
         if apple_output:
-            self.systemctl_required("enable", HEADPHONE_MONITOR_UNIT)
+            self.systemctl_required("enable", HEADPHONE_MONITOR_UNIT, timeout=None)
             # Idempotent start, never a restart: this gate runs on every
             # udev/reconcile pass and a deploy's core-audio bounce fires it
             # several times inside StartLimitIntervalSec. reset-failed clears a
             # parked state; start is a no-op when it is already running, and
             # the monitor re-resolves the card in its own poll loop.
             self.systemctl_call("reset-failed", HEADPHONE_MONITOR_UNIT, quiet=True)
-            self.systemctl_call("start", HEADPHONE_MONITOR_UNIT)
+            self.systemctl_call("start", HEADPHONE_MONITOR_UNIT, timeout=None)
             self.log(
                 "apple_services", state="enabled", output_dac_id=self.output_dac_id
             )
         else:
             self.systemctl_call(
-                "disable", "--now", HEADPHONE_MONITOR_UNIT, quiet=True
+                "disable", "--now", HEADPHONE_MONITOR_UNIT, quiet=True, timeout=None
             )
             self.systemctl_call("reset-failed", HEADPHONE_MONITOR_UNIT, quiet=True)
             self.log(
@@ -1623,7 +1644,7 @@ class Pass:
             return
         profile = self.install_profile()
         if profile == "full":
-            self.systemctl_call("stop", VOICE_UNIT, quiet=True)
+            self.systemctl_call("stop", VOICE_UNIT, quiet=True, timeout=None)
         # These are SEPARATE transactions, deliberately unordered. Correctness
         # does not depend on winning the race with jasper-aec-init: it refuses
         # to certify a STATUS older than outputd.env and the AEC reconciler
