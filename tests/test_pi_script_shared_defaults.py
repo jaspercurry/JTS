@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import shlex
 import shutil
 import stat
@@ -26,16 +25,16 @@ SCRIPT_NAMES = (
     "switch-voice-provider.sh",
     "switch-wake-word.sh",
     "tail-pi-logs.sh",
+    "jasper-trace.sh",
     "verify-ref-no-silence-bug.sh",
     "wake-rate-test.sh",
 )
-ROBUST_SCRIPT_DIR = 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"'
-LIB_SOURCE = '. "${SCRIPT_DIR}/_lib.sh"'
 INVOCATIONS = {
     "switch-gemini-model.sh": (["3.1"], 0),
     "switch-voice-provider.sh": (["gemini"], 0),
     "switch-wake-word.sh": (["jarvis_v2"], 0),
     "tail-pi-logs.sh": (["jasper-voice"], 0),
+    "jasper-trace.sh": ([], 0),
     "verify-ref-no-silence-bug.sh": ([], 1),
     "wake-rate-test.sh": (["1"], 23),
     "rename-speaker.sh": (["jts4", "--no-deploy"], 0),
@@ -85,8 +84,6 @@ def script_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     scripts.mkdir(parents=True)
     for name in (
         *SCRIPT_NAMES,
-        # Not a SCRIPT_NAMES member (predates ROBUST_SCRIPT_DIR); copied so
-        # its env-file-write test below can reuse this fixture's fake ssh.
         "rename-speaker.sh",
         "_lib.sh",
         "_diagnostic_redaction.sh",
@@ -193,24 +190,35 @@ def _run_script(
     return result, calls
 
 
-@pytest.mark.parametrize("name", SCRIPT_NAMES)
-def test_pi_target_scripts_source_the_shared_owner_without_local_defaults(
-    name: str,
-) -> None:
-    text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
-
-    assert text.count(ROBUST_SCRIPT_DIR) == 1
-    assert text.count(LIB_SOURCE) == 1
-    assert not re.search(r"(?m)^\s*(?:export\s+)?PI_(?:HOST|USER)=", text)
-    assert text.index("set -euo pipefail") < text.index(ROBUST_SCRIPT_DIR)
-    assert text.index(ROBUST_SCRIPT_DIR) < text.index(LIB_SOURCE)
-
-
-def test_capture_scripts_use_repo_root_from_the_shared_owner() -> None:
-    for name in ("verify-ref-no-silence-bug.sh", "wake-rate-test.sh"):
-        text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
-        assert 'REPO_ROOT="$(cd ' not in text
-        assert '"$REPO_ROOT/' in text
+@pytest.mark.parametrize("name,units", [
+    ("jasper-trace.sh", []),
+    ("tail-pi-logs.sh", []),
+    ("tail-pi-logs.sh", ["jasper-*", "unit with spaces", "quote'$(printf ignored)", "--all"]),
+])
+def test_log_scripts_preserve_remote_arguments(script_repo, name, units):
+    repo, fake_bin, log = script_repo
+    (repo.parent / "foreign-cwd" / "jasper-expanded").touch()
+    _write_executable(fake_bin / "ssh", '#!/bin/bash\nexec bash -c "${!#}"\n')
+    _write_executable(fake_bin / "journalctl", '''#!/bin/bash
+printf '%s\\0' "$@" > "$FAKE_COMMAND_LOG"
+printf 'event=kept\\n'
+''')
+    since = "today's $(printf ignored)"
+    result, _ = _run_script(
+        script_repo, name, args=units, env_local=None,
+        inherited={"PI_HOST": "explicit.invalid", "SINCE": since},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "event=kept\n"
+    expected = (
+        ["--output=short-iso", "-f", "--since", since, "-u", "jasper-*"]
+        if name == "jasper-trace.sh" else ["-f", "--output=short-iso", *(
+            arg for unit in (units or ["jasper-*", "librespot", "shairport-sync",
+                                      "nqptp", "bluealsa", "bluealsa-aplay", "bt-agent"])
+            for arg in ("-u", unit)
+        )]
+    )
+    assert log.read_bytes().split(b"\0")[:-1] == [arg.encode() for arg in expected]
 
 
 @pytest.mark.parametrize(

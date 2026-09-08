@@ -20,21 +20,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # SYSTEMD_COLORS=0: `-t` makes journalctl colourise, and the redactor's
 # value-run regex can swallow a trailing colour-reset escape along with
 # the value it's redacting.
-if [[ $# -gt 0 ]]; then
-    # Operator passed explicit unit names — tail just those.
-    units=()
-    for u in "$@"; do
-        units+=(-u "$u")
-    done
-    remote_cmd="SYSTEMD_COLORS=0 journalctl -f --output=short-iso ${units[*]}"
-else
-    # Default: every jasper-* unit, plus the renderers and their deps.
-    # Uses systemd unit-name globbing (-u 'jasper-*', supported since
-    # journalctl v245) so new daemons land in the tail automatically.
-    remote_cmd="SYSTEMD_COLORS=0 journalctl -f --output=short-iso \
-        -u 'jasper-*' -u librespot -u shairport-sync -u nqptp \
-        -u bluealsa -u bluealsa-aplay -u bt-agent"
+if [[ $# -eq 0 ]]; then
+    set -- 'jasper-*' librespot shairport-sync nqptp bluealsa bluealsa-aplay bt-agent
 fi
+units=()
+for u in "$@"; do
+    units+=(-u "$u")
+done
+remote_cmd="SYSTEMD_COLORS=0 $(quote_args journalctl -f --output=short-iso "${units[@]}")"
 
 # Line-by-line through the shared redactor, not a piped `sed -u`: GNU's
 # unbuffered flag (-u) and BSD's (-l) aren't the same flag, and this
