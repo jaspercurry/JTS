@@ -41,7 +41,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
-from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KINDS
+from ..measurement_programs import POSE_KIND_BEARING, validated_pose_kind
 from .contracts import (
     DESIGN_AXIS_DEG,
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
@@ -658,10 +658,9 @@ class PositionGeometry:
             raise ValueError(
                 f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
             )
-        if self.kind not in POSE_KINDS:
-            raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {self.kind!r}")
-        if (self.seat_offset_m is not None) != (self.kind == POSE_KIND_SEAT):
-            raise ValueError("a seat pose states its offset from the head; no other kind does")
+        object.__setattr__(
+            self, "seat_offset_m", validated_pose_kind(self.kind, self.seat_offset_m),
+        )
         # `bool` is an `int` and is never an elevation.
         if isinstance(self.vertical_deg, bool) or not isinstance(
             self.vertical_deg, int
@@ -1131,6 +1130,8 @@ def lateral_pose_record(
     cloud position is a summed sweep judged by gating and ripple, and those
     columns are never meaningful for a pose.
     """
+    if geometry.degrees is None:
+        raise ValueError("a lateral pose commands a horizontal bearing; this geometry declares none")
     return {
         "pose_id": pose.pose_id,
         **_take_identity(
@@ -1140,7 +1141,7 @@ def lateral_pose_record(
         ),
         "prompt": pose.prompt,
         "role": pose.role,
-        "position_deg": int(geometry.degrees),  # type: ignore[arg-type]
+        "position_deg": int(geometry.degrees),
         "position_axis": POSITION_AXIS_HORIZONTAL,
         "vertical_deg": int(geometry.vertical_deg),
         "offset_cm": float(pose.offset_cm),

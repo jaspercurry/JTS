@@ -27,7 +27,7 @@ from jasper.audio_measurement.bundles import sha256_file
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.sweep import read_wav_mono
 
-from ..measurement_programs import POSE_KIND_BEARING
+from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 
 # --- refusals: every one names the input that was missing --------------------
 
@@ -92,23 +92,24 @@ def doc_pose_key(doc: Mapping[str, Any]) -> str:
         _number(doc.get("position_deg")),
         _number(doc.get("vertical_deg")),
         _number(doc.get("mark_distance_m")),
-        _doc_pose_kind(doc),
-        _doc_seat_offset(doc),
+        *_doc_pose_category(doc),
     )
 
 
-def _doc_pose_kind(doc: Mapping[str, Any]) -> str:
-    """A doc banked before poses had a kind is the bearing it always was."""
+def _doc_pose_category(doc: Mapping[str, Any]) -> tuple[str, tuple[float, ...] | None]:
+    """The kind a doc declares and, for a seat, its ``(right, forward, up)``.
+
+    A doc banked before poses had a kind is the bearing it always was.
+    """
     kind = doc.get("pose_kind")
-    return kind if isinstance(kind, str) and kind else POSE_KIND_BEARING
-
-
-def _doc_seat_offset(doc: Mapping[str, Any]) -> tuple[float, ...] | None:
+    kind = kind if isinstance(kind, str) and kind else POSE_KIND_BEARING
     offset = doc.get("seat_offset_m")
-    if not isinstance(offset, Sequence) or isinstance(offset, str):
-        return None
+    if kind != POSE_KIND_SEAT or not isinstance(offset, Sequence):
+        return kind, None
     numbers = [_number(v) for v in offset]
-    return None if any(v is None for v in numbers) else tuple(numbers)  # type: ignore[arg-type]
+    if len(numbers) != 3 or any(v is None for v in numbers):
+        return kind, None
+    return kind, tuple(numbers)  # type: ignore[arg-type]
 
 
 def _pose_key(
@@ -279,6 +280,7 @@ def discover_captures(
         ir = regularized_deconvolution_full(signal, program_signal, rate).astype(
             np.float64
         )
+        pose_kind, seat_offset_m = _doc_pose_category(doc)
         captures.append(
             PoseCapture(
                 capture_id=str(doc.get("position_id") or sidecar.stem),
@@ -293,8 +295,8 @@ def discover_captures(
                 sample_rate=int(rate),
                 ir=ir,
                 peak_idx=int(np.argmax(np.abs(ir))),
-                pose_kind=_doc_pose_kind(doc),
-                seat_offset_m=_doc_seat_offset(doc),
+                pose_kind=pose_kind,
+                seat_offset_m=seat_offset_m,
             )
         )
     return tuple(sorted(captures, key=lambda cap: cap.capture_id))

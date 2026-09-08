@@ -138,6 +138,14 @@ def _program_phrase() -> str:
     )
 
 
+def _size_phrase() -> str:
+    """Each program's sizes, read off the registry."""
+    sizes: dict[str, list[str]] = {}
+    for pid, size in measurement_programs.available_programs():
+        sizes.setdefault(pid, []).append(size)
+    return "; ".join(f"{pid}: {' or '.join(row)}" for pid, row in sizes.items())
+
+
 def _angle_field(text: str) -> Any:
     """One ``--angles`` field, as the seam should see it.
 
@@ -723,8 +731,7 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         # No argparse ``choices``: the registry owns the valid set, so an
         # unknown size refuses in its own words and names the real pairs.
         help=(
-            "which tier of a named program (baseline and tournament: express "
-            "or full; seat: cube or express; close: spot). Ignored by "
+            f"which tier of a named program ({_size_phrase()}). Ignored by "
             "--program spot, which is one pose either way"
         ),
     )

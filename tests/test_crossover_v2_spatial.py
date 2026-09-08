@@ -838,6 +838,39 @@ def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
     assert _pose_record()["vertical_deg"] == 0
 
 
+@pytest.mark.parametrize(
+    ("geometry", "fields"),
+    [
+        (
+            spatial.PositionGeometry(spatial.POSITION_AXIS_HORIZONTAL, 7, spatial.MARK_DISTANCE_M),
+            {},
+        ),
+        (
+            spatial.PositionGeometry(
+                spatial.POSITION_AXIS_HORIZONTAL, 0, None, kind="seat",
+                seat_offset_m=(0.3, 0.0, 0.0),
+            ),
+            {
+                "pose_kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0],
+                "mark_distance_m": None, "gating_applied": False,
+            },
+        ),
+        (
+            spatial.PositionGeometry(spatial.POSITION_AXIS_HORIZONTAL, 0, 0.3, kind="close"),
+            {
+                "pose_kind": "close", "seat_offset_m": None,
+                "mark_distance_m": 0.3, "gating_applied": False,
+            },
+        ),
+    ],
+    ids=["bearing", "seat", "close"],
+)
+def test_a_categorized_pose_adds_its_keys_and_a_bearing_adds_none(geometry, fields):
+    """The take-record keys a kind carries (ADR-0260, Wave 0b): none for the
+    bearing every earlier record was, so those stay byte-identical."""
+    assert spatial.pose_kind_fields(geometry, gating_applied=False) == fields
+
+
 def _sweep_program(*segments):
     """A program that declares only the sweep bands under test."""
     return SimpleNamespace(segments=list(segments))

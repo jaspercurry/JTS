@@ -1996,7 +1996,7 @@ def _take_staged_angle_walk(
     )
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.crossover_v2.spatial import TakeClaim
-    from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
+    from jasper.active_speaker.measurement_programs import off_the_mark
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2110,7 +2110,7 @@ def _take_staged_angle_walk(
             # A seat or close pose with no candidate plays the applied tune
             # whole (the VERIFY shape): the room is measured through the
             # speaker stage it sits on (docs/measurement-loop-doctrine.md 1a).
-            through_tune = stop.kind != POSE_KIND_BEARING and not stop.candidate_id
+            through_tune = off_the_mark(stop.kind) and not stop.candidate_id
             specs_by_index[index] = MeasureSpec(
                 kind=MEASURE_KIND_VERIFY if through_tune else MEASURE_KIND_CANDIDATE,
                 positions=(stop.angle_deg,), vertical_deg=stop.elevation_deg,

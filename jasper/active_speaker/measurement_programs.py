@@ -28,8 +28,12 @@ Deliberate omissions, so absence reads as a decision:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Mapping
+from types import MappingProxyType
+from typing import Mapping, Sequence
+
+from jasper.audio_measurement.gating import SEAT_EXEMPT
 
 # Repeats at the on-axis anchor, per the plan's ratified position-major
 # structure: x4 at the 0 deg anchor pose, x1 at every other pose.
@@ -43,12 +47,60 @@ POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
 POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE)
-UNGATED_POSE_KINDS = frozenset({POSE_KIND_SEAT})
+
+#: Which kinds are analyzed ungated, and the word their gating block carries.
+GATE_EXEMPTION_BY_POSE_KIND: Mapping[str, str] = MappingProxyType({POSE_KIND_SEAT: SEAT_EXEMPT})
+
+
+def off_the_mark(kind: str) -> bool:
+    """A bearing is measured at the mark. Every other kind is stated from
+    somewhere else: it plays the applied tune whole as one summed sweep, and
+    a turntable at the mark cannot reach it."""
+
+    return kind != POSE_KIND_BEARING
 
 #: The cube's half-edge and the close reference's standoff, both in metres.
 #: See ADR-0260 (Wave 0b).
 SEAT_OFFSET_M = 0.30
 CLOSE_DISTANCE_M = 0.30
+
+
+def validated_pose_kind(
+    kind: str, seat_offset_m: Sequence[float] | None,
+) -> tuple[float, float, float] | None:
+    """The one rule every carrier of a pose category checks: ``kind`` is one
+    of :data:`POSE_KINDS`, and exactly a seat states three finite metres
+    ``(right, forward, up)`` from the head. Returns the offset normalized to
+    floats; raises ``ValueError``."""
+
+    if kind not in POSE_KINDS:
+        raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}")
+    if (seat_offset_m is not None) != (kind == POSE_KIND_SEAT):
+        raise ValueError(
+            "a seat pose states its (right, forward, up) offset from the head; "
+            "no other kind does"
+        )
+    if seat_offset_m is None:
+        return None
+    try:
+        right, forward, up = (float(v) for v in seat_offset_m)
+    except (TypeError, ValueError):
+        raise ValueError(f"a seat offset is three finite metres, got {seat_offset_m!r}") from None
+    if not all(math.isfinite(v) for v in (right, forward, up)):
+        raise ValueError(f"a seat offset is three finite metres, got {seat_offset_m!r}")
+    return (right, forward, up)
+
+
+def pose_place(
+    kind: str,
+    azimuth_deg: int,
+    elevation_deg: int,
+    distance_m: float | None,
+    seat_offset_m: tuple[float, float, float] | None,
+) -> tuple[object, ...]:
+    """What distinguishes one microphone position from another."""
+
+    return (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
 
 
 @dataclass(frozen=True)
@@ -67,11 +119,14 @@ class ProgramPose:
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "seat_offset_m", validated_pose_kind(self.kind, self.seat_offset_m),
+        )
+
     @property
     def place(self) -> tuple[object, ...]:
-        """What distinguishes one microphone position from another."""
-
-        return (
+        return pose_place(
             self.kind, self.azimuth_deg, self.elevation_deg,
             self.distance_m, self.seat_offset_m,
         )

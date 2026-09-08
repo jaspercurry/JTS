@@ -324,9 +324,8 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 
 
 from jasper.audio_measurement import measurement_geometry as _measurement_geometry
-from jasper.audio_measurement.gating import SEAT_EXEMPT
 
-from .measurement_programs import UNGATED_POSE_KINDS
+from .measurement_programs import GATE_EXEMPTION_BY_POSE_KIND
 
 DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
 
@@ -1975,12 +1974,11 @@ class CrossoverV2Session:
         A seat take is the room's own measurement, so it is analyzed ungated
         (docs/measurement-loop-doctrine.md 1a; ADR-0260, Wave 0b).
         """
-        if (
-            phase in GROUP_PHASES
-            and self._prompt_shown_for(phase, index).kind in UNGATED_POSE_KINDS
-        ):
-            return replace(self._geometry, gate_exempt_reason=SEAT_EXEMPT)
-        return self._geometry
+        exemption = (
+            GATE_EXEMPTION_BY_POSE_KIND.get(self._prompt_shown_for(phase, index).kind)
+            if phase in GROUP_PHASES else None
+        )
+        return replace(self._geometry, gate_exempt_reason=exemption) if exemption else self._geometry
 
     def consume_capture(
         self, index: int, attempt: int, result: Any,

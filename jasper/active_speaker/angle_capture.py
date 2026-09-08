@@ -38,9 +38,10 @@ from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
     POSE_KIND_BEARING,
-    POSE_KIND_SEAT,
-    POSE_KINDS,
     MeasurementProgram,
+    off_the_mark,
+    pose_place,
+    validated_pose_kind,
 )
 from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
@@ -237,22 +238,11 @@ class AngleStop:
             raise CrossoverV2FlowError(
                 f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
             )
-        if self.kind not in POSE_KINDS:
-            raise CrossoverV2FlowError(
-                f"a pose kind must be one of {POSE_KINDS}, got {self.kind!r}"
-            )
-        if (self.seat_offset_m is not None) != (self.kind == POSE_KIND_SEAT):
-            raise CrossoverV2FlowError(
-                "a seat pose states its (right, forward, up) offset from the "
-                "head; no other kind does"
-            )
-        if self.seat_offset_m is not None:
-            offset = tuple(float(v) for v in self.seat_offset_m)
-            if len(offset) != 3 or not all(math.isfinite(v) for v in offset):
-                raise CrossoverV2FlowError(
-                    f"a seat offset is three finite metres, got {self.seat_offset_m!r}"
-                )
-            object.__setattr__(self, "seat_offset_m", offset)
+        try:
+            offset = validated_pose_kind(self.kind, self.seat_offset_m)
+        except ValueError as exc:
+            raise CrossoverV2FlowError(str(exc)) from None
+        object.__setattr__(self, "seat_offset_m", offset)
         if self.distance_m is not None and not (
             isinstance(self.distance_m, numbers.Real)
             and math.isfinite(self.distance_m) and self.distance_m > 0
@@ -263,8 +253,7 @@ class AngleStop:
 
     @property
     def place(self) -> tuple[object, ...]:
-        """What distinguishes one microphone position from another."""
-        return (
+        return pose_place(
             self.kind, self.angle_deg, self.elevation_deg,
             self.distance_m, self.seat_offset_m,
         )
@@ -320,14 +309,12 @@ class AngleCaptureRequest:
             MOVER_MAX_ELEVATION_DEG[self.mover],
             tuple(stop.elevation_deg for stop in self.stops),
         )
-        off_the_mark = sorted({
-            stop.kind for stop in self.stops if stop.kind != POSE_KIND_BEARING
-        })
-        if off_the_mark and self.externally_positioned:
+        unreachable = sorted({stop.kind for stop in self.stops if off_the_mark(stop.kind)})
+        if unreachable and self.externally_positioned:
             raise LateralWalkRefused(
                 WALK_OVER_MOVER_ENVELOPE,
                 f"mover={self.mover!r} turns bearings at the mark, so it cannot "
-                f"reach a {', '.join(off_the_mark)} pose",
+                f"reach a {', '.join(unreachable)} pose",
             )
 
     def _refuse_beyond_reach(
@@ -488,11 +475,7 @@ def request_for_program(
         stops=tuple(
             AngleStop(
                 pose.azimuth_deg,
-                (
-                    REGIME_SUMMED
-                    if candidates or pose.kind != POSE_KIND_BEARING
-                    else REGIME_PER_DRIVER
-                ),
+                REGIME_SUMMED if candidates or off_the_mark(pose.kind) else REGIME_PER_DRIVER,
                 pose.elevation_deg,
                 candidate,
                 kind=pose.kind,
