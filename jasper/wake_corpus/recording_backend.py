@@ -763,9 +763,6 @@ class RecordingBackend:
         self._audio_context = None
         self._current_plan_conformance = None
 
-    def _find_session_metadata(self, session_id: str) -> Path | None:
-        return session_store.find_session_file(self._metadata_dir, session_id)
-
     def _load_session_data(self, data: dict[str, Any]) -> dict[str, Any]:
         try:
             parsed = session_store.parse_session_data(data, self._ports)
@@ -825,8 +822,8 @@ class RecordingBackend:
             )
             return
 
-        target = self._find_session_metadata(session_id)
-        if target is None:
+        saved = session_store.find_session(self._metadata_dir, session_id)
+        if saved is None:
             logger.warning(
                 "recovery skipped: active session metadata missing for %s",
                 session_id,
@@ -834,9 +831,10 @@ class RecordingBackend:
             self._clear_active_session_marker()
             return
 
+        target, data = saved
         try:
-            result = self._load_session_data(json.loads(target.read_text()))
-        except (OSError, json.JSONDecodeError, ValueError) as e:
+            result = self._load_session_data(data)
+        except ValueError as e:
             logger.warning(
                 "recovery skipped: failed to restore %s: %s", target, e,
             )
@@ -1809,11 +1807,11 @@ class RecordingBackend:
                 raise StateError(
                     "can't load session: recording in progress",
                 )
-        target = self._find_session_metadata(session_id)
-        if target is None:
+        saved = session_store.find_session(self._metadata_dir, session_id)
+        if saved is None:
             raise ValueError(f"session not found: {session_id}")
 
-        data = json.loads(target.read_text())
+        _, data = saved
         try:
             result = self._load_session_data(data)
         except ValueError as e:
@@ -1882,11 +1880,11 @@ class RecordingBackend:
                 raise StateError(
                     "can't delete session: recording in progress",
                 )
-        target = self._find_session_metadata(session_id)
-        if target is None:
+        saved = session_store.find_session(self._metadata_dir, session_id)
+        if saved is None:
             raise ValueError(f"session not found: {session_id}")
 
-        data = json.loads(target.read_text())
+        target, data = saved
         wavs_deleted, wavs_missing = session_store.delete_session_files(target, data)
 
         # If we just deleted the in-memory active session, clear state.

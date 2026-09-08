@@ -54,14 +54,14 @@ def write_metadata_atomic(path: Path, data: Mapping[str, Any]) -> None:
     atomic_write_json(path, data)
 
 
-def find_session_file(metadata_dir: Path, session_id: str) -> Path | None:
+def find_session(metadata_dir: Path, session_id: str) -> tuple[Path, dict[str, Any]] | None:
     for p in metadata_dir.glob("enroll_*.json"):
         try:
             data = json.loads(p.read_text())
         except (OSError, json.JSONDecodeError):
             continue
         if data.get("session_id") == session_id:
-            return p
+            return p, data
     return None
 
 
