@@ -978,7 +978,7 @@ def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch
         sound_setup,
         "bonded_follower_leader_web_url",
         lambda path="/": leader_paths.append(path)
-        or f"http://jts3.local{leader_paths[-1]}",
+        or "http://jts3.local/sound/speaker/",
     )
 
     html = sound_setup._index_html("csrf-token", page_mode="speaker").decode()
