@@ -1325,92 +1325,18 @@ def _frequency_label(hz: float) -> str:
     return f"{hz:.0f} Hz"
 
 
-#: Household copy for a round that KEPT an imperfect result (#2537), as
-#: one nudge rather than a screen: ``keep_for_iteration`` leaves the
-#: speaker in the same state ``keep`` does, so it must not look like a
-#: failure — but silence would let "could not tell" read as "verified".
 KEEP_FOR_ITERATION_TEXT = (
-    "This is the best sound measured so far, and it is what the speaker is "
-    "playing. Some of what was measured is still off target — measuring again "
-    "is how that gets closer."
+    "This is the best sound measured so far. Some measured targets are still "
+    "off target. Keep it, or choose what measuring again should answer."
 )
-
-#: Row 7's sentence: same news, no round left to spend (#2656). Cannot
-#: borrow "measuring again is how that gets closer" — a remedy no longer
-#: offered.
-KEEP_MISSED_EXHAUSTED_TEXT = (
-    "This is the best sound measured so far, and it is what the speaker is "
-    "playing. Some of what was measured is still off target, and that was the "
-    "last round of this tuning."
-)
-
-#: Household copy for a round that PASSED and is iterating anyway (#2602)
-#: — "in-tolerance is not done". Reports the pass and the reason to keep
-#: going without dressing either as a fault.
 KEEP_ITERATING_TEXT = (
-    "Everything measured is inside the target, and it can still get flatter. "
-    "This is the best sound measured so far and it is what the speaker is "
-    "playing — measuring again is how the rest of the way gets found."
+    "Everything measured is inside the target. Keep this tune, or choose "
+    "what measuring again should answer."
 )
-
-#: Same row, when the round could not grade how flat the result is — an
-#: ungradable objective keeps the series open with no measured flatness
-#: behind it, so :data:`KEEP_ITERATING_TEXT`'s claim doesn't apply.
 KEEP_ITERATING_UNGRADED_TEXT = (
-    "This is the best sound measured so far, and it is what the speaker is "
-    "playing. There was not enough of a full result to tell how much flatter "
-    "it could get — measuring again is how that gets answered."
+    "This is the best sound measured so far. The result does not show whether "
+    "it can get flatter. Keep it, or choose what measuring again should answer."
 )
-
-#: Household copy for a round that PASSED and ENDED the series (#2602),
-#: keyed by the headroom axis's own reason — three genuinely different
-#: endings. Reasons are :mod:`~.crossover_v2.verification`'s, resolved
-#: lazily by :func:`_series_complete_text` (that module reaches numpy
-#: through ``flat_spec``; this one renders a polling surface).
-SERIES_COMPLETE_DEFAULT_TEXT = (
-    "Everything measured is inside the target, and the tuning is finished."
-)
-
-
-def _series_complete_text(reason: str) -> str:
-    """The ending sentence for a passing round that closed the series
-    (#2602). An unrecognised reason falls back to
-    :data:`SERIES_COMPLETE_DEFAULT_TEXT` rather than silence — states only
-    what the ROW already proves, never guesses at a cause.
-    """
-
-    from .crossover_v2.verification import (
-        HEADROOM_CAP_REACHED,
-        HEADROOM_NO_OBJECTIVES,
-        HEADROOM_PLATEAUED,
-        HEADROOM_WITHIN_PLATEAU,
-    )
-
-    return {
-        HEADROOM_WITHIN_PLATEAU: (
-            "Everything measured is inside the target, and it is as flat and "
-            "as level as measuring can show. The tuning is finished."
-        ),
-        HEADROOM_PLATEAUED: (
-            "Everything measured is inside the target. The last round barely "
-            "moved it, so more rounds are unlikely to help — the tuning is "
-            "finished."
-        ),
-        # Deliberately does NOT say "the third round": spelling the cap
-        # into copy would be a second source of truth.
-        HEADROOM_CAP_REACHED: (
-            "Everything measured is inside the target. That was the last "
-            "round of this tuning, so it is finished here."
-        ),
-        # Reachable only from a receipt banked BEFORE the bites ruling.
-        HEADROOM_NO_OBJECTIVES: (
-            "Everything measured is inside the target. There was not enough of "
-            "a full result to tell whether more rounds would help, so the "
-            "tuning stops here."
-        ),
-    }.get(reason, SERIES_COMPLETE_DEFAULT_TEXT)
-
-
 def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
     """The last graded round's adoption row, outcome, and reason — or
     ``None``. Read straight off the durable ``round_receipt``, computed
@@ -1430,27 +1356,13 @@ def _round_summary(status: Mapping[str, Any]) -> dict[str, str] | None:
     }
 
 
-def _round_is_iterating(v2: Mapping[str, Any]) -> bool:
-    """Did the last graded round say another bite is coming, and is one
-    left? Keyed on the ROW, like :func:`_round_adoption_nudges` — two rows
-    share the ``keep_for_iteration`` outcome. Reads the same
-    ``round_receipt`` the copy does, so the screen can never promise a
-    round and withhold the button. The budget check is defense in depth
-    since #2656, covering a receipt banked BEFORE that change. An
-    unreadable or absent ordinal offers the bite (the series' own reader's
-    fail-open direction).
-    """
-
-    from .crossover_v2.round_evidence import ROUND_SERIES_CAP
-
+def _round_can_continue(v2: Mapping[str, Any]) -> bool:
+    """Every retained tune can start another independently requested round."""
     receipt = _mapping(v2.get("round_receipt"))
-    row = str(receipt.get("row") or "")
-    if row not in {ADOPTION_ROW_KEEP_FOR_ITERATION, ADOPTION_ROW_KEEP_ITERATING}:
-        return False
-    ordinal = receipt.get("round_ordinal")
-    if isinstance(ordinal, bool) or not isinstance(ordinal, int):
-        return True
-    return ordinal < ROUND_SERIES_CAP
+    return str(receipt.get("row") or "") in {
+        ADOPTION_ROW_KEEP, ADOPTION_ROW_KEEP_FOR_ITERATION,
+        ADOPTION_ROW_KEEP_ITERATING, ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
+    }
 
 
 def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -1470,7 +1382,7 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
         return [{
             "code": "crossover_v2_series_complete",
             "severity": "ok",
-            "text": _series_complete_text(reason),
+            "text": KEEP_ITERATING_TEXT,
         }]
     if row == ADOPTION_ROW_KEEP_ITERATING:
         from .crossover_v2.verification import HEADROOM_NO_OBJECTIVES
@@ -1490,13 +1402,7 @@ def _round_adoption_nudges(v2: Mapping[str, Any]) -> list[dict[str, str]]:
         return [{
             "code": "crossover_v2_keep_for_iteration",
             "severity": "warn",
-            # One code, two endings, told apart by the ROW — the news a
-            # household acts on is identical either way.
-            "text": (
-                KEEP_MISSED_EXHAUSTED_TEXT
-                if row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
-                else KEEP_FOR_ITERATION_TEXT
-            ),
+            "text": KEEP_FOR_ITERATION_TEXT,
         }]
     # Unrecognised or absent row, including a pre-#2602 receipt with an
     # outcome but no row.
@@ -2819,11 +2725,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
                 "href": "/sound/room/",
             },
         ]
-        # The two iterating rows PROMISE another round; this carries it —
-        # the SAME re-measure the review screen mints. First in the list:
-        # the recommended next step when another bite is coming.
-        if _round_is_iterating(v2):
-            alternate_actions.insert(0, {
+        if _round_can_continue(v2):
+            alternate_actions.append({
                 "id": "round_remeasure",
                 "label": "Try again with what we learned",
                 "endpoint": "/sound/speaker/crossover/v2/session",

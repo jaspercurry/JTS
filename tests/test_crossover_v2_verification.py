@@ -86,7 +86,6 @@ from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_REALIZED_AND_IMPROVED,
     ADOPTION_UNPROVEN,
     CLIPPED_RUN_CHECK,
-    HEADROOM_CAP_REACHED,
     HEADROOM_NO_OBJECTIVES,
     HEADROOM_PLATEAUED,
     HEADROOM_REACHABLE,
@@ -820,7 +819,6 @@ def test_a_verdict_renders_a_loggable_payload():
     }
 
 
-
 # --------------------------------------------------------------------------
 # 5. the three adoption axes (#2537)
 # --------------------------------------------------------------------------
@@ -1483,14 +1481,13 @@ def _flat_report():
 
 
 def _headroom(
-    *, report=None, previous=None, ordinal=1, cap=3, plateau=0.25,
+    *, report=None, previous=None, ordinal=1, plateau=0.25,
     floor_hz=None, previous_floor_hz=None,
 ):
     return evaluate_iteration_headroom(
         objectives=flatness_objectives(report),
         previous=previous,
         round_ordinal=ordinal,
-        round_cap=cap,
         plateau_db=plateau,
         trusted_floor_hz=floor_hz,
         previous_trusted_floor_hz=previous_floor_hz,
@@ -1562,9 +1559,9 @@ def test_the_worst_objective_is_a_max_so_a_large_tilt_cannot_hide():
             IterationHeadroom.REACHABLE, HEADROOM_REACHABLE,
         ),
         (
-            "round 3 of 3, with plenty still left to chase",
+            "round 3 still has the same analysis as round 1",
             {"report": _round_three_report(), "ordinal": 3},
-            IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED,
+            IterationHeadroom.REACHABLE, HEADROOM_REACHABLE,
         ),
         # The bites ruling reversed both of these: missing evidence is not a
         # plateau, so the reason still names what was missing and the STATUS
@@ -1586,7 +1583,7 @@ def test_the_worst_objective_is_a_max_so_a_large_tilt_cannot_hide():
     ],
 )
 def test_the_headroom_table(case, kwargs, status, reason):
-    """Every way a series continues, and every way it ends. (#2602)"""
+    """Each evidence shape produces the corresponding advisory headroom result."""
 
     verdict = _headroom(**kwargs)
     assert verdict.status is status, case
@@ -1594,22 +1591,12 @@ def test_the_headroom_table(case, kwargs, status, reason):
 
 
 def test_ungradable_objectives_do_not_end_a_series():
-    """The ethos's own sentence, as a guard.
-
-    *Only the round budget, the plateau, and the safety class end a series.*
-    An ungradable objective is missing evidence — a tier that walked no
-    post-apply cloud, or a report whose bands all fell below the trusted floor
-    — and reading that as "nothing better is reachable" is the conflation the
-    ruling forbids. Held separately from the table above because the table
-    would still pass if a later change flipped the status back and updated the
-    expectation with it; this states WHICH statuses are allowed to end a
-    series, so a fourth ending cannot be added by accident.
-    """
+    """Unknown objectives cannot establish a measured plateau."""
 
     ended = {
         reason
         for reason in (
-            HEADROOM_CAP_REACHED, HEADROOM_NO_OBJECTIVES,
+            HEADROOM_NO_OBJECTIVES,
             HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED, HEADROOM_REACHABLE,
         )
         for verdict in [_verdict_for_reason(reason)]
@@ -1617,15 +1604,13 @@ def test_ungradable_objectives_do_not_end_a_series():
     }
 
     assert ended == {
-        HEADROOM_CAP_REACHED, HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED,
+        HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED,
     }
 
 
 def _verdict_for_reason(reason: str):
     """The smallest input that makes the headroom axis answer with ``reason``."""
 
-    if reason == HEADROOM_CAP_REACHED:
-        return _headroom(report=_round_three_report(), ordinal=3)
     if reason == HEADROOM_NO_OBJECTIVES:
         return _headroom(report=None)
     if reason == HEADROOM_WITHIN_PLATEAU:
@@ -1639,21 +1624,11 @@ def _verdict_for_reason(reason: str):
     return _headroom(report=_round_three_report())
 
 
-def test_the_cap_outranks_every_other_ending():
-    """A third round is over because it is the third, not because it stalled.
-
-    Order matters for the SENTENCE, not just the status: telling a household
-    "more rounds are unlikely to help" when the truth is "we are only allowed
-    three" would claim the measurement said something it did not.
-    """
-
-    verdict = _headroom(
-        report=_flat_report(),
-        previous=FlatnessObjectives(tilt_db=0.1, ripple_db=0.1),
-        ordinal=3,
-    )
-    assert verdict.status is IterationHeadroom.EXHAUSTED
-    assert verdict.reason == HEADROOM_CAP_REACHED
+@pytest.mark.parametrize("ordinal", [1, 3, 4, 25])
+def test_round_count_does_not_change_the_analysis(ordinal):
+    verdict = _headroom(report=_flat_report(), ordinal=ordinal)
+    assert verdict.reason == HEADROOM_WITHIN_PLATEAU
+    assert verdict.evidence["advisory"] is True
 
 
 def test_a_first_round_cannot_be_called_plateaued():
@@ -1678,7 +1653,7 @@ def test_the_headroom_verdict_shows_the_numbers_it_decided_on():
     )
     evidence = verdict.evidence
     assert evidence["round_ordinal"] == 2
-    assert evidence["round_cap"] == 3
+    assert evidence["advisory"] is True
     assert evidence["plateau_db"] == 0.25
     assert evidence["objectives"] == {"tilt_db": pytest.approx(2.37), "ripple_db": 0.9}
     assert evidence["previous_objectives"] == {"tilt_db": 4.0, "ripple_db": 0.9}
@@ -1717,12 +1692,8 @@ def test_the_plateau_bar_must_be_a_positive_db():
 # --------------------------------------------------------------------------
 
 
-def test_a_passing_round_with_headroom_left_keeps_going():
-    """#2602's headline row: in tolerance, still improving, another round.
-
-    The graph is KEPT — ``KEEP_FOR_ITERATION`` leaves the speaker in exactly
-    the state ``KEEP`` does — and the round says the series is not over.
-    """
+def test_a_passing_round_with_headroom_left_keeps_the_tune_for_iteration():
+    """Measured headroom is disclosed without withdrawing the tune."""
 
     decision = _adopt(
         headroom=Verdict(IterationHeadroom.REACHABLE, HEADROOM_REACHABLE, {}),
@@ -1734,11 +1705,11 @@ def test_a_passing_round_with_headroom_left_keeps_going():
 
 @pytest.mark.parametrize(
     "reason",
-    [HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED, HEADROOM_CAP_REACHED,
+    [HEADROOM_WITHIN_PLATEAU, HEADROOM_PLATEAUED, "round_cap_reached",
      HEADROOM_NO_OBJECTIVES],
 )
-def test_a_passing_round_with_no_headroom_left_ends_the_series(reason):
-    """Row 1 stays row 1, and now names WHICH ending it was."""
+def test_a_passing_round_with_no_headroom_left_keeps_the_tune(reason):
+    """Legacy headroom reasons do not change the retained tune."""
 
     decision = _adopt(
         headroom=Verdict(IterationHeadroom.EXHAUSTED, reason, {}),
@@ -1752,18 +1723,7 @@ def test_a_passing_round_with_no_headroom_left_ends_the_series(reason):
     "headroom_status", list(IterationHeadroom), ids=lambda s: s.value
 )
 def test_headroom_never_moves_a_round_that_did_not_pass(headroom_status):
-    """#2602's split is confined to the one cell that used to be terminal.
-
-    A MISSED round iterates however FLAT the headroom axis says the result is —
-    it has outstanding targets by construction — and a REGRESSED one restores.
-    If flatness leaked into either, "keep going" and "put the old sound back"
-    would start depending on how flat the speaker happens to be.
-
-    The one fact that does cross to the MISSED row is the spent budget, and it
-    crosses as the axis's REASON (#2656) — which is why this walk over the two
-    STATUSES still holds unchanged, and why it carries a reason that is not
-    :data:`HEADROOM_CAP_REACHED`.
-    """
+    """Headroom cannot replace the measured quality outcome."""
 
     headroom = Verdict(headroom_status, "h", {})
 
@@ -1787,39 +1747,8 @@ def test_headroom_never_moves_a_round_that_did_not_pass(headroom_status):
 
 
 # --------------------------------------------------------------------------
-# 6d. the missing cell, bounded by the budget (#2656)
+# 6d. additional rounds after missed targets
 # --------------------------------------------------------------------------
-
-
-def test_a_missed_round_at_the_budget_ends_the_series():
-    """The cell the gate found unpinned: MISSED, with no round left to spend.
-
-    The gate walked 40 consecutive MISSED rounds against this function and
-    every one of them said keep-for-iteration, because only the PASSED cell
-    read the fourth axis at all. The ethos names the budget as a series-ender
-    with no row exception, so this row ends it.
-
-    Three claims, and the third is the reason the row exists at all:
-
-    * the series ENDS — the outcome is not ``keep_for_iteration``, which is
-      what a driver and the done screen's button both read;
-    * the graph STAYS — ``keep`` leaves the speaker exactly where
-      ``keep_for_iteration`` did, on the best measured state known;
-    * it does not fake a PASS — row 1's identifier says *passed* and this
-      round did not, so the ending gets its own row.
-    """
-
-    decision = _adopt(
-        quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
-        headroom=Verdict(
-            IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED, {},
-        ),
-    )
-
-    assert decision.outcome is AdoptionOutcome.KEEP
-    assert decision.row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
-    assert decision.row != ADOPTION_ROW_KEEP
-    assert decision.reason == HEADROOM_CAP_REACHED
 
 
 @pytest.mark.parametrize(
@@ -1830,16 +1759,8 @@ def test_a_missed_round_at_the_budget_ends_the_series():
 @pytest.mark.parametrize(
     "headroom_status", list(IterationHeadroom), ids=lambda s: s.value
 )
-def test_below_the_budget_a_missed_round_still_iterates(headroom_status, reason):
-    """#2537's choice, untouched by #2656 on every ending that is not the cap.
-
-    A MISSED round has outstanding targets by construction, so "we stopped
-    improving" is not a reason to stop trying — and the plateau stops still
-    cannot fire on this row. Walked over BOTH statuses with every non-cap
-    reason the axis mints, so a change that widened the new branch from the
-    budget to the whole ``EXHAUSTED`` status fails here rather than quietly
-    ending a household's series two rounds early.
-    """
+def test_a_missed_round_can_continue_regardless_of_headroom(headroom_status, reason):
+    """A plateau does not prohibit another useful experiment."""
 
     decision = _adopt(
         quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
@@ -1851,65 +1772,20 @@ def test_below_the_budget_a_missed_round_still_iterates(headroom_status, reason)
     assert decision.reason == ADOPTION_UNPROVEN
 
 
-def test_a_series_that_keeps_missing_terminates_at_the_budget():
-    """The gate's 40-round walk, bounded — and through the REAL axis.
-
-    The two tests above hand ``decide_adoption`` a headroom verdict directly,
-    which pins the table and not the composition. This walks the shipped
-    :func:`evaluate_iteration_headroom` for each round of a series that keeps
-    missing, so what is asserted is what a driver chaining rounds actually
-    gets.
-
-    The series is deliberately one that PLATEAUS immediately — every round
-    measures the same objectives, so movement is zero from round 2 on. That is
-    the second half of the claim: a plateau does not end a MISSED series
-    (#2537), and the budget does (#2656), and only walking both together shows
-    the two stops did not get folded into one.
-    """
-
-    cap = 3
+def test_additional_rounds_reuse_the_same_tools_after_a_plateau():
     previous = None
-    outcomes = []
-    for ordinal in range(1, 8):
-        headroom = _headroom(
-            report=_round_three_report(), previous=previous,
-            ordinal=ordinal, cap=cap,
-        )
+    for ordinal in range(1, 9):
+        headroom = _headroom(report=_round_three_report(), previous=previous, ordinal=ordinal)
         decision = _adopt(
             quality=Verdict(QualityStatus.MISSED, ADOPTION_UNPROVEN, {}),
             headroom=headroom,
         )
-        outcomes.append(
-            (decision.outcome, decision.row, decision.reason, headroom.reason)
-        )
+        assert decision.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+        assert decision.row == ADOPTION_ROW_KEEP_FOR_ITERATION
+        assert headroom.evidence["advisory"] is True
+        if previous is not None:
+            assert headroom.reason == HEADROOM_PLATEAUED
         previous = flatness_objectives(_round_three_report())
-
-    ended = [
-        ordinal for ordinal, (outcome, _, _, _) in enumerate(outcomes, start=1)
-        if outcome is not AdoptionOutcome.KEEP_FOR_ITERATION
-    ]
-    assert ended and ended[0] == cap, (
-        f"a MISSED series must end at round {cap}, ended at {ended[:1] or None}"
-    )
-    # The plateau ACTUALLY FIRED, asserted rather than assumed. Without this
-    # the docstring's second half is narrative only: a broken plateau (a
-    # refused floor comparison, a movement that never resolves) leaves every
-    # round REACHABLE, and the test still passes on the budget alone — proving
-    # half of what it claims while reading like it proved both.
-    assert outcomes[1][3] == HEADROOM_PLATEAUED, (
-        f"round 2 must be the plateau round, got {outcomes[1][3]!r}"
-    )
-    # Every round before the cap kept iterating, plateau and all.
-    assert all(
-        row == ADOPTION_ROW_KEEP_FOR_ITERATION
-        for _, row, _, _ in outcomes[: cap - 1]
-    )
-    # And every round from the cap on says the same thing, so a driver that
-    # ignored the first ending is not offered a fresh one afterwards.
-    for outcome, row, reason, _ in outcomes[cap - 1:]:
-        assert outcome is AdoptionOutcome.KEEP
-        assert row == ADOPTION_ROW_KEEP_MISSED_EXHAUSTED
-        assert reason == HEADROOM_CAP_REACHED
 
 
 @pytest.mark.parametrize(
@@ -1945,27 +1821,6 @@ def test_headroom_can_never_keep_a_graph_the_other_axes_took_off(
     failed = _adopt(headroom=headroom, restore_failed=True)
     assert failed.outcome is AdoptionOutcome.RECOVERY_REQUIRED
     assert failed.row == ADOPTION_ROW_RESTORE_FAILED
-
-
-def test_a_round_at_the_cap_stops_even_with_everything_left_to_fix():
-    """The end-to-end "round 3 of 3" row, through the real evaluator.
-
-    Not ``_adopt`` with a hand-made verdict: the point is that a genuine
-    report with 2.37 dB of tilt still on it reaches row 1 when the ordinal
-    says there is no fourth round to spend it on.
-    """
-
-    decision = decide_adoption(
-        trust=Verdict(EvidenceTrust.TRUSTED, TRUST_MEASURED, {}),
-        safety=Verdict(SafetyStatus.SAFE, SAFETY_NO_FINDING, {}),
-        quality=Verdict(QualityStatus.PASSED, ADOPTION_REALIZED_AND_IMPROVED, {}),
-        headroom=_headroom(report=_round_three_report(), ordinal=3),
-        boosted=False,
-        rollback_available=True,
-    )
-    assert decision.outcome is AdoptionOutcome.KEEP
-    assert decision.row == ADOPTION_ROW_KEEP
-    assert decision.reason == HEADROOM_CAP_REACHED
 
 
 # --------------------------------------------------------------------------
@@ -2227,11 +2082,8 @@ def test_every_axis_combination_lands_on_exactly_one_known_row():
         trust, safety, quality, headroom, headroom_reason, boosted, rollback
     ) in itertools.product(
         EvidenceTrust, SafetyStatus, QualityStatus, IterationHeadroom,
-        # #2656 added the REASON dimension, and it is load-bearing rather than
-        # thorough: one row is selected by the headroom axis's reason, so a
-        # walk over statuses alone cannot reach it — and would have reported a
-        # complete table while a row sat unreachable.
-        ("h", HEADROOM_CAP_REACHED),
+        # An older receipt's cap reason must not change today's adoption.
+        ("h", "round_cap_reached"),
         (False, True), (False, True),
     ):
         decision = _adopt(
@@ -2245,10 +2097,7 @@ def test_every_axis_combination_lands_on_exactly_one_known_row():
         assert decision.row in ADOPTION_ROWS
         assert decision.row != ADOPTION_ROW_RESTORE_FAILED
         seen.add(decision.row)
-    # #2602 widened this from four reachable rows to five and #2656 to six: the
-    # walk covers the fourth axis, so rows 6 and 7 are reachable and must be
-    # REACHED — an unreachable row in the table is a row nothing tests.
-    assert seen == ADOPTION_ROWS - {ADOPTION_ROW_RESTORE_FAILED}
+    assert seen == ADOPTION_ROWS - {ADOPTION_ROW_RESTORE_FAILED, ADOPTION_ROW_KEEP_MISSED_EXHAUSTED}
 
 
 def test_a_fourth_quality_member_would_raise_rather_than_fall_through():
@@ -2419,7 +2268,7 @@ def test_the_evaluator_is_pure():
 
 
 def _plateau_case(**floors):
-    """The exact input that fires the plateau stop, plus the two floors.
+    """The input that reports a plateau, plus the two graded floors.
 
     2.37 dB out with 0.03 dB of movement — the shape
     ``test_the_headroom_table``'s ``plateaued`` case pins. Isolating it here
@@ -2454,8 +2303,7 @@ def test_two_rounds_graded_over_different_floors_refuse_the_comparison():
 
 
 def test_the_same_floor_still_plateaus():
-    """The control. Without it the test above would pass on a change that
-    disabled the plateau stop outright."""
+    """Comparable frames retain the measured plateau disclosure."""
     verdict = _plateau_case(floor_hz=143.0, previous_floor_hz=143.0)
 
     assert verdict.status is IterationHeadroom.EXHAUSTED
@@ -2477,13 +2325,7 @@ def test_the_same_floor_still_plateaus():
     ids=["neither", "this_only", "previous_only", "json_noise"],
 )
 def test_only_positive_evidence_of_a_moved_floor_refuses(case, floors):
-    """The fail direction, which is the whole design of the check.
-
-    An unknown floor is not evidence that the frame moved. Refusing on it
-    would disable the plateau stop the ruling names — on every round until
-    every path threads a floor, and forever on a tier that banks none. So the
-    refusal needs two KNOWN floors that actually disagree, and nothing else.
-    """
+    """Unknown floors are not positive evidence that the frame changed."""
     verdict = _plateau_case(**floors)
 
     assert verdict.status is IterationHeadroom.EXHAUSTED, case

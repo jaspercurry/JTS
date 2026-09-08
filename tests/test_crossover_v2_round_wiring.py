@@ -86,7 +86,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.verification import (
     ADOPTION_MEASURED_REGRESSION,
     ADOPTION_REALIZED_AND_IMPROVED,
-    HEADROOM_CAP_REACHED,
     HEADROOM_NO_OBJECTIVES,
     HEADROOM_REACHABLE,
     ADOPTION_UNPROVEN,
@@ -278,29 +277,7 @@ def _bare_conductor() -> Any:
 
 
 def test_a_measurably_improved_round_keeps_the_graph_and_the_verdict(monkeypatch):
-    """The one keep row, reached by measuring rather than by asserting a table.
-
-    A household whose correction worked must land on the ordinary verified
-    screen — the round adds an answer, it does not add a refusal. This is the
-    control every restore pin below needs: without it, a wiring bug that
-    refused EVERY round would satisfy those tests and fail nobody.
-
-    **#2537 update (corrected in commit c1ea01838).** The quality axis's
-    STATUS is keyed on ``(realization, benefit)`` only — #2291's own table,
-    unchanged in what it reads. Spec rides as disclosure (a next-round
-    target) and never decides keep-vs-keep_for_iteration; an earlier cut of
-    #2537 folded spec into the decision and was corrected back out (the
-    permutation invariant — "spec is any in every row" — is load-bearing and
-    is what this Express-tier fixture would otherwise have tripped, since it
-    walks no post-apply cloud and so never has a spec report at all).
-
-    **Bites update.** The graph is still kept and the household still lands on
-    the ordinary verified screen — that is what this control pins. What moved
-    is which KEEP row: an Express round grades no objectives, and under the
-    ethos ("only the round budget, the plateau, and the safety class end a
-    series") missing evidence may no longer end one, so the round keeps AND
-    offers another bite instead of keeping terminally.
-    """
+    """Measured improvement keeps the graph and reaches the verified screen."""
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     # 1.5x the deviation before, 1.0x after: measurably flatter, by more than
@@ -1208,20 +1185,7 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
 
 
 def test_a_failing_receipt_store_costs_the_round_nothing(monkeypatch, caplog):
-    """Forensics must never outrank the thing it is forensics about.
-
-    The verdict is what protects the household's speaker; the receipt is what
-    lets someone reconstruct why afterwards. A full disk, a tamper-check
-    mismatch, or a bundle that closed under us must not reverse a verdict,
-    refuse a capture, or crash the capture path — it is a WARN and a journal
-    line.
-
-    **#2609 splits what the loss actually costs.** The ARTIFACT is lost and
-    says so (both fingerprints empty). The series' MEMORY is not: the ordinal
-    and objectives are read off the round's own evaluation, so a durably broken
-    evidence store can no longer pin every round at 1 and quietly disable both
-    the cap and the plateau stop.
-    """
+    """A failed receipt write preserves the verdict and ordinal, with empty hashes."""
     _seed_round_state()
     conductor, attempts = _restoring_stage_2(monkeypatch)
     _install_entry_baseline(conductor, scale=1.5)
@@ -2256,13 +2220,7 @@ def test_the_series_position_reader(case, raw, ordinal, previous):
 
 
 def test_a_poisoned_objective_reads_as_absent_not_as_a_number():
-    """A NaN would sail through every comparison in the headroom axis.
-
-    ``NaN < plateau`` is ``False`` and ``NaN <= plateau`` is ``False``, so a
-    corrupt write would make a series look permanently un-plateaued AND
-    permanently un-flat — iterating to the cap every time on evidence that is
-    not evidence.
-    """
+    """Non-finite objectives cannot count as measured progress."""
 
     position = coordinator.series_position_from_state({"round_receipt": {
         "round_ordinal": 1,
@@ -2557,22 +2515,13 @@ def test_a_round_with_no_publishing_seam_still_remembers_where_it_sat():
     ).ordinal == 2
 
 
-def test_the_cap_still_bites_when_every_receipt_write_fails():
-    """#2609's actual acceptance: three rounds, a broken store, and a stop.
-
-    The gate drove twelve rounds proving the old shape — a persistently
-    failing receipt write pinned the ordinal at 1, which disabled the cap AND
-    the plateau stop, and the series then ended only when the measurement
-    itself said "flat enough". Walked here as a real series: each round's
-    identity feeds the next round's reader, exactly as the host carries it.
-    """
+def test_receipt_write_failure_preserves_continuity_across_more_rounds():
+    """A missing artifact stays visible without resetting or ending iteration."""
     def _explode(_receipt):
         raise OSError("no space left on device")
 
-    ordinals = []
-    reasons = []
     state = {}
-    for _ in range(3):
+    for ordinal in range(1, 9):
         position = coordinator.series_position_from_state(state)
         decision = _direct_round(
             publish=_explode,
@@ -2580,15 +2529,15 @@ def test_the_cap_still_bites_when_every_receipt_write_fails():
             previous_objectives=position.previous_objectives,
             previous_trusted_floor_hz=position.previous_trusted_floor_hz,
         )
-        ordinals.append(position.ordinal)
-        reasons.append(decision.evaluation.headroom.reason)
+        assert position.ordinal == ordinal
+        assert decision.evaluation.adoption.outcome is AdoptionOutcome.KEEP_FOR_ITERATION
+        assert decision.evaluation.headroom.evidence["advisory"] is True
+        assert decision.receipt_identity is not None
+        assert decision.receipt_identity["artifact_fingerprint"] == ""
+        assert decision.receipt_identity["receipt_fingerprint"] == ""
         state = {"round_receipt": decision.receipt_identity}
 
-    assert ordinals == [1, 2, 3], "the series must count past a broken store"
-    assert reasons[-1] == HEADROOM_CAP_REACHED
-    assert (
-        coordinator.series_position_from_state(state).ordinal == 4
-    ), "and the cap keeps biting after it"
+    assert coordinator.series_position_from_state(state).ordinal == 9
 
 
 def test_the_receipt_banks_the_probes_band_resolved_realization_verbatim():
