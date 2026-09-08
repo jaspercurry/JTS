@@ -120,6 +120,7 @@ from ._common import (
     safe_back_href,
     send_html_response,
     send_json_response,
+    strip_query,
 )
 
 # Page-specific stylesheet served static from /assets/. Shared primitives
@@ -934,7 +935,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
+            logger.info(
+                "%s - %s", self.address_string(), strip_query(fmt % args)
+            )
 
         def _redirect(self, location: str) -> None:
             redirect_with_legacy_msg(self, location)

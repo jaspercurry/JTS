@@ -96,6 +96,7 @@ logger = logging.getLogger(__name__)
 _LOCAL_WEB_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 _IPV4_HOST_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 _API_KEY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-.~]+$")
+_QUERY_RUN_RE = re.compile(r"\?\S*")
 
 # ---------------------------------------------------------------------------
 # Cookie + header constants.
@@ -1415,6 +1416,16 @@ def redirect_with_legacy_msg(
             send_see_other(handler, clean_location, flash=flash)
             return
     send_see_other(handler, location)
+
+
+def strip_query(message: str) -> str:
+    """Drop every `?query` run from text bound for the journal.
+
+    An OAuth authorization `code` is a single-use credential and arrives
+    as a query parameter, so a stdlib request line carries it verbatim.
+    No log consumer needs a query string (AGENTS.md non-negotiable 3).
+    """
+    return _QUERY_RUN_RE.sub("", message)
 
 
 def mask_secret(value: str) -> str:

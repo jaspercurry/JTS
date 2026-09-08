@@ -16,6 +16,7 @@ import functools
 import http
 import inspect
 import json
+import logging
 import re
 import textwrap
 import urllib.parse
@@ -1229,3 +1230,27 @@ def test_nav_row_labels_match_their_pages_or_the_shrink_only_allowlist():
         "(docs/web-ia.md §2, docs/UX-AUDIT-2026-09-03.md §5.1) — drop an "
         f"allowlist entry as its page is fixed: {mismatched}"
     )
+
+
+def test_oauth_callback_request_line_logs_path_without_its_query(caplog):
+    """The single-use OAuth `code` reaches these two wizards as a query
+    parameter, so the stdlib request line carries it verbatim."""
+    for module, path in (
+        (google_setup, "/callback"),
+        (spotify_setup, "/oauth-callback"),
+    ):
+        handler_cls = module._make_handler({})
+        handler = handler_cls.__new__(handler_cls)
+        handler.address_string = lambda: "127.0.0.1"
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            handler.log_message(
+                '"%s" %s %s',
+                f"GET {path}?code=SECRET123&state=NONCE456 HTTP/1.1",
+                "303",
+                "-",
+            )
+        emitted = "\n".join(record.getMessage() for record in caplog.records)
+        assert "SECRET123" not in emitted, module.__name__
+        assert "NONCE456" not in emitted, module.__name__
+        assert path in emitted, module.__name__
