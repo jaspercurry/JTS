@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 
 from jasper.net import avahi_service
 from jasper.net.avahi_service import RenderResult
@@ -60,16 +59,7 @@ def render_and_install(
     caller should log + fall back to running without advertising —
     still browses + arbitrates, just won't be visible to others).
 
-    The render/guard/atomic-write body is delegated to the shared
-    ``jasper.net.avahi_service.render_service``, which now OWNS the reload: we
-    pass ``reload=reload_avahi`` and it reloads avahi-daemon only when it
-    actually wrote the file (``RenderResult.WROTE``). The peer metadata
-    values (UUID peer_id, constrained room, ``0``|``1`` primary) are
-    mDNS-safe, so ``escape=True`` is byte-identical to no escaping. Because
-    ``render_service`` reports WROTE vs UNCHANGED vs FAILED directly, we no
-    longer read the rendered file before/after to detect a write — a
-    byte-stable re-render returns ``UNCHANGED`` and skips both the write
-    and the reload.
+    Unchanged content skips both the write and the reload.
     """
     substitutions = {
         "__PEER_ID__": peer_id,
@@ -119,19 +109,4 @@ def uninstall(
         logger.warning("peering: could not remove %s: %s", rendered_path, e)
         return
     if reload_avahi:
-        _reload_avahi()
-
-
-def _reload_avahi() -> None:
-    """Best-effort SIGHUP to avahi-daemon. inotify usually catches
-    changes on its own but reload is deterministic and fast (<100 ms).
-    Same pattern used by deploy/install.sh's install_avahi_jasper_control.
-    """
-    try:
-        subprocess.run(
-            ["systemctl", "reload", "avahi-daemon"],
-            check=False, timeout=4,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        logger.debug("peering: avahi-daemon reload failed: %s", e)
+        avahi_service.reload_avahi()
