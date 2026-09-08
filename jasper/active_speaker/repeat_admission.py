@@ -2,15 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Durable, fail-closed admission controller for crossover repeat playback.
-
-The measurement ledger owns accepted acoustic evidence and commissioning
-bundles are optional forensics. Neither can safely arbitrate whether another
-audible attempt may start. This small state machine reserves one of four
-attempts atomically *before* ambient capture/audio, binds completion to an
-unguessable token, and leaves uncertain writes blocking rather than reopening
-the audio gate.
-"""
+"""Read legacy crossover repeat records and close unfinished work at startup."""
 
 from __future__ import annotations
 
@@ -30,33 +22,9 @@ from jasper.log_event import log_event
 
 STATE_KIND = "jts_active_speaker_repeat_admission"
 SCHEMA_VERSION = 1
-# The audible MEASUREMENT budget: how many attempts that PROVABLY played a
-# tone a set may spend. It is DERIVED from the durable results (see
-# ``measurement_attempts``), never from the raw reservation counter — an
-# attempt that never emitted audio (a transport/infra failure) is refunded
-# from it, so infra flakiness cannot exhaust the room-variance tolerance.
+# Audible attempts and total reservations in stored repeat records.
 MAX_ATTEMPTS = 4
-# Infra circuit-breaker: total reservations a set may consume regardless of
-# audio. Transport failures are refunded from ``MAX_ATTEMPTS`` above, so a box
-# whose transport keeps failing could otherwise reserve forever; this caps the
-# loop and gives a terminal distinct from acoustic insufficiency
-# (``INFRA_RETRY_EXHAUSTED``) so the envelope can say "the speaker couldn't
-# complete a pass" rather than blaming the room. With MAX_ATTEMPTS=4 audible
-# attempts this tolerates up to four refunded infra retries.
-#
-# The load-bearing relationship with the relay is an INEQUALITY, not equality:
-# the durable reservation attempt also indexes the commissioning bundle's
-# repeat captures, so it must never exceed the relay's per-plan attempt ceiling
-# (``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS``). The two were both 8 until
-# that ceiling was raised to 32 for the multi-position capture choreography;
-# they were equal by coincidence of value, never by shared meaning. This number
-# is a per-driver infra circuit-breaker sized against MAX_ATTEMPTS above, so it
-# does NOT follow the relay ceiling upward — raising it would loosen a
-# fail-fast bound for a reason that has nothing to do with plan length. The
-# ``<=`` direction is pinned by
-# tests/test_active_speaker_repeat_reservation_sinks.py.
 MAX_RESERVATIONS = 8
-INFRA_RETRY_EXHAUSTED = "infra_retry_exhausted"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_repeat_admission.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_REPEAT_ADMISSION_STATE"
 # Bounded backpressure for the write paths that keep the lock (ADR-0196).
@@ -226,34 +194,6 @@ def _locked(path: Path):
             yield
 
 
-def invalidate(*, path: str | Path | None = None) -> None:
-    global _CLAIM_ERROR
-    target = state_path(path)
-    with _locked(target):
-        _write(target, _base())
-    _CLAIM_ERROR = None
-
-
-def activate(
-    comparison_set: Mapping[str, Any], *, path: str | Path | None = None
-) -> dict[str, Any]:
-    global _CLAIM_ERROR
-    comparison = {
-        "comparison_set_id": str(comparison_set.get("comparison_set_id") or ""),
-        "fingerprint": str(comparison_set.get("fingerprint") or ""),
-    }
-    if not all(comparison.values()):
-        raise ValueError("repeat admission requires a complete comparison binding")
-    target = state_path(path)
-    with _locked(target):
-        state = _base()
-        state["comparison"] = comparison
-        state["updated_at"] = _now()
-        _write(target, state)
-        _CLAIM_ERROR = None
-        return state
-
-
 def claim_owner(*, path: str | Path | None = None) -> dict[str, Any]:
     """At service start, close active work left by the previous process.
 
@@ -315,211 +255,6 @@ def _assert_comparison(state: Mapping[str, Any], expected: Mapping[str, Any]) ->
         for key in ("comparison_set_id", "fingerprint")
     ):
         raise ValueError("the crossover repeat comparison context changed")
-
-
-def reserve(
-    comparison_set: Mapping[str, Any],
-    *,
-    target_id: str,
-    target_fingerprint: str,
-    path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Reserve one attempt before playback; reject any ambiguous state."""
-
-    if not str(target_id or "") or not str(target_fingerprint or ""):
-        raise ValueError("repeat admission requires a complete target binding")
-    target = state_path(path)
-    with _locked(target):
-        state = _load(target)
-        _assert_comparison(state, comparison_set)
-        targets = dict(state["targets"])
-        entry = dict(targets.get(target_id) or {})
-        if entry and entry.get("target_fingerprint") != target_fingerprint:
-            raise ValueError("the crossover repeat target changed")
-        if (
-            entry.get("owner_id") not in (None, OWNER_ID)
-            and entry.get("status") == "active"
-        ):
-            raise ValueError("the crossover repeat set belongs to another service process")
-        if entry.get("status") in {"ready", "completed", "refused", "aborted"}:
-            raise ValueError(f"the crossover repeat set is {entry.get('status')}")
-        if entry.get("inflight"):
-            raise ValueError("a crossover repeat attempt is already in progress")
-        attempts = int(entry.get("attempts") or 0)
-        # Two independent gates. The audible budget is DERIVED from the durable
-        # results, so a refunded transport failure never advances it; the raw
-        # reservation cap is the infra circuit-breaker that stops an
-        # always-failing box from reserving forever, with a distinct terminal
-        # reason so the envelope blames the speaker, not the room.
-        if measurement_attempts(entry.get("results")) >= MAX_ATTEMPTS:
-            raise ValueError("the crossover repeat set already used four attempts")
-        if attempts >= MAX_RESERVATIONS:
-            raise ValueError(
-                "the crossover repeat set could not complete a measurement pass "
-                f"({INFRA_RETRY_EXHAUSTED})"
-            )
-        token = uuid.uuid4().hex
-        entry.update({
-            "target_id": target_id,
-            "target_fingerprint": target_fingerprint,
-            "owner_id": OWNER_ID,
-            "attempts": attempts + 1,
-            "status": "active",
-            "inflight": token,
-            "updated_at": _now(),
-        })
-        targets[target_id] = entry
-        state.update({"targets": targets, "updated_at": entry["updated_at"]})
-        _write(target, state)
-        return {**entry, "token": token, "attempt": attempts + 1}
-
-
-def finish(
-    comparison_set: Mapping[str, Any],
-    *,
-    target_id: str,
-    target_fingerprint: str,
-    token: str,
-    result: Mapping[str, Any],
-    status: str,
-    path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Finish the exact inflight token as active, ready, or refused."""
-
-    if status not in {"active", "ready", "refused"}:
-        raise ValueError(f"unsupported repeat admission finish status: {status}")
-    target = state_path(path)
-    with _locked(target):
-        state = _load(target)
-        _assert_comparison(state, comparison_set)
-        targets = dict(state["targets"])
-        entry = dict(targets.get(target_id) or {})
-        if (
-            entry.get("target_fingerprint") != target_fingerprint
-            or entry.get("owner_id") != OWNER_ID
-            or entry.get("inflight") != token
-        ):
-            raise ValueError("repeat result has no matching inflight admission token")
-        results = list(entry.get("results") or [])
-        stored = {**dict(result), "attempt": entry["attempts"]}
-        # Persist the audible-budget discriminator only when playback proved
-        # its state: True (a tone played) or False (a transport/infra failure
-        # that never played). Anything else stays UNSET and fails closed —
-        # measurement_attempts() then counts it as budget-consuming (acoustic
-        # semantics). Storing a strict bool (never a None sentinel) keeps
-        # legacy results byte-identical.
-        emitted = stored.get("audio_emitted")
-        if emitted is True or emitted is False:
-            stored["audio_emitted"] = emitted
-        else:
-            stored.pop("audio_emitted", None)
-        results.append(stored)
-        entry.update({
-            "inflight": None,
-            "results": results[-MAX_RESERVATIONS:],
-            "status": status,
-            "updated_at": _now(),
-        })
-        targets[target_id] = entry
-        state.update({"targets": targets, "updated_at": entry["updated_at"]})
-        _write(target, state)
-        log_event(
-            logger,
-            "correction.crossover_repeat_attempt",
-            comparison_set_id=str(comparison_set.get("comparison_set_id") or ""),
-            target=target_id,
-            attempt=entry["attempts"],
-            accepted=result.get("accepted"),
-            reject_reason=result.get("reject_reason"),
-            snr_db=result.get("estimated_snr_db"),
-            clipping=result.get("clipping"),
-            failure_type=result.get("failure_type"),
-            phase=result.get("phase") or "acoustic",
-            audio_emitted=stored.get("audio_emitted"),
-            measurement_attempts=measurement_attempts(entry["results"]),
-        )
-        return entry
-
-
-def complete(
-    comparison_set: Mapping[str, Any],
-    *,
-    target_id: str,
-    target_fingerprint: str,
-    path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Move ready -> completed only after final measurement persistence."""
-
-    target = state_path(path)
-    with _locked(target):
-        state = _load(target)
-        _assert_comparison(state, comparison_set)
-        targets = dict(state["targets"])
-        entry = dict(targets.get(target_id) or {})
-        if (
-            entry.get("target_fingerprint") != target_fingerprint
-            or entry.get("owner_id") != OWNER_ID
-            or entry.get("status") != "ready"
-            or entry.get("inflight") is not None
-        ):
-            raise ValueError("repeat set is not ready for completion")
-        entry.update({"status": "completed", "updated_at": _now()})
-        targets[target_id] = entry
-        state.update({"targets": targets, "updated_at": entry["updated_at"]})
-        _write(target, state)
-        return entry
-
-
-def abort_ready(
-    comparison_set: Mapping[str, Any],
-    *,
-    target_id: str,
-    target_fingerprint: str,
-    reason: str,
-    path: str | Path | None = None,
-) -> dict[str, Any]:
-    """Move ``ready`` to terminal ``aborted`` after finalization fails.
-
-    ``ready`` has already consumed the audible attempt and deliberately blocks
-    another reservation. If measurement persistence or the later completion
-    ledger write raises, the caller uses this transition before propagating the
-    original exception: attempts remain preserved, no fifth sweep can play,
-    and a new comparison/level run is the only supported recovery.
-    """
-
-    reason_id = str(reason or "").strip()
-    if not reason_id or len(reason_id) > 120:
-        raise ValueError("repeat finalization abort requires a bounded reason")
-    target = state_path(path)
-    with _locked(target):
-        state = _load(target)
-        _assert_comparison(state, comparison_set)
-        targets = dict(state["targets"])
-        entry = dict(targets.get(target_id) or {})
-        if (
-            entry.get("target_fingerprint") != target_fingerprint
-            or entry.get("owner_id") != OWNER_ID
-            or entry.get("status") != "ready"
-            or entry.get("inflight") is not None
-        ):
-            raise ValueError("repeat set is not ready for finalization abort")
-        entry.update({
-            "status": "aborted",
-            "reason": reason_id,
-            "updated_at": _now(),
-        })
-        targets[target_id] = entry
-        state.update({"targets": targets, "updated_at": entry["updated_at"]})
-        _write(target, state)
-        log_event(
-            logger,
-            "correction.crossover_repeat_aborted",
-            comparison_set_id=str(comparison_set.get("comparison_set_id") or ""),
-            target=target_id,
-            attempts=entry.get("attempts"),
-            reason=reason_id,
-        )
-        return entry
 
 
 def snapshot(

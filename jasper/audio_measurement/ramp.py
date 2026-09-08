@@ -571,9 +571,6 @@ class RampData:
     max_observed_peak_dbfs: float | None = None
     max_signal_over_noise_db: float | None = None
     error: str | None = None
-    # Extra homeowner-facing specifics beyond the stable `error` code. None when
-    # a terminal has nothing to add; see
-    # jasper.correction.level_match.describe_ramp_refusal.
     error_detail: str | None = None
     # Idempotency guard for terminal-state listening-level restore.
     restored: bool = False
