@@ -6,7 +6,7 @@
 
 Capture validity, realization, benefit and spec are graded independently — spec
 is an outcome, never a proxy for benefit — and compose into four adoption axes
-from which :func:`decide_adoption` selects one of seven rows.
+from which :func:`decide_adoption` selects an adoption outcome.
 
 This module invents no DSP and owns no threshold: every number it reports is
 lifted from a shipped primitive, and every threshold is a required parameter
@@ -48,7 +48,6 @@ from .contracts import (
     ADOPTION_ROW_KEEP,
     ADOPTION_ROW_KEEP_FOR_ITERATION,
     ADOPTION_ROW_KEEP_ITERATING,
-    ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
     ADOPTION_ROW_RESTORE_FAILED,
     ADOPTION_ROW_RESTORE_REGRESSION,
     ADOPTION_ROW_RESTORE_UNSAFE,
@@ -110,7 +109,6 @@ __all__ = [
     "CLAIM_NO_PER_BRANCH_CAPTURE",
     "CLIPPED_RUN_CHECK",
     "ECHO_BAND_HF_REGIME_FLOOR_HZ",
-    "HEADROOM_CAP_REACHED",
     "HEADROOM_NO_OBJECTIVES",
     "HEADROOM_PLATEAUED",
     "HEADROOM_REACHABLE",
@@ -1125,7 +1123,6 @@ def _failing_spec_bands(report: FlatSpecReport | None) -> list[dict[str, Any]]:
 # 7b. headroom — is a flatter result still reachable?
 # --------------------------------------------------------------------------
 
-HEADROOM_CAP_REACHED = "round_cap_reached"
 HEADROOM_NO_OBJECTIVES = "objectives_unevaluable"
 HEADROOM_WITHIN_PLATEAU = "objectives_within_plateau"
 HEADROOM_PLATEAUED = "improvement_plateaued"
@@ -1213,10 +1210,9 @@ def _floors_comparable(
     """May two rounds' objectives be differenced?
 
     ``True`` unless there is POSITIVE evidence of a floor change: an unknown or
-    non-finite floor is not evidence that the frame moved, and refusing on it
-    would disable the plateau stop until every path threads a floor. Two KNOWN
-    floors disagreeing by more than :data:`FLOOR_COMPARABILITY_RTOL` is the one
-    case that refuses.
+    non-finite floor is not evidence that the frame moved. Two known floors
+    differing beyond :data:`FLOOR_COMPARABILITY_RTOL` prevent a movement comparison;
+    they do not prohibit another round.
     """
 
     if this_floor_hz is None or previous_floor_hz is None:
@@ -1236,48 +1232,16 @@ def evaluate_iteration_headroom(
     objectives: FlatnessObjectives,
     previous: FlatnessObjectives | None,
     round_ordinal: int,
-    round_cap: int,
     plateau_db: float,
     trusted_floor_hz: float | None = None,
     previous_trusted_floor_hz: float | None = None,
 ) -> Verdict[IterationHeadroom]:
-    """Should the series run another round?
+    """Describe measured movement; the caller decides whether to measure again.
 
-    Quality grades what this round DID; this grades what a next one could still
-    get. Three ways a series is over, checked most-binding first so the reason
-    names the fact that actually ended it:
-
-    1. The round cap. At ``round_ordinal >= round_cap`` there is no next round
-       to have headroom for; naming a plateau here would imply more rounds
-       would not have helped, which the measurement did not say.
-    2. Already flat enough — both objectives inside ``plateau_db``.
-    3. Plateaued: the objectives moved less than ``plateau_db`` since the
-       previous round. Measured on the OBJECTIVES rather than the pooled
-       residual, because a round only reaches
-       :attr:`~.contracts.QualityStatus.PASSED` by improving past
-       :data:`~.round_evidence.MEASURED_BENEFIT_MARGIN_DB`, a wider bar.
-
-    Ungradable objectives are NOT a fourth stop: they resolve to
-    :attr:`~.contracts.IterationHeadroom.REACHABLE` under
-    :data:`HEADROOM_NO_OBJECTIVES`. ``previous is None`` is the first round,
-    where the plateau stop cannot fire and the answer rests on distance alone —
-    which is why the cap is checked independently rather than inferred from
-    absent history.
-
-    Args:
-      objectives: this round's :func:`flatness_objectives`.
-      previous: the previous round's, off the durable receipt, or ``None``.
-      round_ordinal: 1-based position of this round in the series.
-      round_cap / plateau_db: the series policy, passed rather than imported.
-        ``plateau_db`` must be positive; both are defined in
-        :mod:`.round_evidence` beside the benefit margin.
-      trusted_floor_hz: the floor ``objectives`` were graded against, and
-        ``previous_trusted_floor_hz`` the previous round's. Banked in the
-        evidence whether or not they decide anything here, because the NEXT
-        round reads them back. See :func:`_floors_comparable`.
+    The plateau is an analysis threshold, not a campaign limit. A changed
+    trusted floor prevents a movement claim across different frequency spans.
     """
 
-    cap = int(round_cap)
     ordinal = int(round_ordinal)
     plateau = _positive_db(plateau_db, field_name="plateau_db")
     worst = objectives.worst_db
@@ -1291,7 +1255,7 @@ def evaluate_iteration_headroom(
     )
     evidence: dict[str, Any] = {
         "round_ordinal": ordinal,
-        "round_cap": cap,
+        "advisory": True,
         "plateau_db": plateau,
         "objectives": objectives.to_dict(),
         "previous_objectives": None if previous is None else previous.to_dict(),
@@ -1307,8 +1271,6 @@ def evaluate_iteration_headroom(
         "movement_comparable": movement_comparable,
     }
 
-    if ordinal >= cap:
-        return Verdict(IterationHeadroom.EXHAUSTED, HEADROOM_CAP_REACHED, evidence)
     if worst is None:
         # REACHABLE, not EXHAUSTED: missing evidence is not a plateau, and the
         # reason still names which ending this was.
@@ -1365,14 +1327,7 @@ _QUALITY_ROWS: Mapping[QualityStatus, tuple[AdoptionOutcome, str]] = {
     ),
 }
 
-#: Where the table's one PASSED cell splits, by the fourth axis: whether that
-#: keep is TERMINAL.
-#:
-#: Only the passing cell consults the headroom STATUS: a MISSED round keeps
-#: iterating however flat the axis says the result is, and a REGRESSED one
-#: restores before this table is reached. The one fact that crosses to the
-#: missing cell is the spent BUDGET, as the axis's reason rather than its
-#: status — see :func:`decide_adoption`.
+#: Quality disclosure for the passing cell; both outcomes retain the tune.
 _PASSED_ROWS: Mapping[IterationHeadroom, tuple[AdoptionOutcome, str]] = {
     IterationHeadroom.EXHAUSTED: (AdoptionOutcome.KEEP, ADOPTION_ROW_KEEP),
     IterationHeadroom.REACHABLE: (
@@ -1391,60 +1346,10 @@ def decide_adoption(
     rollback_available: bool,
     restore_failed: bool = False,
 ) -> AdoptionDecision:
-    """Keep, keep-and-iterate, restore, or escalate — the adoption table.
+    """Keep an acceptable tune; restore a measured regression or invalid apply.
 
-    Headroom can NEVER keep a graph the other axes said to take off: it is read
-    only on the branch trust, safety and quality all passed, where it splits
-    the passing cell (:data:`_PASSED_ROWS`). One further fact crosses to the
-    MISSED cell — the spent round budget — keyed on the axis's REASON, not its
-    status, so the plateau stops do not cross and a MISSED round still iterates
-    below the cap. :data:`HEADROOM_CAP_REACHED` is minted in exactly one place.
-
-    The seven rows, by their :data:`~.contracts.ADOPTION_ROWS` identifiers:
-
-    ========================================== ============================
-    row                                        outcome
-    ========================================== ============================
-    ``row1_trusted_safe_passed``               ``KEEP``
-    ``row2_trusted_safe_missed``               ``KEEP_FOR_ITERATION``
-    ``row3_unsafe``                            ``RESTORE``
-    ``row4_untrusted_evidence``                ``RESTORE``
-    ``row5_trusted_safe_regressed``            ``RESTORE``
-    ``row6_trusted_safe_passed_reachable``     ``KEEP_FOR_ITERATION``
-    ``row7_trusted_safe_missed_exhausted``     ``KEEP``
-    ========================================== ============================
-
-    Args:
-      trust / safety / quality / headroom: the four axis verdicts. VERDICTS,
-        not bare statuses: the reason a row fires under IS the deciding axis's
-        own reason. This function decides nothing an evaluator did not; it
-        selects which axis speaks, and on both passing rows that axis is
-        headroom. A verdict of the wrong type raises
-        :class:`~.contracts.CrossoverV2ContractError`.
-      boosted: does the applied intervention contain a boost? Computed by the
-        host with ``camilla_yaml.linearization_has_boost``. Read ONLY on the
-        untrusted row — see :data:`ADOPTION_UNPROVEN_BOOST`.
-      rollback_available: can the host actually restore the entry graph? A host
-        that binds no rollback must get a different answer, not a restore
-        instruction nothing can carry out.
-      restore_failed: a restore was attempted and did not complete.
-
-    Ordering, stated because this decides whether a graph stays on a speaker:
-
-    * A failed restore outranks everything, checked first: the speaker is then
-      in neither the entry graph nor the intended one.
-    * Safety is checked BEFORE trust. Both rows restore, so the order only
-      decides which name the receipt carries, and naming the hazard beats
-      naming the absence when both are true (a clipped capture is both).
-    * A measured regression still restores — going back is going back to a
-      measured tune — and an unmeasured applied state never stays either.
-    * A spec band out of tolerance is not a restore trigger; see
-      :func:`evaluate_round_quality`.
-    * A restore we cannot perform is not a restore: with no rollback anchor the
-      answer is ``recovery_required``, never a ``restore`` the host cannot
-      execute and never a ``keep``.
-    * The fourth axis chooses the sentence, never the graph: ``KEEP`` and
-      ``KEEP_FOR_ITERATION`` leave the speaker in the same state.
+    The headroom verdict changes advice only. Neither kept outcome starts or
+    prevents another round. A failed restore takes precedence over all grades.
     """
 
     for name, value, kind in (
@@ -1487,16 +1392,6 @@ def decide_adoption(
         # definition and this branch cannot drift from it.
         outcome, row = _PASSED_ROWS[headroom.status]
         return AdoptionDecision(outcome=outcome, reason=headroom.reason, row=row)
-    if headroom.reason == HEADROOM_CAP_REACHED:
-        # The budget ends a MISSED series too. Reached only from the iterating
-        # cell; the passing one returned above through
-        # ``_PASSED_ROWS[EXHAUSTED]``, which is the same ending by the same
-        # reason.
-        return AdoptionDecision(
-            outcome=AdoptionOutcome.KEEP,
-            reason=headroom.reason,
-            row=ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
-        )
     return AdoptionDecision(outcome=outcome, reason=quality.reason, row=row)
 
 

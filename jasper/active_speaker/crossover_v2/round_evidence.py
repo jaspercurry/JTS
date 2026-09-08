@@ -57,7 +57,6 @@ __all__ = [
     "ENTRY_BASELINE_KIND",
     "ITERATION_PLATEAU_DB",
     "MEASURED_BENEFIT_MARGIN_DB",
-    "ROUND_SERIES_CAP",
     "EntryBaseline",
     "MeasuredResponse",
     "RoundEvaluation",
@@ -87,22 +86,10 @@ __all__ = [
 #: :func:`~jasper.active_speaker.repeat_floor.stopping_thresholds` instead.
 MEASURED_BENEFIT_MARGIN_DB = 0.5
 
-#: dB/round. How much the flattening series must still be moving to be worth a
-#: round — the owner's #2602 ruling figure, with no arithmetic applied. Read
-#: TWICE by :func:`~.verification.evaluate_iteration_headroom`: the same
-#: judgement at two distances. Half :data:`MEASURED_BENEFIT_MARGIN_DB`, and that
-#: is load-bearing — a plateau bar at or above the margin could never fire on
-#: the passing row it exists for. THE FALLBACK, as above: a banked repeat floor
-#: supplies the measured plateau through the same ``stopping_thresholds``.
+#: dB. Advisory threshold for objective size and inter-round movement.
+#: A banked repeat floor supplies the measured value through stopping_thresholds.
 ITERATION_PLATEAU_DB = 0.25
 
-#: How many measurement+correction rounds one series may run — the owner's
-#: #2602 ruling ("up to three"). A hard budget, and the FIRST stop
-#: :func:`~.verification.evaluate_iteration_headroom` checks. Deliberately NOT
-#: :attr:`~jasper.active_speaker.attempts_loop.AttemptBudget.target_attempts`,
-#: also 3: that counts fitting ATTEMPTS inside one correction, this counts
-#: measure-and-correct ROUNDS across a series.
-ROUND_SERIES_CAP = 3
 
 #: Resolution of BOTH sides of the benefit comparison — the same 512 the host
 #: applies to ``verify_priors.predicted_sum``, since the entry baseline crosses
@@ -471,7 +458,6 @@ def evaluate_round(
     trusted_floor_hz: float | None = None,
     previous_trusted_floor_hz: float | None = None,
     round_ordinal: int = 1,
-    round_cap: int = ROUND_SERIES_CAP,
     plateau_db: float = ITERATION_PLATEAU_DB,
     graded_spec: "GradedSpec | None" = None,
     applied_blend_correction: Sequence[Mapping[str, Any]] | None = None,
@@ -497,14 +483,13 @@ def evaluate_round(
     passed rather than imported so this module holds no threshold another owns.
     An absent ``delta_probe`` (#2537) reports no finding rather than an unsafe
     one, and still cannot let a round call itself PASSED. ``margin_db``,
-    ``round_cap`` and ``plateau_db`` default from this module's own constants,
+    ``plateau_db`` defaults from this module's analysis threshold,
     and no call site passes them. ``previous_objectives`` ``None`` is the first
-    round, read by the headroom axis as "the plateau stop cannot fire";
+    round, so no inter-round movement can be reported;
     ``trusted_floor_hz`` / ``previous_trusted_floor_hz`` are the frames those
     objectives were graded in (#2609 SF5), and ``None`` on either side means the
     frame is unknown, read as "no evidence the frame moved". ``round_ordinal``
-    is 1-based, and its default of 1 can only offer another round, never
-    suppress a stop the evidence asked for. ``graded_spec`` must be the CLOUD's
+    is 1-based and does not limit iteration. ``graded_spec`` must be the CLOUD's
     evaluation — its merged honesty mask is the only structural protection
     against prescribing a cut at an interference null, and #2600 item 1 records
     the null detector as uncalibrated across the blend window of any crossover
@@ -602,7 +587,6 @@ def evaluate_round(
         objectives=flatness_objectives(spec_report),
         previous=previous_objectives,
         round_ordinal=round_ordinal,
-        round_cap=round_cap,
         plateau_db=plateau_db,
         trusted_floor_hz=trusted_floor_hz,
         previous_trusted_floor_hz=previous_trusted_floor_hz,

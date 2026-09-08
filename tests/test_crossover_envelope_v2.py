@@ -49,8 +49,6 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     KEEP_FOR_ITERATION_TEXT,
     KEEP_ITERATING_TEXT,
     KEEP_ITERATING_UNGRADED_TEXT,
-    KEEP_MISSED_EXHAUSTED_TEXT,
-    SERIES_COMPLETE_DEFAULT_TEXT,
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     MIC_CALIBRATION_RESERVATION_COPY,
     RIPPLE_RESERVATION_COPY,
@@ -1396,30 +1394,6 @@ def test_a_passing_round_that_is_still_iterating_says_so_on_the_screen():
     assert nudge["text"] != KEEP_FOR_ITERATION_TEXT
 
 
-@pytest.mark.parametrize(
-    ("reason", "phrase"),
-    [
-        ("objectives_within_plateau", "as flat and as level as measuring can show"),
-        ("improvement_plateaued", "barely moved it"),
-        ("round_cap_reached", "the last round"),
-        ("objectives_unevaluable", "not enough of a full result"),
-    ],
-)
-def test_a_series_that_ended_says_which_ending_it_was(reason, phrase):
-    """"Flat enough", "it stopped moving", and "that was the third" are three
-    different sentences, and a household told last round to measure again is
-    owed the specific one."""
-
-    env = _round_done_env(
-        adoption="keep", row="row1_trusted_safe_passed", reason=reason
-    )
-    nudge = _nudge(env, "crossover_v2_series_complete")
-
-    assert nudge["severity"] == "ok"
-    assert phrase in nudge["text"]
-    assert "inside the target" in nudge["text"]
-
-
 def test_an_iterating_round_with_nothing_gradable_does_not_claim_the_target():
     """The bites ruling made this row reachable with NO measured flatness.
 
@@ -1440,94 +1414,8 @@ def test_an_iterating_round_with_nothing_gradable_does_not_claim_the_target():
 
     assert nudge["text"] == KEEP_ITERATING_UNGRADED_TEXT
     assert "inside the target" not in nudge["text"]
-    assert "not enough of a full result" in nudge["text"]
     # Still the good half: the speaker is playing the best measured tune.
     assert "best sound measured so far" in nudge["text"]
-
-
-@pytest.mark.parametrize(
-    "row",
-    ["row2_trusted_safe_missed", "row6_trusted_safe_passed_reachable"],
-    ids=["missed", "passed_but_reachable"],
-)
-def test_a_round_that_promises_another_bite_offers_the_button_to_take_it(row):
-    """Copy that names an action the screen does not carry is #2641's shape.
-
-    Both iterating rows tell the household "measuring again is how that gets
-    closer", and this screen's only other exit was Room correction — so the
-    sentence pointed at nothing. The action is the same re-measure the review
-    screen mints, not a second way in — and on an iterating round it leads
-    the screen: the head of the recommendedness-ordered list is promoted to
-    the primary.
-    """
-
-    env = _round_done_env(adoption="keep_for_iteration", row=row, reason="r")
-    action = env["next_action"]
-
-    assert action["id"] == "round_remeasure"
-    assert action["label"] == "Try again with what we learned"
-    assert action["endpoint"] == "/sound/speaker/crossover/v2/session"
-    # An EMPTY body: the tier is the lapsed session's, resolved server-side.
-    # A literal here would be the #2639 demotion with extra steps.
-    assert action["body"] == {}
-
-
-@pytest.mark.parametrize(
-    "row",
-    ["row1_trusted_safe_passed", "", "row_from_the_future"],
-    ids=["series_complete", "no_row", "unknown_row"],
-)
-def test_a_round_that_ended_the_series_offers_no_re_measure(row):
-    """The other half, and the one that makes the button mean something.
-
-    A terminal round, a receipt with no row, and a row this build does not
-    know all get the same answer: no re-measure. Offering one on a finished
-    series would invite a household to spend a round the ruling says is over.
-    """
-
-    env = _round_done_env(adoption="keep", row=row, reason="r")
-
-    assert "round_remeasure" not in {
-        a["id"] for a in env["alternate_actions"]
-    }
-
-
-def test_an_unknown_ending_still_says_the_tuning_is_finished():
-    """A reason this build does not know is not a reason to say nothing.
-
-    The fallback states only what the ROW already proves — the series is over
-    — and never guesses at a cause it cannot name.
-    """
-
-    env = _round_done_env(
-        adoption="keep", row="row1_trusted_safe_passed", reason="reason_from_the_future"
-    )
-    nudge = _nudge(env, "crossover_v2_series_complete")
-
-    assert nudge["text"] == SERIES_COMPLETE_DEFAULT_TEXT
-    assert "finished" in nudge["text"]
-
-
-@pytest.mark.parametrize(
-    ("row", "code"),
-    [
-        ("row1_trusted_safe_passed", "crossover_v2_series_complete"),
-        ("row6_trusted_safe_passed_reachable", "crossover_v2_keep_iterating"),
-        ("row2_trusted_safe_missed", "crossover_v2_keep_for_iteration"),
-        ("row7_trusted_safe_missed_exhausted", "crossover_v2_keep_for_iteration"),
-    ],
-)
-def test_every_round_copy_keeps_the_screens_register(row, code):
-    """No hardware noun, no instruction to press anything — the same copy rule
-    every other caveat on this screen carries."""
-
-    env = _round_done_env(adoption="keep", row=row, reason="objectives_within_plateau")
-    text = _nudge(env, code)["text"].lower()
-
-    assert not any(
-        word in text
-        for word in ("tweeter", "woofer", "amplifier", "horn", "button", "click")
-    )
 
 
 def test_exactly_one_round_sentence_is_ever_owed():
@@ -1570,37 +1458,6 @@ def test_a_restoring_row_gets_no_round_sentence_at_all():
                 "crossover_v2_keep_for_iteration",
             }
         ], row
-
-
-def test_no_round_copy_spells_the_cap_out_as_a_number():
-    """``ROUND_SERIES_CAP`` has one owner, and the screen is not it.
-
-    Copy reading "that was the third round" would be a second source of truth
-    for the constant — and a change to the cap would turn it into a lie on a
-    household's screen with nothing red. The sentence says "the last round"
-    instead, which stays true at any cap.
-    """
-    from jasper.active_speaker.crossover_envelope_v2 import _series_complete_text
-
-    sentences = [
-        KEEP_ITERATING_TEXT,
-        KEEP_FOR_ITERATION_TEXT,
-        KEEP_MISSED_EXHAUSTED_TEXT,
-        SERIES_COMPLETE_DEFAULT_TEXT,
-        *(
-            _series_complete_text(reason)
-            for reason in (
-                "objectives_within_plateau", "improvement_plateaued",
-                "round_cap_reached", "objectives_unevaluable",
-            )
-        ),
-    ]
-    for text in sentences:
-        lowered = text.lower()
-        assert not any(
-            word in lowered
-            for word in ("three", "third", "3 rounds", "3 more")
-        ), text
 
 
 def test_the_envelope_names_which_adoption_row_the_round_fired():
@@ -1925,29 +1782,6 @@ def test_a_session_restart_on_an_applied_speaker_still_discloses_the_apply():
     ))
     assert "The crossover was already applied." in env["verdict_text"]
     assert "undo" not in env["verdict_text"].lower()
-
-
-def test_an_iterating_round_leads_with_another_bite():
-    """The promotion takes the HEAD of ``alternate_actions``, not "room".
-
-    That list is already ordered by recommendedness, and an iterating round
-    puts ``round_remeasure`` at position 0 precisely because "taking another
-    bite is the recommended next step" there. Pins the two halves that could
-    silently diverge: which action is promoted, and that it is no longer
-    duplicated below.
-    """
-    env = build_crossover_envelope_v2(_status(
-        phase="done", verify={"outcome": "pass"}, candidate=_candidate_summary(),
-        round_receipt={
-            "round_id": "s1", "adoption": "keep_for_iteration",
-            "row": "row6_trusted_safe_passed_reachable", "reason": "r",
-        },
-    ))
-    assert env["next_action"]["id"] == "round_remeasure"
-    assert env["next_action"]["label"] == "Try again with what we learned"
-    ids = [a["id"] for a in env["alternate_actions"]]
-    assert "round_remeasure" not in ids   # promoted, never offered twice
-    assert ids[0] == "room"
 
 
 def test_done_express_discloses_the_degraded_claim_and_the_upgrade_path():
@@ -6091,118 +5925,17 @@ def test_the_reservation_does_not_displace_the_verified_badge():
     assert texts.index("Verified.") < texts.index(RIPPLE_RESERVATION_COPY)
 
 
-@pytest.mark.parametrize(
-    ("case", "ordinal", "offered"),
-    [
-        ("mid-series", 1, True),
-        ("the last round the budget allows", 2, True),
-        ("the cap itself", 3, False),
-        ("past it, from a state nobody should be able to produce", 9, False),
-        ("an ordinal no build wrote", None, True),
-        ("a corrupt ordinal", True, True),
-    ],
-    ids=["round1", "round2", "at_cap", "past_cap", "absent", "corrupt"],
-)
-def test_a_missed_round_at_the_cap_offers_no_fourth_bite(case, ordinal, offered):
-    """The budget at the button, and since #2656 the second of two bounds.
-
-    A capped MISSED series now ends in the adoption table itself, on row 7, so
-    a round graded by this build never reaches this screen carrying row 2 at
-    the cap. Every receipt in this case list is therefore one banked BEFORE
-    that change — row 2 at every ordinal — and they are exactly what this check
-    still covers: the done screen reads persisted receipts, and offering a
-    fourth bite on a three-round budget is what "only the budget, the plateau,
-    and the safety class end a series" forbids however old the record is.
-
-    The unreadable cases OFFER, matching the direction
-    ``series_position_from_state`` already fails in: a lost history resolves to
-    the first round, never to "the cap was reached".
-    """
-    receipt = {
-        "round_id": "s1",
-        "adoption": "keep_for_iteration",
-        "row": "row2_trusted_safe_missed",
-        "reason": "benefit_unproven",
-    }
-    if ordinal is not None:
-        receipt["round_ordinal"] = ordinal
-
-    env = _round_done_env(**receipt)
-
-    # Anywhere on the action row: an iterating round's re-measure is promoted
-    # to the primary, so both slots count as "offered".
-    ids = {a["id"] for a in [env["next_action"], *env["alternate_actions"]]}
-    assert ("round_remeasure" in ids) is offered, case
-    # The CAVEAT stays either way — the round did miss something, and saying so
-    # is honest whether or not another round is on offer.
-    assert "crossover_v2_keep_for_iteration" in {n["code"] for n in env["nudges"]}
-
-
-def test_a_capped_missed_round_says_the_series_is_over_without_claiming_a_pass():
-    """#2656's household sentence, and the three things it has to get right.
-
-    A capped MISSED end is the one ending where both halves of the news are
-    true at once: the speaker is playing the best measured sound, and some of
-    what was measured is still off target, and there is no round left to fix
-    it. Row 1's sentence would claim the opposite of the second half; row 2's
-    would promise the remedy this screen no longer offers.
-    """
-
-    env = _round_done_env(
-        adoption="keep",
-        row="row7_trusted_safe_missed_exhausted",
-        reason="round_cap_reached",
-        round_ordinal=3,
-    )
-    nudge = _nudge(env, "crossover_v2_keep_for_iteration")
-
-    assert nudge["severity"] == "warn"
-    assert nudge["text"] == KEEP_MISSED_EXHAUSTED_TEXT
-    # The best measured state stays, and the outstanding targets are said.
-    assert "best sound measured so far" in nudge["text"]
-    assert "still off target" in nudge["text"]
-    # The series is over: no remedy is promised, and no pass is claimed.
-    assert "measuring again" not in nudge["text"]
-    assert "inside the target" not in nudge["text"]
-    assert nudge["text"] != KEEP_FOR_ITERATION_TEXT
-    # And the button matches the sentence — a screen that said "the last round"
-    # beside a re-measure control would be two answers to one question.
-    assert "round_remeasure" not in {a["id"] for a in env["alternate_actions"]}
-
-
-def test_the_capped_missed_row_is_not_offered_a_bite_at_any_ordinal():
-    """The row alone withholds it, whatever ordinal the receipt carries.
-
-    The ordinal check above is the bound for receipts banked before #2656.
-    This row is the bound for every round graded since, and it must not depend
-    on the ordinal being readable — a receipt whose ordinal was lost still
-    ended its series, and the row says so.
-    """
-
-    for ordinal in (3, 9, None, True):
-        receipt = {
-            "adoption": "keep",
-            "row": "row7_trusted_safe_missed_exhausted",
-            "reason": "round_cap_reached",
-        }
-        if ordinal is not None:
-            receipt["round_ordinal"] = ordinal
-        env = _round_done_env(**receipt)
-        assert "round_remeasure" not in {
-            a["id"] for a in env["alternate_actions"]
-        }, ordinal
-
-
-def test_the_cap_the_button_reads_is_the_headroom_axis_own_constant():
-    """One budget, two readers. A literal here would be a second definition
-    that a change to ``ROUND_SERIES_CAP`` would silently turn into a lie."""
-    import inspect
-
-    from jasper.active_speaker import crossover_envelope_v2 as envelope
-    from jasper.active_speaker.crossover_v2.round_evidence import ROUND_SERIES_CAP
-
-    source = inspect.getsource(envelope._round_is_iterating)
-    assert "ROUND_SERIES_CAP" in source
-    assert str(ROUND_SERIES_CAP) not in source, (
-        "the cap must be read from its owner, never spelled into this screen"
-    )
+@pytest.mark.parametrize("ordinal", [1, 3, 4, 25, None])
+@pytest.mark.parametrize("adoption,row,reason", [
+    ("keep", "row1_trusted_safe_passed", "objectives_within_plateau"),
+    ("keep", "row1_trusted_safe_passed", "improvement_plateaued"),
+    ("keep_for_iteration", "row2_trusted_safe_missed", "benefit_unproven"),
+    ("keep_for_iteration", "row6_trusted_safe_passed_reachable", "flatter_result_reachable"),
+    ("keep", "row7_trusted_safe_missed_exhausted", "round_cap_reached"),
+])
+def test_each_kept_round_offers_another_round_as_a_choice(ordinal, adoption, row, reason):
+    env = _round_done_env(adoption=adoption, row=row, reason=reason, round_ordinal=ordinal)
+    actions = {a["id"]: a for a in env["alternate_actions"]}
+    assert "room" == env["next_action"]["id"]
+    assert actions["round_remeasure"]["endpoint"] == "/sound/speaker/crossover/v2/session"
+    assert actions["round_remeasure"]["body"] == {}

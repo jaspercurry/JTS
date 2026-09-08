@@ -204,8 +204,7 @@ class RoundEvidence:
     #: :func:`~.verification.evaluate_applied_safety`, the adoption table's
     #: only hard stop, so it is stated rather than defaulted.
     delta_probe: Any | None
-    #: 1-based position of this round in the household's flattening series —
-    #: what :data:`~.round_evidence.ROUND_SERIES_CAP` is checked against.
+    #: 1-based round position, independent of whether another round is chosen.
     round_ordinal: int
     #: What the PREVIOUS round of this series measured on the two objectives,
     #: read off the receipt that round banked — ``None`` for the first round.
@@ -311,9 +310,6 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
                 ports, session_id=evidence.session_id,
             ),
             delta_probe=evidence.delta_probe,
-            # The cap and the plateau bar are NOT passed: their single
-            # definitions are ``evaluate_round``'s own defaults, so no call
-            # site can run a longer series than the ruling allows.
             round_ordinal=evidence.round_ordinal,
             previous_objectives=evidence.previous_objectives,
             trusted_floor_hz=evidence.trusted_floor_hz,
@@ -927,8 +923,7 @@ def _blend_residual_from_receipt(receipt: Mapping[str, Any]) -> float | None:
 def _optional_db(value: Any) -> float | None:
     """A finite float from persisted JSON, or ``None``.
 
-    NaN and infinity are rejected: they sail through every comparison in the
-    headroom axis and make a plateau look unreachable forever.
+    NaN and infinity cannot establish an objective or measured movement.
     """
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
