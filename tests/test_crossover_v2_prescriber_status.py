@@ -743,7 +743,7 @@ def test_the_handoff_page_is_the_one_the_household_actually_opens():
 
 
 @pytest.mark.parametrize(
-    "path", [cli.CROSSOVER_PAGE_PATH, cli.SOUND_SETUP_PAGE_PATH]
+    "path", [cli.CROSSOVER_PAGE_PATH, cli.SPEAKER_SETUP_PAGE_PATH]
 )
 def test_every_path_this_tool_prints_is_a_route_nginx_serves(path):
     """A URL an operator cannot open is worse than no URL at all.

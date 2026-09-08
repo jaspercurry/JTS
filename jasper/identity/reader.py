@@ -148,7 +148,7 @@ CROSSOVER_PAGE_PATH = "/sound/speaker/crossover/"
 #: per-driver bound comes from the design draft that page writes, and an
 #: operator whose speaker has never been commissioned cannot satisfy
 #: ``--drivers`` by pointing harder at a file that does not exist yet.
-SOUND_SETUP_PAGE_PATH = "/sound/speaker/"
+SPEAKER_SETUP_PAGE_PATH = "/sound/speaker/"
 
 
 def speaker_url(path: str) -> str:
