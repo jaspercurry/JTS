@@ -2,38 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Multi-segment excitation-program admission.
+"""Re-admit actual measurement WAVs against declared driver caps.
 
-A CHECK/MEASURE program (:mod:`jasper.audio_measurement.program`) is one 2-channel
-WAV that sequences per-driver stimuli by channel. Before it may play, and again
-at play time from a fresh byte readback, it must be admitted. Admission has two
-independent parts
-(docs/historical/crossover-measurement-productization-design.md §5.3):
-
-1. **N per-segment prepared plans.** Every non-silence segment is turned into a
-   :class:`~jasper.active_speaker.excitation_safety_plan.RequestedDriverExcitationPlan`
-   and run through :func:`prepare_driver_excitation_plan` — the SAME closed
-   ledger the isolated-driver capture uses — so each segment's band must be a
-   subset of its driver's permitted band and its effective peak at or below the
-   driver's admitted cap. The session volume folds into every segment's
-   effective peak (the single-definition-path SSOT with
-   :func:`jasper.active_speaker.session_volume_plan.session_measurement_volume_db`),
-   so caps are enforced regardless of the session volume's value.
-
-2. **Two per-channel whole-file facts recomputed from the rendered bytes.** This
-   is what makes admission about the ARTIFACT, not the composer's intent:
-   (a) each channel's true peak (folded through the session volume) must be at or
-   below that driver's admitted cap, and (b) out-of-segment energy on each
-   channel must sit below a quiet floor (no stimulus leaked outside its scheduled
-   window). A third artifact check pins the rendered per-channel peak to the
-   manifest's declared peak, catching composer/render drift.
-
-Play-time re-admission (:func:`readmit_program_from_wav`) reads the ACTUAL WAV
-bytes and re-runs the whole evaluation, so tampered bytes are caught before the
-verified-aplay path (which separately re-verifies the sha256).
-
-Refusals are typed and structured; nothing raises for an admissible-or-not
-verdict, and ``log_event`` fires on refusal.
+Driver programs retain per-segment isolated-driver admission. Summed programs
+require a complete protected graph: runtime_contract proves topology, branch
+headroom and wiring; declared protection filters justify only the frequencies
+outside each driver's input band. Both paths attest actual PCM peak, schedule
+silence and manifest agreement before verified playback.
 """
 
 from __future__ import annotations
@@ -49,6 +24,9 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program import (
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
+    PROGRAM_PHASE_VERIFY,
+    KIND_PILOT,
+    KIND_SUMMED_SWEEP,
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
@@ -57,6 +35,14 @@ from jasper.audio_measurement.program import (
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
+from .driver_safety import evaluate_driver_safety_profile
+from .graph_safety import protection_requirement_present, view_from_emitted_text
+from .measurement import active_driver_targets
+from .runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph,
+)
 from .excitation_safety_plan import (
     DriverSweepGeneratorPlan,
     ExcitationSafetyPlanError,
@@ -65,6 +51,7 @@ from .excitation_safety_plan import (
     RequestedDriverExcitationPlan,
     prepare_driver_excitation_plan,
     resolve_driver_excitation_ceilings,
+    effective_sweep_duration_limit_s,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +81,7 @@ class ProgramAdmissionRefusal(str, Enum):
     MANIFEST_PEAK_MISMATCH = "program_manifest_peak_mismatch"
     RENDER_SHAPE_MISMATCH = "program_render_shape_mismatch"
     GATE_NOT_APPLIED = "program_gate_not_applied"
+    GRAPH_NOT_PROVEN = "program_graph_not_proven"
 
 
 class ProgramAdmissionError(ValueError):
@@ -349,6 +337,56 @@ def _channel_declared_peak_dbfs(program: ExcitationProgram, channel: int) -> flo
     return max(peaks) if peaks else _dbfs(0.0)
 
 
+def _channel_facts(
+    program: ExcitationProgram, pcm: Any, *, channel: int, role: str,
+    cap_dbfs: float, session_volume_db: float,
+) -> tuple[ChannelFacts, list[ProgramAdmissionRefusal]]:
+    import numpy as np
+
+    reasons: list[ProgramAdmissionRefusal] = []
+    column = np.asarray(pcm[:, channel], dtype=np.float32)
+    true_peak = float(np.max(np.abs(column))) if column.size else 0.0
+    true_peak_dbfs = _dbfs(true_peak)
+    effective_true_peak_dbfs = true_peak_dbfs + float(session_volume_db)
+    mask = _out_of_segment_mask(program, channel, column.size)
+    residual = column[mask]
+    rms = (
+        float(np.sqrt(np.mean(np.square(residual), dtype=np.float64)))
+        if residual.size
+        else 0.0
+    )
+    out_of_segment_rms_dbfs = _dbfs(rms)
+    declared_peak_dbfs = _channel_declared_peak_dbfs(program, channel)
+
+    peak_within_cap = effective_true_peak_dbfs <= float(cap_dbfs) + 1e-9
+    quiet_out_of_segment = (
+        out_of_segment_rms_dbfs < OUT_OF_SEGMENT_RMS_FLOOR_DBFS
+    )
+    peak_matches_manifest = (
+        abs(true_peak_dbfs - declared_peak_dbfs) <= CHANNEL_PEAK_TOLERANCE_DB
+    )
+    facts = ChannelFacts(
+        channel=channel,
+        role=role,
+        cap_dbfs=float(cap_dbfs),
+        session_volume_db=float(session_volume_db),
+        declared_peak_dbfs=declared_peak_dbfs,
+        true_peak_dbfs=true_peak_dbfs,
+        effective_true_peak_dbfs=effective_true_peak_dbfs,
+        out_of_segment_rms_dbfs=out_of_segment_rms_dbfs,
+        peak_within_cap=peak_within_cap,
+        quiet_out_of_segment=quiet_out_of_segment,
+        peak_matches_manifest=peak_matches_manifest,
+    )
+    if not peak_within_cap:
+        reasons.append(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP)
+    if not quiet_out_of_segment:
+        reasons.append(ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY)
+    if not peak_matches_manifest:
+        reasons.append(ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH)
+    return facts, reasons
+
+
 def _evaluate_program(
     program: ExcitationProgram,
     pcm: Any,
@@ -359,8 +397,6 @@ def _evaluate_program(
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
 ) -> ProgramAdmission:
-    import numpy as np
-
     refusals: list[ProgramAdmissionRefusal] = []
     segments: list[SegmentAdmission] = []
     channels: list[ChannelFacts] = []
@@ -471,53 +507,12 @@ def _evaluate_program(
             except ExcitationSafetyPlanError as exc:
                 refusals.append(_map_safety_plan_error(exc))
                 continue
-            # float32 throughout: the whole-file materialization is the memory
-            # hot spot on the 1 GB Pi (float64 doubled a ~20 s 2-ch program to
-            # ~19 MB transient), and float32 peak/RMS error (~1e-6 dB) is far
-            # inside the 0.5 dB manifest tolerance. The RMS accumulator stays
-            # float64 so a long quiet residual keeps its low-level energy.
-            column = np.asarray(pcm[:, channel], dtype=np.float32)
-            true_peak = float(np.max(np.abs(column))) if column.size else 0.0
-            true_peak_dbfs = _dbfs(true_peak)
-            effective_true_peak_dbfs = true_peak_dbfs + float(session_volume_db)
-            mask = _out_of_segment_mask(program, channel, column.size)
-            residual = column[mask]
-            rms = (
-                float(np.sqrt(np.mean(np.square(residual), dtype=np.float64)))
-                if residual.size
-                else 0.0
+            facts, reasons = _channel_facts(
+                program, pcm, channel=channel, role=role, cap_dbfs=cap_dbfs,
+                session_volume_db=session_volume_db,
             )
-            out_of_segment_rms_dbfs = _dbfs(rms)
-            declared_peak_dbfs = _channel_declared_peak_dbfs(program, channel)
-
-            peak_within_cap = effective_true_peak_dbfs <= float(cap_dbfs) + 1e-9
-            quiet_out_of_segment = (
-                out_of_segment_rms_dbfs < OUT_OF_SEGMENT_RMS_FLOOR_DBFS
-            )
-            peak_matches_manifest = (
-                abs(true_peak_dbfs - declared_peak_dbfs) <= CHANNEL_PEAK_TOLERANCE_DB
-            )
-            channels.append(
-                ChannelFacts(
-                    channel=channel,
-                    role=role,
-                    cap_dbfs=float(cap_dbfs),
-                    session_volume_db=float(session_volume_db),
-                    declared_peak_dbfs=declared_peak_dbfs,
-                    true_peak_dbfs=true_peak_dbfs,
-                    effective_true_peak_dbfs=effective_true_peak_dbfs,
-                    out_of_segment_rms_dbfs=out_of_segment_rms_dbfs,
-                    peak_within_cap=peak_within_cap,
-                    quiet_out_of_segment=quiet_out_of_segment,
-                    peak_matches_manifest=peak_matches_manifest,
-                )
-            )
-            if not peak_within_cap:
-                refusals.append(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP)
-            if not quiet_out_of_segment:
-                refusals.append(ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY)
-            if not peak_matches_manifest:
-                refusals.append(ProgramAdmissionRefusal.MANIFEST_PEAK_MISMATCH)
+            channels.append(facts)
+            refusals.extend(reasons)
 
     # De-duplicate refusals while preserving first-seen order.
     seen: dict[ProgramAdmissionRefusal, None] = {}
@@ -606,8 +601,8 @@ def _validate_program(program: ExcitationProgram) -> None:
         raise ProgramAdmissionError("program must be an ExcitationProgram")
     if program.phase not in {PROGRAM_PHASE_CHECK, PROGRAM_PHASE_MEASURE}:
         raise ProgramAdmissionError(
-            "program admission only covers CHECK/MEASURE programs; VERIFY rides "
-            "the applied production graph"
+            "driver admission requires CHECK/MEASURE; summed VERIFY requires "
+            "readmit_summed_program_from_wav and a protected graph"
         )
 
 
@@ -627,47 +622,153 @@ def readmit_program_from_wav(
     re-runs the whole evaluation, so tampered bytes are caught before playback.
     A shape/rate/channel mismatch refuses fail-closed.
     """
+    _validate_program(program)
+    pcm = _read_program_pcm(program, wav_path)
+    if pcm is None:
+        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
+    return _evaluate_program(
+        program, pcm, topology=topology, safety_profile=safety_profile,
+        role_targets=role_targets, session_volume_db=session_volume_db,
+        declared_sensitivities=declared_sensitivities,
+    )
+
+
+def _read_program_pcm(program: ExcitationProgram, wav_path: str | Path) -> Any:
     import numpy as np
     from scipy.io import wavfile
 
-    _validate_program(program)
     rate, data = wavfile.read(str(wav_path))
     if data.ndim == 1:
         data = data.reshape(-1, 1)
-    shape_ok = (
-        int(rate) == program.sample_rate_hz
-        and data.shape[1] == program.channels
+    if (
+        int(rate) != program.sample_rate_hz
+        or data.shape != (program.total_samples, program.channels)
+        or data.dtype != np.int16
+    ):
+        return None
+    return data.astype(np.float32) / np.float32(32767.0)
+
+
+def _refused_program(
+    program: ExcitationProgram, session_volume_db: float,
+    reason: ProgramAdmissionRefusal,
+) -> ProgramAdmission:
+    log_event(
+        logger, "active_speaker.program_admission", level=logging.WARNING,
+        result="refused", program_id=program.program_id, phase=program.phase,
+        refusals=reason.value,
     )
-    if not shape_ok:
-        log_event(
-            logger,
-            "active_speaker.program_admission",
-            level=logging.WARNING,
-            result="refused",
-            program_id=program.program_id,
-            phase=program.phase,
-            refusals=ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH.value,
+    return ProgramAdmission(
+        program.program_id, program.phase, session_volume_db, (), (), (reason,),
+    )
+
+
+def readmit_summed_program_from_wav(
+    program: ExcitationProgram,
+    wav_path: str | Path,
+    *,
+    graph_yaml: str,
+    topology: OutputTopology,
+    safety_profile: Mapping[str, Any],
+    role_targets: Mapping[str, str],
+    session_volume_db: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
+) -> ProgramAdmission:
+    """Admit a mono summed artifact through its complete protected tuning graph.
+
+    The runtime contract re-proves branch boost compensation and routing. A
+    declared HP/LP must protect any segment outside a driver's permitted input
+    band; its full emitted band is retained in evidence. The caller must prove
+    this exact graph live while holding the DSP writer lock through playback.
+    """
+    if (
+        not isinstance(program, ExcitationProgram)
+        or program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1
+        or not program.stimulus_segments()
+        or any(
+            segment.channel != 0 or segment.kind not in (KIND_PILOT, KIND_SUMMED_SWEEP)
+            or segment.role not in (None, "summed")
+            for segment in program.stimulus_segments()
         )
-        return ProgramAdmission(
-            program_id=program.program_id,
-            phase=program.phase,
-            session_volume_db=float(session_volume_db),
-            segments=(),
-            channels=(),
-            refusals=(ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH,),
-        )
-    # Invert write_program_wav's S16_LE scaling (peak 1.0 -> 32767); float32
-    # halves the whole-file transient on the 1 GB Pi.
-    if np.issubdtype(data.dtype, np.integer):
-        pcm = data.astype(np.float32) / np.float32(32767.0)
-    else:
-        pcm = data.astype(np.float32)
-    return _evaluate_program(
-        program,
-        pcm,
-        topology=topology,
-        safety_profile=safety_profile,
-        role_targets=role_targets,
+    ):
+        raise ProgramAdmissionError("summed admission requires a mono VERIFY program")
+    if not math.isfinite(session_volume_db) or session_volume_db > 0:
+        raise ProgramAdmissionError("summed admission requires a non-positive finite volume")
+    evaluation = evaluate_driver_safety_profile(safety_profile, topology)
+    if not evaluation.confirmed_and_current:
+        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
+    physical = {target["target_fingerprint"]: target for target in active_driver_targets(topology)}
+    if (
+        not role_targets or set(role_targets.values()) != set(physical)
+        or any(physical[fingerprint]["role"] != role for role, fingerprint in role_targets.items())
+    ):
+        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
+    graph = classify_camilla_graph(
+        topology=topology, text=graph_yaml,
+        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    )
+    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+    view = view_from_emitted_text(graph_yaml)
+    pcm = _read_program_pcm(program, wav_path)
+    if pcm is None:
+        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
+    caps: list[float] = []
+    segments: list[SegmentAdmission] = []
+    refusals: list[ProgramAdmissionRefusal] = []
+    declared = {target["target_fingerprint"]: target for target in safety_profile["targets"]}
+    for role, fingerprint in role_targets.items():
+        try:
+            band, cap = resolve_driver_excitation_ceilings(
+                safety_profile, fingerprint, program_admission=True,
+                declared_sensitivities=declared_sensitivities,
+            )
+            duration = effective_sweep_duration_limit_s(safety_profile, fingerprint)
+        except ExcitationSafetyPlanError as exc:
+            return _refused_program(program, session_volume_db, _map_safety_plan_error(exc))
+        caps.append(cap)
+        output = physical[fingerprint]["output_index"]
+        requirements = declared[fingerprint]["required_protection_filters"]
+        if not all(protection_requirement_present(
+            view, output_index=output, allowed_channels={output}, requirement=requirement,
+        ) for requirement in requirements):
+            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+        for segment in program.stimulus_segments():
+            low, high = segment_emitted_band_hz(segment)
+            low_ok = low >= band.lower_hz or any(
+                requirement["kind"] == "highpass"
+                and requirement["cutoff_hz"] >= band.lower_hz
+                for requirement in requirements
+            )
+            high_ok = high <= band.upper_hz or any(
+                requirement["kind"] == "lowpass"
+                and requirement["cutoff_hz"] <= band.upper_hz
+                for requirement in requirements
+            )
+            peak = float(segment.gain_db) + session_volume_db
+            allowed = (
+                low_ok and high_ok and peak <= cap
+                and segment.n_samples / program.sample_rate_hz <= duration
+            )
+            reasons = () if allowed else (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value,)
+            segments.append(SegmentAdmission(
+                segment.segment_id, role, 0, (low, high), peak, allowed, reasons,
+            ))
+            if not allowed:
+                refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
+    facts, channel_refusals = _channel_facts(
+        program, pcm, channel=0, role="summed", cap_dbfs=min(caps),
         session_volume_db=session_volume_db,
-        declared_sensitivities=declared_sensitivities,
     )
+    refusals.extend(channel_refusals)
+    admission = ProgramAdmission(
+        program.program_id, program.phase, session_volume_db,
+        tuple(segments), (facts,), tuple(dict.fromkeys(refusals)),
+    )
+    if not admission.allowed:
+        log_event(
+            logger, "active_speaker.program_admission", level=logging.WARNING,
+            result="refused", program_id=program.program_id, phase=program.phase,
+            refusals=",".join(reason.value for reason in admission.refusals),
+        )
+    return admission

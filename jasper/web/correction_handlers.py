@@ -1353,41 +1353,20 @@ def _handle_crossover_capture_cancel() -> dict[str, Any]:
 def _handle_crossover_v2_position_ready(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /crossover/v2/position-ready — a GATED session's position release.
-
-    Whoever moved the microphone read ``capture.position_pending`` off the
-    envelope, went to the stated angle, waited their own settle time, and is now
-    saying so. Releasing admits the held ``begin_capture`` and the capture
-    starts. Two shapes reach here and the verb does not care which: the remote
-    tier's external driver, and the person holding the tape on a hand-walked
-    wired round (#2879).
-
-    ``index`` is REQUIRED and checked against what is actually pending: a caller
-    retrying this POST after its capture already started must not release the
-    NEXT position, which is the one way an untargeted release could quietly
-    measure a pose the microphone never reached. A retry that still names the
-    pending index is idempotent.
-    """
+    """Release only the capture attempt whose pose the mover confirmed."""
     raw = correction_capture._read_json_body(handler)
-    if "index" not in raw:
-        raise BadRequest("index is required")
-    raw_index = raw["index"]
-    # A REAL integer, not merely something ``int()`` accepts. ``int(1.5)`` is 1
-    # and ``int(True)`` is 1, so a lenient parse would silently coerce a
-    # malformed index into a VALID one and release a position the driver never
-    # named — the same class of harm the pending-index check exists to prevent,
-    # arriving through the parser instead. One wire shape per meaning, the rule
-    # ``parse_begin_capture`` already holds this protocol to.
-    if isinstance(raw_index, bool) or not isinstance(raw_index, int):
-        raise BadRequest("index must be an integer")
-    index = int(raw_index)
+    for key in ("index", "attempt"):
+        if key not in raw:
+            raise BadRequest(f"{key} is required")
+        if isinstance(raw[key], bool) or not isinstance(raw[key], int):
+            raise BadRequest(f"{key} must be an integer")
     with _session_lock:
         gate = correction_capture._capture_position_gate
     if gate is None:
         raise ValueError(
             "no remote measurement is waiting for the microphone right now"
         )
-    released = gate.release(index)
+    released = gate.release(raw["index"], raw["attempt"])
     return {"ok": True, "released": released}
 
 

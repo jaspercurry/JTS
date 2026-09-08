@@ -2,25 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What a commission session plays, how loud, and for which phase (#2291).
+"""Compose bounded per-driver and summed measurement programs.
 
-Hearing-safety territory, so the invariants are stated to be checked, not
-trusted:
-
-1. :meth:`SessionExcitation.verify_program`'s min-cap clamp is the ONLY level
-   guard on the mono summed sweep. That sweep plays through the applied
-   production graph with no play-time admission gate, so nothing downstream
-   will catch a gain this module gets wrong.
-2. The two phases whose captures are COMPARED — :data:`PHASE_ENTRY_BASELINE`
-   and :data:`PHASE_VERIFY` — receive the IDENTICAL program object, not an
-   equal one: #2291's before→after verdict is checked by ``program_id``
-   equality, which holds only because :func:`program_for_phase` hands both
-   sides the same object.
-3. A lateral pose replays the MEASURE object verbatim, so the prelude rule is
-   asked of the OBJECT, never of the pose.
-
-It composes and holds no session state. No ``jasper.web`` import and nothing
-from :mod:`jasper.active_speaker.crossover_v2_flow`.
+Summed sweeps use the tightest driver cap and duration. Scoped playback also
+re-admits the rendered artifact against its protected graph.
 """
 
 from __future__ import annotations
@@ -114,24 +99,11 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
 # which phases share one composed program
 # --------------------------------------------------------------------------- #
 
-#: The phases whose excitation is the mono summed sweep played through the LIVE
-#: production graph with no program-graph load and no play-time admission gate.
-#: A spatial cloud measures the SUMMED system — pre-apply for CLOUD_MEASURE,
-#: post-apply for CLOUD_VERIFY — and
-#: :meth:`SessionExcitation.verify_program`'s clamp is the only level guard for
-#: all four. ``PHASE_ENTRY_BASELINE`` is a member for a stronger reason than the
-#: other three: it is invariant 2's correctness condition, so removing it here
-#: would make every round's benefit verdict
-#: :data:`~.verification.BENEFIT_PROGRAM_MISMATCH`.
 SUMMED_SWEEP_PHASES = frozenset(
     {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE}
 )
 
-#: The :data:`SUMMED_SWEEP_PHASES` members that are prompted POSITION GROUPS.
-#: They play :meth:`SessionExcitation.cloud_program`, carrying no courtesy
-#: prelude because a position is not a session opener. The complement is
-#: invariant 2's COMPARED pair; splitting the family costs no comparability,
-#: because nothing compares a position's ``program_id``.
+#: Position groups omit the courtesy prelude: each pose is not a new session.
 GROUP_SUMMED_SWEEP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
 
 
@@ -260,38 +232,14 @@ class SessionExcitation:
         )
 
     def verify_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        """The mono summed sweep, clamped to the MOST RESTRICTIVE cap.
-
-        Cap-aware: VERIFY plays a MONO summed sweep through the APPLIED
-        production graph with NO play-time admission gate (it does not ride
-        ``play_program``/``readmit``), so the compose-time clamp here is the ONLY
-        level guard. A summed signal reaches every driver, so it is clamped to
-        the MOST RESTRICTIVE (min) cap: at the worst case (no crossover
-        attenuation) no driver is driven past its own limit. At the shared
-        reference base (effective ~-32 dBFS) it would over-drive a deep-cap
-        tweeter (the JTS3 B&C DE250 at -65 dBFS effective). The
-        :meth:`pilot_gains` pair rides the same clamped level, so its 10 dB delta
-        is preserved. A genuinely-too-quiet clamp surfaces as the existing
-        ``snr_floor``/``agc_behavioral_fail`` verdicts, not a precheck (§5.10).
-        """
+        """The mono summed sweep, bounded by every driven role's cap and duration."""
         return self._summed_sweep(
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY),
             extra_backoff_db=extra_backoff_db,
         )
 
     def cloud_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        """A prompted position's summed sweep — :meth:`verify_program`, unannounced.
-
-        The SAME sweep through the SAME clamp: both go through
-        :meth:`_summed_sweep`, so invariant 1's "only level guard" stays one
-        function and cannot drift into two. The single difference is the courtesy
-        prelude, which a position does not carry — 3.6 s a household holds a
-        microphone still, per position.
-
-        A separate METHOD rather than a flag because :func:`program_for_phase`
-        answers by identity: "which object is this" must stay a question about
-        the phase.
-        """
+        """The same summed sweep without a courtesy prelude at each pose."""
         return self._summed_sweep(
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
             extra_backoff_db=extra_backoff_db,
@@ -300,8 +248,6 @@ class SessionExcitation:
     def _summed_sweep(
         self, *, courtesy_prelude: bool, extra_backoff_db: float,
     ) -> ExcitationProgram:
-        """The mono summed sweep and its ONE min-cap clamp — see
-        :meth:`verify_program` for why that clamp is the only level guard."""
         binding_cap = min(self.caps_dbfs.values()) if self.caps_dbfs else 0.0
         gain = back_off_gain(
             BASE_STIMULUS_PEAK_DBFS - extra_backoff_db,
@@ -310,6 +256,8 @@ class SessionExcitation:
         )
         return build_verify_program(
             self.fc_hz,
+            roles=self.roles,
+            sweep_duration_limits_s=self.sweep_duration_limits_s,
             measurement_band_hz=measurement_band_hz(self.roles),
             gain_db=gain,
             downstream_gain_db=self.session_volume_db,
@@ -328,8 +276,7 @@ def program_for_phase(
 ) -> ExcitationProgram:
     """Which composed program this phase plays — **by identity, not by value**.
 
-    No branch here composes, copies, or replaces, which is invariant 2's whole
-    mechanism: the COMPARED pair gets the same ``verify`` object (shared
+    The compared pair gets the same ``verify`` object (shared
     ``program_id``), and every :data:`GROUP_SUMMED_SWEEP_PHASES` position gets
     the same ``cloud`` object.
 
@@ -357,7 +304,6 @@ def program_for_phase(
         # not a ``STIMULUS_KIND``).
         return cloud
     if phase in SUMMED_SWEEP_PHASES:
-        # The COMPARED pair is one object, and that identity is invariant 2.
         # What differs between the two is the PRIORS the session hands the
         # analysis and the verdict it draws — never the sound the speaker makes.
         return verify

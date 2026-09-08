@@ -304,7 +304,6 @@ def test_an_unusable_capture_is_rejected_and_records_no_baseline():
     conductor = _baseline_only_conductor(fakes)
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     outcome = conductor.consume_capture(1, 1, _capture())
 
     assert outcome["accepted"] is False
@@ -322,7 +321,6 @@ def test_a_usable_capture_records_a_baseline_stamped_with_program_and_mark():
     conductor = _baseline_only_conductor(fakes)
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     outcome = conductor.consume_capture(1, 1, _capture())
 
     assert outcome["accepted"] is True
@@ -370,7 +368,6 @@ def test_the_retained_take_rehydrates_into_the_record_the_round_holds():
     )
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     conductor.consume_capture(1, 1, _capture())
 
     assert len(retained) == 1
@@ -425,7 +422,6 @@ def test_the_retained_take_carries_the_phase_the_baseline_measured():
         ),
     )
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     conductor.consume_capture(1, 1, _capture())
 
     (metadata,) = retained
@@ -468,7 +464,6 @@ def test_a_failing_retention_store_does_not_cost_the_household_a_retake():
     )
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     outcome = conductor.consume_capture(1, 1, _capture())
 
     assert outcome["accepted"] is True
@@ -489,7 +484,6 @@ def test_an_unnamed_entry_graph_degrades_to_a_word_rather_than_a_crash():
     assert conductor._seams.entry_graph_fingerprint is None
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     conductor.consume_capture(1, 1, _capture())
 
     baseline = conductor.measure_entry_baseline
@@ -516,7 +510,6 @@ def test_a_raising_fingerprint_seam_is_survived_the_same_way():
     )
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     outcome = conductor.consume_capture(1, 1, _capture())
 
     assert outcome["accepted"] is True
@@ -546,7 +539,6 @@ def test_a_seam_that_answers_with_nothing_gets_the_same_word():
     )
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     outcome = conductor.consume_capture(1, 1, _capture())
 
     assert outcome["accepted"] is True
@@ -566,7 +558,6 @@ def test_a_bound_fingerprint_seam_reaches_the_record():
     )
 
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     conductor.consume_capture(1, 1, _capture())
 
     assert conductor.measure_entry_baseline.graph_fingerprint == "fp-live-graph"
@@ -589,7 +580,6 @@ def test_a_captured_baseline_reaches_the_durable_state(tmp_path):
     fakes = FakeSeams()
     conductor = _baseline_only_conductor(fakes)
     conductor.authorize_begin(1, 1)
-    conductor.on_armed()
     conductor.consume_capture(1, 1, _capture())
     assert conductor.measure_entry_baseline is not None
 

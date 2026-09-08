@@ -2,110 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 crossover measurement session — state, seams, and the host's adapter.
-
-**What this module is (#2291 Phase 5c-iv).** It owns ONE object,
-:class:`CrossoverV2Session`, which holds a measurement session's mutable state,
-the injected side-effect seams, the locks, and the irreversible acts (publish,
-apply, commit) — and adapts all of it to the one caller that drives it,
-:mod:`jasper.web.correction_crossover_v2`. **The decisions are not here.** Every
-verdict rule, admission policy, prior, program composition, fit, sweep, spatial
-close, and grade lives in :mod:`jasper.active_speaker.crossover_v2` — one module
-per organ, each pure and separately testable. This module reads its session
-state, calls those organs, and records what came back.
-
-That split is the whole point of the Phase-5 migration, and it has a direction:
-**this module imports the package; the package never imports this module** (or
-the web host). ``test_no_domain_module_imports_the_host_or_the_legacy_flow``
-holds that line. When a decision starts being made here, it belongs in an organ;
-when session state or a seam starts being read there, it belongs here.
-
-The predecessor class ``CrossoverV2Conductor`` was deleted in Phase 5c-iv. It
-was a conductor in the sense of *making* the decisions; those left one at a
-time over Phase 5, and what remained was a session owner, so it is named one.
-
-``docs/historical/crossover-measurement-productization-design.md`` §5
-replaces the legacy per-driver distributed transaction with this shape: the
-Pi compiles one excitation program per phase, plays it as one continuous
-stream, and analyzes
-``(program, capture) → analysis`` as a pure function. The session owns the
-phase state machine that drives the capture session. At the shipped defaults a
-FULL-tier commission is 9 captures (3 in stage 1, then 6) and an express one
-is 4 (the same 3, then 1, ``TIER_EXPRESS``) — the tiers differ in stage 2
-only. :func:`tier_display_info` derives both from the plans themselves and is
-what the household-facing chooser reads; do not restate the numbers where a
-plan change cannot reach them. The spatial cloud replaced the original three:
-
-    CHECK → gain solve → MEASURE → the entry baseline
-      → fit + candidate → [the household reviews, then POSTs the apply]
-      → VERIFY → the post-apply position group → done
-
-A 6-pose lateral walk sat between MEASURE and the entry baseline from R17 until
-it was paused on 2026-08-18 and retired with the corner hunt it fed.  An
-operator's staged angle walk still runs those poses as evidence for the forward
-model; no stage-1 plan builds one.
-
-**Owner decision (2026-07-27): the fit is the last thing before the apply.**
-The candidate used to be built the moment MEASURE was accepted, which put it
-eight captures BEFORE the pre-apply cloud whose honesty verdict it is supposed
-to consume — so the two optional cloud terms in ``compose_envelope`` had no
-reachable production caller. Building it at the group close instead lets the
-fit correct the envelope around the interference the cloud identified and
-refuse to fill it (flat-linearization plan, interpretation call (A)). MEASURE
-keeps every trust gate it owned: they read the analysis, not the candidate, so
-a session doomed at sweep two still fails at sweep two rather than after a nine
--position walk. A session with no pre-apply group (the shape this class
-defaults to — and, since the lateral pause, the shipped stage 1 as well) has
-nothing to wait for and still builds at
-MEASURE, with the same accept, the same payload keys and the same apply timing
-it had before the move — its ``candidate.json`` does gain an always-empty
-``exclusion_evidence`` key, which leaves the fingerprint unchanged.
-See :meth:`CrossoverV2Session._measure_verdict`.
-
-**Owner ruling (2026-07-20), SUPERSEDED — kept for archaeology, not as
-behaviour.** It ruled out a human mid-flow Apply gate and had the session
-apply a trusted candidate itself. Two-stage T3 (commit ``61ba33ff1``,
-#1806 / #1906) replaced that: the apply left the session entirely and is now
-the household's explicit POST from the review screen, so nothing here applies
-anything. Read that commit for what replaced it rather than this paragraph.
-:data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR` outlived that ruling as a hard gate
-and no longer is one: the nanny burn-down made it a DISCLOSURE threshold, so
-it decides what a receipt says and nothing about what is built.
-
-It is deliberately I/O-free: every side effect (playback, analysis, evidence
-publish, apply-gate observation) crosses an INJECTED seam
-(:class:`V2FlowSeams`), exactly as :func:`jasper.active_speaker.program_playback.play_program`
-and :class:`jasper.active_speaker.session_volume_plan.SessionVolumePlan` inject
-their DSP / volume seams. That keeps the whole state walk fixture-testable with
-fake seams, and lets production code bind the real CamillaController-backed
-playback, the ``analyze_program_capture`` call, the verified-WAV source, and the
-``commissioning_service`` publish/apply chain without touching this logic.
-
-The session exposes the three ``run_capture_plan`` callbacks
-(:meth:`authorize_begin`, :meth:`on_armed`, :meth:`consume_capture`) plus the
-lifecycle hooks the host needs (:meth:`note_apply_complete`,
-:meth:`snapshot`/:meth:`hydrate` for phase persistence + session binding). One
-journey spans TWO capture sessions since the two-stage split (work order D1/D2,
-issue #1806), each a heterogeneous ``CapturePlan``: **stage 1** is check /
-measure / #2291's entry baseline (3 entries at either tier — the pre-apply
-position group is off, and so is the lateral walk that ran between them until
-the 2026-08-18 pause), and **stage 2** is verify / the post-apply position
-group (5 at Full, 1 on express, which omits the group entirely). See
-"position-group choreography" below. **Nothing is applied inside a session** —
-stage 1 ends on the household's explicit set-completion signal, which closes
-the group and publishes a candidate they then review and choose to apply on
-jts.local. VERIFY's soft hold behind :class:`CaptureBeginDeferred` is retained
-machinery that no shipped session reaches (D10): stage 1 has no VERIFY index
-and stage 2 is constructed already-applied.
-
-**Failure taxonomy (§5.10).** Terminal verdicts are internal reason codes, not
-screens: :data:`REASON_REGISTRY` maps each code to one of the four screen
-templates, its owning phase, and its retry budget. The session records the
-code + accepted verdict its organs decided; the envelope
-(:mod:`jasper.active_speaker.crossover_envelope_v2`)
-renders the template. A woofer-repeat level disagreement REUSES
-``drift_baselines_disagree`` — never a new user-facing code (§5.2).
-"""
 
 from __future__ import annotations
 
@@ -191,6 +87,7 @@ from jasper.active_speaker.crossover_v2.intervention import (
     plan_linearization,
 )
 from jasper.active_speaker.crossover_v2.plan_assembly import JournalRecord, LinearizationPlan
+from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     LATERAL_CONSUMER_FC_SELECTOR,
@@ -614,7 +511,6 @@ _worst_pilot_snr_db = _diagnostics._worst_pilot_snr_db
 # --- seams + snapshot -----------------------------------------------------
 
 # Injected seams: the web host binds production, tests inject fakes.
-PlayProgram = Callable[[str, ExcitationProgram], None]
 
 
 class AnalyzeCapture(Protocol):
@@ -670,7 +566,6 @@ class RecordModelError(Protocol):
 class V2FlowSeams:
     """The session's injected I/O boundary (all side effects)."""
 
-    play: PlayProgram
     analyze: AnalyzeCapture
     publish_check: PublishCheck
     publish_candidate: PublishCandidate
@@ -872,15 +767,6 @@ def _curve_points(curve: Any) -> int | None:
 
 
 class CrossoverV2Session:
-    """One measurement session: its state, its seams, and its host contract.
-
-    Hand :meth:`authorize_begin`, :meth:`on_armed` and :meth:`consume_capture` to
-    :func:`jasper.web.correction_crossover_v2_wired.build_v2_wired_run_and_consume`;
-    :meth:`snapshot` / :meth:`hydrate` carry phase persistence. Three things
-    belong here: this session's mutable state, the reads of it the web host
-    needs, and the acts that cannot be undone or repeated, each behind a seam.
-    No RULE belongs here.
-    """
 
     def __init__(
         self,
@@ -931,6 +817,7 @@ class CrossoverV2Session:
         lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
         lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
         lateral_claims: Sequence["_spatial.TakeClaim"] = (),
+        measure_specs_by_index: Mapping[int, MeasureSpec] | None = None,
         verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
@@ -1037,8 +924,6 @@ class CrossoverV2Session:
         self._group_positions: dict[str, list[_CloudPosition]] = {
             phase: [] for phase in self._journey.plan.group_indexes
         }
-        # The lateral walk keeps its OWN retention: a pose is per-driver evidence and a
-        # cloud position is one summed curve, which one list cannot combine.
         self._lateral_poses: list[LateralPose] = []
         try:
             self._lateral_consumer = validated_lateral_consumer(
@@ -1050,9 +935,8 @@ class CrossoverV2Session:
             tuple(lateral_prompts) if lateral_prompts is not None
             else LATERAL_POSE_PROMPTS
         )
-        # #3498: what each pose was measured UNDER, in prompt order. Empty on every
-        # shipped walk.
         self._lateral_claims: tuple[_spatial.TakeClaim, ...] = tuple(lateral_claims)
+        self._measure_specs_by_index = measure_specs_by_index if measure_specs_by_index is not None else {}
         # Resolved through the resolver the plan builder uses, so the session and the
         # plan cannot read different pose tables.
         self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
@@ -2060,21 +1944,15 @@ class CrossoverV2Session:
             retained=self._retained_group_indexes(phase) if is_group else (),
         )
 
-    def on_armed(self, state: Any = None) -> None:
-        """Play the armed phase's excitation program (the host stimulus)."""
-        index = self._armed_index
-        if index is None:
-            raise CrossoverV2FlowError("on_armed with no authorized capture")
-        phase = self._phase_of_index(index)
-        program = self.program_for_phase(phase)
-        log_event(
-            logger, "correction.crossover_v2_play",
-            session_id=self.session_id, phase=phase, program_id=program.program_id,
-        )
-        self._seams.play(phase, program)
 
     def program_for_phase(self, phase: str) -> ExcitationProgram:
         """The composed program this session plays for ``phase``."""
+        if phase == PHASE_LATERAL and any(
+            index in self._journey.plan.group_offsets(phase)
+            and spec.graph_scope != GRAPH_SCOPE_DRIVERS
+            for index, spec in self._measure_specs_by_index.items()
+        ):
+            return self._cloud_program
         try:
             return _programs.program_for_phase(
                 phase,
@@ -2749,13 +2627,21 @@ class CrossoverV2Session:
         )
         if kind is not None:
             return PhaseVerdict(False, _screen_refusal_code(kind))
-        bands = _primary_sweep_bands(program)
-        curves = [
-            lateral_pose_curve(response, bands[response.role])
-            for response in analysis.driver_responses
-            if response.repeat_index is None and response.role in bands
-        ]
-        kind = _spatial.lateral_curves_sufficient(len(curves))
+        summed_band = _spatial._summed_sweep_band_hz(program)
+        if summed_band is not None:
+            response = analysis.summed_response
+            if response is None:
+                return PhaseVerdict(False, _screen_refusal_code(_spatial.SCREEN_LOCATE_FAILED))
+            curves = [lateral_pose_curve(response, summed_band)]
+            kind = None
+        else:
+            bands = _primary_sweep_bands(program)
+            curves = [
+                lateral_pose_curve(response, bands[response.role])
+                for response in analysis.driver_responses
+                if response.repeat_index is None and response.role in bands
+            ]
+            kind = _spatial.lateral_curves_sufficient(len(curves))
         if kind is not None:
             return PhaseVerdict(False, _screen_refusal_code(kind))
         prompt = self._prompt_shown_for(PHASE_LATERAL, index)
@@ -3857,6 +3743,15 @@ class CrossoverV2Session:
             captured_at=str(metadata["captured_at"]),
             artifact_ref=artifact_ref,
         )
+
+    def note_take_banked(self, metadata: Mapping[str, Any]) -> None:
+        """Attach the saved take's identity after its write succeeds."""
+        baseline = self._measure_entry_baseline
+        if metadata.get("phase") == PHASE_ENTRY_BASELINE and baseline is not None:
+            self._measure_entry_baseline = replace(
+                baseline, artifact_ref=str(metadata["take_id"]),
+                graph_fingerprint=str(metadata["graph_fingerprint"]),
+            )
 
     def _entry_graph_fingerprint(self) -> str:
         """Which graph this capture was measured through, or the unknown word."""

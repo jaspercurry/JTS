@@ -166,12 +166,6 @@ BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
         ),
     },
     "jasper/cli": {
-        # `WiredStimulusCapture` mints the household calibration REFERENCE
-        # through the web host it imports late (`_mint_and_place`), which is
-        # host policy; the engine owns only the protocol it satisfies.
-        "jasper/cli/measure.py": frozenset(
-            {"jasper.web.correction_crossover_v2_wired"}
-        ),
         # `crossover_v2_status_block` is the web ADAPTER over the engine's
         # status projection — the loaded state, volume plan, review decision
         # and republish admission it supplies are the host's. The `GRADE_*`

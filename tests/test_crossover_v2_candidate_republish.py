@@ -14,17 +14,14 @@ door that closes that gap, and the two things it must never become:
   * **A gate bypass.** Republishing changes WHICH candidate is live. Every
     admission check the apply path runs reads live SSOT, so no state write can
     satisfy one — the test here pins the *reachability* half (apply's own
-    state-vs-state gates all pass) and the drift guard below pins that apply
-    has not grown a state read the republish leaves unset.
+    state-vs-state gates all pass) through the normal apply path.
   * **A way to launder a corrupted artifact.** Integrity is the candidate
     model's own recompute-and-compare; a single edited byte must refuse.
 """
 from __future__ import annotations
 
 import json
-import re
 import shutil
-import textwrap
 from dataclasses import replace
 from pathlib import Path
 
@@ -590,71 +587,6 @@ def test_republish_stamps_the_callers_time_not_a_clock_read(bank):
 
     assert result["republished"]["at"] == 1234.5
     assert v2host.load_v2_state()["republished"]["at"] == 1234.5
-
-
-# --- the drift guard on requirement 1 ---------------------------------------
-
-
-def _apply_state_reads() -> set[str]:
-    """Every durable-state key ``handle_v2_apply`` reads, from its own source.
-
-    Derived mechanically rather than listed, for the reason every guard in this
-    repo is: a seventh read added to ``handle_v2_apply``'s OWN BODY must fail
-    this test on the day it lands, not be noticed the next time someone reads
-    both functions side by side. That body loads state exactly once (``state =
-    load_v2_state()``) and then reads it by key, so the key set is greppable.
-
-    **Scoped to that body, and no further.** This parses one function; it does
-    NOT see what apply's callees read. The two state facts apply consumes
-    through :func:`_update_current_review` — ``accepted_phases`` and
-    ``applied`` — are therefore invisible here, and are covered BEHAVIOURALLY
-    instead by ``test_republish_then_apply_reaches_the_banked_candidate``,
-    which drives that compare-and-set for real. A new condition added to the
-    CAS fails that test, not this one. Two guards, two mechanisms, on purpose:
-    do not "fix" this one by teaching it to follow calls.
-    """
-    source = textwrap.dedent(_function_source("handle_v2_apply"))
-    # Three spellings, because a guard that only knows the CURRENT one degrades
-    # silently: a read added as ``state["x"]`` would leave this reporting a
-    # smaller set and the assertion below trivially true.
-    return (
-        set(re.findall(r'\(state or \{\}\)\.get\("([a-z_]+)"', source))
-        | set(re.findall(r'\bstate\.get\("([a-z_]+)"', source))
-        | set(re.findall(r'\bstate\["([a-z_]+)"\]', source))
-    )
-
-
-def _function_source(name: str) -> str:
-    import inspect
-
-    return inspect.getsource(getattr(v2host, name))
-
-
-def test_republish_satisfies_every_state_key_the_apply_path_reads(bank):
-    """Requirement: indistinguishable-in-contract from a fresh mint's publish.
-
-    Not "the fields we remembered" — the fields apply actually reads. Each one
-    must be PRESENT in the republished state (an explicit ``None`` counts: that
-    is a decision, and several of these keys must be null for apply's own
-    compare-and-set to admit the write). A key apply reads and republish never
-    writes would inherit whatever the previous session left there.
-    """
-    candidate = _candidate()
-    _publish(bank, candidate)
-    republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
-    state = v2host.load_v2_state()
-
-    reads = _apply_state_reads()
-    # Sanity: the extractor found the reads we know are there. A regex that
-    # silently matched nothing would make this whole guard vacuous.
-    assert {"session_id", "candidate", "evidence"} <= reads
-
-    missing = sorted(key for key in reads if key not in state)
-    assert not missing, (
-        f"handle_v2_apply reads {missing} from durable state, but "
-        "handle_v2_republish does not write it. Either publish the key or "
-        "refuse the republish naming it as unreconstructable."
-    )
 
 
 def test_the_route_dispatches_into_the_handler(monkeypatch):

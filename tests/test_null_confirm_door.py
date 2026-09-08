@@ -773,6 +773,7 @@ def _hardware_free_walk(monkeypatch, *, depth_db: float = -20.0) -> None:
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
 
     async def _play(*_args, **_kwargs) -> bytes:
+        assert _kwargs["graph_yaml"] == "installed-graph"
         return b"\x00" * 8
 
     monkeypatch.setattr(null_door, "_play_and_capture", _play)
@@ -786,7 +787,9 @@ def _install_door(monkeypatch, *, restore_error: Exception | None = None) -> Non
     class _Open:
         def __init__(self) -> None:
             self.plan = None
-            self.graph = SimpleNamespace(install=self._install)
+            self.graph = SimpleNamespace(
+                install=self._install, installed_graph_yaml=lambda: "installed-graph",
+            )
 
         async def _install(self, *_args, **_kwargs) -> str:
             return "fingerprint-1"

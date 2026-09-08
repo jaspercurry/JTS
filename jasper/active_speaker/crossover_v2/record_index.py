@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Selecting banked takes: eight columns, rescanned from the files each read.
+"""Select banked takes from their saved identities and graph scopes.
 
 No index file exists (ADR-0198): every read rescans the banked takes and filters
 them in Python, so the take files are the single source of truth at the read
@@ -42,6 +42,8 @@ class Measurement:
     vertical_deg: int
     candidate_id: str
     captured_at: str | None
+    graph_scope: str = ""
+    graph_fingerprint: str = ""
 
 
 def _text(value: Any) -> str:
@@ -79,7 +81,7 @@ def _captured_at(value: Any) -> str | None:
 
 
 def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
-    """The eight columns off one banked file, or ``None`` if it is not a take."""
+    """The identity fields from one banked file, or ``None`` if it is not a take."""
     if document.get("kind") != POSITION_EVIDENCE_KIND:
         return None
     return (
@@ -92,6 +94,8 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         _position_deg(document.get("vertical_deg")) or 0,
         _text(document.get("candidate_id")),
         _captured_at(document.get("captured_at")),
+        _text(document.get("graph_scope")),
+        _text(document.get("graph_fingerprint")),
     )
 
 

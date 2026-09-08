@@ -8,7 +8,7 @@ graph, capture record — plus the play transaction, as Protocol contracts.
 Vocabulary only: no provider lives here. Deliberately not
 ``@runtime_checkable`` (see :class:`~.playback_transaction.PlaybackTransaction`);
 method bodies raise :class:`NotImplementedError` so a partial explicit subclass
-fails loudly. See ADR-0179 for why every seam verb is ``async``.
+fails loudly. See ADR-0179 for why hardware operations are ``async``.
 """
 
 from __future__ import annotations
@@ -27,14 +27,11 @@ __all__ = [
 
 
 class SessionGraph(Protocol):
-    """One measurement graph, installed once and patched per candidate.
+    """Select and prove each take's graph, then restore the household graph."""
 
-    The install must be role-routed, crossover-free and per-driver protected
-    (tweeter high-pass plus soft-clip limiter on the tweeter output channels)
-    at once, and must pass the emitter's ``_assert_program_graph_proven`` once
-    before the first stimulus. Every ``dataclasses.fields(ActiveEmitDevices)``
-    field must be derived from ``active_emit_devices(...)`` and forwarded.
-    """
+    def select_scope(self, scope: str, candidate_id: str = "") -> None:
+        """Select drivers, base, speaker_tune or an exact candidate before install."""
+        raise NotImplementedError
 
     async def install(
         self,

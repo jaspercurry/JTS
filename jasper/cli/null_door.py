@@ -377,7 +377,7 @@ def _resolve_mic() -> Any:
 
 async def _play_and_capture(
     context: Any, volume_plan: Any, program: Any, mic: Any, artifact: Any,
-    work_dir: Path,
+    work_dir: Path, *, graph_yaml: str,
 ) -> bytes:
     """Admit, play through the installed graph, and capture. Returns the mic WAV.
 
@@ -409,6 +409,7 @@ async def _play_and_capture(
         role_targets=context.role_targets,
         session_volume_db=context.session_volume_db,
         declared_sensitivities=context.declared_sensitivities,
+        graph_yaml=graph_yaml,
     )
 
     program_s = program.total_samples / float(PROGRAM_SAMPLE_RATE_HZ)
@@ -708,6 +709,7 @@ async def _run(args: argparse.Namespace) -> int:
                     )
                     captured = await _play_and_capture(
                         context, door.plan, program, mic, artifact, work_dir,
+                        graph_yaml=door.graph.installed_graph_yaml(),
                     )
                     mic_wav = (
                         work_dir / "null_programs" / f"capture_{index:02d}.wav"

@@ -24,7 +24,10 @@ from typing import Any, AsyncIterator, Callable
 
 from jasper.log_event import log_event
 
-from ..measurement_emit import MeasurementGraphProfile, emit_measurement_graph
+from ..candidate_bank import find_banked_candidate
+from ..measurement_emit import (
+    MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph,
+)
 from ..restore_wait import resilient_restore
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,7 @@ __all__ = [
     "MeasurementDoorRefused",
     "OpenMeasurementDoor",
     "measurement_door",
+    "bind_measurement_graph",
 ]
 
 #: Another measurement holds the speaker, or a previous one left its volume
@@ -139,7 +143,7 @@ async def measurement_door(
     plan = SessionVolumePlan(state_path=state_path)
     if wall_clock_ceiling_s is not None:
         plan.set_wall_clock_ceiling_s(wall_clock_ceiling_s)
-    graph = _session_graph(
+    graph = bind_measurement_graph(
         profile,
         camilla_factory=camilla_factory,
         config_dir=(
@@ -302,20 +306,32 @@ def _volume_door(
     return OwnerVolumeDoor(owner, read_fader=_read_fader, claim=claim)
 
 
-def _session_graph(
+def bind_measurement_graph(
     profile: MeasurementGraphProfile,
     *,
     camilla_factory: Callable[[], Any],
     config_dir: str | Path,
 ) -> Any:
-    """The session's one measurement graph, over the shared emit."""
+    """Bind neutral driver and complete tuning graphs to one session owner."""
     from jasper.dsp_apply import dsp_writer_lock
 
     from .composition import confirm_graph_is_live
     from .session_graph import MeasurementSessionGraph
 
+    def emit_scoped(scope: str, candidate_id: str) -> str:
+        if scope == "candidate":
+            return compile_tuning_graph(
+                profile, candidate=find_banked_candidate(candidate_id).candidate,
+            )
+        if scope not in ("base", "speaker_tune"):
+            raise ValueError(f"unknown tuning graph scope: {scope}")
+        return compile_tuning_graph(
+            profile, scope="base" if scope == "base" else "speaker_tune",
+        )
+
     return MeasurementSessionGraph(
         emit=partial(emit_measurement_graph, profile),
+        emit_scoped=emit_scoped,
         cam_factory=camilla_factory,
         writer_lock=lambda: dsp_writer_lock(
             str(config_dir), source="crossover_v2_session_graph"

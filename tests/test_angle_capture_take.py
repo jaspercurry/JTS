@@ -19,11 +19,11 @@ second validator is the thing this design exists to avoid.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import math
 import os
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -40,15 +40,19 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_NORMAL,
 )
 from jasper.active_speaker.crossover_v2.journey import (
-    LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
     PHASE_LATERAL,
     PHASE_MEASURE,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2 import door
+from jasper.active_speaker.crossover_v2.wired_stimulus import (
+    CapturedRecordStore, WiredCaptureAnswer,
+)
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
+from tests.crossover_v2_fixtures import FakeSeams, _conductor, _run_phase, bank_into
 
 CAMPAIGN_ANGLES = [0, 7, -7, 22, -22]
 _FC_HZ = 2000.0
@@ -486,32 +490,54 @@ def _inverted_walk(**pair):
     )
 
 
-def _played_measure_spec(measure_spec, monkeypatch):
-    """The spec the engine leg actually hands ``TuningSession.measure``.
-
-    The leg's play runs under the session's measurement isolation; taking the
-    held-window arm keeps this pin off the real coordinator, the same way the
-    engine-leg suite's own fixture does.
-    """
+def _engine_leg(monkeypatch, phase_map, specs=None, prompts=None):
     monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
     monkeypatch.setattr(v2host, "_session_abort_target", None)
-    played: list = []
+    played, pending = [], []
+    answer = WiredCaptureAnswer(wav=b"capture", wav_path="captures/take.wav")
+
+    class _Store:
+        async def bank(self, record):
+            return "rec-1"
+
+    capture = SimpleNamespace(take_answer=lambda: pending.pop() if pending else None)
+    records = CapturedRecordStore(_Store(), capture)
 
     class _Tuning:
+        async def restore_graph(self):
+            return None
+
         async def measure(self, spec):
             played.append(spec)
+            pending.append(answer)
+            record_id = await records.bank({
+                "candidate_id": spec.candidate_id, "graph_scope": spec.graph_scope,
+            })
             return SimpleNamespace(stimuli=(SimpleNamespace(
-                record_id="rec-1", banked=True, incident="", level_db=-22.0,
+                record_id=record_id, banked=True, incident="", level_db=-22.0,
             ),))
 
-    leg = v2host._bind_engine_measure_leg(
-        tuning=_Tuning(),
-        stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
-        index_phase_map={1: PHASE_MEASURE},
-        run_async=asyncio.run,
-        specs_by_index={} if measure_spec is None else {1: measure_spec},
+    def consume(index, attempt, captured):
+        assert captured is answer
+        return {"accepted": True, "index": index, "attempt": attempt}
+
+    return v2host._bind_engine_measure_leg(
+        tuning=_Tuning(), stimulus_capture=capture, records=records,
+        conductor=SimpleNamespace(
+            consume_capture=consume, note_take_banked=lambda record: None,
+            _prompt_shown_for=lambda phase, index: (prompts or {}).get(index, ac.pose_at_angle(0)),
+        ),
+        retention=SimpleNamespace(pending={}, enrich=lambda *args: {}, after_bank=lambda *args: None),
+        index_phase_map=phase_map, run_async=asyncio.run, specs_by_index=specs,
+    ), played
+
+
+def _played_measure_spec(measure_spec, monkeypatch):
+    leg, played = _engine_leg(
+        monkeypatch, {1: PHASE_MEASURE},
+        {} if measure_spec is None else {1: measure_spec},
     )
-    assert leg(1, 1, entry=None) == "the-engine-take"
+    assert leg(1, 1, entry=None) == {"accepted": True, "index": 1, "attempt": 1}
     one, = played
     return one
 
@@ -533,87 +559,126 @@ def _banked(monkeypatch, **alignment):
     return preset
 
 
-def test_a_candidate_stop_banks_under_the_graph_it_actually_played(
-    slot, monkeypatch,
-):
-    """The pose record's claim is the STOP's graph, not the walk's default.
-
-    A reader selecting by ``candidate_id`` is asking what that variant
-    measured; a claim that said ``normal`` and ``level_matched=false`` while
-    the stop rode a flipped branch through the speaker's own level match would
-    answer with a graph that never played.
-    """
+@pytest.mark.parametrize("overlay", [
+    {"level_matched": True},
+    {"polarity": POLARITY_INVERTED, "inverted_role": DRIVER_ROLE_TWEETER},
+    {"delayed_role": DRIVER_ROLE_TWEETER, "delay_us": 250.0},
+])
+@pytest.mark.parametrize("candidate_id", ["", "fp-a"])
+def test_a_complete_graph_trial_refuses_walk_overlays(slot, monkeypatch, overlay, candidate_id):
     preset = _banked(monkeypatch, polarity="invert", delay_role=None, delay_us=None)
     _with_measured_trims(monkeypatch, {DRIVER_ROLE_TWEETER: -9.5})
     spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
-        level_matched=True,
+        stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),), **overlay,
     ))
-    _prompts, _consumer, specs, _trims, claims = _take(preset=preset)
-
-    spec, = [s for i, s in specs.items() if s.candidate_id]
-    claim, = claims
-    assert (claim.candidate_id, claim.polarity) == ("fp-a", spec.polarity)
-    assert claim.polarity == POLARITY_INVERTED
-    assert (claim.level_matched, spec.level_matched) == (True, True)
-    assert claim.level_match_trims_db == {DRIVER_ROLE_TWEETER: -9.5}
+    assert ac.WALK_CANDIDATE_NOT_MEASURABLE in _refused(preset=preset)
+    assert spool.staged_angle_request_pending() is False
 
 
-def test_a_polarity_only_candidate_reaches_a_spec_the_open_accepts(
-    slot, monkeypatch,
+@pytest.mark.parametrize("candidate_ids", [None, ("",), ("", "fp-a", "fp-b")])
+def test_staged_walk_composes_and_analyzes_each_declared_graph(
+    slot, monkeypatch, tmp_path, candidate_ids,
 ):
-    """A zero delay stated with a branch is a pair ``MeasureSpec`` refuses, and
-    at the open the document is already consumed — so the walk must reach a
-    spec that builds rather than a ValueError with nothing left to re-stage."""
+    preset = _banked(monkeypatch)
+    regime = ac.REGIME_PER_DRIVER if candidate_ids is None else ac.REGIME_SUMMED
+    spool.stage_angle_request(ac.AngleCaptureRequest(stops=tuple(
+        ac.AngleStop(20, regime, 5, cid) for cid in (candidate_ids or ("",))
+    )))
+    prompts, consumer, specs, _trims, claims = _take(preset=preset)
+    index_phases = flow.build_v2_cloud_index_phase_map(
+        plan_shape=_hand_shape(), include_cloud_measure=False,
+        include_lateral=True, lateral_prompts=prompts,
+    )
+    fakes = FakeSeams()
+    records, analyzed_programs = [], []
+    seams = fakes.seams()
+
+    def analyze(program, *args, **kwargs):
+        analyzed_programs.append(program)
+        return seams.analyze(program, *args, **kwargs)
+
+    conductor = _conductor(
+        fakes, index_phase_map=index_phases, lateral_prompts=prompts,
+        lateral_consumer=consumer, lateral_claims=claims,
+        measure_specs_by_index=specs,
+        seams=replace(seams, analyze=analyze, bank_take=bank_into(records, phase=PHASE_LATERAL)),
+    )
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 1)
+    monkeypatch.setattr(
+        door, "bind_measurement_graph",
+        lambda *a, **kw: SimpleNamespace(installed_graph_yaml=lambda: "graph: scoped\n"),
+    )
+    playback = v2host.bind_production_play(
+        camilla_factory=object,
+        evidence_store=SimpleNamespace(
+            bundle_dir=tmp_path,
+            identify_artifact=lambda rel: SimpleNamespace(fingerprint="fixture"),
+        ),
+        capture_session_id="scope-walk", topology=object(), preset=preset,
+        role_channels={"woofer": 0, "tweeter": 1}, playback_device="hw:Test",
+        safety_profile={}, role_targets={}, session_volume_db=-22,
+        program_for_phase=conductor.program_for_phase,
+    )
+    lateral_indexes = [i for i, phase in index_phases.items() if phase == PHASE_LATERAL]
+    for index, cid in zip(lateral_indexes, candidate_ids or ("",)):
+        spec = replace(specs.get(index, MeasureSpec(kind="candidate")), program_phase=PHASE_LATERAL)
+        expected_scope = "drivers" if candidate_ids is None else "candidate" if cid else "base"
+        assert (spec.graph_scope, spec.candidate_id) == (expected_scope, cid)
+        prepared = asyncio.run(playback.compose(spec=spec))
+        verdict = _run_phase(conductor, index, 1)
+        assert verdict["accepted"] is True
+        assert analyzed_programs[-1] is prepared.program
+        assert prepared.program is conductor.program_for_phase(
+            PHASE_MEASURE if candidate_ids is None else flow.PHASE_CLOUD_MEASURE,
+        )
+    expected_roles = {"woofer", "tweeter"} if candidate_ids is None else {"summed"}
+    assert [{curve["role"] for curve in record["curves"]} for record in records] == [expected_roles] * len(lateral_indexes)
+    assert [record["candidate_id"] for record in records] == list(candidate_ids or ("",))
+    assert len(list((tmp_path / "crossover_v2/scope-walk").glob("*.wav"))) == len(lateral_indexes)
+
+
+@pytest.mark.parametrize("delay_us", [0.0, 250.0])
+def test_a_candidate_stop_selects_the_complete_graph_at_its_pose(slot, monkeypatch, delay_us):
     preset = _banked(
-        monkeypatch, polarity="invert", delay_role=DRIVER_ROLE_TWEETER, delay_us=0.0,
+        monkeypatch, polarity="invert", delay_role=DRIVER_ROLE_TWEETER, delay_us=delay_us,
     )
     spool.stage_angle_request(ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, 0, "fp-a"),),
+        stops=(ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),),
     ))
-    _prompts, _consumer, specs, _trims, _claims = _take(preset=preset)
+    prompts, _consumer, specs, trims, claims = _take(preset=preset)
 
     spec, = [s for i, s in specs.items() if s.candidate_id]
+    assert (spec.graph_scope, spec.candidate_id, claims[0].candidate_id) == (
+        "candidate", "fp-a", "fp-a",
+    )
+    assert (spec.positions, spec.vertical_deg, spec.pose_prompts) == (
+        (20,), 5, (prompts[0].text,),
+    )
     assert (spec.delayed_role, spec.delay_us) == ("", 0.0)
-    assert spec.inverted_role == DRIVER_ROLE_TWEETER
+    assert (spec.polarity, spec.inverted_role, spec.level_matched, trims) == (
+        POLARITY_NORMAL, "", False, {},
+    )
 
 
 def test_the_engine_leg_plays_the_spec_its_own_index_names(monkeypatch):
-    """One leg, one spec per claimed capture (#3498).
-
-    A stop that names a candidate rides the alignment that candidate was minted
-    with, so the leg cannot hand every index one spec. An index no spec names
-    and no MEASURE phase claims stays on the flow leg, which is what keeps a
-    candidate-free walk on the path it already ran on.
-    """
-    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
-    monkeypatch.setattr(v2host, "_session_abort_target", None)
-    played: list = []
-
-    class _Tuning:
-        async def measure(self, spec):
-            played.append(spec)
-            return SimpleNamespace(stimuli=(SimpleNamespace(
-                record_id="rec-1", banked=True, incident="", level_db=-22.0,
-            ),))
-
     at_pose = MeasureSpec(
-        kind=MEASURE_KIND_CANDIDATE, positions=(20,), candidate_id="fp-a",
+        kind=MEASURE_KIND_CANDIDATE, positions=(20,), candidate_id="fp-a", graph_scope="candidate",
     )
-    leg = v2host._bind_engine_measure_leg(
-        tuning=_Tuning(),
-        stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
-        index_phase_map={1: PHASE_MEASURE, 3: PHASE_LATERAL, 4: PHASE_LATERAL},
-        run_async=asyncio.run,
-        specs_by_index={3: at_pose},
+    leg, played = _engine_leg(
+        monkeypatch, {1: PHASE_MEASURE, 3: PHASE_LATERAL, 4: PHASE_LATERAL}, {3: at_pose},
+        {3: ac.pose_at_angle(20, 5), 4: ac.pose_at_angle(-7)},
     )
 
-    assert leg(4, 1, entry=None) is None
-    assert leg(3, 1, entry=None) == "the-engine-take"
-    assert leg(1, 1, entry=None) == "the-engine-take"
-    assert [(s.candidate_id, s.positions) for s in played] == [
-        ("fp-a", (20,)), ("", ()),
+    for attempt, index in enumerate((4, 3, 1), start=1):
+        assert leg(index, attempt, entry=None) == {"accepted": True, "index": index, "attempt": attempt}
+    assert [(s.graph_scope, s.candidate_id, s.positions, s.program_phase) for s in played] == [
+        ("drivers", "", (-7,), PHASE_LATERAL),
+        ("candidate", "fp-a", (20,), PHASE_LATERAL),
+        ("drivers", "", (), PHASE_MEASURE),
     ]
+    assert played[1].vertical_deg == 5
+    assert played[1].pose_prompts == (ac.pose_at_angle(20, 5).text,)
 
 
 def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatch):
@@ -924,34 +989,6 @@ def test_a_one_sided_polarity_refuses_the_open_in_the_specs_own_words(slot, capl
     assert spool.staged_angle_request_pending() is False
 
 
-# --- one take, four surfaces --------------------------------------------------
-
-
-def test_the_preparer_feeds_map_spec_and_conductor_from_one_take():
-    """ONE take, read by everything that must agree about the walk.
-
-    Source-read rather than driven, for the reason the sibling tier pin gives:
-    driving ``_open`` needs a live capture. What matters is the wiring -- a second
-    take would hand the map and the spec different walks, and a surface left
-    unthreaded would render one walk while the conductor ran another.
-
-    Dropping the CONSUMER thread also fails closed at RUNTIME, because
-    ``validated_lateral_consumer`` refuses a session handed a pose table with
-    the selector consumer. This pin catches that earlier and by name.
-    """
-    source = inspect.getsource(v2host.prepare_v2_session)
-    assert source.count("_take_staged_angle_walk(") == 1
-    assert "lateral_prompts=lateral_prompts" in source
-    assert "lateral_consumer=lateral_consumer" in source
-    # The map, the spec, and the conductor: three readers, one local.
-    assert source.count("lateral_prompts=lateral_prompts") == 3
-    # ...and the default when nothing is staged is the ratified walk's owner.
-    assert f"lateral_consumer = {LATERAL_CONSUMER_FC_SELECTOR!s}" not in source
-    assert "lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR" in source
-    # The take is fed the session's own shape, never a default one.
-    assert "base_entries=len(stage1_index_phase)" in source
-    assert "lateral_group_present=include_lateral" in source
-
 # --- the take opens the session, whatever the document does -------------------
 
 
@@ -1018,26 +1055,6 @@ def test_a_taken_walk_still_says_it_was_consumed(slot, caplog):
     line, = _events(caplog)
     assert "consumed=true" in line
     assert spool.staged_angle_request_pending() is False
-
-
-def test_the_silent_shape_change_is_gone_from_the_take(slot):
-    """The pin on the DELETED behaviour, at the source (#2879).
-
-    Every refusal arm used to end in ``return None``, and ``None`` is what the
-    preparer reads as "no walk staged" — so a refused walk and an ordinary
-    session were the same value, and the session opened in its ordinary
-    3-capture shape with only a WARNING nobody was reading to say otherwise.
-    The behavioural pins above cover each arm; this one says the SHAPE cannot
-    come back: exactly one ``return None`` survives, and it is the arm that
-    genuinely means "nothing was staged".
-    """
-    source = inspect.getsource(v2host._take_staged_angle_walk)
-    body = source.split('"""', 2)[-1]
-    assert body.count("return None") == 1
-    assert "if request is None:\n            return None" in body
-    # ...and the journal says so too, rather than claiming the session lives on.
-    assert "session_continues=False" in body
-    assert "session_continues=True" not in body
 
 
 def test_the_take_reads_the_sessions_own_cloud_shape(slot):

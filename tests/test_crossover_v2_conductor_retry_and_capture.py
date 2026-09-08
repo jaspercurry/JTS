@@ -1061,12 +1061,6 @@ def test_cloud_positions_play_the_summed_program_and_get_no_tracking_prior():
     attempt = _walk(c, (1, 2), 1)
     _run_phase(c, CLOUD_MEASURE_INDEXES[0], attempt)
 
-    played_phase, played_program = fakes.played[-1]
-    assert played_phase == PHASE_CLOUD_MEASURE
-    # The conductor's phase and the PROGRAM's phase are different vocabularies:
-    # the program is the VERIFY-shaped summed sweep, which is exactly why
-    # `analyze_program_capture` needed no new dispatch branch.
-    assert played_program.phase == PHASE_VERIFY
     analyzed_phase, prog_phase, _result, priors, _geometry = fakes.analyzed[-1]
     # Issue #1855: the analyze seam must receive the FLOW's phase
     # (cloud_measure), not the program's own phase (verify) — a retention

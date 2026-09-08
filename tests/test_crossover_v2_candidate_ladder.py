@@ -83,6 +83,22 @@ def test_the_ladder_pairs_the_configs_one_pose_played_and_locates_the_gap(tmp_pa
     assert [row["candidate_id"] for row in role["candidates"]] == ["cfg-a", "cfg-b"]
 
 
+def test_explicit_base_graph_remains_in_the_candidate_comparison(tmp_path):
+    round_dir = tmp_path / "r1"
+    session_dir = round_dir / "bundle" / "sess1"
+    grid = np.array([500.0, 1000.0, 2000.0, 4000.0])
+    for index, candidate_id in enumerate(("", "cfg-a")):
+        _bank_lateral_pose(
+            session_dir, take_id=f"lateral_{index:02d}_a01", position_deg=0,
+            candidate_id=candidate_id, curves=[_summed_curve(grid, np.zeros_like(grid))],
+        )
+    path, = session_dir.glob("evidence/v1/artifacts/crossover_v2/*/positions/lateral_00_a01.json")
+    record = json.loads(path.read_text())
+    record.update(graph_scope="base", graph_fingerprint="a" * 16)
+    path.write_text(json.dumps(record))
+    assert _ladder(round_dir)["summary"]["candidates"] == ["base:" + "a" * 16, "cfg-a"]
+
+
 def test_the_ladder_compares_only_the_span_both_configs_actually_measured(tmp_path):
     """A config swept over less than its neighbour is compared over the OVERLAP.
 

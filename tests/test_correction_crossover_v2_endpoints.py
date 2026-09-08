@@ -18,11 +18,12 @@ flow-selector refusals the dispatch relies on.
 """
 from __future__ import annotations
 
+from tests.engine_twin import retained_take_writer
+
 import asyncio
 import contextlib
 from copy import deepcopy
 import hashlib
-import inspect
 import json
 import logging
 import os
@@ -52,7 +53,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2_flow import (
-    STAGE1_INCLUDES_CLOUD_MEASURE,
     TIER_EXPRESS,
     TIER_FULL,
     V2_FIRST_BEGIN_TIMEOUT_S,
@@ -428,7 +428,7 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
         info["bundle_dir"], expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    bank = v2host.bind_position_retention(
+    bank = retained_take_writer(
         store, "cap_retake_session", refs, asyncio.run,
     )
 
@@ -524,7 +524,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
         bundle_dir, expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    bank = v2host.bind_position_retention(
+    bank = retained_take_writer(
         store, "cap_record_session", refs, asyncio.run,
     )
 
@@ -581,7 +581,7 @@ def _retention_bundle(tmp_path, capture_session_id, *, provenance=None):
         bundle_dir, expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    bank = v2host.bind_position_retention(
+    bank = retained_take_writer(
         store, capture_session_id, refs, asyncio.run, provenance=provenance,
     )
     return bank, refs, bundle_dir, store
@@ -659,9 +659,8 @@ def _stage_seams_over(store, capture_session_id, refs, recorder):
         open_stage,
     )
 
-    return v2host.bind_v2_stage_seams(
+    seams = v2host.bind_v2_stage_seams(
         open_stage(STAGE_MEASURE_CAPABILITIES, index_phase_map={}),
-        play=lambda *_a, **_kw: None,
         evidence_store=store,
         capture_session_id=capture_session_id,
         refs=refs,
@@ -671,6 +670,11 @@ def _stage_seams_over(store, capture_session_id, refs, recorder):
         camilla_factory=None,
         provenance=recorder,
     )
+
+    from dataclasses import replace
+    return replace(seams, bank_take=retained_take_writer(
+        store, capture_session_id, refs, asyncio.run, retention=seams.bank_take,
+    ))
 
 
 def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
@@ -1256,33 +1260,14 @@ def test_an_unprompted_phase_take_reaches_the_real_store(tmp_path, phase):
     ]
 
 
-def test_a_store_that_refuses_costs_a_warning_and_not_the_capture(
-    tmp_path, caplog,
-):
-    """The fail-soft boundary, at the binding the lift moved it to.
+def test_a_failed_take_write_never_enters_the_position_index(tmp_path):
+    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreError
 
-    Evidence retention is forensics, never a gate: a full disk must not turn an
-    acoustically-good capture into a retake. The store stays strict for every
-    other caller — this drives it into a REAL refusal (two different payloads at
-    one write-once path is ``PATH_CONFLICT``) rather than a raising fake, so the
-    exception this catches is the one production can actually raise.
-    """
-    bank, refs, _bundle_dir, _store = _retention_bundle(
-        tmp_path, "cap_refuse_session",
-    )
-
+    bank, refs, _bundle_dir, _store = _retention_bundle(tmp_path, "cap_refuse_session")
     record = _entry_baseline_take()
     assert bank(WiredCaptureAnswer(wav=b"entry-bytes"), record)
-
-    with caplog.at_level(logging.WARNING):
-        answer = bank(
-            WiredCaptureAnswer(wav=b"entry-bytes"),
-            {**record, "summed_ripple_db": 9.0},
-        )
-
-    assert answer == ""
-    assert "crossover_v2_position_retain_failed" in caplog.text
-    # The refused take is absent from the index rather than present-but-wrong.
+    with pytest.raises(CommissioningEvidenceStoreError):
+        bank(WiredCaptureAnswer(wav=b"entry-bytes"), {**record, "summed_ripple_db": 9.0})
     assert len(refs["position_artifacts"]) == 1
 
 
@@ -1710,7 +1695,6 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
-            play=lambda *a, **k: None,
             analyze=lambda *a, **k: None,
             publish_check=lambda *a, **k: None,
             publish_candidate=lambda *a, **k: None,
@@ -1806,7 +1790,6 @@ def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
-            play=lambda *a, **k: None,
             analyze=lambda *a, **k: None,
             publish_check=lambda *a, **k: None,
             publish_candidate=lambda *a, **k: None,
@@ -1853,7 +1836,6 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
-            play=lambda *a, **k: None,
             analyze=lambda *a, **k: None,
             publish_check=lambda *a, **k: None,
             publish_candidate=lambda *a, **k: None,
@@ -2702,27 +2684,7 @@ def test_a_resolvable_context_renders_a_quiet_review_screen():
         v2host.resolve_conductor_context = original
 
 
-def test_the_session_preparer_rearms_the_walked_away_volume_ceiling():
-    """S4: the ceiling is only correct because the preparer re-arms it from the
-    plan the stage it opened actually emitted — the volume plan is
-    process-global, so a dropped call silently leaves the previous session's
-    ceiling in force. Nothing enforced that; this does, by reading the call out
-    of the preparer's source.
-    """
-    import inspect
-
-    # The derivation is now BOUND to a name (issue #2509 sizes the capture session
-    # from the same number), so pinning the two tokens separately would no
-    # longer prove the value reaches the arm. Pin the binding and the arm.
-    source = inspect.getsource(v2host.prepare_v2_session)
-    assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in (
-        source
-    ), "the preparer must size the ceiling from the plan it emits"
-    assert "set_wall_clock_ceiling_s(ceiling_s)" in source, (
-        "the preparer must arm the ceiling it derived"
-    )
-    # And the two plans really do want different ceilings, which is the whole
-    # reason the re-arm cannot be done once at import.
+def test_stage_plans_have_their_own_volume_ceiling():
     from jasper.active_speaker.crossover_v2_flow import (
         build_v2_capture_plan,
         build_v2_verify_capture_plan,
@@ -2854,34 +2816,6 @@ def test_the_preflight_runs_after_the_freshness_gates(monkeypatch):
     assert "no longer current" in str(excinfo.value)
 
 
-def test_the_apply_endpoint_cannot_skip_the_preflight():
-    """``status`` is REQUIRED and keyword-only, so no caller can quietly drop
-    it — and the dispatch really does supply one."""
-    import inspect
-
-    sig = inspect.signature(v2host.handle_v2_apply)
-    status_param = sig.parameters["status"]
-    assert status_param.kind is inspect.Parameter.KEYWORD_ONLY
-    assert status_param.default is inspect.Parameter.empty
-
-    from jasper.web import (
-        correction_handlers,
-    )
-
-    source = inspect.getsource(correction_handlers._handle_crossover_v2_apply)
-    assert "status=correction_crossover_backend.status_payload()" in source
-    # …and the call site really is inside handle_v2_apply, before the commit.
-    apply_source = inspect.getsource(v2host.handle_v2_apply)
-    assert "_assert_stage_2_can_open(status)" in apply_source
-    # rindex, not index: the first `apply_baseline_profile(` is the import.
-    assert apply_source.index("_assert_stage_2_can_open(status)") < apply_source.rindex(
-        "apply_baseline_profile("
-    )
-
-
-# --- stage 2's entry point (work order D2) -----------------------------------
-
-
 def test_the_verify_endpoint_opens_the_tier_matched_stage_2_or_the_recovery():
     """ONE entry point, two shapes — generalized over the plan shape rather
     than forked into a second builder (work order D2).
@@ -2964,7 +2898,6 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
-            play=lambda *a, **k: None,
             analyze=lambda *a, **k: None,
             publish_check=lambda *a, **k: None,
             publish_candidate=lambda *a, **k: None,
@@ -3025,14 +2958,6 @@ def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
     )
     assert conductor._verify_pilot_baseline is None
     assert conductor.verify_pilot_transfer_reference is None
-    # …and the preparer really does route it to that argument, never to a
-    # baseline. Source-read for the same reason
-    # ``test_the_session_preparer_rearms_the_walked_away_volume_ceiling``
-    # uses one: driving ``_open`` needs a live capture.
-    source = inspect.getsource(v2host.prepare_v2_session)
-    assert "pilot_transfer_prior_from_state(state)" in source
-    assert "verify_pilot_transfer_prior=pilot_transfer_prior" in source
-    assert "verify_pilot_transfer_baseline" not in source
 
 
 def test_a_measuring_session_drops_the_prior_level_reference():
@@ -3133,38 +3058,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     )
     with pytest.raises(v2host.CrossoverV2Refused, match="confirmed driver protection"):
         v2host.prepare_v2_session({}, status={}, run_async=None, camilla_factory=None)
-
-
-def test_the_session_preparer_threads_one_tier_into_the_spec_and_the_map():
-    """§1.2's whole point: the emitted plan and the conductor's index→phase map
-    come from ONE resolved shape, so a tier can never reach one and not the
-    other. Read the preparer's own source rather than trusting the call site to
-    stay wired — this is the desync the shape value exists to prevent.
-    """
-    import inspect
-
-    source = inspect.getsource(v2host.prepare_v2_session)
-    # ONE resolution, from ONE requested tier — whether that tier came from the
-    # body or (#2639) was inherited from the lapsed session's durable state.
-    # The literal moved with the inherit; what it pins did not.
-    assert 'requested_tier = (raw.get("tier") if raw else None) or None' in source
-    assert source.count("resolve_plan_shape(") == 1
-    assert "resolve_plan_shape(requested_tier)" in source
-    assert "build_v2_session_spec(" in source and "plan_shape=plan_shape" in source
-    # Stronger than the old literal: the preparer must READ the one owner of
-    # this fact, so the chooser and the session cannot drift (#2098).
-    assert "include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE" in source
-    assert STAGE1_INCLUDES_CLOUD_MEASURE is False
-    # THREE since #2732's angle-walk take: the base index→phase map, the same
-    # map rebuilt when a staged walk is taken, and the emitted spec. Every one
-    # of them reads the single ``include_cloud_measure`` local above, which is
-    # what this count is actually about — a literal at any of the three would
-    # be the drift, not the number of call sites.
-    assert source.count("include_cloud_measure=include_cloud_measure") == 3
-    assert "confirmed_protection_sections(" in source
-    assert "protection_sections_by_role=protection_sections" in source
-    assert "measurement_protection_sections_by_role=protection_sections" in source
-    assert "tier=plan_shape.tier," in source
 
 
 def test_the_tier_rides_the_durable_state_and_state_block():
@@ -5373,7 +5266,9 @@ def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
         v2host.set_volume_plan_for_tests(None)
 
 
-def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
+@pytest.mark.parametrize("drain", ["close", "abandon"])
+@pytest.mark.parametrize("restore_fails", [False, True])
+def test_the_graph_goes_back_before_the_fader_does(monkeypatch, drain, restore_fails):
     """A derived safety property, pinned because it is no longer an accident.
 
     Before this wave the order was implicit in ``_put_the_graph_back``'s
@@ -5405,6 +5300,8 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
             order.append("graph")
             if self.seams.volume is not None:
                 await self.seams.volume.release()
+            if restore_fails:
+                raise RuntimeError("restore failed")
 
     class _LoggingCam(_FakeVolCam):
         async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
@@ -5427,8 +5324,14 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
             lambda: cam, _Ctx(), tuning=_sess, volume_claim=_sess.claim,
         )
         await hooks.open()
-        order.clear()  # the open's own fader write is not what this pins
-        await hooks.close()
+        order.clear()
+        if restore_fails:
+            with pytest.raises(RuntimeError):
+                await getattr(hooks, drain)()
+        else:
+            await getattr(hooks, drain)()
+        assert cam.vol == -15.0
+        assert not v2host.session_measurement_pause_held()
 
     asyncio.run(scenario())
     v2host.set_volume_plan_for_tests(None)
@@ -5766,331 +5669,34 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 # --- W6 hardware run 3, finding F: bind_production_play's config_dir SSOT -------
 
 
-def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, Any]:
-    """Drive ``bind_production_play`` far enough to observe the ``config_dir``
-    it threads into its two lock users — ``bind_program_playback_seams`` and,
-    since wave 6b, the session measurement graph — short-circuiting via a
-    sentinel exception BEFORE any real DSP graph emission/playback, since this
-    probe cares only about the config_dir plumbing (graph emission and
-    playback have their own coverage elsewhere).
-
-    The graph's lock is captured through ``dsp_writer_lock`` itself rather than
-    assumed to match the seams': it is a SECOND lock user threaded from the
-    same resolved dir, and a probe that only watched the first would go green
-    on a graph locking somewhere else entirely."""
-    import contextlib
-
-    from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker.crossover_v2 import composition as composition_mod
-    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
-    import jasper.audio_measurement.program as program_mod
-    import jasper.dsp_apply as dsp_apply_mod
-
-    captured: dict[str, Any] = {}
-
-    class _ShortCircuit(Exception):
-        pass
-
-    def fake_bind_program_playback_seams(cam, **kwargs):
-        captured["config_dir"] = kwargs["config_dir"]
-        raise _ShortCircuit("captured config_dir — stop before the DSP plumbing")
-
-    @contextlib.asynccontextmanager
-    async def fake_dsp_writer_lock(config_dir, *, source, **_kwargs):
-        captured.setdefault("lock_dirs", []).append((source, str(config_dir)))
-        yield
-
-    async def _install_taking_only_the_lock(self) -> str:
-        # The real emit, where wave 6b put it — so the protection-threading pin
-        # below still watches the arguments that reach the emitter — but none
-        # of the CamillaDSP transport around it.
-        self.graph_yaml()
-        async with self._writer_lock():
-            pass
-        return "probe"
-
-    monkeypatch.setattr(dsp_apply_mod, "dsp_writer_lock", fake_dsp_writer_lock)
-    monkeypatch.setattr(
-        session_graph_mod.MeasurementSessionGraph,
-        "install",
-        _install_taking_only_the_lock,
-    )
-    monkeypatch.setattr(
-        composition_mod, "bind_program_playback_seams", fake_bind_program_playback_seams
-    )
-    _patch_measurement_window(monkeypatch, [])
-    protection = {"woofer": (), "tweeter": ()}
-
-    def _emit(*args, **kwargs):
-        captured["emitter_protection"] = kwargs["protection_sections_by_role"]
-        return "placeholder-graph-yaml"
-
-    monkeypatch.setattr(camilla_yaml_mod, "emit_active_speaker_program_config", _emit)
-    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
-
-    class _FakeEvidenceStore:
-        bundle_dir = tmp_path
-
-        def identify_artifact(self, rel):
-            return SimpleNamespace(fingerprint="fake")
-
-    play = v2host.bind_production_play(
-        run_async=asyncio.run,
-        camilla_factory=lambda: object(),
-        evidence_store=_FakeEvidenceStore(),
-        capture_session_id="cap_config_dir_probe",
-        topology=object(),
-        preset=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
-        protection_sections_by_role=protection,
-    )
-    with pytest.raises(_ShortCircuit):
-        play(PHASE_CHECK, object())
-    captured["source_protection"] = protection
-    return captured
-
-
-def test_bind_production_play_default_config_dir_matches_ssot(monkeypatch, tmp_path):
-    """W6 hardware run 3 finding F: bind_production_play's config_dir default
-    must resolve to the SAME canonical constant every sibling DSP writer
-    (commissioning apply/verify, web_commissioning, correction_setup) locks
-    against — jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR — not
-    the stale "/etc/camilladsp" literal this binding shipped with. An SSOT
-    pin: if either side's default drifts away from the other, this fails."""
+def test_web_binding_shares_graph_profile_and_writer_directory(monkeypatch, tmp_path):
+    from jasper.active_speaker.crossover_v2 import composition, door
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
-    captured = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
-    assert captured["config_dir"] == str(DEFAULT_CAMILLA_CONFIG_DIR)
-    # The session graph is the other lock user, and it locks the same dir under
-    # its own source name — so the two DSP writers this binding creates
-    # serialize against each other and against every sibling writer.
-    assert captured["lock_dirs"] == [
-        ("crossover_v2_session_graph", str(DEFAULT_CAMILLA_CONFIG_DIR)),
-    ]
-
-
-def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camilladsp(
-    monkeypatch, tmp_path
-):
-    """The resolved config_dir's DSP writer lock must land under
-    /var/lib/camilladsp — the ONLY tree jasper-correction-web's
-    ProtectSystem=full leaves writable (ReadWritePaths=/var/lib/jasper
-    /var/lib/camilladsp; see deploy/jasper-correction-web.service). A lock
-    under /etc/camilladsp is exactly the EROFS W6 run 3 hit 70 ms into the
-    first play."""
-    from jasper.dsp_apply import dsp_apply_lock_path
-
-    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)["config_dir"]
-    assert str(dsp_apply_lock_path(resolved)).startswith("/var/lib/camilladsp")
-
-
-def test_bind_production_play_threads_exact_protection_to_emitter(monkeypatch, tmp_path):
-    captured = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
-    assert captured["emitter_protection"] is captured["source_protection"]
-
-
-# --- Issue #1976: the summed-sweep stimulus must also land at a stable name --
-
-
-def test_cloud_measure_play_also_persists_canonical_summed_program_wav(
-    monkeypatch, tmp_path
-):
-    """Issue #1976: a measure-stage session that walks the pre-apply cloud
-    group (CLOUD_MEASURE) plays the SAME excitation object a literal VERIFY
-    capture would — ``program_for_phase`` in crossover_v2_flow.py returns
-    ``self._verify_program`` for every phase in ``SUMMED_SWEEP_PHASES`` — but
-    a session that never arms PHASE_VERIFY itself used to leave that reusable
-    stimulus discoverable only under its cloud-phase filename.
-
-    Confirmed against real bench data
-    (``captures/bench-20260730/bundle-d76b55bc6b67``, a measure-stage-only
-    session): ``cloud_measure_program.wav`` was on disk, no summed-sweep
-    stimulus was recoverable under a predictable name.
-
-    ``_play`` must now ALSO persist ``summed_program.wav`` alongside the
-    phase-named file whenever the armed phase is CLOUD_MEASURE, CLOUD_VERIFY,
-    or VERIFY itself. This is a NEW, dedicated filename — never
-    ``verify_program.wav`` — because corpus-index tooling derives "which
-    phases this bundle reached" from which ``{phase}_program.wav`` files
-    exist; reusing that name would make a cloud-only bundle false-report
-    having reached VERIFY (adversarial-gate SF1, PR #2028)."""
-    import jasper.active_speaker.program_playback as program_playback_mod
-    import jasper.audio_measurement.program as program_mod
-
-    written: list[Path] = []
-
-    def fake_write_program_wav(path, program):
-        written.append(Path(path))
-        Path(path).write_bytes(b"fake-wav-bytes")
-
-    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
-        return SimpleNamespace()
-
-    monkeypatch.setattr(program_mod, "write_program_wav", fake_write_program_wav)
-    monkeypatch.setattr(
-        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
-    )
-    _patch_measurement_window(monkeypatch, [])
-
-    class _FakeEvidenceStore:
-        bundle_dir = tmp_path
-
-        def identify_artifact(self, rel):
-            return SimpleNamespace(fingerprint="fake")
-
+    bound = {}
+    graph = SimpleNamespace(installed_graph_yaml=lambda: "graph")
+    def bind_graph(profile, **kwargs):
+        bound["profile"], bound["graph_dir"] = profile, kwargs["config_dir"]
+        return graph
+    def bind_compose(**kwargs):
+        bound["composer"] = kwargs
+        return "composer"
+    monkeypatch.setattr(door, "bind_measurement_graph", bind_graph)
+    monkeypatch.setattr(composition, "bind_program_composer", bind_compose)
+    monkeypatch.setattr(v2host, "_applied_profile_now", lambda: {"profile": "applied"})
+    protection = {"woofer": (), "tweeter": ()}
     play = v2host.bind_production_play(
-        run_async=asyncio.run,
-        camilla_factory=lambda: object(),
-        evidence_store=_FakeEvidenceStore(),
-        capture_session_id="cap_verify_persist_probe",
-        topology=object(),
-        preset=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
+        program_for_phase=lambda phase: phase, camilla_factory=lambda: None,
+        evidence_store=SimpleNamespace(bundle_dir=tmp_path), capture_session_id="capture",
+        topology=None, preset=None, role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="null", safety_profile={}, role_targets={},
+        session_volume_db=-20, protection_sections_by_role=protection,
     )
-    play(PHASE_CLOUD_MEASURE, object())
-
-    session_dir = tmp_path / "crossover_v2" / "cap_verify_persist_probe"
-    assert (session_dir / "cloud_measure_program.wav").exists()
-    # The phase-named file's presence must stay a reliable phase-reach signal:
-    # CLOUD_MEASURE alone must NOT create a verify_program.wav that would make
-    # this cloud-only session false-report having reached VERIFY.
-    assert not (session_dir / "verify_program.wav").exists()
-    assert (session_dir / "summed_program.wav").exists(), (
-        "CLOUD_MEASURE must also persist the canonical summed_program.wav — "
-        "a session that never arms a literal VERIFY capture would otherwise "
-        "leave its reusable stimulus un-replayable offline (#1976)"
-    )
-    # Written exactly once each — the alias is not re-derived or re-rendered,
-    # just a second write of the SAME program object already validated above.
-    assert written == [
-        session_dir / "cloud_measure_program.wav",
-        session_dir / "summed_program.wav",
-    ]
-
-
-def test_verify_play_does_not_overwrite_existing_summed_program_wav(
-    monkeypatch, tmp_path
-):
-    """A CLOUD_VERIFY position captured after the session's own VERIFY anchor
-    must not re-render (or clobber) the summed_program.wav VERIFY already
-    wrote — the alias write is a fill-if-absent, not an unconditional write,
-    so repeated cloud positions in one session cost one extra WAV write, not
-    N."""
-    import jasper.active_speaker.program_playback as program_playback_mod
-    import jasper.audio_measurement.program as program_mod
-
-    write_calls: list[Path] = []
-
-    def fake_write_program_wav(path, program):
-        write_calls.append(Path(path))
-        Path(path).write_bytes(b"fake-wav-bytes")
-
-    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
-        return SimpleNamespace()
-
-    monkeypatch.setattr(program_mod, "write_program_wav", fake_write_program_wav)
-    monkeypatch.setattr(
-        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
-    )
-    _patch_measurement_window(monkeypatch, [])
-
-    class _FakeEvidenceStore:
-        bundle_dir = tmp_path
-
-        def identify_artifact(self, rel):
-            return SimpleNamespace(fingerprint="fake")
-
-    play = v2host.bind_production_play(
-        run_async=asyncio.run,
-        camilla_factory=lambda: object(),
-        evidence_store=_FakeEvidenceStore(),
-        capture_session_id="cap_verify_no_clobber_probe",
-        topology=object(),
-        preset=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
-    )
-    play(PHASE_VERIFY, object())
-    play(PHASE_CLOUD_VERIFY, object())
-
-    session_dir = tmp_path / "crossover_v2" / "cap_verify_no_clobber_probe"
-    assert write_calls == [
-        session_dir / "verify_program.wav",
-        session_dir / "summed_program.wav",
-        session_dir / "cloud_verify_program.wav",
-    ], (
-        "summed_program.wav must be written exactly once, by VERIFY itself "
-        "(the phase-named verify_program.wav write, then the summed_program.wav "
-        "fill) — CLOUD_VERIFY's fill-if-absent check must skip it"
-    )
-
-
-def test_summed_program_wav_persist_failure_is_best_effort(monkeypatch, tmp_path):
-    """A full disk or permissions fault writing the summed_program.wav
-    diagnostic copy must never abort the measurement (adversarial-gate SF4,
-    PR #2028) — matches the ``bank_take`` convention elsewhere in this module:
-    catch, log at WARN, keep going. The phase-named WAV (the file actually
-    played) must still have been written before the failure."""
-    import jasper.active_speaker.program_playback as program_playback_mod
-    import jasper.audio_measurement.program as program_mod
-
-    calls: list[Path] = []
-
-    def flaky_write_program_wav(path, program):
-        calls.append(Path(path))
-        if Path(path).name == "summed_program.wav":
-            raise OSError("ENOSPC: no space left on device")
-        Path(path).write_bytes(b"fake-wav-bytes")
-
-    async def fake_verified_program_aplay(bundle_dir, artifact, **kwargs):
-        return SimpleNamespace()
-
-    monkeypatch.setattr(program_mod, "write_program_wav", flaky_write_program_wav)
-    monkeypatch.setattr(
-        program_playback_mod, "verified_program_aplay", fake_verified_program_aplay
-    )
-    _patch_measurement_window(monkeypatch, [])
-
-    class _FakeEvidenceStore:
-        bundle_dir = tmp_path
-
-        def identify_artifact(self, rel):
-            return SimpleNamespace(fingerprint="fake")
-
-    play = v2host.bind_production_play(
-        run_async=asyncio.run,
-        camilla_factory=lambda: object(),
-        evidence_store=_FakeEvidenceStore(),
-        capture_session_id="cap_summed_persist_fails_probe",
-        topology=object(),
-        preset=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
-    )
-    # Must not raise — the OSError from the summed_program.wav write is
-    # swallowed, not propagated into the measurement.
-    play(PHASE_CLOUD_MEASURE, object())
-
-    session_dir = tmp_path / "crossover_v2" / "cap_summed_persist_fails_probe"
-    assert (session_dir / "cloud_measure_program.wav").exists(), (
-        "the phase-named WAV that was actually played must persist even "
-        "when the best-effort diagnostic copy fails"
-    )
-    assert not (session_dir / "summed_program.wav").exists()
+    assert play.graph is graph and play.compose == "composer"
+    assert bound["profile"].protection_sections_by_role is protection
+    assert bound["profile"].applied_profile == {"profile": "applied"}
+    assert bound["graph_dir"] == bound["composer"]["config_dir"] == str(DEFAULT_CAMILLA_CONFIG_DIR)
+    assert bound["composer"]["graph_yaml"]() == "graph"
 
 
 # --- W6 run-6 Blocker M + Finding N: apply's real fingerprint-vocabulary seam ---
@@ -7795,7 +7401,6 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
             driver_caps_dbfs=CAPS,
             session_volume_db=SESSION_VOLUME_DB,
             seams=V2FlowSeams(
-                play=lambda *a, **k: None,
                 analyze=lambda *a, **k: None,
                 publish_check=lambda *a, **k: None,
                 publish_candidate=lambda *a, **k: None,
@@ -8261,30 +7866,10 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     return pointer
 
 
-def test_the_rearm_stand_in_matches_prepare_v2_sessions_durable_write_set():
-    """``_rearm_verify`` below is a stand-in, and a stand-in is only evidence
-    while it stays faithful. Its fidelity claim is narrow and checkable:
-    the verify-only prepare reaches durable v2 state through
-    ``persist_conductor_state`` and nothing else. A future re-arm that writes
-    the state file by another route fails here rather than quietly making the
-    two tests below prove something about a shape production no longer has."""
-    import inspect
-
-    source = inspect.getsource(v2host.prepare_v2_session)
-
-    assert "persist_conductor_state(" in source
-    for direct_writer in (
-        "save_v2_state(", "clear_v2_state(", "reset_v2_journey_state(",
-        "observe_apply_success(", "_update_current_review(",
-    ):
-        assert direct_writer not in source, direct_writer
-
-
 def _rearm_verify():
     """What the verify-only prepare does to durable state on a ``verify_retry``:
     re-derive the session context (which re-ensures the crossover preview) and
-    persist a conductor under a BRAND-NEW session id. The write-set fidelity
-    of this stand-in is pinned by the test directly above."""
+    persist a conductor under a new session id."""
     v2host.ensure_crossover_preview_ready()
     v2host.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
 
@@ -8439,7 +8024,6 @@ def test_a_persist_after_a_rollback_keeps_the_reverted_candidate_applied(
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
-            play=lambda *a, **k: None,
             analyze=lambda *a, **k: None,
             publish_check=lambda *a, **k: None,
             publish_candidate=lambda *a, **k: None,

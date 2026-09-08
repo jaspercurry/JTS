@@ -26,14 +26,12 @@ import math
 import numbers
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import ExcitationProgram
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
 from .crossover_v2.contracts import (
-    DRIVER_ROLES,
-    POLARITY_INVERTED,
     POLARITY_NORMAL,
 )
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
@@ -80,7 +78,6 @@ __all__ = [
     "pose_at_angle",
     "request_for_program",
     "walk_price",
-    "candidate_measure_axes",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -109,8 +106,7 @@ __all__ = [
 #: the P2 forward model.
 REGIME_PER_DRIVER = "per_driver"
 
-#: One sweep through the graph as it stands (regime S): the system response at that
-#: angle, the before/after evidence.
+#: One sweep through the selected summed graph: the system response at that angle.
 REGIME_SUMMED = "summed"
 
 REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED)
@@ -416,7 +412,9 @@ def request_for_program(
 ) -> AngleCaptureRequest:
     """The walk one named program asks for, in the table's own order.
 
-    Per-driver at every pose (:data:`WALK_REGIME_UNSUPPORTED`). A pose's ``repeats``
+    A nonempty candidate tuple uses summed captures; an empty id selects base.
+    Omit candidates for per-driver captures.
+    A pose's ``repeats``
     become that many ADJACENT identical stops, so the microphone moves once per DISTINCT
     pose. The graph flags pass through untouched -- a program states POSE geometry only.
     ``candidates`` expands POSE-MAJOR, CANDIDATE-MINOR (adjacent stops, one place);
@@ -427,7 +425,7 @@ def request_for_program(
         stops=tuple(
             AngleStop(
                 pose.azimuth_deg,
-                REGIME_PER_DRIVER,
+                REGIME_SUMMED if candidates else REGIME_PER_DRIVER,
                 pose.elevation_deg,
                 candidate,
             )
@@ -568,8 +566,6 @@ def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
 
 
-#: A stop is not per-driver. A session lateral group plays MEASURE's
-#: per-driver object at every pose, so a summed stop would measure wrong.
 WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 
 #: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
@@ -609,10 +605,6 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 #: guided captures). Raised by the CALLER; this module reads no box state.
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
-#: A stop names a banked candidate this walk cannot PLAY. The per-driver
-#: MEASURE graph omits crossover, linearization and applied delays by
-#: contract, so only alignment axes can vary; a candidate carrying
-#: linearization EQ is not measurable through this path at all.
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 
 WALK_REFUSAL_REASONS = frozenset({
@@ -643,66 +635,13 @@ class LateralWalkRefused(CrossoverV2FlowError):
         self.detail = detail
 
 
-def candidate_measure_axes(candidate: Any) -> dict[str, Any]:
-    """The :class:`MeasureSpec` axes a banked candidate implies, or a refusal. A stop plays the
-    per-driver MEASURE graph, which omits crossover, linearization and delays, so only
-    ALIGNMENT can vary; anything else refuses as :data:`WALK_CANDIDATE_NOT_MEASURABLE`.
-    """
-    from .crossover_alignment import POLARITY_INVERT
-    from .crossover_declaration import preset_crossover_geometry
-
-    fingerprint = str(getattr(candidate, "fingerprint", "") or "")
-    if getattr(candidate, "linearization", None):
-        raise LateralWalkRefused(
-            WALK_CANDIDATE_NOT_MEASURABLE,
-            f"banked candidate {fingerprint} carries linearization EQ, and a "
-            "per-driver measurement graph plays no linearization",
-        )
-    minted = preset_crossover_geometry(getattr(candidate, "source_preset", None))
-    if minted is None:
-        raise LateralWalkRefused(
-            WALK_CANDIDATE_NOT_MEASURABLE,
-            f"banked candidate {fingerprint} declares no single readable "
-            "crossover, so the branch its alignment flips cannot be named",
-        )
-    roles, _geometry = minted
-    alignment = getattr(candidate, "alignment", None)
-    inverted = getattr(alignment, "polarity", None) == POLARITY_INVERT
-    # The candidate's convention is the region's UPPER driver relative to its
-    # lower one, which is the branch named here.
-    inverted_role = roles[1] if inverted else ""
-    delay_us = float(getattr(alignment, "delay_us", None) or 0.0)
-    # A zero delay names no branch. ``MeasuredCrossoverAlignment`` accepts the
-    # pair ``(0.0, role)`` and :class:`MeasureSpec` refuses it, so an alignment
-    # that delays nothing is stated here as one that names nothing rather than
-    # reaching the spec as a half-stated pair.
-    delayed_role = (
-        str(getattr(alignment, "delay_role", None) or "") if delay_us else ""
-    )
-    for axis, role in (
-        ("inverted_role", inverted_role), ("delayed_role", delayed_role),
-    ):
-        if role and role not in DRIVER_ROLES:
-            raise LateralWalkRefused(
-                WALK_CANDIDATE_NOT_MEASURABLE,
-                f"banked candidate {fingerprint} names {role!r} as its "
-                f"{axis}, and a measurement graph carries only "
-                f"{', '.join(DRIVER_ROLES)}",
-            )
-    return {
-        "polarity": POLARITY_INVERTED if inverted else POLARITY_NORMAL,
-        "inverted_role": inverted_role,
-        "delayed_role": delayed_role,
-        "delay_us": delay_us,
-    }
-
-
 def session_lateral_walk(
     request: AngleCaptureRequest,
     *,
     externally_positioned: bool,
     base_entries: int,
     plans_cloud_group: bool,
+    supported_summed_candidates: bool = False,
 ) -> tuple[CloudPositionPrompt, ...]:
     """The poses a measurement session should walk for this request.
 
@@ -724,11 +663,13 @@ def session_lateral_walk(
     off_regime = sorted({
         stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER
     })
-    if off_regime:
+    if off_regime and not (
+        supported_summed_candidates
+        and all(stop.regime == REGIME_SUMMED for stop in request.stops)
+    ):
         raise LateralWalkRefused(
             WALK_REGIME_UNSUPPORTED,
-            f"a session walk plays the {REGIME_PER_DRIVER} program at every "
-            f"pose, so it cannot take {', '.join(off_regime)} stops",
+            f"unsupported capture regimes for this session: {', '.join(off_regime)}",
         )
     if request.externally_positioned != externally_positioned:
         raise LateralWalkRefused(

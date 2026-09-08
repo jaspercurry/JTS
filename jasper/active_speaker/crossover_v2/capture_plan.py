@@ -18,6 +18,7 @@ import logging
 import math
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from itertools import groupby
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
@@ -1365,6 +1366,36 @@ def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
 POSITION_DEG_KEY = "position_deg"
 POSITION_VERTICAL_DEG_KEY = "position_vertical_deg"
 POSITION_ROLE_KEY = "position_role"
+POSITION_BATCH_START_KEY = "position_batch_start"
+POSITION_BATCH_SIZE_KEY = "position_batch_size"
+POSITION_BATCH_CONFIG_KEY = "position_batch_config"
+POSITION_HAND_RELEASED_KEY = "position_hand_released"
+
+
+def _candidate_batch_screens(
+    indexes: Sequence[int], prompts: Sequence[CloudPositionPrompt],
+    candidate_ids: Sequence[str],
+) -> dict[int, dict[str, str]]:
+    if len(candidate_ids) != len(indexes) or any(not isinstance(cid, str) for cid in candidate_ids):
+        raise CrossoverV2FlowError("candidate ids must name every lateral capture")
+    if not indexes:
+        return {}
+    screens = {}
+    for _pose, group in groupby(
+        enumerate(prompts), key=lambda row: (
+            position_angle_deg(row[1]), position_elevation_deg(row[1]),
+        ),
+    ):
+        offsets = [offset for offset, _prompt in group]
+        for ordinal, offset in enumerate(offsets, 1):
+            screens[indexes[offset]] = {
+                "candidate_id": candidate_ids[offset],
+                POSITION_BATCH_START_KEY: str(indexes[offsets[0]]),
+                POSITION_BATCH_SIZE_KEY: str(len(offsets)),
+                POSITION_BATCH_CONFIG_KEY: str(ordinal),
+                "progress": f"Config {ordinal} of {len(offsets)} — keep the mic still.",
+            }
+    return screens
 
 
 def _entry_policy(
@@ -1415,6 +1446,7 @@ def build_v2_capture_plan(
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+    lateral_candidate_ids: Sequence[str] | None = None,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan.
 
@@ -1430,6 +1462,9 @@ def build_v2_capture_plan(
     clause). Entry durations derive from the composed programs plus a lead/tail
     margin — MEASURE is sized from a nominal gain plan, exact because sweep and
     gap lengths are gain-independent.
+
+    ``lateral_candidate_ids`` names one full summed graph per lateral prompt.
+    The execution owner must compile and identify those graphs before capture.
     """
     from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 
@@ -1546,25 +1581,34 @@ def build_v2_capture_plan(
             },
         ),
     ]
-    # ``duration_ms`` is the MEASURE program's because each pose replays it
-    # verbatim (``program_for_phase``), not the summed sweep's.
     lateral_indexes = [
         i for i, p in sorted(index_phase.items()) if p == PHASE_LATERAL
     ]
     lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
+    candidate_screens = (
+        _candidate_batch_screens(lateral_indexes, lateral_table, lateral_candidate_ids)
+        if lateral_candidate_ids is not None else {}
+    )
     for offset, capture_index in enumerate(lateral_indexes):
         prompt = _positioned_prompt(lateral_table[offset], shape)
+        policy = _entry_policy(shape, prompt)
+        batch = candidate_screens.get(capture_index, {})
+        if batch:
+            policy[POSITION_HAND_RELEASED_KEY] = str(not shape.externally_positioned).lower()
+            if int(batch[POSITION_BATCH_CONFIG_KEY]) > 1:
+                policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
+                              countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
         entries.append(
             CapturePlanEntry(
                 index=capture_index - 1,
                 kind_label="lateral",
-                duration_ms=measure_ms,
-                screen=_cloud_entry_screen(
+                duration_ms=cloud_ms if batch else measure_ms,
+                screen={**_cloud_entry_screen(
                     progress=capture_progress_label(capture_index, target),
                     title=prompt.headline,
                     body=prompt.detail,
-                    policy=_entry_policy(shape, prompt),
-                ),
+                    policy=policy,
+                ), **batch},
             )
         )
     # The two prompted groups. ``index_phase`` is 1-based (the capture's own
@@ -2008,6 +2052,7 @@ def build_v2_session_spec(
     include_lateral: bool = False,
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+    lateral_candidate_ids: Sequence[str] | None = None,
     **spec_kwargs: Any,
 ) -> Any:
     """One stage-1 capture spec, optionally including the pre-apply cloud.
@@ -2030,6 +2075,7 @@ def build_v2_session_spec(
         include_lateral=include_lateral,
         include_entry_baseline=include_entry_baseline,
         lateral_prompts=lateral_prompts,
+        lateral_candidate_ids=lateral_candidate_ids,
     )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     # EITHER group makes this a walk. The entry baseline is deliberately NOT a

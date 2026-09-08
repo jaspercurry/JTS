@@ -13,11 +13,16 @@ constructs the same engine and must not pull the web host in.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping
+import asyncio
+from functools import partial
+from itertools import count
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from .playback_transaction import PlaybackTransaction
 from .program_transaction import (
     Compose,
+    ProgramForStimulus,
     ProgramPlaybackTransaction,
     StimulusCapture,
 )
@@ -27,54 +32,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram
 
 __all__ = [
-    "NoRoutedPhasesGraph",
     "bind_engine_seams",
     "bind_program_playback_seams",
+    "bind_program_composer",
     "confirm_graph_is_live",
 ]
-
-
-class NoRoutedPhasesGraph:
-    """The graph slot for a stage that measures nothing through one.
-
-    Stage 2 is verify-class on every tier: it plays its summed sweep through the
-    APPLIED graph, so there is no per-driver branch to flip, delay or trim and
-    any such coordinate is a caller error (ruling S12 — never bank a record
-    naming a coordinate that was not played). ``""`` is the seam's own spelling
-    for "the host cannot name the graph".
-    """
-
-    async def install(
-        self,
-        inverted_roles: tuple[str, ...] = (),
-        measurement_delays_us: Mapping[str, float] | None = None,
-        level_trims_db: Mapping[str, float] | None = None,
-    ) -> str:
-        if inverted_roles:
-            raise ValueError(
-                "this stage measures through the applied graph and has no "
-                "per-driver branch to invert; cannot flip "
-                + ", ".join(sorted(inverted_roles))
-            )
-        if measurement_delays_us:
-            raise ValueError(
-                "this stage measures through the applied graph and has no "
-                "per-driver branch to delay; cannot delay "
-                + ", ".join(sorted(measurement_delays_us))
-            )
-        if level_trims_db:
-            raise ValueError(
-                "this stage measures through the applied graph and has no "
-                "per-driver branch to trim; cannot level-match "
-                + ", ".join(sorted(level_trims_db))
-            )
-        return ""
-
-    async def patch(self, changes: Mapping[str, Any]) -> None:
-        return None
-
-    async def restore(self) -> None:
-        return None
 
 
 def bind_engine_seams(
@@ -85,21 +47,15 @@ def bind_engine_seams(
     session_volume_plan: Any,
     compose_stimulus: Compose,
     capture_stimulus: StimulusCapture | None = None,
-    routed_phases: bool = True,
 ) -> EngineSeams:
-    """The engine's four seams from a host's parts — one binder, any caller.
-
-    ``routed_phases=False`` binds :class:`NoRoutedPhasesGraph`: a verify-class
-    stage grades through the APPLIED graph and must not swap the measurement
-    graph in and straight back out.
-    """
+    """Bind the engine's graph, volume, records and playback owners."""
     play: PlaybackTransaction = ProgramPlaybackTransaction(
         compose=compose_stimulus,
         session_volume_plan=session_volume_plan,
         capture=capture_stimulus,
     )
     return EngineSeams(
-        graph=session_graph if routed_phases else NoRoutedPhasesGraph(),
+        graph=session_graph,
         volume=volume_claim,
         records=records,
         play=play,
@@ -153,6 +109,10 @@ def bind_program_playback_seams(
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
     timeout_s: float = 60.0,
+    graph_yaml: str,
+    summed: bool = False,
+    phase: str = "",
+    before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """The real CamillaController-backed seams for :func:`play_program`.
 
@@ -164,25 +124,41 @@ def bind_program_playback_seams(
     """
     from jasper.dsp_apply import dsp_writer_lock
 
-    from ..program_admission import readmit_program_from_wav
+    from ..program_admission import (
+        readmit_program_from_wav,
+        readmit_summed_program_from_wav,
+    )
     from ..program_playback import verified_program_aplay
 
+    if not graph_yaml:
+        raise ValueError("playback requires its installed measurement graph")
+
     async def _play_wav() -> Any:
+        await confirm_graph_is_live(cam, graph_yaml)
+        if before_play is not None:
+            await before_play(program, artifact, phase or program.phase)
         return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
 
     async def _readmit() -> Any:
         # ``declared_sensitivities`` MUST match what the session composed
         # against: readmission re-resolves every cap, so dropping it here would
         # refuse a program composed at a different HF ceiling.
-        return readmit_program_from_wav(
-            program,
-            wav_path,
+        arguments = dict(
             topology=topology,
             safety_profile=safety_profile,
             role_targets=role_targets,
             session_volume_db=session_volume_db,
             declared_sensitivities=declared_sensitivities,
         )
+        readmit: Callable[[], Any]
+        if not summed:
+            readmit = partial(readmit_program_from_wav, program, wav_path, **arguments)
+        else:
+            readmit = partial(
+                readmit_summed_program_from_wav, program, wav_path,
+                graph_yaml=graph_yaml, **arguments,
+            )
+        return await asyncio.to_thread(readmit)
 
     return {
         "play_wav": _play_wav,
@@ -191,3 +167,64 @@ def bind_program_playback_seams(
             config_dir, source="crossover_v2_program"
         ),
     }
+
+
+def bind_program_composer(
+    *,
+    program_for_spec: Callable[[Any, float | None], "ExcitationProgram"],
+    store: Any,
+    capture_session_id: str,
+    cam_factory: Callable[[], Any],
+    config_dir: str,
+    topology: Any,
+    safety_profile: Mapping[str, Any],
+    role_targets: Mapping[str, str],
+    session_volume_db: float,
+    declared_sensitivities: Mapping[str, float] | None = None,
+    before_play: Callable[[Any, Any, str], Awaitable[None]] | None = None,
+    graph_yaml: Callable[[], str],
+) -> Compose:
+    """Render each take once and bind admission, locked graph proof and playback.
+
+    ``graph_yaml`` supplies the installed graph, including any driver overlays.
+    ``before_play`` runs after its live proof, inside the same writer lock.
+    """
+    from jasper.audio_measurement.program import write_program_wav
+
+    from .measure_spec import GRAPH_SCOPE_DRIVERS
+
+    ordinals = count()
+    bundle_dir = Path(store.bundle_dir)
+
+    async def compose(
+        *, spec: Any, position_deg: int | None = None, prompt: str = "",
+        level_db: float = 0.0, stimulus_dbfs: float | None = None,
+    ) -> ProgramForStimulus:
+        program = program_for_spec(spec, stimulus_dbfs)
+        expected_graph = graph_yaml()
+        if not expected_graph:
+            raise ValueError("playback has no installed measurement graph")
+        phase = spec.program_phase or program.phase
+        wav_rel = (
+            f"crossover_v2/{capture_session_id}/"
+            f"{phase}_{next(ordinals):02d}_program.wav"
+        )
+        wav_path = bundle_dir / wav_rel
+
+        def render() -> Any:
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
+            write_program_wav(str(wav_path), program)
+            return store.identify_artifact(wav_rel)
+
+        artifact = await asyncio.to_thread(render)
+        return ProgramForStimulus(program, bind_program_playback_seams(
+            cam_factory(), bundle_dir=str(bundle_dir), artifact=artifact,
+            config_dir=config_dir, program=program, wav_path=str(wav_path),
+            topology=topology, safety_profile=safety_profile,
+            role_targets=role_targets, session_volume_db=session_volume_db,
+            declared_sensitivities=declared_sensitivities,
+            graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
+            phase=phase, before_play=before_play,
+        ))
+
+    return compose

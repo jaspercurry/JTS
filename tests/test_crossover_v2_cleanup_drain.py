@@ -31,7 +31,6 @@ from typing import Any, Callable
 import pytest
 
 from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
-from jasper.audio_measurement.wired_capture import WiredMicDevice
 from jasper.capture_protocol import CapturePlan
 from jasper.volume_owner import ClaimKind, VolumeOwner
 from jasper.web import correction_crossover_v2 as v2host
@@ -115,10 +114,7 @@ def _wired_row(
             volume=hooks,
             stop_event=threading.Event(),
             stop_lock=threading.Lock(),
-            device=WiredMicDevice(
-                card_id="UMIK2", card_index=0, usb_id="2752:0072",
-                model_key="minidsp_umik2", model_label="miniDSP UMIK-2",
-            ),
+            capture_stimulus=lambda *_: pytest.fail("the empty plan must not capture"),
             ceiling_s=ceiling_s,
             complete_event=threading.Event(),
             poll_interval_s=0.01,
@@ -196,33 +192,27 @@ POST_WALK = tuple(row for row in ROWS if "-complete-" in row.id)
 
 
 @pytest.mark.parametrize("row", POST_WALK, ids=lambda row: row.id)
-def test_a_failing_drain_does_not_replace_the_persists_own_error(row, monkeypatch):
-    """A drain raising inside the ``finally`` would REPLACE the in-flight
-    persist error and change the failure identity the outer net logs and
-    flips ``/status.capture`` on.
-
-    What stops it is that BOTH branches are best-effort over the same
-    ``(OSError, RuntimeError, ValueError)`` tuple — ``_abandon_best_effort``
-    for one, the inline close guard for the other. This pins that symmetry:
-    strip either guard and the persist's own error stops being the one that
-    arrives.
-    """
+def test_a_failing_drain_keeps_the_persist_failure_in_its_exception_chain(row, monkeypatch):
+    """Cleanup failure stays visible, with the failed write retained as context."""
     def _raise(*a: Any, **k: Any) -> None:
         raise DISK_FULL
 
     monkeypatch.setattr(v2host, row.persist, _raise)
 
+    monkeypatch.setattr(v2host, "_persist_terminal_failure", lambda *_a, **_kw: None)
+    drain_error = ValueError("the fader would not answer")
     async def _drain_fails() -> None:
-        raise ValueError("the fader would not answer")
+        raise drain_error
 
     async def _drive() -> None:
-        with pytest.raises(OSError) as caught:
+        with pytest.raises(ValueError) as caught:
             await row.drive(
                 v2host.V2VolumeHooks(
                     open=_opened, close=_drain_fails, abandon=_drain_fails,
                 ),
                 monkeypatch,
             )
-        assert caught.value is DISK_FULL, "the drain's error replaced the persist's"
+        assert caught.value is drain_error
+        assert caught.value.__context__ is DISK_FULL
 
     asyncio.run(_drive())

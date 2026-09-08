@@ -817,7 +817,10 @@ def test_the_measure_sweep_fit_rides_the_snapshot():
     from jasper.active_speaker.crossover_v2 import priors as _priors_mod
 
     fakes = FakeSeams()
-    c = _conductor(fakes, driver_sweep_duration_limits_s={"woofer": 3.5})
+    c = _conductor(
+        fakes,
+        driver_sweep_duration_limits_s={"woofer": 3.5, "tweeter": 10.0},
+    )
     _run_phase(c, 1, 1)  # CHECK solve -> MEASURE composed at the fitted length
 
     expected = _priors_mod.measure_sweep_durations_s(
@@ -883,7 +886,7 @@ def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
         session_volume_db=SESSION_VOLUME_DB,
         seams=fakes.seams(),
         driver_spacing_m=0.15,
-        driver_sweep_duration_limits_s={"woofer": 3.5},
+        driver_sweep_duration_limits_s={"woofer": 3.5, "tweeter": 10.0},
     )
     _run_phase(c, 1, 1)  # CHECK solve -> MEASURE composed, woofer sweep fitted
 
@@ -1735,6 +1738,7 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
         safety_profile={},
         role_targets={},
         session_volume_db=SESSION_VOLUME_DB,
+        graph_yaml="program: graph\n",
     )
     # The count IS the claim, and wave 6b shrank it: the three graph seams
     # moved to ``MeasurementSessionGraph``, which installs one graph per session
@@ -1904,5 +1908,4 @@ def test_shipped_v2_plans_serialize_to_byte_identical_wire_payloads():
             f"{label} v2 capture plan wire bytes changed: "
             f"len={len(raw)} sha256={actual_sha}"
         )
-
 

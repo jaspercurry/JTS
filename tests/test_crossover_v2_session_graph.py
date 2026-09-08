@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -60,7 +61,7 @@ class FakeCam:
         return True
 
 
-def _graph(cam, *, tmp_path, emits=None):
+def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
     emitted = emits if emits is not None else []
 
     def _emit(
@@ -97,6 +98,7 @@ def _graph(cam, *, tmp_path, emits=None):
         cam_factory=lambda: cam,
         writer_lock=_lock,
         confirm_live=_confirm,
+        emit_scoped=emit_scoped,
     )
     graph.emitted = emitted  # type: ignore[attr-defined]
     return graph
@@ -277,6 +279,7 @@ def test_restore_puts_the_entry_graph_back_and_is_a_noop_twice(tmp_path):
     cam = FakeCam(entry_path=entry)
     graph = _graph(cam, tmp_path=tmp_path)
     asyncio.run(graph.install())
+    Path(entry).write_text("entry: rewritten\n")
 
     asyncio.run(graph.restore())
     assert cam.live == "entry: graph\n"
@@ -353,24 +356,65 @@ def test_a_rejected_restore_is_a_different_line_from_a_raised_one(tmp_path, capl
     assert "result=rejected" in caplog.text
 
 
-def test_a_failed_restore_does_not_leave_the_session_owning_a_graph(tmp_path):
-    """A second drain must not re-enter the same failing path.
-
-    Every drain arm calls restore; if the first failure left the entry path
-    held, the close arm's error would be replaced by the abandon arm's identical
-    one and the original cause would be lost.
-    """
+@pytest.mark.parametrize("failure", ["unavailable", "not_live"])
+def test_a_failed_restore_retains_the_entry_graph_for_retry(tmp_path, failure):
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)
     asyncio.run(graph.install())
-    cam.load_raises = CamillaUnavailable("websocket closed")
+    original_confirm = graph._confirm_live
+    if failure == "unavailable":
+        cam.load_raises = CamillaUnavailable("websocket closed")
+    else:
+        async def not_live(_cam, _text):
+            raise RuntimeError("entry graph is not live")
+        graph._confirm_live = not_live
 
     with pytest.raises(SessionGraphError):
         asyncio.run(graph.restore())
 
-    assert graph.installed is False
+    assert graph.installed is True
+    Path(cam.entry_path).unlink()
     cam.load_raises = None
-    asyncio.run(graph.restore())  # no second raise
+    graph._confirm_live = original_confirm
+    asyncio.run(graph.restore())
+    assert graph.installed is False
+    assert cam.live == "entry: graph\n"
+
+
+def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tmp_path):
+    emitted = []
+
+    def emit_scoped(scope, candidate_id):
+        emitted.append((scope, candidate_id))
+        return f"scope: {scope}\ncandidate: {candidate_id}\n"
+
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
+    with pytest.raises(SessionGraphError):
+        graph.installed_graph_yaml()
+    scopes = [("drivers", ""), ("base", ""), ("speaker_tune", ""), ("candidate", "a"), ("candidate", "b")]
+    fingerprints = {}
+    for scope, candidate_id in scopes * 2:
+        graph.select_scope(scope, candidate_id)
+        fingerprint = asyncio.run(graph.install())
+        assert fingerprint == fingerprints.setdefault((scope, candidate_id), fingerprint)
+        assert graph.installed_graph_yaml() == cam.live
+    assert len(set(fingerprints.values())) == len(scopes)
+    assert emitted == scopes[1:]
+    assert cam.ops.count("get_path") == 1
+    cam.live = "other: graph\n"
+    asyncio.run(graph.restore())
+    assert cam.live == "entry: graph\n"
+    with pytest.raises(SessionGraphError):
+        graph.installed_graph_yaml()
+
+
+def test_scope_refusal_cannot_load_an_unrequested_graph(tmp_path):
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+    with pytest.raises(SessionGraphError):
+        graph.select_scope("base")
+    assert cam.ops == []
 
 
 def test_patch_refuses_before_there_is_a_graph_to_patch(tmp_path):
@@ -411,6 +455,8 @@ def test_a_polarity_variant_is_its_own_graph_with_its_own_fingerprint(tmp_path):
     normal = asyncio.run(graph.install())
     flipped = asyncio.run(graph.install(("tweeter",)))
 
+    assert graph.installed_graph_yaml() == cam.live
+    assert graph.installed_graph_yaml() != graph.graph_yaml()
     assert normal and flipped and normal != flipped
     assert len(graph.emitted) == 2, "one emit per variant"
 

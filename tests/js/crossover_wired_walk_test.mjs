@@ -67,7 +67,7 @@ const PENDING = {
     id: "crossover_v2_position_ready",
     label: "Microphone is at +7°",
     endpoint: "/sound/speaker/crossover/v2/position-ready",
-    body: { index: 3, degrees: 7 },
+    body: { index: 3, attempt: 1, degrees: 7 },
   },
 };
 // The SAME hold shape on an externally positioned walk: the arm's driver
@@ -122,7 +122,7 @@ nextEnvelope = envelope({ status: "awaiting_capture", source: "wired" });
 await release.click();
 assert.deepEqual(posted, [{
   path: "/sound/speaker/crossover/v2/position-ready",
-  body: { index: 3, degrees: 7 },
+  body: { index: 3, attempt: 1, degrees: 7 },
 }]);
 
 // -- state: CAPTURING — released, tone playing ------------------------------ //

@@ -2278,35 +2278,6 @@ async def test_a_volume_that_did_not_confirm_installs_no_graph_at_all(
     v2host.set_volume_plan_for_tests(None)
 
 
-async def test_a_stage_two_session_swaps_no_graph_for_a_walk_with_no_captures(
-    monkeypatch,
-):
-    """B5: verify-class stages grade through the APPLIED graph.
-
-    A measurement graph installed for a stage that takes no routed capture is
-    a full DSP swap and restore that buys nothing and carries every stranding
-    exposure an installed graph carries.
-    """
-    captured: dict[str, Any] = {}
-    real_hooks = v2host._volume_hooks
-
-    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
-        captured["tuning"] = tuning
-        return real_hooks(camilla_factory, context, tuning=tuning, **kw)
-
-    monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
-    _seed_applied_stage_1_state()
-    _stage_2(monkeypatch)
-    session = captured["tuning"]
-
-    from jasper.active_speaker.crossover_v2.composition import (
-        NoRoutedPhasesGraph,
-    )
-
-    assert isinstance(session.seams.graph, NoRoutedPhasesGraph)
-    assert await session.seams.graph.install() == "", (
-        "a stage that measures through no graph cannot name one"
-    )
 
 
 def _session_from_real_open(monkeypatch, fakes) -> Any:

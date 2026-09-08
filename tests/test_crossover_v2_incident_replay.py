@@ -368,7 +368,6 @@ def _conductor() -> CrossoverV2Session:
     method, and every seam exists only because the constructor wants one.
     """
     seams = V2FlowSeams(
-        play=lambda phase, program: None,
         analyze=lambda *a, **k: None,
         publish_check=lambda plan, ambient: None,
         publish_candidate=lambda candidate: None,

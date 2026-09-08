@@ -247,6 +247,15 @@ class TuningSession:
             await self._release_both_after_failed_open(opening_exc)
             raise
 
+    async def restore_graph(self) -> None:
+        """Restore normal routing while keeping the volume lease and session open.
+
+        Record enrichment can call this during ``measure``, so it must not take
+        an operation lock. The next stimulus reinstalls its graph; ``close``
+        remains able to retry a failed restoration.
+        """
+        await self.seams.graph.restore()
+
     async def close(self) -> None:
         """Release both held slots, even if releasing one raises.
 
@@ -369,8 +378,6 @@ class TuningSession:
         cancelled = await _shielded_cleanup(self._give_back_both(opening_exc))
         if cancelled is not None:
             _attach_first(opening_exc, cancelled)
-        self._volume_held = False
-        self._graph_installed = False
 
     async def _give_back_both(self, opening_exc: BaseException) -> None:
         """Both releases, unconditionally, each attaching its own failure.
@@ -382,8 +389,17 @@ class TuningSession:
         WRITE lands first. Nothing here is arming a live pipeline, so this order
         carries no isolation meaning.
         """
-        for release in (self.seams.volume.release, self.seams.graph.restore):
-            await _attach_cleanup_failure(opening_exc, release)
+        self._volume_held = self._graph_installed = True
+        for flag, release in (
+            ("_volume_held", self.seams.volume.release),
+            ("_graph_installed", self.seams.graph.restore),
+        ):
+            try:
+                await release()
+            except Exception as cleanup_exc:  # noqa: BLE001 - preserve the opening failure
+                _attach_first(opening_exc, cleanup_exc)
+            else:
+                setattr(self, flag, False)
 
     async def _release_slots(self) -> None:
         """Give back whatever is still held, in reverse order of taking.
@@ -444,21 +460,8 @@ class TuningSession:
         prompt: str,
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
-        """Prove the graph, prove the level, play, and bank exactly one stimulus.
-
-        **The graph is proven per stimulus, not only at open.** Between two
-        stimuli the writer lock is released and arbitrary time passes, so
-        another DSP writer may have replaced the running graph;
-        ``install()`` is the install-or-prove that puts it back. The fingerprint
-        the record carries is THIS prove's answer, so a record names the graph
-        its own stimulus actually played through. A stage bound to
-        ``composition.NoRoutedPhasesGraph`` answers ``""`` throughout.
-
-        **The polarity variant is chosen HERE, at the same call** (R-1): the flip
-        lives in the graph's per-driver branch, so an inverted capture installs a
-        different graph, and the fingerprint this prove answers with is that
-        graph's.
-        """
+        """Prove this take's graph and level, then play and bank one stimulus."""
+        self.seams.graph.select_scope(spec.graph_scope, spec.candidate_id)
         self._graph_fingerprint = await self.seams.graph.install(
             inverted_roles_for(spec),
             measurement_delays_for(spec),
@@ -528,7 +531,7 @@ class TuningSession:
         return float(reading)
 
     def _require_open(self) -> None:
-        if not self.is_open:
+        if self._spent or not (self._graph_installed and self._volume_held):
             raise SessionStateError(
                 f"session {self.session_id} must be open to measure — its graph "
                 "is proven and its level claimed at open()"
@@ -578,6 +581,9 @@ class TuningSession:
             "session_id": self.session_id,
             "take_id": take_id,
             "kind": spec.kind,
+            "measurement_status": "captured" if outcome.wav_path and not outcome.incident else "incomplete",
+            "graph_scope": spec.graph_scope,
+            **({"program_phase": spec.program_phase} if spec.program_phase else {}),
             "baseline_record_id": "",
             "position_deg": bearing,
             "position_axis": spec.position_axis,

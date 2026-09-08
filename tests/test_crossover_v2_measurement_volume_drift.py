@@ -2,44 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A drifted fader must never read as a measurement (#2925).
+"""Driver and summed playback must prove the fader before emitting audio.
 
-The subject is the 2026-08-23/24 overnight campaign. Every MEASURE-phase
-stimulus played at the household volume (−21.212124) while the session plan
-declared the measurement volume (−12.5), all night, every round.
-``play_program`` brackets every measure-phase stimulus in a graph load/restore
-pair, and the fader was not surviving it.
-
-**The mechanism, corrected (#2929).** #2925 recorded it as "a CamillaDSP
-``SetConfig`` replace re-applies the incoming config's STORED volume". It does
-not: CamillaDSP v4.1.3 has no config field that stores a volume, rejects
-unknown ``devices`` keys outright, and keeps the fader across a reload. The
-writer was JTS's own graph-swap duck — ``_duck_release_target_db`` releases to
-``min(canonical, released)``, where ``canonical`` is the household target
-``percent_to_db(listening_level)``, which is below any measurement volume and
-therefore won that ``min`` on every capture. This file's own ``HOUSEHOLD_DB``
-is the proof: −21.212124 is ``percent_to_db(58)`` to within 3 µdB of a float
-readback, and the other two dB values #2925 attributed to configs are
-``percent_to_db(81)`` and ``percent_to_db(64)``. The swap now takes the level
-the session plan owns as its release reference, so the fader lands on the
-declared volume by construction and the hold below is a TRIPWIRE — in a
-healthy routed session it reads in tolerance and writes nothing.
-
-Two halves ship together and are pinned together here:
-
-* **T1-1** — the play path PROVES the declared measurement volume per
-  stimulus, and refuses the capture when it cannot. It reads; it never writes.
-  The safety framing is not measurement tidiness: ``readmit_program_from_wav``
-  admitted every program against the DECLARED volume, so the excitation-safety
-  ledger was wrong for every capture that night. It was wrong QUIET; the
-  identical seam reversed is LOUD.
-* **T1-2** — the retained record already carried the answer. ``main_volume_db``
-  and ``session_volume_db`` sat two fields apart disagreeing by 8.712 dB from
-  the first walk, and nothing compared them.
-
-``test_the_two_capture_paths_share_one_fader_hold`` is this file's pin: the
-defect lived in the split between the routed MEASURE path and the summed VERIFY
-path, so the discipline is one seam and a per-phase copy would rebuild it.
+The shared composer reads the session level under the DSP writer lock.
+A wrong or unreadable level refuses playback without writing the fader.
 """
 
 from __future__ import annotations
@@ -72,6 +38,7 @@ from jasper.audio_measurement.program import (
     FrequencyBand,
     RoleBand,
     build_check_program,
+    build_verify_program,
 )
 from jasper.web import correction_crossover_v2 as v2host
 
@@ -565,8 +532,10 @@ class _StubCam:
     def __init__(self, *, volume_db: float) -> None:
         self.volume_db = volume_db
         self.volume_writes: list[float] = []
+        self.locked = False
 
     async def get_volume_db(self, *, best_effort: bool = False) -> float:
+        assert self.locked
         return self.volume_db
 
     async def set_volume_db(self, db: float, *, best_effort: bool = False) -> bool:
@@ -580,12 +549,20 @@ class _StubCam:
     async def get_active_config_raw(self, *, best_effort: bool = False) -> str:
         return "devices: {samplerate: 48000}\n"
 
+    async def normalize_config_raw(self, text, *, best_effort=False):
+        return text
+
 
 class _Window:
+    def __init__(self, cam):
+        self.cam = cam
+
     async def __aenter__(self) -> "_Window":
+        self.cam.locked = True
         return self
 
     async def __aexit__(self, *exc: Any) -> bool:
+        self.cam.locked = False
         return False
 
 
@@ -632,7 +609,9 @@ class _Plan:
         )
 
 
-def _program() -> Any:
+def _program(phase: str) -> Any:
+    if phase == PHASE_VERIFY:
+        return build_verify_program(2000.0, sweep_s=0.3)
     return build_check_program(
         [
             RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
@@ -654,101 +633,63 @@ def _drive(
     played: list[str] | None = None,
     on_emit: Any = None,
 ) -> list[str]:
-    """Play one phase through the real seam; return the audio that reached ALSA.
+    """Use the shared composer and playback owner; replace hardware and admission."""
+    from jasper import dsp_apply
+    from jasper.active_speaker import program_admission, program_playback
+    from jasper.active_speaker.crossover_v2 import door
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.audio_measurement import program as program_mod
 
-    Only the transport below the seams is faked, so the ordering under test —
-    writer lock, graph load, fader hold, WAV handoff — is the production one.
-
-    ``played`` may be supplied by the caller so the record SURVIVES a raise.
-    That is the whole point on the refusal tests: "refuses before any audio" is
-    an ORDERING claim, and a test that only catches the exception passes just
-    as happily with the hold moved AFTER the stimulus.
-
-    ``on_emit`` fires at the instant either branch hands its WAV to the
-    transport, so a caller can sample what the speaker's level actually WAS
-    when sound left — the only way to assert the loud direction rather than
-    infer it from the write list.
-    """
     if played is None:
         played = []
 
-    def _emitted(tag: str) -> None:
-        played.append(tag)
+    async def emit(bundle_dir, artifact, *, timeout_s):
+        assert cam.locked
+        played.append(phase)
         if on_emit is not None:
             on_emit()
-    from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker.crossover_v2 import composition as composition_mod
-    from jasper.active_speaker import program_playback as playback_mod
-    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
-    from jasper.audio_measurement import program as program_mod
-    from jasper import measurement_window as coordinator
-
-    monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _Window())
-    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
-    monkeypatch.setattr(
-        camilla_yaml_mod, "emit_active_speaker_program_config",
-        lambda *a, **k: "pipeline: []\n",
-    )
-
-    # The session's measurement graph is stubbed out because these tests are
-    # about the FADER HOLD both playback paths share, not about the graph
-    # transport — which has its own suite
-    # (``tests/test_crossover_v2_session_graph.py``). Leaving it real would put
-    # the production DSP writer lock and a CamillaDSP swap inside a probe whose
-    # instrument is ``volume_writes``.
-    async def _no_install(self) -> str:
-        return "stub"
-
-    async def _no_restore(self) -> None:
-        return None
-
-    monkeypatch.setattr(
-        session_graph_mod.MeasurementSessionGraph, "install", _no_install
-    )
-    monkeypatch.setattr(
-        session_graph_mod.MeasurementSessionGraph, "restore", _no_restore
-    )
-
-    async def _fake_aplay(bundle_dir, artifact, *, alsa_device=None, timeout_s=60.0):
-        _emitted("summed")
         return SimpleNamespace(ok=True)
 
-    monkeypatch.setattr(playback_mod, "verified_program_aplay", _fake_aplay)
-
-    def _fake_seams(cam_arg, **kwargs):
-        async def play_wav() -> Any:
-            _emitted("routed")
-            return SimpleNamespace(ok=True)
-
-        async def readmit() -> Any:
-            return SimpleNamespace(allowed=True, refusals=())
-
-        return {
-            "play_wav": play_wav,
-            "readmit": readmit,
-            "writer_lock": lambda: _Window(),
-        }
-
-    monkeypatch.setattr(composition_mod, "bind_program_playback_seams", _fake_seams)
+    monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _Window(cam))
+    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
+    for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
+        monkeypatch.setattr(
+            program_admission, name,
+            lambda *a, **kw: SimpleNamespace(allowed=True, refusals=()),
+        )
+    monkeypatch.setattr(
+        door, "bind_measurement_graph",
+        lambda *a, **kw: SimpleNamespace(
+            installed_graph_yaml=lambda: "devices: {samplerate: 48000}\n",
+        ),
+    )
     v2host.set_volume_plan_for_tests(plan)
-
-    play = v2host.bind_production_play(
-        run_async=asyncio.run,
+    playback = v2host.bind_production_play(
         camilla_factory=lambda: cam,
         evidence_store=SimpleNamespace(
             bundle_dir=tmp_path,
             identify_artifact=lambda rel: SimpleNamespace(fingerprint="f"),
         ),
         capture_session_id="drift_probe",
-        topology=object(),
-        preset=object(),
+        topology=object(), preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
+        playback_device="hw:Test", safety_profile={}, role_targets={},
         session_volume_db=DECLARED_DB,
+        program_for_phase=_program,
     )
-    play(phase, _program())
+
+    async def run():
+        prepared = await playback.compose(spec=MeasureSpec(
+            kind="verify" if phase == PHASE_VERIFY else "candidate",
+            graph_scope="speaker_tune" if phase == PHASE_VERIFY else "drivers",
+            program_phase=phase,
+        ))
+        await program_playback.play_program(
+            prepared.program, session_volume_plan=plan, **prepared.seams,
+        )
+
+    asyncio.run(run())
     return played
 
 
@@ -756,18 +697,7 @@ def _drive(
 def test_the_two_capture_paths_share_one_fader_hold(
     monkeypatch, tmp_path, phase, caplog
 ):
-    """THE PIN — the defect lived in the SPLIT between the two paths.
-
-    The routed MEASURE path loads a program graph and the summed VERIFY path
-    does not, so only the first carried a duck bracket whose release pulled the
-    fader to the household level. Both reach the same hold anyway: a discipline
-    that only one path runs is the shape that let a whole campaign's measure
-    phases drift while its verify phases held.
-
-    The hold writes nothing now, so a healthy capture's only trace is the
-    liveness line — which is exactly what it is for (#2198): without it, "both
-    paths ran the hold" and "neither did" look identical from here.
-    """
+    """Both graph scopes prove the fader once while holding the writer lock."""
     cam = _StubCam(volume_db=DECLARED_DB)
     with caplog.at_level(logging.INFO, logger=LATCH_LOGGER):
         played = _drive(monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan())
@@ -822,22 +752,22 @@ def test_an_undrifted_capture_still_plays(monkeypatch, tmp_path, phase):
 
 
 @pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
-def test_no_declared_volume_discloses_and_does_not_police(
-    monkeypatch, tmp_path, phase, caplog
+def test_no_declared_volume_refuses_before_audio(
+    monkeypatch, tmp_path, phase,
 ):
-    """A session that declared no measurement volume is a DIFFERENT defect with
-    its own owner — ``SessionVolumePlan.assert_ready``, which ``play_program``
-    already calls. This seam says so and stops there rather than growing a
-    second gate on the same question."""
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumePlan, SessionVolumePlanError,
+    )
+
+    played: list[str] = []
     cam = _StubCam(volume_db=HOUSEHOLD_DB)
-    with caplog.at_level(logging.WARNING, logger="jasper.web.correction_crossover_v2"):
-        played = _drive(
+    with pytest.raises(SessionVolumePlanError):
+        _drive(
             monkeypatch, tmp_path, phase=phase, cam=cam,
-            plan=_Plan(measurement_volume_db=None),
+            plan=SessionVolumePlan(), played=played,
         )
-    assert played
+    assert played == []
     assert cam.volume_writes == []
-    assert "crossover_v2_capture_volume_unheld" in caplog.text
 
 
 #: The campaign drifted QUIET, so every fixture above walks that direction.
@@ -909,68 +839,19 @@ def test_a_loud_fader_that_will_not_come_down_emits_nothing(
 
 @pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
 def test_an_unready_plan_never_gets_its_fader_raised(monkeypatch, tmp_path, phase):
-    """THE SAFETY GUARD ON THE FIX ITSELF.
-
-    A plan whose restore could not be CONFIRMED keeps ``measurement_volume_db``
-    while latching ``unresolved`` — so reading that field unguarded would let
-    this hold raise the fader BACK UP on a speaker whose plan had just given
-    up. Which shape that is, precisely: a restore whose emergency write LANDED
-    on the hardware but never read back at the floor. A restore that DOES
-    confirm the floor returns ``EMERGENCY_ATTENUATED`` and clears the field to
-    ``None`` via ``_clear_resolved`` — safe for a different reason (nothing
-    left to hold), so it is not this test's subject. The declared volume is
-    only ever taken from a plan ``assert_ready`` accepts.
-
-    The two paths then answer differently, and both are correct: the routed
-    path never reaches the hold at all, because ``play_program`` asks the same
-    plan the same question first and refuses; the summed path has no such gate
-    and keeps today's behaviour — it leaves the fader alone. Neither writes.
-    """
+    """A stale declared value cannot authorize either graph scope."""
     from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
 
     cam = _StubCam(volume_db=HOUSEHOLD_DB)
-    if phase == PHASE_VERIFY:
-        assert _drive(
+    played: list[str] = []
+    with pytest.raises(SessionVolumePlanError):
+        _drive(
             monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan(ready=False),
+            played=played,
         )
-    else:
-        with pytest.raises(SessionVolumePlanError):
-            _drive(
-                monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan(ready=False),
-            )
+    assert played == []
     assert cam.volume_writes == []
     assert cam.volume_db == HOUSEHOLD_DB
-
-
-
-class _FakeCamillaClient:
-    """CamillaDSP as it actually behaves (#2929).
-
-    ``main_volume`` is PROCESS state and survives a config replace — the
-    property ``_graph_mutation``'s whole fade-down/fade-back-up design already
-    depended on, and the one #2925 mis-recorded as the opposite. v4.1.3's
-    ``devices`` schema has no field that could carry a volume, so
-    ``set_active_raw`` deliberately does not touch the fader here.
-    """
-
-    def __init__(self, volume_db: float) -> None:
-        self._volume = float(volume_db)
-        self.config = self
-        self.volume = self
-        self.general = self
-        self.loads: list[str] = []
-
-    def main_volume(self) -> float:
-        return self._volume
-
-    def set_main_volume(self, value: float) -> None:
-        self._volume = float(value)
-
-    def main_mute(self) -> bool:
-        return False
-
-    def set_active_raw(self, text: str) -> None:
-        self.loads.append(text)
 
 
 

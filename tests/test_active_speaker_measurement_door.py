@@ -342,53 +342,30 @@ async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
     assert set(seen) <= FANIN_TEST_OWNERS
 
 
-def test_the_wizard_emits_through_the_shared_home(tmp_path):
-    """The move landed with no duplication window, and mapped all FIVE fields.
-
-    ``bind_production_play`` built its own closure over five values that were
-    never web vocabulary. It now hands the SAME function ``jasper-measure``
-    binds, so the emitter's proofs, the both-halves device derivation and the
-    three variant axes cannot diverge between the two doors.
-
-    **Both halves are asserted, and the second is the one that matters.**
-    Function identity alone would pass a binding that transposed ``topology``
-    and ``playback_device``, or dropped the confirmed protection — a
-    measurement graph that emits without a name to fail under. The profile is a
-    frozen dataclass, so one equality covers every field, and a field added to
-    it later fails here until this site maps it.
-    """
+@pytest.mark.parametrize("inverted,delays,trims", [
+    ((), {}, {}),
+    (("tweeter",), {"woofer": 120.0}, {"tweeter": -9.5}),
+])
+def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverted, delays, trims):
     from types import SimpleNamespace
 
-    from jasper.active_speaker.branch_chain import sections_by_role
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
     from jasper.web import correction_crossover_v2 as host
 
-    preset = _preset()
-    topology = mono_output_topology()
-    protection = sections_by_role(preset.crossover_regions)
-
-    play = host.bind_production_play(
-        run_async=lambda coro: None,
+    profile = _profile()
+    monkeypatch.setattr(host, "_applied_profile_now", lambda: profile.applied_profile)
+    playback = host.bind_production_play(
         camilla_factory=lambda: object(),
         evidence_store=SimpleNamespace(bundle_dir=tmp_path),
         capture_session_id="door_pin",
-        topology=topology,
-        preset=preset,
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="plughw:CARD=Loopback,DEV=0",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
-        protection_sections_by_role=protection,
+        topology=profile.topology, preset=profile.preset,
+        role_channels=profile.role_channels,
+        playback_device=profile.playback_device,
+        safety_profile={}, role_targets={}, session_volume_db=-20.0,
+        protection_sections_by_role=profile.protection_sections_by_role,
+        program_for_phase=lambda phase: None,
     )
 
-    assert play.graph._emit.func is emit_measurement_graph
-    assert play.graph._emit.args == (
-        MeasurementGraphProfile(
-            preset=preset,
-            topology=topology,
-            role_channels={"woofer": 0, "tweeter": 1},
-            playback_device="plughw:CARD=Loopback,DEV=0",
-            protection_sections_by_role=protection,
-        ),
-    )
+    actual = playback.graph.graph_yaml(inverted, delays, trims)
+    expected = emit_measurement_graph(profile, inverted, delays, trims)
+    assert actual == expected

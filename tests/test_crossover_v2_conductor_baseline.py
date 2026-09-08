@@ -710,7 +710,7 @@ def test_happy_path_walks_check_measure_apply_verify():
 
     verdict = _run_phase(c, 1, 1)
     assert verdict["accepted"] is True
-    assert fakes.played[0][0] == PHASE_CHECK
+    assert fakes.analyzed[0][0] == PHASE_CHECK
     assert len(fakes.published_checks) == 1
     assert c.current_phase == PHASE_MEASURE
 
@@ -721,7 +721,7 @@ def test_happy_path_walks_check_measure_apply_verify():
     # in this payload tells anything to apply it — the ``auto_apply: True``
     # literal that used to sit here is gone, and its absence is the pin.
     assert "auto_apply" not in verdict
-    assert fakes.played[1][0] == PHASE_MEASURE
+    assert fakes.analyzed[1][0] == PHASE_MEASURE
     assert len(fakes.published_candidates) == 1
     candidate = fakes.published_candidates[0]
     assert candidate.fingerprint == verdict["candidate_fingerprint"]
@@ -749,7 +749,7 @@ def test_happy_path_walks_check_measure_apply_verify():
     verdict = _run_phase(c, 3, 3)
     assert verdict["accepted"] is True
     assert c.applied is True
-    assert fakes.played[2][0] == PHASE_VERIFY
+    assert fakes.analyzed[2][0] == PHASE_VERIFY
     assert c.verify_outcome == "pass"
     assert c.current_phase == PHASE_DONE
 
@@ -1557,7 +1557,6 @@ def test_conductor_threads_geometry_and_result_to_analyze():
     c = _conductor(fakes)  # driver_spacing_m=0.15
     result = _capture()
     c.authorize_begin(1, 1)
-    c.on_armed()
     c.consume_capture(1, 1, result)
     assert len(fakes.analyzed) == 1
     phase, _prog_phase, seen_result, _priors, geometry = fakes.analyzed[0]

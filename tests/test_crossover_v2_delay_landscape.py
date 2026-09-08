@@ -520,21 +520,6 @@ def test_a_delay_beyond_the_dsp_ceiling_is_refused_at_the_spec():
             MeasureSpec(kind="baseline", delayed_role="tweeter", delay_us=bad)
 
 
-def test_the_verify_stage_graph_refuses_a_delay_instead_of_dropping_it():
-    """Stage 2 measures through the APPLIED graph and has no per-driver branch
-    to delay. Silently ignoring the coordinate would bank a record naming a
-    delay it never played — the S12 lie this slot already refuses for polarity.
-    """
-    import asyncio
-
-    from jasper.active_speaker.crossover_v2.composition import NoRoutedPhasesGraph
-
-    graph = NoRoutedPhasesGraph()
-    assert asyncio.run(graph.install()) == ""
-    with pytest.raises(ValueError):
-        asyncio.run(graph.install((), {"tweeter": 250.0}))
-    with pytest.raises(ValueError):
-        asyncio.run(graph.install(("tweeter",)))
 
 
 def test_the_grid_a_curve_was_banked_on_does_not_change_the_answer():
