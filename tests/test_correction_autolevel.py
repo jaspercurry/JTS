@@ -394,6 +394,8 @@ async def test_autolevel_lock_is_not_authoritative_until_cleanup_finishes():
 
     assert controller.data.status == AutolevelStatus.RAMPING
     assert controller.run_in_progress is True
+    assert await controller.restore_listening_volume_if_ramped() is False
+    assert writes == [-40.0, -40.0]
 
     allow_final_write.set()
     await run

@@ -747,11 +747,16 @@ def _handle_autolevel_start(
             return float(value)
 
         async def _set_vol(db: float) -> None:
-            nonlocal claim
-            if claim is None:
-                claim = await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, db)
-            else:
-                claim = await owner.relevel(claim, db)
+            async def _move_claim() -> None:
+                nonlocal claim
+                if claim is None:
+                    claim = await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, db)
+                else:
+                    claim = await owner.relevel(claim, db)
+
+            # Cancellation must not lose the replacement handle after the owner
+            # moves its ledger; cleanup needs that exact handle to release it.
+            await resilient_restore(_move_claim())
 
         async def _restore_vol(db: float) -> bool:
             async def _release_and_restore() -> bool:

@@ -3500,6 +3500,7 @@ def test_a_level_match_restore_without_an_owner_reports_not_in_effect(caplog):
 @pytest.mark.parametrize("ending", [
     "playback_failure", "capture_timeout", "restore_false", "restore_exception",
     "restore_readback", "maxed_out", "cancel", "apply", "reset", "verified",
+    "cancel_acquire", "cancel_relevel",
 ])
 def test_room_terminal_cleanup_releases_real_owner_and_retries(
     monkeypatch, tmp_path, ending,
@@ -3509,11 +3510,20 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
     from jasper.correction.session import AutolevelStatus, SessionState
     from jasper.volume_owner import ClaimKind, VolumeOwner, install_volume_owner
 
+    interrupted_write = {"cancel_acquire": 1, "cancel_relevel": 2}.get(ending)
+    write_started = threading.Event()
+    allow_write = asyncio.Event()
+
     class Fader:
+        writes = 0
         db = -18.0
         failure = None
 
         async def set(self, db):
+            self.writes += 1
+            if interrupted_write == self.writes:
+                write_started.set()
+                await allow_write.wait()
             if self.failure == "restore_exception":
                 raise OSError("injected fader failure")
             if self.failure == "restore_false":
@@ -3529,6 +3539,7 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
     owner = VolumeOwner(set_fader_db=fader.set, get_fader_db=fader.get_volume_db)
     install_volume_owner(owner)
     run = correction_capture._run_async
+    fader.writes = -1
     run(owner.declare_household_level_db(-18.0))
     sess = make_measurement_session(tmp_path)
     sess.state = SessionState.NEEDS_NOISE_CAPTURE
@@ -3542,7 +3553,7 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
         async def play(self):
             if ending == "cancel":
                 await sess.cancel_autolevel()
-            elif ending != "maxed_out":
+            elif ending != "maxed_out" and not interrupted_write:
                 await sess.lock_autolevel()
             await self.stop.wait()
 
@@ -3562,11 +3573,24 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
             await run_autolevel(**kwargs, start_db=-12.0, end_db=-12.0, fade_step_s=0)
 
         monkeypatch.setattr(sess, "run_autolevel", fast_run)
+    scheduled = []
+    schedule = asyncio.run_coroutine_threadsafe
+
+    def track_schedule(coro, loop):
+        future = schedule(coro, loop)
+        scheduled.append(future)
+        return future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", track_schedule)
     assert correction_handlers._handle_autolevel_start(None)["started"]
+    if interrupted_write:
+        wait_until_sync(write_started.is_set)
+        assert scheduled[-1].cancel()
+        correction_capture._ensure_loop().call_soon_threadsafe(allow_write.set)
     wait_until_sync(lambda: not sess.autolevel_run_in_progress)
     assert stopped.is_set()
 
-    if ending not in {"maxed_out", "cancel"}:
+    if ending not in {"maxed_out", "cancel"} and not interrupted_write:
         assert owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
         assert sess.autolevel.status is AutolevelStatus.LOCKED
     if ending == "playback_failure":

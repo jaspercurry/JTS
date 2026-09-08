@@ -191,7 +191,12 @@ class AutolevelController:
         return True
 
     async def restore_listening_volume_if_ramped(self) -> bool:
-        """Release measurement ownership and confirm restoration; failures retry."""
+        """Restore only after the ramp has stopped owning live audio."""
+        if self.run_in_progress:
+            return False
+        return await self._restore_listening_volume()
+
+    async def _restore_listening_volume(self) -> bool:
         async with self._restore_lock:
             al = self.data
             if al.restored or al.original_main_volume_db is None:
@@ -308,7 +313,7 @@ class AutolevelController:
                     terminal = AutolevelStatus.CANCELLED
                     al.locked_main_volume_db = None
                 if terminal is not AutolevelStatus.LOCKED:
-                    await self.restore_listening_volume_if_ramped()
+                    await self._restore_listening_volume()
                 al.status = terminal
 
         try:
