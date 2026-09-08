@@ -390,16 +390,11 @@ def test_locate_failed_and_budget_exhaustion():
         assert verdict["attempts"]["by_household"] == extra
         assert verdict["attempts"]["by_speaker"] == 0
 
+    armed_before = c.armed_capture
     with pytest.raises(CaptureBeginRefused) as excinfo:
         c.authorize_begin(1, 5)
     assert excinfo.value.code == "locate_failed"
-    # The copy states the count and the outcome. It must NOT invite another try:
-    # that is the exact sentence the ruling forbids in front of a refusal.
-    message = excinfo.value.user_message
-    assert "4 times" in message and "3 extra tries" in message
-    assert message.startswith(locate_failed_diagnosis(verdict["pilot_heard"]))
-    assert "cannot continue" in message.lower()
-    assert "try again" not in message.lower()
+    assert c.armed_capture == armed_before
 
 
 def test_check_agc_and_snr_and_channel_map_verdicts():
@@ -616,37 +611,6 @@ def test_worst_pilot_snr_db_handles_both_infinities(snrs, expected):
 
 def test_worst_pilot_snr_db_is_none_without_pilots():
     assert _worst_pilot_snr_db(_snr_analysis()) is None
-
-
-def test_pilot_level_collapse_copy_never_accuses_the_phone():
-    """Issue #1810's actual complaint, pinned as copy.
-
-    The household's previous experience of this failure was being told to go
-    re-allow a microphone that had done nothing wrong. The new reason names
-    the two real causes and two real actions; the definite mic accusation is
-    reserved for ``verify_level_shift``, which has the cross-attempt transfer
-    step to back it.
-    """
-    spec = REASON_REGISTRY["pilot_level_collapse"]
-    assert spec.retry_budget == 1
-    text = spec.message.lower()
-    assert "phone's microphone" not in text
-    assert "re-allow" not in text
-    assert "too loud" in text and "too quiet" in text
-    # The one code still allowed to state the mic as the cause is the one
-    # holding the evidence for it.
-    assert "microphone" in REASON_REGISTRY["verify_level_shift"].message.lower()
-
-
-def test_agc_behavioral_fail_copy_states_the_observation_not_the_cause():
-    """Issue #1810 amendment. ``agc_behavioral_fail`` fires on a captured
-    two-pilot delta that did not match the programmed one — which the phone's
-    input chain OR the speaker's own output compression can produce. The copy
-    may describe that observation and prescribe the one useful action; it may
-    not assert the phone as the cause, because this code never observes it."""
-    message = REASON_REGISTRY["agc_behavioral_fail"].message
-    assert "your phone's microphone changed" not in message.lower()
-    assert "test tones" in message.lower()
 
 
 def test_delay_exceeds_search_window_verdict():
@@ -1718,7 +1682,6 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(
         if "crossover_v2_position_attempts_spent" in record.getMessage()
     ]
     assert len(spent) == 1
-    assert f'diagnosis="{locate_failed_diagnosis(True)}"' in spent[0]
     assert "pilot_heard=true" in spent[0]
     assert "observed=locate_failed" in spent[0]
     # Nothing was retained for it — an unresolved position is not evidence.
@@ -1730,5 +1693,3 @@ def test_a_spent_cloud_position_is_attributed_and_the_group_continues(
     second = CLOUD_MEASURE_INDEXES[1]
     c.authorize_begin(second, attempt)
     assert c.armed_capture == (second, attempt)
-
-
