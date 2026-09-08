@@ -52,6 +52,7 @@ from jasper.active_speaker.runtime_contract import (
 
 from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
 from ._web_test_helpers import request_with_csrf
+from .correction_session_fixtures import make_measurement_session
 
 
 @pytest.fixture(autouse=True)
@@ -2344,6 +2345,14 @@ def _locked_autolevel_session(
                 locked_main_volume_db=-8.0,
             )
 
+        async def _restore_listening_volume_if_ramped(self):
+            from jasper.correction.autolevel import AutolevelController
+
+            controller = AutolevelController(session_id=self.session_id)
+            controller.data = self.autolevel
+            controller.main_volume_setter = correction_capture._household_level_door()
+            return await controller.restore_listening_volume_if_ramped()
+
         async def apply(
             self,
             set_cb,
@@ -3357,122 +3366,29 @@ def test_reset_releases_intent_when_audio_quiescence_fails(monkeypatch):
     assert order == ["intent", "stop", "intent-released"]
 
 
-def test_maybe_restore_main_volume_swallows_restore_failure():
-    # The restore runs inside apply/reset's finally; a failed restore must not
-    # raise (which would mask the original apply/reset error).
-    from jasper.correction.session import (
-        AutolevelData,
-        AutolevelStatus,
-        SessionState,
+@pytest.mark.parametrize("settled", [True, False])
+def test_maybe_restore_respects_measurement_state(tmp_path, settled):
+    from jasper.correction.autolevel import AutolevelData, AutolevelStatus
+    from jasper.correction.session import SessionState
+
+    written = []
+    _install_recording_volume_owner(written)
+    sess = make_measurement_session(tmp_path)
+    sess.autolevel = AutolevelData(
+        status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0,
     )
-
-    class _FailingCam:
-        async def set_volume_db(self, db, best_effort=False):
-            raise RuntimeError("CamillaDSP websocket down")
-
-    sess = types.SimpleNamespace(
-        state=SessionState.APPLIED,  # settled, so we reach the (failing) restore
-        autolevel=AutolevelData(
-            status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
-        ),
+    sess._main_volume_setter = correction_capture._household_level_door()
+    states = (
+        (SessionState.APPLIED, SessionState.IDLE, SessionState.FAILED)
+        if settled else
+        (SessionState.PREPARING, SessionState.SWEEPING,
+         SessionState.ANALYZING, SessionState.VERIFYING)
     )
-    # Must not raise.
-    correction_handlers._maybe_restore_main_volume(sess, _FailingCam())
-
-
-def test_maybe_restore_skips_while_measurement_still_active():
-    # A reset rejected during a sweep (the server refuses it via the
-    # SessionBusyError guard) leaves the session mid-measurement. The restore
-    # must NOT drop the ramped sweep level underneath the active measurement.
-    from jasper.correction.session import (
-        AutolevelData,
-        AutolevelStatus,
-        SessionState,
-    )
-
-    restored: list[float] = []
-    for active in (
-        SessionState.PREPARING,
-        SessionState.SWEEPING,
-        SessionState.ANALYZING,
-        SessionState.VERIFYING,
-    ):
-        sess = types.SimpleNamespace(
-            state=active,
-            autolevel=AutolevelData(
-                status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
-            ),
-        )
-        correction_handlers._maybe_restore_main_volume(
-            sess, _volume_recording_cam(restored)
-        )
-    assert restored == []  # skipped in every active state
-
-
-def test_maybe_restore_runs_once_the_workflow_has_settled():
-    # The normal post-apply / post-reset case still restores the listening
-    # level — the guard only fences the mid-measurement states.
-    from jasper.correction.session import (
-        AutolevelData,
-        AutolevelStatus,
-        SessionState,
-    )
-
-    for settled in (
-        SessionState.APPLIED,
-        SessionState.IDLE,
-        SessionState.FAILED,
-    ):
-        restored: list[float] = []
-        _install_recording_volume_owner(restored)
-        sess = types.SimpleNamespace(
-            state=settled,
-            autolevel=AutolevelData(
-                status=AutolevelStatus.LOCKED, original_main_volume_db=-20.0
-            ),
-        )
-        correction_handlers._maybe_restore_main_volume(
-            sess, _volume_recording_cam(restored)
-        )
-        assert restored == [-20.0], settled
-
-
-def test_the_apply_path_restore_is_not_gated_on_the_controllers_one_shot_latch():
-    """THE HAPPY-PATH RESTORE, which nothing pinned before wave 5b-3b.
-
-    On a clean run — autolevel, sweep, ``/apply`` succeeds, session APPLIED —
-    this handler is the ONLY thing that returns the household to its level.
-    ``AutolevelController.restore_listening_volume_if_ramped`` does not cover
-    it twice: it is reached only from ``session.py``'s failure arm and its
-    post-VERIFIED arm, neither of which is on the apply path.
-
-    And it could not be trusted even where it does run. It sets
-    ``al.restored = True`` BEFORE its await and swallows the write's failure,
-    so a restore that never reached the fader still reads as done. That is why
-    this handler is the RETRY and must never learn to skip on that flag —
-    which is exactly what a future "idempotence" tidy-up would try to add.
-    """
-    from jasper.correction.session import (
-        AutolevelData,
-        AutolevelStatus,
-        SessionState,
-    )
-
-    declared: list[float] = []
-    _install_recording_volume_owner(declared)
-    sess = types.SimpleNamespace(
-        state=SessionState.APPLIED,
-        autolevel=AutolevelData(
-            status=AutolevelStatus.LOCKED,
-            original_main_volume_db=-20.0,
-            # The controller latched, then lost its write.
-            restored=True,
-        ),
-    )
-
-    correction_handlers._maybe_restore_main_volume(sess, _volume_recording_cam([]))
-
-    assert declared == [-20.0]
+    for state in states:
+        sess.state = state
+        correction_handlers._maybe_restore_main_volume(sess, None)
+    assert written == ([-20.0] if settled else [])
+    assert sess.autolevel.restored is settled
 
 
 def test_e2e_reset_while_busy_returns_409(monkeypatch, tmp_path):
@@ -3581,115 +3497,118 @@ def test_a_level_match_restore_without_an_owner_reports_not_in_effect(caplog):
     )
 
 
-def test_the_autolevel_ramp_holds_one_claim_and_moves_it(monkeypatch):
-    """W10 routed: the ramp takes ONE session-measurement claim and MOVES it.
+@pytest.mark.parametrize("ending", [
+    "playback_failure", "capture_timeout", "restore_false", "restore_exception",
+    "restore_readback", "maxed_out", "cancel", "apply", "reset", "verified",
+])
+def test_room_terminal_cleanup_releases_real_owner_and_retries(
+    monkeypatch, tmp_path, ending,
+):
+    from jasper import measurement_window as window_module
+    from jasper.correction import playback
+    from jasper.correction.session import AutolevelStatus, SessionState
+    from jasper.volume_owner import ClaimKind, VolumeOwner, install_volume_owner
 
-    The point is what does NOT happen between steps. Release-then-reacquire
-    per step would settle to the household level on every release, so a ramp
-    climbing from -40 dB would strobe up to the listening level ~15 times with
-    a tone playing. One claim, releveled, never passes through it — asserted
-    here by watching every fader write the owner actually made.
-    """
-    import contextlib
+    class Fader:
+        db = -18.0
+        failure = None
 
-    from jasper.correction.autolevel import AutolevelData, AutolevelStatus
-    from jasper.volume_owner import volume_owner
+        async def set(self, db):
+            if self.failure == "restore_exception":
+                raise OSError("injected fader failure")
+            if self.failure == "restore_false":
+                return False
+            if self.failure != "restore_readback":
+                self.db = db
+            return True
 
-    writes: list[float] = []
-    owner = _install_recording_volume_owner(writes)
-    # A household level must EXIST for "never passes through it" to mean
-    # anything: without one a release settles to nothing and writes nothing,
-    # so the very strobe this pins would be invisible. -15.0 is loud, and the
-    # ramp below climbs from -40.0, so any release-per-step shows up at once.
-    asyncio.run(owner.declare_household_level_db(-15.0))
-    writes.clear()
+        async def get_volume_db(self, **_kwargs):
+            return self.db
 
-    from jasper import measurement_window as coordinator_module
-    from jasper.correction import playback as playback_module
+    fader = Fader()
+    owner = VolumeOwner(set_fader_db=fader.set, get_fader_db=fader.get_volume_db)
+    install_volume_owner(owner)
+    run = correction_capture._run_async
+    run(owner.declare_household_level_db(-18.0))
+    sess = make_measurement_session(tmp_path)
+    sess.state = SessionState.NEEDS_NOISE_CAPTURE
+    sess._local_capture_setup_bound = True
+    stopped = threading.Event()
 
-    monkeypatch.setattr(
-        coordinator_module,
-        "measurement_window",
-        lambda *a, **k: contextlib.nullcontext(),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        playback_module, "_ensure_tone_wav",
-        lambda **kwargs: "/tmp/tone.wav", raising=False,
-    )
-
-    class _Player:
-        def __init__(self, _wav):
-            pass
+    class Player:
+        def __init__(self, _path):
+            self.stop = asyncio.Event()
 
         async def play(self):
-            return None
+            if ending == "cancel":
+                await sess.cancel_autolevel()
+            elif ending != "maxed_out":
+                await sess.lock_autolevel()
+            await self.stop.wait()
 
         def cancel(self):
-            return None
+            self.stop.set()
+            stopped.set()
 
-    monkeypatch.setattr(
-        playback_module, "TonePlayer", _Player, raising=False
-    )
+    monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
+    monkeypatch.setattr(correction_capture, "_camilla", lambda: fader)
+    monkeypatch.setattr(window_module, "measurement_window", lambda: nullcontext())
+    monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: tmp_path / "tone.wav")
+    monkeypatch.setattr(playback, "TonePlayer", Player)
+    if ending == "maxed_out":
+        run_autolevel = sess.run_autolevel
 
-    ramp = [-40.0, -39.0, -38.0, -37.0]
+        async def fast_run(**kwargs):
+            await run_autolevel(**kwargs, start_db=-12.0, end_db=-12.0, fade_step_s=0)
 
-    class _Sess:
-        def __init__(self):
-            from jasper.correction.session import SessionState
+        monkeypatch.setattr(sess, "run_autolevel", fast_run)
+    assert correction_handlers._handle_autolevel_start(None)["started"]
+    wait_until_sync(lambda: not sess.autolevel_run_in_progress)
+    assert stopped.is_set()
 
-            self.autolevel = AutolevelData(status=AutolevelStatus.IDLE)
-            self.state = SessionState.NEEDS_NOISE_CAPTURE
-            self.local_capture_setup_bound = True
+    if ending not in {"maxed_out", "cancel"}:
+        assert owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
+        assert sess.autolevel.status is AutolevelStatus.LOCKED
+    if ending == "playback_failure":
+        async def broken_play(*_args, **_kwargs):
+            raise OSError("injected playback failure")
 
-        async def reserve_autolevel_run(self):
-            return object()
+        with pytest.raises(OSError):
+            run(sess.prepare_and_play_sweep(broken_play))
+    elif ending == "capture_timeout":
+        sess.capture_timeout_sec = 0.01
+        run(sess._set_state(SessionState.AWAITING_CAPTURE))
+        wait_until_sync(
+            lambda: sess.state is SessionState.FAILED
+            and sess._autolevel_reset_intent is None,
+        )
+    elif ending.startswith("restore_"):
+        fader.failure = ending
+        run(sess._fail("injected measurement failure"))
+        assert not owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
+        assert sess.autolevel.restored is False
+        assert sess.autolevel.snapshot()["restore_error"] is not None
+        fader.failure = None
+        correction_handlers._maybe_restore_main_volume(sess, fader)
+    elif ending in {"apply", "reset", "verified"}:
+        sess.state = {
+            "apply": SessionState.APPLIED, "reset": SessionState.IDLE,
+            "verified": SessionState.VERIFIED,
+        }[ending]
+        correction_handlers._maybe_restore_main_volume(sess, fader)
 
-        async def release_autolevel_run_reservation(self, _token):
-            return None
-
-        async def run_autolevel(self, *, set_main_volume_db, **_kwargs):
-            for db in ramp:
-                await set_main_volume_db(db)
-            self.autolevel = AutolevelData(
-                status=AutolevelStatus.LOCKED,
-                original_main_volume_db=-15.0,
-                locked_main_volume_db=ramp[-1],
-            )
-
-    sess = _Sess()
-    monkeypatch.setattr(
-        correction_capture, "_get_or_create_session", lambda: sess
-    )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: _FakeCam())
-
-    correction_handlers._handle_autolevel_start(None)
-
-    # Every write the owner made, in order — and nothing else wrote the fader.
-    assert writes == ramp
-    # One claim, still held at the locked level for the sweeps that follow.
-    assert correction_handlers._AUTOLEVEL_CLAIM is not None
-    assert volume_owner().declared_level_db() == ramp[-1]
-
-    # ... and the settle-time restore releases it in one write.
-    sess.state = SessionState_APPLIED()
-    correction_handlers._maybe_restore_main_volume(sess, _FakeCam())
-    assert correction_handlers._AUTOLEVEL_CLAIM is None
-    assert writes[-1] == -15.0
-
-
-def SessionState_APPLIED():
-    from jasper.correction.session import SessionState
-
-    return SessionState.APPLIED
-
-
-class _FakeCam:
-    async def set_volume_db(self, db, best_effort=False):
-        raise AssertionError("the ramp must not write the fader directly")
-
-    async def get_volume_db(self, best_effort=False):
-        return -40.0
+    assert fader.db == -18.0
+    assert sess.autolevel.restored is True
+    assert sess.autolevel.snapshot()["restore_error"] is None
+    assert not owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
+    assert run(owner.declare_household_level_db(-30.0))
+    assert fader.db == -30.0
+    correction_handlers._maybe_restore_main_volume(sess, fader)
+    assert fader.db == -30.0
+    claim = run(owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -35.0))
+    assert fader.db == -35.0
+    run(owner.release(claim))
+    sess._cancel_capture_timeout()
 
 
 def test_the_level_match_claim_is_taken_once_moved_and_released():

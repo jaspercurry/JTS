@@ -17,9 +17,8 @@ and times out cleanly when it doesn't.
 from __future__ import annotations
 
 import asyncio
-import logging
 
-
+import pytest
 from jasper.correction.autolevel import AutolevelController, AutolevelData
 from jasper.correction.session import (
     AutolevelStatus,
@@ -79,24 +78,41 @@ async def test_state_changed_from_accepts_set_of_states(tmp_path):
 # ---------- run_autolevel --------------------------------------------------
 
 
-async def test_autolevel_controller_restores_locked_level_once():
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [(False, "write_unconfirmed"), (RuntimeError(), "RuntimeError")],
+    ids=["unconfirmed", "exception"],
+)
+async def test_autolevel_controller_retries_restore_until_confirmed(failure, error):
     controller = AutolevelController(session_id="restore-once")
     restored: list[float] = []
 
     async def fake_set_vol(db):
         restored.append(db)
+        if len(restored) == 1:
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        return True
 
     controller.main_volume_setter = fake_set_vol
     controller.data = AutolevelData(
         status=AutolevelStatus.LOCKED,
         original_main_volume_db=-18.0,
+        current_main_volume_db=-25.0,
     )
 
-    await controller.restore_listening_volume_if_ramped()
-    await controller.restore_listening_volume_if_ramped()
+    assert await controller.restore_listening_volume_if_ramped() is False
+    assert controller.data.snapshot()["restored"] is False
+    assert controller.data.snapshot()["restore_error"] == error
+    assert controller.data.current_main_volume_db == -25.0
 
-    assert restored == [-18.0]
-    assert controller.data.restored is True
+    assert await controller.restore_listening_volume_if_ramped() is True
+    assert await controller.restore_listening_volume_if_ramped() is True
+    assert restored == [-18.0, -18.0]
+    assert controller.data.snapshot()["restored"] is True
+    assert controller.data.snapshot()["restore_error"] is None
+    assert controller.data.current_main_volume_db == -18.0
 
 
 class _StubTonePlayer:
@@ -386,55 +402,129 @@ async def test_autolevel_lock_is_not_authoritative_until_cleanup_finishes():
     assert controller.run_in_progress is False
 
 
-async def test_autolevel_graceful_stop_logs_setter_failures(caplog):
-    """_graceful_stop's fade-down loop and its final lock-value set must
-    LOG set_main_volume_db failures rather than swallowing them silently.
-    A CamillaDSP write that fails during
-    stop can strand the speaker at the measurement level; the operator
-    needs a journal line to know why."""
-    controller = AutolevelController(session_id="stop-logs")
-    stop_phase = {"on": False}
+async def test_autolevel_failed_cleanup_has_no_lock_and_can_retry_restore():
+    controller = AutolevelController(session_id="failed-cleanup")
+    ramp_stepped = asyncio.Event()
+    fail_writes = False
 
     async def fake_get_vol():
         return -10.0
 
     async def fake_set_vol(db):
-        # Succeed during the ramp; fail every set once we enter the
-        # graceful-stop phase (fade-down sets + the final lock-value set).
-        if stop_phase["on"]:
-            raise RuntimeError("camilla write failed during graceful stop")
+        if fail_writes:
+            raise RuntimeError()
+        if db > -40.0:
+            ramp_stepped.set()
 
     player = _StubTonePlayer()
 
     async def _signal_lock():
-        # Wait past run()'s ~0.1 s pre-ramp startup sleep plus several
-        # 0.05 s ramp steps, so current_main_volume_db is comfortably
-        # above fade_down_to_db (-40) and the fade-down loop runs.
-        await asyncio.sleep(0.3)
-        stop_phase["on"] = True
-        await controller.lock()
+        nonlocal fail_writes
+        await wait_signalled(ramp_stepped, "first autolevel ramp step")
+        fail_writes = True
+        assert await controller.lock() is True
 
-    asyncio.create_task(_signal_lock())
-    with caplog.at_level(logging.WARNING):
-        await controller.run(
-            get_main_volume_db=fake_get_vol,
-            set_main_volume_db=fake_set_vol,
-            play_continuous_tone=player.play,
-            cancel_tone=player.cancel,
-            start_db=-40.0,
-            end_db=0.0,
-            step_db=1.0,
-            step_interval_s=0.05,
-        )
+    signalling = asyncio.create_task(_signal_lock())
+    await controller.run(
+        get_main_volume_db=fake_get_vol,
+        set_main_volume_db=fake_set_vol,
+        play_continuous_tone=player.play,
+        cancel_tone=player.cancel,
+        start_db=-40.0,
+        end_db=0.0,
+        step_interval_s=0.01,
+    )
+    await signalling
 
-    assert controller.data.status == AutolevelStatus.LOCKED
-    messages = [r.message for r in caplog.records]
-    # Final lock-value set failure is now observable.
-    assert any("final set_main_volume_db" in m for m in messages), messages
-    # Fade-down set failure is now observable.
-    assert any("fade-down set_main_volume_db" in m for m in messages), messages
-    # Tone was still cancelled despite the setter failures.
+    assert controller.data.status == AutolevelStatus.ERROR
+    assert controller.data.locked_main_volume_db is None
+    assert controller.data.snapshot()["restored"] is False
+    assert controller.data.snapshot()["restore_error"] == "RuntimeError"
+    assert controller.run_in_progress is False
     assert player.cancelled
+
+    fail_writes = False
+    assert await controller.restore_listening_volume_if_ramped() is True
+    assert controller.data.snapshot()["restored"] is True
+    assert controller.data.snapshot()["restore_error"] is None
+    assert controller.data.current_main_volume_db == -10.0
+
+
+@pytest.mark.parametrize("repeat_cancel", [False, True], ids=["once", "repeated"])
+async def test_autolevel_task_cancellation_drains_tone_and_restore(repeat_cancel):
+    controller = AutolevelController(session_id="cancel-cleanup")
+    ramp_stepped = asyncio.Event()
+    tone_cancelled = asyncio.Event()
+    allow_tone_stop = asyncio.Event()
+    tone_stopped = asyncio.Event()
+    restore_started = asyncio.Event()
+    allow_restore = asyncio.Event()
+    restored: list[float] = []
+
+    async def set_volume(db):
+        if db > -40.0:
+            ramp_stepped.set()
+
+    async def play():
+        await tone_cancelled.wait()
+        await allow_tone_stop.wait()
+        tone_stopped.set()
+
+    async def restore(db):
+        assert tone_stopped.is_set()
+        restore_started.set()
+        await allow_restore.wait()
+        restored.append(db)
+        return True
+
+    run = asyncio.create_task(controller.run(
+        get_main_volume_db=lambda: asyncio.sleep(0, result=-18.0),
+        set_main_volume_db=set_volume,
+        restore_main_volume_db=restore,
+        play_continuous_tone=play,
+        cancel_tone=tone_cancelled.set,
+        start_db=-40.0,
+        end_db=-20.0,
+        step_interval_s=0.01,
+        fade_step_s=0.0,
+    ))
+    try:
+        await wait_signalled(ramp_stepped, "first ramp step", producer=run)
+        run.cancel()
+        await wait_signalled(tone_cancelled, "tone stop requested", producer=run)
+        assert not run.done()
+        assert controller.run_in_progress
+        assert not tone_stopped.is_set()
+        assert not controller.data.snapshot()["restored"]
+
+        allow_tone_stop.set()
+        await wait_signalled(restore_started, "final restore started", producer=run)
+        if repeat_cancel:
+            for _ in range(2):
+                run.cancel()
+                await asyncio.sleep(0)
+        assert not run.done()
+        assert controller.run_in_progress
+        assert not controller.data.snapshot()["restored"]
+
+        allow_restore.set()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+    finally:
+        allow_tone_stop.set()
+        allow_restore.set()
+        if not run.done():
+            run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+
+    assert tone_stopped.is_set()
+    assert restored == [-18.0]
+    assert controller.data.status == AutolevelStatus.CANCELLED
+    assert controller.data.locked_main_volume_db is None
+    assert controller.data.snapshot()["restored"] is True
+    assert controller.data.snapshot()["restore_error"] is None
+    assert controller.data.current_main_volume_db == -18.0
+    assert controller.run_in_progress is False
 
 
 async def test_autolevel_lock_when_no_run_in_progress_returns_false(tmp_path):

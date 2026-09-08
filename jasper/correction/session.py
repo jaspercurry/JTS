@@ -728,13 +728,9 @@ class MeasurementSession:
             if owned_intent is not None:
                 await self.end_autolevel_reset(owned_intent)
 
-    async def _restore_listening_volume_if_ramped(self) -> None:
-        """Restore main_volume to the pre-autolevel listening level.
-
-        Best-effort, idempotent and lock-free, for the endings the web
-        apply/reset handlers never see (watchdog FAILED, verify VERIFIED).
-        """
-        await self._autolevel_controller.restore_listening_volume_if_ramped()
+    async def _restore_listening_volume_if_ramped(self) -> bool:
+        """Release the measurement level, with failed restoration left retryable."""
+        return await self._autolevel_controller.restore_listening_volume_if_ramped()
 
     def _ensure_sweep_cache(self) -> tuple[Path, sweep.SweepMeta]:
         """Generate or reuse the cached sweep WAV (deterministic per parameters)."""
@@ -2062,6 +2058,7 @@ class MeasurementSession:
         reservation_token: object | None = None,
         get_main_volume_db: Callable[[], Awaitable[float]],
         set_main_volume_db: Callable[[float], Awaitable[Any]],
+        restore_main_volume_db: Callable[[float], Awaitable[Any]] | None = None,
         play_continuous_tone: Callable[[], Awaitable[Any]],
         cancel_tone: Callable[[], None],
         start_db: float = -40.0,
@@ -2075,18 +2072,12 @@ class MeasurementSession:
         fade_down_to_db: float = -40.0,
         fade_step_s: float = 0.03,
     ) -> None:
-        """Auto-level CamillaDSP main_volume against a continuous tone.
-
-        ``end_db`` defaults to ``clamp(original_main_volume_db + end_db_bump,
-        [end_db_absolute_min, end_db_absolute_max])``: +6 dB over the
-        household's listening level, clamped to [-20, -6] dB. With the -12 dBFS
-        tone that puts worst-case dongle output at -18 dBFS. Exits LOCKED,
-        MAXED_OUT (no measurement lock minted) or CANCELLED.
-        """
+        """Ramp at most 6 dB above the listening level, capped at −6 dB."""
         await self._autolevel_controller.run(
             reservation_token=reservation_token,
             get_main_volume_db=get_main_volume_db,
             set_main_volume_db=set_main_volume_db,
+            restore_main_volume_db=restore_main_volume_db,
             play_continuous_tone=play_continuous_tone,
             cancel_tone=cancel_tone,
             start_db=start_db,

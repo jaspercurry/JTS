@@ -44,9 +44,8 @@ class AutolevelData:
     locked_main_volume_db: float | None = None
     cap_db: float | None = None
     error: str | None = None
-    # Set once the listening level has been restored after a measurement ending,
-    # so terminal-state restore stays idempotent.
     restored: bool = False
+    restore_error: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
         def r(x: float | None) -> float | None:
@@ -59,6 +58,8 @@ class AutolevelData:
             "locked_main_volume_db": r(self.locked_main_volume_db),
             "cap_db": r(self.cap_db),
             "error": self.error,
+            "restored": self.restored,
+            "restore_error": self.restore_error,
         }
 
 
@@ -90,6 +91,7 @@ class AutolevelController:
         self._cancel_event: asyncio.Event | None = None
         self._run_finished: asyncio.Event | None = None
         self._start_reserved = False
+        self._restore_lock = asyncio.Lock()
         self._reservation_token: object | None = None
         self._reservation_released: asyncio.Event | None = None
         self._main_volume_setter: (
@@ -140,6 +142,8 @@ class AutolevelController:
         """
         if self.slot_occupied or self.run_in_progress:
             return None
+        if not await self.restore_listening_volume_if_ramped():
+            return None
         token = object()
         self._reservation_token = token
         self._reservation_released = asyncio.Event()
@@ -186,41 +190,32 @@ class AutolevelController:
         await asyncio.wait_for(released.wait(), timeout=timeout_s)
         return True
 
-    async def restore_listening_volume_if_ramped(self) -> None:
-        """Restore main_volume when a measurement ends outside apply/reset.
-
-        Autolevel ramps main_volume up to a measurement level and leaves it
-        LOCKED for the whole measurement. Failed or verify-ended measurements
-        skip the web apply/reset handlers, so this best-effort hook restores
-        the user's listening level there. It is idempotent and swallows errors.
-        """
-        al = self.data
-        if al.restored:
-            return
-        if al.status not in (AutolevelStatus.LOCKED, AutolevelStatus.MAXED_OUT):
-            return
-        if (
-            al.original_main_volume_db is None
-            or self._main_volume_setter is None
-        ):
-            return
-        al.restored = True
-        try:
-            await self._main_volume_setter(al.original_main_volume_db)
-            log_event(
-                logger,
-                "correction_autolevel_volume_restored",
-                session=self.session_id,
-                to_db=f"{al.original_main_volume_db:.1f}",
-                trigger="measurement_ended",
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "autolevel volume restore on measurement end failed "
-                "(session=%s) — speaker may remain at the measurement level "
-                "until /reset",
-                self.session_id,
-            )
+    async def restore_listening_volume_if_ramped(self) -> bool:
+        """Release measurement ownership and confirm restoration; failures retry."""
+        async with self._restore_lock:
+            al = self.data
+            if al.restored or al.original_main_volume_db is None:
+                return True
+            if self._main_volume_setter is None:
+                al.restore_error = "restore_unavailable"
+                return False
+            try:
+                result = await self._main_volume_setter(al.original_main_volume_db)
+                if result is False:
+                    al.restore_error = "write_unconfirmed"
+                    return False
+                al.restored = True
+                al.restore_error = None
+                al.current_main_volume_db = al.original_main_volume_db
+                log_event(
+                    logger, "correction_autolevel_volume_restored",
+                    session=self.session_id, to_db=al.original_main_volume_db,
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                al.restore_error = type(exc).__name__
+                logger.exception("autolevel volume restore failed")
+                return False
 
     async def run(
         self,
@@ -228,6 +223,7 @@ class AutolevelController:
         reservation_token: object | None = None,
         get_main_volume_db: Callable[[], Awaitable[float]],
         set_main_volume_db: Callable[[float], Awaitable[Any]],
+        restore_main_volume_db: Callable[[float], Awaitable[Any]] | None = None,
         play_continuous_tone: Callable[[], Awaitable[Any]],
         cancel_tone: Callable[[], None],
         start_db: float = -40.0,
@@ -266,58 +262,60 @@ class AutolevelController:
             raise RuntimeError("autolevel run reservation is stale")
         if run_finished is None or lock_event is None or cancel_event is None:
             raise RuntimeError("autolevel run reservation is incomplete")
-        # Retain the setter so FAIL/VERIFY endings can restore listening level.
-        self._main_volume_setter = set_main_volume_db
+        self._main_volume_setter = restore_main_volume_db or set_main_volume_db
         loop = asyncio.get_event_loop()
         tone_task: asyncio.Task | None = None
+        terminal = AutolevelStatus.ERROR
+        lock_value_db: float | None = None
+        cancellation: asyncio.CancelledError | None = None
 
-        async def _graceful_stop(lock_value_db: float | None) -> None:
-            """Fade down before killing tone, then set final main_volume."""
+        async def _set_volume(db: float) -> None:
+            if await set_main_volume_db(db) is False:
+                raise RuntimeError("autolevel volume write not confirmed")
+            al.current_main_volume_db = db
+
+        async def _finish() -> None:
+            nonlocal terminal
             try:
-                cur = al.current_main_volume_db
-                while cur > fade_down_to_db:
-                    cur = max(fade_down_to_db, cur - 2.0)
-                    try:
-                        await set_main_volume_db(cur)
-                    except Exception:  # noqa: BLE001
-                        # Best-effort quieting; log and stop fading rather
-                        # than silently swallowing the setter failure.
-                        logger.warning(
-                            "autolevel: fade-down set_main_volume_db(%.1f) "
-                            "failed (session=%s) — stopping fade, will still "
-                            "attempt tone cancel + final lock-value set",
-                            cur, self.session_id, exc_info=True,
-                        )
-                        break
-                    await asyncio.sleep(fade_step_s)
-            finally:
-                cancel_tone()
                 if tone_task is not None:
-                    try:
+                    cur = al.current_main_volume_db
+                    while cur > fade_down_to_db:
+                        cur = max(fade_down_to_db, cur - 2.0)
+                        try:
+                            await _set_volume(cur)
+                        except Exception:  # noqa: BLE001
+                            logger.exception("autolevel fade failed")
+                            break
+                        await asyncio.sleep(fade_step_s)
+            finally:
+                try:
+                    cancel_tone()
+                    if tone_task is not None:
                         await asyncio.wait_for(tone_task, timeout=2.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
-                        pass
-                if lock_value_db is not None:
+                except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
+                    al.error = type(exc).__name__
+                    terminal = AutolevelStatus.ERROR
+                if cancellation is not None or cancel_event.is_set():
+                    terminal = AutolevelStatus.CANCELLED
+                if terminal is AutolevelStatus.LOCKED:
                     try:
-                        await set_main_volume_db(lock_value_db)
-                        al.current_main_volume_db = lock_value_db
-                    except Exception:  # noqa: BLE001
-                        # The final volume set is the one that actually
-                        # leaves the speaker at its intended level (lock or
-                        # restored listening level). A silent failure here
-                        # can strand the speaker at the measurement volume, so
-                        # make it observable.
-                        logger.warning(
-                            "autolevel: final set_main_volume_db(%.1f) failed "
-                            "(session=%s) — speaker may remain at the "
-                            "measurement level until /reset",
-                            lock_value_db, self.session_id, exc_info=True,
-                        )
+                        await _set_volume(lock_value_db)
+                        al.locked_main_volume_db = lock_value_db
+                    except Exception as exc:  # noqa: BLE001
+                        al.error = type(exc).__name__
+                        terminal = AutolevelStatus.ERROR
+                if cancellation is not None or cancel_event.is_set():
+                    terminal = AutolevelStatus.CANCELLED
+                    al.locked_main_volume_db = None
+                if terminal is not AutolevelStatus.LOCKED:
+                    await self.restore_listening_volume_if_ramped()
+                al.status = terminal
 
         try:
             al.original_main_volume_db = float(await get_main_volume_db())
             if cancel_event.is_set():
-                al.status = AutolevelStatus.CANCELLED
+                terminal = AutolevelStatus.CANCELLED
+                al.restored = True
                 logger.info(
                     "autolevel: CANCELLED before first volume write "
                     "(session=%s)",
@@ -355,8 +353,7 @@ class AutolevelController:
             # usual start_db. Never jump straight past that cap just to reach
             # the nominal start of the legacy ramp.
             current_db = min(float(start_db), float(end_db))
-            await set_main_volume_db(current_db)
-            al.current_main_volume_db = current_db
+            await _set_volume(current_db)
             await asyncio.sleep(0.1)
 
             tone_task = asyncio.create_task(play_continuous_tone())
@@ -373,9 +370,8 @@ class AutolevelController:
                             current_db,
                             loop.time() - start_time,
                         )
-                        await _graceful_stop(current_db)
-                        al.locked_main_volume_db = current_db
-                        al.status = AutolevelStatus.LOCKED
+                        lock_value_db = current_db
+                        terminal = AutolevelStatus.LOCKED
                         return
                     if cancel_event.is_set():
                         logger.info(
@@ -385,8 +381,7 @@ class AutolevelController:
                             loop.time() - start_time,
                             al.original_main_volume_db,
                         )
-                        await _graceful_stop(al.original_main_volume_db)
-                        al.status = AutolevelStatus.CANCELLED
+                        terminal = AutolevelStatus.CANCELLED
                         return
                     if loop.time() - start_time > safety_timeout_s:
                         al.error = f"safety timeout after {safety_timeout_s}s"
@@ -396,13 +391,11 @@ class AutolevelController:
                             current_db,
                             al.original_main_volume_db,
                         )
-                        await _graceful_stop(al.original_main_volume_db)
-                        al.status = AutolevelStatus.CANCELLED
+                        terminal = AutolevelStatus.CANCELLED
                         return
 
                 current_db = min(end_db, current_db + step_db)
-                await set_main_volume_db(current_db)
-                al.current_main_volume_db = current_db
+                await _set_volume(current_db)
                 logger.debug("autolevel: step main_volume=%.1f dB", current_db)
 
             al.error = (
@@ -415,27 +408,32 @@ class AutolevelController:
                 end_db,
                 al.original_main_volume_db,
             )
-            await _graceful_stop(al.original_main_volume_db)
-            al.status = AutolevelStatus.MAXED_OUT
-        except Exception as e:  # noqa: BLE001
-            al.error = str(e)
+            terminal = AutolevelStatus.MAXED_OUT
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+            terminal = AutolevelStatus.CANCELLED
+        except Exception as exc:  # noqa: BLE001
+            al.error = str(exc)
             logger.exception("autolevel failed")
-            try:
-                if al.original_main_volume_db is not None:
-                    await _graceful_stop(al.original_main_volume_db)
-                else:
-                    cancel_tone()
-            except Exception:  # noqa: BLE001
-                pass
-            al.status = AutolevelStatus.ERROR
         finally:
-            if self._lock_event is lock_event:
+            # Keep ownership until tone teardown and volume restoration finish,
+            # even when the request is cancelled again during cleanup.
+            cleanup = asyncio.create_task(_finish())
+            try:
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError as exc:
+                        cancellation = exc
+                cleanup.result()
+            finally:
                 self._lock_event = None
-            if self._cancel_event is cancel_event:
                 self._cancel_event = None
-            run_finished.set()
-            if auto_release:
-                await self.release_run_reservation(reservation_token)
+                run_finished.set()
+                if auto_release:
+                    await self.release_run_reservation(reservation_token)
+            if cancellation is not None:
+                raise cancellation
 
     async def lock(self) -> bool:
         """Signal the running autolevel task to lock current main_volume."""

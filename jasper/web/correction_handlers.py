@@ -28,6 +28,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.audio_measurement import room_boundary
+from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
+from jasper.active_speaker.restore_wait import resilient_restore
+from jasper.active_speaker.session_volume_plan import RestoreOutcome
 
 from ..log_event import log_event
 from . import correction_tuning
@@ -46,28 +49,6 @@ from .correction_capture import (
     _session_lock,
     logger,
 )
-
-
-#: The session-measurement claim the autolevel ramp holds, from its first
-#: quiet write until the workflow settles at ``/apply`` or ``/reset``.
-#:
-#: It OUTLIVES the request that took it because the level does: the ramp locks
-#: a measurement level, the sweeps play at it, and only apply/reset returns the
-#: household its own. Module-scoped for the same reason ``_LEVEL_LEASE`` and
-#: ``session_volume_plan()`` are — this process serves one measurement session.
-#:
-#: **The failure mode is unchanged by routing, and is #3038's.** A process exit
-#: mid-session strands the claim exactly as it already stranded the fader; the
-#: claim makes that state legible in the owner's ledger rather than invisible.
-_AUTOLEVEL_CLAIM: Any = None
-
-
-def _take_autolevel_claim() -> Any:
-    """Hand back the held autolevel claim, clearing it. ``None`` when none."""
-
-    global _AUTOLEVEL_CLAIM
-    claim, _AUTOLEVEL_CLAIM = _AUTOLEVEL_CLAIM, None
-    return claim
 
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -227,6 +208,10 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
         cam = correction_capture._camilla()
         prior_session = correction_capture._get_or_create_session()
+        if not correction_capture._run_async(
+            prior_session._restore_listening_volume_if_ramped(), timeout=5.0,
+        ):
+            raise RequestConflict("speaker volume could not be restored; retry Reset")
         correction_capture._run_async(
             prior_session.restore_level_match_volume(correction_capture._household_level_door()),
             timeout=5.0,
@@ -736,67 +721,62 @@ def _handle_autolevel_start(
         raise RequestConflict("the speaker volume owner is not available")
 
     async def _run_autolevel() -> None:
+        claim = None
+
+        async def _get_vol() -> float:
+            value = await cam.get_volume_db(best_effort=False)
+            if value is None:
+                raise RuntimeError("speaker volume is unavailable")
+            return float(value)
+
+        async def _set_vol(db: float) -> None:
+            nonlocal claim
+            if claim is None:
+                claim = await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, db)
+            else:
+                claim = await owner.relevel(claim, db)
+
+        async def _restore_vol(db: float) -> bool:
+            async def _release_and_restore() -> bool:
+                nonlocal claim
+                if claim is not None:
+                    await owner.release(claim, household_level_db=db)
+                    claim = None
+                door = OwnerVolumeDoor(owner, read_fader=_get_vol)
+                return await door.restore_household_level_db(db) is RestoreOutcome.LANDED
+
+            return await resilient_restore(_release_and_restore())
+
         try:
             async with measurement_window():
-                # Tone source amplitude = -12 dBFS, matching the sweep
-                # amplitude. Earlier this was -6 dBFS — 6 dB louder
-                # than the actual sweep, which made the autolevel
-                # phase startlingly loud AND inflated the user's
-                # expectation of how loud the measurement sweep would
-                # be. With -12 dBFS, the tone and sweep are the same
-                # loudness so leveling-to-tone calibrates leveling-to-
-                # sweep directly.
                 tone_wav = playback._ensure_tone_wav(
                     freq_hz=1000.0,
-                    duration_s=15.0,  # safety > max ramp duration
+                    duration_s=15.0,
                     dbfs=-12.0,
                     sample_rate=48000,
                 )
                 player = playback.TonePlayer(tone_wav)
-
-                async def _get_vol() -> float:
-                    v = await cam.get_volume_db(best_effort=False)
-                    return float(v) if v is not None else 0.0
-
-                async def _set_vol(db: float) -> None:
-                    # W10 routed. The ramp's FIRST write is the quiet start
-                    # level, which is exactly when the claim should be taken;
-                    # every write after it MOVES that held claim rather than
-                    # re-taking one, so the fader never passes through the
-                    # household level between steps.
-                    global _AUTOLEVEL_CLAIM
-                    if _AUTOLEVEL_CLAIM is None:
-                        _AUTOLEVEL_CLAIM = await owner.acquire_level(
-                            ClaimKind.SESSION_MEASUREMENT, float(db)
-                        )
-                        return
-                    _AUTOLEVEL_CLAIM = await owner.relevel(
-                        _AUTOLEVEL_CLAIM, float(db)
-                    )
-
                 await sess.run_autolevel(
                     reservation_token=reserved,
                     get_main_volume_db=_get_vol,
                     set_main_volume_db=_set_vol,
+                    restore_main_volume_db=_restore_vol,
                     play_continuous_tone=player.play,
                     cancel_tone=player.cancel,
                 )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("autolevel run failed: %s", e)
+        except asyncio.CancelledError:
+            sess.autolevel.status = AutolevelStatus.CANCELLED
+            raise
+        except Exception as exc:  # noqa: BLE001
+            sess.autolevel.status = AutolevelStatus.ERROR
+            sess.autolevel.error = type(exc).__name__
+            logger.exception("autolevel run failed")
         finally:
-            # A run that did not end LOCKED/MAXED_OUT leaves no measurement
-            # level for the sweeps to play at, so its claim dies with it here
-            # rather than waiting for an apply/reset that may never come. A
-            # run that DID lock keeps the claim, because the level it locked is
-            # what the sweeps are about to use.
-            if sess.autolevel.status not in {
-                AutolevelStatus.LOCKED,
-                AutolevelStatus.MAXED_OUT,
-            }:
-                stranded = _take_autolevel_claim()
-                if stranded is not None:
-                    await owner.release(stranded)
-            await sess.release_autolevel_run_reservation(reserved)
+            try:
+                if sess.autolevel.status is not AutolevelStatus.LOCKED:
+                    await resilient_restore(sess._restore_listening_volume_if_ramped())
+            finally:
+                await sess.release_autolevel_run_reservation(reserved)
 
     reserved = correction_capture._run_async(sess.reserve_autolevel_run(), timeout=2.0)
     if not reserved:
@@ -834,7 +814,12 @@ def _handle_autolevel_cancel(
     main_volume to whatever it was before the ramp started."""
     sess = correction_capture._get_or_create_session()
     fired = correction_capture._run_async(sess.cancel_autolevel(), timeout=2.0)
-    return {"cancelled": bool(fired), "autolevel": sess.autolevel.snapshot()}
+    snapshot = sess.autolevel.snapshot()
+    return {
+        "cancel_requested": bool(fired),
+        "cancelled": snapshot["status"] == "cancelled",
+        "autolevel": snapshot,
+    }
 
 
 def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1570,117 +1555,24 @@ def _handle_crossover_reset() -> tuple[dict[str, Any], HTTPStatus]:
 
 
 def _maybe_restore_main_volume(sess, cam) -> None:
-    """If autolevel ran and locked a measurement-friendly level,
-    restore main_volume to the pre-autolevel value after the
-    measurement workflow completes (apply or reset). This keeps the
-    user's listening level intact across what otherwise would be a
-    surprising "music is quieter now" experience.
+    """Use the session's terminal cleanup, including retries after failed writes."""
+    from jasper.correction.session import SessionState
 
-    Idempotent — skips silently if no autolevel ran in this session.
-    """
-    # Runs inside the apply/reset `finally`, so the ENTIRE body is
-    # best-effort — nothing here may raise, or it would mask the original
-    # apply/reset error. The single guard covers the lazy import and the
-    # autolevel-state reads too, not just the restore call. A failed restore
-    # can strand the volume at the measurement level, but that is logged
-    # loudly and is better than swallowing the real error.
+    if sess.state in {
+        SessionState.PREPARING, SessionState.SWEEPING,
+        SessionState.ANALYZING, SessionState.VERIFYING,
+    }:
+        return
     try:
-        from jasper.correction.session import AutolevelStatus, SessionState
-        from jasper.volume_owner import volume_owner
+        async def _restore() -> None:
+            await sess._restore_listening_volume_if_ramped()
+            restore_level_match = getattr(sess, "restore_level_match_volume", None)
+            if callable(restore_level_match):
+                await restore_level_match(correction_capture._household_level_door())
 
-        owner = volume_owner()
-        if owner is None:
-            # This process registers one at startup (``web/__main__.main``),
-            # so None is a registration defect rather than a state to handle.
-            # Loud and skipped: minting a second owner here would be the
-            # arbitration failure wave 5 exists to delete, and there is no
-            # second write path to fall back to by design.
-            log_event(
-                logger,
-                "correction.autolevel_restore_owner_absent",
-                level=logging.CRITICAL,
-            )
-            return
-
-        restore_level_match = getattr(sess, "restore_level_match_volume", None)
-        if callable(restore_level_match):
-            async def _restore_level_match() -> bool:
-                return await restore_level_match(owner.declare_household_level_db)
-
-            if correction_capture._run_async(_restore_level_match(), timeout=5.0):
-                logger.info(
-                    "restored main_volume after the level-match workflow"
-                )
-                return
-
-        al = sess.autolevel
-        if al.original_main_volume_db is None:
-            return
-        # Only restore when autolevel had a "ran and finished" outcome.
-        # If still RAMPING or IDLE, don't interfere.
-        if al.status not in {
-            AutolevelStatus.LOCKED,
-            AutolevelStatus.MAXED_OUT,
-        }:
-            return
-        # Don't restore mid-measurement. We run in apply()/reset()'s finally,
-        # so this also fires when one was REJECTED from a transient state — a
-        # stale /reset during a sweep, which the server refuses. The sweep
-        # still needs the ramped level; dropping it underneath an active
-        # measurement would corrupt the capture. Restore only once the
-        # workflow has settled (idle / applied / verified / failed).
-        if sess.state in {
-            SessionState.PREPARING,
-            SessionState.SWEEPING,
-            SessionState.ANALYZING,
-            SessionState.VERIFYING,
-        }:
-            return
-
-        # THE happy-path restore. The autolevel controller's own
-        # `restore_listening_volume_if_ramped` is called only from
-        # `session.py`'s `_fail` and its post-VERIFIED arm, neither of which is
-        # on the apply path, and it latches `restored` BEFORE its await, so it
-        # is one-shot even when its write fails. This is the retry, and on a
-        # clean autolevel -> sweep -> /apply run it is the only thing that
-        # returns the household to its level.
-        #
-        # Routed: the household level is DECLARED, not written. Under a
-        # higher-ranked claim the declaration is recorded and lands when that
-        # claim releases, instead of a blind write racing it.
-        #
-        # And when the ramp's own session-measurement claim is still held —
-        # the ordinary case, since the level it locked is what the sweeps
-        # played at — the release and the re-declaration are ONE call, so the
-        # fader lands on the household level in a single write instead of
-        # stepping through whatever was declared before it.
-        claim = _take_autolevel_claim()
-        if claim is not None:
-            correction_capture._run_async(
-                owner.release(
-                    claim, household_level_db=al.original_main_volume_db
-                ),
-                timeout=5.0,
-            )
-            in_effect = True
-        else:
-            in_effect = correction_capture._run_async(
-                owner.declare_household_level_db(al.original_main_volume_db),
-                timeout=5.0,
-            )
-        log_event(
-            logger,
-            "correction.autolevel_restore_declared",
-            level=logging.INFO if in_effect else logging.WARNING,
-            to_db=f"{al.original_main_volume_db:.1f}",
-            released_claim=claim is not None,
-            in_effect=in_effect,
-        )
+        correction_capture._run_async(resilient_restore(_restore()), timeout=5.0)
     except Exception:  # noqa: BLE001
-        logger.exception(
-            "main_volume restore after autolevel workflow failed "
-            "(volume may be left at the measurement level)",
-        )
+        logger.exception("main_volume restore after autolevel workflow failed")
 
 
 def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:

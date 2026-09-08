@@ -2451,12 +2451,18 @@ import {
             'so no measurement level was locked. Raise the external amplifier a little, ' +
             'then retry the level check.';
         } else if (al.status === 'cancelled') {
-          autolevelLine.textContent = 'Auto-level cancelled — speaker volume restored.';
+          autolevelLine.textContent = al.restored
+            ? 'Auto-level cancelled — speaker volume restored.'
+            : 'Auto-level cancelled.';
           autolevelDetail.textContent = '';
         } else if (al.status === 'error') {
           autolevelLine.textContent = 'Auto-level error.';
           console.warn('autolevel failed', al.error || '');
-          autolevelDetail.textContent = 'The level check stopped safely. Try again.';
+          autolevelDetail.textContent = 'The level check stopped. Try again.';
+        }
+        if (al.restore_error) {
+          autolevelDetail.textContent =
+            'Speaker volume could not be restored. Use Reset to retry.';
         }
         return true;
       } catch (e) {
