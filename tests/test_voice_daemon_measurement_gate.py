@@ -27,10 +27,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import numpy as np
 
 import pytest
 
 from jasper.audio_io import TtsPlayout
+from jasper.audio_buffer import InputFrame
 from jasper.cues.manager import AudioCueManager
 from jasper.timers import Timer
 from tests._cue_spy import SpyCues
@@ -307,3 +313,35 @@ async def test_emission_proceeds_once_the_window_closes() -> None:
     await wl._play_listening_chirp(going_on=True)
 
     assert tts.segments == [wl._assistant_output._chirp_on_pcm]
+
+
+async def test_measurement_between_frames_discards_old_input_and_resets_history():
+    wl = wake_loop_for_tests()
+    old = np.zeros(1280, dtype=np.int16)
+    fresh = np.ones(1280, dtype=np.int16)
+    captured_at = time.monotonic()
+    wl._pre_roll.append(old)
+    wl._capture_ring_on.append(old)
+    wl._acquire_buffer.append(old, captured_at)
+    detector = wl._legs["on"].detector
+    detector.reset = Mock()
+    wl._handle_wake_frame = AsyncMock()
+
+    async def frames():
+        mic.last_frame = InputFrame(old, captured_at)
+        yield old
+        mic.last_frame = InputFrame(fresh, time.monotonic())
+        yield fresh
+
+    mic = SimpleNamespace(frames=frames, last_frame=None)
+    wl._mic = wl._legs["on"].mic = mic
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    await wl.measurement_hold.resume()
+    assert not wl._pre_roll
+    assert not wl._capture_ring_on
+    assert not wl._acquire_buffer
+    await wl.run()
+    assert len(wl._pre_roll) == 1
+    assert wl._pre_roll[0] is fresh
+    wl._handle_wake_frame.assert_awaited_once_with(fresh, leg="on")
+    detector.reset.assert_called_once_with()

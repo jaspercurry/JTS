@@ -42,7 +42,6 @@ async def _park():
 
 def _acquire_loop(monkeypatch):
     wl = wake_loop_for_tests()
-    wl._begin_turn_output_episode = AsyncMock()
     wl._prepare_assistant_loudness_context = AsyncMock()
     wl._content_activity.refresh_now = AsyncMock()
     wl._arm_turn_background_end = lambda: None
@@ -227,12 +226,14 @@ async def test_endpoint_discarded_tail_does_not_keep_pre_gap_vad_state():
     assert reset == [True]
 
 
+@pytest.mark.parametrize("gate", ["mute", "measurement"])
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("wait_at", ["prepare", "acquire", "prefix"])
-async def test_mute_during_acquire_never_uploads_frozen_prefix(
-    monkeypatch, tmp_path, resume, wait_at,
+async def test_input_pause_during_acquire_never_uploads_frozen_prefix(
+    monkeypatch, tmp_path, gate, resume, wait_at,
 ):
     wl = _acquire_loop(monkeypatch)
+    monkeypatch.setattr("jasper.voice.measurement_hold.MEASUREMENT_INFLIGHT_DRAIN_SEC", 0.0)
     wl._cfg.mic_mute_state_path = str(tmp_path / "mute.env")
     wl._play_mute_click = AsyncMock()
     wl._play_listening_chirp = AsyncMock()
@@ -256,16 +257,29 @@ async def test_mute_during_acquire_never_uploads_frozen_prefix(
     wl._connection.acquire_turn = acquire
     task = asyncio.create_task(wl.manual_session_start())
     await asyncio.wait_for(entered.wait(), 1.0)
-    await wl.mute_mic()
-    if resume:
-        await wl.unmute_mic()
-    release.set()
-    assert await task == "MUTED"
-    assert turn.send_audio.await_count == int(wait_at == "prefix")
-    assert turn.release.await_count == int(wait_at != "prepare")
-    assert not wl._acquiring
-    assert wl._state is State.WAKE
-    await wl._cancel_fire_and_forget_tasks()
+    try:
+        if gate == "mute":
+            await wl.mute_mic()
+            if resume:
+                await wl.unmute_mic()
+        else:
+            assert await wl.measurement_hold.pause_response() == {"result": "ok", "drained": False}
+            if resume:
+                await wl.measurement_hold.resume()
+        release.set()
+        assert (await task, turn.send_audio.await_count) == (
+            "MUTED" if gate == "mute" else "MEASURING", int(wait_at == "prefix"),
+        )
+        assert turn.release.await_count == int(wait_at != "prepare")
+        assert not wl._acquiring
+        assert wl._state is State.WAKE
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _stop_playback(wl)
+        await wl.measurement_hold.resume()
+        await wl._cancel_fire_and_forget_tasks()
 
 
 @pytest.mark.parametrize("buffered", [False, True])

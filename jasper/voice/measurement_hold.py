@@ -585,6 +585,7 @@ class MeasurementHold:
         else:
             gate.clear()
         if changed:
+            self._wake_loop._invalidate_input("MEASURING")
             log_event(
                 logger,
                 "measurement.reconcile_guard",
