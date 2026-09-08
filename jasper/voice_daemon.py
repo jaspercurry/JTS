@@ -597,7 +597,6 @@ class WakeLoop:
         # ring still gets a real deque so no reader special-cases it.
         _on = self._legs.get("on")
         self._mic = _on.mic if _on is not None else None
-        self._detector = _on.detector if _on is not None else None
         self._capture_ring_on = (
             _on.capture_ring if _on is not None
             else deque(maxlen=CAPTURE_RING_FRAMES)
@@ -833,53 +832,25 @@ class WakeLoop:
     def _output_gate(self) -> AssistantOutputGate:
         return self._assistant_output.gate
 
-    @_output_gate.setter
-    def _output_gate(self, value: AssistantOutputGate) -> None:
-        self._assistant_output._output_gate = value
-
-    # `_cfg`, `_tts`, `_cues`, `_ducker` and `_volume_coordinator` live on
-    # `AssistantOutput`; these keep one object per collaborator. The
-    # getters serve the loop and `MeasurementHold`; the setters serve
-    # `wake_loop_for_tests` overrides and the suite's rebinds.
     @property
     def _cfg(self) -> Config:
         return self._assistant_output._cfg
-
-    @_cfg.setter
-    def _cfg(self, value: Config) -> None:
-        self._assistant_output._cfg = value
 
     @property
     def _tts(self) -> TtsPlayout:
         return self._assistant_output._tts
 
-    @_tts.setter
-    def _tts(self, value: TtsPlayout) -> None:
-        self._assistant_output._tts = value
-
     @property
     def _cues(self) -> AudioCueManager | None:
         return self._assistant_output._cues
-
-    @_cues.setter
-    def _cues(self, value: AudioCueManager | None) -> None:
-        self._assistant_output._cues = value
 
     @property
     def _ducker(self) -> FanInDucker:
         return self._assistant_output._ducker
 
-    @_ducker.setter
-    def _ducker(self, value: FanInDucker) -> None:
-        self._assistant_output._ducker = value
-
     @property
     def _volume_coordinator(self) -> VolumeCoordinator:
         return self._assistant_output._volume_coordinator
-
-    @_volume_coordinator.setter
-    def _volume_coordinator(self, value: VolumeCoordinator) -> None:
-        self._assistant_output._volume_coordinator = value
 
     def _create_fire_and_forget_task(
         self,
@@ -2728,7 +2699,7 @@ class WakeLoop:
             event,
             fields={
                 "provider": self._cfg.voice_provider,
-                "model": _active_model(self._cfg),
+                "model": self._cfg.active_voice_model,
                 **fields,
                 **({"suppressed": end_reason} if suppressed else {}),
             },
@@ -2890,7 +2861,7 @@ class WakeLoop:
             and (silent or lost_mid_reply)
             and not expected_research_silence_dismiss
         ):
-            model = _active_model(self._cfg)
+            model = self._cfg.active_voice_model
             if self._input_ended:
                 diagnosis: dict[str, object] = (
                     {}
@@ -2980,18 +2951,8 @@ class WakeLoop:
         return play_no_answer_cue
 
 
-def _active_model(*args, **kwargs):
-    from .voice.daemon_main import active_model as impl
-    return impl(*args, **kwargs)
-
-
-async def run() -> None:
-    from .voice.daemon_main import run as impl
-    await impl()
-
-
 def main() -> None:
-    from .voice.daemon_main import main as impl
+    from .voice.daemon_main import main as impl  # lazy: composition root imports WakeLoop
     impl()
 
 

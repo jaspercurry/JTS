@@ -45,13 +45,13 @@ class _SpyCalls:
         self.kwargs = kwargs
 
 
-def _make_wake_loop():
+def _make_wake_loop(**collaborators):
     """A WakeLoop with only the attributes manual_session_start reads
     plus spies on the side effects we assert must NOT fire.
     """
     from jasper.voice_daemon import State
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(**collaborators)
     wl._state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
@@ -117,8 +117,7 @@ async def test_manual_start_at_the_spend_cap_cues_and_refuses(caplog):
     The cap is not a state the household just asked for, so silence here
     is unexplainable (AGENTS.md's no-silent-deafness rule).
     """
-    wl = _make_wake_loop()
-    wl._cues = _SpyCues()
+    wl = _make_wake_loop(cues=_SpyCues())
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
@@ -192,8 +191,7 @@ async def test_manual_start_failure_cues_the_cause(connection_drops, expected_sl
     no-silent-deafness rule) — and an outage cue for a connection that is
     still up would be a lie, so that branch cues `internal_error`.
     """
-    wl = _make_wake_loop()
-    wl._cues = _SpyCues()
+    wl = _make_wake_loop(cues=_SpyCues())
     paused = False
 
     async def _begin_turn_that_fails(**_kwargs) -> None:
@@ -222,17 +220,14 @@ async def test_manual_refusal_cue_does_not_hold_up_the_reply():
     and drain: awaiting one answered the button 503 and left the real
     result to be written to a closed socket.
     """
-    wl = _make_wake_loop()
-    wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
     played = asyncio.Event()
-
     class _SlowCues:
         async def play(self, slug: str) -> bool:
             await asyncio.sleep(0.05)
             played.set()
             return True
-
-    wl._cues = _SlowCues()
+    wl = _make_wake_loop(cues=_SlowCues())
+    wl._spend_cap = types.SimpleNamespace(allowed=lambda: False)
 
     assert await wl.manual_session_start() == "CAP"
     assert not played.is_set()
@@ -259,7 +254,6 @@ async def test_manual_start_waits_out_a_planned_rotation(monkeypatch):
 
 async def test_manual_start_does_not_repeat_begin_owned_cleanup():
     """A failed begin that released its episode is not cleaned twice."""
-
 
     wl = wake_loop_for_tests()
     cleanup_calls = 0
@@ -294,7 +288,6 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
 async def test_manual_start_cleans_prefix_failure_before_turn_inner():
     """An ordinary loudness-prefix failure is centrally cleaned exactly once."""
 
-
     wl = wake_loop_for_tests()
     cleanup_calls = 0
     inner = _SpyCalls()
@@ -321,14 +314,13 @@ async def test_manual_start_cleans_prefix_failure_before_turn_inner():
 
 async def test_measurement_pause_and_resume_transfer_volume_ownership():
     """The voice-side gate and volume-owner lease change together."""
-    wl = _make_wake_loop()
     ownership: list[bool] = []
-
     async def note_measurement_active(active):
         ownership.append(bool(active))
-
-    wl._volume_coordinator = types.SimpleNamespace(
+    wl = _make_wake_loop(
+        volume_coordinator=types.SimpleNamespace(
         note_measurement_active=note_measurement_active
+    ),
     )
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
@@ -345,14 +337,13 @@ async def test_measurement_pause_and_resume_transfer_volume_ownership():
 
 async def test_measurement_auto_clear_releases_reconcile_guard(monkeypatch):
     """A crashed correction owner cannot strand the guard active."""
-    wl = _make_wake_loop()
     ownership: list[bool] = []
-
     async def note_measurement_active(active):
         ownership.append(bool(active))
-
-    wl._volume_coordinator = types.SimpleNamespace(
+    wl = _make_wake_loop(
+        volume_coordinator=types.SimpleNamespace(
         note_measurement_active=note_measurement_active
+    ),
     )
     timer_started = asyncio.Event()
     release_timer = asyncio.Event()
@@ -464,10 +455,7 @@ def _ptt_only_wake_loop():
     from jasper.voice_daemon import State
     from tests._manual_mics import remote_mic
 
-    wl = wake_loop_for_tests(
-        legs=[],
-        manual_mics=[remote_mic()],
-    )
+    wl = wake_loop_for_tests(legs=[], manual_mics=[remote_mic()], cues=_SpyCues())
     wl._state = State.WAKE
     wl._mic_muted = False
     wl._measurement_active = asyncio.Event()
@@ -480,7 +468,6 @@ def _ptt_only_wake_loop():
     wl._prepare_assistant_loudness_context = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
     wl._cleanup_after_failed_begin = _SpyCalls()
-    wl._cues = _SpyCues()
     return wl
 
 

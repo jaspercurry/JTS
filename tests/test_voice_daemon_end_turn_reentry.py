@@ -13,7 +13,7 @@ import pytest
 from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from tests._async_wait import wait_signalled, wait_until
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn
-from tests._wake_loop import wake_loop_for_tests
+from tests._wake_loop import FakeTts, wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
 
 
@@ -27,23 +27,11 @@ def _make_wakeloop():
         def resume(self):
             return None
 
-    class _AsyncNoop:
+    class _AsyncNoop(FakeTts):
         async def restore(self):
             return None
 
-        async def resume_content_meter(self):
-            return None
-
-        async def end_segment(self):
-            return None
-
-        async def wait_drained(self):
-            return None
-
-        def take_paced_sec(self):
-            return 0.0
-
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(volume_coordinator=_Noop(), ducker=_AsyncNoop(), tts=_AsyncNoop())
     wl._state = State.SESSION
     wl._turn = _FakeTurn()
     wl._session_id = 7
@@ -56,13 +44,7 @@ def _make_wakeloop():
     wl._silero_raw_armed_at_ms = None
     wl._input_ended = False
     wl._ending = False
-
-    # Collaborators with real side effects — stub to async/sync no-ops so
-    # only the re-entrancy logic is under test.
-    wl._volume_coordinator = _Noop()
     wl._content_activity = _Noop()
-    wl._ducker = _AsyncNoop()
-    wl._tts = _AsyncNoop()
 
     async def _noop_stage(_stage):
         # Yield control so a concurrent _end_turn entrant actually gets

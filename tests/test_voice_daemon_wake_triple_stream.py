@@ -60,13 +60,11 @@ def _make_wake_loop_triple(
     store = MagicMock()
     store.begin_event = AsyncMock()
     wl = wake_loop_for_tests(wake_event_store=store)
-    wl._cfg = MagicMock()
-    wl._cfg.peering_enabled = False
-    wl._detector = _make_detector()
+    wl._legs["on"].detector = _make_detector()
     # Build the leg collection the refactored _handle_wake_frame reads.
     # capture_ring=None is fine — _tail_frame_rms_dbfs tolerates None.
     wl._legs = {
-        "on": LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
+        "on": LegRuntime(by_token("on"), MagicMock(), wl._legs["on"].detector, None),
     }
     if detector_off is not None:
         wl._legs["off"] = LegRuntime(
@@ -195,7 +193,7 @@ async def test_aec_on_fire_still_records_fire_aec_on():
     """Regression on the non-broken path — make sure adding the dtln
     branch didn't change AEC ON behavior."""
     wl = _make_wake_loop_triple()
-    wl._detector.score_frame.return_value = 0.91
+    wl._legs["on"].detector.score_frame.return_value = 0.91
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
@@ -299,7 +297,7 @@ async def test_chip_beam_corroborates_in_fired_legs_when_software_leg_fires():
     and the corroborating beam's recent score lands in its own column."""
     detector_chip = _make_detector(threshold=0.5)
     wl = _make_wake_loop_triple(detector_chip_aec_150=detector_chip)
-    wl._detector.score_frame.return_value = 0.90  # "on" wins the race
+    wl._legs["on"].detector.score_frame.return_value = 0.90  # "on" wins the race
     now = asyncio.get_event_loop().time()
     wl._legs["chip_aec_150"].recent_score = 0.81
     wl._legs["chip_aec_150"].recent_score_at = now
@@ -353,7 +351,7 @@ async def test_wake_log_omits_unconfigured_leg_scores(caplog):
     leg regardless of hardware."""
     import logging
     wl = _make_wake_loop_triple()  # "on" only — no off/dtln/chip detectors
-    wl._detector.score_frame.return_value = 0.91
+    wl._legs["on"].detector.score_frame.return_value = 0.91
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
     fields = event_fields(caplog, "wake.detected")
@@ -373,7 +371,7 @@ async def test_wake_log_emits_only_active_legs_with_chip(caplog):
         detector_chip_aec_150=_make_detector(),
         detector_chip_aec_210=_make_detector(),
     )
-    wl._detector.score_frame.return_value = 0.88
+    wl._legs["on"].detector.score_frame.return_value = 0.88
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
     fields = event_fields(caplog, "wake.detected")

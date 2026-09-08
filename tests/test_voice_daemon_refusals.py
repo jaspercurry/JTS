@@ -118,14 +118,13 @@ class _CueDuringSurrender:
 
     def __init__(
         self,
-        wl: WakeLoop,
         timeline: list[str],
         allow_release: asyncio.Event,
         opener_done: asyncio.Event,
         *,
         resume_opener_during_play: bool,
     ) -> None:
-        self._wl = wl
+        self._wl: WakeLoop
         self._timeline = timeline
         self._allow_release = allow_release
         self._opener_done = opener_done
@@ -220,18 +219,13 @@ async def _drive_cancel_timeout(
         "RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC",
         0.01,
     )
-    wl = wake_loop_for_tests()
-    wl._state = State.WAKE
     timeline: list[str] = []
-    wl._ducker = _OrderedDucker(timeline)
-    _record_output_writes(wl, timeline)
     release_started = asyncio.Event()
     allow_release = asyncio.Event()
     opener_done = asyncio.Event()
     turn = _BlockingReleaseTurn(timeline, release_started, allow_release)
     cues = (
         _CueDuringSurrender(
-            wl,
             timeline,
             allow_release,
             opener_done,
@@ -239,7 +233,11 @@ async def _drive_cancel_timeout(
         )
         if cues_configured else None
     )
-    wl._cues = cues
+    wl = wake_loop_for_tests(ducker=_OrderedDucker(timeline), cues=cues)
+    wl._state = State.WAKE
+    _record_output_writes(wl, timeline)
+    if cues is not None:
+        cues._wl = wl
     opener = asyncio.create_task(_OPENERS[teardown](wl, turn, opener_done))
     try:
         # Parked inside `turn.release()`: past the point where each teardown
@@ -589,9 +587,8 @@ async def _surrender_inside_end_turn_inner() -> tuple[WakeLoop, list[str]]:
     """`_end_turn_inner` losing output ownership after it has begun and
     before it has written anything: the research cancel timeout's handover,
     landing inside the peering notify."""
-    wl = wake_loop_for_tests()
     timeline: list[str] = []
-    wl._ducker = _OrderedDucker(timeline)
+    wl = wake_loop_for_tests(ducker=_OrderedDucker(timeline))
     _record_output_writes(wl, timeline)
 
     async def _end_segment() -> None:

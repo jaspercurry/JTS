@@ -99,15 +99,6 @@ logger = logging.getLogger("jasper.voice_daemon")
 _T = TypeVar("_T")
 
 
-def active_model(cfg: Config) -> str:
-    """Return the model name for the currently selected provider — used
-    by startup-readiness logging and the silent-failure heuristic in
-    `_end_turn` so journalctl shows the actual model in flight. Resolution
-    lives on `Config.active_voice_model`; the `<unknown:…>` sentinel keeps
-    log lines legible for an unset provider."""
-    return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
-
-
 def _wire_billable_activity_meter(
     *,
     connection: LiveConnection,
@@ -666,7 +657,7 @@ async def run() -> None:
     # jasper/flight_recorder.py.
     flight_recorder.install("voice")
 
-    model_name = active_model(cfg)
+    model_name = cfg.active_voice_model
     pricing_overrides = load_pricing_overrides()
     pricing = pricing_for_model(model_name, overrides=pricing_overrides)
     speech_policy = build_effective_speech_input_policy(cfg)
@@ -980,7 +971,7 @@ async def run() -> None:
         )
         logger.info(
             "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
-            cfg.voice_provider, active_model(cfg),
+            cfg.voice_provider, cfg.active_voice_model,
             _wake_ready_detail(cfg, planned_wake_legs),
             cfg.mic_device or "(none)", _tts_ready_detail(cfg),
         )
@@ -1149,7 +1140,7 @@ async def run() -> None:
             gain_db=0.0,
             drain_tail_sec=cfg.tts_drain_tail_sec,
             provider=cfg.voice_provider,
-            model=active_model(cfg),
+            model=cfg.active_voice_model,
             voice=_active_voice(cfg),
             profile_path=cfg.assistant_loudness_profile_path,
         ))

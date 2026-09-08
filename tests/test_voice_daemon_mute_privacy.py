@@ -23,7 +23,7 @@ import pytest
 
 from tests._cue_spy import SpyCues
 from tests._log_events import event_fields
-from tests._wake_loop import wake_loop_for_tests
+from tests._wake_loop import FakeTts, wake_loop_for_tests
 
 
 def _wake_loop_for_mute(tmp_path):
@@ -41,7 +41,7 @@ def _wake_loop_for_mute(tmp_path):
         "off": SimpleNamespace(capture_ring=off_ring, mic=None),
         "dtln": SimpleNamespace(capture_ring=None, mic=None),  # leg without a ring
     }
-    wl._cfg = SimpleNamespace(mic_mute_state_path=str(tmp_path / "mic_mute.env"))
+    wl._cfg.mic_mute_state_path = str(tmp_path / "mic_mute.env")
 
     async def _noop_click(going_on: bool) -> None:
         return None
@@ -102,8 +102,7 @@ async def test_session_status_nulls_idle_level_fields_while_mic_not_feeding(
 
 async def test_play_cue_warns_once_when_cues_unconfigured(caplog) -> None:
 
-    wl = wake_loop_for_tests()
-    wl._cues = None
+    wl = wake_loop_for_tests(cues=None)
     wl._assistant_output._warned_cues_unconfigured = False
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
@@ -121,8 +120,7 @@ async def test_public_play_cue_reports_playback_failure() -> None:
         async def play(self, _slug: str) -> bool:
             return False
 
-    wl = wake_loop_for_tests()
-    wl._cues = _FakeCues()
+    wl = wake_loop_for_tests(cues=_FakeCues())
 
     assert await wl.play_cue("cant_connect") == "play_failed"
 
@@ -133,8 +131,7 @@ async def test_public_play_cue_reports_busy_when_output_active() -> None:
         async def play(self, _slug: str) -> bool:
             raise AssertionError("busy cue must not play")
 
-    wl = wake_loop_for_tests()
-    wl._cues = _FakeCues()
+    wl = wake_loop_for_tests(cues=_FakeCues())
     turn = await wl._output_gate.begin_turn()
     try:
         assert await wl.play_cue("cant_connect") == "busy"
@@ -147,7 +144,7 @@ async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None
 
     events: list[tuple[str, object]] = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def prepare_assistant_context(self, **kwargs) -> None:
             events.append(("prepare", kwargs))
 
@@ -167,14 +164,15 @@ async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None
         def get_listening_level(self) -> int:
             return 92
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(
+        tts=_Tts(),
+        ducker=_Ducker(),
+        cues=_Cues(),
+        volume_coordinator=_Volume(),
+    )
     wl._cfg.voice_provider = "grok"
     wl._cfg.grok_model = "grok-voice-think-fast-1.0"
     wl._cfg.grok_voice = "eve"
-    wl._tts = _Tts()
-    wl._ducker = _Ducker()
-    wl._cues = _Cues()
-    wl._volume_coordinator = _Volume()
 
     assert await wl._play_cue("spend_cap_reached") is True
 
@@ -194,7 +192,7 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
 
     events: list[tuple[str, object]] = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def prepare_assistant_context(self, **kwargs) -> None:
             events.append(("prepare", kwargs))
 
@@ -224,14 +222,15 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
         def get_listening_level(self) -> int:
             return 64
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(
+        tts=_Tts(),
+        ducker=_Ducker(),
+        cues=_Cues(),
+        volume_coordinator=_Volume(),
+    )
     wl._cfg.voice_provider = "gemini"
     wl._cfg.gemini_model = "gemini-3.1-flash-live-preview"
     wl._cfg.gemini_voice = "Aoede"
-    wl._tts = _Tts()
-    wl._ducker = _Ducker()
-    wl._cues = _Cues()
-    wl._volume_coordinator = _Volume()
 
     assert await wl._play_dynamic_text("Your timer is up.") is True
 
@@ -245,7 +244,7 @@ async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() ->
     )
 
 
-async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
+async def test_dynamic_text_duck_depth_uses_configured_value() -> None:
     """WakeLoop._cfg (S5) delegates onto AssistantOutput's own cfg — the
     two are one object, not two captured at construction. Rebinding
     wl._cfg must reach the duck depth AssistantOutput reads per call,
@@ -276,14 +275,11 @@ async def test_dynamic_text_duck_depth_follows_a_rebound_cfg() -> None:
         def __init__(self, owner: _Owner) -> None:
             self.volume_owner = owner
 
-    wl = wake_loop_for_tests()
     owner = _Owner()
-    wl._cues = _Cues()
-    wl._ducker = object()  # not a FanInDucker: takes the owner/CueDuck path
-    wl._volume_coordinator = _Volume(owner)
+    wl = wake_loop_for_tests(cues=_Cues(), ducker=object(), volume_coordinator=_Volume(owner))
 
     assert wl._cfg.duck_db == 0.0  # wake_loop_for_tests() default, confirms the rebind below moves it
-    wl._cfg = SimpleNamespace(duck_db=-9.5)
+    wl._cfg.duck_db = -9.5
 
     assert await wl._play_dynamic_text("Your timer is up.") is True
     assert owner.acquired_depths == [-9.5]
@@ -306,8 +302,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
         async def speak_text(self, _text: str, _should_play=None) -> bool:
             raise AssertionError("stale dynamic text must not write")
 
-    wl = wake_loop_for_tests()
-    wl._cues = _Cues()
+    wl = wake_loop_for_tests(cues=_Cues())
 
     assert await wl._play_dynamic_text("Your research is ready.") is False
     assert events == ["rendered", "turn_active=turn"]
@@ -323,7 +318,7 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
 
     events: list[tuple[str, object]] = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def prepare_assistant_context(self, **kwargs) -> None:
             events.append(("prepare", kwargs))
 
@@ -337,12 +332,10 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
         def get_listening_level(self) -> int:
             return 77
 
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(tts=_Tts(), volume_coordinator=_Volume())
     wl._cfg.voice_provider = "openai"
     wl._cfg.openai_model = "gpt-realtime-2"
     wl._cfg.openai_voice = "marin"
-    wl._tts = _Tts()
-    wl._volume_coordinator = _Volume()
 
     await wl._play_mute_click(going_on=False)
 
@@ -366,7 +359,7 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
 
     prepares = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def prepare_assistant_context(self, **kwargs) -> None:
             prepares.append(kwargs)
 
@@ -377,9 +370,7 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
         async def effective_volume_context(self):
             return EffectiveVolumeContext(-25.0, -25.0, -41.0, False, 123)
 
-    wl = wake_loop_for_tests()
-    wl._tts = _Tts()
-    wl._volume_coordinator = _Volume()
+    wl = wake_loop_for_tests(tts=_Tts(), volume_coordinator=_Volume())
 
     await wl._prepare_assistant_loudness_context()
 
@@ -399,7 +390,7 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
 
     prepares = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def prepare_assistant_context(self, **kwargs) -> None:
             prepares.append(kwargs)
 
@@ -411,9 +402,7 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
             return EffectiveVolumeContext(-30.0, -30.0, -41.0, False, 9)
 
     monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
-    wl = wake_loop_for_tests()
-    wl._tts = _Tts()
-    wl._volume_coordinator = _Volume()
+    wl = wake_loop_for_tests(tts=_Tts(), volume_coordinator=_Volume())
 
     await wl._prepare_assistant_loudness_context()
 
@@ -427,7 +416,7 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
 
     prepares = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def prepare_assistant_context(self, **kwargs) -> None:
             prepares.append(kwargs)
 
@@ -443,9 +432,7 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
         "JASPER_TTS_OUTPUTD_SOCKET",
         "/run/jasper-outputd/tts.sock",
     )
-    wl = wake_loop_for_tests()
-    wl._tts = _Tts()
-    wl._volume_coordinator = _Volume()
+    wl = wake_loop_for_tests(tts=_Tts(), volume_coordinator=_Volume())
 
     await wl._prepare_assistant_loudness_context()
 
@@ -454,12 +441,11 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
 
 async def test_mute_click_skips_when_output_active() -> None:
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def write_segment(self, *_args, **_kwargs) -> None:
             raise AssertionError("mute click must not write during active output")
 
-    wl = wake_loop_for_tests()
-    wl._tts = _Tts()
+    wl = wake_loop_for_tests(tts=_Tts())
     turn = await wl._output_gate.begin_turn()
     try:
         await wl._play_mute_click(going_on=True)
@@ -471,7 +457,7 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
 
     events: list[tuple[bytes, dict]] = []
 
-    class _Tts:
+    class _Tts(FakeTts):
         async def write_segment(self, pcm: bytes, on_first_write=None, **kwargs) -> bool:
             events.append((pcm, kwargs))
             if on_first_write is not None:
@@ -482,9 +468,8 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
     # `tts_wire_is_wide()`, which reads the box's own fanin.env — absent on a
     # test runner, and an undeclared box is WIDE since #3655. `pcm_wide` below
     # asserts this value, so the test declares it.
-    wl = wake_loop_for_tests()
+    wl = wake_loop_for_tests(tts=_Tts())
     wl._assistant_output._earcon_wide = False
-    wl._tts = _Tts()
     wl._assistant_output._chirp_on_pcm = b"wake"
     profile = object()
     wl._assistant_output._chirp_on_profile = profile

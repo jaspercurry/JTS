@@ -506,8 +506,7 @@ def _shutting_down_daemon(
         )
         marker.write_text(f"reason={code}\n")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
-    wake_loop = wake_loop_for_tests()
-    wake_loop._cues = _SpyCues()
+    wake_loop = wake_loop_for_tests(cues=_SpyCues())
     return wake_loop
 
 
