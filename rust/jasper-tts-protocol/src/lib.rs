@@ -703,8 +703,12 @@ pub const TTS_FRAME_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Concurrent client connections a TTS server retains. Real load is one
 /// long-lived voice-daemon connection plus at most a couple of transient
-/// probes (cue park, assistant volume, doctor). See ADR-0254.
-pub const TTS_MAX_CLIENTS: usize = 8;
+/// probes (cue park, assistant volume, doctor). The rest is headroom over
+/// leaked connections: idling forever is legitimate here — the daemon's own
+/// connection does it — so a ceiling near real load would let a handful of
+/// leaks refuse that daemon its reconnect. Sixteen reader threads reserve
+/// 8 MiB of stack. See ADR-0254.
+pub const TTS_MAX_CLIENTS: usize = 16;
 
 /// Read one command, bounding only the time spent MID-FRAME.
 ///
@@ -726,8 +730,10 @@ pub fn read_command_deadlined(
     reader.get_ref().set_read_timeout(Some(deadline))?;
     let command = read_command(reader);
     // Disarm on every path: the next command may be hours away, and a still
-    // armed deadline would read as a stall.
-    reader.get_ref().set_read_timeout(None)?;
+    // armed deadline would read as a stall. Best-effort, because a failing
+    // disarm must not discard a command that was read whole, nor replace the
+    // timeout error `is_frame_timeout` has to recognise.
+    let _ = reader.get_ref().set_read_timeout(None);
     command
 }
 

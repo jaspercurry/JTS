@@ -1310,6 +1310,11 @@ pub fn spawn_tts_server(
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
+                        // A client that stops reading its FLUSH_SYNC ack would
+                        // otherwise pin its slot forever inside `write_all`.
+                        // Best-effort: a socket that refuses the option is
+                        // still worth serving.
+                        let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
                         let slot = match metrics.slots.try_acquire() {
                             Ok(slot) => slot,
                             // The pool counts every refusal for STATUS; only
