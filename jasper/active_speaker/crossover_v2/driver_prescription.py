@@ -1831,15 +1831,11 @@ def driver_prescription_response_format() -> dict[str, Any]:
             "model_may_grade_itself": False,
             "jts_validates_and_measures": True,
             "note": (
-                "an accepted prescription becomes an ordinary measured "
-                "candidate: the same admission, safety-envelope, headroom and "
-                "variance gates every automatic round faces, and the round's "
-                "own adoption verdict decides keep or restore. On a round "
-                "whose per-driver fit ran, the verify gates apply identically "
-                "— the round models the graph your filters will actually "
-                "produce. The pre-apply screen asks only that the prediction "
-                "not be WORSE than the measurement it replaces; what settles "
-                "whether a cut helped is the measured round, not a model"
+                "An admitted prescription is an unmeasured candidate until "
+                "captured. Driver protection, headroom and capture integrity "
+                "still apply. Prediction quality informs the experiment and "
+                "does not veto it. The measured adoption result records keep "
+                "or restore; either result can inform another experiment."
             ),
         },
     }

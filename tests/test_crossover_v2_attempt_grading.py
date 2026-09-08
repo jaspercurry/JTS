@@ -2,21 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The conductor's tuning-attempt grading (#2291 5b-ii), driven through
-``_consume_verify`` via ``_run_phase`` — the production entry point.
-
-What this slice pins that nothing else asserts: which identity a graded
-capture lands on (and that the candidate object is read only when no tuning
-attempt id is in hand), and that the irreversible ``model_error_store`` write
-still fires between the record's construction and the loop decision.
-``tests/test_crossover_v2_conductor.py`` owns the neighbouring properties:
-the already-recorded dedup, the write's exactly-once guard across store
-failures, and the evidence-refusal-outranks-no-floor ruling.
-"""
+"""Production attempt identity, durable write ordering and advisory decisions."""
 
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
+
+from jasper.active_speaker.attempts_loop import AttemptBudget, STOP_FLOOR
 
 from tests.crossover_v2_fixtures import (
     SESSION,
@@ -120,3 +112,26 @@ def test_the_durable_write_still_happens_between_the_record_and_the_decision():
     # Both moved afterwards, so the ordering above is a real window.
     assert c.last_attempt_decision != prior
     assert [item.attempt_id for item in c.attempt_history] == ["candidate-a"]
+
+
+def test_comparison_advice_does_not_limit_further_human_started_experiments():
+    history = ()
+    cap = AttemptBudget().hard_cap_attempts
+    for attempt in range(cap + 2):
+        c = _verify_only_conductor(
+            FakeSeams(), tuning_attempt_id=f"candidate-{attempt}", attempt_history=history,
+        )
+        assert _run_phase(c, 1, 1)["accepted"] is True
+        assert c.last_attempt_decision["authority"] == "advisory"
+        if history:
+            assert c.last_attempt_decision["decision"] == STOP_FLOOR
+        history = c.attempt_history
+    assert len(history) == cap
+    assert history[-1].attempt_id == f"candidate-{cap + 1}"
+
+    c._attempt_floor = None
+    c._tuning_attempt_id = "without-floor"
+    assert _run_phase(c, 1, 2)["accepted"] is True
+    assert c.last_attempt_decision["authority"] == "advisory"
+    assert c.last_attempt_decision["decision"] is None
+    assert c.last_attempt_decision["reason"] == "ungraded_no_floor"
