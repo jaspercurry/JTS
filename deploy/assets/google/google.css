@@ -236,3 +236,29 @@ ol.steps {
 ol.steps li {
   margin-bottom: 0.35em;
 }
+
+/* Step 4's redirect-URI widget (copy row when interactive, plain text when
+   read-only inside the management page's setup-guide disclosure). */
+.step4-redirect {
+  margin-top: 0.3em;
+}
+
+/* "Why a github.io URL?" note under the redirect-URL re-reference block. */
+.redirect-hint {
+  margin-top: 0.6em;
+}
+
+/* Client-ID reveal button — compact padding to match the inline <code>. */
+.reveal-btn {
+  padding: 0.2em 0.7em;
+}
+
+/* "Reset Google credentials" destructive form, states 2 and 3. */
+.reset-credentials-form {
+  margin-top: 2em;
+}
+
+/* "Add another household member" hint above the add-account form (state 3). */
+.add-account-hint {
+  margin-top: 1.6em;
+}

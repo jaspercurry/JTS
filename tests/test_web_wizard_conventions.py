@@ -1021,22 +1021,15 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
     )
 
 
-# docs/UX-AUDIT-2026-09-03.md §5.5 — no inline style= in jasper/web/*.py
-# HTML (recurrence: 21 in correction_room_flow.py, 8 in google_setup.py —
-# B.4's --tone/.badge promotion cleared one of google's, so the live count
-# below is 7; C.S5's title/header/back pass moved all 21 of
-# correction_room_flow.py's into classes, clearing that entry entirely;
-# measured at HEAD, not the audit snapshot).
+# docs/UX-AUDIT-2026-09-03.md §5.5 — no inline style= in jasper/web/*.py HTML.
 #
 # Shrink-only: each entry is today's real style="/style=' count for that
 # module. The test fails if a count GROWS (a new inline style=) and fails
 # if a count SHRINKS without this table being lowered to match — a fix must
 # update the allowlist in the same PR, never pass by accident. Delete an
 # entry outright once its module reaches 0.
-_INLINE_STYLE_ALLOWLIST = {
-    # Services cluster (C.A5): google is secrets-tier, handled separately.
-    "google_setup.py": 7,
-}
+# Shrink-only ratchet: a new page never adds an entry (ADR-0253 section 4).
+_INLINE_STYLE_ALLOWLIST = {}
 
 _INLINE_STYLE_RE = re.compile(r"""style=["']""")
 
@@ -1091,9 +1084,8 @@ _PAGE_MODULE = {
 # entry when its page is fixed; never add one without a ledger row. A `back`
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
-_TITLE_ALLOWLIST = {
-    ("/assistant/google/", "Google"): {"back", "title", "header"},  # C.A5
-}
+# Shrink-only ratchet: a new page never adds an entry (ADR-0253 section 4).
+_TITLE_ALLOWLIST = {}
 
 _SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}
 
