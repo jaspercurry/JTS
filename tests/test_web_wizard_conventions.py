@@ -1040,8 +1040,6 @@ _INLINE_STYLE_ALLOWLIST = {
     "home_assistant_setup.py": 1,
     "transit_setup.py": 3,
     "weather_setup.py": 2,
-    # /assistant/wake/ pass (C.A3).
-    "wake_setup.py": 1,
 }
 
 _INLINE_STYLE_RE = re.compile(r"""style=["']""")
@@ -1098,9 +1096,6 @@ _PAGE_MODULE = {
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
 _TITLE_ALLOWLIST = {
-    ("/assistant/voice/", "Voice"): {"back", "title", "header"},    # C.A2
-    ("/assistant/wake/", "Wake word"): {"back"},                    # C.A3
-    ("/assistant/tools/", "Tools"): {"back"},                       # C.A4
     ("/assistant/weather/", "Weather"): {"back"},                   # C.A5
     ("/assistant/transit/", "Transit"): {"back"},                   # C.A5
     ("/assistant/google/", "Google"): {"back", "title", "header"},  # C.A5

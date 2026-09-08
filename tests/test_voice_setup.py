@@ -466,7 +466,7 @@ def test_index_renders_active_radio_checked_for_active_provider():
     nearby = page[idx - 200: idx + 200]
     assert "checked" in nearby
     # Title element is present so the page renders cleanly.
-    assert "<title>Voice provider</title>" in page
+    assert "<title>Voice</title>" in page
 
 
 def test_index_disables_radio_for_unconfigured_provider(monkeypatch):

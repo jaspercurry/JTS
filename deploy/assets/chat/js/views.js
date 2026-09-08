@@ -94,7 +94,7 @@ export function buildPage(root, handlers, opts = {}) {
   history.body.append(historyBody);
 
   root.replaceChildren(
-    appHeader({ title: "Chat history", backHref: "/" }),
+    appHeader({ title: "Chat history", backHref: "/assistant/" }),
     h(
       "main.app-main",
       null,
