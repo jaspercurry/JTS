@@ -2,63 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read H2/H3 out of one round's banked MEASURE captures, and file the reading.
+"""Read per-take H2/H3 with capture bytes and stimulus identity checked.
 
-An OFFLINE instrument, the same shape as :mod:`.feature_classifier`: it reads
-captures a round already banked, writes one artifact into that round's own
-directory, and is then read by
-:func:`~.evidence_packet.build_crossover_evidence_packet`. No Pi is touched
-and nothing is re-measured. There is no ABSOLUTE level — the corpus banks no
-SPL — so every number is "dB below the fundamental, at the drive this capture
-used", and the drive rides beside it in dBFS; the two are never published
-apart.
-
-**The production window cannot be used.**
-:data:`~jasper.audio_measurement.program_analysis.DECONV_PRE_GUARD_S` is
-0.25 s, while the H3 image LEADS the linear IR by ``L·ln 3`` — about 1.34 s
-on a MEASURE woofer sweep. Deconvolution is circular, so at the production
-window every harmonic image is wrapped off the front of the array.
-:func:`~jasper.audio_measurement.distortion.read_segment_distortion`
-re-deconvolves the SAME capture bytes at
-:func:`~jasper.audio_measurement.distortion.required_pre_guard_s`.
-
-**Three gates, all of which refuse rather than report.** The MEASURE program
-is REBUILT from the round's own banked ``gain_plan_db`` and driver bands and
-must reproduce the ``program_id`` the session recorded — a SHA-256 over the
-full segment schedule, so a match proves every ``L`` the harmonic offsets
-derive from. The shipped ``analyze_program_capture`` is re-run and its
-:data:`FIDELITY_FIELDS` compared against the sidecar's own ``diagnostic``
-block, fail-closed: zero comparisons is not a passed gate, and the count
-actually compared is published for every capture. :func:`_scope_captures`
-decides which CAPTURES belong to the program, and refuses rather than
-guessing — read its docstring for the one seam it does not close.
-
-A third gate, and the one that is easiest to leave out
-------------------------------------------------------
-Neither gate above says which CAPTURES belong to the program.  Gate 1 proves
-the program matches the state; gate 2's fields are every one of them
-amplitude-invariant.  So a capture from a neighbouring round, read against this
-round's program, publishes that program's drive — silently, and wrongly.
-:func:`_scope_captures` is the gate for the CAPTURE half of that, and it
-REFUSES rather than guessing.  It does **not** close the STATE half — a caller
-handing it a scope from one round and a flow state from another mis-attributes
-drive through every gate cleanly — and that residual is named in full in its
-docstring, along with the one change that retires it.  Read it before treating
-this module as all-clear.
-
-**Provenance of the method.**  Both gates, the band arithmetic and the pooling
-rule were established against the 2026-08-17 and 2026-08-19 corpora by a lab
-bench this module replaced.  The math is not re-derived here — it is
-:mod:`jasper.audio_measurement.distortion`'s, called.
-
-**One seam worth naming.**  Locating the schedule inside a capture uses
-``program_analysis``'s ``_global_offset`` / ``_locate_segments`` /
-``_estimate_drift``.  Those are private, and importing them is deliberate: the
-anchors a distortion read rides MUST be the anchors the session's own analysis
-used, and re-deriving them through a public path would be a second answer to a
-question that already has one.  The durable fix is for a capture to BANK its
-anchors; until it does, reproducing them is the only way to be sure, and the
-fidelity gate above is what proves the reproduction landed.
+Harmonic images precede the linear IR by L·ln(order), so the distortion
+kernel uses a wider pre-guard than the normal response analysis. Legacy
+captures without stimulus identity retain conditional ratios, with drive
+unknown; timing agreement alone cannot prove the played program's level.
 """
 
 from __future__ import annotations
@@ -66,12 +15,17 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import tempfile
 import wave
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
+from jasper.audio_measurement.bundles import sha256_file
+from jasper.audio_measurement.program import write_program_wav
 
 from ..profile import DRIVER_ROLES_BY_WAY
 from .evidence_packet import (
@@ -216,13 +170,7 @@ RING_NOT_SCOPED_TO_ONE_SESSION = "ring_not_scoped_to_one_session"
 
 
 class HarmonicEvidenceRefused(Exception):
-    """This instrument declined to produce a reading, by name.
-
-    ``reason`` is one of the module's refusal constants and ``evidence`` is
-    what it saw. An exception rather than a partial artifact: a distortion
-    document that quietly covered half a round would be read as the round's
-    answer.
-    """
+    """No valid reading is available; per-take failures remain in evidence."""
 
     def __init__(self, reason: str, evidence: Mapping[str, Any] | None = None):
         super().__init__(reason)
@@ -230,7 +178,7 @@ class HarmonicEvidenceRefused(Exception):
         self.evidence = dict(evidence or {})
 
 
-def _read_mono(path: Path) -> np.ndarray:
+def _read_mono(path: Path, *, sample_rate_hz: int | None = None) -> np.ndarray:
     """One WAV as mono float64 in [-1, 1), at whatever width it was written.
 
     Width comes from the container's own ``fmt`` chunk, never assumed: the dump
@@ -240,7 +188,12 @@ def _read_mono(path: Path) -> np.ndarray:
     with wave.open(str(path)) as handle:
         channels = handle.getnchannels()
         width = handle.getsampwidth()
-        raw = handle.readframes(handle.getnframes())
+        frames = handle.getnframes()
+        raw = handle.readframes(frames)
+        if sample_rate_hz is not None and handle.getframerate() != sample_rate_hz:
+            raise ValueError("capture sample rate does not match the stimulus")
+        if len(raw) != frames * channels * width:
+            raise ValueError("capture WAV is truncated")
     if width == 2:
         samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 2**15
     elif width == 4:
@@ -505,14 +458,7 @@ def rebuild_measure_program(
 
 
 def _state_capture_session_id(state: Mapping[str, Any]) -> str | None:
-    """The flow state's own session id — a CAPTURE id, not the ring's bundle id.
-
-    Two namespaces that look alike and are not: this is
-    ``wired-dBetH8WEDOn8zCl5JMeAjQ``-shaped, while a ring sidecar stamps
-    ``79679a65c207``, and nothing banked maps between them — which is why this
-    is recorded for audit rather than compared for a refusal. See
-    :func:`_scope_captures`.
-    """
+    """The flow state's capture id, distinct from the bundle id."""
     value = state.get("session_id")
     return value if isinstance(value, str) and value else None
 
@@ -566,20 +512,7 @@ def _crossover_fc_hz(
 
 
 def _bind_measure_captures(dumps_dir: Path) -> list[dict[str, Any]]:
-    """Every MEASURE capture in the ring, bound to its sidecar by content.
-
-    Found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` and paired with the
-    WAV in the sidecar's own sibling ``wav/`` — the same rule
-    :func:`~.feature_classifier.load_round_captures` uses. Sidecars are
-    deduplicated by ``wav_sha256``: several re-analyses of one capture are one
-    capture, not several.
-
-    **Every capture is returned, with the session identity it banked attached,
-    and NOTHING is filtered here.** Scoping is :func:`_scope_captures`'s,
-    because a binder that silently returned fewer rows would make that refusal
-    impossible to reach.
-    """
-    seen_sha: set[str] = set()
+    """Keep every readable MEASURE sidecar, including one whose WAV is lost."""
     bound: list[dict[str, Any]] = []
     for sidecar_path in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
         try:
@@ -589,16 +522,14 @@ def _bind_measure_captures(dumps_dir: Path) -> list[dict[str, Any]]:
         if not isinstance(doc, Mapping) or doc.get("phase") != PHASE_MEASURE:
             continue
         sha = doc.get("wav_sha256")
-        if not isinstance(sha, str) or sha in seen_sha:
-            continue
+        sha = sha if isinstance(sha, str) else ""
         wav_path = sidecar_path.parent.parent / "wav" / f"{sidecar_path.stem}.wav"
-        if not wav_path.is_file():
-            continue
-        identity = doc.get("jts_session_identity")
+        identity = doc.get(SESSION_IDENTITY_KEY)
         banked = identity.get("session_id") if isinstance(identity, Mapping) else None
-        seen_sha.add(sha)
         bound.append({
             "wav": wav_path,
+            "take_id": doc.get("take_id") or sidecar_path.stem,
+            "sidecar_path": sidecar_path.name,
             "sidecar": dict(doc),
             "wav_sha256": sha,
             "session_id": banked if isinstance(banked, str) and banked else None,
@@ -609,38 +540,7 @@ def _bind_measure_captures(dumps_dir: Path) -> list[dict[str, Any]]:
 def _scope_captures(
     banked: list[dict[str, Any]], session_id: str | None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """The captures this round may be read from, and the scope that chose them.
-
-    Returns ``(captures, scope)``. Raises :class:`HarmonicEvidenceRefused`
-    rather than pooling captures whose provenance this reader cannot establish.
-
-    **Why an unscoped ring is a refusal and not a default.** Every capture is
-    read against ONE rebuilt program, and that program is where the published
-    drive comes from — ``stimulus_peak_dbfs`` and ``effective_peak_dbfs`` are
-    the SEGMENT's, not the capture's. Measured on the shipped corpus, one
-    capture read against a neighbouring session's program reported
-    ``-6.0 / -26.0`` where its own program says ``-10.2 / -30.2`` — **4.2 dB**,
-    on exactly the field this module says must never be published apart from
-    the ratio. Neither other gate can see it: the program-identity gate says
-    nothing about which captures were played through the program, and every
-    :data:`FIDELITY_FIELDS` entry is amplitude-invariant. So a supplied
-    ``session_id`` scopes to it, and an absent one is admitted ONLY when the
-    ring's MEASURE captures all carry one readable identity.
-
-    **What this does NOT guard, stated because it is the only unguarded seam
-    left that can publish a wrong number.** The ``state`` is TRUSTED to belong
-    to the scope: nothing here checks that the flow state the program was
-    rebuilt from describes the same round the ``session_id`` selects, so a
-    caller passing a scope from one round and a state from another
-    mis-attributes drive through every gate cleanly — 5/5 fidelity, zero
-    refusals, an authoritative-looking ``captures.scope`` block. It is not
-    guardable today: the state's ``session_id`` is a CAPTURE id while the ring
-    stamps the BUNDLE id, nothing banked maps between them, and the capture's
-    ``provenance`` block is empty on every sidecar in both shipped corpora.
-    **What retires this is the capture banking its own program_id.** Until
-    then the capture id is at least RECORDED in the artifact's ``program``
-    block, so a mis-scoped read is auditable after the fact.
-    """
+    """Select one bundle's takes; never pool an ambiguous unscoped ring."""
     if session_id is not None:
         return (
             [capture for capture in banked if capture["session_id"] == session_id],
@@ -1004,6 +904,38 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     }
 
 
+def _capture_program_identity(
+    sidecar: Mapping[str, Any], program: Any, state: Mapping[str, Any],
+    capture_session_id: str, program_sha256: str | None,
+) -> tuple[dict[str, Any], str | None]:
+    identity = sidecar.get(SESSION_IDENTITY_KEY)
+    aliases = identity.get("aliases") if isinstance(identity, Mapping) else None
+    recorded_session = (
+        aliases.get(ALIAS_CAPTURE_SESSION_ID) if isinstance(aliases, Mapping) else None
+    ) or sidecar.get("capture_session_id")
+    provenance = sidecar.get("provenance")
+    stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
+    stimulus = stimulus if isinstance(stimulus, Mapping) else {}
+    recorded_program = stimulus.get("program_id")
+    recorded_sha = stimulus.get("wav_sha256")
+    proof = {
+        "program_id": recorded_program,
+        "program_id_status": "matched" if recorded_program == program.program_id else "unknown",
+        "stimulus_wav_status": "matched" if recorded_sha and recorded_sha == program_sha256 else "unknown",
+        "capture_session_id": recorded_session,
+        "state_capture_session_id": _state_capture_session_id(state),
+    }
+    if _state_capture_session_id(state) not in (None, capture_session_id):
+        return proof, "state_session_mismatch"
+    if recorded_session and recorded_session != capture_session_id:
+        return proof, "capture_session_mismatch"
+    if recorded_program and recorded_program != program.program_id:
+        return proof, "stimulus_program_mismatch"
+    if recorded_sha and recorded_sha != program_sha256:
+        return proof, "stimulus_wav_mismatch"
+    return proof, None
+
+
 def read_round_harmonics(
     round_dir: Path,
     dumps_dir: Path,
@@ -1015,34 +947,7 @@ def read_round_harmonics(
     calibration_text: str | None = None,
     applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
-    """One round's H2/H3 reading, as the document the packet carries.
-
-    ``round_dir`` names the reading in the artifact, ``dumps_dir`` is the ring
-    root, ``state`` is the flow state's parsed contents (its ``gain_plan_db``
-    and ``candidate.program_id`` are what the MEASURE program is rebuilt from
-    and proved against), and ``bands`` maps each driver role to its
-    ``(f1, f2)``.
-
-    ``applied_profile_path`` is the applied-baseline-profile SSOT, where the
-    round's crossover corner is read from (:func:`_crossover_fc_hz`). Its
-    absence, or an unreadable file, is a refusal rather than a fallback to
-    what the flow state records about a previous apply.
-
-    ``session_id`` is the BUNDLE session id. Omitting it is NOT "read
-    everything": an unscoped ring whose captures do not all carry one
-    identity is REFUSED by name — see :func:`_scope_captures` for the
-    measured size of that error. The scope that was applied rides in the
-    artifact.
-
-    ``calibration_text`` is a vendor calibration file's CONTENTS, not a
-    parsed curve: the sign convention it must be read under depends on which
-    microphone this round's own captures recorded through.
-
-    Raises :class:`HarmonicEvidenceRefused` rather than returning a partial
-    document. Every capture that failed a gate is nonetheless COUNTED and its
-    failures published, because a round where three of four captures failed
-    fidelity is a different round from one where all four passed.
-    """
+    """Read valid takes and disclose every omitted take and unbound legacy drive."""
     orders = tuple(int(order) for order in orders)
     applied_profile, profile_reason = _applied_profile_source(applied_profile_path)
     fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
@@ -1067,48 +972,87 @@ def read_round_harmonics(
             },
         )
 
+    program_sha256 = None
+    if any(
+        isinstance(capture["sidecar"].get("provenance"), Mapping)
+        and isinstance(capture["sidecar"]["provenance"].get("stimulus"), Mapping)
+        and capture["sidecar"]["provenance"]["stimulus"].get("wav_sha256")
+        for capture in captures
+    ):
+        with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
+            rendered = Path(temporary) / "program.wav"
+            write_program_wav(rendered, program)
+            program_sha256 = sha256_file(rendered)
+
     calibration, calibration_note = _calibration_for(captures, calibration_text)
 
     blocks: list[dict[str, Any]] = []
     read: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
     disclosures: list[dict[str, str]] = []
+    seen: set[str] = set()
     for capture in captures:
         sha12 = capture["wav_sha256"][:12]
+        take = {
+            "take_id": capture["take_id"],
+            "sidecar": capture["sidecar_path"],
+            "wav_sha256_12": sha12,
+            "position_deg": capture["sidecar"].get("position_deg"),
+        }
+        proof, reason = _capture_program_identity(
+            capture["sidecar"], program, state, round_dir.name, program_sha256,
+        )
         try:
-            samples = _read_mono(capture["wav"])
-        except (OSError, wave.Error, ValueError) as exc:
+            if not reason:
+                actual = sha256_file(capture["wav"])
+                if actual != capture["wav_sha256"]:
+                    reason = "capture_wav_mismatch"
+            if reason:
+                refused.append({**take, "reason": reason, "identity": proof,
+                                "fidelity_fields_compared": 0, "failures": [reason]})
+                continue
+            if actual in seen:
+                continue
+            samples = _read_mono(capture["wav"], sample_rate_hz=program.sample_rate_hz)
+            readings, failures, disclosure, compared = _read_one_capture(
+                program, samples, capture["sidecar"],
+                orders=orders, calibration=calibration, fc_hz=fc_hz,
+            )
+        except (OSError, wave.Error, ValueError, TypeError, EOFError) as exc:
             refused.append({
-                "wav_sha256_12": sha12,
+                **take,
+                "reason": "capture_wav_missing" if isinstance(exc, FileNotFoundError) else "capture_unreadable",
                 "fidelity_fields_compared": 0,
-                "failures": [str(exc)],
+                "failures": [type(exc).__name__],
             })
             continue
-        readings, failures, disclosure, compared = _read_one_capture(
-            program, samples, capture["sidecar"],
-            orders=orders, calibration=calibration, fc_hz=fc_hz,
-        )
         if failures:
             refused.append({
-                "wav_sha256_12": sha12,
-                "fidelity_fields_compared": compared,
-                "failures": failures,
+                **take, "reason": "capture_fidelity_mismatch",
+                "fidelity_fields_compared": compared, "failures": failures,
             })
             continue
+        seen.add(actual)
         # The count rides on a PASS too, not only on a refusal: a capture whose
         # sidecar carried one of the five gate fields passed a much weaker gate
         # than one that carried all five.
-        read.append({
-            "wav_sha256_12": sha12,
-            "fidelity_fields_compared": compared,
-        })
+        read.append({**take, "identity": proof, "fidelity_fields_compared": compared})
         if disclosure:
             disclosures.append({"wav_sha256_12": sha12, "note": disclosure})
         by_role: dict[str, list] = {}
         for reading in readings:
             by_role.setdefault(reading.role or "?", []).append(reading)
         for role, role_readings in sorted(by_role.items()):
-            blocks.append(_role_block(role, role_readings, sha12, orders))
+            block = _role_block(role, role_readings, sha12, orders)
+            block["drive"]["identity"] = proof
+            if proof["program_id_status"] != "matched":
+                block["drive"]["stimulus_peak_dbfs"] = None
+                block["drive"]["effective_peak_dbfs"] = None
+                block["drive"]["status"] = "unknown"
+                block["drive"]["reason"] = "stimulus_program_identity_missing"
+            else:
+                block["drive"]["status"] = "program_declared"
+            blocks.append(block)
 
     if not blocks:
         raise HarmonicEvidenceRefused(
@@ -1131,14 +1075,11 @@ def read_round_harmonics(
         "orders": list(orders),
         "program": {
             "program_id": program.program_id,
-            "solved_downstream_gain_db": downstream_db,
+            "solved_downstream_gain_db": (
+                downstream_db if all(take["identity"]["program_id_status"] == "matched" for take in read) else None
+            ),
             "solved_courtesy_prelude": prelude,
             "crossover_fc_hz": round(fc_hz, 1),
-            # WHICH round's state this program was rebuilt from, in the state's own
-            # namespace. It cannot be compared against `captures.scope` (that is a
-            # BUNDLE id, this is a CAPTURE id, and nothing banked maps between them),
-            # so it guards nothing at read time — it is here so the one seam
-            # `_scope_captures` cannot refuse is at least AUDITABLE afterwards.
             "state_capture_session_id": _state_capture_session_id(state),
         },
         "captures": {
@@ -1146,7 +1087,7 @@ def read_round_harmonics(
             # Published because the drive levels below come from the rebuilt program
             # rather than from each capture.
             "scope": scope,
-            "n_read": len({block["wav_sha256_12"] for block in blocks}),
+            "n_read": len(read),
             "n_refused": len(refused),
             "read": read,
             "refused": refused,
