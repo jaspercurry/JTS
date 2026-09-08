@@ -11,14 +11,13 @@ and response facts without re-running deconvolution for every report.
 """
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from jasper.atomic_io import atomic_write_json
 
 from . import interop
 
@@ -66,22 +65,6 @@ def _round_list(values: np.ndarray, digits: int) -> list[float]:
     return [round(float(v), digits) for v in arr]
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
-        f.write("\n")
-        tmp_name = f.name
-    os.replace(tmp_name, path)
-    path.chmod(0o600)
-
-
 def write_capture_replay_artifacts(
     bundle_dir: Path,
     *,
@@ -107,7 +90,6 @@ def write_capture_replay_artifacts(
         capture_kind=capture_kind,
         position_index=position_index,
     )
-    analysis_dir = bundle_dir / "analysis"
     ir_rel = f"analysis/{stem}_ir.wav"
     response_rel = f"analysis/{stem}_response.json"
 
@@ -150,7 +132,9 @@ def write_capture_replay_artifacts(
             ],
         },
     }
-    _atomic_write_json(analysis_dir / f"{stem}_response.json", payload)
+    atomic_write_json(
+        bundle_dir / response_rel, payload, mode=0o600, group_from_parent=False,
+    )
     return ReplayArtifactSet(
         impulse_response_path=ir_rel,
         response_path=response_rel,
