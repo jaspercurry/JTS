@@ -212,8 +212,9 @@ and receipt select before attributing a listening difference.
 A gated capture cannot establish response below its validity floor. Disclose the
 unverified band. Nearfield or another supported measurement regime may answer
 that question, with its own scope and limits. Repeating one in-room seat cannot
-turn room modes into a speaker-only response. The toolbox has no electrical
-impedance instrument; external data must retain its source.
+turn room modes into a speaker-only response; the room itself is measured on
+the seat cube (§11). The toolbox has no electrical impedance instrument;
+external data must retain its source.
 
 ## 10. Decide whether to continue
 
@@ -241,14 +242,39 @@ Judge evidence use, recovery, and resulting state; no tool sequence is required.
 ## 11. Room
 
 Room correction is a layer of this toolbox, not a separate product
-([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)):
-an ungated seat-cube program through the applied tune, corrected below
-the applied tune's trusted floor
-([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)),
-with every take categorized by kind, distance and window
-([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md)).
-This section is written in the wave that lands the seat program and the room
-views.
+([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)).
+The room is measured where it is heard: a cube around the listener's head, the
+head centre and the six face centres 0.30 m out (`seat/cube`; `seat/express` is
+the head, right and forward). Each pose is one summed sweep through the applied
+tune, analyzed ungated so the reflections stay in. A seat take records its
+kind, its offset from the head and its window
+([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md));
+it is not a bearing at the mark, and no gated reader treats it as one. The
+close reference (`close/spot`, about 0.3 m on the design axis) stays the
+room-suppressed diagnostic of the speaker's own share.
+
+The seam is the ceiling: the applied candidate's trusted floor (2.5/T of the
+gate it earned), clamped to the room boundary's bounds, with the shipped
+default disclosed when no applied floor is readable
+([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)).
+Above it the speaker stage has authority and the room layer does nothing.
+Below it speaker, room and bass are read together on the cube.
+
+Three views read a banked seat-cube round:
+
+- `room-ceiling`: where the room layer stops, and which source set it.
+- `room-median`: per frequency the median across positions (the trend), the
+  spread (population sigma, the confidence) and each position's deviation,
+  20 Hz to the ceiling.
+- `room-persistence`: the peaks and dips each position shows against its own
+  local level, clustered across the cube with the fraction of positions that
+  carry each at an agreeing depth. A feature most positions share is the
+  room's; one position's is that seat's.
+
+Deliberately not done here: nothing above the ceiling is graded or corrected
+from the cube; the median is a trend, never a per-position target; a dip is not
+boosted on this evidence alone, the room candidate kind decides; no room volume
+or Schroeder estimate is derived.
 
 ## 12. Bass
 
