@@ -48,7 +48,7 @@ Renderer support:
             degrade to phone-side pause.
   USB sink (jasper-usbsink):
     detect: fan-in DIRECT-captures the gadget, so USB liveness comes
-            from fan-in DIRECT-lane telemetry. See _usbsink_playing.
+            from fan-in DIRECT-lane telemetry. See _usbsink_streaming.
             Liveness is purely "is the host streaming frames to us" —
             there is no audio-LEVEL gate. A faint sound is still a
             sound; if USB is the only source, we play it.
@@ -429,7 +429,7 @@ class Mux:
     ) -> dict[Source, bool]:
         probes: dict[Source, Any] = {
             Source.SPOTIFY: spotify_playing(self._librespot_state_path),
-            Source.USBSINK: self._usbsink_playing(),
+            Source.USBSINK: self._usbsink_streaming(),
         }
         probes.update(
             (source, probe())
@@ -471,7 +471,7 @@ class Mux:
             )
         return resolved
 
-    async def _usbsink_playing(self) -> bool | None:
+    async def _usbsink_streaming(self) -> bool | None:
         """"Is USB streaming to us" for the source arbiter, off fan-in's DIRECT
         lane.
 

@@ -133,7 +133,7 @@ def patched_probes(monkeypatch, mux):
     monkeypatch.setattr("jasper.mux.spotify_playing", spotify)
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
-    monkeypatch.setattr(mux, "_usbsink_playing", usbsink)
+    monkeypatch.setattr(mux, "_usbsink_streaming", usbsink)
     return SimpleNamespace(
         spotify=spotify, airplay=airplay,
         bluetooth=bluetooth, usbsink=usbsink,
@@ -981,8 +981,8 @@ def _make_combo_box(mux: Mux, monkeypatch, streaming_seq):
     """
     monkeypatch.setattr(
         mux,
-        "_usbsink_playing",
-        Mux._usbsink_playing.__get__(mux, Mux),
+        "_usbsink_streaming",
+        Mux._usbsink_streaming.__get__(mux, Mux),
     )
     streaming = list(streaming_seq)
     idx = {"i": 0}

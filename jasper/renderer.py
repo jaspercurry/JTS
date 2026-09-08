@@ -36,7 +36,7 @@ from .source_state import (
     airplay_playing,
     bluetooth_playing,
     spotify_playing,
-    usbsink_playing,
+    usbsink_streaming,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,14 +82,16 @@ class RendererClient:
     async def active_renderers(self) -> dict[str, bool]:
         """Return raw renderer activity keyed by the stable public names.
 
-        ``usbsinkactive`` comes from fan-in's DIRECT lane, the sole USB audio
-        owner.
+        ``usbsinkactive`` is fan-in's DIRECT-lane *streaming* edge, the same
+        arbitration predicate mux uses — not the level predicate behind
+        ``/state.renderers.usbsink.playing`` — so a caller falling back to
+        these probes cannot pick a different winner than mux did.
         """
         spot, ap, bt, usb = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
             airplay_playing(),
             bluetooth_playing(),
-            usbsink_playing(),
+            usbsink_streaming(),
             return_exceptions=False,
         )
         return {
@@ -100,13 +102,15 @@ class RendererClient:
         }
 
     async def selected_source(self) -> str | None:
-        """Return mux's effective audible source, or None if unknown/idle.
+        """Return mux's effective audible source, or None if unknown.
 
-        This is intentionally separate from `active_renderers()`, which
-        reports raw renderer activity. Mux controls the audible fan-in
-        lane in both manual mode and auto mode once a winner has been
-        selected, so volume/dashboard callers should prefer this policy
-        layer when it is available.
+        The answer is mux's own ``active_source`` — the single field that
+        already folds the test lease, the manual pin, and a winner that is
+        still playing into one name. This is intentionally separate from
+        `active_renderers()`, which reports raw renderer activity.
+
+        Fail-soft: an unreachable mux, an unparseable reply, or a STATUS
+        without the field all return ``None``.
         """
         try:
             async with asyncio.timeout(1.0):
@@ -147,11 +151,8 @@ class RendererClient:
             payload = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
-        selected = payload.get("selected_source")
-        if isinstance(selected, str):
-            return selected
-        winner = payload.get("winner")
-        return winner if isinstance(winner, str) else None
+        effective = payload.get("active_source")
+        return effective if isinstance(effective, str) else None
 
     # ------------------------------------------------------------------
     # Currentsong — cascades by active source. Returns a dict with at

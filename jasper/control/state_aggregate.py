@@ -632,15 +632,15 @@ def _active_source(
         else overall.get("active_source")
     )
 
+    # Mux's own answer to "what is audible now" — one field, not a second
+    # reconstruction from the manual pin and the raw winner. "idle" is mux
+    # saying nothing is audible, which must not short-circuit the raw-probe
+    # fallbacks below.
     mux_effective_source = None
     if isinstance(mux_status, dict):
-        raw_selected = mux_status.get("selected_source")
-        if isinstance(raw_selected, str):
-            mux_effective_source = raw_selected
-        else:
-            raw_winner = mux_status.get("winner")
-            if isinstance(raw_winner, str):
-                mux_effective_source = raw_winner
+        raw_effective = mux_status.get("active_source")
+        if isinstance(raw_effective, str) and raw_effective != "idle":
+            mux_effective_source = raw_effective
 
     if voice_session:
         return "voice"
