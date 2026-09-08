@@ -112,6 +112,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room-ceiling": ViewArtifact("room_ceiling.json"),
     "room-median": ViewArtifact("room_median.json"),
     "room-persistence": ViewArtifact("room_persistence.json"),
+    "bass-fit": ViewArtifact("bass_fit.json"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(

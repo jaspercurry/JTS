@@ -37,6 +37,7 @@ from tests.crossover_v2_banked_round import (
     bank_verify_round,
 )
 from tests.room_median_fixture import write_room_median
+from tests.test_cli_round_views_bass_fit import bank_bass_fit_inputs
 
 CLI_DIR = Path(_refusal.__file__).resolve().parent
 
@@ -286,6 +287,9 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
     "room-median": lambda r: ["room-median", str(r.seat)],
     "room-persistence": lambda r: ["room-persistence", str(r.seat)],
+    # The seat median and the design draft are the room-median view's and
+    # /sound/'s to file, so this view's two inputs are banked beside the round.
+    "bass-fit": lambda r: ["bass-fit", str(bank_bass_fit_inputs(r.measured))],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],
