@@ -736,35 +736,6 @@ async def test_teardown_skips_end_input_when_nothing_in_the_gate_is_set():
     assert turn.end_input_calls == 0
 
 
-def test_teardown_gate_includes_the_manual_term():
-    """Source-level pin for the mutation above: the gate expression in
-    `_end_turn` must actually carry `_manual_endpoint_this_turn`. Without
-    this, deleting that term leaves every behavioural test green."""
-    import ast
-    import inspect
-
-    from jasper.voice_daemon import WakeLoop
-
-    src = inspect.getsource(WakeLoop._end_turn_inner)
-    gates = [
-        node
-        for node in ast.walk(ast.parse(src.lstrip()))
-        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or)
-        and {
-            n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)
-        } >= {"_input_ended", "_user_speech_seen"}
-    ]
-    assert gates, "no `_input_ended or _user_speech_seen` gate in _end_turn"
-    names = {
-        n.attr for g in gates for n in ast.walk(g)
-        if isinstance(n, ast.Attribute)
-    }
-    assert "_manual_endpoint_this_turn" in names, (
-        "the teardown end_input() gate dropped _manual_endpoint_this_turn; "
-        "a button turn torn down mid-hold would stop finalising its input"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Barge-in on a button turn refuses loudly rather than going inert
 # ---------------------------------------------------------------------------

@@ -724,3 +724,48 @@ async def test_the_surrendered_duck_comes_back_once_with_no_cue_manager(
     assert wl._output_gate.is_active is False
     assert wl._turn_output_episode is None
     assert wl._state is State.WAKE
+
+
+async def test_failed_timeout_cue_does_not_unduck_successor(monkeypatch):
+    timeline = []
+
+    class FailedCue:
+        async def play(self, _slug):
+            return False
+
+    ducker = _OrderedDucker(timeline)
+    wl = wake_loop_for_tests(ducker=ducker, cues=FailedCue())
+    _record_output_writes(wl, timeline)
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    await ducker.duck()
+    cue_released, successor_ducked = asyncio.Event(), asyncio.Event()
+    play_cue = wl._play_cue
+
+    async def hold_return(*args, **kwargs):
+        played = await play_cue(*args, **kwargs)
+        cue_released.set()
+        await asyncio.wait_for(successor_ducked.wait(), timeout=5.0)
+        return played
+
+    monkeypatch.setattr(wl, "_play_cue", hold_return)
+
+    async def start_successor():
+        await asyncio.wait_for(cue_released.wait(), timeout=5.0)
+        episode = await wl._output_gate.begin_turn()
+        await ducker.duck()
+        successor_ducked.set()
+        return episode
+
+    _, successor = await asyncio.wait_for(
+        asyncio.gather(
+            wl._research._host.play_cancel_timeout_cue(), start_successor(),
+        ),
+        timeout=5.0,
+    )
+    try:
+        assert wl._output_gate.is_current(successor)
+        assert ducker.is_ducked
+        assert timeline.count("restore") == 1
+    finally:
+        await ducker.restore()
+        await wl._output_gate.end_turn(successor)
