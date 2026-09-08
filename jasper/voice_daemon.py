@@ -2830,6 +2830,7 @@ class WakeLoop:
     def _log_no_answer(
         self,
         event: str,
+        /,
         *,
         end_reason: str,
         counted: bool = False,
@@ -2850,11 +2851,12 @@ class WakeLoop:
         log_event(
             logger,
             event,
-            provider=self._cfg.voice_provider,
-            model=_active_model(self._cfg),
-            **fields,
-            endpointer=self._endpointer_label(),
-            **({"suppressed": end_reason} if suppressed else {}),
+            fields={
+                "provider": self._cfg.voice_provider,
+                "model": _active_model(self._cfg),
+                **fields,
+                **({"suppressed": end_reason} if suppressed else {}),
+            },
             level=logging.INFO if suppressed else logging.WARNING,
         )
         return not suppressed
@@ -3045,6 +3047,7 @@ class WakeLoop:
                     bytes_sent=bytes_sent,
                     chunks_received=chunks_received,
                     turn_lost=lost_mid_reply,
+                    endpointer=self._endpointer_label(),
                 )
             elif (
                 bytes_sent > 0
@@ -3053,12 +3056,24 @@ class WakeLoop:
             ):
                 model = _active_model(self._cfg)
                 if self._input_ended:
+                    # A chosen ending carries no diagnosis at all — no
+                    # `reason=`, `bytes_sent=` or `endpointer=` — so a
+                    # journal filter on those fields keeps excluding a turn
+                    # nobody asked a question of.
+                    diagnosis: dict[str, object] = (
+                        {}
+                        if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                        else {
+                            "reason": reason,
+                            "bytes_sent": bytes_sent,
+                            "endpointer": self._endpointer_label(),
+                        }
+                    )
                     play_no_answer_cue = self._log_no_answer(
                         "turn.silent_response",
                         end_reason=reason,
                         counted=True,
-                        reason=reason,
-                        bytes_sent=bytes_sent,
+                        **diagnosis,
                         chunks_received=chunks_received,
                         turn_lost=lost_mid_reply,
                     )
@@ -3113,6 +3128,7 @@ class WakeLoop:
                         bytes_sent=bytes_sent,
                         chunks_received=chunks_received,
                         turn_lost=lost_mid_reply,
+                        endpointer=self._endpointer_label(),
                     )
             elif (
                 bytes_sent > 0
@@ -3126,6 +3142,7 @@ class WakeLoop:
                     end_reason=reason,
                     dropped_bytes=self._turn.audio_dropped_bytes(),
                     chunks_received=chunks_received,
+                    endpointer=self._endpointer_label(),
                 )
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
