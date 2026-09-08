@@ -134,9 +134,10 @@ class Interruptible(Protocol):
         """How many audio chunks the playout queue still holds — the depth
         ``drop_pending_audio`` would drain.
 
-        The idle watchdog defers on playout PROGRESS (this depth paired
-        with the drain deadline) and ends the turn once neither has moved
-        for ``response_stall_timeout``. See ADR-0254."""
+        The idle watchdog measures playout PROGRESS on this depth ALONE
+        while it is nonzero, and consults the drain deadline only once it
+        reaches zero, ending the turn when neither has moved for
+        ``response_stall_timeout``. See ADR-0254."""
         ...
 
     def audio_dropped_bytes(self) -> int:
