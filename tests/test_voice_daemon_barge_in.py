@@ -278,7 +278,7 @@ def test_disabled_branch_never_calls_playback_handler(monkeypatch):
     wl = _playback_loop(score=0.99, active=False)
     called = {"n": 0}
 
-    async def _spy(_frame):
+    async def _spy(_frame, *, captured_at):
         called["n"] += 1
 
     monkeypatch.setattr(wl, "_handle_playback_frame", _spy)

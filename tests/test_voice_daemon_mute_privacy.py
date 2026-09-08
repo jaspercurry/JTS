@@ -33,13 +33,13 @@ def _wake_loop_for_mute(tmp_path):
     wl._mic_muted = False
     wl._state = State.WAKE
     wl._pre_roll = deque([b"pre1", b"pre2"], maxlen=8)
-    wl._acquire_buffer = deque([b"acq"], maxlen=8)
+    wl._acquire_buffer.append(b"acq")
     on_ring = deque([b"on1", b"on2"], maxlen=8)
     off_ring = deque([b"off1"], maxlen=8)
     wl._legs = {
-        "on": SimpleNamespace(capture_ring=on_ring),
-        "off": SimpleNamespace(capture_ring=off_ring),
-        "dtln": SimpleNamespace(capture_ring=None),  # leg without a ring
+        "on": SimpleNamespace(capture_ring=on_ring, mic=None),
+        "off": SimpleNamespace(capture_ring=off_ring, mic=None),
+        "dtln": SimpleNamespace(capture_ring=None, mic=None),  # leg without a ring
     }
     wl._cfg = SimpleNamespace(mic_mute_state_path=str(tmp_path / "mic_mute.env"))
 

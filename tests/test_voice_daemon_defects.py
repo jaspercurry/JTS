@@ -391,3 +391,38 @@ def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
     status = wl.session_status()
     assert status["duck_active"] is True
     assert status["camilla_volume_locked"] is False
+
+
+def test_capture_gap_resets_wake_history_and_reports_input_age():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from jasper.audio_buffer import InputFrame
+
+    wl = wake_loop_for_tests()
+    rt = wl._legs["on"]
+    rt.detector.reset = Mock()
+    rt.shadow_vad = SimpleNamespace(reset=Mock())
+    rt.recent_score = 1.0
+    rt.recent_score_at = time.monotonic()
+    rt.capture_ring.append(b"old")
+    wl._pre_roll.append(b"old")
+    wl._barge_in_run_started_at = time.monotonic()
+    wl._barge_in_signalled_this_run = True
+    rt.mic = SimpleNamespace(
+        last_frame=InputFrame(b"new", time.monotonic() - 0.5, True),
+        dropped_frames=7,
+    )
+
+    _, gap = wl._capture_input(rt.mic, "on")
+
+    assert gap
+    rt.detector.reset.assert_called_once()
+    rt.shadow_vad.reset.assert_called_once()
+    assert rt.recent_score == 0.0
+    assert not rt.capture_ring and not wl._pre_roll
+    assert wl._barge_in_run_started_at == 0.0
+    assert not wl._barge_in_signalled_this_run
+    status = wl.session_status()["input_audio"]
+    assert status["gaps"] == 1
+    assert status["capture_dropped_frames"] == 7
+    assert status["last_age_ms"] >= 500

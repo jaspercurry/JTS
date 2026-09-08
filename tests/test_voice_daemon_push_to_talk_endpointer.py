@@ -207,6 +207,29 @@ async def test_hold_cap_does_not_fire_early_on_a_button_turn():
     assert wl._turn.send_audio_calls == 1
 
 
+async def test_delayed_acquire_preserves_audio_captured_before_hold_cap():
+    wl = _session_loop(manual=True)
+    cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
+    wl._turn_started_at_loop = asyncio.get_running_loop().time() - (cap + 1.0)
+    for elapsed in (0.08, 0.16, cap - 0.08):
+        wl._acquire_buffer.append(silent_frame(), wl._turn_started_at_loop + elapsed)
+
+    await wl._drain_acquire_audio()
+
+    assert wl._turn.send_audio_calls == 3
+    assert wl._turn.end_input_calls == 0
+    assert not wl._input_ended
+
+    for elapsed in (cap, cap + 0.08):
+        await wl._handle_session_frame(
+            silent_frame(), captured_at=wl._turn_started_at_loop + elapsed,
+        )
+
+    assert wl._turn.send_audio_calls == 3
+    assert wl._turn.end_input_calls == 1
+    assert wl._input_ended
+
+
 async def test_hold_cap_fires_once_then_frames_are_dropped():
     """`_input_ended` gates re-entry, so a still-held button after the cap
     does not re-send end_input on every frame."""
@@ -297,7 +320,11 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
     wl = wake_loop_for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._acquire_buffer.extend(silent_frame() for _ in range(4))
+    wl._turn_started_at_loop = asyncio.get_running_loop().time() - 1.0
+    for index in range(4):
+        wl._acquire_buffer.append(
+            silent_frame(), wl._turn_started_at_loop + (index + 1) * 0.08,
+        )
     wl._manual_endpoint_this_turn = True
 
     drained, speech = await wl._drain_acquire_audio()
@@ -313,7 +340,11 @@ async def test_acquire_drain_still_scores_on_a_wake_turn():
     wl = wake_loop_for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._acquire_buffer.extend(silent_frame() for _ in range(4))
+    wl._turn_started_at_loop = asyncio.get_running_loop().time() - 1.0
+    for index in range(4):
+        wl._acquire_buffer.append(
+            silent_frame(), wl._turn_started_at_loop + (index + 1) * 0.08,
+        )
     wl._manual_endpoint_this_turn = False
 
     drained, speech = await wl._drain_acquire_audio()

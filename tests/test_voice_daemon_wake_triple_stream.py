@@ -106,9 +106,22 @@ def _make_wake_loop_triple(
     wl._content_activity = MagicMock()
     wl._content_activity.music_dbfs = None
 
-    async def _noop(**kwargs):
-        return None
-    wl._arbitrate_acquire_drain = MagicMock(side_effect=_noop)
+    wl._peering.arbitrate = AsyncMock(return_value="LOSE")
+    wl._wake_telemetry.stage = AsyncMock()
+    wl._wake_telemetry.outcome = AsyncMock()
+    handle_wake = wl._handle_wake_frame
+
+    async def wake_and_record(frame, *, leg="on"):
+        await handle_wake(frame, leg=leg)
+        try:
+            await asyncio.gather(*(
+                task for task in wl._fire_and_forget
+                if task.get_name() == "wake-arbitrate-acquire-drain"
+            ))
+        finally:
+            await wl._cancel_fire_and_forget_tasks()
+
+    wl._handle_wake_frame = wake_and_record
 
     # Snapshot helper used by the capture finalize task; not exercised
     # here (we never reach the finalize path), but stub anyway so any

@@ -11,7 +11,7 @@ One row per refusal surface: the spend-cap and paused gates in
 recording-timeout/no-audio-sent/input-ended diagnoses in `_end_turn_inner`
 — and the reasons the household or the daemon chose, which are journalled
 but never spoken about — and the NN-6 research confirmation-window cancel
-timeout in `_handle_wake_frame` (which must also cue — a dropped wake with
+timeout in `_arbitrate_acquire_drain` (which must also cue — a dropped wake with
 no audible response is a non-negotiable violation, not just a missing log
 line).
 
@@ -28,6 +28,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
+import jasper.voice.research_announcer as research_announcer_module
 from jasper.research import DONE, ResearchJob
 from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
@@ -214,8 +215,6 @@ async def _drive_cancel_timeout(
     """The NN-6 collision on real code: a confirmation-window opener holding
     the turn output episode, the wake that cancels it timing out, and the
     cue that must still be heard taking the gate from under it."""
-    import jasper.voice.research_announcer as research_announcer_module
-
     monkeypatch.setattr(
         research_announcer_module,
         "RESEARCH_CONFIRMATION_OPEN_CANCEL_TIMEOUT_SEC",
@@ -267,10 +266,15 @@ async def _drive_cancel_timeout(
         wl._research._window_opening_done = asyncio.Event()
         wl._legs["on"].detector.score_frame = lambda _frame: 0.95
         await wl._handle_wake_frame(silent_frame(), leg="on")
+        await asyncio.wait_for(asyncio.gather(*(
+            task for task in wl._fire_and_forget
+            if task.get_name() == "wake-arbitrate-acquire-drain"
+        )), timeout=5.0)
         allow_release.set()
         await asyncio.wait_for(opener, timeout=5.0)
     finally:
         opener.cancel()
+        await wl._cancel_fire_and_forget_tasks()
     return wl, timeline, cues
 
 

@@ -14,10 +14,7 @@ from enum import Enum
 
 from jasper.log_event import log_event
 
-from .audio_buffer import (
-    ACQUIRE_BUFFER_MAX_FRAMES,
-    drain_acquire_buffer,
-)
+from .audio_buffer import AudioBuffer
 from .audio_io import (
     InputDeviceUnavailable,
     MicCapture,
@@ -132,13 +129,7 @@ async def cancel_tracked_tasks(task_set: set[asyncio.Task]) -> None:
     task_set.difference_update(tasks)
 
 
-# Refractory after a turn ends before the wake detector is re-armed.
-# Bounds the one transient that is a self-loop risk: TTS audio still in
-# the ALSA dmix playout buffer when _end_turn runs. The dongle dmix is
-# configured at 4096 frames @ 48 kHz ≈ 85 ms of buffering. TtsPlayout's
-# drain primitive anchors turn-end on samples actually queued, so the
-# refractory only needs to cover that dmix tail: 0.2 s is ~2.5x the
-# 85 ms buffer — still a margin, but won't swallow conversational pacing.
+# Acoustic tail margin after the output owner has drained a turn.
 WAKE_REFRACTORY_SEC = 0.2
 
 # `_end_turn` reasons the household or the daemon itself chose: whoever
@@ -293,6 +284,12 @@ def _aec_reference_available(mic_device: str) -> bool:
     This is leg/profile *selection*, not an AEC topology change: the "on"
     leg is the same stream the live session already consumes."""
     return mic_device.strip().lower().startswith("udp:")
+
+
+class _InputAdmissionClosed(RuntimeError):
+    def __init__(self, result: str) -> None:
+        self.result = result
+        super().__init__(result)
 
 
 class State(Enum):
@@ -898,10 +895,10 @@ class WakeLoop:
         self._barge_in_count: int = 0
         self._barge_in_last_at: str | None = None
         self._barge_in_last_leg: str | None = None
-        # Rolling ring of the most recent mic frames, appended in both
-        # WAKE and SESSION state and drained into the new turn at
-        # _begin_turn so the first phoneme of the command isn't clipped.
+        # The frozen prefix belongs to the accepted wake/manual start;
+        # only later frames enter the acquire buffer.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
+        self._frozen_pre_roll: tuple | None = None
 
         # Wake-event telemetry. It owns every store write and the
         # in-flight event id; the WakeLoop contributes the per-leg
@@ -914,15 +911,15 @@ class WakeLoop:
             wake_model=cfg.wake_model,
             voice_provider=cfg.voice_provider,
         )
-        # Frames captured during the wake → turn-acquired window. While
-        # `_acquiring` is set the mic loops route frames here instead of
-        # through the wake or session handlers, and the background
-        # acquire task drains them into the turn in order once
-        # acquire_turn() resolves — so the user's full utterance survives
-        # a context reset or network blip that stretches the acquire
-        # window to several seconds.
         self._acquiring: bool = False
-        self._acquire_buffer: deque = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
+        self._acquire_input_epoch = 0.0
+        self._acquire_buffer = AudioBuffer()
+        self._input_gaps = 0
+        self._acquire_drops_reported = 0
+        self._input_last_age_ms = 0
+        self._input_max_age_ms = 0
+        self._input_suspended: set[str] = set()
+        self._input_admit_after = 0.0
 
         self._peering = PeeringClient(
             enabled=cfg.peering_enabled, socket_path=cfg.peering_uds_socket,
@@ -1249,6 +1246,7 @@ class WakeLoop:
                 # Active sessions never reach this branch: the measurement
                 # hold refuses to set the event while State.SESSION (BUSY).
                 if self._measurement_active.is_set():
+                    self._input_suspended.add("on")
                     continue
 
                 # User has muted the mic. Drain the frame (don't backpressure
@@ -1259,8 +1257,12 @@ class WakeLoop:
                 # era pre-roll would prepend silence (or whatever room
                 # ambience leaked through) to the next turn.
                 if self._mic_muted:
+                    self._input_suspended.add("on")
                     continue
 
+                captured_at, gap = self._capture_input(self._mic, "on")
+                if captured_at < self._input_admit_after:
+                    continue
                 self._pre_roll.append(frame)
                 # Independent capture ring for wake-event telemetry —
                 # sized for the 6 s offline-review window, not the 560 ms
@@ -1268,14 +1270,9 @@ class WakeLoop:
                 # context is already on hand the moment a wake fires.
                 self._capture_ring_on.append(frame)
 
-                # Acquire window: between wake firing and the new turn
-                # being ready to accept audio. The background acquire task
-                # drains this buffer into the turn, so a multi-second
-                # context reset doesn't truncate the user's command. See
-                # ACQUIRE_BUFFER_MAX_FRAMES.
                 if self._acquiring:
                     if self._push_to_talk.active_source is None:
-                        self._acquire_buffer.append(frame)
+                        self._acquire_buffer.append(frame, captured_at, discontinuity=gap)
                     continue
 
                 if self._state is State.WAKE:
@@ -1287,7 +1284,7 @@ class WakeLoop:
                         await self._handle_wake_frame(frame, leg="on")
                         if self._acquiring or self._state is State.WAKE:
                             continue
-                    await self._handle_session_frame(frame)
+                    await self._handle_session_frame(frame, captured_at=captured_at)
         finally:
             # Cancel + join every leg loop before sweeping tracked side-work.
             # The leg loops are producers: while they are alive, a late wake
@@ -1317,14 +1314,18 @@ class WakeLoop:
             if self._stop_event.is_set():
                 return
             if self._measurement_active.is_set() or self._mic_muted:
+                self._input_suspended.add(source_id)
                 continue
             if self._push_to_talk.active_source != source_id:
                 continue
+            captured_at, gap = self._capture_input(rt.mic, source_id)
+            if captured_at < self._input_admit_after:
+                continue
             if self._acquiring:
-                self._acquire_buffer.append(frame)
+                self._acquire_buffer.append(frame, captured_at, discontinuity=gap)
                 continue
             if self._state is State.SESSION:
-                await self._handle_session_frame(frame)
+                await self._handle_session_frame(frame, captured_at=captured_at)
 
     async def _wake_leg_loop(self, leg_name: str) -> None:
         """Parallel wake-only consumer for a non-primary leg.
@@ -1350,12 +1351,17 @@ class WakeLoop:
             if self._stop_event.is_set():
                 return
             if self._measurement_active.is_set():
+                self._input_suspended.add(leg_name)
                 continue
             # Mute is a privacy promise — do NOT record audio for the
             # wake-events corpus when the user has muted the mic. Mirrors
             # the primary loop: the capture ring fills only AFTER the
             # mute / measurement gates.
             if self._mic_muted:
+                self._input_suspended.add(leg_name)
+                continue
+            captured_at, _ = self._capture_input(rt.mic, leg_name)
+            if captured_at < self._input_admit_after:
                 continue
             # Filled before the acquiring / WAKE-state checks so a wake
             # fire's window has pre-fire context even when it overlaps the
@@ -1370,6 +1376,43 @@ class WakeLoop:
                 await self._handle_wake_frame(frame, leg=leg_name)
             elif self._state is State.SESSION and rt.shadow_vad is not None:
                 await self._shadow_vad_score_raw(frame)
+
+    def _note_input_age(self, captured_at: float) -> None:
+        self._input_last_age_ms = max(0, round((time.monotonic() - captured_at) * 1000))
+        self._input_max_age_ms = max(self._input_max_age_ms, self._input_last_age_ms)
+
+    def _capture_input(self, mic, source: str) -> tuple[float, bool]:
+        captured = getattr(mic, "last_frame", None)
+        captured_at = captured.captured_at if captured is not None else time.monotonic()
+        if source == (self._push_to_talk.active_source or "on"):
+            self._note_input_age(captured_at)
+        gap = bool(captured and captured.discontinuity) or source in self._input_suspended
+        self._input_suspended.discard(source)
+        if gap:
+            self._input_gaps += 1
+            rt = self._legs.get(source)
+            if rt is not None:
+                rt.detector.reset()
+                rt.recent_score = rt.recent_score_at = 0.0
+                if rt.capture_ring is not None:
+                    rt.capture_ring.clear()
+                if rt.shadow_vad is not None:
+                    rt.shadow_vad.reset()
+            if source == "on":
+                self._pre_roll.clear()
+            if not self._acquiring and source == (self._push_to_talk.active_source or "on"):
+                self._reset_session_input()
+            log_event(logger, "voice.input_gap", source=source,
+                      dropped_frames=getattr(mic, "dropped_frames", 0))
+        return captured_at, gap
+
+    def _reset_session_input(self) -> None:
+        if self._vad is not None:
+            self._vad.reset()
+        self._speech_run_started_at = self._silence_started_at = 0.0
+        self._speech_run_max_silero = 0.0
+        self._barge_in_run_started_at = self._barge_in_run_peak = 0.0
+        self._barge_in_signalled_this_run = False
 
     async def _drain_inflight_output(self, *, timeout_sec: float) -> bool:
         return await self._assistant_output.drain_inflight(
@@ -1395,18 +1438,19 @@ class WakeLoop:
         """
         if self._mic_muted:
             return "ok"
+        self._mic_muted = True
         if self._state is State.SESSION:
             try:
                 await self._end_turn("mic_muted")
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
-        self._mic_muted = True
         # Drop already-buffered room audio, not just future frames. The
         # pre-roll otherwise survives the mute and is replayed into the
         # first turn after unmute (~560 ms of pre-mute room audio sent
         # to the LLM); the telemetry capture rings would likewise write
         # pre-mute audio to disk if a wake fired right after unmute.
         self._pre_roll.clear()
+        self._frozen_pre_roll = None
         self._acquire_buffer.clear()
         for _rt in self._legs.values():
             if _rt.capture_ring is not None:
@@ -1421,6 +1465,9 @@ class WakeLoop:
         if not self._mic_muted:
             return "ok"
         self._mic_muted = False
+        self._input_admit_after = time.monotonic()
+        self._input_suspended.update(self._legs)
+        self._input_suspended.update(self._push_to_talk.sources)
         write_mic_muted(self._cfg.mic_mute_state_path, False)
         log_event(logger, "mic.unmute")
         await self._play_mute_click(going_on=True)
@@ -1536,27 +1583,11 @@ class WakeLoop:
         for _other in self._legs.values():
             _other.detector.reset()
 
-        # The OR-gate above is RECALL: a leg crossed its threshold and won
-        # the race, *proposing* a fire. `verify()` is the PRECISION stage —
-        # it corroborates before the turn opens, and fails open. On a
-        # suppress the detectors are already reset above (the utterance
-        # elevated them either way) and the only refractory held is the
-        # short WAKE_REFRACTORY_SEC, so a genuine wake immediately after is
-        # not blinded.
-        if not self._fuser.verify(leg, fired_set, self._current_condition):
-            log_event(
-                logger,
-                "wake.suppressed",
-                leg=leg,
-                fired=fired_legs,
-                threshold=f"{firing_threshold:.2f}",
-            )
-            return
-
-        if not await self._research.cancel_for_wake():
-            return
-
         self._wake_event_at_monotonic = time.monotonic()
+        self._frozen_pre_roll = tuple(self._pre_roll)
+        self._acquire_input_epoch = self._input_admit_after
+        self._acquiring = True
+        self._acquire_buffer.clear()
         # Per-leg score summary for the log — ONLY the legs this install
         # actually built, so a single-stream or non-chip-AEC install emits
         # no fields for legs it isn't running. "none" means an ACTIVE leg
@@ -1591,36 +1622,18 @@ class WakeLoop:
         conn_paused = self._connection.is_paused()
         can_serve = spend_allowed and not conn_paused
 
-        # Buffer frames into `_acquire_buffer` for the whole arbitration and
-        # turn-acquire window; otherwise they dispatch back through
-        # `_handle_wake_frame` while peering resolves and either pile up in
-        # the asyncio mic queue or re-trigger detection.
-        self._acquiring = True
-        self._acquire_buffer.clear()
-
         # Tertiary tiebreaker for the peering ranking function. SNR would rank
         # better but needs rolling-noise-floor state nothing tracks; the
         # ranker falls through to RMS when SNR is missing.
         rms_dbfs = _frame_rms_dbfs(frame)
 
-        # Open a wake-event row for the funnel hooks to update as the event
-        # progresses. Guarded so a speaker without a store pays none of the
-        # fire-time record assembly below.
+        wake_event = None
         if self._wake_telemetry.store is not None:
-            # Acoustic condition at RECORD time, not the ~1 Hz
-            # `_current_condition` the fire gate keys on: the awaits above
-            # (fire lock, research-window cancel) can put real wall-clock
-            # time between the two. Same formula, later sampling instant —
-            # and deliberately not written back to `_current_condition`,
-            # which `_maybe_refresh_condition` alone owns. Music comes from
-            # ContentActivityTracker's cached playback RMS, free to read on
-            # the hot path (a renderer probe would add ~50 ms). Best-effort:
-            # neither _ring_noise_floor_dbfs nor classify_condition raises.
             condition_ctx = classify_condition(
                 music_dbfs=self._read_music_dbfs(),
                 noise_floor_dbfs=_ring_noise_floor_dbfs(self._capture_ring_on),
             )
-            event_id = await self._wake_telemetry.on_fire(
+            wake_event = dict(
                 leg=leg,
                 score=score,
                 now_loop=now_loop,
@@ -1643,19 +1656,8 @@ class WakeLoop:
                 condition=condition_ctx,
                 mic_muted=self._mic_muted,
             )
-            # Deliberately not in `_bg_tasks`: those tasks drive turn
-            # completion.
-            if event_id is not None:
-                self._create_fire_and_forget_task(
-                    self._wake_telemetry.finalize_event_audio(
-                        event_id, snapshot=self._snapshot_leg_audio,
-                    ),
-                    name="wake-event-audio-finalize",
-                )
-
         # Background task so the main mic loop stays responsive while
-        # frames pile into _acquire_buffer (up to 20 s — see
-        # ACQUIRE_BUFFER_MAX_FRAMES).
+        # input continues to enter the bounded acquire buffer.
         self._create_fire_and_forget_task(
             self._arbitrate_acquire_drain(
                 score=score,
@@ -1663,6 +1665,7 @@ class WakeLoop:
                 spend_allowed=spend_allowed,
                 conn_paused=conn_paused,
                 can_serve=can_serve,
+                wake_event=wake_event,
             ),
             name="wake-arbitrate-acquire-drain",
         )
@@ -1716,6 +1719,7 @@ class WakeLoop:
         spend_allowed: bool,
         conn_paused: bool,
         can_serve: bool,
+        wake_event: dict | None = None,
     ) -> None:
         """Background coroutine spawned on wake.
 
@@ -1733,6 +1737,8 @@ class WakeLoop:
         local rather than connectivity.
         """
         try:
+            if not await self._research.cancel_for_wake():
+                return
             # mute_mic / MeasurementHold.pause_response can fire after
             # _handle_wake_frame spawned this task but before it is scheduled.
             # Both are user-deliberate "stop listening" signals; a chirp plus
@@ -1742,6 +1748,17 @@ class WakeLoop:
                 await self._wake_telemetry.stage("late_cancel")
                 await self._wake_telemetry.outcome("late_cancel", "pre_arb")
                 return  # finally clears _acquiring + buffer
+
+            self._check_input_admission(self._acquire_input_epoch)
+            if wake_event is not None:
+                event_id = await self._wake_telemetry.on_fire(**wake_event)
+                if event_id is not None:
+                    self._create_fire_and_forget_task(
+                        self._wake_telemetry.finalize_event_audio(
+                            event_id, snapshot=self._snapshot_leg_audio,
+                        ),
+                        name="wake-event-audio-finalize",
+                    )
 
             decision = await self._peering.arbitrate(
                 score=score, snr_db=None, rms_dbfs=rms_dbfs,
@@ -1791,23 +1808,10 @@ class WakeLoop:
             # session lifecycle is the source of truth.
             await self._peering.session_started(has_turn=self._turn is not None)
 
-            try:
-                drained, speech_in_acquire = await self._drain_acquire_audio()
-            except Exception as e:  # noqa: BLE001
-                drained = 0
-                speech_in_acquire = False
-                logger.warning("acquire-buffer drain failed: %s", e)
-            if drained:
-                logger.info(
-                    "acquire-buffer drained: %d frames (~%.0fms%s)",
-                    drained, drained * 80.0,
-                    "; contained speech — silence detector pre-armed"
-                    if speech_in_acquire else "",
-                )
-            # Fast-talker compensation; see `_drain_acquire_audio`.
-            if speech_in_acquire and not self._user_speech_seen:
-                self._user_speech_seen = True
-                await self._wake_telemetry.stage("speech_detected")
+            await self._drain_acquire_audio()
+        except _InputAdmissionClosed:
+            await self._wake_telemetry.stage("late_cancel")
+            await self._wake_telemetry.outcome("late_cancel", "acquire")
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             log_event(
@@ -1839,6 +1843,8 @@ class WakeLoop:
             # stream to `_handle_session_frame`; on the LOSE, cue and error
             # paths state is still WAKE, so it returns to wake detection.
             self._acquiring = False
+            self._acquire_buffer.clear()
+            self._frozen_pre_roll = None
             # Protects against the detector re-firing on the TTS tail (won
             # path) or on a quick repeat-wake (lost path).
             self._refractory_until = max(
@@ -1931,7 +1937,7 @@ class WakeLoop:
             want = False
         self._barge_in_active = want
 
-    async def _handle_playback_frame(self, frame) -> None:
+    async def _handle_playback_frame(self, frame, *, captured_at: float | None = None) -> None:
         """In-session barge-in detection while the assistant is speaking.
 
         Reached from ``_handle_session_frame`` once ``_input_ended`` is set
@@ -1943,10 +1949,6 @@ class WakeLoop:
         immediately. The felt experience: the user talks over the assistant
         and the speaker goes quiet.
 
-        Detection and local flush only: this does NOT truncate / cancel
-        the provider response, so a real-time provider may resume after
-        the flush.
-
         Runs INLINE (never a ``_bg_task``): completed ``_bg_tasks`` end the
         turn, so a fire-once detector task would race turn-end."""
         if self._turn is None:
@@ -1955,7 +1957,7 @@ class WakeLoop:
         # predict error propagates exactly as it does there (unguarded)
         # rather than being silently swallowed here.
         speech_prob = self._vad.predict(frame)
-        now = asyncio.get_event_loop().time()
+        now = time.monotonic() if captured_at is None else captured_at
         if speech_prob < self._cfg.vad_barge_in_threshold:
             # Sub-threshold frame breaks the run. A fresh continuous run
             # must re-accumulate from zero (and may re-trigger), mirroring
@@ -2055,8 +2057,8 @@ class WakeLoop:
             return "no_speech_abort"
         return label
 
-    async def _handle_manual_session_frame(self, frame) -> None:
-        now = asyncio.get_event_loop().time()
+    async def _handle_manual_session_frame(self, frame, *, captured_at: float | None = None) -> None:
+        now = time.monotonic() if captured_at is None else captured_at
         if self._push_to_talk.hold_cap_exceeded(
             now - self._turn_started_at_loop, self._cfg.idle_timeout_sec,
         ):
@@ -2064,151 +2066,79 @@ class WakeLoop:
             return
         await self._send_session_audio(frame)
 
-    async def _handle_session_frame(self, frame) -> None:
-        # If any background task ended, the turn is over. Cleanup, then
-        # this frame is silently consumed (no double-dispatch into detector).
+    async def _handle_session_frame(self, frame, *, captured_at: float | None = None) -> None:
+        if self._mic_muted or self._measurement_active.is_set():
+            return
+        if captured_at is not None:
+            self._note_input_age(captured_at)
         if any(t.done() for t in self._bg_tasks):
             await self._end_turn()
             return
-
         assert self._turn is not None
-
         if self._input_ended:
-            # Input closed: the assistant is (or is about to be) speaking.
-            # With barge-in active, score this frame for an interruption;
-            # otherwise drop it (mic ignored during playback).
             if self._barge_in_active:
-                await self._handle_playback_frame(frame)
+                await self._handle_playback_frame(frame, captured_at=captured_at)
             return
-
-        # ---- Push-to-talk branch ----
-        # The button already carries both turn boundaries, so nothing
-        # here may close the user's input early. Must come BEFORE the
-        # Silero branch: that one ends input on its own schedule.
         if self._manual_endpoint_this_turn:
-            await self._handle_manual_session_frame(frame)
+            await self._handle_manual_session_frame(frame, captured_at=captured_at)
             return
 
-        # ---- Local Silero VAD path (manual VAD) ----
-        # End-of-utterance detection: run Silero VAD on the frame and arm
-        # the silence detector once the user has been speaking
-        # continuously for SUSTAINED_SPEECH_TO_ARM_SEC AND the run peaked
-        # at SPEECH_RUN_PEAK_MIN. A real spoken command — even one
-        # delivered immediately after the wake word with no pause —
-        # clears both within ~200 ms; wake-word tail clears the duration
-        # bar but not the peak. See those two constants.
         speech_prob = self._vad.predict(frame)
-        if speech_prob > self._max_silero_score_in_turn:
-            self._max_silero_score_in_turn = speech_prob
-        now = asyncio.get_event_loop().time()
+        self._max_silero_score_in_turn = max(self._max_silero_score_in_turn, speech_prob)
+        now = time.monotonic() if captured_at is None else captured_at
         elapsed = now - self._turn_started_at_loop
-
-        # Bail out fast if no real speech has been detected within the
-        # abort window. Avoids the "ducked the music for 10 s and then
-        # nothing happened" UX when the wake word fires but the user
-        # doesn't follow up with a question (or speaks too quietly).
-        # Logging the max silero score helps disambiguate "wake fired
-        # but user really didn't speak" (max ~0) from "user did speak
-        # but score never crossed threshold" (max close to threshold).
         if not self._user_speech_seen and elapsed >= NO_SPEECH_ABORT_SEC:
-            logger.info(
-                "no user speech detected within %.1fs (silero max=%.2f, threshold=%.2f); aborting turn",
-                NO_SPEECH_ABORT_SEC,
-                self._max_silero_score_in_turn,
-                END_OF_UTTERANCE_SPEECH_THRESHOLD,
-            )
+            log_event(logger, "voice.no_speech", max_silero=self._max_silero_score_in_turn)
             await self._end_turn()
             return
-
-        # Hard recording cap: defends against stuck-on TVs / continuous
-        # noise / runaway dictation by force-ending the turn after a
-        # generous window. Sends activity_end so the server can finalise
-        # whatever audio it has, then ends the turn locally.
-        if elapsed >= HARD_RECORDING_CAP_SEC and not self._input_ended:
-            logger.info(
-                "hard recording cap reached (%.1fs); ending input",
-                HARD_RECORDING_CAP_SEC,
-            )
+        if elapsed >= HARD_RECORDING_CAP_SEC:
             await self._end_session_input("cap")
             return
 
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
             if self._speech_run_started_at == 0.0:
                 self._speech_run_started_at = now
-                self._speech_run_max_silero = speech_prob
-            else:
-                self._speech_run_max_silero = max(
-                    self._speech_run_max_silero, speech_prob,
-                )
-            sustained = now - self._speech_run_started_at
+            self._speech_run_max_silero = max(self._speech_run_max_silero, speech_prob)
             if (not self._user_speech_seen
-                    and sustained >= SUSTAINED_SPEECH_TO_ARM_SEC
+                    and now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
                     and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
-                logger.info(
-                    "user speech detected (sustained=%.0fms, "
-                    "silero=%.2f, peak_in_run=%.2f) "
-                    "— silence detector armed",
-                    sustained * 1000, speech_prob,
-                    self._speech_run_max_silero,
-                )
                 self._user_speech_seen = True
-                if self._silero_aec_armed_at_ms is None:
-                    self._silero_aec_armed_at_ms = int(
-                        (now - self._turn_started_at_loop) * 1000
-                    )
+                self._silero_aec_armed_at_ms = int(elapsed * 1000)
                 await self._wake_telemetry.stage("speech_detected")
             self._silence_started_at = 0.0
         else:
-            # Sub-threshold frame breaks the run. Both the duration
-            # anchor and the peak-tracker reset together so the next
-            # run starts fresh — partial accumulation across silence
-            # gaps would defeat the wake-tail-rejection design.
-            self._speech_run_started_at = 0.0
-            self._speech_run_max_silero = 0.0
+            self._speech_run_started_at = self._speech_run_max_silero = 0.0
             if self._user_speech_seen:
                 if self._silence_started_at == 0.0:
                     self._silence_started_at = now
                     self._stamp_turn_stage("speech_end", first=False)
                 elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
-                    silence_ms = (now - self._silence_started_at) * 1000
-                    logger.info(
-                        "end-of-utterance: %.0fms user silence; sending activity_end",
-                        silence_ms,
-                    )
                     await self._end_session_input("end-of-utterance")
                     return
-
         await self._send_session_audio(frame)
 
     async def _drain_acquire_audio(self) -> tuple[int, bool]:
-        """Forward buffered wake/acquire frames into the newly opened turn.
-
-        The VAD pass exists for one purpose: pre-arm ``_user_speech_seen``
-        so the live end-of-utterance detector doesn't abort a fast-talker
-        turn whose whole question landed in the acquire window. A
-        push-to-talk turn runs neither the detector nor the abort, so
-        scoring those frames would buy nothing and cost a Silero pass per
-        frame on the exact class of box (Pi Zero 2 W) that can least
-        afford it. ``drain_acquire_buffer`` already contracts
-        ``vad_predict=None`` -> ``sustained_speech_detected=False``.
-        """
-        vad_predict = (
-            None
-            if self._manual_endpoint_this_turn
-            else self._vad.predict
-        )
-        # Before the drain, not after: these frames ARE this turn's first
-        # audio on a sourced button turn, and stamping on the way out would
-        # charge the whole drain to the provider.
+        count = 0
+        while self._turn is not None and not self._input_ended:
+            if self._mic_muted or self._measurement_active.is_set():
+                break
+            frame = self._acquire_buffer.pop()
+            drops = self._acquire_buffer.dropped_frames
+            if drops != self._acquire_drops_reported:
+                self._input_gaps += 1
+                self._acquire_drops_reported = drops
+                self._reset_session_input()
+                log_event(logger, "voice.input_gap", source="acquire", dropped_frames=drops)
+            elif frame is not None and frame.discontinuity:
+                self._reset_session_input()
+            if frame is None:
+                break
+            await self._handle_session_frame(frame.pcm, captured_at=frame.captured_at)
+            count += 1
         if self._acquire_buffer:
-            self._stamp_turn_stage("first_audio_to_provider")
-        return await drain_acquire_buffer(
-            self._acquire_buffer,
-            self._turn,  # type: ignore[arg-type]
-            vad_predict=vad_predict,
-            speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
-            peak_min=SPEECH_RUN_PEAK_MIN,
-        )
+            self._reset_session_input()
+        self._acquire_buffer.clear()
+        return count, self._user_speech_seen
 
     async def _await_connection(self, timeout_sec: float) -> bool:
         """Nudge a paused connection and wait a bounded time for it.
@@ -2286,7 +2216,7 @@ class WakeLoop:
             )
             self._spawn_manual_refusal_cue(NO_ROOM_MIC_CUE_SLUG)
             return "NO_ROOM_MIC"
-        if self._state is State.SESSION:
+        if self._state is State.SESSION or self._acquiring:
             log_event(logger, "session.manual_refused", reason="busy")
             return "BUSY"
         # User-deliberate "stop listening" gates — mirror the wake path's
@@ -2317,25 +2247,28 @@ class WakeLoop:
             )
             self._spawn_manual_refusal_cue("spend_cap_reached")
             return "CAP"
-        if self._connection.is_paused() and not await self._await_connection(
-            PAUSED_CONNECTION_WAIT_SEC,
-        ):
-            # Still paused after the wait: this is a real outage, not a
-            # rotation. Cued — a press that produces nothing is the
-            # one refusal the household cannot explain to itself.
-            log_event(
-                logger,
-                "session.manual_refused",
-                reason="connection_paused",
-                waited_sec=PAUSED_CONNECTION_WAIT_SEC,
-            )
-            self._spawn_manual_refusal_cue(self._connection.wake_cue())
-            return "PAUSED"
-        if source:
-            self._push_to_talk.active_source = source
-            self._acquiring = True
-            self._acquire_buffer.clear()
+        self._push_to_talk.active_source = source
+        self._frozen_pre_roll = () if source else tuple(self._pre_roll)
+        self._input_admit_after = time.monotonic()
+        self._acquire_input_epoch = self._input_admit_after
+        self._acquiring = True
+        self._acquire_buffer.clear()
         try:
+            if self._connection.is_paused() and not await self._await_connection(
+                PAUSED_CONNECTION_WAIT_SEC,
+            ):
+                # Still paused after the wait: this is a real outage, not a
+                # rotation. Cued — a press that produces nothing is the
+                # one refusal the household cannot explain to itself.
+                log_event(
+                    logger,
+                    "session.manual_refused",
+                    reason="connection_paused",
+                    waited_sec=PAUSED_CONNECTION_WAIT_SEC,
+                )
+                self._spawn_manual_refusal_cue(self._connection.wake_cue())
+                self._push_to_talk.active_source = None
+                return "PAUSED"
             if source:
                 await self._begin_turn(
                     pre_roll=False,
@@ -2343,8 +2276,8 @@ class WakeLoop:
                 )
             else:
                 await self._begin_turn(listening_feedback=True)
+            drained, _ = await self._drain_acquire_audio()
             if source:
-                drained, speech_in_acquire = await self._drain_acquire_audio()
                 if drained:
                     log_event(
                         logger,
@@ -2352,15 +2285,14 @@ class WakeLoop:
                         source=source,
                         frames=drained,
                     )
-                if speech_in_acquire:
-                    self._user_speech_seen = True
-                    self._silence_started_at = 0.0
             log_event(
                 logger,
                 "session.manual_started",
                 source=source or "primary",
             )
             return "OK"
+        except _InputAdmissionClosed as error:
+            return error.result
         except Exception as e:  # noqa: BLE001
             logger.exception("manual session start failed: %s", e)
             if self._turn_output_episode is not None:
@@ -2376,8 +2308,9 @@ class WakeLoop:
                 self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)
             return "ERROR"
         finally:
-            if source:
-                self._acquiring = False
+            self._acquiring = False
+            self._acquire_buffer.clear()
+            self._frozen_pre_roll = None
 
     async def manual_session_end(self) -> str:
         """Finalize the input side of an in-progress session (remote
@@ -2495,6 +2428,16 @@ class WakeLoop:
         return {
             "state": self._state.name,
             "input_ended": self._input_ended,
+            "input_audio": {
+                "last_age_ms": self._input_last_age_ms,
+                "max_age_ms": self._input_max_age_ms,
+                "gaps": self._input_gaps,
+                "acquire_dropped_frames": self._acquire_buffer.dropped_frames,
+                "capture_dropped_frames": sum(
+                    getattr(rt.mic, "dropped_frames", 0)
+                    for rt in (*self._legs.values(), *self._push_to_talk.sources.values())
+                ),
+            },
             "spend_allowed": self._spend_cap.allowed(),
             # usage.db writes are failing, so turns are served but their cost
             # is not recorded and the spend cap cannot enforce. Surfaced so
@@ -2617,8 +2560,11 @@ class WakeLoop:
         listening_feedback: bool = False,
         anchor_at: float = 0.0,
     ) -> None:
+        acquiring_at_begin = self._acquiring
         completed = False
         try:
+            if acquiring_at_begin:
+                self._check_input_admission(self._acquire_input_epoch)
             if listening_feedback:
                 # Prime the TTS IPC owner's loudness context before the chirp
                 # as well as before assistant TTS. The chirp is fire-and-forget,
@@ -2647,6 +2593,8 @@ class WakeLoop:
                         task_name="turn-begin-cleanup",
                     ),
                 )
+                if acquiring_at_begin:
+                    self._acquiring = False
                 if cleanup_error is not None and not isinstance(
                     cleanup_error,
                     asyncio.CancelledError,
@@ -2659,6 +2607,12 @@ class WakeLoop:
                         err=str(cleanup_error),
                     )
 
+    def _check_input_admission(self, input_epoch: float) -> None:
+        if self._mic_muted or input_epoch != self._input_admit_after:
+            raise _InputAdmissionClosed("MUTED")
+        if self._measurement_active.is_set():
+            raise _InputAdmissionClosed("MEASURING")
+
     async def _begin_turn_inner(
         self,
         *,
@@ -2666,6 +2620,13 @@ class WakeLoop:
         text_context: str | None = None,
         anchor_at: float = 0.0,
     ) -> None:
+        input_epoch = (
+            self._acquire_input_epoch if self._acquiring else self._input_admit_after
+        )
+        self._check_input_admission(input_epoch)
+        pre_roll_frames = (
+            tuple(self._pre_roll) if self._frozen_pre_roll is None else self._frozen_pre_roll
+        ) if pre_roll else ()
         # Anchored before the first await so the fire-and-forget listening
         # chirp cannot stamp its cue into the previous turn's timeline.
         self._anchor_turn_timeline(anchor_at)
@@ -2686,17 +2647,16 @@ class WakeLoop:
         )
         # Silero's internal LSTM state must not leak across turns. A
         # push-to-talk-only daemon has no VAD to reset (see __init__).
-        if self._vad is not None:
-            self._vad.reset()
+        self._reset_session_input()
         # `_turn_started_at_loop` anchors NO_SPEECH_ABORT_SEC,
         # HARD_RECORDING_CAP_SEC and the push-to-talk hold cap; it is read on
         # the asyncio loop clock to match what the silence detector reads.
         self._user_speech_seen = False
-        self._silence_started_at = 0.0
-        self._speech_run_started_at = 0.0
-        self._speech_run_max_silero = 0.0
         self._input_ended = False
-        self._turn_started_at_loop = asyncio.get_event_loop().time()
+        self._turn_started_at_loop = (
+            anchor_at or (self._input_admit_after if self._acquiring else 0.0)
+            or asyncio.get_event_loop().time()
+        )
         self._max_silero_score_in_turn = 0.0
         self._max_silero_raw_in_turn = 0.0
         self._silero_raw_armed_at_ms = None
@@ -2723,6 +2683,7 @@ class WakeLoop:
         )
         self._turn = await self._connection.acquire_turn()
         t_after_acquire = time.monotonic()
+        self._check_input_admission(input_epoch)
 
         if text_context:
             await self._turn.send_text_context(text_context)
@@ -2743,22 +2704,12 @@ class WakeLoop:
         # Drain the recent-mic ring into the turn so the user's first phoneme,
         # which preceded the wake firing, reaches the model. The frame that
         # fired the wake is the most-recently-appended entry and is included.
-        pre_roll_frames = list(self._pre_roll) if pre_roll else []
         if pre_roll_frames:
             self._stamp_turn_stage("first_audio_to_provider")
-        for f in pre_roll_frames:
-            try:
-                await self._turn.send_audio(f.tobytes())
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "pre-roll send failed (will continue with live frames): %s", e,
-                )
-                break
-        if pre_roll_frames:
-            logger.info(
-                "pre-roll sent: %d frames (~%.0fms)",
-                len(pre_roll_frames), len(pre_roll_frames) * 80.0,
-            )
+        for frame in pre_roll_frames:
+            self._check_input_admission(input_epoch)
+            await self._turn.send_audio(frame.tobytes())
+        self._check_input_admission(input_epoch)
         playback = asyncio.create_task(
             play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
@@ -2855,7 +2806,6 @@ class WakeLoop:
             self._bg_tasks = set()
             self._bg_end_scheduled = False
             self._push_to_talk.active_source = None
-            self._acquiring = False
             self._state = State.WAKE
 
         await run_phase("local_state_reset", reset_local_state)

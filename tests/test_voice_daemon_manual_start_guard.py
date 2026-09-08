@@ -440,7 +440,7 @@ async def test_manual_mic_loop_forwards_only_active_source():
     }
     seen = []
 
-    async def handle(frame):
+    async def handle(frame, *, captured_at):
         seen.append(frame)
 
     wl._handle_session_frame = handle

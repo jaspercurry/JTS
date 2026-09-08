@@ -52,19 +52,9 @@ def _setup_error_message(
 
 
 class SpeechVAD:
-    """Wrapper around openWakeWord's Silero VAD for in-session barge-in
-    detection.
+    """Stateful speech scores for local endpoint and barge-in detection.
 
-    Silero VAD is trained to distinguish human conversational speech from
-    music, environmental noise, and synthesised audio. We use it during a
-    voice session while the model is producing TTS: bleed-through of the
-    model's own speech (and any ducked music) reaches the mic, but Silero
-    can tell that bleed apart from a real user trying to interrupt. So
-    the daemon can gate mic-to-Gemini on speech_prob >= threshold —
-    server doesn't get confused by bleed, but real barge-in still works.
-
-    Stateful (LSTM internally). Call reset() between sessions so state
-    from one session doesn't bleed into the next.
+    Reset between turns and after capture discontinuities.
     """
 
     def __init__(self) -> None:
