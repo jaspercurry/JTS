@@ -19,7 +19,10 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Coroutine, Mapping
 
+from jasper.audio_measurement.playback import PlaybackObservation
+
 from ..volume_latch import fader_matches
+from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import (
     MeasureSpec,
@@ -28,7 +31,8 @@ from .measure_spec import (
     measurement_delays_for,
     stubbed_capabilities,
 )
-from .playback_transaction import PlaybackOutcome
+
+from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
 from .session_seams import EngineSeams
 from .spatial import take_id_for
 
@@ -128,6 +132,7 @@ class StimulusOutcome:
     level_db: float | None
     record_id: str
     incident: str = ""
+    playback: PlaybackObservation = field(default_factory=PlaybackObservation)
 
     @property
     def banked(self) -> bool:
@@ -198,6 +203,7 @@ class TuningSession:
     _volume_held: bool = field(default=False, init=False)
     _spent: bool = field(default=False, init=False)
     _graph_fingerprint: str = field(default="", init=False)
+    last_playback: PlaybackObservation = field(default_factory=PlaybackObservation, init=False)
     _banked: list[str] = field(default_factory=list, init=False)
     #: How many takes this session has minted an id for, in memory only: a
     #: persisted registry of minted ids would be a second index over the bank,
@@ -348,11 +354,6 @@ class TuningSession:
                     spec, bearing, prompt, stimulus_dbfs,
                 )
                 stimuli.append(stimulus)
-                # Accounted as each one banks, never after the walk: every
-                # stimulus is a cancel point, and a record written to the store
-                # but missing from this list is one `banked_record_ids` denies.
-                if stimulus.record_id:
-                    self._banked.append(stimulus.record_id)
 
         return MeasureOutcome(spec=spec, stimuli=tuple(stimuli))
 
@@ -461,6 +462,7 @@ class TuningSession:
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
         """Prove this take's graph and level, then play and bank one stimulus."""
+        self.last_playback = PlaybackObservation(emission="not_started")
         self.seams.graph.select_scope(spec.graph_scope, spec.candidate_id)
         self._graph_fingerprint = await self.seams.graph.install(
             inverted_roles_for(spec),
@@ -468,26 +470,45 @@ class TuningSession:
             level_trims_for(spec, self.level_match_trims_db),
         )
         proven_level_db = await self._proven_level()
-        outcome: PlaybackOutcome = await self.seams.play.run(
-            spec=spec,
-            position_deg=bearing,
-            prompt=prompt,
-            level_db=self.measurement_level_db,
-            stimulus_dbfs=stimulus_dbfs,
-        )
+        interruption = None
+        try:
+            outcome: PlaybackOutcome = await self.seams.play.run(
+                spec=spec,
+                position_deg=bearing,
+                prompt=prompt,
+                level_db=self.measurement_level_db,
+                stimulus_dbfs=stimulus_dbfs,
+            )
+        except PlaybackInterrupted as exc:
+            self.last_playback = exc.playback
+            if not exc.wav_path:
+                raise
+            interruption = exc
+            outcome = PlaybackOutcome(
+                STAGE_RESTORE, wav_path=exc.wav_path, playback=exc.playback,
+            )
+        self.last_playback = outcome.playback
         record_id = ""
         incident = outcome.incident
         if outcome.played:
             if proven_level_db is None:
                 incident = incident or UNPROVEN_LEVEL
             else:
-                record_id = await self.seams.records.bank(self._record(
-                    spec, bearing, prompt, stimulus_dbfs, outcome,
-                    proven_level_db, self._next_take_id(spec.kind),
-                ))
+                async def _bank() -> str:
+                    written = await self.seams.records.bank(self._record(
+                        spec, bearing, prompt, stimulus_dbfs, outcome,
+                        proven_level_db, self._next_take_id(spec.kind),
+                    ))
+                    self._banked.append(written)
+                    return written
+
+                record_id = await resilient_restore(_bank())
+        if interruption is not None:
+            raise interruption
         return StimulusOutcome(
             position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
             level_db=proven_level_db, record_id=record_id, incident=incident,
+            playback=outcome.playback,
         )
 
     def _next_take_id(self, kind: str) -> str:
@@ -611,5 +632,6 @@ class TuningSession:
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,
             "incident": outcome.incident,
+            "playback": outcome.playback.as_dict(),
             "wav_path": outcome.wav_path,
         }

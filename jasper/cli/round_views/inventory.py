@@ -2,27 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Which analysis artifacts a round already carries, and what produces the rest.
-
-* ``inventory <round-dir>`` — which of the named artifacts this round already
-  has, how big each one is, and the command that produces each one it is
-  missing, so "was this round ever analysed for X" is read rather than re-run.
-  Each ``produced_by`` is a line to RUN: this round's own paths are filled in,
-  and what is left in angle brackets is what the inventory cannot know (the
-  other round of a comparison, the applied corner), which
-  ``producer_needs_more_than_this_round`` flags. The round is resolved, never
-  graded. Presence is read at the path each producer writes with no ``--out``
-  (:func:`default_out`). Writes ``inventory.json``.
-"""
+"""Artifact presence, producer provenance and usable next commands for one round."""
 
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
@@ -42,17 +32,18 @@ from ._common import (
 )
 
 
-def _runnable(view: str, spec: ViewArtifact, round_dir: Path, bundle: Path) -> str:
-    """This producer as a line to run, with this round's own paths in it.
-
-    The bundle substitution goes first: every bundle placeholder starts with
-    the whole-round one, and replacing the shorter token first would leave a
-    path spliced into the middle of the longer one.
-    """
-    takes = spec.takes.replace(TAKES_THIS_BUNDLE, str(bundle)).replace(
-        TAKES_THIS_ROUND, str(round_dir)
-    )
-    return f"{spec.producer or f'{PROG} {view}'} {takes}"
+def _runnable(
+    view: str, spec: ViewArtifact, round_dir: Path, inputs: RoundInputs,
+) -> tuple[str, list[str]]:
+    bindings = {
+        TAKES_THIS_ROUND: round_dir,
+        TAKES_THIS_BUNDLE: inputs.session_dir,
+        "<flow-state>": inputs.state_path,
+        "<applied-profile>": inputs.applied_profile_path,
+    }
+    missing = [token for token in spec.takes if token.startswith("<") and not bindings.get(token)]
+    tokens = [str(bindings.get(token) or token) for token in spec.takes]
+    return shlex.join([*shlex.split(spec.producer or f"{PROG} {view}"), *tokens]), missing
 
 
 def _cmd_inventory(args: argparse.Namespace) -> int:
@@ -72,16 +63,18 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
             else default_out(inputs, round_dir, spec.artifact)
         )
         stat = path.stat() if path.is_file() else None
-        produced_by = _runnable(view, spec, round_dir, inputs.session_dir)
+        produced_by, required_inputs = _runnable(view, spec, round_dir, inputs)
+        banked_index = view == "position-cycle" and inputs.banked
         artifacts.append({
             "artifact": spec.artifact,
             "path": str(path),
             "present": stat is not None,
             "bytes": None if stat is None else stat.st_size,
             "produced_by": produced_by,
-            # What is left in angle brackets after this round's own paths went
-            # in is what no inventory of ONE round can fill.
-            "producer_needs_more_than_this_round": "<" in produced_by,
+            "producer_needs_more_than_this_round": bool(required_inputs),
+            "required_inputs": required_inputs,
+            "next_command": None if banked_index else produced_by,
+            "repair_reason": "banked_pose_index_missing" if banked_index and stat is None else None,
         })
     bytes_total = sum(row["bytes"] or 0 for row in artifacts)
     payload = {
@@ -94,14 +87,19 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     written = _write(
         payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT)
     )
-    missing = [row["produced_by"] for row in artifacts if not row["present"]]
+    missing_rows = [row for row in artifacts if not row["present"]]
+    missing = [row["next_command"] for row in missing_rows if row["next_command"]]
     return answer(
-        args.command, out=written, present=len(artifacts) - len(missing),
+        args.command, out=written, present=len(artifacts) - len(missing_rows),
         total=len(artifacts), bytes_total=bytes_total, missing=missing,
+        unavailable_repairs=[
+            {"artifact": row["artifact"], "reason": row["repair_reason"]}
+            for row in missing_rows if row["next_command"] is None
+        ],
         frozen_packet=payload["frozen_packet"],
         latest_agent_note=payload["latest_agent_note"],
         line=(
-            f"inventory: {len(artifacts) - len(missing)}/{len(artifacts)} "
+            f"inventory: {len(artifacts) - len(missing_rows)}/{len(artifacts)} "
             f"artifact(s) present"
             + (f"; missing: {', '.join(missing)}" if missing else "")
             + (f" -> {written}" if written else "")

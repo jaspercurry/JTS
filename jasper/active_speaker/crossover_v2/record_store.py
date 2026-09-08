@@ -18,6 +18,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
+from jasper.active_speaker.restore_wait import resilient_restore
+
 from jasper.attribution.findings import FINDING_SET_SCHEMA
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID,
@@ -200,7 +202,7 @@ class BankedRecordStore:
         route = self._route(discriminator)
         relative = route.relative_path(self.capture_session_id, record)
         payload = self._payload(record, route, discriminator, measure)
-        await asyncio.to_thread(self._publish, relative, payload, route)
+        await resilient_restore(asyncio.to_thread(self._publish, relative, payload, route))
         return relative
 
     # --------------------------------------------------------------- internals

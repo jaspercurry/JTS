@@ -820,21 +820,68 @@ def test_an_unreadable_bundle_still_reports_and_says_which_half_failed(
     assert payload["next"] == ["jasper-seat-level --mic-serial '<mic serial>'"]
 
 
-def test_a_virgin_speaker_orients_with_no_session_dir_at_all(capsys):
-    """The runbook's step 1 (Orient) must run before any session exists:
-    ``session_dir`` is optional for ``status`` alone, so a virgin speaker with
-    nothing banked yet still gets a report naming the gap, not a usage error.
-    """
+def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     code, payload = _status([], capsys)
 
     assert code == cli.EXIT_OK
     assert payload["packet_fingerprint"] is None
-    assert payload["packet_error"]
+    assert payload["packet_error"] == "round_not_selected"
+    assert payload["selected_round"] is None
+    assert payload["recent_rounds"] == []
     assert payload["banked"]["available"] is False
     assert payload["banked"]["reason"] == payload["packet_error"]
     # Nothing to run against a speaker with no session: the page that runs one
     # is the handoff, and this verb never invents a command it cannot spell.
     assert payload["next"] == ["jasper-seat-level --mic-serial '<mic serial>'"]
+
+
+@pytest.mark.parametrize("count", [2, 35])
+def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
+    tmp_path, monkeypatch, capsys, count
+):
+    monkeypatch.chdir(tmp_path)
+    live_root = tmp_path / "session store 'one'"
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: live_root)
+    source, _ = _speaker_dirs(tmp_path / "source")
+    paths = []
+    for index in range(count):
+        banked = bool(index % 2)
+        root = tmp_path / "campaigns" if banked else live_root
+        path = root / f"round '{index}"
+        bundle = path / "bundle" / f"s{index}" if banked else path
+        shutil.copytree(source, bundle)
+        info_path = bundle / "info.json"
+        info = json.loads(info_path.read_text())
+        info.update(session_id=f"s{index}", started_at=index)
+        info_path.write_text(json.dumps(info))
+        paths.append((path, bundle))
+    before = _tree(tmp_path)
+
+    code, payload = _status([], capsys)
+
+    assert code == cli.EXIT_OK
+    assert payload["packet_error"] == "round_not_selected"
+    assert payload["packet_fingerprint"] is None
+    assert payload["selected_round"] is None
+    assert payload["banked"]["available"] is False
+    assert len(payload["recent_rounds"]) == min(count, 32)
+    for entry, (path, bundle) in zip(payload["recent_rounds"], reversed(paths), strict=False):
+        assert entry["path"] == str(path)
+        assert entry["bundle_session_dir"] == str(bundle)
+        status, inventory = map(shlex.split, entry["next"])
+        assert status == [cli.PROG, "status", str(path)]
+        assert inventory == ["jasper-round-views", "inventory", str(path)]
+    selected = shlex.split(payload["recent_rounds"][0]["next"][0])
+    assert cli.main(selected[1:]) == cli.EXIT_OK
+    current = json.loads(capsys.readouterr().out)
+    assert current["selected_round"] == str(paths[-1][0])
+    assert current["packet_fingerprint"]
+    assert current["packet_error"] is None
+    assert _tree(tmp_path) == before
+    inventory = shlex.split(payload["recent_rounds"][0]["next"][1])
+    assert round_views.main(inventory[1:]) == cli.EXIT_OK
+    detail = Path(json.loads(capsys.readouterr().out)["out"])
+    assert json.loads(detail.read_text())["round_dir"] == str(paths[-1][0])
 
 
 def test_a_missing_declaration_carries_the_reason_and_the_page_that_fixes_it(
@@ -1076,6 +1123,8 @@ _STATUS_DOCUMENT_KEYS = {
     "speaker",
     "packet_fingerprint",
     "packet_error",
+    "selected_round",
+    "recent_rounds",
     "frozen_packet",
     "latest_agent_note",
     "context_error",

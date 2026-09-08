@@ -10,7 +10,9 @@ strings, success/failure paths). The store-side semantics live in
 in `tests/test_wake_events.py`."""
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -81,10 +83,9 @@ async def _seed_events(store: WakeEventStore, ids_and_ts: list[tuple[str, str]])
             threshold=0.5,
             wake_model="jarvis_v2.onnx",
         )
-        store._conn.execute(  # noqa: SLF001
-            "UPDATE wake_events SET ts_utc = ? WHERE event_id = ?",
-            (ts, event_id),
-        )
+        await store.get_event(event_id)
+        with closing(sqlite3.connect(store._db_path, isolation_level=None)) as conn:
+            conn.execute("UPDATE wake_events SET ts_utc = ? WHERE event_id = ?", (ts, event_id))
 
 
 async def test_flag_tool_returns_success_with_canonical_spoken_response(

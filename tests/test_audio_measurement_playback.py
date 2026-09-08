@@ -1076,3 +1076,40 @@ async def test_both_aplay_spawns_carry_the_correction_lane_umask(
     # Value pinned too: a `umask=` present but wrong is the same silent
     # failure, so the kwarg's presence alone is not the claim.
     assert correction_lane.CORRECTION_PLAY_UMASK == 0o007
+
+
+@pytest.mark.parametrize("reaped", [True, False])
+async def test_wav_cancel_reports_observed_child_cleanup(tmp_path, monkeypatch, reaped):
+    started, stopped = asyncio.Event(), asyncio.Event()
+    wav = tmp_path / "stimulus.wav"
+    wav.write_bytes(b"RIFF")
+
+    class Process:
+        stderr = None
+        returncode = None
+
+        async def wait(self):
+            started.set()
+            await stopped.wait()
+            return self.returncode
+
+        def kill(self):
+            if reaped:
+                self.returncode = -9
+                stopped.set()
+
+    async def spawn(*args, **kwargs):
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(playback, "_PROCESS_CLEANUP_TIMEOUT_S", 0.01)
+    task = asyncio.create_task(playback.play_wav(wav, alsa_device="null", timeout_s=10))
+    await wait_signalled(started, "process wait() started", producer=task)
+    task.cancel()
+    with pytest.raises(playback.WavPlaybackCancelled) as error:
+        await task
+    assert error.value.observation.as_dict() == {
+        "emission": "possible", "failure_code": None,
+        "cleanup_state": "killed_and_reaped" if reaped else "kill_sent_reap_unconfirmed",
+        "returncode": -9 if reaped else None,
+    }

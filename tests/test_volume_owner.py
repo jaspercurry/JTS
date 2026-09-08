@@ -20,6 +20,8 @@ import logging
 
 import pytest
 
+from ._async_wait import wait_signalled
+
 from jasper.active_speaker.volume_latch import READBACK_TOLERANCE_DB
 from jasper.volume_owner import (
     ClaimKind,
@@ -850,6 +852,38 @@ async def test_a_relevel_that_cannot_be_established_keeps_the_claim():
     # The ORIGINAL handle survives, so the caller's own reference still works.
     await owner.release(claim)
     assert owner.declared_level_db() == HOUSEHOLD_DB
+
+
+@pytest.mark.parametrize("failure", ["cancel", "io"])
+async def test_interrupted_relevel_retains_the_callers_claim(failure):
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
+    fader.writes.clear()
+    entered = asyncio.Event()
+    original_set = fader.set
+
+    async def interrupted_set(db):
+        await original_set(db)
+        entered.set()
+        if failure == "io":
+            raise _DoorRaised()
+        await asyncio.Event().wait()
+
+    fader.set = interrupted_set
+    move = asyncio.create_task(owner.relevel(claim, -36.0))
+    await wait_signalled(entered, "relevel write entered", producer=move)
+    if failure == "cancel":
+        move.cancel()
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else _DoorRaised):
+        await move
+    assert owner.holds(claim)
+    assert owner.declared_level_db() == -24.0
+    assert fader.writes == [-36.0]
+    fader.set = original_set
+    await owner.release(claim)
+    assert not owner.holds_kind(ClaimKind.COMMISSIONING)
+    assert fader.db == HOUSEHOLD_DB
 
 
 @pytest.mark.parametrize(

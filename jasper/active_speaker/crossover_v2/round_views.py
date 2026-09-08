@@ -1614,11 +1614,10 @@ def audibility_co_metrics(
 def directivity_view(banked: BankedRound) -> DirectivityTable:
     """This round's cloud seats as departures from their on-axis reference.
 
-    Per graded band each seat's difference splits into a level offset (the
-    band's directivity index, which a trim can remove) and the shape residual
-    it cannot — the arithmetic is
-    :func:`~jasper.active_speaker.flat_spec_views.directivity_table`'s.
-    **Observed only: no grade moves.**
+    Each band's level difference and residual shape come from
+    :func:`~jasper.active_speaker.flat_spec_views.directivity_table`.
+    This is not sound-power DI; a shared trim leaves the difference unchanged.
+    Observed only: no grade moves.
 
     A round banked before the seat bearings were written still answers, as a
     table with ``angles_recorded`` false and every ``degrees`` ``None``:

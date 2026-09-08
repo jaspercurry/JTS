@@ -4,7 +4,7 @@
 
 """H2/H3 out of a banked round's MEASURE captures.
 
-* ``distortion <bundle-dir> --dumps <ring> --state <flow-state>`` — H2/H3
+* ``distortion <bundle-dir> --dumps <ring> --state <flow-state> --applied-profile <profile>`` — H2/H3
   out of a banked round's MEASURE captures, relative to the fundamental, at
   the drive each capture used. ``<bundle-dir>`` is a commissioning bundle,
   and its round is resolved by the rule the evidence packet's reader uses, so
@@ -89,10 +89,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     distortion.add_argument(
         "--state", type=Path, required=True,
         help=(
-            "THIS round's flow state; its gain_plan_db and candidate.program_id "
-            "rebuild the MEASURE program and prove it. That proof is "
-            "program-vs-STATE only: a state from a DIFFERENT round than "
-            "bundle_dir reads the drive wrong with no refusal"
+            "matching capture state used to prove the MEASURE program; capture, "
+            "program and WAV identities must agree. Legacy drive may remain unknown"
         ),
     )
     distortion.add_argument(

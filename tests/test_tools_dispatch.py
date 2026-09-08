@@ -110,7 +110,7 @@ async def test_dispatch_observer_sees_registered_call_start_and_completion():
         events.append((stage, name))
 
     reg = _registry(echo)
-    reg.set_dispatch_observer(observe)
+    reg.set_dispatch_observer(lambda: observe)
 
     assert await dispatch_tool(reg, "echo", {"x": "hi"}) == {"got": "hi"}
     assert events == [("called", "echo"), ("completed", "echo")]
@@ -127,7 +127,7 @@ async def test_dispatch_observer_completion_includes_tool_error_payloads():
         events.append((stage, name))
 
     reg = _registry(boom)
-    reg.set_dispatch_observer(observe)
+    reg.set_dispatch_observer(lambda: observe)
 
     assert await dispatch_tool(reg, "boom", {}) == {"error": "kaboom"}
     assert events == [("called", "boom"), ("completed", "boom")]
@@ -140,7 +140,7 @@ async def test_dispatch_observer_ignores_unknown_tool_names():
         events.append((stage, name))
 
     reg = ToolRegistry()
-    reg.set_dispatch_observer(observe)
+    reg.set_dispatch_observer(lambda: observe)
 
     assert await dispatch_tool(reg, "nope", {}) == {"error": "unknown tool nope"}
     assert events == []
@@ -155,7 +155,7 @@ async def test_dispatch_observer_failure_does_not_block_tool():
         raise OSError("telemetry disk unavailable")
 
     reg = _registry(echo)
-    reg.set_dispatch_observer(broken_observer)
+    reg.set_dispatch_observer(lambda: broken_observer)
 
     assert await dispatch_tool(reg, "echo", {}) == {"ok": True}
 
@@ -172,7 +172,7 @@ async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch):
 
     monkeypatch.setattr(tools_module, "_DISPATCH_OBSERVER_TIMEOUT_SEC", 0.01)
     reg = _registry(echo)
-    reg.set_dispatch_observer(stuck_observer)
+    reg.set_dispatch_observer(lambda: stuck_observer)
 
     result = await asyncio.wait_for(
         dispatch_tool(reg, "echo", {}),
@@ -204,7 +204,7 @@ async def test_timeout_returns_error_and_respects_per_tool_budget():
     async def observe(stage: str, name: str) -> None:
         events.append((stage, name))
 
-    reg.set_dispatch_observer(observe)
+    reg.set_dispatch_observer(lambda: observe)
     # The tool's own 10ms budget must apply (not the 12s default), so this
     # resolves promptly into the speakable timeout error rather than
     # hanging the session.

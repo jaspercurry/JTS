@@ -143,3 +143,41 @@ def test_level_match_provisional_deduped_from_snapshot_setup(
     })
     # Tracks the snapshot's baseline_profile, despite the on-disk file being absent.
     assert payload["level_match_provisional"] is True
+
+
+async def test_state_publishes_wake_storage_and_turn_identity(monkeypatch, tmp_path):
+    from jasper.control import state_aggregate as sa
+    from tests._wake_loop import wake_loop_for_tests
+    from jasper.wake_events import WakeEventStore
+
+    store = WakeEventStore(tmp_path / "wake-events")
+    store.open()
+    wl = wake_loop_for_tests(wake_event_store=store)
+    wl._anchor_turn_timeline()
+    status = wl.session_status()
+    async def no_status(*_args, **_kwargs):
+        return None
+    async def voice_status(*_args, **_kwargs):
+        return status
+    async def camilla_status(**_kwargs):
+        return {key: None for key in (
+            "main_volume_db", "playback_rms_dbfs", "playback_peak_dbfs",
+            "clipped_samples", "active_config_path",
+        )}
+    monkeypatch.setattr(sa, "_camilla_status", camilla_status)
+    monkeypatch.setattr(sa, "_read_tool_catalog", lambda: {})
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
+    try:
+        state = await sa._get_state(
+            camilla_host="127.0.0.1", camilla_port=1234, voice_socket_path="/unused",
+            voice_socket_command=voice_status, mux_socket_command=no_status,
+            local_status_json=no_status, aec_full_status=lambda: {},
+            read_transit_state_func=lambda: {"packs": []},
+            ha_status_snapshot=lambda: {"configured": False, "connected": False},
+            airplay_playing_snapshot=lambda: None,
+        )
+        assert state["voice"]["wake_event_store"] == status["wake_event_store"]
+        assert state["voice"]["turn_event_id"] == status["turn_event_id"]
+    finally:
+        await store.aclose()

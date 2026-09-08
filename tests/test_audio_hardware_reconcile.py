@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -1047,6 +1048,84 @@ def test_print_env_recognizes_dac8x_studio_role(tmp_path: Path):
     assert "OUTPUT_DAC_CARD=DAC8XStudio" in result.stdout
     assert "OUTPUT_DAC_ID=hifiberry_dac8x_studio" in result.stdout
     assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
+
+
+def _parse_print_env(stdout: str) -> dict[str, str]:
+    """Parse `--print-env`'s `KEY=value` lines, unquoting each value the way
+    a `bash eval` of install.sh's consumer would (deploy/install.sh:893)."""
+    parsed: dict[str, str] = {}
+    for line in stdout.splitlines():
+        key, _, raw_value = line.partition("=")
+        tokens = shlex.split(raw_value)
+        parsed[key] = tokens[0] if tokens else ""
+    return parsed
+
+
+@pytest.mark.parametrize(
+    ("listing", "expected"),
+    [
+        pytest.param(
+            DAC8X_AND_APPLE_LISTING,
+            {
+                "DONGLE_CARD": "A",
+                "APPLE_DONGLE_PRESENT": "1",
+                "APPLE_DONGLE_SERVICE_CARD": "auto",
+                "OUTPUT_DAC_CARD": "sndrpihifiberry",
+                "OUTPUT_DAC_ID": "hifiberry_dac8x",
+                "OUTPUT_DAC_RECOGNIZED": "1",
+            },
+            id="recognized-dac8x-with-apple-control",
+        ),
+        pytest.param(
+            APPLE_LISTING,
+            {
+                "DONGLE_CARD": "A",
+                "APPLE_DONGLE_PRESENT": "1",
+                "APPLE_DONGLE_SERVICE_CARD": "auto",
+                "OUTPUT_DAC_CARD": "A",
+                "OUTPUT_DAC_ID": "apple_usb_c_dongle",
+                "OUTPUT_DAC_RECOGNIZED": "1",
+            },
+            id="apple-dongle-as-output",
+        ),
+        pytest.param(
+            "",
+            {
+                "DONGLE_CARD": "A",
+                "APPLE_DONGLE_PRESENT": "0",
+                "APPLE_DONGLE_SERVICE_CARD": "auto",
+                "OUTPUT_DAC_CARD": "A",
+                "OUTPUT_DAC_ID": "unknown",
+                "OUTPUT_DAC_RECOGNIZED": "0",
+            },
+            id="no-dac-unrecognized",
+        ),
+        pytest.param(
+            DAC8X_STUDIO_LISTING,
+            {
+                "DONGLE_CARD": "A",
+                "APPLE_DONGLE_PRESENT": "0",
+                "APPLE_DONGLE_SERVICE_CARD": "auto",
+                "OUTPUT_DAC_CARD": "DAC8XStudio",
+                "OUTPUT_DAC_ID": "hifiberry_dac8x_studio",
+                "OUTPUT_DAC_RECOGNIZED": "1",
+            },
+            id="hifiberry-dac8x-studio",
+        ),
+    ],
+)
+def test_print_env_pins_the_install_contract(
+    tmp_path: Path, listing: str, expected: dict[str, str]
+):
+    """`--print-env` is install.sh's contract with this script (install.sh:893
+    evals it and exports every key; deploy/lib/install/systemd-units.sh:1331,
+    1650 call it too). #4478 ports this script to Python -- pin the exact key
+    set and values here so that port cannot silently change this surface."""
+    result = _run_reconcile(tmp_path, listing, "--print-env")
+
+    assert result.returncode == 0, result.stderr
+    assert _parse_print_env(result.stdout) == expected
+    assert result.stdout.count("\n") == len(expected)
 
 
 def test_reconcile_innomaker_uses_registry_identity_and_renders_raw_hw(

@@ -942,7 +942,7 @@ async def run() -> None:
                 max_audio_bytes=cfg.wake_events_max_audio_bytes,
             )
             wake_event_store.open()
-            _release(stack, "wake_events", wake_event_store.close)
+            _arelease(stack, "wake_events", wake_event_store.aclose)
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "wake_events: failed to open store at %s: %s "
@@ -1249,12 +1249,8 @@ async def run() -> None:
             manual_mics=manual_mics,
         )
         _release(stack, "wake_loop", wake_loop.close_conversation_store)
-        # Host-compose the wake funnel at the single cross-provider
-        # dispatch seam. Tool implementations and provider adapters stay
-        # unaware of WakeLoop / SQLite; the narrow observer records only
-        # registered call start/completion while a wake event is active.
         registry.set_dispatch_observer(
-            wake_loop.record_tool_dispatch_stage,
+            wake_loop.bind_tool_dispatch,
         )
         _release(
             stack, "dispatch_observer", registry.set_dispatch_observer, None,

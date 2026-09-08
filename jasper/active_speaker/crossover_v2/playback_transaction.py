@@ -14,9 +14,12 @@ ADR-0228 #8). Stage vocabulary is engine-internal, never reaching a front end.
 
 from __future__ import annotations
 
+import asyncio
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
+
+from jasper.audio_measurement.playback import PlaybackObservation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .measure_spec import MeasureSpec
@@ -83,6 +86,7 @@ class PlaybackOutcome:
     stage_reached: str
     incident: str = ""
     wav_path: str = ""
+    playback: PlaybackObservation = field(default_factory=PlaybackObservation)
 
     def __post_init__(self) -> None:
         if self.stage_reached not in _STAGE_RANK:
@@ -100,6 +104,13 @@ class PlaybackOutcome:
     def played(self) -> bool:
         """Did the stimulus actually play? True exactly when ``play`` completed."""
         return _STAGE_RANK[self.stage_reached] >= _PLAY_RANK
+
+
+class PlaybackInterrupted(asyncio.CancelledError):
+    def __init__(self, playback: PlaybackObservation, *, wav_path: str = "") -> None:
+        super().__init__()
+        self.playback = playback
+        self.wav_path = wav_path
 
 
 class PlaybackTransaction(Protocol):

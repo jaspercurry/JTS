@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -22,6 +22,7 @@ from .audio_io import (
 )
 from .wake_events import (
     WakeEventStore,
+    make_event_id,
     CAPTURE_PRE_SEC,
     CAPTURE_POST_SEC,
 )
@@ -257,11 +258,10 @@ SPEECH_RUN_PEAK_MIN = 0.60
 # wake-tail 0.15 — bleed false-positives are the failure mode here.
 BARGE_IN_SUSTAINED_SPEECH_SEC = SUSTAINED_SPEECH_TO_ARM_SEC
 
-# Per-turn latency stages, in the order they occur. Each becomes a
-# `<stage>_ms` delta from the turn anchor in `event=turn.timeline` and in
-# `/state.voice.last_turn_ms`; a stage that did not happen is absent.
+# Published latency stages; absent stages remain absent.
 _TURN_TIMELINE_STAGES = (
-    "cue",
+    "cue_attempt",
+    "cue_accepted",
     "first_audio_to_provider",
     "speech_end",
     "end_input",
@@ -659,7 +659,6 @@ class WakeLoop:
     ) -> None:
         self._assistant_output = AssistantOutput(
             cfg, tts, ducker, cues, volume_coordinator,
-            stamp_stage=self._stamp_turn_stage,
         )
         # Per-pack tool-registration outcomes, already serialized to the
         # /state.voice.tool_packs wire shape by outcomes_to_state. Opaque
@@ -821,6 +820,7 @@ class WakeLoop:
         # Per-turn latency timeline: stage -> time.monotonic(). Reset at
         # turn start; rendered as integer-ms deltas from `_turn_anchor`.
         self._turn_timeline: dict[str, float] = {}
+        self._turn_event_id: str | None = None
         self._turn_anchor: float = 0.0
         self._turn_anchor_kind: str = "manual"
         self._last_turn_ms: dict[str, object] = {}
@@ -1422,8 +1422,12 @@ class WakeLoop:
     async def _play_mute_click(self, *, going_on: bool) -> None:
         await self._assistant_output.play_mute_click(going_on=going_on)
 
-    async def _play_listening_chirp(self, *, going_on: bool) -> None:
-        await self._assistant_output.listening_chirp(going_on=going_on)
+    def _play_listening_chirp(self, *, going_on: bool) -> Coroutine[object, object, None]:
+        return self._assistant_output.listening_chirp(
+            going_on=going_on,
+            on_attempt=self._turn_observer("cue_attempt") if going_on else None,
+            on_first_write=self._turn_observer("cue_accepted") if going_on else None,
+        )
 
     async def _prepare_assistant_loudness_context(self) -> None:
         await self._assistant_output.prepare_loudness()
@@ -1574,6 +1578,7 @@ class WakeLoop:
                     fired_set.add(_name)
             fired_legs = ",".join(sorted(fired_set))
 
+        self._wake_event_at_monotonic = time.monotonic()
         # Reset ALL detectors after a wake fires. openWakeWord's
         # prediction smoothing keeps recent-activation state across
         # calls; without resetting, the post-fire baseline stays
@@ -1583,7 +1588,6 @@ class WakeLoop:
         for _other in self._legs.values():
             _other.detector.reset()
 
-        self._wake_event_at_monotonic = time.monotonic()
         self._frozen_pre_roll = tuple(self._pre_roll)
         self._acquire_input_epoch = self._input_admit_after
         self._acquiring = True
@@ -1697,19 +1701,23 @@ class WakeLoop:
             return None
         return _frame_rms_dbfs(ring[-1])
 
-    async def record_tool_dispatch_stage(self, stage: str, name: str) -> None:
-        """Shared-dispatch-observer seam: `daemon_main` binds this method
-        into the tool registry, so it stays on the loop."""
-        await self._wake_telemetry.record_tool_dispatch_stage(stage, name)
+    def bind_tool_dispatch(self) -> Callable[[str, str], Awaitable[None]]:
+        return self._wake_telemetry.bind_tool_dispatch()
 
-    async def _record_response_started(self) -> None:
-        """Record the first provider-neutral assistant-audio boundary."""
-        self._stamp_turn_stage("first_response")
-        await self._wake_telemetry.stage("response_started")
+    def _turn_observer(
+        self, stage: str, *, event_stage: str | None = None,
+    ) -> Callable[[], Awaitable[None]]:
+        timeline, anchor = self._turn_timeline, self._turn_anchor
+        event_id = self._turn_event_id
 
-    async def _record_first_write(self) -> None:
-        """Record the first assistant PCM the playout socket accepted."""
-        self._stamp_turn_stage("first_write")
+        async def observe() -> None:
+            if timeline is not self._turn_timeline or not anchor or anchor != self._turn_anchor:
+                return
+            self._stamp_turn_stage(stage)
+            if event_stage is not None and event_id is not None:
+                await self._wake_telemetry.stage(event_stage, event_id=event_id)
+
+        return observe
 
     async def _arbitrate_acquire_drain(
         self,
@@ -2326,18 +2334,11 @@ class WakeLoop:
         return "OK"
 
     def _anchor_turn_timeline(self, anchor_at: float = 0.0) -> None:
-        """Open a fresh per-turn timeline.
-
-        `anchor_at` is the wake fire that opened this turn, so every
-        `turn.timeline` delta counts from the moment the household was
-        heard. It is passed in rather than read off `_wake_event_at_monotonic`
-        because a wake that fires and then opens no turn (late cancel, lost
-        arbitration, spend cap, paused connection) leaves that field set:
-        the next push-to-talk or research turn would inherit it and report a
-        multi-minute turn. 0.0 means "no wake opened this turn" — anchor on
-        now and say so.
-        """
+        """Wake turns use fire time; manual turns start their own clock."""
         self._turn_timeline = {}
+        self._turn_event_id = (
+            self._wake_telemetry.current_event_id if anchor_at else None
+        ) or make_event_id()
         self._turn_anchor = anchor_at or time.monotonic()
         self._turn_anchor_kind = "wake" if anchor_at else "manual"
 
@@ -2369,22 +2370,14 @@ class WakeLoop:
         return deltas
 
     def _emit_turn_timeline(self, outcome: str) -> None:
-        """Publish this turn's ledger and close the timeline.
-
-        Every line carries `outcome=` so a journal reader can filter; a turn
-        that died on the way into the session emits one too — it had already
-        ducked the music and chirped. `/state.voice.last_turn_ms` keeps only
-        `complete` turns: it is read as "how long a turn takes", and an
-        aborted one's stages are a truncated ruler. Closing the timeline
-        keeps teardown stages (the off-chirp, the teardown end_input) out of
-        the next turn, so it happens even if the log write raises.
-        """
+        """Publish complete turns to status; close every timeline before teardown."""
         timeline = self._turn_timeline_ms()
         try:
             if timeline:
                 log_event(
                     logger,
                     "turn.timeline",
+                    event_id=self._turn_event_id,
                     anchor=self._turn_anchor_kind,
                     endpointer=self._endpointer_label(),
                     outcome=outcome,
@@ -2392,6 +2385,7 @@ class WakeLoop:
                 )
                 if outcome == "complete":
                     self._last_turn_ms = {
+                        "event_id": self._turn_event_id,
                         "anchor": self._turn_anchor_kind,
                         "outcome": outcome,
                         **timeline,
@@ -2484,6 +2478,10 @@ class WakeLoop:
             # (`anchor` says what ms 0 is). Same not-cleared-at-turn-end
             # shape as `endpointer`; `{}` until this daemon served a turn.
             "last_turn_ms": dict(self._last_turn_ms),
+            "turn_event_id": self._turn_event_id if self._turn_anchor else None,
+            "wake_event_store": (
+                self._wake_telemetry.store.status() if self._wake_telemetry.store else None
+            ),
             "music_dbfs": (
                 round(self._content_activity.music_dbfs, 1)
                 if self._content_activity.music_dbfs is not None else None
@@ -2562,6 +2560,7 @@ class WakeLoop:
     ) -> None:
         acquiring_at_begin = self._acquiring
         completed = False
+        self._anchor_turn_timeline(anchor_at)
         try:
             if acquiring_at_begin:
                 self._check_input_admission(self._acquire_input_epoch)
@@ -2627,9 +2626,6 @@ class WakeLoop:
         pre_roll_frames = (
             tuple(self._pre_roll) if self._frozen_pre_roll is None else self._frozen_pre_roll
         ) if pre_roll else ()
-        # Anchored before the first await so the fire-and-forget listening
-        # chirp cannot stamp its cue into the previous turn's timeline.
-        self._anchor_turn_timeline(anchor_at)
         await self._begin_turn_output_episode()
         t_begin = time.monotonic()
         # sched_lag is wake→picked-up-by-the-loop; a turn no wake opened has
@@ -2713,8 +2709,8 @@ class WakeLoop:
         playback = asyncio.create_task(
             play_responses(
                 self._turn, self._tts, barge_in_enabled=self._barge_in_active,
-                on_response_started=self._record_response_started,
-                on_first_write=self._record_first_write,
+                on_response_started=self._turn_observer("first_response", event_stage="response_started"),
+                on_first_write=self._turn_observer("first_write"),
             )
         )
         idle = asyncio.create_task(

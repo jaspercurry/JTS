@@ -1541,3 +1541,77 @@ async def test_a_banked_inverted_record_says_which_branch_was_flipped():
     )
     assert normal["graph_fingerprint"] != flipped["graph_fingerprint"]
     assert normal["kind"] == flipped["kind"], "same kind, different polarity"
+
+
+@pytest.mark.parametrize("blocked", ["finish", "place", "enrich", "publish", "after_bank"])
+async def test_cancel_settles_post_play_workers_and_counts_the_record(tmp_path, monkeypatch, blocked):
+    import threading
+    from types import SimpleNamespace
+    from jasper.active_speaker.crossover_v2 import program_transaction as transaction
+    from jasper.active_speaker.crossover_v2.wired_stimulus import (
+        CapturedRecordStore, WiredCaptureAnswer, WiredStimulusCapture,
+    )
+
+    reached, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    finished = []
+
+    def work(stage):
+        if stage == blocked:
+            loop.call_soon_threadsafe(reached.set)
+            assert release.wait(5)
+        finished.append(stage)
+
+    class Recorder:
+        def start(self):
+            pass
+
+        def finish(self, **kwargs):
+            work("finish")
+
+        def abort(self):
+            raise AssertionError("completed playback was aborted")
+
+    def place(*args):
+        work("place")
+        return WiredCaptureAnswer(wav=b"capture", wav_path="capture.wav")
+
+    class Records(_Records):
+        async def bank(self, record):
+            await asyncio.to_thread(work, "publish")
+            return await super().bank(record)
+
+    async def play(*args, **kwargs):
+        return SimpleNamespace(playback=SimpleNamespace(cleanup_state="not_needed", returncode=0))
+
+    monkeypatch.setattr(transaction, "play_program", play)
+    monkeypatch.setattr(WiredStimulusCapture, "_mint_and_place", place)
+    capture = WiredStimulusCapture(None, tmp_path, recorder_factory=lambda *_: Recorder())
+    records = CapturedRecordStore(
+        Records(), capture, enrich=lambda *_: work("enrich") or {},
+        after_bank=lambda *_: work("after_bank"),
+    )
+    program = SimpleNamespace(sample_rate_hz=48000, total_samples=48000, phase="measure")
+    playing = transaction.ProgramPlaybackTransaction(
+        compose=lambda **_: transaction.ProgramForStimulus(program, {}),
+        session_volume_plan=None, capture=capture,
+    )
+    session, _ = _session(play=playing, records=records)
+    await session.open()
+    task = asyncio.create_task(session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE)))
+    try:
+        await asyncio.wait_for(reached.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished == ["finish", "place", "enrich", "publish", "after_bank"]
+    assert session.banked_record_ids == ("rec-1",)
+    assert records.inner.banked[0]["wav_path"] == "capture.wav"
+    assert capture.take_answer() is None
+    await session.close()

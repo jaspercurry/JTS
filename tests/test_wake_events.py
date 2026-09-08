@@ -24,6 +24,7 @@ alone.
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 import sqlite3
 import wave
 from datetime import datetime, timezone
@@ -76,20 +77,7 @@ def test_make_event_id_is_sortable():
     `ls` in the wake-events dir stays chronological."""
     early = datetime(2026, 5, 22, 14, 30, 11, tzinfo=timezone.utc)
     late = datetime(2026, 5, 22, 14, 30, 12, tzinfo=timezone.utc)
-    assert make_event_id(early, 1) < make_event_id(late, 1)
-    assert make_event_id(early, 1) < make_event_id(early, 2)
-
-
-def test_make_event_id_pads_sequence_to_three_digits():
-    """Burst-of-N-in-one-second handling: seq 1..999 all sort
-    correctly inside a one-second bucket."""
-    now = datetime(2026, 5, 22, 14, 30, 11, tzinfo=timezone.utc)
-    assert make_event_id(now, 1).endswith("-001")
-    assert make_event_id(now, 42).endswith("-042")
-    # Strict ordering 9 < 10 < 100 holds because of zero-padding.
-    assert make_event_id(now, 9) < make_event_id(now, 10) < make_event_id(now, 100)
-
-
+    assert make_event_id(early) < make_event_id(late)
 # ---------------------------------------------------------------------------
 # Schema migration / lifecycle
 # ---------------------------------------------------------------------------
@@ -556,6 +544,7 @@ async def test_retention_deletes_oldest_when_over_cap(tmp_path: Path):
             await s.attach_audio(
                 event_id=eid, audio_on=_pcm(1.0), audio_off=None,
             )
+        await s.get_event(eid)
         wavs = sorted(tmp_path.glob("*.wav"))
         # Cap should leave at most 3 WAV files (older deleted oldest-first)
         assert 2 <= len(wavs) <= 3
@@ -727,16 +716,17 @@ def test_schema_migration_adds_columns_to_existing_db(tmp_path: Path):
     # idempotently, preserving the legacy row.
     s = WakeEventStore(tmp_path)
     s.open()
+    conn = sqlite3.connect(db_path)
     try:
         # Legacy row survives with the new columns set to NULL
-        cur = s._conn.execute(  # type: ignore[union-attr]
+        cur = conn.execute(
             "SELECT event_id, mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off "
             "FROM wake_events WHERE event_id='legacy-1'"
         )
         row = cur.fetchone()
         assert row == ("legacy-1", None, None, None)
         # New columns are now in the table schema
-        cur = s._conn.execute(  # type: ignore[union-attr]
+        cur = conn.execute(
             "PRAGMA table_info(wake_events)"
         )
         cols = {r[1] for r in cur.fetchall()}
@@ -745,6 +735,8 @@ def test_schema_migration_adds_columns_to_existing_db(tmp_path: Path):
         assert "mic_rms_dbfs_off" in cols
     finally:
         s.close()
+
+    conn.close()
 
     # Calling open() again is still idempotent (no duplicate-column
     # error from running ALTER TABLE a second time).
@@ -795,20 +787,22 @@ def test_schema_migration_adds_chip_aec_columns_to_existing_db(tmp_path: Path):
     ]
     s = WakeEventStore(tmp_path)
     s.open()
+    conn = sqlite3.connect(db_path)
     try:
-        cur = s._conn.execute(  # type: ignore[union-attr]
+        cur = conn.execute(
             "PRAGMA table_info(wake_events)"
         )
         cols = {r[1] for r in cur.fetchall()}
         for c in chip_cols:
             assert c in cols, f"migration did not add {c}"
         # Pre-existing row survives, all chip columns NULL.
-        cur = s._conn.execute(  # type: ignore[union-attr]
+        cur = conn.execute(
             f"SELECT {', '.join(chip_cols)} FROM wake_events "
             "WHERE event_id='legacy-pre-chip'"
         )
         assert cur.fetchone() == (None,) * len(chip_cols)
     finally:
+        conn.close()
         s.close()
 
 
@@ -947,13 +941,9 @@ async def _seed_event(
         wake_model="jarvis_v2.onnx",
     )
     if ts_utc is not None:
-        # The store's connection is the only writer in tests; no
-        # concurrent record_flag during seeding, so a direct UPDATE
-        # is safe. (Production callers never set ts_utc.)
-        store._conn.execute(  # noqa: SLF001
-            "UPDATE wake_events SET ts_utc = ? WHERE event_id = ?",
-            (ts_utc, event_id),
-        )
+        await store.get_event(event_id)
+        with closing(sqlite3.connect(store._db_path, isolation_level=None)) as conn:
+            conn.execute("UPDATE wake_events SET ts_utc = ? WHERE event_id = ?", (ts_utc, event_id))
 
 
 async def test_record_flag_returns_none_when_only_in_flight_event_exists(
@@ -1078,32 +1068,6 @@ async def test_record_flag_reason_with_pipe_character_preserved(
 # ---------------------------------------------------------------------------
 
 
-async def test_attach_audio_file_io_runs_off_loop(store: WakeEventStore, monkeypatch):
-    """The WAV writes + the sweep's scan must go through
-    asyncio.to_thread — synchronous SD-card I/O on the loop glitches
-    the mic loop sharing it."""
-    offloaded: list[str] = []
-    real_to_thread = asyncio.to_thread
-
-    async def recording_to_thread(fn, *args, **kwargs):
-        offloaded.append(getattr(fn, "__name__", str(fn)))
-        return await real_to_thread(fn, *args, **kwargs)
-
-    monkeypatch.setattr(asyncio, "to_thread", recording_to_thread)
-    await store.begin_event(
-        event_id="evt-off-loop", trigger_kind="fire_aec_on",
-        peak_score_aec_on=0.9, peak_score_aec_off=None,
-        threshold=0.5, wake_model="jarvis_v2.onnx",
-    )
-    await store.attach_audio(
-        event_id="evt-off-loop", audio_on=_pcm(0.1), audio_off=_pcm(0.1),
-    )
-    assert "_write_wavs_blocking" in offloaded
-    assert "_scan_and_prune_blocking" in offloaded  # first sweep seeds estimate
-    row = await store.get_event("evt-off-loop")
-    assert row["audio_on_path"] == "evt-off-loop.aec-on.wav"
-
-
 async def test_retention_under_cap_skips_directory_scan_after_seed(
     store: WakeEventStore, monkeypatch,
 ):
@@ -1118,6 +1082,7 @@ async def test_retention_under_cap_skips_directory_scan_after_seed(
             threshold=0.5, wake_model="jarvis_v2.onnx",
         )
         await store.attach_audio(event_id=eid, audio_on=_pcm(0.1), audio_off=None)
+        await store.get_event(eid)
 
     await _attach("evt-seed")  # seeds the estimate via one full scan
     assert store._audio_bytes_estimate is not None
@@ -1151,6 +1116,7 @@ async def test_retention_estimate_reseeds_from_scan_on_prune(tmp_path: Path):
                 threshold=0.5, wake_model="jarvis_v2.onnx",
             )
             await s.attach_audio(event_id=eid, audio_on=_pcm(1.0), audio_off=None)
+        await s.get_event(eid)
         on_disk = sum(p.stat().st_size for p in tmp_path.glob("*.wav"))
         assert on_disk <= 100_000
         assert s._audio_bytes_estimate == on_disk
@@ -1158,43 +1124,163 @@ async def test_retention_estimate_reseeds_from_scan_on_prune(tmp_path: Path):
         s.close()
 
 
-async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
-    """Two attach-driven sweeps overlapping must run the blocking
-    stat-walk once — the second caller skips while one is in flight
-    (the in-flight sweep re-seeds the estimate)."""
-    store = WakeEventStore(tmp_path / "we", max_audio_bytes=1)
-    store.open()
-    calls = 0
-    started = asyncio.Event()
-    release = asyncio.Event()
-    # Captured here, in the test's own async body, rather than reaching into
-    # asyncio.Event's private lazily-bound `_loop` from the background
-    # thread below. `_loop` is only bound once wait()'s prologue actually
-    # runs, and wait_signalled's asyncio.wait_for wraps that wait in a Task
-    # on Python 3.11 (ensure_future adds a scheduling tick) -- the
-    # background thread can start and reach for `started._loop` before that
-    # Task gets its first turn, reading None. Capturing the loop explicitly
-    # up front makes this immune to that ordering regardless of how the
-    # test body awaits `started`. Same idiom as FakeProc in
-    # tests/test_web_sync_flow.py.
+
+
+async def test_locked_sqlite_does_not_delay_audio_or_freeze_late_values(store, monkeypatch):
+    import json
+    import threading
+    from jasper import wake_events
+
     loop = asyncio.get_running_loop()
+    write_started = asyncio.Event()
+    completed = threading.Event()
+    execute = store._execute
 
-    def slow_scan():
-        nonlocal calls
-        calls += 1
+    def held_write(sql, params):
+        loop.call_soon_threadsafe(write_started.set)
+        try:
+            execute(sql, params)
+        finally:
+            completed.set()
+
+    await store._result(store._execute, "PRAGMA busy_timeout=5000", ())
+    monkeypatch.setattr(store, "_execute", held_write)
+    now = "2026-09-08T12:00:00.001+00:00"
+    monkeypatch.setattr(wake_events, "_now_iso", lambda: now)
+    with closing(sqlite3.connect(store._db_path, isolation_level=None)) as lock:
+        lock.execute("BEGIN IMMEDIATE")
+        config = {"levels": [1]}
+        try:
+            assert await store.begin_event(
+                event_id="locked", trigger_kind="fire_aec_on", peak_score_aec_on=0.9,
+                peak_score_aec_off=None, threshold=0.5, wake_model="test", bridge_config=config,
+            )
+            await wait_signalled(write_started, "SQLite write started")
+            config["levels"].append(2)
+            assert await store.update_stage("locked", "response_started")
+            now = "2026-09-08T12:00:59.999+00:00"
+            audio_ran = asyncio.Event()
+            loop.call_soon(audio_ran.set)
+            await wait_signalled(audio_ran, "scheduled audio ran with SQLite locked")
+            assert not completed.is_set()
+        finally:
+            lock.execute("ROLLBACK")
+    row = await store.get_event("locked")
+    assert row["ts_utc"] == row["ts_response_started"] == "2026-09-08T12:00:00.001+00:00"
+    assert json.loads(row["bridge_config_json"]) == {"levels": [1]}
+
+
+@pytest.mark.parametrize("limit", ["count", "bytes"])
+async def test_pressure_is_bounded_and_shutdown_finishes_owned_work(store, monkeypatch, limit):
+    import threading
+
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    write_wavs = store._write_wavs_blocking
+
+    def held_wavs(files):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(5)
+        return write_wavs(files)
+
+    monkeypatch.setattr(store, "_write_wavs_blocking", held_wavs)
+    await _seed_event(store, "bounded")
+    pcm = bytearray(_pcm(6))
+    assert await store.attach_audio(event_id="bounded", audio_on=pcm, audio_off=None)
+    await wait_signalled(entered, "WAV write held")
+    pcm[:] = b"\x01" * len(pcm)
+    accepted = 0
+    closing_task = None
+    try:
+        for i in range(100):
+            if limit == "bytes":
+                accepted += await store.attach_audio(
+                    event_id="bounded", audio_on=_pcm(6), audio_off=_pcm(6),
+                    audio_dtln=_pcm(6), audio_chip_aec_150=_pcm(6), audio_chip_aec_210=_pcm(6),
+                )
+            else:
+                accepted += await store.update_stage("bounded", "turn_opened", ts=str(i))
+        status = store.status()
+        assert status["pending_work"] == accepted + 1
+        assert status["pending_work"] <= status["max_pending_work"]
+        assert status["pending_bytes"] <= status["max_pending_bytes"]
+        assert status["discarded_work"] == 100 - accepted > 0
+        closing_task = asyncio.create_task(store.aclose())
+        await asyncio.sleep(0)
+        closing_task.cancel()
+        await asyncio.sleep(0)
+        assert not closing_task.done()
+        with pytest.raises(RuntimeError):
+            await store.update_stage("bounded", "turn_complete")
+    finally:
+        release.set()
+        if closing_task is not None:
+            with pytest.raises(asyncio.CancelledError):
+                await closing_task
+        else:
+            await store.aclose()
+    assert store.status()["pending_work"] == store.status()["pending_bytes"] == 0
+    assert store.status()["write_errors"] == 0
+    if limit == "count":
+        with closing(sqlite3.connect(store._db_path)) as reader:
+            assert reader.execute("SELECT ts_turn_opened FROM wake_events").fetchone() == (str(accepted - 1),)
+        with wave.open(str(store._base_dir / "bounded.aec-on.wav")) as wav:
+            assert wav.readframes(wav.getnframes()) == _pcm(6)
+
+
+async def test_store_errors_are_visible_and_flag_writes_are_atomic(store, monkeypatch):
+    await _seed_event(store, "prior")
+    await _seed_event(store, "current")
+    await store.begin_event(
+        event_id="current", trigger_kind="fire_aec_on", peak_score_aec_on=0.9,
+        peak_score_aec_off=None, threshold=0.5, wake_model="test",
+    )
+    await store.get_event("current")
+    assert store.status()["write_errors"] == 1
+    assert store.status()["last_error"] == "IntegrityError"
+    # A failed second flag write must roll back the first label write.
+    execute = store._execute
+    def fail_second(sql, params):
+        if "flag_action" in sql:
+            raise OSError()
+        execute(sql, params)
+    monkeypatch.setattr(store, "_execute", fail_second)
+    with pytest.raises(OSError):
+        await store.record_flag("failure")
+    assert (await store.get_event("prior"))["label"] is None
+    assert (await store.get_event("current"))["label"] is None
+    monkeypatch.setattr(store, "_execute", execute)
+    assert (await store.record_flag("success"))["flagged_event_id"] == "prior"
+
+
+@pytest.mark.parametrize("operation", ["get_event", "record_flag"])
+async def test_cancelled_result_does_not_stop_ordered_storage_work(store, monkeypatch, operation):
+    import threading
+
+    await _seed_event(store, "prior")
+    await _seed_event(store, "current")
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    real = getattr(store, "_" + operation)
+    def held(arg):
         loop.call_soon_threadsafe(started.set)
-        # block until the test releases us
-        import time
-        while not release.is_set():
-            time.sleep(0.01)
-        return [], 0
-
-    store._scan_and_prune_blocking = slow_scan
-    store._audio_bytes_estimate = None  # force scan path
-    t1 = asyncio.ensure_future(store._retention_sweep())
-    await wait_signalled(started, "blocking scan started", producer=t1)
-    await store._retention_sweep()  # should skip, not second-scan
-    release.set()
-    await t1
-    assert calls == 1
-    store.close()
+        assert release.wait(5)
+        return real(arg)
+    monkeypatch.setattr(store, "_" + operation, held)
+    pending = asyncio.create_task(getattr(store, operation)("current"))
+    try:
+        await wait_signalled(started, "ordered operation started", producer=pending)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert store.status()["pending_work"] == 1
+    finally:
+        release.set()
+        await store.aclose()
+    assert store.status()["write_errors"] == 0
+    if operation == "record_flag":
+        with closing(sqlite3.connect(store._db_path)) as reader:
+            assert reader.execute("SELECT label FROM wake_events ORDER BY rowid").fetchall() == [
+                ("voice_flagged",), ("flag_action",),
+            ]

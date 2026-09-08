@@ -27,10 +27,10 @@ import tempfile
 import uuid
 import wave
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 import numpy as np
 
@@ -60,6 +60,25 @@ class PlaybackCleanupState(str, Enum):
     NOT_NEEDED = "not_needed"
     KILLED_AND_REAPED = "killed_and_reaped"
     KILL_SENT_REAP_UNCONFIRMED = "kill_sent_reap_unconfirmed"
+
+
+@dataclass(frozen=True)
+class PlaybackObservation:
+    """Process facts only; completed playback does not prove acoustic capture."""
+
+    emission: Literal["unknown", "not_started", "possible", "completed"] = "unknown"
+    failure_code: PlaybackFailureCode | None = None
+    cleanup_state: PlaybackCleanupState | None = None
+    returncode: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class WavPlaybackCancelled(asyncio.CancelledError):
+    def __init__(self, observation: PlaybackObservation) -> None:
+        super().__init__()
+        self.observation = observation
 
 
 @dataclass(frozen=True)
@@ -99,6 +118,18 @@ class SweepPlaybackError(RuntimeError):
         self.returncode = returncode
         self.cleanup_state = cleanup_state
         self.diagnostic_tail = diagnostic_tail
+
+    @property
+    def observation(self) -> PlaybackObservation:
+        before_spawn = self.code in {
+            PlaybackFailureCode.INVALID_REQUEST, PlaybackFailureCode.MISSING_FILE,
+            PlaybackFailureCode.START_FAILED,
+        }
+        return PlaybackObservation(
+            emission="not_started" if before_spawn else "possible",
+            failure_code=self.code, cleanup_state=self.cleanup_state,
+            returncode=self.returncode,
+        )
 
 
 PlaybackError = SweepPlaybackError
@@ -907,7 +938,10 @@ async def _play_wav_source(
                 device=alsa_device,
                 cleanup_state=cleanup.state.value,
             )
-            raise cleanup.cancellation
+            raise WavPlaybackCancelled(PlaybackObservation(
+                emission="possible", cleanup_state=cleanup.state,
+                returncode=proc.returncode,
+            )) from cleanup.cancellation
         log_event(
             logger,
             "audio_measurement.playback",
@@ -937,7 +971,10 @@ async def _play_wav_source(
             device=alsa_device,
             cleanup_state=cleanup.state.value,
         )
-        raise cleanup.cancellation or exc
+        raise WavPlaybackCancelled(PlaybackObservation(
+            emission="possible", cleanup_state=cleanup.state,
+            returncode=proc.returncode,
+        )) from (cleanup.cancellation or exc)
     except _ProcessWaitFailure as exc:
         cleanup = await _kill_and_settle(proc, operation_task)
         if cleanup.cancellation is not None:
@@ -949,7 +986,10 @@ async def _play_wav_source(
                 device=alsa_device,
                 cleanup_state=cleanup.state.value,
             )
-            raise cleanup.cancellation
+            raise WavPlaybackCancelled(PlaybackObservation(
+                emission="possible", cleanup_state=cleanup.state,
+                returncode=proc.returncode,
+            )) from cleanup.cancellation
         log_event(
             logger,
             "audio_measurement.playback",
