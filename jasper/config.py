@@ -85,15 +85,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on", "enabled"}:
-        return True
-    if value in {"0", "false", "no", "off", "disabled"}:
-        return False
-    return default
+    value = _env_optional_bool(name)
+    return default if value is None else value
 
 
 def _env_optional_bool(name: str) -> bool | None:
