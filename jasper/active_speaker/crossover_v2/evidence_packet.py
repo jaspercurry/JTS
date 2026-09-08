@@ -82,6 +82,7 @@ __all__ = [
     "NO_CANDIDATE_TAKES",
     "NO_ROUND_ARTIFACTS_REASON",
     "OPERATOR_NOTES_BLOCK",
+    "validate_packet",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
     "RING_SIDECAR_GLOB",
@@ -2945,18 +2946,26 @@ def build_crossover_evidence_packet(
 
 
 def _fingerprint(packet: dict[str, Any]) -> str:
-    """The content hash a prescription must echo back.
-
-    Through :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`
-    over the packet MINUS the fingerprint field itself, which does not exist
-    yet at this point.
-    """
     try:
-        return json_fingerprint(packet, field_name="evidence_packet")
-    except EvidenceIdentityError as exc:  # pragma: no cover - defensive
-        raise CrossoverEvidencePacketError(
-            f"packet is not exact JSON data: {exc}"
-        ) from exc
+        return json_fingerprint(
+            {key: value for key, value in packet.items() if key != "packet_fingerprint"},
+            field_name="evidence_packet",
+        )
+    except EvidenceIdentityError as exc:
+        raise CrossoverEvidencePacketError(f"packet is not exact JSON data: {exc}") from exc
+
+
+def validate_packet(packet: Any) -> dict[str, Any]:
+    """Check the complete frozen input, without consulting mutable source files."""
+    if (
+        not isinstance(packet, dict)
+        or packet.get("kind") != PACKET_KIND
+        or packet.get("artifact_schema_version") != PACKET_SCHEMA_VERSION
+    ):
+        raise CrossoverEvidencePacketError("unsupported evidence packet kind or schema")
+    if packet.get("packet_fingerprint") != _fingerprint(packet):
+        raise CrossoverEvidencePacketError("evidence packet content does not match its fingerprint")
+    return packet
 
 
 # --- the readers the gate uses, so the packet owns its own shape ---

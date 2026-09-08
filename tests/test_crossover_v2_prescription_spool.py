@@ -2609,3 +2609,35 @@ def test_a_prescribed_branch_does_not_earn_the_fits_exclusion_evidence(
     # a statement about the two maps rather than about an empty candidate.
     assert set(candidate.linearization) == {"tweeter"}
     assert prescription.roles == ("tweeter",)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_frozen_packet_content_is_checked_before_proposal_and_staging(tmp_path, capsys, changed):
+    from tests.test_crossover_v2_blend_prescription import _bundle, _document as document, _cut
+    from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
+
+    session, _ = _bundle(tmp_path)
+    packet = build_crossover_evidence_packet(session)
+    prescription = document([_cut(freq=1000.0)], packet)
+    if changed:
+        packet["crossover_region"]["band_hz"][0] = 400.0
+    packet_path, prescription_path, state_path = (tmp_path / name for name in (
+        "packet.json", "prescription.json", "state.json",
+    ))
+    packet_path.write_text(json.dumps(packet))
+    prescription_path.write_text(json.dumps(prescription))
+    state_path.write_text(json.dumps({"round_receipt": {"round_ordinal": 4}}))
+    for verb in ("propose", "stage"):
+        code = cli.main([
+            verb, "--packet", str(packet_path), "--prescription", str(prescription_path),
+            *(["--state", str(state_path)] if verb == "stage" else []),
+        ])
+        answer = json.loads(capsys.readouterr().out)
+        assert code == (cli.EXIT_UNREADABLE if changed else cli.EXIT_OK)
+        if changed:
+            assert answer["reason"] == cli.REASON_UNREADABLE
+    taken = spool.take_staged_prescription(round_ordinal=5)
+    assert (taken is None) is changed
+    if taken:
+        assert taken.record()["packet_fingerprint"] == packet["packet_fingerprint"]
+        assert taken.record()["filters"] == prescription["filters"]
