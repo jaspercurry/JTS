@@ -916,7 +916,7 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
 
 def _capture_program_identity(
     sidecar: Mapping[str, Any], program: Any, state: Mapping[str, Any],
-    capture_session_id: str, program_sha256: str | None,
+    program_sha256: str | None,
 ) -> tuple[dict[str, Any], str | None]:
     identity = sidecar.get(SESSION_IDENTITY_KEY)
     aliases = identity.get("aliases") if isinstance(identity, Mapping) else None
@@ -928,16 +928,15 @@ def _capture_program_identity(
     stimulus = stimulus if isinstance(stimulus, Mapping) else {}
     recorded_program = stimulus.get("program_id")
     recorded_sha = stimulus.get("wav_sha256")
+    state_session = _state_capture_session_id(state)
     proof = {
         "program_id": recorded_program,
         "program_id_status": "matched" if recorded_program == program.program_id else "unknown",
         "stimulus_wav_status": "matched" if recorded_sha and recorded_sha == program_sha256 else "unknown",
         "capture_session_id": recorded_session,
-        "state_capture_session_id": _state_capture_session_id(state),
+        "state_capture_session_id": state_session,
     }
-    if _state_capture_session_id(state) not in (None, capture_session_id):
-        return proof, "state_session_mismatch"
-    if recorded_session and recorded_session != capture_session_id:
+    if recorded_session and state_session and recorded_session != state_session:
         return proof, "capture_session_mismatch"
     if recorded_program and recorded_program != program.program_id:
         return proof, "stimulus_program_mismatch"
@@ -1018,7 +1017,7 @@ def read_round_harmonics(
             "position_deg": capture["sidecar"].get("position_deg"),
         }
         proof, reason = _capture_program_identity(
-            capture["sidecar"], program, state, round_dir.name, program_sha256,
+            capture["sidecar"], program, state, program_sha256,
         )
         try:
             if not reason:

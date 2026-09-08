@@ -1480,8 +1480,8 @@ def harmonic_capture(tmp_path, monkeypatch):
     profile = _write_applied_profile(tmp_path, fc_hz=1800.0)
     monkeypatch.setattr(he, "_DOWNSTREAM_GRID_DB", (-20.0,))
 
-    def read(supplied_state=state, *, scope="c2a1812b849e"):
-        return he.read_round_harmonics(round_dir, ring, supplied_state, bands,
+    def read(supplied_state=state, *, scope="c2a1812b849e", output_dir=round_dir):
+        return he.read_round_harmonics(output_dir, ring, supplied_state, bands,
                                        session_id=scope, applied_profile_path=profile)
 
     return read, compose, sidecar, wav, document
@@ -1489,7 +1489,7 @@ def harmonic_capture(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("fault,reason", [
     ("program", "stimulus_program_mismatch"),
-    ("state", "state_session_mismatch"),
+    ("state", "capture_session_mismatch"),
     ("capture", "capture_session_mismatch"),
     ("stimulus", "stimulus_wav_mismatch"),
 ])
@@ -1543,6 +1543,7 @@ def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic
     read, _, sidecar, _, document = harmonic_capture
     bound = read()
     document.pop("provenance")
+    document["jts_session_identity"].pop("aliases")
     sidecar.write_text(json.dumps(document))
     legacy = read()
     assert legacy["captures"]["n_read"] == 1
@@ -1595,3 +1596,25 @@ def test_harmonics_accounts_for_unscoped_omissions_and_duplicate_takes(harmonic_
     assert captures["unscoped_omissions"] == expected_unscoped
     assert captures["scope"]["session_id"] == "c2a1812b849e"
     assert len(artifact["roles"]) == 2
+
+
+@pytest.mark.parametrize("capture_identity", ["alias", "capture_session_id", "missing"])
+def test_harmonics_output_directory_name_is_not_capture_identity(harmonic_capture, tmp_path, capture_identity):
+    read, _, sidecar, wav, document = harmonic_capture
+    capture_session = document["jts_session_identity"]["aliases"]["capture_session_id"]
+    if capture_identity != "alias":
+        document["jts_session_identity"].pop("aliases")
+        if capture_identity == "capture_session_id":
+            document["capture_session_id"] = capture_session
+    sidecar.write_text(json.dumps(document))
+    original = read()
+    renamed = tmp_path / "renamed-analysis-output"
+    renamed.mkdir()
+    output = renamed / "existing-output.json"
+    output.write_text(json.dumps(original))
+    assert read(output_dir=renamed) == {**original, "round_dir": renamed.name}
+    assert original["captures"]["n_read"] == 1
+    assert all(role["drive"]["status"] == "program_declared" for role in original["roles"])
+    assert sha256_file(wav) == document["wav_sha256"]
+    assert json.loads(sidecar.read_text()) == document
+    assert json.loads(output.read_text()) == original
