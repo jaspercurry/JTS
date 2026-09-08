@@ -19,7 +19,7 @@ from jasper.active_speaker.commissioning_admission import parse_running_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
-from .measure_spec import GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
+from .measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
 
 logger = logging.getLogger(__name__)
 _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
@@ -151,12 +151,12 @@ class MeasurementSessionGraph:
     def select_scope(self, scope: str, candidate_id: str = "") -> None:
         if scope not in GRAPH_SCOPES:
             raise SessionGraphError(f"unknown graph scope: {scope}")
-        if scope == "candidate" and not candidate_id.strip():
-            raise SessionGraphError("candidate scope requires candidate_id")
+        if scope in CANDIDATE_SCOPES and not candidate_id.strip():
+            raise SessionGraphError(f"{scope} scope requires candidate_id")
         if scope != GRAPH_SCOPE_DRIVERS and self._emit_scoped is None:
             raise SessionGraphError("no scoped graph emitter is bound")
         self._scope = scope
-        self._candidate_id = candidate_id if scope == "candidate" else ""
+        self._candidate_id = candidate_id if scope in CANDIDATE_SCOPES else ""
 
     def graph_yaml(
         self,

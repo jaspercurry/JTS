@@ -401,7 +401,13 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
     with pytest.raises(SessionGraphError):
         graph.installed_graph_yaml()
-    scopes = [("drivers", ""), ("base", ""), ("speaker_tune", ""), ("candidate", "a"), ("candidate", "b")]
+    for named in ("candidate", "room_candidate"):
+        with pytest.raises(SessionGraphError):
+            graph.select_scope(named, "")
+    scopes = [
+        ("drivers", ""), ("base", ""), ("speaker_tune", ""),
+        ("candidate", "a"), ("candidate", "b"), ("room_candidate", "a"),
+    ]
     fingerprints = {}
     for scope, candidate_id in scopes * 2:
         graph.select_scope(scope, candidate_id)

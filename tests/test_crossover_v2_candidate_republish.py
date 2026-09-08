@@ -50,7 +50,11 @@ from jasper.cli import crossover_prescriber
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
 
-from tests.test_active_speaker_measured_crossover_candidate import _candidate, _preset
+from tests.test_active_speaker_measured_crossover_candidate import (
+    _candidate,
+    _preset,
+    _room_correction,
+)
 from tests.active_speaker_fixtures import mono_output_topology
 
 BUNDLE = "bundle0000aa"
@@ -176,17 +180,8 @@ def test_default_candidate_lookup_survives_live_session_retention(bank):
     assert find_banked_candidate(candidate.fingerprint).path == saved
 
 
-@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest", "edited_labels", "legacy_labels"])
-def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
-    parent = _candidate()
-    _publish(bank, parent)
-    child = compose_candidate(find_banked_candidate(parent.fingerprint), {})
-    publish_authored_candidate(child)
-    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
-        republish.handle_v2_republish({"fingerprint": child.fingerprint})
-    assert refusal.value.code == "candidate_trial_required"
-    assert v2host.load_v2_state() is None
-
+def _stage_trial(bank, record_fields: dict) -> tuple[Path, Path, Path]:
+    """Bank one captured trial into a live session bundle; the caller names it."""
     info = open_bundle(mono_output_topology(mode="active_3_way"), calibration_id="", sessions_dir=bank)
     bundle = Path(info["bundle_dir"])
     wav = bundle / "capture.wav"
@@ -198,17 +193,50 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
     record = {
         "kind": POSITION_EVIDENCE_KIND, "measure_kind": "candidate",
         "session_id": "trial-capture", "take_id": "candidate_00_attempt_0",
-        "candidate_id": parent.fingerprint if fault == "parent" else child.fingerprint,
-        "graph_scope": "drivers" if fault == "scope" else "candidate",
-        "graph_fingerprint": "" if fault == "graph" else graph_fingerprint("submitted: graph\n"),
-        "incident": "stimulus_play_failed" if fault == "incident" else "",
-        "level_db": None if fault == "level" else -25.0,
-        "measurement_status": "planned" if fault == "status" else "captured",
+        "graph_scope": "candidate",
+        "graph_fingerprint": graph_fingerprint("submitted: graph\n"),
+        "incident": "",
+        "level_db": -25.0,
+        "measurement_status": "captured",
         "wav_path": wav.name,
+        **record_fields,
     }
     store = BankedRecordStore(CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"]), "trial-capture")
     record_id = asyncio.run(store.bank(record))
-    path = bundle / "evidence/v1/artifacts" / record_id
+    return bundle, bundle / "evidence/v1/artifacts" / record_id, wav
+
+
+def _retain_round(bank, bundle: Path) -> Path:
+    """Complete the bundle, bank it as a round, and drop the live copy."""
+    info_path = bundle / "info.json"
+    info_path.write_text(json.dumps({**json.loads(info_path.read_text()), "state": "complete"}))
+    saved = bank_round(bundle, campaign_root=bank.parent / "campaigns").path
+    shutil.rmtree(bundle)
+    return saved
+
+
+@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest", "edited_labels", "legacy_labels"])
+def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
+    parent = _candidate()
+    _publish(bank, parent)
+    child = compose_candidate(find_banked_candidate(parent.fingerprint), {})
+    publish_authored_candidate(child)
+    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+        republish.handle_v2_republish({"fingerprint": child.fingerprint})
+    assert refusal.value.code == "candidate_trial_required"
+    assert v2host.load_v2_state() is None
+
+    faults = {
+        "parent": {"candidate_id": parent.fingerprint},
+        "scope": {"graph_scope": "drivers"},
+        "graph": {"graph_fingerprint": ""},
+        "incident": {"incident": "stimulus_play_failed"},
+        "level": {"level_db": None},
+        "status": {"measurement_status": "planned"},
+    }
+    bundle, path, wav = _stage_trial(
+        bank, {"candidate_id": child.fingerprint, **faults.get(fault, {})},
+    )
     if fault == "edited_labels":
         edited = json.loads(path.read_text())
         edited["graph_fingerprint"] = graph_fingerprint("different: graph\n")
@@ -224,11 +252,7 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
         wav.write_bytes(b"changed capture bytes!")
     elif fault == "manifest":
         (bundle / "artifact_manifest.json").unlink()
-    info_path = bundle / "info.json"
-    saved_info = json.loads(info_path.read_text())
-    info_path.write_text(json.dumps({**saved_info, "state": "complete"}))
-    saved = bank_round(bundle, campaign_root=bank.parent / "campaigns").path
-    shutil.rmtree(bundle)
+    saved = _retain_round(bank, bundle)
     if fault:
         with pytest.raises(v2host.CrossoverV2Refused) as refusal:
             republish.handle_v2_republish({"fingerprint": child.fingerprint})
@@ -921,3 +945,28 @@ def test_the_wizard_way_back_action_round_trips_through_this_door(
     assert (
         v2host.load_v2_state()["candidate"]["fingerprint"] == previous.fingerprint
     )
+
+
+@pytest.mark.parametrize("captured_scope, admitted", [
+    ("room_candidate", True), ("candidate", False),
+])
+def test_a_room_candidate_needs_a_trial_through_its_room_graph(bank, captured_scope, admitted):
+    """A room set is a layer the trial has to have played through (§1a)."""
+    parent = _candidate()
+    _publish(bank, parent)
+    child = replace(
+        compose_candidate(find_banked_candidate(parent.fingerprint), {}),
+        room_correction=_room_correction(),
+    )
+    publish_authored_candidate(child)
+    bundle, _path, _wav = _stage_trial(
+        bank, {"candidate_id": child.fingerprint, "graph_scope": captured_scope},
+    )
+    _retain_round(bank, bundle)
+
+    if admitted:
+        assert require_candidate_trial(child)["graph_scope"] == captured_scope
+    else:
+        with pytest.raises(CandidateBankRefusal) as refusal:
+            require_candidate_trial(child)
+        assert refusal.value.code == "candidate_trial_required"

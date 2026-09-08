@@ -29,6 +29,11 @@ from jasper.active_speaker.commissioning_admission import (
     ActiveCommissioningAdmissionError,
     running_graph_fingerprint,
 )
+from jasper.active_speaker.crossover_v2.measure_spec import (
+    CANDIDATE_SCOPES,
+    GRAPH_SCOPES,
+    MeasureSpec,
+)
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
 from jasper.active_speaker.baseline_profile import recompose_applied_baseline_yaml
 from jasper.active_speaker.measurement_emit import (
@@ -36,11 +41,15 @@ from jasper.active_speaker.measurement_emit import (
     MeasurementGraphRefused,
     compile_tuning_graph,
 )
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverCandidate,
+    candidate_room_peqs,
+)
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.camilla_config_contract import FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_gain_filter
 from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
 from jasper.sound.profile import (
     CURVE_PRESETS,
     MAX_PARAMETRIC_BANDS,
@@ -54,6 +63,7 @@ from jasper.sound.profile import (
     save_profile,
 )
 from tests.test_active_speaker_audition import ACTIVE_PCM, LINEARIZATION, _applied_profile
+from tests.test_active_speaker_measured_crossover_candidate import _room_correction
 from tests.test_active_speaker_runtime_contract import _active_topology
 
 FLAT = SoundProfile()
@@ -336,3 +346,54 @@ def test_saved_corrections_refuse_instead_of_becoming_defaults(tuning_profile, s
     with pytest.raises(MeasurementGraphRefused) as exc:
         compile_tuning_graph(tuning_profile, scope=scope)
     assert exc.value.reason == "measurement_corrections_invalid"
+
+
+def test_the_room_candidate_scope_always_names_its_candidate():
+    """The new scope joins the candidate scopes, which never stand alone."""
+
+    assert GRAPH_SCOPES[-1] == "room_candidate"
+    assert CANDIDATE_SCOPES == frozenset({"candidate", "room_candidate"})
+    with pytest.raises(ValueError):
+        MeasureSpec(kind="baseline", graph_scope="room_candidate")
+    assert MeasureSpec(
+        kind="baseline", graph_scope="room_candidate", candidate_id="fp-a",
+    ).candidate_id == "fp-a"
+
+
+def test_a_room_candidate_graph_rides_the_applied_speaker_tune(tuning_profile):
+    """Layer 3 plays the candidate's room set through the tune below it.
+
+    The candidate's own linearization and blend gains differ from the applied
+    profile's, so filter-for-filter equality with the ``speaker_tune`` graph is
+    what proves the room scope carries the APPLIED tune and not the candidate's.
+    """
+
+    candidate = replace(
+        _trial_candidate(tuning_profile), room_correction=_room_correction(),
+    )
+    text = compile_tuning_graph(
+        tuning_profile, scope="room_candidate", candidate=candidate,
+    )
+    room = yaml.safe_load(text)
+    tune = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="speaker_tune"))
+
+    assert extract_room_peqs_from_config_text(text) == list(candidate_room_peqs(candidate))
+    assert {
+        name: entry for name, entry in room["filters"].items()
+        if not name.startswith("room_peq_")
+    } == tune["filters"]
+    assert not any(name.startswith("room_peq_") for name in tune["filters"])
+    assert not set(room["filters"]) & sound_filter_slot_names()
+
+
+@pytest.mark.parametrize("named, reason", [
+    (False, "measurement_candidate_required"),
+    (True, "measurement_candidate_no_room"),
+])
+def test_the_room_scope_refuses_a_candidate_with_no_room_set(tuning_profile, named, reason):
+    with pytest.raises(MeasurementGraphRefused) as exc:
+        compile_tuning_graph(
+            tuning_profile, scope="room_candidate",
+            candidate=_trial_candidate(tuning_profile) if named else None,
+        )
+    assert exc.value.reason == reason

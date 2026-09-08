@@ -9,14 +9,21 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Sequence
 
+from jasper.camilla_config_contract import PeqFilter
 from jasper.json_fields import finite_float
 from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.baseline_profile import (
     applied_baseline_hardware_match,
     recompose_applied_baseline_yaml,
 )
+from jasper.active_speaker.crossover_v2.measure_spec import (
+    CANDIDATE_SCOPES,
+    GRAPH_SCOPE_DRIVERS,
+    GRAPH_SCOPES,
+)
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
+    candidate_room_peqs,
     compile_candidate_config,
     prove_candidate_config,
 )
@@ -29,9 +36,12 @@ from jasper.active_speaker.profile import (
 __all__ = [
     "MeasurementGraphProfile",
     "MeasurementGraphRefused",
+    "TuningGraphScope",
     "compile_tuning_graph",
     "emit_measurement_graph",
 ]
+
+TuningGraphScope = Literal["base", "speaker_tune", "candidate", "room_candidate"]
 
 
 @dataclass(frozen=True)
@@ -71,19 +81,24 @@ def _filter_list(value: Any) -> bool:
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
     *,
-    scope: Literal["base", "speaker_tune"] = "base",
+    scope: TuningGraphScope = "base",
     candidate: MeasuredCrossoverCandidate | None = None,
 ) -> str:
     """Compile a stereo graph for summed captures, clouds and confirmation.
 
     Base keeps the applied structure, protection, trims and alignment; accepted
     speaker tune also keeps linearization and blend. A named candidate replaces
-    those corrections with its complete candidate layer. None includes room,
-    preference or bass-extension processing. Callers must compare DSP readback
-    with the emitted graph before attributing a capture to it.
+    those corrections with its complete candidate layer, and ``room_candidate``
+    plays the accepted speaker tune through that candidate's room set — the
+    layer-3 capture of ``docs/measurement-loop-doctrine.md`` §1a, whose rule
+    also keeps preference and bass extension out of every scope here. Callers
+    must compare DSP readback with the emitted graph before attributing a
+    capture to it.
     """
-    if scope not in ("base", "speaker_tune"):
+    if scope == GRAPH_SCOPE_DRIVERS or scope not in GRAPH_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
+    if scope in CANDIDATE_SCOPES and candidate is None:
+        raise MeasurementGraphRefused("measurement_candidate_required", scope)
     snapshot, issues = applied_baseline_hardware_match(
         profile.topology, applied_profile=profile.applied_profile or {},
     )
@@ -94,6 +109,7 @@ def compile_tuning_graph(
         raise MeasurementGraphRefused(
             "measurement_base_mismatch", "declared speaker differs from applied base",
         )
+    room_peqs: tuple[PeqFilter, ...] = ()
     if candidate is not None:
         if not isinstance(candidate, MeasuredCrossoverCandidate):
             raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
@@ -101,25 +117,34 @@ def compile_tuning_graph(
             raise MeasurementGraphRefused(
                 "measurement_candidate_base_mismatch", candidate.fingerprint,
             )
-        # The shared reducer skips malformed records. Refuse before reduction
-        # so the graph cannot silently omit part of the named candidate.
-        if set(candidate.linearization) - set(required_driver_roles(profile.preset.way_count)) or any(
-            not isinstance(value, Mapping) or not _filter_list(value.get("filters"))
-            for value in candidate.linearization.values()
-        ):
-            raise MeasurementGraphRefused("measurement_filters_invalid", candidate.fingerprint)
-        devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
-        candidate_text = compile_candidate_config(
-            candidate, playback_device=profile.playback_device,
-            capture_device=devices.capture_device,
-            capture_format=devices.capture_format,
-            playback_format=devices.playback_format,
-            chunksize=devices.chunksize, target_level=devices.target_level,
-            queuelimit=devices.queuelimit, enable_rate_adjust=devices.enable_rate_adjust,
-            protection_sections_by_role=profile.protection_sections_by_role,
-        )
-        prove_candidate_config(candidate, candidate_text)
-        return candidate_text
+        if scope == "room_candidate":
+            room_peqs = candidate_room_peqs(candidate)
+            if not room_peqs:
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_no_room", candidate.fingerprint,
+                )
+        else:
+            # The shared reducer skips malformed records. Refuse before reduction
+            # so the graph cannot silently omit part of the named candidate.
+            if set(candidate.linearization) - set(required_driver_roles(profile.preset.way_count)) or any(
+                not isinstance(value, Mapping) or not _filter_list(value.get("filters"))
+                for value in candidate.linearization.values()
+            ):
+                raise MeasurementGraphRefused("measurement_filters_invalid", candidate.fingerprint)
+            devices = camilla_yaml.active_emit_devices(
+                profile.playback_device, topology=profile.topology,
+            )
+            candidate_text = compile_candidate_config(
+                candidate, playback_device=profile.playback_device,
+                capture_device=devices.capture_device,
+                capture_format=devices.capture_format,
+                playback_format=devices.playback_format,
+                chunksize=devices.chunksize, target_level=devices.target_level,
+                queuelimit=devices.queuelimit, enable_rate_adjust=devices.enable_rate_adjust,
+                protection_sections_by_role=profile.protection_sections_by_role,
+            )
+            prove_candidate_config(candidate, candidate_text)
+            return candidate_text
     corrections = snapshot.get("corrections")
     if (
         not isinstance(corrections, Mapping)
@@ -139,7 +164,7 @@ def compile_tuning_graph(
         )
     except ActiveSpeakerConfigError as exc:
         raise MeasurementGraphRefused("measurement_corrections_invalid", str(exc)) from exc
-    if scope == "speaker_tune":
+    if scope != "base":
         linearization = snapshot.get("linearization", {})
         if (
             not isinstance(linearization, Mapping)
@@ -151,7 +176,7 @@ def compile_tuning_graph(
     text, issues = recompose_applied_baseline_yaml(
         profile.topology, applied_profile=profile.applied_profile or {},
         playback_device=profile.playback_device, bass_extension_profile=None,
-        drop_measured_correction=scope == "base",
+        room_peqs=room_peqs, drop_measured_correction=scope == "base",
         protection_sections_by_role=profile.protection_sections_by_role,
     )
     if text is None:
