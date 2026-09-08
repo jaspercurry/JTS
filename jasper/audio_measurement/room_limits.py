@@ -25,14 +25,16 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+
 __all__ = [
+    "ROOM_FLOOR_HZ",
     "ROOM_BOOST_DEPTH_AGREEMENT_DB",
     "ROOM_BOOST_MAX_DIP_DB",
     "ROOM_BOOST_MIN_DIP_DB",
     "ROOM_BOOST_MIN_POSITIONS",
     "ROOM_BOOST_MIN_WIDTH_OCTAVES",
     "ROOM_BOOST_PRESENCE_MIN_FRACTION",
-    "ROOM_F_LOW_HZ",
     "ROOM_MAX_CUT_DB",
     "ROOM_MAX_FILTERS_PER_SIDE",
     "ROOM_MAX_FILTER_BOOST_DB",
@@ -49,10 +51,6 @@ __all__ = [
     "cut_floor_db",
     "depth_fraction",
 ]
-
-#: Design band floor, Hz — :func:`jasper.audio_measurement.peq.design_peq`'s
-#: own ``f_low`` default.
-ROOM_F_LOW_HZ: float = 20.0
 
 #: The strategy's own cut floor, dB, which the spread scales per frequency.
 ROOM_MAX_CUT_DB: float = -10.0

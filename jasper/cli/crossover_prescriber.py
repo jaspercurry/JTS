@@ -88,7 +88,6 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
 )
 from jasper.active_speaker.crossover_v2.room_prescription import (
     LAYOUT_UNAVAILABLE,
-    ROOM_MEDIAN_ARTIFACT,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_PRESCRIPTION_KIND,
     RoomMedian,
@@ -429,6 +428,8 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
 
 
 PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
+#: The seat cube's median, written by ``jasper-round-views room-median``.
+ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
 
 
 def _cmd_packet(args: argparse.Namespace) -> int:

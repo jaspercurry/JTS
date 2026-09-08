@@ -69,11 +69,12 @@ from jasper.audio_measurement.null_walk import (
     NullWalkError,
 )
 from jasper.audio_measurement.room_boundary import (
+    CEILING_SOURCES,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
+    ROOM_FLOOR_HZ,
 )
 from jasper.audio_measurement.room_limits import (
-    ROOM_F_LOW_HZ,
     ROOM_MAX_FILTER_BOOST_DB,
     ROOM_MAX_FILTERS_PER_SIDE,
     ROOM_MAX_TOTAL_BOOST_DB,
@@ -92,7 +93,7 @@ from .camilla_yaml import (
 )
 from .crossover_alignment import POLARITY_INVERT, POLARITY_KEEP
 from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
-from .crossover_v2.room_prescription import ROOM_CEILING_SOURCES, ROOM_MEDIAN_FIELD
+from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
 from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
@@ -214,10 +215,10 @@ def _validated_room_correction(
             "ceiling_hz must be within "
             f"{ROOM_BOUNDARY_MIN_HZ}..{ROOM_BOUNDARY_MAX_HZ} Hz",
         )
-    if raw["ceiling_source"] not in ROOM_CEILING_SOURCES:
+    if raw["ceiling_source"] not in CEILING_SOURCES:
         _refuse(
             _ROOM_INVALID,
-            f"ceiling_source must be one of {sorted(ROOM_CEILING_SOURCES)}",
+            f"ceiling_source must be one of {sorted(CEILING_SOURCES)}",
         )
     basis = raw["basis"]
     if not isinstance(basis, Mapping) or set(basis) != _ROOM_BASIS_KEYS:
@@ -275,11 +276,11 @@ def _validated_room_correction(
                     _ROOM_INVALID,
                     f"side {side!r} filter values must be finite numbers",
                 )
-            if not ROOM_F_LOW_HZ <= freq <= ceiling_hz:
+            if not ROOM_FLOOR_HZ <= freq <= ceiling_hz:
                 _refuse(
                     _ROOM_INVALID,
                     f"side {side!r} filter freq must be within "
-                    f"{ROOM_F_LOW_HZ}..{ceiling_hz} Hz",
+                    f"{ROOM_FLOOR_HZ}..{ceiling_hz} Hz",
                 )
             if not ROOM_PEQ_Q_MIN <= q <= ROOM_PEQ_Q_MAX:
                 _refuse(

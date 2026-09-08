@@ -24,6 +24,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.candidate_bank import find_banked_candidate
@@ -32,6 +33,13 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_room_peqs,
 )
+from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+from jasper.active_speaker.crossover_v2.room_views import (
+    room_ceiling,
+    room_median,
+    seat_takes,
+)
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
@@ -54,6 +62,7 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
 from jasper.camilla_config_contract import PeqFilter
 from jasper.cli import crossover_prescriber as cli
 
+from tests.crossover_v2_banked_round import bank_seat_round
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -90,7 +99,10 @@ def _room_median(*, present: int = 5) -> dict[str, Any]:
     rest read it back to nearly flat, which is what an interference null looks
     like across a cloud.
     """
-    freqs = [20.0 * 2.0 ** (step / 12.0) for step in range(52)]
+    freqs = [
+        freq for freq in (20.0 * 2.0 ** (step / 12.0) for step in range(52))
+        if freq <= CEILING_HZ
+    ]
     return {
         "freqs_hz": freqs,
         "median_db": [
@@ -404,3 +416,17 @@ def test_compose_refuses_half_the_room_evidence(evidence, bank, capsys):
         "--room-prescription", document,
     ]) == 2
     assert json.loads(capsys.readouterr().out)["reason"] == cli.REASON_EVIDENCE_SOURCE
+
+
+
+def test_the_producers_median_reads_through_the_door(tmp_path):
+    """The seat cube's own artifact, not a hand-built one, is what the door reads."""
+    round_dir = bank_seat_round(tmp_path)
+    document = room_median(seat_takes(round_inputs(round_dir).session_dir), room_ceiling(None))
+
+    median = read_room_median(document)
+
+    assert median.n_positions == document["n_positions"] == 7
+    assert median.level_reference_db == pytest.approx(-30.0)
+    assert np.allclose(median.median_db, 0.0)
+    assert median.freqs_hz[0] >= ROOM_FLOOR_HZ and median.freqs_hz[-1] <= median.ceiling_hz

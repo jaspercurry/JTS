@@ -30,11 +30,12 @@ import numpy as np
 from jasper.active_speaker._common import require_sha256_hex
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.audio_measurement.room_boundary import (
+    CEILING_SOURCES,
+    ROOM_FLOOR_HZ,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
 )
 from jasper.audio_measurement.room_limits import (
-    ROOM_F_LOW_HZ,
     ROOM_MAX_FILTER_BOOST_DB,
     ROOM_MAX_FILTERS_PER_SIDE,
     ROOM_MAX_TOTAL_BOOST_DB,
@@ -79,7 +80,6 @@ __all__ = [
     "FILTER_CUT_TOO_DEEP",
     "LAYOUT_UNAVAILABLE",
     "ROOM_COMPOSED_TOLERANCE_DB",
-    "ROOM_MEDIAN_ARTIFACT",
     "ROOM_MEDIAN_FIELD",
     "ROOM_MEDIAN_MISMATCH",
     "ROOM_MEDIAN_UNAVAILABLE",
@@ -111,14 +111,6 @@ ROOM_PRESCRIPTION_KIND = "jts_room_prescription"
 
 #: The median field a proposal must echo back.
 ROOM_MEDIAN_FIELD = "room_median_sha256"
-
-#: What the round's spatial median is filed as beside a round. Lane B's
-#: ``ARTIFACT_BY_VIEW["room-median"]`` will consume this name.
-ROOM_MEDIAN_ARTIFACT = "room_median.json"
-
-#: The two sources a ceiling may have: the applied tune's own trusted floor,
-#: or the band-edge default when no tune establishes one (ADR-0256 rule 1).
-ROOM_CEILING_SOURCES = frozenset({"applied_candidate", "fallback"})
 
 #: Slack, dB, on the COMPOSED cascade's per-frequency allowance. A Q >= 1 bell
 #: still leaves a skirt at the knee where the taper has closed the allowance to
@@ -209,11 +201,14 @@ class RoomMedian:
     n_positions: int
     ceiling_hz: float
     ceiling_source: str
+    #: The level ``median_db`` was read against: the producer's median curve's
+    #: own median over the band, dB.
+    level_reference_db: float = 0.0
 
     @property
     def band_hz(self) -> tuple[float, float]:
         """The band a prescription against this median may place filters in."""
-        return (ROOM_F_LOW_HZ, self.ceiling_hz)
+        return (ROOM_FLOOR_HZ, self.ceiling_hz)
 
 
 def _unavailable(detail: str, **evidence: Any) -> NoReturn:
@@ -262,14 +257,14 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
             "ceiling_hz must sit within "
             f"{ROOM_BOUNDARY_MIN_HZ:g}-{ROOM_BOUNDARY_MAX_HZ:g} Hz"
         )
-    if freqs[0] > ROOM_F_LOW_HZ or freqs[-1] < ceiling:
+    if freqs[0] < ROOM_FLOOR_HZ or freqs[-1] > ceiling:
         _unavailable(
-            f"the median's grid ({freqs[0]:.1f}-{freqs[-1]:.1f} Hz) does not "
-            f"cover the prescribable band {ROOM_F_LOW_HZ:g}-{ceiling:.1f} Hz"
+            f"the median's grid ({freqs[0]:.1f}-{freqs[-1]:.1f} Hz) reaches "
+            f"outside the room band {ROOM_FLOOR_HZ:g}-{ceiling:.1f} Hz"
         )
     source = raw.get("ceiling_source")
-    if source not in ROOM_CEILING_SOURCES:
-        _unavailable(f"ceiling_source must be one of {sorted(ROOM_CEILING_SOURCES)}")
+    if source not in CEILING_SOURCES:
+        _unavailable(f"ceiling_source must be one of {sorted(CEILING_SOURCES)}")
 
     positions = raw.get("positions")
     if isinstance(positions, (str, bytes)) or not isinstance(positions, Sequence):
@@ -292,10 +287,15 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
                 length=bins,
             )
         )
+    # The producer writes the median at measurement level; a room correction
+    # moves shape, never level, so the trend is read against its own robust
+    # level over the band and that reference is disclosed.
+    level_db = float(np.median(median_db))
     return RoomMedian(
         freqs_hz=freqs,
-        median_db=median_db,
+        median_db=median_db - level_db,
         spread_db=spread_db,
+        level_reference_db=level_db,
         deviations_db=(
             np.vstack(rows) if rows else np.zeros((0, bins), dtype=np.float64)
         ),
@@ -357,7 +357,7 @@ class RoomPrescription:
 
     @property
     def band_hz(self) -> tuple[float, float]:
-        return (ROOM_F_LOW_HZ, self.ceiling_hz)
+        return (ROOM_FLOOR_HZ, self.ceiling_hz)
 
     @property
     def admitted_boosts_hz(self) -> list[float]:
@@ -432,7 +432,7 @@ def room_prescription_response_format() -> dict[str, Any]:
         ),
         "bounds": {
             "band_hz": (
-                f"{ROOM_F_LOW_HZ:g} Hz to the median's own ceiling_hz, above "
+                f"{ROOM_FLOOR_HZ:g} Hz to the median's own ceiling_hz, above "
                 "which the direct-sound stage owns the band"
             ),
             "q_range": [ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX],

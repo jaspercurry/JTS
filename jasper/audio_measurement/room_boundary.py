@@ -118,6 +118,16 @@ ROOM_BOUNDARY_DEFAULT_HZ: float = 350.0
 ROOM_BOUNDARY_MIN_HZ: float = GATED_SPEC_LOWER_EDGE_HZ
 ROOM_BOUNDARY_MAX_HZ: float = 500.0
 
+# The room layer's floor, Hz: below it a seat take says little a cabinet can
+# act on, and no room filter is placed.
+ROOM_FLOOR_HZ: float = 20.0
+
+# Where a room ceiling came from: the applied candidate's trusted floor, or
+# the default above when no floor was readable (ADR-0256 rule 1).
+CEILING_SOURCE_APPLIED = "applied_candidate"
+CEILING_SOURCE_FALLBACK = "fallback"
+CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK})
+
 
 def room_ceiling_hz(trusted_floor_hz: float | None) -> float:
     """Where the room layer stops (ADR-0256 rule 1): the applied tune's

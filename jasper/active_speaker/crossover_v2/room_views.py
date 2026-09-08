@@ -34,8 +34,11 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.room_boundary import (
+    CEILING_SOURCE_APPLIED,
+    CEILING_SOURCE_FALLBACK,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
+    ROOM_FLOOR_HZ,
     room_ceiling_hz,
 )
 
@@ -48,9 +51,6 @@ from .round_captures import doc_pose_key
 from .round_views import RoundViewsError, local_features
 from .spatial import cloud_trusted_floor_hz
 
-#: The room layer's floor: below it a seat take says little a cabinet can act on.
-ROOM_FLOOR_HZ = 20.0
-
 #: A feature is a local excursion at least this deep against the local level,
 #: at least this wide between its half-depth edges; positions agree on it
 #: when their depths sit within the same span.
@@ -62,9 +62,6 @@ FEATURE_AGREEMENT_DB = 3.0
 #: this many octaves either side, in dB, so a mode neither lifts its own
 #: baseline the way a power mean would nor hides in a dip.
 TREND_HALF_WIDTH_OCTAVES = 0.5
-
-CEILING_SOURCE_APPLIED = "applied_candidate"
-CEILING_SOURCE_FALLBACK = "fallback"
 
 
 @dataclass(frozen=True)

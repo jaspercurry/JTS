@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ
+from jasper.audio_measurement.room_boundary import ROOM_BOUNDARY_DEFAULT_HZ, ROOM_FLOOR_HZ
 from jasper.camilla_config_contract import total_positive_boost_db
 
 
@@ -107,7 +107,7 @@ def design_peq(
     target_db: np.ndarray,
     freqs: np.ndarray,
     *,
-    f_low: float = 20.0,
+    f_low: float = ROOM_FLOOR_HZ,
     f_high: float = ROOM_BOUNDARY_DEFAULT_HZ,
     max_filters: int = 5,
     max_cut_db: float | np.ndarray = -10.0,
