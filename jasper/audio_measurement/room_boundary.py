@@ -75,9 +75,9 @@ floor — but the two layers' deliberate overlap can narrow, and on a room whose
 gate tops out at 7 ms it closes: the trusted floor is 357.14 Hz against a
 350 Hz room ceiling, so 350-357 Hz is owned by neither layer. That gap is
 disclosed, not introduced: the gate never had authority at 350 Hz in such a
-room, and grading there was the thing #2551 stopped. Whether the room ceiling
-should follow the trusted floor is a room-layer policy question, deliberately
-not answered here.
+room, and grading there was the thing #2551 stopped. ADR-0256 answers the
+question that gap raised: the room ceiling IS the applied tune's trusted
+floor, clamped (:func:`room_ceiling_hz`), so the gap closes by construction.
 
 What is NOT owned here
 ----------------------
@@ -95,7 +95,7 @@ What is NOT owned here
   becomes per-room.
 
 The ceiling follows the applied tune's trusted floor, clamped to the bounds
-below; no estimator is built. See ADR-0256.
+below (:func:`room_ceiling_hz`); no estimator is built. See ADR-0256.
 """
 from __future__ import annotations
 
@@ -118,3 +118,12 @@ ROOM_BOUNDARY_DEFAULT_HZ: float = 350.0
 # strategy's band.
 ROOM_BOUNDARY_MIN_HZ: float = GATED_SPEC_LOWER_EDGE_HZ
 ROOM_BOUNDARY_MAX_HZ: float = 500.0
+
+
+def room_ceiling_hz(trusted_floor_hz: float | None) -> float:
+    """Where the room layer stops (ADR-0256 rule 1): the applied tune's
+    trusted floor inside ``[ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]``, or
+    :data:`ROOM_BOUNDARY_DEFAULT_HZ` when no floor is readable."""
+    if trusted_floor_hz is None:
+        return ROOM_BOUNDARY_DEFAULT_HZ
+    return min(max(float(trusted_floor_hz), ROOM_BOUNDARY_MIN_HZ), ROOM_BOUNDARY_MAX_HZ)

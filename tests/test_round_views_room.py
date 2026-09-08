@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room views: the median contract, what persists across the cube, and
-where the ceiling comes from."""
+"""The room views: the median contract, what persists across the cube, where
+the ceiling comes from, and the answers that summarize without the curves."""
 
 from __future__ import annotations
 
@@ -13,15 +13,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.active_speaker.crossover_v2 import room_views
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
+    room_ceiling_hz,
 )
 from jasper.cli import round_views
 from jasper.cli.round_views import room
-from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
+from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round
 
 #: Away from every feature below, where the ladder alone sets the numbers.
 _QUIET_HZ = 200.0
@@ -49,7 +51,7 @@ def _run(capsys: pytest.CaptureFixture[str], argv: list[str]) -> dict:
 def test_room_median_is_the_contract_a_room_candidate_reads(tmp_path: Path, capsys) -> None:
     round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube())
 
-    answer = _run(capsys, ["room-median", str(round_dir)])
+    _run(capsys, ["room-median", str(round_dir)])
 
     doc = json.loads((round_dir / "room_median.json").read_text())
     assert set(doc) == {
@@ -57,8 +59,7 @@ def test_room_median_is_the_contract_a_room_candidate_reads(tmp_path: Path, caps
         "ceiling_hz", "ceiling_source", "window",
     }
     freqs = np.asarray(doc["freqs_hz"])
-    assert freqs[0] >= room.ROOM_FLOOR_HZ and freqs[-1] <= doc["ceiling_hz"]
-    assert (doc["ceiling_hz"], doc["ceiling_source"]) == (ROOM_BOUNDARY_DEFAULT_HZ, "fallback")
+    assert freqs[0] >= room_views.ROOM_FLOOR_HZ and freqs[-1] <= doc["ceiling_hz"]
     assert (doc["n_positions"], doc["window"]) == (7, "ungated")
     at = int(np.argmin(np.abs(freqs - _QUIET_HZ)))
     assert doc["median_db"][at] == pytest.approx(-27.0)
@@ -67,13 +68,12 @@ def test_room_median_is_the_contract_a_room_candidate_reads(tmp_path: Path, caps
         [i - 3.0 for i in range(7)]
     )
     assert len({p["pose_key"] for p in doc["positions"]}) == 7
-    assert answer["mean_spread_db"]["20-60"] == pytest.approx(2.0)
 
 
 def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, capsys) -> None:
     round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube())
 
-    answer = _run(capsys, ["room-persistence", str(round_dir)])
+    _run(capsys, ["room-persistence", str(round_dir)])
 
     doc = json.loads((round_dir / "room_persistence.json").read_text())
     by_kind = {feature["kind"]: feature for feature in doc["features"]}
@@ -83,12 +83,21 @@ def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, caps
     assert (by_kind["dip"]["n_present"], by_kind["dip"]["presence_fraction"]) == (7, 1.0)
     assert by_kind["peak"]["n_present"] == 3
     assert by_kind["peak"]["presence_fraction"] == pytest.approx(3 / 7)
-    assert (answer["persistent"], answer["top"][0]["kind"]) == (1, "dip")
+
+
+def test_the_answers_summarize_without_the_curves(tmp_path: Path, capsys) -> None:
+    round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube())
+
+    median = _run(capsys, ["room-median", str(round_dir)])
+    persistence = _run(capsys, ["room-persistence", str(round_dir)])
+
+    assert median["mean_spread_db"]["20-60"] == pytest.approx(2.0)
+    assert "freqs_hz" not in median and "median_db" not in median
+    assert (persistence["persistent"], persistence["top"][0]["kind"]) == (1, "dip")
+    assert "features" in persistence and isinstance(persistence["features"], int)
 
 
 def test_a_round_with_no_seat_takes_is_refused_by_name(tmp_path: Path, capsys) -> None:
-    from tests.crossover_v2_banked_round import bank_measure_round
-
     round_dir = bank_measure_round(tmp_path)
 
     code = round_views.main(["room-median", str(round_dir)])
@@ -98,28 +107,33 @@ def test_a_round_with_no_seat_takes_is_refused_by_name(tmp_path: Path, capsys) -
 
 
 @pytest.mark.parametrize(
-    ("raw_floor_hz", "ceiling_hz"),
+    ("trusted_floor_hz", "ceiling_hz"),
     [
-        (60.0, ROOM_BOUNDARY_MIN_HZ),
-        (130.0, 130.0 * TRUSTED_FLOOR_MULTIPLIER),
-        (400.0, ROOM_BOUNDARY_MAX_HZ),
+        (None, ROOM_BOUNDARY_DEFAULT_HZ),
+        (150.0, ROOM_BOUNDARY_MIN_HZ),
+        (325.0, 325.0),
+        (1000.0, ROOM_BOUNDARY_MAX_HZ),
     ],
 )
-def test_the_ceiling_is_the_applied_trusted_floor_clamped(
-    monkeypatch: pytest.MonkeyPatch, raw_floor_hz: float, ceiling_hz: float,
-) -> None:
-    """``validity_floor_hz`` is the cloud's ``1/T`` floor; the ceiling is its
-    trusted ``2.5/T``, inside the room boundary's bounds (ADR-0256 rule 1)."""
+def test_the_ceiling_is_the_trusted_floor_clamped(trusted_floor_hz, ceiling_hz) -> None:
+    """ADR-0256 rule 1, at the module that owns the bounds."""
+    assert room_ceiling_hz(trusted_floor_hz) == ceiling_hz
+
+
+def test_the_ceiling_reads_the_banked_floor_as_the_raw_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``validity_floor_hz`` is the cloud's ``1/T`` floor; the trusted floor
+    is ``TRUSTED_FLOOR_MULTIPLIER`` times it, and that is what is clamped."""
     monkeypatch.setattr(
-        room, "applied_profile_source",
-        lambda path: ({"exclusion_evidence": {"validity_floor_hz": raw_floor_hz}}, ""),
+        room_views, "applied_profile_source",
+        lambda path: ({"exclusion_evidence": {"validity_floor_hz": 130.0}}, ""),
     )
 
-    ceiling = room.room_ceiling(Path("applied-profile.json"))
+    ceiling = room_views.room_ceiling(Path("applied-profile.json"))
 
-    assert (ceiling.ceiling_hz, ceiling.source) == (ceiling_hz, "applied_candidate")
-    assert ceiling.trusted_floor_hz == pytest.approx(raw_floor_hz * TRUSTED_FLOOR_MULTIPLIER)
-    assert ceiling.raw_floor_hz == raw_floor_hz
+    assert (ceiling.ceiling_hz, ceiling.source) == (
+        130.0 * TRUSTED_FLOOR_MULTIPLIER, room_views.CEILING_SOURCE_APPLIED,
+    )
+    assert (ceiling.raw_floor_hz, ceiling.reason) == (130.0, "")
 
 
 @pytest.mark.parametrize(
@@ -129,18 +143,21 @@ def test_the_ceiling_is_the_applied_trusted_floor_clamped(
         lambda path: ({"exclusion_evidence": {"validity_floor_hz": None}}, ""),
         lambda path: ({}, ""),
     ],
+    ids=["no-profile", "no-floor", "no-evidence"],
 )
 def test_a_missing_floor_falls_back_and_says_so(monkeypatch: pytest.MonkeyPatch, source) -> None:
-    monkeypatch.setattr(room, "applied_profile_source", source)
+    monkeypatch.setattr(room_views, "applied_profile_source", source)
 
-    ceiling = room.room_ceiling(None)
+    ceiling = room_views.room_ceiling(None)
 
-    assert (ceiling.ceiling_hz, ceiling.source) == (ROOM_BOUNDARY_DEFAULT_HZ, "fallback")
+    assert (ceiling.ceiling_hz, ceiling.source) == (
+        ROOM_BOUNDARY_DEFAULT_HZ, room_views.CEILING_SOURCE_FALLBACK,
+    )
     assert ceiling.trusted_floor_hz is None
     assert isinstance(ceiling.reason, str) and ceiling.reason
 
 
-def test_room_ceiling_writes_the_disclosed_fallback_for_a_round_with_no_profile(
+def test_room_ceiling_writes_the_disclosed_fallback_and_inventory_lists_the_room(
     tmp_path: Path, capsys,
 ) -> None:
     round_dir = bank_seat_round(tmp_path)
@@ -148,8 +165,7 @@ def test_room_ceiling_writes_the_disclosed_fallback_for_a_round_with_no_profile(
     answer = _run(capsys, ["room-ceiling", str(round_dir)])
 
     doc = json.loads((round_dir / "room_ceiling.json").read_text())
-    assert doc["ceiling_source"] == answer["ceiling_source"] == "fallback"
-    assert doc["ceiling_hz"] == ROOM_BOUNDARY_DEFAULT_HZ
+    assert doc["ceiling_source"] == answer["ceiling_source"] == room_views.CEILING_SOURCE_FALLBACK
     assert doc["clamp_hz"] == [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]
     _run(capsys, ["inventory", str(round_dir)])
     rows = {
