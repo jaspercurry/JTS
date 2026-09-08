@@ -34,7 +34,8 @@ from tests.voice_replay import RecordingPlayout
 
 
 @pytest.fixture(params=["gemini", "openai", "grok"])
-async def provider(request):
+async def provider(request, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     name = request.param
     factory = _FakeConnect() if name == "gemini" else _FakeConnectFactory()
     cls = {"gemini": GeminiLiveConnection, "openai": OpenAIRealtimeConnection,
