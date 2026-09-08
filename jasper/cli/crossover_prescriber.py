@@ -281,6 +281,10 @@ def _cmd_packet(args: argparse.Namespace) -> int:
             EXIT_WRITE_FAILED, REASON_UNWRITABLE, f"could not write {out}: {exc}"
         )
     summary = _packet_summary(packet, out, size_bytes)
+    summary["rebuild_status_command"] = shlex.join([
+        PROG, "status", *_evidence_words(args),
+        *(["--state", args.state] if args.state else []),
+    ])
     print(
         f"packet {(summary['packet_fingerprint'] or '')[:16]} "
         f"round={summary['round_id']} -> {out} ({summary['bytes']} bytes)",
@@ -1107,15 +1111,7 @@ def status_document(
     evidence: list[str],
     state: str | None,
 ) -> dict[str, Any]:
-    """Where this speaker stands, and what to run next, as a value.
-
-    The packet is a parameter rather than an ``argparse.Namespace`` so a caller
-    that already built one need not walk the bundle again; ``session_dir``,
-    ``evidence`` and ``state`` are what a printed command must carry to read
-    the same evidence this report read. An unreadable bundle does not stop the report:
-    the packet's failure becomes every evidence section's reason, and the spool
-    is reported truthfully regardless.
-    """
+    """Read status without rebuilding a supplied packet or consuming the spool."""
     sections = _status_sections(packet, packet_error)
     context: dict[str, Any] = {
         "frozen_packet": None, "latest_agent_note": None, "context_error": None,
