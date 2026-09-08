@@ -35,33 +35,17 @@ def wake_loop_for_tests(
     legs=_UNSET,
     manual_mics=None,
     tts=None,
+    cfg=None,
+    cues=None,
+    ducker=None,
+    volume_coordinator=None,
     vad=_UNSET,
     conversation_store: ConversationStore | None = None,
     wake_event_store: WakeEventStore | None = None,
     current_event_id: str | None = None,
     **overrides,
 ) -> WakeLoop:
-    """Build a fully-shaped WakeLoop without opening hardware.
-
-    The supported seam for unit tests that exercise individual
-    methods, so production code needs no defensive probes for
-    partially-initialised instances.
-
-    ``**overrides`` are applied by ``setattr`` AFTER construction, so
-    they cannot reach a decision ``__init__`` makes from its
-    arguments. ``legs``, ``manual_mics``, ``tts``, ``vad``,
-    ``conversation_store`` and ``wake_event_store`` are
-    constructor-time knobs, so a test can
-    build the shape a push-to-talk-only speaker actually has — no
-    wake legs plus a manual mic source — and exercise the real
-    derivation rather than a value poked in afterwards. Pass
-    ``legs=[]`` to mean "none"; omitting it keeps the default primary
-    leg. Pass ``vad=None`` to let ``__init__`` make its own VAD
-    decision. ``current_event_id`` seeds the wake-telemetry object's
-    in-flight event id right after construction, for tests that
-    exercise a funnel-stage or teardown write without going through
-    ``on_fire`` first.
-    """
+    """Inject collaborators at construction; overrides seed local turn state."""
 
     class _TestMic:
         async def frames(self):
@@ -182,7 +166,7 @@ def wake_loop_for_tests(
         def reset(self) -> None:
             return None
 
-    cfg = SimpleNamespace(
+    cfg = cfg if cfg is not None else SimpleNamespace(
         active_voice_model="",
         duck_db=0.0,
         idle_timeout_sec=10.0,
@@ -202,12 +186,15 @@ def wake_loop_for_tests(
         cfg=cfg,
         tts=_TestTts() if tts is None else tts,
         connection=_TestConnection(),
-        ducker=_TestDucker(),
+        ducker=_TestDucker() if ducker is None else ducker,
+        cues=cues,
         content_activity=_TestContentActivity(),
         usage_store=_TestUsageStore(),
         spend_cap=_TestSpendCap(),
         stop_event=asyncio.Event(),
-        volume_coordinator=_TestVolumeCoordinator(),
+        volume_coordinator=(
+            _TestVolumeCoordinator() if volume_coordinator is None else volume_coordinator
+        ),
         legs=[
             LegRuntime(
                 by_token("on"),
