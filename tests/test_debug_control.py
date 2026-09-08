@@ -17,6 +17,19 @@ from jasper import debug_mode
 from jasper.control import debug_control
 from jasper.env_file import read_env_file
 
+from tests.control_server_fixtures import (
+    _explicit_passive_output_topology,
+    _isolate_household_secret,
+    _post,
+    server_with_coordinator,
+)
+
+_IMPORTED_FIXTURES = (
+    _explicit_passive_output_topology,
+    _isolate_household_secret,
+    server_with_coordinator,
+)
+
 NOW = 1_000_000.0
 TTL = debug_mode.DEFAULT_TTL_SEC
 
@@ -81,7 +94,7 @@ def _env(path) -> dict[str, str]:
 
 
 def test_set_debug_voice_writes_restarts_and_arms(dc):
-    st = debug_control.set_debug("voice", True, now=NOW)
+    st, _restart_result = debug_control.set_debug("voice", True, now=NOW)
     env = _env(dc.path)
     assert env["JASPER_DEBUG_VOICE"] == "1"
     assert env[debug_mode.EXPIRES_KEY] == str(int(NOW + TTL))
@@ -172,3 +185,35 @@ def test_on_expiry_clears_flags_without_restart(dc):
     assert env["JASPER_DEBUG_VOICE"] == "0"
     assert env[debug_mode.EXPIRES_KEY] == ""
     assert dc.restarts == []  # the daemon quiets itself; no restart on expiry
+
+
+# -------------------------------------------------------- broker plumbing
+
+
+@pytest.mark.parametrize(
+    "broker_ok, expected_status",
+    [(False, 502), (True, 202)],
+)
+def test_post_debug_answers_through_the_broker_result_helper(
+    monkeypatch, tmp_path, server_with_coordinator, broker_ok, expected_status,
+):
+    """POST /debug's restart now goes through the same broker envelope as
+    every other --no-block action: refused is 502 with a code, ok is 202 —
+    never the old bare-Popen claim that the restart already happened."""
+    monkeypatch.setattr(debug_mode, "DEBUG_FILE", str(tmp_path / "debug.env"))
+    monkeypatch.setattr(debug_control, "_arm_expiry_locked", lambda *a, **k: None)
+    monkeypatch.setattr(
+        debug_control.restart_broker,
+        "manage_units",
+        lambda *units, **kwargs: {"ok": broker_ok, "units": list(units)},
+    )
+
+    base, _fake = server_with_coordinator
+    status, body = _post(f"{base}/debug", {"subsystem": "voice", "enabled": True})
+
+    assert status == expected_status
+    if broker_ok:
+        assert body["subsystems"]
+    else:
+        assert body["code"] == "debug_restart_failed"
+        assert body.get("ok") is not True

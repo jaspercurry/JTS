@@ -298,7 +298,7 @@ class SystemRoutes(ControlHandlerMixin):
             )
             return
         try:
-            debug_control.set_debug(subsystem, enabled)
+            _state, restart_result = debug_control.set_debug(subsystem, enabled)
         except ValueError as e:
             self._send_json({"error": str(e)}, status=400)
             return
@@ -308,6 +308,16 @@ class SystemRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
+        if restart_result is not None and not restart_result.get("ok"):
+            self._send_broker_result(
+                restart_result,
+                error=(
+                    f"The {subsystem} debug flag was saved, but its "
+                    "restart could not be scheduled."
+                ),
+                code="debug_restart_failed",
+            )
+            return
         log_event(
             logger,
             "debug.toggle",
@@ -315,7 +325,7 @@ class SystemRoutes(ControlHandlerMixin):
             enabled=enabled,
             client=self.address_string(),
         )
-        self._send_json(debug_control.snapshot())
+        self._send_json(debug_control.snapshot(), status=202)
         return
 
     def _post_usb_forensics(self) -> None:
