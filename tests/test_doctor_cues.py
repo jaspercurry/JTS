@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the jasper-doctor cue-cache domain."""
+"""Unit tests for the jasper-doctor cue domain: the baked cache and the
+delivery record the running daemon publishes."""
 from __future__ import annotations
 
 import urllib.parse
@@ -11,9 +12,11 @@ from pathlib import Path
 import pytest
 
 from jasper.cli.doctor import cues
+from jasper.cli.doctor._evidence import StatusRead, evidence
 from jasper.cues.factory import build_cue_tts_backend
 from jasper.cues.manager import AudioCueManager
 from jasper.cues.registry import CueDef
+from jasper.platform.control_client import ControlError
 
 from .doctor_test_support import _fresh_cfg
 
@@ -82,3 +85,86 @@ def test_check_cue_cache_classifies_the_registry(
     result = cues.check_cue_cache(cfg)
     assert result.status == status
     assert result.reason == (getattr(cues, reason_name) if reason_name else "")
+
+
+# --- check_cue_delivery ---
+
+
+def _delivery_state(*, failed: int, outcome: str, reason: str) -> dict:
+    """A /state cue block, counts taken from a real manager's snapshot so a
+    new outcome in the closed set can't silently drift out of this fixture."""
+    state = AudioCueManager("/nonexistent", "jts.local", "Aoede").snapshot()
+    state["counts"].update({"delivered": 3, "failed": failed})
+    state["last"] = {
+        "outcome": outcome, "reason": reason, "slug": "wake_ack",
+        "age_seconds": 5.0,
+    }
+    return state
+
+
+_UNREACHABLE = StatusRead(None, ControlError("connection refused"))
+
+
+@pytest.mark.parametrize(
+    "read, streambox, status, reason",
+    [
+        # (1) jasper-control could not be read at all.
+        (_UNREACHABLE, False, "skipped", cues.REASON_CUE_DELIVERY_UNAVAILABLE),
+        # (2) the daemon answers but carries no cue manager: every failure
+        # cue is silent, which is the streambox's normal shape and nobody
+        # else's.
+        (
+            StatusRead({"cues": None}), False,
+            "warn", cues.REASON_CUE_DELIVERY_NO_MANAGER,
+        ),
+        (
+            StatusRead({"cues": None}), True,
+            "skipped", cues.REASON_CUE_DELIVERY_NO_MANAGER,
+        ),
+        # (3) shape drift — never `ok`, because nothing was observed.
+        (
+            StatusRead({"cues": {"counts": [], "last": None}}), False,
+            "skipped", cues.REASON_CUE_DELIVERY_UNAVAILABLE,
+        ),
+        (
+            StatusRead({"cues": {"counts": {"failed": True}, "last": None}}), False,
+            "skipped", cues.REASON_CUE_DELIVERY_UNAVAILABLE,
+        ),
+        # (4) the LAST attempt failed.
+        (
+            StatusRead({"cues": _delivery_state(
+                failed=2, outcome="failed", reason="no_cache",
+            )}), False,
+            "warn", cues.REASON_CUE_DELIVERY_FAILED,
+        ),
+        # (5) delivering now. A historical failure count is carried in the
+        # detail rather than alarming forever — the counters are monotonic.
+        (
+            StatusRead({"cues": _delivery_state(
+                failed=2, outcome="delivered", reason="ok",
+            )}), False,
+            "ok", "",
+        ),
+        (
+            StatusRead({"cues": _delivery_state(
+                failed=0, outcome="delivered", reason="ok",
+            )}), False,
+            "ok", "",
+        ),
+    ],
+    ids=[
+        "control_unreachable", "no_manager", "no_manager_on_streambox",
+        "counts_not_a_dict", "failed_is_a_bool", "last_attempt_failed",
+        "recovered_after_failures", "never_failed",
+    ],
+)
+def test_check_cue_delivery_classifies_the_snapshot(
+    read, streambox, status, reason,
+):
+    evidence.seed("control_state", read)
+    evidence.seed("install_profile_is_streambox", streambox)
+
+    result = cues.check_cue_delivery()
+
+    assert result.status == status
+    assert result.reason == reason

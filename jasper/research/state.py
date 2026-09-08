@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import os
-import time
 from datetime import datetime, timezone
 from typing import Any
 
 from ..env_load import merged_env_files
+from ..json_fields import age_seconds
 from .catalog import PROVIDERS, provider_by_id
 from .scheduler import DEFAULT_DB_PATH, DONE, FAILED, RUNNING, ResearchJobStore
 
@@ -161,7 +161,7 @@ def _recent_failure(jobs) -> dict[str, Any] | None:
     return {
         "job_id": latest.id,
         "finished_at": _iso(when),
-        "age_seconds": max(0.0, round(time.time() - when, 1)),
+        "age_seconds": age_seconds(when),
         "announced": latest.announced,
         "read": latest.read,
         "error_present": bool(latest.error),

@@ -36,6 +36,7 @@ from ..audio_io import (
 from ..camilla import CueDuck
 from ..config import Config
 from ..cues import AudioCueManager
+from ..cues.manager import REASON_BUSY, REASON_OUTPUT_ACTIVE
 from ..tts_routing import (
     tts_socket_feeds_post_dsp_outputd,
     tts_socket_feeds_pre_dsp_fanin,
@@ -352,7 +353,8 @@ class AssistantOutput:
         that distinct code on the wire, which a plain `busy` would hide."""
         if not slug:
             return "missing_slug"
-        if self._cues is None:
+        cues = self._cues
+        if cues is None:
             return "cues_not_configured"
         from ..cues.registry import find as _find
         if _find(slug) is None:
@@ -360,6 +362,7 @@ class AssistantOutput:
         refusal = self.admission_refusal()
         if refusal is not None:
             log_event(logger, "cue.skipped", reason=refusal, slug=slug)
+            cues.note_skipped(refusal, slug)
             return refusal
         if self._output_gate.is_active:
             log_event(
@@ -368,7 +371,8 @@ class AssistantOutput:
                 slug=slug,
                 active_kind=self._output_gate.active_kind,
             )
-            return "busy"
+            cues.note_skipped(REASON_BUSY, slug)
+            return REASON_BUSY
         episode = await self._output_gate.begin_if_idle("admin")
         if episode is None:
             log_event(
@@ -377,7 +381,8 @@ class AssistantOutput:
                 slug=slug,
                 active_kind=self._output_gate.active_kind,
             )
-            return "busy"
+            cues.note_skipped(REASON_BUSY, slug)
+            return REASON_BUSY
         played = await self._play_cue_owned(slug, episode)
         return "ok" if played else "play_failed"
 
@@ -496,7 +501,8 @@ class AssistantOutput:
         this method's to release on EVERY exit, the unconfigured-cues one
         included — otherwise it leaks the gate and the speaker goes deaf to
         every later cue."""
-        if self._cues is None:
+        cues = self._cues
+        if cues is None:
             if episode is not None:
                 await self._output_gate.end(episode)
             # Cues are how the user hears why the speaker did not respond.
@@ -521,13 +527,15 @@ class AssistantOutput:
         if episode is None:
             episode = await self._output_gate.begin_if_idle("admin")
         if episode is None:
+            reason = self.admission_refusal() or REASON_OUTPUT_ACTIVE
             log_event(
                 logger,
                 "cue.skipped",
-                reason=self.admission_refusal() or "output_active",
+                reason=reason,
                 slug=slug,
                 active_kind=self._output_gate.active_kind,
             )
+            cues.note_skipped(reason, slug)
             return False
         return await self._play_cue_owned(slug, episode)
 

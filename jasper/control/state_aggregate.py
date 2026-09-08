@@ -144,6 +144,8 @@ _VOICE_STATUS_PUBLISHED_KEYS = (
     frozenset(_VOICE_STATUS_DIRECT_KEYS)
     | frozenset(_VOICE_STATUS_NESTED_FIELDS.values())
 )
+#: Not pulled through into `/state.voice`: either internal to the daemon, or
+#: published at the TOP level of `/state` instead (`research`, `cues`).
 _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "state",
     "input_ended",
@@ -152,6 +154,7 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "active_manual_mic_source",
     "barge_in_reconcile",
     "research",
+    "cues",
 })
 
 
@@ -1166,6 +1169,8 @@ async def _get_state(
         # Async research summary. Counts and timestamps only; no prompt or
         # answer text leaves the local store through /state.
         "research": research_state,
+        # AudioCueManager.snapshot() verbatim; never the cue/dynamic text.
+        "cues": voice_status.get("cues"),
         # The open measurement window as this process sees it — an in-memory
         # read of its own self-expiring copy, not a probe. `held_for_s` is
         # what jasper-doctor's check_measurement_hold reads: `expires_in_s`

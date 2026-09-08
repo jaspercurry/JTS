@@ -27,7 +27,7 @@ import shlex
 import stat as _stat
 import subprocess
 from collections.abc import Iterable
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
     CHECK_STATUSES,
     CheckResult,
@@ -396,3 +396,11 @@ def _loopback_playback_active() -> bool:
         index <= 4 and first_line(status) not in ("", "closed")
         for index, status in evidence.loopback_substreams().items()
     )
+
+
+def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
+    """Drill a nested dict out of a jasper-control HTTP payload along
+    ``keys``, fail-soft to None on any shape mismatch."""
+    for key in keys:
+        payload = payload.get(key) if isinstance(payload, dict) else None
+    return payload if isinstance(payload, dict) else None

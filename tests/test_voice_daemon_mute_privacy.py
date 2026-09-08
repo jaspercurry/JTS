@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._cue_spy import SpyCues
 from tests._log_events import event_fields
 from tests._wake_loop import wake_loop_for_tests
 
@@ -128,7 +129,7 @@ async def test_public_play_cue_reports_playback_failure() -> None:
 
 async def test_public_play_cue_reports_busy_when_output_active() -> None:
 
-    class _FakeCues:
+    class _FakeCues(SpyCues):
         async def play(self, _slug: str) -> bool:
             raise AssertionError("busy cue must not play")
 

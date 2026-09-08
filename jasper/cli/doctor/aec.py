@@ -5,7 +5,6 @@
 """jasper-doctor checks — aec domain."""
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
@@ -50,7 +49,7 @@ from ...aec.bridge_config import (
     REF_SOURCE_ENV,
 )
 from ...aec.bridge_engines import DTLN_ENABLED_ENV
-from ...aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
+from ...aec.bridge_telemetry import read_bridge_stats
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -1337,15 +1336,7 @@ def check_aec_bridge_output_health() -> CheckResult:
 
 def _read_bridge_stats_snapshot() -> dict | None:
     """Read the bridge's one live stats snapshot source."""
-    stats_path = Path(os.environ.get(
-        BRIDGE_STATS_PATH_ENV,
-        "/run/jasper/aec_bridge_stats.json",
-    ))
-    try:
-        stats = json.loads(stats_path.read_text())
-    except (OSError, UnicodeError, ValueError, OverflowError):
-        return None
-    return stats if isinstance(stats, dict) else None
+    return read_bridge_stats()
 
 
 def _applied_reference_source(stats: dict | None) -> str | None:

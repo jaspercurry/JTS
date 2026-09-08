@@ -53,8 +53,9 @@ def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
         raw = os.environ.get(BRIDGE_STATS_PATH_ENV, "").strip()
         stats_path = Path(raw) if raw else BRIDGE_STATS_PATH
     try:
+        # ValueError covers json.JSONDecodeError and a non-UTF-8 UnicodeDecodeError.
         data = json.loads(stats_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         log_event(
             logger,
             "aec_bridge.stats_unavailable",

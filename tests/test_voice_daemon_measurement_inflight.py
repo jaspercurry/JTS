@@ -60,6 +60,7 @@ from jasper.voice.measurement_hold import (
 from jasper.voice_daemon import State, WakeLoop
 
 from ._async_wait import wait_signalled
+from ._cue_spy import SpyCues
 from ._log_events import event_fields, event_records
 from ._wake_loop import wake_loop_for_tests
 
@@ -205,8 +206,11 @@ class _TailHeldTts:
         return None
 
 
-class _RefusingCues:
-    """Cue manager that raises if asked to play — proves nothing played."""
+class _RefusingCues(SpyCues):
+    """Cue manager that raises if asked to play — proves nothing played.
+
+    The rest of the surface is the shared spy's, so a gate that records its
+    refusal on the manager still finds the method there."""
 
     async def play(self, _slug: str) -> bool:
         raise AssertionError("cue must not play during a measurement window")

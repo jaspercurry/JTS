@@ -49,6 +49,12 @@ def utc_now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def age_seconds(epoch: float) -> float:
+    """Seconds since ``epoch``, floored at zero so a backwards clock step
+    cannot publish a negative age."""
+    return max(0.0, round(time.time() - epoch, 1))
+
+
 def sha256_file(path: str | os.PathLike[str]) -> str:
     """SHA-256 hex of a file's bytes, read in bounded chunks.
 

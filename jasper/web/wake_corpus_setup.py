@@ -130,7 +130,6 @@ from jasper.wake_corpus.bridge_session import (  # noqa: F401 - re-exported
     BRIDGE_CORPUS_OUTPUT_VARS,
     BRIDGE_OUTPUT_LABELS,
     BRIDGE_RESTART_TIMEOUT_SEC,
-    BRIDGE_STATS_PATH,
     BRIDGE_UNIT,
     CAPTURE_PLAN_SCHEMA_VERSION,
     CHIP_AEC_LEGS,

@@ -2577,6 +2577,7 @@ class WakeLoop:
             # only flushes locally while the server may resume (Gemini).
             "barge_in_reconcile": self._barge_in_reconcile.value,
             "research": self._research.status(),
+            "cues": self._cues.snapshot() if self._cues is not None else None,
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:

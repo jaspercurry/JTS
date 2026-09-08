@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import wave
@@ -13,13 +14,16 @@ import pytest
 
 from jasper.cues import AudioCueManager, CUES
 from jasper.cues.generator import (
+    TTS_MODEL,
     TTSResult,
     WAV_CHANNELS,
     WAV_RATE,
     WAV_SAMPLE_WIDTH,
     cue_filename,
+    dynamic_text_path,
 )
-from jasper.cues.registry import find
+from jasper.cues import manager as manager_mod
+from jasper.cues.registry import CueDef, find
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields
 
@@ -244,6 +248,17 @@ def test_status_reports_cached_and_not_cached(tmp_path):
 # --- play ---
 
 
+def _assert_outcome(mgr, outcome, reason, *, slug, count=1):
+    """The whole `last` record plus that outcome's count — one play()
+    attempt records exactly once, whatever path it took."""
+    snap = mgr.snapshot()
+    assert snap["last"] == {
+        "outcome": outcome, "reason": reason, "slug": slug,
+        "age_seconds": snap["last"]["age_seconds"],
+    }
+    assert snap["counts"][outcome] == count
+
+
 def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     backend = _FakeBackend(samples_24k=240)
     tts = _FakeTtsPlayout()
@@ -260,6 +275,8 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     # WAVs are at Gemini's native 24kHz mono — 240 samples = 480 bytes.
     # TtsPlayout upsamples to 48k internally; the manager doesn't.
     assert len(tts.writes[0]) == 480
+
+    _assert_outcome(mgr, "delivered", "ok", slug="spend_cap_reached")
 
 
 def test_play_passes_measured_cue_source_profile(tmp_path):
@@ -312,6 +329,141 @@ def test_speak_text_passes_measured_dynamic_source_profile(tmp_path):
     assert profile.confidence == 1.0
 
 
+# --- speak_text outcome recording ---
+
+
+class _RaisingSynthesisBackend:
+    def synthesise(self, text: str) -> TTSResult:
+        raise RuntimeError("synthesis exploded")
+
+
+def _speak_text_delivered(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    return mgr, lambda: mgr.speak_text("hello")
+
+
+def _speak_text_no_playout(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=None,
+    )
+    return mgr, lambda: mgr.speak_text("hello")
+
+
+def _speak_text_no_backend(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=None, tts_playout=_FakeTtsPlayout(),
+    )
+    return mgr, lambda: mgr.speak_text("hello")
+
+
+def _speak_text_stale_pre_synth(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    return mgr, lambda: mgr.speak_text_guarded("hello", should_play=lambda: False)
+
+
+def _speak_text_synthesis_error(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_RaisingSynthesisBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    return mgr, lambda: mgr.speak_text("hello")
+
+
+def _speak_text_read_error(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    path = dynamic_text_path(str(tmp_path), "hello", "Aoede", TTS_MODEL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"not a wav file")
+    return mgr, lambda: mgr.speak_text("hello")
+
+
+def _speak_text_stale_post_synth(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    calls = {"n": 0}
+
+    def should_play() -> bool:
+        calls["n"] += 1
+        return calls["n"] == 1  # true pre-synth, false post-synth
+
+    return mgr, lambda: mgr.speak_text_guarded("hello", should_play=should_play)
+
+
+def _speak_text_write_error(tmp_path):
+    tts = _FakeTtsPlayout()
+    tts.fail_with = RuntimeError("ALSA hates us today")
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=tts,
+    )
+    return mgr, lambda: mgr.speak_text("hello")
+
+
+@pytest.mark.parametrize(
+    "build, expected_ok, outcome, reason",
+    [
+        (_speak_text_delivered, True, "delivered", "ok"),
+        (_speak_text_no_playout, False, "failed", "no_playout"),
+        (_speak_text_no_backend, False, "failed", "no_backend"),
+        (_speak_text_stale_pre_synth, False, "skipped", "stale_text"),
+        (_speak_text_synthesis_error, False, "failed", "synthesis_error"),
+        (_speak_text_read_error, False, "failed", "read_error"),
+        (_speak_text_stale_post_synth, False, "skipped", "stale_text"),
+        (_speak_text_write_error, False, "failed", "write_error"),
+    ],
+    ids=[
+        "delivered", "no_playout", "no_backend", "stale_pre_synth",
+        "synthesis_error", "read_error", "stale_post_synth", "write_error",
+    ],
+)
+def test_speak_text_records_outcome(tmp_path, build, expected_ok, outcome, reason):
+    mgr, call = build(tmp_path)
+
+    ok = asyncio.run(call())
+
+    assert ok is expected_ok
+    # Dynamic speech is never keyed by its own text.
+    _assert_outcome(mgr, outcome, reason, slug="text")
+
+
+def test_snapshot_starts_empty(tmp_path):
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+    )
+    assert mgr.snapshot() == {
+        "counts": {
+            "delivered": 0, "fallback": 0, "stale": 0, "skipped": 0, "failed": 0,
+        },
+        "last": None,
+    }
+
+
+def test_snapshot_never_leaks_dynamic_text(tmp_path):
+    secret = "the launch code is 12345 zebra unicorn"
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+
+    assert asyncio.run(mgr.speak_text(secret)) is True
+
+    assert secret not in json.dumps(mgr.snapshot())
+
+
 def test_play_returns_false_with_no_tts_playout(tmp_path):
     backend = _FakeBackend()
     mgr = AudioCueManager(
@@ -321,6 +473,8 @@ def test_play_returns_false_with_no_tts_playout(tmp_path):
     mgr.regenerate()
     assert asyncio.run(mgr.play("spend_cap_reached")) is False
 
+    _assert_outcome(mgr, "failed", "no_playout", slug="spend_cap_reached")
+
 
 def test_play_unknown_slug_returns_false(tmp_path):
     mgr = AudioCueManager(
@@ -328,6 +482,8 @@ def test_play_unknown_slug_returns_false(tmp_path):
         backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
     )
     assert asyncio.run(mgr.play("not_a_real_slug")) is False
+
+    _assert_outcome(mgr, "failed", "unknown_slug", slug="not_a_real_slug")
 
 
 def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
@@ -351,6 +507,8 @@ def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
     assert len(tts.writes) == 1
     assert tts.waits == 1
 
+    _assert_outcome(mgr, "stale", "ok", slug="spend_cap_reached")
+
 
 def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
     """Empty sounds dir + no stale fallback → silent failure but no
@@ -364,6 +522,8 @@ def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is False
     assert tts.writes == []
+
+    _assert_outcome(mgr, "failed", "no_cache", slug="spend_cap_reached")
 
 
 def test_play_swallows_tts_write_exception(tmp_path):
@@ -379,6 +539,26 @@ def test_play_swallows_tts_write_exception(tmp_path):
     mgr.regenerate()
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is False
+
+    _assert_outcome(mgr, "failed", "write_error", slug="spend_cap_reached")
+
+
+def test_play_records_failed_on_wav_read_error(tmp_path):
+    """A cached file that isn't a readable WAV (truncated write, disk
+    corruption) fails closed with a read_error outcome, never raises."""
+    cue = find("spend_cap_reached")
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    os.makedirs(os.path.dirname(mgr.expected_path(cue)), exist_ok=True)
+    with open(mgr.expected_path(cue), "wb") as f:
+        f.write(b"not a wav file")
+
+    ok = asyncio.run(mgr.play("spend_cap_reached"))
+
+    assert ok is False
+    _assert_outcome(mgr, "failed", "read_error", slug="spend_cap_reached")
 
 
 @pytest.mark.parametrize("operation", ["play", "speak_text"])
@@ -528,6 +708,87 @@ def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(tmp_path):
     mgr.regenerate(slug="cant_connect")
     assert asyncio.run(mgr.play("provider_out_of_credit")) is True
     assert len(tts.writes) == 1
+
+    # One user-visible attempt, one record: the delegated cue is not
+    # counted a second time as "delivered".
+    _assert_outcome(mgr, "fallback", "ok", slug="provider_out_of_credit")
+    assert mgr.snapshot()["counts"]["delivered"] == 0
+
+
+def test_play_reports_the_delegates_failure_when_the_fallback_is_unbaked(tmp_path):
+    """Nothing baked at all: the attempt is one silent failure, reported
+    with the DELEGATE's slug and reason rather than a delivered-looking
+    fallback — regenerating the delegate is what would fix the silence."""
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
+    )
+    assert find("provider_out_of_credit").fallback == "cant_connect"
+    assert asyncio.run(mgr.play("provider_out_of_credit")) is False
+
+    _assert_outcome(mgr, "failed", "no_cache", slug="cant_connect")
+    assert mgr.snapshot()["counts"]["fallback"] == 0
+
+
+def test_play_terminates_on_a_fallback_cycle(tmp_path, monkeypatch):
+    """A registry whose fallbacks loop records one failure instead of
+    recursing until RecursionError."""
+    cycle = {
+        "a_cue": CueDef(
+            slug="a_cue", template="a", description="d", fallback="b_cue",
+        ),
+        "b_cue": CueDef(
+            slug="b_cue", template="b", description="d", fallback="a_cue",
+        ),
+    }
+    monkeypatch.setattr(manager_mod, "find_cue", cycle.get)
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=_FakeTtsPlayout(),
+    )
+
+    assert asyncio.run(mgr.play("a_cue")) is False
+
+    _assert_outcome(mgr, "failed", "no_cache", slug="a_cue")
+
+
+def test_play_records_cancellation_and_re_raises(tmp_path):
+    """Barge-in cancels the drain wait on the busiest cue path. The attempt
+    is a recorded skip; the cancellation still reaches the caller."""
+
+    class _CancellingDrain(_FakeTtsPlayout):
+        async def wait_drained(self) -> None:
+            raise asyncio.CancelledError
+
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=_CancellingDrain(),
+    )
+    _hand_write_wav(mgr.expected_path(find("spend_cap_reached")), b"\x00\x00" * 100)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mgr.play("spend_cap_reached"))
+
+    _assert_outcome(mgr, "skipped", "cancelled", slug="spend_cap_reached")
+
+
+def test_play_records_an_unexpected_error_and_returns_false(tmp_path, monkeypatch):
+    """An exception the play path does not classify (a sounds-dir listdir
+    that raises, say) must not escape into a failure handler, and must not
+    leave the attempt unrecorded."""
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=_FakeTtsPlayout(),
+    )
+
+    def _boom(_cue):
+        raise OSError("sounds dir unreadable")
+
+    monkeypatch.setattr(mgr, "find_any_cached", _boom)
+
+    assert asyncio.run(mgr.play("spend_cap_reached")) is False
+
+    _assert_outcome(mgr, "failed", "error", slug="spend_cap_reached")
 
 
 def test_regenerate_prunes_wavs_of_retired_slugs(tmp_path):
