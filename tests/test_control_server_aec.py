@@ -65,31 +65,6 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     assert calls == [("restart", ["jasper-aec-reconcile.service"])]
 
 
-def test_aec_leg_502s_when_the_reconciler_restart_is_refused(
-    monkeypatch, tmp_path, server_with_coordinator,
-):
-    """A refused reconciler kick must reach the caller: the leg is persisted
-    but nothing has applied it to the running bridge."""
-    base, _ = server_with_coordinator
-
-    mode_file = tmp_path / "aec_mode.env"
-    mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    _record_broker(monkeypatch, ok=False)
-
-    status, body = _post(
-        f"{base}/aec/leg",
-        {"leg": "chip_aec_150", "enabled": True},
-    )
-
-    assert status == 502
-    assert body["code"] == "leg_reconcile_failed"
-    assert body["intent_saved"] is True
-    assert body["requested_leg"] == "chip_aec_150"
-    assert body["requested_enabled"] is True
-    assert body.get("ok") is not True
-
-
 def test_json_array_body_is_treated_as_empty_body(server_with_coordinator):
     base, _ = server_with_coordinator
 
@@ -130,25 +105,6 @@ def test_aec_profile_restarts_reconciler(
     assert calls == [("restart", ["jasper-aec-reconcile.service"])]
 
 
-def test_aec_profile_502s_when_the_reconciler_restart_is_refused(
-    monkeypatch, tmp_path, server_with_coordinator,
-):
-    base, _ = server_with_coordinator
-
-    mode_file = tmp_path / "aec_mode.env"
-    mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
-    _record_broker(monkeypatch, ok=False)
-
-    status, body = _post(f"{base}/aec/profile", {"profile": "xvf_chip_aec"})
-
-    assert status == 502
-    assert body["code"] == "profile_reconcile_failed"
-    assert body["intent_saved"] is True
-    assert body["requested_profile"] == "xvf_chip_aec"
-    assert body.get("ok") is not True
-
-
 def test_aec_threshold_persists_and_restarts_voice(
     monkeypatch, tmp_path, server_with_coordinator,
 ):
@@ -168,21 +124,51 @@ def test_aec_threshold_persists_and_restarts_voice(
     assert calls == [("restart", ["jasper-voice.service"])]
 
 
-def test_aec_threshold_502s_when_the_voice_restart_is_refused(
-    monkeypatch, tmp_path, server_with_coordinator,
+@pytest.mark.parametrize(
+    "path, payload, code, extra_field",
+    [
+        (
+            "/aec/leg",
+            {"leg": "chip_aec_150", "enabled": True},
+            "leg_reconcile_failed",
+            {"requested_leg": "chip_aec_150", "requested_enabled": True},
+        ),
+        (
+            "/aec/profile",
+            {"profile": "xvf_chip_aec"},
+            "profile_reconcile_failed",
+            {"requested_profile": "xvf_chip_aec"},
+        ),
+        (
+            "/aec/threshold",
+            {"threshold": 0.42},
+            "wake_threshold_restart_failed",
+            {"threshold": 0.42},
+        ),
+    ],
+)
+def test_aec_restart_502s_when_the_broker_refuses(
+    monkeypatch, tmp_path, server_with_coordinator, path, payload, code, extra_field,
 ):
+    """Every /aec persist-then-restart route reports a refused restart the
+    same way: the change is persisted, but 502 with a route-specific code —
+    never a silent 200 claiming the daemon picked it up."""
     base, _ = server_with_coordinator
+    mode_file = tmp_path / "aec_mode.env"
+    mode_file.write_text("JASPER_AEC_MODE=auto\n")
+    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
     model_file = tmp_path / "wake_model.env"
     model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
     monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
     _record_broker(monkeypatch, ok=False)
 
-    status, body = _post(f"{base}/aec/threshold", {"threshold": 0.42})
+    status, body = _post(f"{base}{path}", payload)
 
     assert status == 502
-    assert body["code"] == "wake_threshold_restart_failed"
+    assert body["code"] == code
     assert body["intent_saved"] is True
-    assert body["threshold"] == 0.42
+    for key, value in extra_field.items():
+        assert body[key] == value
     assert body.get("ok") is not True
 
 
