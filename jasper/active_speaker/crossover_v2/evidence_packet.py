@@ -362,7 +362,7 @@ def _read_json(path: Path) -> tuple[Any, str]:
         return None, f"not valid JSON: {exc.msg}"
 
 
-def _applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
+def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
     """The applied-profile SSOT, and why there is none when there is none.
 
     One owner for "what is this speaker playing":
@@ -1775,7 +1775,7 @@ REPEAT_FLOOR_UNUSABLE = "unusable"
 def _repeat_floor_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
     """The banked floor, or why there is none — ``source_absent`` when no file
     was there to read, the read failure otherwise (same rule as
-    :func:`_applied_profile_source`)."""
+    :func:`applied_profile_source`)."""
     if path is None:
         return None, "source_absent"
     record = load_repeat_floor(state_path=path)
@@ -2743,7 +2743,7 @@ def build_crossover_evidence_packet(
     if state and not state_matches_capture(state, round_dir.name):
         state, state_reason = {}, STATE_SESSION_UNKNOWN
 
-    applied_profile, applied_profile_reason = _applied_profile_source(
+    applied_profile, applied_profile_reason = applied_profile_source(
         applied_profile_path
     )
     repeat_floor, repeat_floor_reason = _repeat_floor_source(repeat_floor_path)

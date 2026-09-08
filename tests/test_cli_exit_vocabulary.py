@@ -31,7 +31,11 @@ from typing import Any, Callable, NamedTuple
 import pytest
 
 from jasper.cli import _refusal, round_views
-from tests.crossover_v2_banked_round import bank_measure_round, bank_verify_round
+from tests.crossover_v2_banked_round import (
+    bank_measure_round,
+    bank_seat_round,
+    bank_verify_round,
+)
 
 CLI_DIR = Path(_refusal.__file__).resolve().parent
 
@@ -222,6 +226,7 @@ class _FixtureRound(NamedTuple):
     measured: Path
     verified: Path
     bundle: Path
+    seat: Path
 
 
 def _fixture_round(root: Path) -> _FixtureRound:
@@ -229,6 +234,7 @@ def _fixture_round(root: Path) -> _FixtureRound:
     bundle, = (measured / "bundle").iterdir()
     return _FixtureRound(
         measured=measured, verified=bank_verify_round(root), bundle=bundle,
+        seat=bank_seat_round(root),
     )
 
 
@@ -255,6 +261,9 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "classify-features": _NO_CAPTURES,
     "findings": lambda r: ["findings", str(r.measured)],
     "close-reference": _NO_CAPTURES,
+    "room-ceiling": lambda r: ["room-ceiling", str(r.seat)],
+    "room-median": lambda r: ["room-median", str(r.seat)],
+    "room-persistence": lambda r: ["room-persistence", str(r.seat)],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
     "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],
