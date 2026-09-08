@@ -63,6 +63,8 @@ class _FakeConn:
 
     async def send(self, event: dict) -> None:
         self.sent.append(event)
+        if event["type"] == "session.update":
+            self._inbox.put_nowait({"type": "session.updated", "session": event["session"]})
 
     def __aiter__(self):
         return self
@@ -323,6 +325,85 @@ async def test_session_update_failure_redacts_the_connections_own_key(caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1, [r.getMessage() for r in warnings]
     assert "plainvalue123" not in warnings[0].args[1]
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+@pytest.mark.parametrize("outcome", ["accepted", "rejected", "closed", "timeout"])
+async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monkeypatch, caplog):
+    from jasper.voice import openai_session
+
+    class DelayedSetup(_FakeConn):
+        async def send(self, event):
+            self.sent.append(event)
+
+    wire = DelayedSetup()
+    conn = conn_cls(api_key="plainvalue123", connect_factory=lambda **_: _FakeAsyncCM(wire))
+    conn._registry = ToolRegistry()
+    monkeypatch.setattr(openai_session, "SESSION_SETUP_TIMEOUT_SEC", 0.1)
+    opening = asyncio.create_task(conn._open_session())
+    await _wait_until(lambda: bool(wire.sent))
+    assert not conn._connected_event.is_set()
+    assert conn.is_paused()
+    wire.feed({"type": "session.created"})
+    await asyncio.sleep(0)
+    assert not opening.done()
+    try:
+        if outcome == "accepted":
+            wire.feed({"type": "session.updated", "session": wire.sent[0]["session"]})
+            await opening
+            assert not conn.is_paused()
+            await (await conn.acquire_turn()).release()
+        else:
+            if outcome == "rejected":
+                wire.feed({"type": "error", "error": {
+                    "type": "invalid_request_error", "code": "invalid_parameter",
+                    "message": "rejected plainvalue123",
+                }})
+            elif outcome == "closed":
+                wire.feed_iter_stop()
+            with pytest.raises((ValueError, ConnectionError, TimeoutError)):
+                await opening
+            assert conn.is_paused()
+            assert conn.last_failure_detail()
+            assert "plainvalue123" not in conn.last_failure_detail()
+            assert "plainvalue123" not in caplog.text
+            assert wire.closed
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("error_type, code, transient", [
+    ("invalid_request_error", "invalid_parameter", False),
+    ("server_error", "server_error", True),
+    ("rate_limit_error", "rate_limit_exceeded", True),
+    ("invalid_request_error", "rate_limit_exceeded", True),
+])
+async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, transient, caplog):
+    from openai.types.realtime import RealtimeErrorEvent
+    from jasper.voice._supervisor import is_transient
+
+    class RejectedSetup(_FakeConn):
+        async def send(self, event):
+            self._inbox.put_nowait(RealtimeErrorEvent.model_validate({
+                "type": "error", "event_id": "setup_error",
+                "error": {"type": error_type, "code": code, "message": "setup rejected plainvalue123"},
+            }))
+
+    conn = OpenAIRealtimeConnection(
+        api_key="plainvalue123", connect_factory=lambda **_: _FakeAsyncCM(RejectedSetup()),
+        backoff_schedule=(0.0,),
+    )
+    with pytest.raises((ValueError, RuntimeError)) as failure:
+        await conn._open_session()
+    assert is_transient(failure.value) is transient
+    assert conn.wake_cue() == (CANT_CONNECT_CUE_SLUG if transient else NEEDS_ATTENTION_CUE_SLUG)
+    assert conn.is_paused()
+    assert "plainvalue123" not in str(failure.value)
+    await run_reconnect_with_backoff(conn)
+    assert conn._state is ConnectionState.FAILED
+    assert "plainvalue123" not in caplog.text
+    assert "plainvalue123" not in conn.last_failure_detail()
+    await conn.stop()
 
 
 async def test_reasoning_effort_skipped_for_non_dash2_models():
@@ -2125,7 +2206,6 @@ async def test_grok_uses_grok_provider_filter_and_default_model():
         upd = _find_event(factory.conns[0].sent, "session.update")
         names = {t["name"] for t in upd["session"]["tools"]}
         assert names == {"grok_only", "universal"}
-        # Grok models do not accept reasoning.effort.
         assert "reasoning" not in upd["session"]
     finally:
         await conn.stop()
