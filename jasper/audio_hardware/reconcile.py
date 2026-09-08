@@ -746,8 +746,13 @@ class Pass:
             return False
         if not self.asound_artifact_parks_outputd_dac():
             return False
-        if not self.try_set_env_file_var(
-            self.outputd_env_file, "JASPER_OUTPUTD_BACKEND", "fake"
+        # A write that did not LAND is not a park; a write the file already
+        # satisfied is (this pass's caller must still log action=park).
+        if (
+            self.try_set_env_file_var(
+                self.outputd_env_file, "JASPER_OUTPUTD_BACKEND", "fake"
+            )
+            is None
         ):
             return False
         self.log(
