@@ -1742,14 +1742,11 @@ class Pass:
             print(f"{key}={_shell_quote(value)}")
 
     def execute(self) -> int:
-        if self.print_env:
-            self.observe_output_hardware_state(write=False)
-            self.apply_observed_single_policy()
-            self.apply_observed_composite_policy()
-            self.print_role_env()
-            return 0
         if not os.access(self.asound_render_lib, os.R_OK):
-            # LOUD and before any mutation. Unreadable, the `bash -c source` in
+            # LOUD and before any mutation, and ahead of --print-env because
+            # install.sh runs that verb from the same tree it is about to
+            # install from: a broken library has to fail the install, not
+            # answer it. Unreadable, the `bash -c source` in
             # render_asound_if_needed exits 127 — which preserves the template
             # but lets the pass go on to restart jasper-outputd against an
             # asound.conf naming a different DAC than the outputd.env it just
@@ -1759,6 +1756,12 @@ class Pass:
                 lib=_log_token(self.asound_render_lib),
             )
             raise _Abort(66)
+        if self.print_env:
+            self.observe_output_hardware_state(write=False)
+            self.apply_observed_single_policy()
+            self.apply_observed_composite_policy()
+            self.print_role_env()
+            return 0
         self.reconcile_i2s_hat_boot()
         self.observe_output_hardware_state(write=True)
         self.sync_i2s_hat_reboot_marker()

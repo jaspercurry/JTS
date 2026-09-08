@@ -1000,6 +1000,19 @@ def test_a_failed_classification_leaves_every_observed_fact_at_its_absent_value(
     assert not (tmp_path / "output_hardware.json").exists()
 
 
+#: The role values a box with no recognized output DAC answers with. Also what
+#: the shim prints when the pass could not be reached at all, so the two are
+#: pinned to one another rather than restated.
+_PRINT_ENV_NO_DAC = {
+    "DONGLE_CARD": "A",
+    "APPLE_DONGLE_PRESENT": "0",
+    "APPLE_DONGLE_SERVICE_CARD": "auto",
+    "OUTPUT_DAC_CARD": "A",
+    "OUTPUT_DAC_ID": "unknown",
+    "OUTPUT_DAC_RECOGNIZED": "0",
+}
+
+
 def _parse_print_env(stdout: str) -> dict[str, str]:
     """Parse `--print-env`'s `KEY=value` lines, unquoting each value the way
     a `bash eval` of install.sh's consumer would (deploy/install.sh:893)."""
@@ -1038,18 +1051,7 @@ def _parse_print_env(stdout: str) -> dict[str, str]:
             },
             id="apple-dongle-as-output",
         ),
-        pytest.param(
-            "",
-            {
-                "DONGLE_CARD": "A",
-                "APPLE_DONGLE_PRESENT": "0",
-                "APPLE_DONGLE_SERVICE_CARD": "auto",
-                "OUTPUT_DAC_CARD": "A",
-                "OUTPUT_DAC_ID": "unknown",
-                "OUTPUT_DAC_RECOGNIZED": "0",
-            },
-            id="no-dac-unrecognized",
-        ),
+        pytest.param("", _PRINT_ENV_NO_DAC, id="no-dac-unrecognized"),
         pytest.param(
             DAC8X_STUDIO_LISTING,
             {
@@ -1535,6 +1537,81 @@ def test_help_publishes_no_event_because_reading_usage_is_not_a_pass(
     assert "--print-env" in result.stdout
     assert "--no-restart" in result.stdout
     assert _event_names(result.stderr) == [], result.stderr
+
+
+def _failing_interpreter(tmp_path: Path, rc: int) -> dict[str, str]:
+    """An interpreter that cannot start: 127 absent, 126 not executable."""
+    return {
+        "JASPER_OUTPUT_HARDWARE_PYTHON": str(
+            _script(tmp_path, f"unstartable-{rc}", f"exit {rc}\n")
+        )
+    }
+
+
+@pytest.mark.parametrize("rc", [126, 127], ids=["not-executable", "not-found"])
+def test_print_env_degrades_to_the_no_dac_row_when_the_pass_cannot_start(
+    tmp_path: Path, rc: int
+) -> None:
+    """install.sh evals this output and reads every key under `set -u`
+    (deploy/install.sh:893), so an unstartable interpreter must degrade to the
+    unrecognized-DAC answer with rc 0 rather than abort the install on an
+    empty eval. Only 126/127 mean "no pass ran"; see the sibling below."""
+    result = _run_shim(
+        tmp_path, "", "--print-env", extra_env=_failing_interpreter(tmp_path, rc)
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _parse_print_env(result.stdout) == _PRINT_ENV_NO_DAC
+
+
+def test_the_shim_propagates_a_verdict_the_pass_itself_reached(tmp_path: Path) -> None:
+    """An unreadable shared render library is the pass's OWN 66, not a missing
+    interpreter: it must fail the install rather than answer it with defaults.
+
+    The pass runs that check ahead of --print-env, as the shell reconciler did
+    -- install.sh runs this verb from the tree it is about to install from, so
+    a broken library there has to be loud.
+    """
+    result = _run_shim(
+        tmp_path,
+        "",
+        "--print-env",
+        extra_env={"JASPER_ASOUND_RENDER_LIB": str(tmp_path / "absent-render-lib.sh")},
+    )
+
+    assert result.returncode == 66, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(("--changed", "--resaon", "boot"), id="misspelled-flag"),
+        pytest.param(("--changed", "--reason"), id="reason-without-a-value"),
+    ],
+)
+def test_the_shim_rejects_bad_arguments_before_the_changed_predicate(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    """--changed answers and exits before the Python parser would ever see the
+    argv, so a typo would otherwise be swallowed into a needless full pass (or
+    a pass whose reason is the next flag)."""
+    result = _run_shim(tmp_path, "", *args)
+
+    assert result.returncode == 2, result.stdout
+
+
+def test_reading_usage_survives_an_interpreter_that_cannot_start(
+    tmp_path: Path,
+) -> None:
+    """`set -euo pipefail` plus a failing interpreter would kill the shell
+    before the case arm's own exit 0, so the shim states every flag itself."""
+    result = _run_shim(
+        tmp_path, "", "--help", extra_env=_failing_interpreter(tmp_path, 127)
+    )
+
+    assert result.returncode == 0, result.stderr
+    _assert_states(result.stdout, "--changed", "--print-env", "--no-restart")
 
 
 def _signal_self(signum: int):

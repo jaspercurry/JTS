@@ -179,16 +179,34 @@ write_reconcile_stamp() {
     return 0
 }
 
-# Only --changed is described here, because only --changed is this script's. The
-# ban on an interpreter is ExecCondition='s alone, so --help may start one for
-# the verbs the pass itself owns rather than keeping a second copy of its help.
+# Flag names only, and no interpreter: this is also what an argument error
+# prints, which must stay readable on a box whose interpreter cannot start.
+# --changed gets the prose because only --changed is this script's.
 usage() {
     cat <<'EOF'
+Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env]
+                                       [--no-restart] [--changed]
+
 --changed performs no mutations: it exits 0 when a pass is needed and 1 when the
   inputs match the stamp the last successful pass left (systemd ExecCondition).
 
 EOF
-    "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile --help
+}
+
+# What --print-env answers with when the pass could not be reached AT ALL.
+# install.sh evals this output and reads every key under `set -u`
+# (deploy/install.sh:893), so empty stdout aborts an install instead of
+# degrading it; the shell reconciler this replaced answered exactly these
+# values with rc 0. Pinned equal to the no-DAC row of the --print-env golden.
+print_env_defaults() {
+    cat <<'EOF'
+DONGLE_CARD=A
+APPLE_DONGLE_PRESENT=0
+APPLE_DONGLE_SERVICE_CARD=auto
+OUTPUT_DAC_CARD=A
+OUTPUT_DAC_ID=unknown
+OUTPUT_DAC_RECOGNIZED=0
+EOF
 }
 
 # Scan for the verbs this shell owns; every argument is forwarded verbatim, so
@@ -198,7 +216,12 @@ index=0
 while (( index < $# )); do
     case "${args[index]}" in
         --reason)
-            REASON="${args[index + 1]:-manual}"
+            if (( index + 1 >= $# )); then
+                echo "missing value for --reason" >&2
+                usage >&2
+                exit 2
+            fi
+            REASON="${args[index + 1]}"
             index=$((index + 2))
             continue
             ;;
@@ -207,7 +230,19 @@ while (( index < $# )); do
         --changed) CHECK_CHANGED=1 ;;
         -h|--help)
             usage
+            # The pass owns its own half of the help rather than keeping a
+            # second copy here; an interpreter that cannot start must not turn
+            # reading usage into a nonzero exit.
+            "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile --help \
+                || true
             exit 0
+            ;;
+        *)
+            # --changed exits before the Python parser would see this, so the
+            # rejection has to happen here or a typo becomes a silent full pass.
+            echo "unknown argument: ${args[index]}" >&2
+            usage >&2
+            exit 2
             ;;
     esac
     index=$((index + 1))
@@ -253,7 +288,26 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 
 if [[ "$PRINT_ENV" == "1" ]]; then
-    exec "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile "$@"
+    print_env_rc=0
+    print_env_payload="$(
+        "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile "$@"
+    )" || print_env_rc=$?
+    if [[ "$print_env_rc" == "0" ]]; then
+        printf '%s\n' "$print_env_payload"
+        exit 0
+    fi
+    case "$print_env_rc" in
+        126|127)
+            # The interpreter is not there or not executable -- the one outcome
+            # that says nothing about the hardware. Every other code is the
+            # pass's own verdict (66 = unreadable render library) and
+            # propagates with no payload, the way a broken install must.
+            log_event "state_observed_failed" "path=${OUTPUT_HARDWARE_STATE_PATH}"
+            print_env_defaults
+            exit 0
+            ;;
+    esac
+    exit "$print_env_rc"
 fi
 
 # From here the pass mutates, so no stamp may stand until one completes. An
