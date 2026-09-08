@@ -196,8 +196,12 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
 
     status, body = _post(f"{base}/aec/usb-mic", {"enabled": True})
 
-    assert status == 200
-    assert body["usb_mic"] == {"enabled": True, "state": "starting"}
+    assert status == 202
+    assert body == {
+        "ok": True,
+        "status": "accepted",
+        "usb_mic": {"enabled": True, "state": "starting"},
+    }
     assert writes == [True]
     assert recomposes == [True]
 
@@ -347,8 +351,8 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         {"leg": "raw0"},
     )
 
-    assert status == 200
-    assert body == final_status
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", **final_status}
     assert events == [
         ("write", "raw0"),
         (
@@ -489,13 +493,21 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
     )
     monkeypatch.setattr(aec_endpoints, "_aec_full_status", lambda: pending_status)
 
-    for _request in range(2):
-        status, body = _post(
-            f"{base}/aec/usb-mic-leg",
-            {"leg": "chip_aec_210"},
-        )
-        assert status == 200
-        assert body == pending_status
+    applied_status, applied_body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+    coalesced_status, coalesced_body = _post(
+        f"{base}/aec/usb-mic-leg",
+        {"leg": "chip_aec_210"},
+    )
+
+    assert applied_status == 202
+    assert applied_body == {"ok": True, "status": "accepted", **pending_status}
+    # Nothing new was handed to systemd, so the coalesced repeat is not
+    # "accepted" work — it reports the state that already stands.
+    assert coalesced_status == 200
+    assert coalesced_body == pending_status
 
     assert calls == [
         ("jasper-aec-bridge.service", "reset-failed"),
@@ -508,8 +520,8 @@ def test_usb_mic_leg_coalesces_pending_apply_then_retries_after_timeout(
         {"leg": "chip_aec_210"},
     )
 
-    assert status == 200
-    assert body == pending_status
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", **pending_status}
     assert calls == [
         ("jasper-aec-bridge.service", verb)
         for _attempt in range(2)
@@ -567,8 +579,8 @@ def test_usb_mic_leg_failed_schedule_does_not_suppress_immediate_retry(
 
     assert first_status == 502
     assert first_body["code"] == "usb_mic_leg_restart_failed"
-    assert second_status == 200
-    assert second_body == pending_status
+    assert second_status == 202
+    assert second_body == {"ok": True, "status": "accepted", **pending_status}
     assert calls == [
         ("jasper-aec-bridge.service", verb)
         for _attempt in range(2)
@@ -607,7 +619,7 @@ def test_usb_mic_leg_repeated_changes_reset_reboot_budget_before_restart(
 
     for leg in ("chip_aec_210", "primary") * 3:
         status, _body = _post(f"{base}/aec/usb-mic-leg", {"leg": leg})
-        assert status == 200
+        assert status == 202
 
     assert calls == [
         ("jasper-aec-bridge.service", verb)
@@ -813,7 +825,7 @@ def test_aec_commission_starts_oneshot_when_idle(
     monkeypatch, server_with_coordinator,
 ):
     """POST /aec/commission on an idle box resets then no-block-starts the
-    root measurement oneshot and answers with the full /aec status body."""
+    root measurement oneshot and answers 202 with the full /aec status body."""
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
@@ -832,8 +844,12 @@ def test_aec_commission_starts_oneshot_when_idle(
 
     status, body = _post(f"{base}/aec/commission", None)
 
-    assert status == 200
-    assert body == {"commission": {"running": True}}
+    assert status == 202
+    assert body == {
+        "ok": True,
+        "status": "accepted",
+        "commission": {"running": True},
+    }
     assert commands == [
         ["systemctl", "reset-failed", "jasper-aec-commission.service"],
         ["systemctl", "start", "--no-block", "jasper-aec-commission.service"],
@@ -884,7 +900,7 @@ def test_aec_commission_concurrent_second_click_starts_nothing(
     The first start blocks while a second POST is issued. Without the lock
     the second request reaches the probe DURING the held start — the probe
     snapshots `running` before releasing the first start, so it reads False
-    and a second start fires (starts == 2, both 200). With the lock the
+    and a second start fires (starts == 2, both 202). With the lock the
     second request cannot probe until the first completes, so it sees
     running=True and answers 409 with nothing started."""
     import threading
@@ -937,7 +953,7 @@ def test_aec_commission_concurrent_second_click_starts_nothing(
     second.join(timeout=5)
 
     assert state["starts"] == 1
-    assert sorted(status for status, _body in results) == [200, 409]
+    assert sorted(status for status, _body in results) == [202, 409]
 
 
 def test_aec_firmware_update_starts_when_required(
@@ -961,8 +977,8 @@ def test_aec_firmware_update_starts_when_required(
 
     status, body = _post(f"{base}/aec/firmware/update", {})
 
-    assert status == 200
-    assert body == status_payload
+    assert status == 202
+    assert body == {"ok": True, "status": "accepted", **status_payload}
     assert starts == ["start"]
 
 
