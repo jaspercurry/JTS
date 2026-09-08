@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import IO
 
 from jasper.atomic_io import (
+    ENV_FILE_LOCK_TIMEOUT_SECONDS,
     advisory_file_lock,
     atomic_write_text,
     env_lock_path,
@@ -136,13 +137,6 @@ _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 ENTRY_LOCK_PATH = "/run/jasper-fanin-coupling.lock"
 ENTRY_LOCK_TIMEOUT_SECONDS = 10.0
 ENTRY_LOCK_POLL_SECONDS = 0.2
-
-# Bound on the PER-FILE advisory lock :func:`_write_env_actions` takes on
-# fanin.env/outputd.env (``atomic_io.env_lock_path``) — matches the bash
-# env-file writer's own `flock -w 10` (deploy/lib/jasper-env-file.sh) so a
-# hot-path Python reconcile cannot block forever on
-# ``advisory_file_lock``'s default (``LOCK_EX``, no ``LOCK_NB``).
-ENV_FILE_LOCK_TIMEOUT_SECONDS = 10.0
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]

@@ -482,6 +482,14 @@ def env_lock_path(path: str) -> str:
     return os.path.join(parent, f".{basename}.lock")
 
 
+# Bound every Python holder of the lock :func:`env_lock_path` names waits under
+# — matches the bash env-file writer's own `flock -w 10`
+# (deploy/lib/jasper-env-file.sh), so a shell writer and a Python one back off
+# over the same bound instead of blocking forever on ``advisory_file_lock``'s
+# default (``LOCK_EX``, no ``LOCK_NB``).
+ENV_FILE_LOCK_TIMEOUT_SECONDS = 10.0
+
+
 def read_regular_bytes_nofollow(
     path: str | os.PathLike,
     *,
