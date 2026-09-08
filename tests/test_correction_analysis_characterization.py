@@ -537,7 +537,7 @@ def test_smooth_capture_preserves_pipeline_and_five_value_result(
     monkeypatch.setattr(analysis, "resample_log", resample_response)
     monkeypatch.setattr(calibration, "apply_calibration_curve", apply_calibration)
     monkeypatch.setattr(analysis, "normalize_to_band", normalize_response)
-    monkeypatch.setattr(sess, "_write_capture_replay_artifacts", write_replay)
+    monkeypatch.setattr(sess.artifacts, "write_capture_replay_artifacts", write_replay)
 
     analysis_result = acoustic_quality.analyze_capture(
         capture_path,
@@ -734,20 +734,10 @@ def test_helper_reports_reach_status_and_homeowner_nudge(
         assert payload["acoustic_quality"]["capture_count"] == 1
         assert payload["acoustic_quality"]["min_band_snr_db"] == 25.0
 
-    sess._write_acoustic_quality_json()
+    sess.artifacts.write_acoustic_quality_json()
     acoustic_path = tmp_path / "acoustic_quality.json"
     persisted_bytes = acoustic_path.read_bytes()
-    # Digest has moved twice: in #1838, when the report gained
-    # `band_snr_scale` (previously 261dd876…), and again in #1847, when
-    # BAND_SNR_SCALE bumped `band_power_v2` -> `band_power_v3` for the
-    # sweep-side window fix (see BAND_SNR_SCALE's own comment in
-    # acoustic_quality.py). That key is the whole point: bundles written on
-    # either side of a scale OR shape fix carry `band_snr` / `min_band_snr_db`
-    # on different scales with identical keys and units, so the marker has to
-    # be IN the artifact for a later reader to tell them apart. The
-    # capture_quality digest above is deliberately unchanged — `band_snr` is
-    # monkeypatched to a fixed fixture here, not computed through the changed
-    # estimator, so that report is untouched.
+    # The persisted scale marker distinguishes band-SNR values across estimators.
     assert hashlib.sha256(persisted_bytes).hexdigest() == (
         "8a34fa59588d154b91a941602e1a3496d72f9e0c6481408c6d400d507aaf8d0d"
     )
