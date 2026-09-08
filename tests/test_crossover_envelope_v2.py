@@ -252,7 +252,7 @@ def test_setup_not_ready_blocks_before_any_capture():
         "crossover_v2": {"phase": "check"},
     })
     assert env["screen"] == "speaker_setup"
-    assert env["next_action"]["href"] == "/sound/setup/"
+    assert env["next_action"]["href"] == "/sound/speaker/"
     assert _step_statuses(env)["speaker_setup"] == "active"
 
 
@@ -2079,7 +2079,7 @@ def test_the_class_prior_remedy_points_at_the_driver_class_declaration_route():
         r"const CLASS_PRIOR_REMEDY = \{.*?href: '([^']+)',", source, re.DOTALL,
     )
     assert match, "the renderer no longer carries a named class-prior remedy href"
-    assert match.group(1) == "/sound/setup/"
+    assert match.group(1) == "/sound/speaker/"
 
 
 def test_done_candidate_review_carries_the_alignment_objective():
@@ -2491,7 +2491,7 @@ def test_hard_stop_template():
     assert "wiring" in env["verdict_text"]
     assert "speaker setup" in env["verdict_text"]
     assert "try again" not in env["verdict_text"]
-    assert env["next_action"]["href"] == "/sound/setup/"
+    assert env["next_action"]["href"] == "/sound/speaker/"
 
 
 def test_session_restart_template():
@@ -5014,7 +5014,7 @@ def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
     The invariant, stated so it can be checked rather than intended: an action
     whose ``href`` points back INTO this flow is a decision, and a decision has
     to carry an ``endpoint`` a driver can POST. An action pointing at another
-    subsystem (``/sound/room/``, ``/sound/setup/``) is a navigation and is
+    subsystem (``/sound/room/``, ``/sound/speaker/``) is a navigation and is
     exempt — no endpoint here could perform it, and minting a fake one would be
     worse than the link.
 

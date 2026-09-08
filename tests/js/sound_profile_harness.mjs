@@ -592,7 +592,7 @@ function summedSummary(latestSummedTests, overrides = {}) {
 }
 
 function setupHarness(fetchHandler, options = {}) {
-  const pageMode = options.mode || "setup";
+  const pageMode = options.mode || "speaker";
   const elements = new Map();
   const absent = new Set();
   for (const id of [
@@ -623,9 +623,9 @@ function setupHarness(fetchHandler, options = {}) {
         },
     });
   elements.set("sound-page-data", island);
-  if (pageMode === "setup" || options.follower) {
-    // Setup and follower pages omit the content-EQ chrome. Making those ids
-    // resolve to null exercises the module's mode guards as the browser does.
+  if (pageMode !== "eq" || options.follower) {
+    // The hardware and follower pages omit the content-EQ chrome. Making those
+    // ids resolve to null exercises the module's mode guards as the browser does.
     // islandText lets a test inject malformed renderer data.
     for (const id of [
       "tab-off", "tab-saved", "tab-draft", "eq-tabs", "now-playing",
@@ -736,10 +736,8 @@ function setupHarness(fetchHandler, options = {}) {
       open: attrs.open !== undefined ? attrs.open : true,
       getAttribute(name) { return attrs[name] || ""; },
       matches(selector) {
-        return (selector === "[data-active-speaker-setup]" &&
-          Object.prototype.hasOwnProperty.call(attrs, "data-active-speaker-setup")) ||
-          (selector === "[data-driver-advanced]" &&
-            Object.prototype.hasOwnProperty.call(attrs, "data-driver-advanced"));
+        return selector === "[data-driver-advanced]" &&
+          Object.prototype.hasOwnProperty.call(attrs, "data-driver-advanced");
       },
       classList: {
         contains(name) {
@@ -1018,7 +1016,7 @@ async function testVolumeFloorRequiresExplicitSaveButAuditionsDraft() {
       }));
     },
   });
-  const harness = setupHarness(fetchHandler);
+  const harness = setupHarness(fetchHandler, { mode: "output" });
   await harness.flush();
   await harness.flush();
 
@@ -1074,7 +1072,7 @@ async function testBlockedSettingsSaveRendersOnTheCard() {
       message: "This speaker runs an active crossover.",
       volume_warning: "Saved, but the volume floor lands on the next change.",
     })),
-  }));
+  }), { mode: "output" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
   harness.dispatchChange({ id: "set-match-loudness", checked: true });
@@ -1267,9 +1265,9 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
       fail("EQ mode omitted an owned Saved control", { expected, eqHtml });
     }
   }
-  for (const forbidden of ["Volume floor", "Extra headroom", "Speaker setup", "Match loudness"]) {
+  for (const forbidden of ["Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness"]) {
     if (eqHtml.includes(forbidden)) {
-      fail("EQ mode rendered a Setup-owned control", { forbidden, eqHtml });
+      fail("EQ mode rendered a hardware-page control", { forbidden, eqHtml });
     }
   }
   if (eqFetched.includes("./output-topology") ||
@@ -1309,23 +1307,24 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   const setup = setupHarness((path, options = {}) => {
     setupFetched.push(path);
     return setupBase(path, options);
-  }, { mode: "setup" });
+  }, { mode: "output" });
   await setup.flush(); await setup.flush(); await setup.flush();
   const setupHtml = setup.elements.get("view-body").innerHTML;
   for (const expected of [
-    "Volume floor", "Extra headroom", "Speaker setup", "I²S audio HAT", "Match loudness",
+    "Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness",
   ]) {
     if (!setupHtml.includes(expected)) {
-      fail("Setup mode omitted an owned control", { expected, setupHtml });
+      fail("Output mode omitted an owned control", { expected, setupHtml });
     }
   }
-  for (const forbidden of ["Your profiles", "Simple", "PEQ"]) {
+  for (const forbidden of ["Your profiles", "Simple", "PEQ", "Active crossover setup"]) {
     if (setupHtml.includes(forbidden)) {
-      fail("Setup mode rendered an EQ-owned control", { forbidden, setupHtml });
+      fail("Output mode rendered another page's control", { forbidden, setupHtml });
     }
   }
+  // The HAT reading rides the topology payload, so Output loads it too.
   if (!setupFetched.includes("./output-topology")) {
-    fail("Setup mode should load local topology", { setupFetched });
+    fail("Output mode should load the I2S HAT reading", { setupFetched });
   }
   // Nothing detected: the picker is rendered, on the saved value, offering
   // only the HATs that cannot identify themselves.
@@ -1353,12 +1352,34 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   // A detected HAT is reported, not offered: no control to change it.
   hat.detected_profile_id = "hifiberry_dac8x_studio";
   hat.detected_label = "HiFiBerry DAC8x Studio";
-  const detectedSetup = setupHarness(setupBase, { mode: "setup" });
+  const detectedSetup = setupHarness(setupBase, { mode: "output" });
   await detectedSetup.flush(); await detectedSetup.flush(); await detectedSetup.flush();
   const detectedHtml = detectedSetup.elements.get("view-body").innerHTML;
   if (!detectedHtml.includes("HiFiBerry DAC8x Studio") ||
       detectedHtml.includes('id="set-i2s-hat"')) {
     fail("a detected HAT must be reported without a picker", { detectedHtml });
+  }
+
+  const speakerFetched = [];
+  const speaker = setupHarness((path, options = {}) => {
+    speakerFetched.push(path);
+    return setupBase(path, options);
+  }, { mode: "speaker" });
+  await speaker.flush(); await speaker.flush(); await speaker.flush();
+  const speakerHtml = speaker.elements.get("view-body").innerHTML;
+  if (!speakerHtml.includes("Active crossover setup")) {
+    fail("Speaker mode omitted the layout/driver surface", { speakerHtml });
+  }
+  for (const forbidden of [
+    "Volume floor", "Extra headroom", "I²S audio HAT", "Match loudness", "Your profiles",
+  ]) {
+    if (speakerHtml.includes(forbidden)) {
+      fail("Speaker mode rendered another page's control", { forbidden, speakerHtml });
+    }
+  }
+  // The leader owns the program domain on this page too: no content-EQ /state.
+  if (speakerFetched.includes("./state")) {
+    fail("Speaker mode must not fetch the content-EQ /state", { speakerFetched });
   }
   return { splitPageModesRenderAndBootOnlyOwnedSurfaces: true };
 }
@@ -2402,27 +2423,6 @@ async function testThreeWayRendersEveryPhysicalComponentChoice() {
     });
   }
   return { threeWayRendersEveryPhysicalComponentChoice: true };
-}
-
-async function testActiveSpeakerSetupTogglePersistsAcrossRender() {
-  const harness = setupHarness(baseFetch());
-  await loadAndSetActiveState(harness);
-
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (initialHtml.includes("data-active-speaker-setup open")) {
-    fail("settled passive setup should start collapsed", { initialHtml });
-  }
-
-  harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
-  harness.dispatchClick({ "data-act": "browse-presets" });
-  await harness.flush();
-  await harness.flush();
-
-  const rerenderedHtml = harness.elements.get("view-body").innerHTML;
-  if (!rerenderedHtml.includes("data-active-speaker-setup open")) {
-    fail("opening speaker setup should survive the next render", { rerenderedHtml });
-  }
-  return { activeSpeakerSetupTogglePersistsAcrossRender: true };
 }
 
 async function testActiveRouteLimitsRenderedTemplates() {
@@ -7199,7 +7199,7 @@ async function testCommissionAutoRampResetsRunningFlagOnThrow() {
   // is re-rendered. We read it from the last successful render inside runCommission.
   // Actually the throw happened inside render(), so view-body innerHTML may be stale.
   // Force a fresh render by invoking a harmless action:
-  harness.dispatchToggle({ "data-active-speaker-setup": true, open: true });
+  harness.dispatchToggle({ "data-driver-advanced": true, open: true });
   await harness.flush(); await harness.flush();
 
   // After the throw the card must show the Play button again, NOT a disabled
@@ -7851,8 +7851,7 @@ async function testFollowerModeRendersLocalDriverUi() {
   await harness.flush();
 
   const html = harness.elements.get("view-body").innerHTML;
-  // The local driver/crossover/commissioning surface renders as primary content,
-  // expanded (not tucked behind the solo box's "Speaker setup" disclosure).
+  // The local driver/crossover/commissioning surface renders as primary content.
   for (const expected of ["Active crossover setup", "Test combined drivers"]) {
     if (!html.includes(expected)) {
       fail("follower /sound/ should render the local active-speaker UI", { expected, html });
@@ -7862,7 +7861,6 @@ async function testFollowerModeRendersLocalDriverUi() {
     "Create custom profile",
     "Try a stock profile",
     "data-act=\"new-draft\"",
-    "Speaker setup",
     "Match loudness",
     "Volume floor",
     "Extra headroom",
@@ -8895,7 +8893,6 @@ results.push(await testPartialSavePreservesUnchosenEnclosure());
 results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
-results.push(await testActiveSpeakerSetupTogglePersistsAcrossRender());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testAppliedProfileEditContinueOpensProfileStep());

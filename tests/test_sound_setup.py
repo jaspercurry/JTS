@@ -805,18 +805,18 @@ def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
     assert read_calls == [len(body)]
 
 
-# The EQ chrome the /sound/setup/ page must not render: the Off/Saved/Draft
+# The EQ chrome the hardware pages must not render: the Off/Saved/Draft
 # tablist and the now-playing plot are content-DSP surfaces.
 _EQ_ONLY_CHROME = ('id="tab-off"', 'id="tab-saved"', 'id="tab-draft"', 'id="plot"')
 
 
 @pytest.mark.parametrize(
     ("page_mode", "title"),
-    [("eq", "EQ"), ("setup", "Sound setup")],
+    [("eq", "EQ"), ("speaker", "Speaker setup"), ("output", "Output")],
 )
 def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
-    """Both modes share the design system and the static module; only the EQ
-    mode renders the Off/Saved/Draft chrome, and neither inlines logic."""
+    """All three modes share the design system and the static module; only the
+    EQ mode renders the Off/Saved/Draft chrome, and none inlines logic."""
     html = sound_setup._index_html(page_mode=page_mode).decode()
 
     assert "/assets/app.css" in html
@@ -838,6 +838,11 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     else:
         assert 'id="view-body"' in html
         assert not any(marker in html for marker in _EQ_ONLY_CHROME)
+    # Only the speaker page links its child row, and RELATIVELY: an absolute
+    # link would land the household on the self-signed 443 origin (#2632).
+    child = re.findall(r'<a class="btn" href="([^"]*)">Active speaker</a>', html)
+    assert child == (["crossover/"] if page_mode == "speaker" else [])
+    assert "/sound/speaker/crossover/" not in html
 
 
 def _island_payload(html: str) -> dict:
@@ -948,7 +953,7 @@ def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     assert "Sound is controlled by the pair leader" in html
     assert leader_paths == ["/sound/eq/"]
     assert "http://jts3.local/sound/eq/" in html
-    assert 'href="/sound/setup/">Open local sound setup</a>' in html
+    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
     # EQ is entirely leader-owned on a follower; no local commissioning module.
     assert "/assets/sound-profile/js/main.js" not in html
     assert 'id="sound-page-data"' in html
@@ -966,25 +971,48 @@ def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
     assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
-def test_setup_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
+def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     leader_paths = []
     monkeypatch.setattr(
         sound_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/setup/",
+        lambda path="/": leader_paths.append(path)
+        or f"http://jts3.local{leader_paths[-1]}",
     )
 
-    html = sound_setup._index_html("csrf-token", page_mode="setup").decode()
+    html = sound_setup._index_html("csrf-token", page_mode="speaker").decode()
 
-    assert leader_paths == ["/sound/setup/"]
-    assert "http://jts3.local/sound/setup/" in html
+    assert leader_paths == ["/sound/speaker/"]
+    assert "http://jts3.local/sound/speaker/" in html
     assert 'id="view-body"' in html
     assert "/assets/sound-profile/js/main.js" in html
-    assert '"mode": "setup"' in html
+    assert '"mode": "speaker"' in html
     assert '"follower": true' in html
     assert 'id="tab-off"' not in html
     assert 'id="plot"' not in html
+    # The local page owns the driver domain, so it offers no way back to it.
+    assert "Open local speaker setup" not in html
+
+
+def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
+    """Volume shaping is the leader's PROGRAM domain, so the follower's Output
+    page is delegation-only — with a path to the local page it does own."""
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    leader_paths = []
+    monkeypatch.setattr(
+        sound_setup,
+        "bonded_follower_leader_web_url",
+        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/output/",
+    )
+
+    html = sound_setup._index_html("csrf-token", page_mode="output").decode()
+
+    assert leader_paths == ["/sound/output/"]
+    assert "http://jts3.local/sound/output/" in html
+    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
+    assert "/assets/sound-profile/js/main.js" not in html
+    assert 'id="view-body"' not in html
 
 
 def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
@@ -1247,12 +1275,15 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     repo = Path(__file__).resolve().parents[1]
     unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
     nginx = (repo / "deploy/nginx-jasper.conf").read_text()
-    proxy = nginx.split("location /sound/setup/", 1)[1].split("}", 1)[0]
-    streambox_proxy = (repo / "deploy/nginx-jasper-streambox.conf").read_text().split("location /sound/setup/", 1)[1].split("}", 1)[0]
+    streambox = (repo / "deploy/nginx-jasper-streambox.conf").read_text()
     assert "TimeoutStartSec=50s" in unit
     assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
-    assert "proxy_read_timeout 65s;" in proxy
-    assert "proxy_read_timeout 65s;" in streambox_proxy
+    # The I2S HAT control POSTs through /sound/output/; the speaker page shares
+    # the backend and the same bound.
+    for conf in (nginx, streambox):
+        for page in ("/sound/speaker/", "/sound/output/"):
+            block = conf.split(f"location {page} {{", 1)[1].split("}", 1)[0]
+            assert "proxy_read_timeout 65s;" in block
 
 
 def test_sound_module_active_speaker_status_is_explicit_read_only():
@@ -1334,9 +1365,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "data-act=\"prepare-active-tone\"" not in js
     assert "data-act=\"verify-active-tone\"" not in js
     assert "activeSpeaker.playback" not in js
-    assert "var activeSpeakerSetupOpen = false;" in js
-    assert "'<details class=\"advanced\" data-active-speaker-setup' + (open ? ' open' : '')" in js
-    assert "activeSpeakerSetupOpen = !!ev.target.open;" in js
     assert "No active driver test" not in js
     assert "no separate direct-DAC driver test in the product UI" not in js
     assert "id=\"active-speaker-level\"" not in js
@@ -2562,7 +2590,7 @@ def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path
 def test_a_roleful_layout_on_the_innomaker_is_accepted_with_a_drivable_route(
     monkeypatch, tmp_path: Path, shape,
 ):
-    """THE FLIP, at the surface the owner hit: /sound/setup/ refused these
+    """THE FLIP, at the surface the owner hit: /sound/speaker/ refused these
     layouts on the InnoMaker, and now accepts them.
 
     The board declares the width-2 active outputd lane, so the one predicate
@@ -5370,7 +5398,6 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         "partialSavePreservesUnchosenEnclosure",
         "directCrossoverEditRefreshesProposalAndFooter",
         "tweeterTypeChangeInvalidatesCopiedResearchBinding",
-        "activeSpeakerSetupTogglePersistsAcrossRender",
         # The cross-child verdict is a warning, so the notice IS the disclosure:
         # evaluate_output_topology reports speaker_group_spans_child_devices
         # without blocking the save, and nothing else tells the household. This
@@ -7891,7 +7918,7 @@ def test_tuning_handoff_follows_the_pages_applied_profile_verdict(
     # still holding the prompt back.
     assert payload["binding"]["hostname"] == "jts7.local"
     assert payload["binding"]["design_draft_revision"] == 5
-    assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/setup/"
+    assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/speaker/"
 
 
 def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(

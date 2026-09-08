@@ -311,7 +311,7 @@ def test_profile_not_confirmed_action_deep_links_the_review_callout():
     assert spec.next_action == {
         "id": "review_safety_limits",
         "label": "Review safety limits",
-        "href": "/sound/setup/#confirm-safety-limits",
+        "href": "/sound/speaker/#confirm-safety-limits",
     }
 
 
@@ -336,7 +336,7 @@ def test_missing_profile_never_tells_the_household_to_review_limits():
     assert spec.template == TEMPLATE_HARD_STOP and spec.retry_budget == 0
     # No fragment: there is no callout to land on in this state.
     assert spec.next_action is not None
-    assert spec.next_action["href"] == "/sound/setup/"
+    assert spec.next_action["href"] == "/sound/speaker/"
 
 
 def test_incomplete_profile_asks_for_the_values_not_a_save_that_changes_nothing():
@@ -386,7 +386,7 @@ def test_hard_stop_screen_renders_the_reasons_own_action():
 
     env = build_crossover_envelope_v2(_status(REASON_PROGRAM_PROFILE_NOT_CONFIRMED))
     assert env["screen"] == "hard_stop"
-    assert env["next_action"]["href"] == "/sound/setup/#confirm-safety-limits"
+    assert env["next_action"]["href"] == "/sound/speaker/#confirm-safety-limits"
     assert env["next_action"]["label"] == "Review safety limits"
     assert env["verdict_text"] == (
         REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
@@ -395,7 +395,7 @@ def test_hard_stop_screen_renders_the_reasons_own_action():
     generic = build_crossover_envelope_v2(_status(REASON_PROGRAM_UNPLAYABLE))
     assert generic["screen"] == "hard_stop"
     assert generic["next_action"] == {
-        "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/setup/",
+        "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/",
     }
 
 
@@ -600,7 +600,7 @@ def test_the_refusal_carries_its_own_resolution_action_for_the_400_body():
     action["href"] = "/tampered/"
     assert REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action[
         "href"
-    ] == "/sound/setup/#confirm-safety-limits"
+    ] == "/sound/speaker/#confirm-safety-limits"
 
     # An uncoded refusal (the many whose only honest answer is prose) offers no
     # button rather than a guessed one.

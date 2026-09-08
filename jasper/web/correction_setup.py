@@ -890,7 +890,7 @@ def _post_start(handler: _Handler) -> None:
                 # that will refuse again.
                 recovery_action={
                     "label": "Open speaker setup",
-                    "href": "/sound/setup/",
+                    "href": "/sound/speaker/",
                 },
             ),
             diagnostic=str(e),

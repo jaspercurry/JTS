@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared backend for preference EQ at /sound/eq/ and hardware setup at /sound/setup/.
+"""Shared backend for three Sound pages: /sound/eq/, /sound/speaker/, /sound/output/.
 
-Both public prefixes are stripped by nginx, so the routes this server answers
-are the bare paths listed in ``do_GET``/``do_POST`` below.
+nginx names the page in ``X-JTS-Sound-Page`` and strips the public prefix, so
+the routes this server answers are the bare paths listed in
+``do_GET``/``do_POST`` below. EQ owns preference profiles, Speaker setup owns
+the driver/layout domain, Output owns the I2S HAT and volume shaping.
 
 The page is built on the canonical design system (jasper.web._common.
 canonical_page + /assets/app.css). The view's Off / Saved / Draft tabs
@@ -148,6 +150,28 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
 MAX_JSON_BYTES = 64 * 1024
 
+#: The public path of each ``X-JTS-Sound-Page`` mode nginx may set. Any other
+#: header value renders EQ, the one page every profile serves.
+_PAGE_PATHS = {
+    "eq": "/sound/eq/",
+    "speaker": "/sound/speaker/",
+    "output": "/sound/output/",
+}
+
+
+def _coerce_page_mode(page_mode: str) -> str:
+    return page_mode if page_mode in _PAGE_PATHS else "eq"
+
+
+#: /sound/speaker/ renders the link to its own child row (docs/web-ia.md §1).
+#: The href is RELATIVE so it stays on the origin the household is already on;
+#: an absolute one would land on the self-signed 443 origin (issue #2632).
+_CROSSOVER_CHILD_LINK = """<section class="info-card">
+    <p class="form-hint">Measure the crossover between this speaker's drivers
+    and set the filters that protect them.</p>
+    <div class="form-actions"><a class="btn" href="crossover/">Active speaker</a></div>
+  </section>"""
+
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
     """The one ``sound-page-data`` island both /sound/ shells render.
@@ -191,17 +215,17 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
     A bonded follower delegates the PROGRAM domain (content EQ, room
     correction, volume shaping) to the pair leader but still owns its LOCAL
     driver domain (the per-driver crossover / limiter / tweeter high-pass that
-    protects the DAC it drives). Setup keeps the delegation card and mounts the
-    same active-speaker UI as a solo box; EQ is a delegation-only page with a
-    path back to local Setup.
+    protects the DAC it drives). Speaker setup keeps the delegation card and
+    mounts the same active-speaker UI as a solo box; EQ and Output are
+    delegation-only pages with a path back to local Speaker setup.
 
-    The page island tells main.js to boot in follower Setup mode: only the
+    The page island tells main.js to boot in follower speaker mode: only the
     active-speaker section, no Off/Saved/Draft editor or now-playing plot.
     Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``); the
     active-speaker commissioning/crossover endpoints are allowed.
     """
-    page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
-    leader_path = "/sound/eq/" if page_mode == "eq" else "/sound/setup/"
+    page_mode = _coerce_page_mode(page_mode)
+    leader_path = _PAGE_PATHS[page_mode]
     leader_sound_url = bonded_follower_leader_web_url(leader_path)
     leader_link = (
         '<a class="btn btn--primary" href="'
@@ -211,18 +235,22 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
         else ""
     )
     page_island = _sound_page_island(page_mode=page_mode, follower=True)
-    title = "EQ" if page_mode == "eq" else "Sound setup"
+    title = (
+        "EQ" if page_mode == "eq"
+        else "Speaker setup" if page_mode == "speaker"
+        else "Output"
+    )
     local_setup = (
         '<div id="view-body"></div>'
         '<div class="status-line" id="status" role="status" aria-live="polite"></div>'
         '<link rel="modulepreload" href="/assets/sound-profile/js/topology.js">'
         '<script type="module" src="/assets/sound-profile/js/main.js"></script>'
-        if page_mode == "setup"
+        if page_mode == "speaker"
         else ""
     )
     local_setup_link = (
-        '<a class="btn" href="/sound/setup/">Open local sound setup</a>'
-        if page_mode == "eq"
+        '<a class="btn" href="/sound/speaker/">Open local speaker setup</a>'
+        if page_mode != "speaker"
         else ""
     )
     header = canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
@@ -254,10 +282,14 @@ def _follower_sound_html(csrf_token: str = "", *, page_mode: str) -> bytes:
 
 
 def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
-    page_mode = page_mode if page_mode in {"eq", "setup"} else "eq"
+    page_mode = _coerce_page_mode(page_mode)
     if bonded_follower_active():
         return _follower_sound_html(csrf_token, page_mode=page_mode)
-    title = "EQ" if page_mode == "eq" else "Sound setup"
+    title = (
+        "EQ" if page_mode == "eq"
+        else "Speaker setup" if page_mode == "speaker"
+        else "Output"
+    )
     eq_tabs_html = (
         '<div><div class="segmented" role="tablist" aria-label="Sound source">'
         '<button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>'
@@ -289,10 +321,11 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 """
         if page_mode == "eq"
         else canonical_header(title, back_href="/sound/", back_label="Sound", back_id="back")
-        + """
+        + f"""
 <main class="page">
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
+  {_CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""}
 </main>
 """
     )

@@ -701,7 +701,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     assert body["error"] == spec.message
     # Same registry entry the hard-stop screen would have rendered.
     assert body["next_action"] == dict(spec.next_action)
-    assert body["next_action"]["href"] == "/sound/setup/#confirm-safety-limits"
+    assert body["next_action"]["href"] == "/sound/speaker/#confirm-safety-limits"
     # And the code is on the journal line beside the reason.
     assert any(
         f"code={REASON_PROGRAM_PROFILE_NOT_CONFIRMED}" in r.getMessage()

@@ -5099,7 +5099,7 @@ _VERDICTS_WITHOUT_NUMBERS = {
         ),
         # Audit item 4i: the household remedy for an undeclared class needs the
         # ACTUAL declared class beside the reason, to tell "unknown" (an action
-        # exists at /sound/setup/) from a real class's own prior (there is none).
+        # exists at /sound/speaker/) from a real class's own prior (there is none).
         pytest.param(
             {
                 "woofer": {

@@ -1224,7 +1224,7 @@ def test_e2e_start_safety_refusal_returns_422(monkeypatch):
                 # than a retry that would refuse again.
                 "recovery_action": {
                     "label": "Open speaker setup",
-                    "href": "/sound/setup/",
+                    "href": "/sound/speaker/",
                 },
             },
         }

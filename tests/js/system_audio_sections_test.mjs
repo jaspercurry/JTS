@@ -119,7 +119,7 @@ const PARKED = {
   headline: "Sound cannot come out of the speaker",
   detail:
     "InnoMaker HiFi AMP Pro cannot drive an active speaker layout, so " +
-    "nothing can play. Choose a passive speaker layout at /sound/setup/ " +
+    "nothing can play. Choose a passive speaker layout at /sound/speaker/ " +
     "(passive sends full-range to every output; requires a built-in passive " +
     "crossover) or attach an active-capable DAC.",
   active_source: null,

@@ -257,11 +257,10 @@ import {
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
   // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
-  // is "/sound/setup/#confirm-safety-limits"). Both halves of that link — the id
+  // is "/sound/speaker/#confirm-safety-limits"). Both halves of that link — the id
   // rendered here and the href in the registry — are pinned by
   // tests/test_sound_profile_confirm_deeplink.py so neither can move alone.
   var CONFIRM_SAFETY_ANCHOR_ID = 'confirm-safety-limits';
-  var activeSpeakerSetupOpen = false;
   var driverAdvancedOpen = false;
   var outputTemplateDraftAxes = {layout: '', speakerMode: ''};
   var ZERO_DETENT_DB = 0.1;
@@ -526,8 +525,8 @@ import {
       status(statusText, statusErr);
       return;
     }
-    if (pageMode === 'setup') {
-      renderSetup();
+    if (pageMode !== 'eq') {
+      if (pageMode === 'speaker') renderSpeaker(); else renderOutput();
       status(statusText, statusErr);
       return;
     }
@@ -550,9 +549,8 @@ import {
     status(statusText, statusErr);
   }
 
-  // Follower mode renders the local driver/crossover/commissioning surface as the
-  // page's primary content (expanded, not behind the Speaker setup disclosure a
-  // solo box tucks it under). No EQ tabs/plot exist on a follower.
+  // A follower's local page carries the I2S HAT too: its Output page is
+  // delegated to the leader. No EQ tabs/plot exist on a follower.
   function renderFollower() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="active-speaker-setup">' +
@@ -560,10 +558,15 @@ import {
       '</section></div>';
   }
 
-  function renderSetup() {
+  function renderSpeaker() {
+    el('view-body').innerHTML =
+      '<div class="saved-stack"><section class="active-speaker-setup">' +
+      renderOutputTopologySetup() + '</section></div>';
+  }
+
+  function renderOutput() {
     el('view-body').innerHTML = '<div class="saved-stack">' +
-      renderI2sHatSetting() + renderSetupSoundSettings() +
-      renderActiveSpeakerSetup() + '</div>';
+      renderI2sHatSetting() + renderSetupSoundSettings() + '</div>';
   }
 
   function renderI2sHatSetting() {
@@ -807,19 +810,6 @@ import {
             '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
           '</div>' +
         '</div>' +
-      '</details>' +
-    '</section>';
-  }
-  function renderActiveSpeakerSetup() {
-    var open = activeSpeakerSetupOpen || activeSpeaker.loading ||
-      activeSpeaker.session ||
-      activeSpeaker.error || outputTopology.loading || outputTopology.saving ||
-      outputTopology.identitySaving || outputTopology.protectionSaving || outputTopology.error ||
-      outputTopology.dirty || outputTopology.touched;
-    return '<section class="active-speaker-setup">' +
-      '<details class="advanced" data-active-speaker-setup' + (open ? ' open' : '') + '>' +
-        '<summary>Speaker setup</summary>' +
-        renderOutputTopologySetup() +
       '</details>' +
     '</section>';
   }
@@ -3665,10 +3655,6 @@ import {
     }
   });
   el('view-body').addEventListener('toggle', function(ev) {
-    if (ev.target && ev.target.matches && ev.target.matches('[data-active-speaker-setup]')) {
-      activeSpeakerSetupOpen = !!ev.target.open;
-      return;
-    }
     if (ev.target && ev.target.matches && ev.target.matches('[data-driver-advanced]')) {
       driverAdvancedOpen = !!ev.target.open;
       return;
@@ -5608,18 +5594,17 @@ import {
         view = 'off';
       }
       render();
-      // The design draft the deep link needs arrives with this refresh, so the
-      // fragment is applied after it settles, not at DOMContentLoaded.
-      if (pageMode === 'setup') {
-        refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
-      }
+      // The Output page reads the I2S HAT off the topology payload; the
+      // safety-limits deep link belongs to the speaker page.
+      if (pageMode === 'output') refreshOutputTopology({silent: true});
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }
   }
-  // Follower boot: no content-EQ /state fetch (the leader owns the program
-  // domain). Paint the local active-speaker shell, then load its hardware state.
-  function loadFollowerActive() {
+  // Hardware-only boot, for /sound/speaker/ and for a follower (whose leader
+  // owns the program domain): no content-EQ /state fetch. Paint the shell, then
+  // load the hardware state the safety-limits deep link needs to resolve.
+  function loadLocalHardware() {
     render();
     refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
   }
@@ -5648,6 +5633,6 @@ import {
   window.addEventListener('pageshow', function(event) {
     if (event && event.persisted && view === 'draft') scheduleLiveDraft(true);
   });
-  if (followerMode) loadFollowerActive();
+  if (followerMode || pageMode === 'speaker') loadLocalHardware();
   else loadState();
 })();

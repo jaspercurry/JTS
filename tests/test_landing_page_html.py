@@ -208,7 +208,7 @@ def test_volume_slider_surfaces_active_speaker_safety_muted_state() -> None:
 
     assert 'id="volume-safety-note" hidden' in html
     assert "Speaker output is locked until active crossover setup is complete." in html
-    assert 'href="/sound/setup/"' in html
+    assert 'href="/sound/speaker/"' in html
     assert ".volume-wrap.safety-muted" in style
     assert "cursor: not-allowed;" in style
     assert "fetch('/system/data.json', {cache: 'no-store'})" in script
@@ -674,15 +674,15 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in https_catchall
         _assert_strong_no_cache(https_catchall)
 
-        eq = _nginx_location_block(http_nginx, "location /sound/eq/")
-        setup = _nginx_location_block(http_nginx, "location /sound/setup/")
         compat = _nginx_location_block(http_nginx, "location /sound/")
-        for block in (eq, setup, compat):
+        assert "proxy_pass http://127.0.0.1:8784/;" in compat
+        assert "127.0.0.1:8770" not in compat
+        assert "return 302" not in compat
+        for mode in ("eq", "speaker", "output"):
+            block = _nginx_location_block(http_nginx, f"location /sound/{mode}/")
             assert "proxy_pass http://127.0.0.1:8784/;" in block
             assert "127.0.0.1:8770" not in block
-        assert "proxy_set_header X-JTS-Sound-Page eq;" in eq
-        assert "proxy_set_header X-JTS-Sound-Page setup;" in setup
-        assert "return 302" not in compat
+            assert f"proxy_set_header X-JTS-Sound-Page {mode};" in block
 
         for public_prefix, backend_prefix in measurement_routes.items():
             location = f"location /sound/{public_prefix}"
@@ -869,6 +869,46 @@ def test_speaker_timing_is_mounted_on_both_listeners(conf_path: Path) -> None:
         listeners |= set(ports)
 
     assert listeners == {80, 443}
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_the_split_sound_pages_keep_their_trailing_slash(conf_path: Path) -> None:
+    """`/sound/speaker/` and `/sound/output/` are prefix blocks with the slash,
+    plus a `location =` 308 for the bare path (ADR-0253 §3).
+
+    The slash is load-bearing: a bare `location /sound/output` would also match
+    /sound/output-topology, the live API the `/sound/` compat proxy serves, and
+    a bare `location /sound/speaker` would swallow nothing today but has the
+    same shape. The 308 is what makes the no-slash URL usable.
+    """
+    for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8")):
+        if ("", "/sound/") not in locations:
+            continue
+        for page in ("/sound/speaker/", "/sound/output/"):
+            bare = page.rstrip("/")
+            assert ("", page) in locations
+            assert ("", bare) not in locations
+            assert locations[("=", bare)].strip() == f"return 308 {page};"
+
+
+@pytest.mark.parametrize(
+    "conf_path", (_NGINX_PATH, _STREAMBOX_NGINX_PATH), ids=lambda p: p.stem,
+)
+def test_the_old_sound_setup_path_only_redirects(conf_path: Path) -> None:
+    """`/sound/setup/` was printed and bookmarked, so it 301s instead of being
+    cut outright (ADR-0253 §3) — but it serves nothing of its own any more."""
+    blocks = {
+        (mod, path): body
+        for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8"))
+        for (mod, path), body in locations.items()
+        if path == "/sound/setup" or path.startswith("/sound/setup/")
+    }
+
+    assert set(blocks) == {("=", "/sound/setup"), ("", "/sound/setup/")}
+    for body in blocks.values():
+        assert body.strip() == "return 301 /sound/speaker/;"
 
 
 @pytest.mark.parametrize(

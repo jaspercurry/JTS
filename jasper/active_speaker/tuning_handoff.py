@@ -116,7 +116,7 @@ def build_tuning_handoff(
     baseline_profile: Mapping[str, Any],
     design_draft: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """``{prompt, binding}`` for the /sound/setup/ handoff card.
+    """``{prompt, binding}`` for the /sound/speaker/ handoff card.
 
     Readiness is ``applied_profile_stands``, read from the same baseline-profile
     payload the page renders its active-profile card from (ADR-0195): a second

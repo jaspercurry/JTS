@@ -799,7 +799,7 @@ def read_active_speaker_setup_status(
             reason=reason,
             detail=detail,
             room_detail=room_detail,
-            setup_href="/sound/setup/",
+            setup_href="/sound/speaker/",
             active_config_path=active_config_path,
             issues=[issue, *(dict(item) for item in output_contract.issues)],
         )

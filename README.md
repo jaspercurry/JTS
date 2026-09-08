@@ -149,7 +149,7 @@ is the authoritative route list; it covers the assistant
 (`/assistant/voice/`, `/assistant/wake/`, `/assistant/tools/`,
 `/assistant/chat/`, `/assistant/transit/`, `/assistant/weather/`,
 `/assistant/google/`, `/assistant/ha/`), sound (`/sound/eq/`,
-`/sound/setup/`, `/sound/pair/`, `/sound/room/`,
+`/sound/speaker/`, `/sound/pair/`, `/sound/room/`,
 `/sound/speaker/crossover/`, `/sound/bass/`), sources (`/sources/`,
 `/spotify/`, `/bluetooth/`, `/airplay/`) and the system pages
 (`/system/`, `/wifi/`, `/speaker/`).

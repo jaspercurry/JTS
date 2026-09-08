@@ -180,7 +180,7 @@ def test_review_prints_the_same_facts_for_a_human(capsys):
 def test_the_door_is_reached_at_its_own_daemons_paths_with_that_daemons_token():
     """The reason this verb exists: nginx fronts several wizard daemons.
 
-    ``/sound/setup/`` is jasper-web's prefix, so the door's routes carry it and
+    ``/sound/speaker/`` is jasper-web's prefix, so the door's routes carry it and
     the double-submit token is minted from a page jasper-web itself serves --
     not from the correction wizard's page next door.
     """

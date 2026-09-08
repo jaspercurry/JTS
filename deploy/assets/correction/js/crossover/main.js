@@ -196,7 +196,7 @@ const OCTAVE_REASON_OUT_OF_BAND = 'envelope_out_of_band';
 // (jasper.active_speaker.linearization_envelope.ReasonCode.LIMITED_BY_CLASS_PRIOR).
 // An undeclared driver_class resolves to the "unknown" class prior — the most
 // conservative row in _CLASS_PRIOR_FULL_TO_HZ — and banked this code with no
-// household surface ever naming the /sound/setup/ field that lifts it. Gated
+// household surface ever naming the /sound/speaker/ field that lifts it. Gated
 // on driver_class === 'unknown' at the render site below, never on the reason
 // code alone: the same code fires for an ALREADY-declared class's own real
 // prior, where redeclaring it is not an action the household has left to take.
@@ -206,7 +206,7 @@ const OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR = 'envelope_limited_by_class_prior';
 // remedy/next-action shape ({id, label, href}) refusal_copy.py's safety-limits
 // deep-link rows use (REASON_PROGRAM_PROFILE_MISSING /
 // _NOT_CONFIRMED), not a new one. No fragment: unlike
-// "#confirm-safety-limits", /sound/setup/ renders no anchor for driver_class,
+// "#confirm-safety-limits", /sound/speaker/ renders no anchor for driver_class,
 // so a deep link would land on nothing — the bare page, which opens on its
 // own first unfinished step, IS the action, the same "no fragment" contract
 // REASON_PROGRAM_PROFILE_MISSING uses for the identical reason. The
@@ -216,7 +216,7 @@ const OCTAVE_REASON_LIMITED_BY_CLASS_PRIOR = 'envelope_limited_by_class_prior';
 const CLASS_PRIOR_REMEDY = {
   id: 'declare_driver_class',
   label: "Declare this driver's technology class",
-  href: '/sound/setup/',
+  href: '/sound/speaker/',
 };
 
 // The measured-crossover candidate the household reviews before applying
@@ -463,7 +463,7 @@ function renderCandidateReview(review) {
     // Audit item 4i: an undeclared driver_class capped correction on this
     // row. Gated on driver_class === 'unknown', never on the reason code
     // alone — the same code fires for an ALREADY-declared class's own real
-    // prior, where naming /sound/setup/ again would be a false remedy. One
+    // prior, where naming /sound/speaker/ again would be a false remedy. One
     // sentence, not per-band: the row already named which octaves and their
     // numbers above.
     const classPriorLimited = bands.some(
