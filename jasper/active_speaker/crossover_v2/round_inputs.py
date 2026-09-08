@@ -19,15 +19,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from jasper.json_fields import finite_float
+from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from jasper.active_speaker.bundles import DEFAULT_SESSIONS_DIR
+from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
+
 from jasper.active_speaker.state_paths import (
     DEFAULT_BASELINE_PROFILE_STATE_PATH as APPLIED_PROFILE_DEFAULT_PATH,
 )
 from jasper.active_speaker.crossover_v2.durable_state import (
     DEFAULT_V2_STATE_PATH as STATE_DEFAULT_PATH,
-)
-from jasper.active_speaker.crossover_v2.evidence_packet import (
-    CrossoverEvidencePacketError,
-    round_artifact_dir,
 )
 from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as DRIVERS_DEFAULT_PATH,
@@ -53,6 +54,8 @@ __all__ = [
     "STATE_DEFAULT_PATH",
     "STATE_FILENAME",
     "STATE_SESSION_UNKNOWN",
+    "banked_round_of",
+    "recent_round_sessions",
     "round_inputs",
 ]
 
@@ -70,6 +73,26 @@ DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 #: Why a LIVE session resolves to no flow state. One slug for every such case;
 #: it reaches an operator through the published ``verify_pose.reason`` field.
 STATE_SESSION_UNKNOWN = "state_session_unknown"
+
+
+class CrossoverEvidencePacketError(ValueError):
+    """The named directory is not a crossover-v2 session bundle."""
+
+
+NO_ROUND_ARTIFACTS_REASON = "no crossover_v2 round artifacts under evidence/v1"
+
+
+def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
+    matches = sorted(
+        path for path in session_dir.glob(f"{EVIDENCE_ROOT}/artifacts/crossover_v2/*")
+        if path.is_dir()
+    )
+    if not matches:
+        return None, NO_ROUND_ARTIFACTS_REASON
+    if len(matches) > 1:
+        names = ", ".join(path.name for path in matches)
+        return None, f"bundle carries more than one round ({names})"
+    return matches[0], ""
 
 
 class RoundViewsError(CrossoverEvidencePacketError):
@@ -171,3 +194,50 @@ def round_inputs(path: Path) -> RoundInputs:
         f"{path}: neither a banked round (no bundle/ directory) nor a live "
         f"session bundle (no info.json)"
     )
+
+
+def banked_round_of(session_dir: Path) -> Path | None:
+    """The bank containing this bundle, if it resolves back to the same bundle."""
+    candidate = session_dir.parent.parent
+    try:
+        inputs = round_inputs(candidate)
+        return candidate if inputs.banked and inputs.session_dir == session_dir else None
+    except RoundViewsError:
+        return None
+
+
+def recent_round_sessions(session_dir: Path, *, limit: int = 32) -> list[Path]:
+    """Read a bounded window from adjacent live and campaign stores.
+
+    Directory times select the window; capture times order the evidence.
+    Duplicate bundle ids are read from the requested store first.
+    """
+    bank = banked_round_of(session_dir)
+    root = bank.parent if bank else session_dir.parent
+    roots = [root]
+    paired = {
+        DEFAULT_SESSIONS_DIR.name: DEFAULT_CAMPAIGN_ROOT.name,
+        DEFAULT_CAMPAIGN_ROOT.name: DEFAULT_SESSIONS_DIR.name,
+    }.get(root.name)
+    if paired:
+        roots.append(root.parent / paired)
+    sessions: dict[str, tuple[float, Path]] = {}
+    for store in roots:
+        if not store.is_dir():
+            continue
+        directories = sorted(
+            (path for path in store.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )[:max(0, limit)]
+        for directory in directories:
+            try:
+                bundle = round_inputs(directory).session_dir
+                info = json.loads((bundle / "info.json").read_text())
+                if not isinstance(info, dict):
+                    continue
+            except (OSError, ValueError, CrossoverEvidencePacketError):
+                continue
+            sessions.setdefault(str(info.get("session_id") or bundle.name), (
+                finite_float(info.get("started_at")) or 0.0, bundle,
+            ))
+    return [bundle for _started_at, bundle in sorted(sessions.values(), reverse=True)][:max(0, limit)]

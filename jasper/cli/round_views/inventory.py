@@ -37,6 +37,7 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
+    context_artifacts,
     default_out,
 )
 
@@ -88,6 +89,7 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
         "banked": inputs.banked,
         "bytes_total": bytes_total,
         "artifacts": artifacts,
+        **context_artifacts(inputs, round_dir),
     }
     written = _write(
         payload, args.out, default_out(inputs, round_dir, INVENTORY_ARTIFACT)
@@ -96,6 +98,8 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     return answer(
         args.command, out=written, present=len(artifacts) - len(missing),
         total=len(artifacts), bytes_total=bytes_total, missing=missing,
+        frozen_packet=payload["frozen_packet"],
+        latest_agent_note=payload["latest_agent_note"],
         line=(
             f"inventory: {len(artifacts) - len(missing)}/{len(artifacts)} "
             f"artifact(s) present"

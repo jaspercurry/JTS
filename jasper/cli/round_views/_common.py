@@ -19,7 +19,12 @@ from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_AR
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    RoundInputs,
+    banked_round_of,
+    recent_round_sessions,
+    round_inputs,
+)
 from jasper.active_speaker.crossover_v2.round_views import (
     BankedRound,
     RoundViewsError,
@@ -89,6 +94,7 @@ class ViewArtifact(NamedTuple):
 #: ``repeat-floor`` is absent because it publishes to ``--install`` or
 #: ``--out`` instead of beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
+    "packet": ViewArtifact("packet.json", producer="jasper-crossover-prescriber packet"),
     "entry": ViewArtifact("entry_state_grade.json"),
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
     "per-seat": ViewArtifact("per_seat.json"),
@@ -220,19 +226,6 @@ def refused_by_name(
     return failed(code, reason, detail)
 
 
-def banked_round_of(session_dir: Path) -> Path | None:
-    """The banked round tree this session bundle was copied into, if any.
-
-    Asked of the resolver rather than by re-spelling its layout: a directory
-    two levels up that resolves to THIS session bundle is the round holding it.
-    """
-    candidate = session_dir.parent.parent
-    try:
-        return candidate if round_inputs(candidate).session_dir == session_dir else None
-    except RoundViewsError:
-        return None
-
-
 def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     """Where a view lands when the operator named no ``--out``.
 
@@ -254,6 +247,29 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str) -> Path:
     if banked_round is not None:
         return banked_round / name
     return Path.cwd() / f"{inputs.session_dir.name}-{name}"
+
+
+def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
+    """Paths and sizes only; optional agent prose never becomes measurement data."""
+    packet = default_out(inputs, round_dir, ARTIFACT_BY_VIEW["packet"].artifact)
+    bundles = recent_round_sessions(inputs.session_dir)
+    latest_note = next((
+        path
+        for bundle in bundles
+        for path in dict.fromkeys((
+            (banked_round_of(bundle) or bundle) / "agent_notes.md",
+            bundle / "agent_notes.md",
+        ))
+        if path.is_file()
+    ), None)
+    return {
+        key: {
+            "path": str(path) if path else None,
+            "present": path is not None and path.is_file(),
+            "bytes": path.stat().st_size if path and path.is_file() else None,
+        }
+        for key, path in (("frozen_packet", packet), ("latest_agent_note", latest_note))
+    }
 
 
 def resolved_out(round_dir: Path, artifact: str) -> Path:

@@ -47,6 +47,10 @@ from .journey import (
     PHASE_MEASURE,
 )
 from .record_index import Measurement, bundle_measurements
+from .round_inputs import (
+    CrossoverEvidencePacketError, NO_ROUND_ARTIFACTS_REASON,
+    recent_round_sessions, round_artifact_dir,
+)
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
 # resolving it through the module on every call is what keeps that ownership
 # real rather than a copy taken once at import.
@@ -108,17 +112,6 @@ GENERATED_BY = (
     "jasper.active_speaker.crossover_v2.evidence_packet."
     "build_crossover_evidence_packet"
 )
-
-#: Where a session bundle keeps its round artifacts. The ``<cap-id>`` directory
-#: under it is the capture session id, NOT the bundle's own ``session_id`` — two
-#: distinct namespaces on disk.
-_EVIDENCE_GLOB = f"{EVIDENCE_ROOT}/artifacts/crossover_v2/*"
-
-#: :func:`round_artifact_dir`'s reason when no
-#: ``evidence/v1/artifacts/crossover_v2/<capture>/`` directory exists under the
-#: given path at all. Named so a caller can tell this refusal from "bundle
-#: carries more than one round" without parsing prose.
-NO_ROUND_ARTIFACTS_REASON = "no crossover_v2 round artifacts under evidence/v1"
 
 #: Position fields copied verbatim. ``wav_path`` is deliberately absent — it is
 #: an absolute path on the speaker's filesystem, and ``wav_sha256`` identifies
@@ -349,9 +342,6 @@ def _snr_shape(column: str) -> str | None:
 _STATE_WITHHELD = ("household_findings",)
 
 
-class CrossoverEvidencePacketError(ValueError):
-    """The named directory is not a crossover-v2 session bundle."""
-
 
 def _read_json(path: Path) -> tuple[Any, str]:
     """One artifact, plus why it is missing when it is.
@@ -505,26 +495,6 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
         return [_exact_json_value(item, column, non_finite) for item in value]
     return value
 
-
-def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
-    """The one round-artifact directory in a bundle, or ``(None, why)``.
-
-    Public because the directory is WRITTEN as well as read —
-    :mod:`.feature_classifier` files :data:`CLASSIFICATION_ARTIFACT` there —
-    and one rule has to serve both directions.
-    """
-    matches = sorted(
-        path for path in session_dir.glob(_EVIDENCE_GLOB) if path.is_dir()
-    )
-    if not matches:
-        return None, NO_ROUND_ARTIFACTS_REASON
-    if len(matches) > 1:
-        # Fail closed rather than pick. Two round directories in one bundle
-        # means the caller has to say which round it is asking about, and
-        # guessing would silently grade a proposal against the wrong one.
-        names = ", ".join(path.name for path in matches)
-        return None, f"bundle carries more than one round ({names})"
-    return matches[0], ""
 
 
 def round_program_dir(
@@ -2077,42 +2047,18 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
 
 
 def _structural_history_block(session_dir: Path) -> dict[str, Any]:
-    """Every structural axis's recent per-round history.
-
-    ``candidate.json`` is what durably banks these values — write-once, one
-    file per round directory, retained as long as the bundle. Neither
-    ``round_receipt.json`` (whose ``round_axes`` is the four ADOPTION verdicts)
-    nor :mod:`.durable_state` (ONE overwritten current snapshot) carries a
-    candidate across rounds.
-
-    A round is admitted when its candidate names ANY declared axis, because a
-    round whose structure can have moved is a row whether or not it re-solved a
-    trim.
-
-    Across BUNDLES, not across round directories inside one: a bundle carries
-    at most one round directory, and a household's rounds are siblings under
-    ``session_dir``'s parent, newest first by ``started_at``
-    (:func:`~jasper.active_speaker.bundles.list_bundles` — bundle DIRECTORY
-    name order is a random uuid4 and is not chronological). A bundle with no
-    round directory, or none carrying a candidate, is silently skipped.
-
-    Values only, oldest first; no drift verdict — reading one is the LLM's job.
-    """
-    from jasper.active_speaker.bundles import list_bundles
+    """Candidate axes across recent live or banked rounds, oldest first."""
 
     try:
-        bundles = list_bundles(
-            session_dir.parent, limit=_STRUCTURAL_HISTORY_BUNDLE_SCAN_LIMIT
+        bundles = recent_round_sessions(
+            session_dir, limit=_STRUCTURAL_HISTORY_BUNDLE_SCAN_LIMIT
         )
     except OSError:
         bundles = []
 
     newest_first: list[dict[str, Any]] = []
-    for info in bundles:
-        bundle_dir = info.get("bundle_dir")
-        if not isinstance(bundle_dir, str) or not bundle_dir:
-            continue
-        round_dir, _reason = round_artifact_dir(Path(bundle_dir))
+    for bundle_dir in bundles:
+        round_dir, _reason = round_artifact_dir(bundle_dir)
         if round_dir is None:
             continue
         axes = _structural_axes_of(_read_candidate(round_dir))
@@ -2139,7 +2085,7 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
         ],
         "source": (
             "candidate.json role_attenuations_db / alignment / source_preset "
-            "corner, across this bundle's recent siblings"
+            "corner, across recent live or banked rounds"
         ),
         "note": (
             "oldest first, so a monotonic walk reads left to right. Values "

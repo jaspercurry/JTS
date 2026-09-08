@@ -14,6 +14,7 @@ reuse rule ``test_crossover_v2_driver_prescription`` follows.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -339,6 +340,14 @@ def test_the_history_reads_sibling_bundles_oldest_first(tmp_path):
     ] == [-1.4, -2.1, -3.1]
     assert all("verdict" not in row for row in history["rounds"])
 
+    for bundle in root.iterdir():
+        bank = tmp_path / "campaign" / bundle.name / "bundle" / bundle.name
+        shutil.copytree(bundle, bank)
+    banked = build_crossover_evidence_packet(
+        tmp_path / "campaign" / latest.name / "bundle" / latest.name
+    )
+    assert banked["structural_history"] == history
+
 
 def test_pinned_trim_roles_carry_their_own_flag(tmp_path):
     root = tmp_path / "bundles"
@@ -354,6 +363,21 @@ def test_pinned_trim_roles_carry_their_own_flag(tmp_path):
     packet = build_crossover_evidence_packet(only)
     row = packet["structural_history"]["rounds"][0]
     assert row["axes"]["trim_db"]["pinned"] == {"woofer": False, "tweeter": True}
+
+
+def test_live_and_banked_history_survive_live_retention(tmp_path):
+    from jasper.active_speaker.round_bank import bank_round
+
+    root = tmp_path / "sessions"
+    first = _sibling_bundle(root, "r1", started_at=1.0, trim_db={"woofer": -1.0})
+    current = _sibling_bundle(root, "r2", started_at=2.0, trim_db={"woofer": -2.0})
+    expected = build_crossover_evidence_packet(current)["structural_history"]
+    bank = bank_round(first, campaign_root=tmp_path / "campaigns")
+    assert build_crossover_evidence_packet(current)["structural_history"] == expected
+    shutil.rmtree(first)
+    assert build_crossover_evidence_packet(current)["structural_history"] == expected
+    banked_bundle = bank.path / "bundle" / first.name
+    assert build_crossover_evidence_packet(banked_bundle)["structural_history"] == expected
 
 
 def test_the_history_is_empty_when_no_round_banked_a_candidate(tmp_path):
