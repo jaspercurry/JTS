@@ -153,17 +153,22 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
     _build_rooms_payload (rooms_setup.identity.read_identity), so we patch
     that reader directly rather than the deleted per-field _self_* helpers.
     Address is NIC-derived (not identity), so self_addresses / _self_address
-    stay patched separately. The wake-response (peering) block is stubbed too
-    so a test never reads the real /var/lib/jasper/peering.env — default
-    off/off, overridable via `peering=`."""
+    stay patched separately. The wake-response (peering) block runs the real
+    jasper.peering.config parsers (state_enabled/state_primary); only their
+    file read (read_state) is stubbed, so a test never touches the real
+    /var/lib/jasper/peering.env — default off/off, overridable via
+    `peering=`."""
     fake_identity = rooms_setup.identity.SpeakerIdentity(
         name=self_name, room=self_room, hostname=self_hostname, peer_id="test-peer-id",
     )
     monkeypatch.setattr(rooms_setup.identity, "read_identity", lambda: fake_identity)
+    _peering = peering if peering is not None else {"enabled": False, "primary": False}
     monkeypatch.setattr(
-        rooms_setup, "_read_peering_block",
-        lambda: dict(peering if peering is not None
-                     else {"enabled": False, "primary": False}),
+        rooms_setup.peering_config, "read_state",
+        lambda *a, **k: {
+            "JASPER_PEERING": "on" if _peering["enabled"] else "off",
+            "JASPER_PEER_PRIMARY": "1" if _peering["primary"] else "0",
+        },
     )
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set(self_addrs))
     monkeypatch.setattr(
@@ -182,12 +187,7 @@ def _patch_discovery(monkeypatch, *, speakers, grouping=None, airplay_fit=None,
         rooms_setup, "with_airplay_latency_fit",
         lambda g: g if not isinstance(g, dict) else {**g, "airplay_latency_fit": _fit},
     )
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", lambda *a, **k: list(speakers))
-    # _build_rooms_payload calls discover_speakers_cached(), which memoizes
-    # the browse in a module-level TTL cache. Reset it per test so the cache
-    # can't leak one test's speakers into the next (and so the patched
-    # _discover_speakers above is what actually gets read).
-    rooms_setup._disc_cache.update(at=0.0, result=[])
+    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", lambda: list(speakers))
 
 
 def _get(path: str):
@@ -305,7 +305,7 @@ def test_get_root_does_not_open_a_socket_for_discovery(monkeypatch):
         calls["discover"] += 1
         raise AssertionError("GET / must not run discovery")
 
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", _boom)
+    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", _boom)
     h = _get("/")
     assert h.status == 200
     assert calls["discover"] == 0
@@ -520,43 +520,64 @@ def test_rooms_json_peer_links_never_fall_back_to_raw_ip(monkeypatch):
     assert p["system_url"] == ""
 
 
-def test_self_exclusion_uses_exact_hostname_not_substring(monkeypatch):
-    """Regression (found on hardware): a speaker whose hostname is a SUBSTRING
-    of a peer's must NOT drop that peer. `jts` was excluding `jts3` because
-    "jts" is a substring of "jts3" — and asymmetrically (jts3 kept jts), which
-    is the tell. Self-exclusion must be an EXACT hostname-label match, not a
-    substring of the free-form display name."""
+@pytest.mark.parametrize(
+    ("self_hostname", "self_addrs", "speakers", "expected_peer_names"),
+    [
+        pytest.param(
+            "jts.local", frozenset({"192.168.1.74"}),
+            [{"name": "JTS3", "hostname": "jts3", "room": "", "address": "192.168.1.92"}],
+            ["JTS3"],
+            id="substring_must_not_exclude",
+        ),
+        pytest.param(
+            "jts.local", frozenset({"192.168.1.74"}),
+            [
+                # Same hostname "jts", different address (our own advert the
+                # route trick didn't list) -> must be excluded as self.
+                {"name": "JTS", "hostname": "jts", "room": "", "address": "127.0.1.1"},
+                {"name": "JTS3", "hostname": "jts3", "room": "", "address": "192.168.1.92"},
+            ],
+            ["JTS3"],
+            id="exact_match_excludes_despite_address_miss",
+        ),
+        pytest.param(
+            "jts-living.local", frozenset({"192.168.1.5"}),
+            [
+                # Our OWN advert on an address the route trick didn't list:
+                # same hostname "jts-living", a friendly display name that
+                # looks nothing like it -> still excluded as self.
+                {"name": "Living Room", "hostname": "jts-living", "room": "",
+                 "address": "192.168.1.99"},
+                {"name": "jts-bedroom", "hostname": "jts-bedroom", "room": "bedroom",
+                 "address": "192.168.1.9"},
+            ],
+            ["jts-bedroom"],
+            id="exact_match_beats_decoy_display_name",
+        ),
+    ],
+)
+def test_self_exclusion_matches_exact_hostname_label(
+    monkeypatch, self_hostname, self_addrs, speakers, expected_peer_names,
+):
+    """Self-exclusion from /rooms.json peers keys off an EXACT SRV hostname-
+    label match against OUR hostname, never a substring and never the
+    free-form display name.
+
+    Regression (found on hardware): a speaker whose hostname is a SUBSTRING
+    of a peer's must NOT drop that peer — "jts" was excluding "jts3" because
+    "jts" is a substring of "jts3" (asymmetrically: jts3 kept jts, the tell).
+    The other two cases show the fallback still catches self when the route
+    trick missed our own address, by hostname alone, even against a decoy
+    display name."""
     _patch_discovery(
         monkeypatch,
-        self_hostname="jts.local",            # our hostname label is "jts"
-        self_addrs=frozenset({"192.168.1.74"}),
-        speakers=[
-            {"name": "JTS3", "hostname": "jts3", "room": "", "address": "192.168.1.92"},
-        ],
+        self_hostname=self_hostname,
+        self_addrs=self_addrs,
+        speakers=speakers,
     )
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
     names = [p["name"] for p in data["peers"]]
-    assert names == ["JTS3"], f"jts must not exclude jts3 as self; got {names}"
-
-
-def test_self_excluded_by_exact_hostname_when_address_missed(monkeypatch):
-    """The hostname fallback still catches self when the route trick missed our
-    address (e.g. a loopback/secondary advert): an EXACT hostname-label match
-    on a peer not in our address set is dropped."""
-    _patch_discovery(
-        monkeypatch,
-        self_hostname="jts.local",
-        self_addrs=frozenset({"192.168.1.74"}),
-        speakers=[
-            # Same hostname "jts", different address (our own advert the route
-            # trick didn't list) -> must be excluded as self.
-            {"name": "JTS", "hostname": "jts", "room": "", "address": "127.0.1.1"},
-            {"name": "JTS3", "hostname": "jts3", "room": "", "address": "192.168.1.92"},
-        ],
-    )
-    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
-    names = [p["name"] for p in data["peers"]]
-    assert names == ["JTS3"], f"exact-hostname self must drop, jts3 stays; got {names}"
+    assert names == expected_peer_names
 
 
 def test_rooms_json_self_has_name_key(monkeypatch):
@@ -603,10 +624,11 @@ def test_rooms_json_self_hostname_and_room_flow_from_identity(monkeypatch):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "")
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
-    monkeypatch.setattr(rooms_setup, "_read_peering_block",
-                        lambda: {"enabled": False, "primary": False})
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", lambda *a, **k: [])
-    rooms_setup._disc_cache.update(at=0.0, result=[])
+    monkeypatch.setattr(
+        rooms_setup.peering_config, "read_state",
+        lambda *a, **k: {"JASPER_PEERING": "off", "JASPER_PEER_PRIMARY": "0"},
+    )
+    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", lambda: [])
 
     data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
     assert data["self"]["name"] == "Sun Room"
@@ -629,29 +651,6 @@ def test_rooms_json_excludes_self_by_address(monkeypatch):
     addrs = [p["address"] for p in data["peers"]]
     assert "192.168.1.5" not in addrs
     assert addrs == ["192.168.1.8"]
-
-
-def test_rooms_json_excludes_self_by_hostname_label(monkeypatch):
-    """When the route trick missed our own address, self is still dropped by an
-    EXACT match of the advert's SRV hostname label against ours — and crucially
-    by hostname, NOT by the free-form display name (which here is "Living Room",
-    nothing like the hostname)."""
-    _patch_discovery(
-        monkeypatch,
-        speakers=[
-            # Our OWN advert on an address the route trick didn't list: same
-            # hostname "jts-living", a friendly display name -> excluded as self.
-            {"name": "Living Room", "hostname": "jts-living", "room": "",
-             "address": "192.168.1.99"},
-            {"name": "jts-bedroom", "hostname": "jts-bedroom", "room": "bedroom",
-             "address": "192.168.1.9"},
-        ],
-        self_hostname="jts-living.local",
-        self_addrs=frozenset({"192.168.1.5"}),  # does NOT include .99
-    )
-    data = json.loads(_get("/rooms.json").wfile.getvalue().decode())
-    names = [p["name"] for p in data["peers"]]
-    assert names == ["jts-bedroom"]
 
 
 def test_rooms_json_hostile_peer_name_is_a_json_string_not_markup(monkeypatch):
@@ -724,14 +723,6 @@ def _raise_run(*a, **k):
     raise RuntimeError("zeroconf exploded")
 
 
-def test_discover_speakers_swallows_failure(monkeypatch):
-    """Discovery is best-effort: if the mDNS browse raises, the real
-    _discover_speakers must degrade to an empty list (so /rooms.json renders an
-    empty directory, never 500s). Simulated at the asyncio.run boundary."""
-    monkeypatch.setattr(rooms_setup.asyncio, "run", _raise_run)
-    assert rooms_setup._discover_speakers() == []
-
-
 def test_rooms_json_renders_empty_directory_when_discovery_fails(monkeypatch):
     """End-to-end: a failing browse leaves /rooms.json with self present and an
     empty peer list — the page degrades, it does not error."""
@@ -742,8 +733,10 @@ def test_rooms_json_renders_empty_directory_when_discovery_fails(monkeypatch):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "")
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
-    monkeypatch.setattr(rooms_setup, "_read_peering_block",
-                        lambda: {"enabled": False, "primary": False})
+    monkeypatch.setattr(
+        rooms_setup.peering_config, "read_state",
+        lambda *a, **k: {"JASPER_PEERING": "off", "JASPER_PEER_PRIMARY": "0"},
+    )
     monkeypatch.setattr(rooms_setup.asyncio, "run", _raise_run)
     h = _get("/rooms.json")
     assert h.status == 200
@@ -810,15 +803,20 @@ def _seed_peering_env(tmp_path, monkeypatch, text):
     return envp
 
 
-def test_post_peering_unknown_path_404s_before_csrf(monkeypatch):
-    """Route-check runs BEFORE the CSRF guard (project convention): a bogus
-    POST path 404s without revealing CSRF state. The stub raises if CSRF is
-    even consulted on the wrong path."""
+@pytest.mark.parametrize(
+    "path",
+    ["/not-peering", "/bond-typo", "/unbond-typo", "/swap-typo", "/trim-typo"],
+)
+def test_post_unknown_path_404s_before_csrf(monkeypatch, path):
+    """Route-check runs BEFORE the CSRF guard (project convention), for every
+    POST route (/peering, /bond, /unbond, /swap, /trim): a near-miss path
+    404s without ever consulting CSRF state. The stub raises if CSRF is even
+    consulted on an unknown path."""
     def _boom(*_a, **_k):
         raise AssertionError("CSRF guard must not run on an unknown POST path")
 
     monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
-    h, _ = make_real_handler(rooms_setup._make_handler(), "/not-peering", body=b"{}", content_type=None)
+    h, _ = make_real_handler(rooms_setup._make_handler(), path, body=b"{}", content_type=None)
     h.do_POST()
     assert h.status == 404
 
@@ -1074,8 +1072,7 @@ def test_rooms_json_peering_block_reflects_env(monkeypatch, tmp_path):
     monkeypatch.setattr(rooms_setup, "self_addresses", lambda: set())
     monkeypatch.setattr(rooms_setup, "_self_address", lambda known=None: "")
     monkeypatch.setattr(rooms_setup, "read_grouping_state", lambda *a, **k: dict(_OFF_GROUPING))
-    monkeypatch.setattr(rooms_setup, "_discover_speakers", lambda *a, **k: [])
-    rooms_setup._disc_cache.update(at=0.0, result=[])
+    monkeypatch.setattr(rooms_setup, "discover_speakers_cached", lambda: [])
     # Clear any ambient env so peering_config's os.environ fallthrough can't lie.
     for k in ("JASPER_PEERING", "JASPER_PEER_PRIMARY"):
         monkeypatch.delenv(k, raising=False)
@@ -1465,16 +1462,6 @@ def test_post_bond_partial_failure_is_502_with_per_member_results(monkeypatch):
     assert results["192.168.1.5"]["ok"] is True
     assert results["192.168.1.9"]["ok"] is False
     assert "Connection refused" in results["192.168.1.9"]["detail"]
-
-
-def test_post_bond_unknown_path_still_404s_before_csrf(monkeypatch):
-    def _boom(*_a, **_k):
-        raise AssertionError("CSRF must not run on an unknown POST path")
-
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
-    h, _ = make_real_handler(rooms_setup._make_handler(), "/bond-typo", body=b"{}", content_type=None)
-    h.do_POST()
-    assert h.status == 404
 
 
 # ---- post_grouping_to_member: the cross-speaker call + SSRF guard ----
@@ -2347,18 +2334,6 @@ def test_post_unbond_rejects_bad_csrf(monkeypatch):
     )
     assert h.status == 403
     assert posts == []
-
-
-def test_post_unbond_unknown_path_404s_before_csrf(monkeypatch):
-    """/unbond is in the route allow-list; a near-miss path still 404s before
-    the CSRF guard runs."""
-    def _boom(*_a, **_k):
-        raise AssertionError("CSRF must not run on an unknown POST path")
-
-    monkeypatch.setattr(rooms_setup, "guard_mutating_request", _boom)
-    h, _ = make_real_handler(rooms_setup._make_handler(), "/unbond-typo", body=b"{}", content_type=None)
-    h.do_POST()
-    assert h.status == 404
 
 
 # ----------------------------------------------------------------------
