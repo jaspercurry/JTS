@@ -1595,9 +1595,9 @@ def _attempt_budget_sentence(decision: Mapping[str, Any]) -> str:
         if isinstance(attempts, int) and not isinstance(attempts, bool) else None
     )
     return (
-        f"The earlier planning count of {count} attempts has been reached."
+        f"Attempts recorded: {count}."
         if count is not None
-        else "The earlier planning count has been reached."
+        else "The latest attempt was recorded."
     )
 
 
