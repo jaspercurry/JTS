@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -202,3 +203,13 @@ def test_adr_numbers_are_unique() -> None:
     }
 
     assert duplicates == {}
+
+
+def test_adr_index_lists_every_adr_and_only_real_files() -> None:
+    adr_dir = ROOT / "docs" / "adr"
+    adr_filenames = {path.name for path in adr_dir.glob("[0-9][0-9][0-9][0-9]*.md")}
+
+    index_text = (adr_dir / "README.md").read_text(encoding="utf-8")
+    linked_filenames = set(re.findall(r"\]\((\d{4}-[^)]+\.md)\)", index_text))
+
+    assert linked_filenames == adr_filenames
