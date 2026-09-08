@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,7 +73,12 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
     :data:`MAX_CANDIDATE_ARTIFACTS_SCANNED` bounds work, not recent history.
     """
     try:
-        found = sorted(Path(root).glob(CANDIDATE_ARTIFACT_GLOB))
+        found = sorted({
+            path
+            for store in _candidate_roots(root)
+            for prefix in ("", "bundle/", "*/bundle/")
+            for path in store.glob(prefix + CANDIDATE_ARTIFACT_GLOB)
+        })
     except OSError:
         return []
     return found[-MAX_CANDIDATE_ARTIFACTS_SCANNED:]
@@ -83,6 +89,20 @@ def _bank_root(root: Path | None) -> Path:
     from jasper.active_speaker.bundles import sessions_dir
 
     return Path(root) if root is not None else sessions_dir()
+
+
+def _candidate_roots(root: Path) -> tuple[Path, ...]:
+    from jasper.active_speaker.bundles import DEFAULT_SESSIONS_DIR  # lazy: keep discovery imports cheap
+    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: commissioning import cost
+
+    root = Path(root)
+    paired = {
+        DEFAULT_SESSIONS_DIR.name: DEFAULT_CAMPAIGN_ROOT.name,
+        DEFAULT_CAMPAIGN_ROOT.name: DEFAULT_SESSIONS_DIR.name,
+    }.get(root.name)
+    if root == _bank_root(None):
+        paired = DEFAULT_CAMPAIGN_ROOT.name
+    return (root, root.parent / paired) if paired else (root,)
 
 
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
@@ -112,6 +132,50 @@ def _verified_candidates(paths: list[Path]) -> list[BankedCandidate]:
             )
         )
     return found
+
+
+def publish_authored_candidate(candidate: Any, *, root: Path | None = None) -> BankedCandidate:
+    """Publish an idempotent authored bundle; do not open or abandon a capture."""
+    from jasper.active_speaker.bundles import (  # lazy: candidate bank is used by status before NumPy loads
+        BUNDLE_FILE_MODE, BUNDLE_SCHEMA_VERSION,
+    )
+    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: authoring-only writer
+    from jasper.audio_measurement.bundles import write_json_artifact  # lazy: authoring-only writer
+
+    if candidate.analysis.get("measurement_status") != "unmeasured":
+        raise CandidateBankRefusal("authored_status_required", "an authored candidate must be unmeasured")
+    bundle_id = f"authored-{candidate.fingerprint}"
+    stores = _candidate_roots(_bank_root(root))
+    destination = next((store for store in stores if store.name == DEFAULT_CAMPAIGN_ROOT.name), stores[0])
+    path = destination / CANDIDATE_ARTIFACT_GLOB.replace("*", bundle_id, 1).replace("*", "authored", 1)
+    bundle = path.parents[5]
+    if path.exists():
+        existing = load_candidate_artifact(path)
+        if existing is None or existing.fingerprint != candidate.fingerprint:
+            raise CandidateBankRefusal("authored_candidate_conflict", f"cannot reuse {path}")
+        return BankedCandidate(existing, bundle_id, "authored", path)
+    info: dict[str, Any] = {
+        "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
+        "kind": "jts_authored_candidate_bundle",
+        "session_id": bundle_id,
+        "started_at": time.time(),
+        "measurement_status": "unmeasured",
+        "purpose": "candidate_composition",
+        "captures": [],
+        "summed_captures": [],
+        "verification": None,
+    }
+    for relative, payload in (("info.json", info), (str(path.relative_to(bundle)), candidate.to_dict())):
+        write_json_artifact(
+            bundle, relative, payload, kind=payload["kind"],
+            sensitivity="config", recomputable=False,
+            generated_by="active_speaker.candidate_parts",
+            schema_version=BUNDLE_SCHEMA_VERSION, file_mode=BUNDLE_FILE_MODE,
+        )
+    reopened = load_candidate_artifact(path)
+    if reopened is None or reopened.fingerprint != candidate.fingerprint:
+        raise CandidateBankRefusal("authored_candidate_unreadable", f"cannot reopen {path}")
+    return BankedCandidate(reopened, bundle_id, "authored", path)
 
 
 def _identity_from_path(path: Path) -> tuple[str, str]:

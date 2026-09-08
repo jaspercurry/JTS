@@ -99,6 +99,7 @@ def _opener(*, v2=None, envelopes=None, raises=None, **pages) -> _FakeOpener:
             wc.SESSION_PATH: pages.get("session", "{}"),
             wc.VERIFY_PATH: pages.get("verify", "{}"),
             wc.APPLY_PATH: pages.get("apply", '{"status": "applied"}'),
+            cli.REPUBLISH_PATH: pages.get("republish", '{"status": "republished"}'),
         },
         envelopes=envelopes,
         raises=raises,
@@ -140,7 +141,7 @@ def test_the_endpoints_and_stage_words_are_the_products_own():
     from jasper.web.correction_setup import _POST_ROUTES
 
     # nginx maps /sound/speaker/crossover/ onto the daemon's /crossover/.
-    for path in (wc.SESSION_PATH, wc.VERIFY_PATH, wc.APPLY_PATH):
+    for path in (wc.SESSION_PATH, wc.VERIFY_PATH, wc.APPLY_PATH, cli.REPUBLISH_PATH):
         assert path.startswith("/sound/speaker/crossover/")
         assert path.removeprefix("/sound/speaker") in _POST_ROUTES
     assert (wc.STAGE_KEY, wc.STAGE_POST_APPLY) == (
@@ -272,27 +273,47 @@ def test_the_measuring_stage_refuses_an_absent_tier_without_posting(
 
 
 @pytest.mark.parametrize(
-    "live, reason",
+    "live",
     [
-        ({"candidate": {"fingerprint": _OTHER}}, wc.REASON_FINGERPRINT_MISMATCH),
-        ({"phase": "review"}, wc.REASON_NO_CANDIDATE),
-        ({}, wc.REASON_NO_V2_STATE),
+        {"candidate": {"fingerprint": _OTHER}},
+        {"phase": "review"},
+        {},
     ],
 )
-def test_apply_refuses_a_fingerprint_that_is_not_the_live_one(
-    live, reason, monkeypatch, capsys
+def test_apply_selects_a_banked_fingerprint_before_using_the_full_apply_path(
+    live, monkeypatch, capsys
 ):
-    opener = _opener(v2=live)
+    opener = _opener(
+        v2={"candidate": {"fingerprint": _FINGERPRINT}},
+        envelopes=[_envelope(**live)],
+    )
     code, receipt = _run(
         ["apply", "--expected-fingerprint", _FINGERPRINT],
         opener, monkeypatch, capsys,
     )
 
-    assert code == cli.EXIT_REFUSED
-    assert receipt["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
-    assert receipt["reason"] == reason
-    assert receipt["detail"]["refused_by"] == "client"
-    assert receipt["detail"]["expected_candidate_fingerprint"] == _FINGERPRINT
+    assert code == cli.EXIT_OK
+    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+    assert [json.loads(request.data) for request in opener.posts()] == [
+        {"fingerprint": _FINGERPRINT},
+        {"expected_candidate_fingerprint": _FINGERPRINT},
+    ]
+
+
+@pytest.mark.parametrize("outcome", ["refused", "lost", "changed"])
+def test_apply_stops_when_the_selected_candidate_cannot_be_published(
+    outcome, monkeypatch, capsys,
+):
+    opener = _opener(
+        v2={"candidate": {"fingerprint": _OTHER}},
+        republish='{"code":"candidate_trial_required"}' if outcome == "refused" else '{"status":"republished"}',
+        raises={cli.REPUBLISH_PATH: _lost(0)} if outcome == "lost" else {},
+    )
+    code, _receipt = _run(
+        ["apply", "--expected-fingerprint", _FINGERPRINT],
+        opener, monkeypatch, capsys,
+    )
+    assert code == (cli.EXIT_UNREADABLE if outcome == "lost" else cli.EXIT_REFUSED)
     assert opener.posted_to(wc.APPLY_PATH) == []
 
 
@@ -312,6 +333,7 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     assert [json.loads(r.data.decode()) for r in posted] == [
         {"expected_candidate_fingerprint": _FINGERPRINT}
     ]
+    assert opener.posted_to(cli.REPUBLISH_PATH) == []
 
 
 @pytest.mark.parametrize("body", ['{"status": "apply_failed"}', '{"ok": false}'])

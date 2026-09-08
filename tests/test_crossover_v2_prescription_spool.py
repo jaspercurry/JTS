@@ -1267,28 +1267,25 @@ def test_the_stage_verb_refuses_without_the_state_it_reads_the_ordinal_from(
     assert not spool.staged_prescription_pending()
 
 
-def test_the_state_flag_help_matches_whether_the_verb_needs_it():
-    """``--help`` must not call a hard-required flag optional.
-
-    ``stage`` refuses without ``--state``; ``packet`` and ``propose`` degrade
-    and say so. One shared help string cannot be true of both, and the one that
-    shipped was the optional sentence — a `--help` contradicting the command it
-    documents, and contradicting the tool index's own row.
-    """
+@pytest.mark.parametrize("argv", [
+    ["status"],
+    ["packet", "round"],
+    ["propose", "round", "--prescription", "prescription.json"],
+    ["stage", "round", "--prescription", "prescription.json"],
+    ["compose", "--base", "candidate-fingerprint"],
+])
+def test_state_is_an_evidence_input_and_not_a_compose_option(argv):
     parser = cli.build_parser()
-    helps = {
-        name: next(
-            action.help for action in sub._actions
-            if action.dest == "state"
-        )
-        for name, sub in parser._subparsers._group_actions[0].choices.items()
-    }
-
-    assert "REQUIRED for this verb" in helps["stage"]
-    assert "Optional" not in helps["stage"]
-    for verb in ("packet", "propose", "status"):
-        assert "Optional" in helps[verb]
-        assert "REQUIRED" not in helps[verb]
+    args = parser.parse_args(argv)
+    with_state = [*argv, "--state", "flow_state.json"]
+    if argv[0] == "compose":
+        assert not hasattr(args, "state")
+        with pytest.raises(SystemExit) as caught:
+            parser.parse_args(with_state)
+        assert caught.value.code == 2
+    else:
+        assert args.state is None
+        assert parser.parse_args(with_state).state == "flow_state.json"
 
 
 def test_a_refused_prescription_stages_nothing_and_exits_two(tmp_path, monkeypatch):

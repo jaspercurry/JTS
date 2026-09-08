@@ -2,37 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a crossover round -- open, wait, apply, bank -- from a shell on the speaker.
+"""Open, wait, apply a named candidate, or bank a round through existing owners.
 
-The round verbs the laptop's ``scripts/run-crossover-round.py`` already drove
-over the LAN, reachable from the box itself. Same wizard, same transport
-(:mod:`jasper.active_speaker.wizard_client`), same apply gate -- what changes is
-only WHERE the operator is standing, which matters when there is no laptop on
-the network, when the round is being driven from an ssh session, or when a
-script on the speaker wants the verbs without an ssh hop back out.
-
-**Four verbs, and deliberately nothing between them.** ``open`` posts one
-stage open. ``wait`` polls until the wizard's session stops. ``apply`` gates a
-fingerprint and posts one apply. ``bank`` files the finished session where it
-outlives session retention. There is no runner, no state file and no resume:
-what may follow what is the wizard's own artifact-dependency refusal to answer,
-and a second sequencer here would be a weaker copy of it. ``wait`` polls
-whatever session the wizard is currently publishing, so it is run directly
-after ``open`` rather than against a round from yesterday.
-
-**The apply gate is the library's, not a second opinion.** The endpoint runs
-the same comparison and would refuse the same request; what
-:func:`~jasper.active_speaker.wizard_client.apply_by_fingerprint` adds is that
-a mistyped or stale fingerprint ends here instead of becoming a state-changing
-request, with both values on the receipt.
-
-**``bank`` reaches no wizard**: it files through
-:func:`jasper.active_speaker.round_bank.bank_round` into the campaign home.
-
-Every verb answers on stdout with ONE JSON receipt and prints one human line
-on stderr; a failure answers with the refusal document instead, under the word
-its exit code owns. See ``docs/tuning-operator-runbook.md`` steps 6 and 8,
-which name this tool beside the laptop script it shares its transport with.
+Apply republishes a banked selection only when it differs from the live slot;
+the existing wizard apply path owns graph admission, installation and restore.
 """
 
 from __future__ import annotations
@@ -44,6 +17,7 @@ from typing import Any, Sequence
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH,
     REASON_ANSWER_LOST,
+    REASON_NO_FINGERPRINT,
     SESSION_PATH,
     STAGE_MEASURE,
     STAGE_POST_APPLY,
@@ -63,6 +37,7 @@ from ._refusal import (
 )
 
 PROG = "jasper-round"
+REPUBLISH_PATH = "/sound/speaker/crossover/v2/republish"
 DEFAULT_TIMEOUT_S = 900.0
 DEFAULT_POLL_S = 5.0
 
@@ -220,6 +195,17 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
     result = apply_by_fingerprint(client, args.expected_fingerprint)
+    if result["refused_by"] == "client" and result["reason"] != REASON_NO_FINGERPRINT:
+        http, payload = client.post_json(
+            REPUBLISH_PATH, {"fingerprint": args.expected_fingerprint.strip()},
+        )
+        if http != 200 or not isinstance(payload, dict) or payload.get("status") != "republished":
+            return failed(
+                EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
+                REASON_ANSWER_LOST if http == 0 else "candidate_not_republished",
+                {"http": http, "error": error_of(payload)},
+            )
+        result = apply_by_fingerprint(client, args.expected_fingerprint)
     fingerprint = str(result["candidate_fingerprint"])
     if result["status"] == "applied":
         return _answer(
@@ -404,8 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-fingerprint",
         required=True,
         help=(
-            "refused here, before anything is sent, when it is not the "
-            "fingerprint the wizard is currently publishing"
+            "select this banked candidate, then use the full apply path; "
+            "authored candidates need a completed trial of the same fingerprint"
         ),
     )
     applier.set_defaults(func=_cmd_apply)

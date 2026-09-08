@@ -2,27 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The v2 republish door — make a BANKED measured candidate live again.
-
-A sibling of the v2 web host (:mod:`jasper.web.correction_crossover_v2`), in
-the shape ``correction_crossover_v2_wired`` already established: the host is
-reached **late-bound**, from inside the handler, so this module can lean on
-the host's durable-state owner without either file importing the other at
-module scope.
-
-Its own file rather than a hundred more lines in the host, because the host is
-already at its line ceiling (``tests/test_lint_contracts.py``'s ratchet) and
-this is a self-contained door: one entry point, no other caller in the host,
-and a concern — "which banked candidate is the published one" — that the
-host's apply/restore/persist machinery does not share.
-
-**What it does NOT do.** It applies nothing and validates no graph. Every
-admission gate lives on the apply path and reads live SSOT, so republishing
-changes only WHICH candidate the apply door will match. The full contract —
-what apply reads out of durable state and how each key is satisfied — is in
-:func:`handle_v2_republish`'s own docstring, which is the thing to read before
-changing either side.
-"""
+"""Select a banked candidate for the existing full apply path. Applies no graph."""
 
 from __future__ import annotations
 
@@ -77,6 +57,7 @@ def _admit_banked_candidate(fingerprint: str) -> tuple[str, str, Any, Any]:
         CandidateBankRefusal,
         find_banked_candidate,
     )
+    from jasper.active_speaker.candidate_trials import require_candidate_trial
     from jasper.active_speaker.crossover_declaration import (
         declaration_change_for_candidate,
     )
@@ -88,6 +69,7 @@ def _admit_banked_candidate(fingerprint: str) -> tuple[str, str, Any, Any]:
         return "fingerprint_required", "fingerprint is required", None, None
     try:
         banked = find_banked_candidate(str(fingerprint).strip())
+        require_candidate_trial(banked.candidate)
     except CandidateBankRefusal as exc:
         return (
             exc.code,
@@ -140,71 +122,12 @@ def republish_preflight(fingerprint: str) -> str | None:
 def handle_v2_republish(
     raw: Mapping[str, Any], *, now: float | None = None
 ) -> dict[str, Any]:
-    """POST /crossover/v2/republish — make a BANKED candidate live again.
+    """Publish a candidate with coherent review identity and cleared verify priors.
 
-    **The problem this door exists for.** ``state["candidate"]`` is a single
-    slot with no lookup: :func:`persist_conductor_state` rebuilds it from a
-    fresh literal on every persist, so each measure session overwrites it and a
-    failed one leaves it ``None``. The apply door then refuses every fingerprint
-    it is handed, because the only one it can match is whatever is in the slot.
-    The candidates themselves never went anywhere — each MEASURE writes its
-    artifact write-once into a commissioning bundle — so three perfectly good
-    candidates can be sitting on disk while apply reports that none is
-    published. This restores the slot from the bank; it applies nothing.
-
-    **What "publish" means, and what this reproduces.** The apply path reads
-    exactly six facts out of durable state, and they have to be coherent with
-    each other or the apply half-succeeds:
-
-    * ``candidate.fingerprint`` — the only key apply reads from the summary
-      (the rest of that block is display; the filters live in the artifact).
-    * ``session_id`` — NOT just review identity. It is a **path component**:
-      :func:`_reopen_candidate_artifact` rebuilds
-      ``<bundle>/evidence/v1/artifacts/crossover_v2/<session_id>/candidate.json``
-      from it, so it must be the MINTING capture session, not a fresh id.
-    * ``evidence.bundle_session_id`` — which bundle holds that path.
-    * ``accepted_phases`` containing ``"measure"`` — :func:`_update_current_review`
-      gates on it, and that CAS is what admits :func:`observe_apply_success`.
-      Omit it and the graph goes live while the state never records the apply:
-      no ``applied`` flag, **no way-back pointer recorded**.
-    * ``accepted_sound_revision`` / ``accepted_sound_declaration_change`` —
-      the retry breadcrumb of a Sound accept. Another candidate's pair left
-      standing would make apply believe Sound already carries THIS candidate's
-      crossover when it carries the other one's, so both are cleared.
-    * ``applied`` not already ``True`` — same CAS. ``False`` beside a preserved
-      ``previous_candidate_fingerprint`` is not a contradiction: it is
-      byte-for-byte what a fresh measuring session persists over a
-      previously-applied graph (``applied`` is session-scoped at
-      :func:`persist_conductor_state`'s carry-forward; the way-back pointer is
-      host-owned and unconditional).
-
-    **The fact a bundle cannot reconstruct, named rather than guessed.**
-    ``sound_design_revision`` records which ``/sound`` revision the measurement
-    was taken under, and apply needs it as a compare-and-set expectation on the
-    ONE path that writes the declaration — a candidate whose crossover differs
-    from what Sound currently declares. It is a property of the minting
-    session, not of the artifact, and nothing in the bundle carries it. So this
-    door refuses that class up front, naming the missing fact, rather than
-    inventing a revision number or letting the operator discover it as a
-    confusing refusal three steps later. A candidate measured at the crossover
-    Sound already declares — every same-corner arm of a bake-off — is
-    unaffected.
-
-    **This changes WHICH candidate is live, never what apply validates.** Every
-    admission gate apply runs reads live SSOT, not this state: the declared-floor
-    hearing check, ``_assert_stage_2_can_open`` → ``resolve_conductor_context``
-    (driver safety profile, excitation ceilings, way count, playback device),
-    the read-only baseline recompose and its own fingerprint guard, and the
-    artifact tamper check itself. None of them can be satisfied by writing a
-    state file.
-
-    **VERIFY is not restored, and says so.** ``verify_priors`` is rebuilt from
-    a stage-1 conductor that actually ran a fit, so a banked candidate has
-    none. They are cleared rather than inherited — priors belonging to a
-    different round would grade this candidate against another one's predicted
-    sum and entry baseline, which is precisely the false comparison #2291
-    exists to stop. The honest consequence rides on the response: a post-apply
-    VERIFY of a republished candidate grades INDETERMINATE, never a false pass.
+    Authored parts need an intact capture of the exact child fingerprint. A
+    changed Sound declaration also needs the original revision, which the bank
+    cannot reconstruct. Apply still reads live hardware and graph protections.
+    Host-owned restore pointers survive this session-state replacement.
     """
     from jasper.web import correction_crossover_v2 as _host
     from jasper.active_speaker.crossover_v2.coordinator import (
@@ -283,9 +206,6 @@ def handle_v2_republish(
         # listing what survives is the reviewable shape.
         state = {
             "session_id": banked.capture_session_id,
-            # Truthful minimum, not a guess: a published candidate artifact IS
-            # the record that MEASURE was accepted. Nothing else about the
-            # minting session's plan is recoverable, so nothing else is claimed.
             "accepted_phases": [PHASE_MEASURE],
             "session_phases": [PHASE_MEASURE],
             "applied": False,
