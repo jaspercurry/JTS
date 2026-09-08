@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
+from .log_event import log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -265,7 +267,10 @@ class WakeEventStore:
                     with self._condition:
                         self._write_errors += 1
                         self._last_error = type(exc).__name__
-                    logger.warning("event=wake_events.write_failed error=%s", type(exc).__name__)
+                    log_event(
+                        logger, "wake_events.write_failed",
+                        error=type(exc).__name__, level=logging.WARNING,
+                    )
                     result.set_exception(exc)
                 else:
                     result.set_result(value)
