@@ -465,6 +465,7 @@ class TuningSession:
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
         """Prove this take's graph and level, then play and bank one stimulus."""
+        self.last_playback = PlaybackObservation(emission="not_started")
         self.seams.graph.select_scope(spec.graph_scope, spec.candidate_id)
         self._graph_fingerprint = await self.seams.graph.install(
             inverted_roles_for(spec),

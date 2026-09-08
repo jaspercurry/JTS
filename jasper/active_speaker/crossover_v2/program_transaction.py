@@ -189,6 +189,8 @@ class ProgramPlaybackTransaction:
                 level_db=level_db,
                 stimulus_dbfs=stimulus_dbfs,
             ))
+        except asyncio.CancelledError as exc:
+            raise PlaybackInterrupted(PlaybackObservation(emission="not_started")) from exc
         except (OSError, ValueError):
             # The two ways composing genuinely fails on a working wiring: the
             # rendered stimulus could not be written, or the parameters do not
