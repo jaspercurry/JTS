@@ -184,8 +184,6 @@ def test_reconcile_reports_converging_when_the_wait_times_out_but_job_runs(
     still-converging, never as the needs_attention a real failure would be
     (#3094).
     """
-    from jasper.web import _unit_snapshot
-
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units",
         lambda unit, **_kwargs: {
@@ -194,11 +192,9 @@ def test_reconcile_reports_converging_when_the_wait_times_out_but_job_runs(
         },
     )
     monkeypatch.setattr(
-        _unit_snapshot,
-        "probe_unit_snapshot",
-        lambda units: _unit_snapshot.UnitSnapshot(
-            {u: _unit_snapshot.UnitState(active_state="activating") for u in units}
-        ),
+        topology_runtime,
+        "read_unit_states",
+        lambda units, **_kwargs: {u: {"active_state": "activating"} for u in units},
     )
 
     result = topology_runtime.trigger_reconcile(reason="test")
@@ -211,18 +207,14 @@ def test_reconcile_stays_failed_when_the_probe_shows_no_activity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A genuine failure (unit not activating) keeps the plain not-ok verdict."""
-    from jasper.web import _unit_snapshot
-
     monkeypatch.setattr(
         "jasper.control.restart_broker.manage_units",
         lambda unit, **_kwargs: {"ok": False, "error": "grouping failed"},
     )
     monkeypatch.setattr(
-        _unit_snapshot,
-        "probe_unit_snapshot",
-        lambda units: _unit_snapshot.UnitSnapshot(
-            {u: _unit_snapshot.UnitState(active_state="failed") for u in units}
-        ),
+        topology_runtime,
+        "read_unit_states",
+        lambda units, **_kwargs: {u: {"active_state": "failed"} for u in units},
     )
 
     result = topology_runtime.trigger_reconcile(reason="test")

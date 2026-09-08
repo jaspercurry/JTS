@@ -39,7 +39,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Mapping
 
 from dbus_next.errors import DBusError  # type: ignore
 
@@ -65,7 +65,6 @@ from ._common import (
     send_json_response,
     toggle_html,
 )
-from ._unit_snapshot import UnitSnapshot, probe_unit_snapshot
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,
@@ -76,6 +75,7 @@ from ..bluetooth.models import BluetoothActionResult
 from ..log_event import log_event
 from ..local_sources import local_source_lifecycle
 from ..music_sources import Source
+from ..service_units import read_unit_states, unit_active, unit_loaded
 from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
@@ -132,21 +132,6 @@ def _normalize_mutation_id(value: object, *, url_encoded: bool = False) -> str |
     return candidate if _MUTATION_ID_RE.fullmatch(candidate) else None
 
 
-def _unit_active(unit: str) -> bool:
-    try:
-        proc = subprocess.run(
-            ["systemctl", "is-active", unit],
-            check=False,
-            timeout=5,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0 and proc.stdout.strip() == "active"
-
-
 def _unit_available(unit: str) -> bool:
     try:
         proc = subprocess.run(
@@ -168,18 +153,26 @@ def _effective_bluetooth_state(
     powered: bool | None,
     parked: bool = False,
     availability: BluetoothAvailability | None = None,
-    unit_snapshot: UnitSnapshot | None = None,
+    records: Mapping[str, dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
-    """Compare desired intent with radio and source-resource truth."""
+    """Compare desired intent with radio and source-resource truth.
+
+    ``records`` is one ``read_unit_states`` batch over ``_STATE_UNITS``
+    (shared with ``availability``'s own probe when the caller supplies
+    neither); None (systemctl unavailable) reads every unit as not active,
+    same fail-soft rule as an empty batch.
+    """
     if parked:
         return "parked", ""
-    active_probe = unit_snapshot.active if unit_snapshot else _unit_active
+    records_map = records or {}
     active = {
-        unit: active_probe(unit) for unit in _BLUETOOTH_LIFECYCLE.runtime_units
+        unit: unit_active(records_map.get(unit))
+        for unit in _BLUETOOTH_LIFECYCLE.runtime_units
     }
     reasons: list[str] = []
-    unit_available = unit_snapshot.available if unit_snapshot else _unit_available
-    hardware = availability or probe_bluetooth_availability(unit_available)
+    hardware = availability or probe_bluetooth_availability(
+        lambda unit: unit_loaded(records_map.get(unit))
+    )
     if hardware.error:
         reasons.append(f"Bluetooth availability probe is incomplete: {hardware.error}")
     any_soft_blocked = hardware.any_soft_blocked
@@ -211,7 +204,7 @@ def _effective_bluetooth_state(
 
 def _annotate_pairing_readiness(
     payload: dict[str, Any],
-    unit_snapshot: UnitSnapshot,
+    records: Mapping[str, dict[str, Any]] | None,
 ) -> None:
     """Stamp one structured pairing-readiness verdict onto a state payload.
 
@@ -221,13 +214,14 @@ def _annotate_pairing_readiness(
     a value, never on `degradedReason` prose.
 
     Two cases carry no verdict: parked (a parked snapshot must not probe
-    source units at all) and a failed probe, where `active` cannot tell
-    "stopped" from "absent from the output".
+    source units at all) and a failed probe (``records`` is None, systemctl
+    unavailable), where `active` cannot tell "stopped" from "absent from the
+    output".
     """
-    if payload.get("parked") or unit_snapshot.error:
+    if payload.get("parked") or records is None:
         return
     payload["pairingReady"] = all(
-        unit_snapshot.active(unit)
+        unit_active(records.get(unit))
         for unit in _BLUETOOTH_LIFECYCLE.advertise_units
     )
 
@@ -255,8 +249,11 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
 
     park_reason = bonded_follower_park_reason()
     parked = bool(park_reason)
-    unit_snapshot = probe_unit_snapshot(_STATE_UNITS)
-    availability = probe_bluetooth_availability(unit_snapshot.available)
+    records = read_unit_states(_STATE_UNITS, timeout=STATE_PROBE_TIMEOUT_SEC)
+    records_map = records or {}
+    availability = probe_bluetooth_availability(
+        lambda unit: unit_loaded(records_map.get(unit))
+    )
     try:
         raw = _dispatch().run(
             adapter_state(),
@@ -268,7 +265,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
             powered=None,
             parked=parked,
             availability=availability,
-            unit_snapshot=unit_snapshot,
+            records=records,
         )
         if not availability.available and not parked:
             effective = "unavailable"
@@ -300,7 +297,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
         powered=powered,
         parked=parked,
         availability=availability,
-        unit_snapshot=unit_snapshot,
+        records=records,
     )
     if not availability.available and not parked:
         effective = "unavailable"
@@ -315,7 +312,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
         state["parkReason"] = park_reason
     else:
         state.pop("parkReason", None)
-    _annotate_pairing_readiness(state, unit_snapshot)
+    _annotate_pairing_readiness(state, records)
     return state, HTTPStatus.OK
 
 
