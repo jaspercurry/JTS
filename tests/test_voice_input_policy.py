@@ -52,19 +52,26 @@ def test_auto_disables_openai_noise_reduction_for_software_aec3_input():
 
 
 @pytest.mark.parametrize("chip", [False, True])
-@pytest.mark.parametrize("device,port,processed", [
-    ("udp:9876", None, True),
-    (" UDP:9876 ", None, True),
-    ("udp://127.0.0.1:9876", None, True),
-    ("udp:5555", "5555", True),
-    ("UDP://127.0.0.1:5555", "5555", True),
-    ("udp:9876", "5555", False),
-    ("udp:9877", None, False),
-    ("udp:9999", None, False),
-    ("Array", None, False),
+@pytest.mark.parametrize("device,port,host,processed", [
+    ("udp:9876", None, None, True),
+    (" UDP:9876 ", None, None, True),
+    ("udp://127.0.0.1:9876", None, None, True),
+    ("udp:5555", "5555", None, True),
+    ("UDP://127.0.0.1:5555", "5555", None, True),
+    ("udp:9876", "5555", None, False),
+    ("udp:9877", None, None, False),
+    ("udp:9999", None, None, False),
+    ("Array", None, None, False),
+    ("udp://192.0.2.10:9876", None, None, False),
+    ("udp:9876", None, "192.0.2.10", False),
+    ("udp://192.0.2.10:5555", "5555", "192.0.2.10", True),
+    ("udp://0.0.0.0:9876", None, None, True),
+    ("udp://:9876", None, None, True),
+    ("udp://localhost:9876", None, "localhost", True),
+    ("udp://localhost:9876", None, None, False),
 ])
 def test_applied_stream_processing_uses_configured_bridge_port(
-    monkeypatch, chip, device, port, processed,
+    monkeypatch, chip, device, port, host, processed,
 ):
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -74,6 +81,10 @@ def test_applied_stream_processing_uses_configured_bridge_port(
         monkeypatch.delenv("JASPER_AEC_UDP_PORT", raising=False)
     else:
         monkeypatch.setenv("JASPER_AEC_UDP_PORT", port)
+    if host is None:
+        monkeypatch.delenv("JASPER_AEC_UDP_HOST", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_AEC_UDP_HOST", host)
     contract = contract_from_config(Config.from_env())
     assert contract.echo_cancelled is processed
     assert contract.beamformed is (processed and chip)

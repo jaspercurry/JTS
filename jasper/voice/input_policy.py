@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from jasper.mics.xvf3800 import ALSA_CARD_NAMES
-from jasper.wake_ports import DEFAULT_AEC_ON_PORT, parse_udp_device
+from jasper.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST, parse_udp_device
 
 
 # The endpointer JTS ships. Provider server VAD was measured and ruled out
@@ -103,7 +103,10 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
     udp = parse_udp_device(mic_device.strip())
     chip_enabled = bool(getattr(cfg, "aec_chip_aec_enabled", False))
     aec_port = getattr(cfg, "aec_udp_port", DEFAULT_AEC_ON_PORT)
-    if udp is not None and udp[1] == aec_port:
+    aec_host = getattr(cfg, "aec_udp_host", DEFAULT_AEC_UDP_HOST).strip().lower()
+    if udp is not None and udp[1] == aec_port and (
+        udp[0].lower() in ("", "0.0.0.0", aec_host)
+    ):
         return SpeechInputContract(
             profile="xvf_chip_aec" if chip_enabled else "xvf_software_aec3",
             source=mic_device,

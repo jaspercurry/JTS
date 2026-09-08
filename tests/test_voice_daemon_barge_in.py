@@ -274,6 +274,8 @@ def test_resolve_defaults_off(monkeypatch, tmp_path):
     ("udp:9876", "5555", False),
     ("udp:9877", "9876", False),
     ("udp:9999", "9876", False),
+    ("udp://192.0.2.10:9876", "9876", False),
+    ("udp://0.0.0.0:9876", "9876", True),
     ("Array", "9876", False),
 ])
 def test_barge_in_requires_processing_on_the_selected_stream(
@@ -283,6 +285,7 @@ def test_barge_in_requires_processing_on_the_selected_stream(
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("JASPER_MIC_DEVICE", device)
     monkeypatch.setenv("JASPER_AEC_UDP_PORT", port)
+    monkeypatch.delenv("JASPER_AEC_UDP_HOST", raising=False)
     monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", str(int(chip)))
     path = tmp_path / "voice_provider.env"
     path.write_text("JASPER_BARGE_IN_OPENAI=1\n")

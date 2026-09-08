@@ -8,6 +8,8 @@ from __future__ import annotations
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
 from jasper import wake_legs
 
+DEFAULT_AEC_UDP_HOST = "127.0.0.1"
+
 # Wire ports now have a single definition in jasper.wake_legs.REGISTRY
 # (which matches jasper.cli.aec_bridge's OUT_PORT* emit constants). These
 # module constants are kept as the stable import surface that build_ports()
@@ -110,7 +112,7 @@ def parse_udp_device(device: str) -> tuple[str, int] | None:
             )
         host, port_str = rest.rsplit(":", 1)
     elif rest.startswith(":"):
-        host = "127.0.0.1"
+        host = DEFAULT_AEC_UDP_HOST
         port_str = rest[1:]
     else:
         raise ValueError(
