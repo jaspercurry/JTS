@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.systemd_unit_helpers import assignments_for
+
 ROOT = Path(__file__).resolve().parents[1]
 RUST_HELPERS = ROOT / "deploy/lib/install/rust-daemons.sh"
 
@@ -84,11 +86,14 @@ build_install_rust_daemon jasper-outputd 1 {shlex.quote(str(cache))}
 
 
 def test_each_workspace_binary_has_one_systemd_owner() -> None:
+    exec_starts = {
+        unit.name: assignments_for(unit.read_text(), "ExecStart")
+        for unit in (ROOT / "deploy/systemd").glob("*.service")
+    }
     for main in sorted((ROOT / "rust").glob("*/src/main.rs")):
-        daemon = main.parents[1].name
-        needle = f"ExecStart=/opt/jasper/bin/{daemon}"
+        daemon = main.parent.parent.name
         owners = [
-            unit.name for unit in (ROOT / "deploy/systemd").glob("*.service")
-            if needle in unit.read_text()
+            name for name, starts in exec_starts.items()
+            if f"/opt/jasper/bin/{daemon}" in starts
         ]
         assert owners == [f"{daemon}.service"], (daemon, owners)
