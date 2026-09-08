@@ -2,17 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""``jasper-measure`` — one measurement of this speaker, banked and named.
+"""Measure one microphone placement through ``TuningSession`` (ADR-0188 §4).
 
-The general operator door onto
-:class:`~jasper.active_speaker.crossover_v2.session.TuningSession`: it opens
-the speaker once, plays what one ``MeasureSpec`` asks for, banks the takes and
-prints their ids. It does not grade, adopt or restore a profile (ADR-0188 §4,
-ruling S12). ONE placement per run — this door prompts nobody to move the
-microphone, so a walk is N runs — and as many specs against it as ``--specs``
-names. Run as root: the CamillaDSP socket and session-volume record are
-root-owned. Exit 0 when the session opened and closed, 1 on a refusal, 2 on
-flags that do not describe a measurement.
+Run as root: the CamillaDSP socket and session-volume record are root-owned.
+Exit 0 when every requested stimulus has a banked take without an incident,
+1 on an incomplete run or refusal, 2 on invalid measurement flags.
 """
 
 from __future__ import annotations
@@ -84,6 +78,7 @@ REFUSE_STORE_LOST = "measure_evidence_store_lost"
 #: The operator interrupted the run. Named like the other three because it ends
 #: the batch the same way and needs the ids of what already banked.
 REFUSE_CANCELLED = "measure_cancelled"
+REFUSE_INCOMPLETE = "measure_incomplete"
 
 #: This door's identity on the mux diagnostic gate. ``mux.FANIN_TEST_OWNERS`` is
 #: a CLOSED allowlist, so the name must be registered there; every lease and
@@ -591,7 +586,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     before the interlock would hit a LIVE session and then be refused.
     """
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.bundles import mark_state, open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
     )
@@ -636,6 +631,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     # something to report against.
     outcomes: tuple[tuple[Any, str], ...] = ()
     store: Any = None
+    bundle_dir: Path | None = None
     try:
         async with measurement_door(
             profile=MeasurementGraphProfile(
@@ -659,8 +655,9 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                     "could not open a commissioning evidence bundle for this "
                     "session",
                 )
+            bundle_dir = Path(str(info["bundle_dir"]))
             store = CommissioningEvidenceStore.open(
-                Path(str(info["bundle_dir"])),
+                bundle_dir,
                 expected_session_id=str(info["session_id"]),
             )
             capture = WiredStimulusCapture(
@@ -695,7 +692,6 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                 level_match_trims_db=trims,
             ) as session:
                 outcomes = await _measured(session, specs, store=store)
-                return _report(outcomes, store=store, session_id=session_id)
     except SessionGraphError as exc:
         if store is None:
             raise
@@ -707,6 +703,14 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             REFUSE_GRAPH_LOST, str(exc),
             _report(outcomes, store=store, session_id=session_id),
         ) from exc
+    finally:
+        bundle_closed = bundle_dir is None or mark_state(bundle_dir, "closed") is not None
+    report = _report(outcomes, store=store, session_id=session_id)
+    if not bundle_closed:
+        report["status"] = "incomplete"
+        report["bundle_failure"] = REFUSE_STORE_LOST
+        report.pop("next", None)
+    return report
 
 
 def _session_scoped_aborts() -> tuple[tuple[type[BaseException], ...], dict[type, str]]:
@@ -772,13 +776,7 @@ async def _measured(
 
 
 def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
-    """One spec's own answer: scalars, and the incidents nothing else records.
-
-    ``graph_fingerprint`` rides per spec, never once per run: each spec may
-    install a different variant graph. A stimulus with an ``incident`` banked
-    NO record, so its sentence exists nowhere but here; the banked takes carry
-    their own levels and ids and are read from the bundle, not from stdout.
-    """
+    """A spec's graph, banked takes, and any stimulus incidents."""
     from jasper.active_speaker.crossover_v2.measure_spec import stubbed_capabilities
 
     return {
@@ -795,19 +793,17 @@ def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
 def _report(
     outcomes: tuple[tuple[Any, str], ...], *, store: Any, session_id: str,
 ) -> dict[str, Any]:
-    """What this run measured — ONE shape whether it ran one spec or ten.
-
-    A single-spec run reports a one-entry ``specs`` list, so no reader has to
-    branch on a count. The graph fingerprint lives on each entry, never at the
-    top: one value could not name the several variant graphs a batch installs.
-    """
     record_ids = [
         record_id
         for outcome, _fingerprint in outcomes
         for record_id in outcome.record_ids
     ]
+    complete = bool(outcomes) and all(
+        outcome.stimuli and all(s.banked and not s.incident for s in outcome.stimuli)
+        for outcome, _fingerprint in outcomes
+    )
     return {
-        "status": "measured",
+        "status": "measured" if complete else "incomplete",
         "session_id": session_id,
         "bundle_dir": str(store.bundle_dir),
         "n_takes": len(record_ids),
@@ -901,6 +897,10 @@ def _cmd_measure(args: argparse.Namespace) -> int:
         return _restore_failed(exc)
     except (BoxNotMeasurable, MeasurementDoorRefused) as exc:
         return _refused(exc.reason, exc.detail, code=EXIT_REFUSED)
+    if payload["status"] != "measured":
+        return failed(EXIT_REFUSED, REFUSE_INCOMPLETE, {
+            k: v for k, v in payload.items() if k != "status"
+        })
     return answered(
         payload,
         f"measured {payload['n_takes']} take(s) into {payload['bundle_dir']}",
@@ -943,8 +943,8 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "EXIT CODES\n"
             "  0  EXIT_OK -- every spec measured; ids printed\n"
-            "  1  EXIT_REFUSED -- the door refused the measurement itself\n"
-            "     (box not measurable, an interrupt, a restore failure)\n"
+            "  1  EXIT_REFUSED -- incomplete takes, a refusal, an interrupt,\n"
+            "     or a restore failure; any banked ids remain in detail\n"
             "  2  EXIT_UNREADABLE -- the request could not even be built: a\n"
             "     second --position, a variant axis with no --candidate-id,\n"
             "     a malformed --specs file"
