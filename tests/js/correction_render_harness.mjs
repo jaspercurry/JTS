@@ -46,6 +46,7 @@ const siblingDir = dirname(modulePath);
 // in `preamble`.
 const SIBLING_MODULES = [
   "api.js", "capture.js", "chart.js", "format.js", "quality.js", "report.js",
+  "state.js",
 ];
 const STRIP_EXPORT = [/^export /gm, ""];
 
@@ -309,7 +310,7 @@ const PROBE_INJECT = [
     invalidateLoadedCalibration,
     checkCalibrationHonesty,
     resetCalibrationMismatchAlerted: function () {
-      calibrationMismatchAlerted = false;
+      micCalibration.calibrationMismatchAlerted = false;
     },
     // Gauge fix (2026-07-24): orientation label mapping for the loaded-
     // calibration status line.
