@@ -297,7 +297,11 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
     wl = wake_loop_for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._acquire_buffer.extend(silent_frame() for _ in range(4))
+    wl._turn_started_at_loop = asyncio.get_running_loop().time() - 1.0
+    for index in range(4):
+        wl._acquire_buffer.append(
+            silent_frame(), wl._turn_started_at_loop + (index + 1) * 0.08,
+        )
     wl._manual_endpoint_this_turn = True
 
     drained, speech = await wl._drain_acquire_audio()
@@ -313,7 +317,11 @@ async def test_acquire_drain_still_scores_on_a_wake_turn():
     wl = wake_loop_for_tests()
     wl._turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._acquire_buffer.extend(silent_frame() for _ in range(4))
+    wl._turn_started_at_loop = asyncio.get_running_loop().time() - 1.0
+    for index in range(4):
+        wl._acquire_buffer.append(
+            silent_frame(), wl._turn_started_at_loop + (index + 1) * 0.08,
+        )
     wl._manual_endpoint_this_turn = False
 
     drained, speech = await wl._drain_acquire_audio()

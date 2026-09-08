@@ -125,62 +125,63 @@ async def test_research_announced_in_session_is_spoken_by_end_turn_drain():
     assert wl._research.status()["pending_announcements"] == 0
 
 
-async def test_real_wake_during_confirmation_window_cancels_window_and_wins():
+@pytest.mark.parametrize("opening", [False, True])
+async def test_real_wake_cancels_research_without_holding_mic_capture(opening):
     wl = _wake_loop()
-    turn = _put_in_session(wl)
+    turn = None if opening else _put_in_session(wl)
     wl._user_speech_seen = False
     wl._input_ended = False
-    _open_window(wl, _job())
-    wl._legs["on"].detector.score_frame = lambda _frame: 0.95
-    wl._acquire_buffer = []
-    acquired: list[dict] = []
-
-    def _schedule(coro, *, name):
-        acquired.append({"name": name, "coro": coro})
-        coro.close()
-
-    wl._create_fire_and_forget_task = _schedule
-
-    await wl._handle_wake_frame(np.zeros(1280, dtype=np.int16), leg="on")
-
-    assert turn.end_input_calls == 0
-    assert turn.release_calls == 1
-    assert wl._research.window_active is False
-    assert wl._state.name == "WAKE"
-    assert wl._acquiring is True
-    assert [task["name"] for task in acquired] == ["wake-arbitrate-acquire-drain"]
-
-
-async def test_real_wake_during_confirmation_opening_waits_then_wins():
-    wl = _wake_loop()
-    opening_done = asyncio.Event()
+    opening_done = asyncio.Event() if opening else None
     _open_window(wl, _job(), opening_done=opening_done)
     wl._legs["on"].detector.score_frame = lambda _frame: 0.95
-    acquired: list[dict] = []
+    records = []
+    wl._wake_telemetry.store = object()
 
-    def _schedule(coro, *, name):
-        acquired.append({"name": name, "coro": coro})
-        coro.close()
+    async def close_record(*_args):
+        records.append("old_closed")
 
-    wl._create_fire_and_forget_task = _schedule
+    async def open_record(**_kwargs):
+        records.append("new_opened")
+        return None
 
-    task = asyncio.create_task(
-        wl._handle_wake_frame(np.zeros(1280, dtype=np.int16), leg="on"),
-    )
-    await asyncio.sleep(0)
+    wl._wake_telemetry.outcome = close_record
+    wl._wake_telemetry.on_fire = open_record
+    cancellation_started = asyncio.Event()
+    cancel_research = wl._research.cancel_for_wake
 
-    assert wl._research._window is ResearchWindow.CANCELLED
-    assert acquired == []
+    async def cancel():
+        cancellation_started.set()
+        return await cancel_research()
 
-    # Simulate the opener observing the cancellation, cleaning up the
-    # confirmation turn, and releasing the normal wake path to continue.
-    wl._research._window = ResearchWindow.IDLE
-    opening_done.set()
-    await asyncio.wait_for(task, timeout=1.0)
+    wl._research.cancel_for_wake = cancel
+    arbitrated, release = asyncio.Event(), asyncio.Event()
 
-    assert wl._state.name == "WAKE"
-    assert wl._acquiring is True
-    assert [task["name"] for task in acquired] == ["wake-arbitrate-acquire-drain"]
+    async def arbitrate(**_kwargs):
+        arbitrated.set()
+        await release.wait()
+        return "LOSE"
+
+    wl._peering.arbitrate = arbitrate
+    try:
+        await wl._handle_wake_frame(np.zeros(1280, dtype=np.int16), leg="on")
+        assert wl._acquiring
+        if opening:
+            await asyncio.wait_for(cancellation_started.wait(), timeout=1.0)
+            assert wl._research._window is ResearchWindow.CANCELLED
+            assert not arbitrated.is_set()
+            wl._research._window = ResearchWindow.IDLE
+            opening_done.set()
+        await asyncio.wait_for(arbitrated.wait(), timeout=1.0)
+        assert records == (["new_opened"] if opening else ["old_closed", "new_opened"])
+        if turn is not None:
+            assert turn.end_input_calls == 0
+            assert turn.release_calls == 1
+        assert not wl._research.window_active
+        assert wl._state.name == "WAKE"
+        assert wl._acquiring
+    finally:
+        release.set()
+        await wl._cancel_fire_and_forget_tasks()
 
 
 async def test_confirmation_open_cancelled_after_begin_ends_turn_without_reading():
