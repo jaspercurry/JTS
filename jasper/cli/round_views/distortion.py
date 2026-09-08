@@ -94,7 +94,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         ),
     )
     distortion.add_argument(
-        "--applied-profile", type=Path, required=True,
+        "--applied-profile", type=Path, default=None,
         help=(
             "the applied baseline profile JSON, where this round's crossover "
             "corner is read from — never the flow state's record of a previous "
