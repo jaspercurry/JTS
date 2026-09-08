@@ -1995,7 +1995,7 @@ def test_start_rejects_values_outside_the_disclosed_run_contract_before_dsp(
 
 
 def test_start_passes_the_disclosed_run_contract_to_session_admission(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
     from jasper.web import (
         correction_capture,
@@ -2008,15 +2008,10 @@ def test_start_passes_the_disclosed_run_contract_to_session_admission(
     )
     monkeypatch.setattr(correction_capture, "_start_in_progress", False)
 
-    async def restore_level_match_volume(_setter):
-        return True
-
     monkeypatch.setattr(
         correction_capture,
         "_get_or_create_session",
-        lambda: SimpleNamespace(
-            restore_level_match_volume=restore_level_match_volume,
-        ),
+        lambda: _make_session(tmp_path),
     )
     captured = {}
 
@@ -2057,7 +2052,7 @@ def test_start_passes_the_disclosed_run_contract_to_session_admission(
 
 
 def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ):
     """An unsafe measurement baseline must not reach the household as a 500.
 
@@ -2080,15 +2075,10 @@ def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
     )
     monkeypatch.setattr(correction_capture, "_start_in_progress", False)
 
-    async def restore_level_match_volume(_setter):
-        return True
-
     monkeypatch.setattr(
         correction_capture,
         "_get_or_create_session",
-        lambda: SimpleNamespace(
-            restore_level_match_volume=restore_level_match_volume,
-        ),
+        lambda: _make_session(tmp_path),
     )
     monkeypatch.setattr(
         correction_capture,

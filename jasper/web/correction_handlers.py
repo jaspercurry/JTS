@@ -28,7 +28,11 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.audio_measurement import room_boundary
+from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
 from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
+from jasper.active_speaker.commissioning_admission import running_graph_fingerprint
+from jasper.correction.status import _MEASUREMENT_FILENAME_RE, _SOUND_FILENAME_RE
+from jasper.dsp_apply import config_file_sha256, last_dsp_apply_state, same_config_file
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.active_speaker.session_volume_plan import RestoreOutcome
 
@@ -399,6 +403,7 @@ async def _snapshot_running_room_graph(
     *,
     current_path: str | Path | None = None,
     bass_profile_summary: Mapping[str, Any] | None = None,
+    snapshot_path: Path | None = None,
 ) -> tuple[Path, Path, Mapping[str, Any]]:
     """Persist one validated, content-stable copy of Camilla's running graph."""
 
@@ -436,12 +441,13 @@ async def _snapshot_running_room_graph(
         text,
         bass_profile_summary=bass_profile_summary,
     )
-    snapshot = _room_graph_artifact_path(sess, "snapshot")
+    snapshot = snapshot_path or _room_graph_artifact_path(sess, "snapshot")
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
         snapshot,
         text,
         mode=0o640,
+        durable=True,
     )
     validation = validate_camilla_config(snapshot)
     if not validation.ok_to_apply:
@@ -481,9 +487,11 @@ async def _load_measurement_baseline(
     from jasper.sound.profile import SoundProfile
 
     sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
-    out_path = sess.cfg.config_dir / (
-        f"correction_measurement_{sess.session_id}_{int(sess.started_at)}.yml"
+    snapshot_path = _room_graph_artifact_path(sess, "snapshot")
+    out_path = snapshot_path.with_name(
+        snapshot_path.name.replace("sound_snapshot_", "correction_measurement_", 1)
     )
+    previous_apply = last_dsp_apply_state()
     # The measurement graph must capture the SAME program tap fan-in is feeding,
     # else under shm_ring it would measure a dead loopback. Thread the coupling.
     coupling_capture_kwargs = coupling_capture_kwargs_from_env()
@@ -499,11 +507,20 @@ async def _load_measurement_baseline(
         anchor = await cam.get_config_file_path(best_effort=False)
         if not anchor:
             raise RuntimeError("CamillaDSP did not report a loaded config path")
+        predecessor = await _pre_measurement_restore_target(
+            sess, cam, current_path=anchor, previous_apply=previous_apply,
+        )
+        if predecessor is not None:
+            if not await cam.set_config_file_path(str(predecessor), best_effort=False):
+                raise RuntimeError("Room predecessor could not be restored")
+            await confirm_graph_is_live(cam, predecessor.read_text(encoding="utf-8"))
+            anchor = str(predecessor)
         _, restore_path, _ = await _snapshot_running_room_graph(
             sess,
             cam,
             current_path=anchor,
             bass_profile_summary=bass_profile_summary,
+            snapshot_path=snapshot_path,
         )
         carrier = carrier_for_loaded_config(
             restore_path,
@@ -1887,19 +1904,64 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
-async def _pre_measurement_restore_target(sess: Any, cam: Any) -> Path | None:
+async def _pre_measurement_restore_target(
+    sess: Any,
+    cam: Any,
+    *,
+    current_path: str | Path | None = None,
+    previous_apply: Mapping[str, Any] | None = None,
+) -> Path | None:
     """Prior graph to restore only while this measurement still owns Camilla."""
     state_value = getattr(getattr(sess, "state", None), "value", None)
-    if state_value in {"idle", "applied", "verified"}:
+    if state_value in {"applied", "verified"}:
         return None
     prior = getattr(sess, "pre_measurement_config_path", None)
     restore = getattr(sess, "pre_measurement_restore_path", None)
-    if not prior or not restore:
+    if state_value == "idle" and (prior or restore):
         return None
-
-    current = await cam.get_config_file_path(best_effort=False)
+    current = current_path or await cam.get_config_file_path(best_effort=False)
     if not current:
         raise RuntimeError("CamillaDSP did not report a loaded config path")
+    if not prior or not restore:
+        candidate = Path(current)
+        config_dir = getattr(getattr(sess, "cfg", None), "config_dir", None)
+        match = _MEASUREMENT_FILENAME_RE.fullmatch(candidate.name)
+        if not match or not config_dir or not same_config_file(candidate.parent, config_dir):
+            return None
+        normalized = await cam.normalize_config_raw(
+            candidate.read_text(encoding="utf-8"), best_effort=False,
+        )
+        live = await cam.get_active_config_raw(best_effort=False)
+        if running_graph_fingerprint(normalized) != running_graph_fingerprint(live):
+            log_event(logger, "correction.measurement_graph_superseded", current=str(current))
+            return None
+        snapshot = candidate.with_name(
+            candidate.name.replace("correction_measurement_", "sound_snapshot_", 1)
+        )
+        if not snapshot.is_file():
+            # Older runs used unrelated snapshot names. The last operation can
+            # recover those only when its candidate still matches live audio.
+            operation = previous_apply or last_dsp_apply_state() or {}
+            saved = operation.get("prior_config_path")
+            if (
+                operation.get("source") == "correction_measurement"
+                and operation.get("phase") in {"load", "confirm", "persist", "done"}
+                and same_config_file(operation.get("candidate_config_path"), candidate)
+                and operation.get("config_sha256") == config_file_sha256(candidate)
+                and isinstance(saved, str)
+                and same_config_file(Path(saved).parent, config_dir)
+                and Path(saved).name.startswith("sound_snapshot_")
+                and _SOUND_FILENAME_RE.fullmatch(Path(saved).name)
+            ):
+                snapshot = Path(saved)
+            if not snapshot.is_file():
+                raise RequestConflict("Room predecessor snapshot is unavailable")
+        log_event(
+            logger, "correction.measurement_predecessor_recovered",
+            current=str(candidate), restore=str(snapshot),
+        )
+        return snapshot
+
     measurement = getattr(sess, "measurement_config_path", None)
     owned_path = Path(measurement) if measurement else Path(prior)
     prior_path = Path(prior)

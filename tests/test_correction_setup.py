@@ -3684,3 +3684,132 @@ def test_a_refused_level_match_level_is_answered_not_raised():
 
     assert asyncio.run(correction_capture._assert_level_match_level(-20.0)) is False
     assert correction_capture._LEVEL_MATCH_CLAIM is None
+
+
+@pytest.mark.parametrize("recovery", [
+    "reset", "next_start", "failed_unrelated_writer", "legacy_interrupted_load",
+    "missing_snapshot", "legacy_wrong_hash", "restore_retry", "new_path", "new_raw", "bad_readback",
+])
+async def test_fresh_room_session_recovers_only_its_active_predecessor(
+    monkeypatch, tmp_path, recovery,
+):
+    from jasper.correction.session import SessionState
+    from jasper.camilla_config_contract import PeqFilter
+    from jasper.dsp_apply import last_dsp_apply_state
+    from jasper.output_topology import save_output_topology
+    from .active_speaker_fixtures import passive_stereo_output_topology
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import SoundProfile
+
+    topology_path = tmp_path / "topology.json"
+    save_output_topology(passive_stereo_output_topology(), topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    state_path = tmp_path / "last-dsp.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
+    summary = {"authority_valid": True, "runtime_block_required": False}
+
+    async def authority_current(_cam, _expected):
+        return summary
+
+    monkeypatch.setattr(correction_capture, "_assert_room_authority_current", authority_current)
+    original = make_measurement_session(tmp_path)
+    original.cfg.config_dir.mkdir(parents=True)
+    household = original.cfg.config_dir / "correction_before_123.yml"
+    household.write_text(emit_sound_config(
+        SoundProfile(enabled=False),
+        room_peqs=[PeqFilter(freq=45.0, q=3.0, gain=-6.0)],
+    ), encoding="utf-8")
+    before = household.read_text(encoding="utf-8")
+
+    class Cam:
+        current = str(household)
+        raw = before
+        accepts = True
+
+        async def get_config_file_path(self, **_kwargs):
+            return self.current
+
+        async def get_active_config_raw(self, **_kwargs):
+            return self.raw
+
+        async def normalize_config_raw(self, raw, **_kwargs):
+            return raw
+
+        async def set_config_file_path(self, path, **_kwargs):
+            if not self.accepts:
+                return False
+            self.current = str(path)
+            self.raw = Path(path).read_text(encoding="utf-8")
+            return True
+
+    cam = Cam()
+    await correction_handlers._load_measurement_baseline(
+        original, cam, expected_authority_binding=(False, "passive_not_required", None),
+    )
+    baseline = cam.current
+    snapshot = original.pre_measurement_restore_path
+    saved = snapshot.read_text(encoding="utf-8")
+    assert correction_handlers._running_graph_body(saved) == correction_handlers._running_graph_body(before)
+    fresh = make_measurement_session(tmp_path)
+    assert fresh.state is SessionState.IDLE
+    assert fresh.pre_measurement_restore_path is None
+    if recovery in {"legacy_interrupted_load", "legacy_wrong_hash"}:
+        operation = last_dsp_apply_state()
+        old_snapshot = snapshot.with_name("sound_snapshot_legacy_123.yml")
+        snapshot.rename(old_snapshot)
+        snapshot = old_snapshot
+        operation.update(prior_config_path=str(snapshot), phase="load", result="in_progress")
+        if recovery == "legacy_wrong_hash":
+            operation["config_sha256"] = "0" * 64
+        state_path.write_text(json.dumps(operation), encoding="utf-8")
+    elif recovery == "failed_unrelated_writer":
+        state_path.write_text(json.dumps({"source": "sound", "result": "failed"}))
+    elif recovery == "missing_snapshot":
+        snapshot.unlink()
+        state_path.write_text("{}", encoding="utf-8")
+    elif recovery in {"new_path", "new_raw"}:
+        cam.raw = emit_sound_config(SoundProfile(enabled=False))
+        if recovery == "new_path":
+            new = original.cfg.config_dir / "sound_new_123.yml"
+            new.write_text(cam.raw, encoding="utf-8")
+            cam.current = str(new)
+        else:
+            # Preserve the measurement path but replace the running content.
+            cam.raw = before
+        assert await correction_handlers._pre_measurement_restore_target(fresh, cam) is None
+        assert cam.raw != saved or cam.current != baseline
+        return
+
+    if recovery == "bad_readback":
+        from jasper.active_speaker.commissioning_admission import ActiveCommissioningAdmissionError
+
+        cam.raw = None
+        with pytest.raises(ActiveCommissioningAdmissionError):
+            await correction_handlers._run_locked_room_reset(fresh, cam)
+        assert cam.current == baseline
+        return
+    if recovery in {"missing_snapshot", "legacy_wrong_hash"}:
+        with pytest.raises(correction_capture.RequestConflict):
+            await correction_handlers._run_locked_room_reset(fresh, cam)
+        assert cam.current == baseline
+        return
+    if recovery == "next_start":
+        await correction_handlers._load_measurement_baseline(
+            fresh, cam, expected_authority_binding=(False, "passive_not_required", None),
+        )
+        assert fresh.pre_measurement_restore_path.read_text(encoding="utf-8") == saved
+        assert cam.current != baseline
+        return
+    if recovery == "restore_retry":
+        cam.accepts = False
+        await correction_handlers._run_locked_room_reset(fresh, cam)
+        assert fresh.state is SessionState.FAILED
+        assert cam.current == baseline
+        cam.accepts = True
+    await correction_handlers._run_locked_room_reset(fresh, cam)
+    assert fresh.state is SessionState.IDLE
+    assert cam.current == str(snapshot)
+    assert cam.raw == saved
+    assert await correction_handlers._pre_measurement_restore_target(
+        make_measurement_session(tmp_path), cam,
+    ) is None
