@@ -89,7 +89,7 @@ def test_secret_move_preserves_values_and_removes_broad_copies(
     broad.write_text(f'JASPER_HOSTNAME=jts.local\n{key}=stale\n  {key} = "{encoded}"\r\n')
     broad.chmod(0o640)
     if canonical is not None:
-        target.write_text(f"{key}={shlex.quote(canonical)}\n")
+        target.write_text(f"{key}={canonical}\n" if canonical else f"{key}=''\n")  # the planted placeholder form
         target.chmod(0o640)
     owner = (broad.stat().st_uid, broad.stat().st_gid)
     assigned = canonical or value  # a non-empty compartment value wins; an empty one is a placeholder
