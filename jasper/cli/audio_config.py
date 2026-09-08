@@ -20,6 +20,7 @@ from jasper.audio_hardware.dac import (
 from jasper.audio_runtime_plan import (
     AUDIO_RUNTIME_OVERRIDE_KEYS,
     OUTPUTD_LATENCY_KEYS,
+    RuntimeEnvAction,
     build_audio_runtime_plan,
     build_audio_runtime_plan_from_system,
     outputd_env_buffer_pair_error,
@@ -123,7 +124,7 @@ def outputd_floor_plan(
     base_env: str,
     outputd_env: str,
     overrides: str | None = None,
-):
+) -> tuple[dict[str, str], tuple[RuntimeEnvAction, ...]]:
     """``(latency-key summary, outputd.env actions)`` for one DAC's declared floor.
 
     Precedence (operator env > profile floor > packaged default) stays in this
