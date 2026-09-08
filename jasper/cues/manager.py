@@ -559,17 +559,16 @@ class AudioCueManager:
         return OUTCOME_DELIVERED, REASON_OK, _DYNAMIC_TEXT_SLUG, True
 
     async def _write_pcm(self, tts: Any, pcm: bytes, *, model: str) -> None:
-        """Hand cue PCM to `tts`, preferring the profiled segment API where
-        the playout offers one. Raises on write failure."""
         write_segment = getattr(tts, "write_segment", None)
         if callable(write_segment):
-            await write_segment(
+            if await write_segment(
                 pcm,
                 segment_kind="cue",
                 source_profile=_cue_source_profile(
                     model=model, voice=self._voice, pcm=pcm,
                 ),
-            )
+            ) is False:
+                raise OSError("cue output was not accepted")
         else:
             await tts.write(pcm)
 

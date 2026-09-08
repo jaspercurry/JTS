@@ -49,17 +49,21 @@ class _FakeTtsPlayout:
         self.segments: list[dict] = []
         self.waits = 0
         self.fail_with: Exception | None = None
+        self.accept = True
 
     async def write(self, pcm: bytes) -> None:
         if self.fail_with is not None:
             raise self.fail_with
         self.writes.append(pcm)
 
-    async def write_segment(self, pcm: bytes, **kwargs) -> None:
+    async def write_segment(self, pcm: bytes, **kwargs) -> bool:
         if self.fail_with is not None:
             raise self.fail_with
+        if not self.accept:
+            return False
         self.segments.append({"pcm": pcm, **kwargs})
         self.writes.append(pcm)
+        return True
 
     async def wait_drained(self) -> None:
         self.waits += 1
@@ -526,21 +530,28 @@ def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):
     _assert_outcome(mgr, "failed", "no_cache", slug="spend_cap_reached")
 
 
-def test_play_swallows_tts_write_exception(tmp_path):
-    """A broken audio chain must not throw out of the failure
-    handler that called `play()`."""
+@pytest.mark.parametrize("operation", ["play", "speak_text"])
+@pytest.mark.parametrize("failure", ["exception", "refused"])
+def test_cue_write_failure_is_reported(tmp_path, operation, failure):
     backend = _FakeBackend()
     tts = _FakeTtsPlayout()
-    tts.fail_with = RuntimeError("ALSA hates us today")
+    tts.fail_with = OSError("output unavailable") if failure == "exception" else None
+    tts.accept = False
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=backend, tts_playout=tts,
     )
-    mgr.regenerate()
-    ok = asyncio.run(mgr.play("spend_cap_reached"))
+    if operation == "play":
+        mgr.regenerate(slug="spend_cap_reached")
+        ok = asyncio.run(mgr.play("spend_cap_reached"))
+        slug = "spend_cap_reached"
+    else:
+        ok = asyncio.run(mgr.speak_text("Timer finished"))
+        slug = "text"
     assert ok is False
-
-    _assert_outcome(mgr, "failed", "write_error", slug="spend_cap_reached")
+    assert tts.writes == []
+    assert tts.waits == 1
+    _assert_outcome(mgr, "failed", "write_error", slug=slug)
 
 
 def test_play_records_failed_on_wav_read_error(tmp_path):
