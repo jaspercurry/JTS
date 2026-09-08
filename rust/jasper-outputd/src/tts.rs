@@ -167,7 +167,7 @@ pub struct TtsMetrics {
     pub pending_frames: Arc<AtomicU64>,
     pub dropped_audio_frames: Arc<AtomicU64>,
     pub dropped_commands: Arc<AtomicU64>,
-    pub connections_rejected: Arc<AtomicU64>,
+    pub slots: TtsClientSlots,
     pub frame_timeouts: Arc<AtomicU64>,
     pub flush_requests: Arc<AtomicU64>,
     pub flushed_frames: Arc<AtomicU64>,
@@ -187,7 +187,7 @@ impl TtsMetrics {
             pending_frames: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
-            connections_rejected: Arc::new(AtomicU64::new(0)),
+            slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
             frame_timeouts: Arc::new(AtomicU64::new(0)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
@@ -200,12 +200,6 @@ impl TtsMetrics {
         self.dropped_audio_frames
             .fetch_add(frames, Ordering::Relaxed);
         self.dropped_commands.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Returns true for the first rejection of this process, which is the
-    /// only one worth a log line — the counter carries the rest.
-    fn mark_connection_rejected(&self) -> bool {
-        self.connections_rejected.fetch_add(1, Ordering::Relaxed) == 0
     }
 
     /// A clone of the shared snapshot cell, handed to `OutputCore` so the audio
@@ -262,7 +256,6 @@ pub fn spawn_tts_server(
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("binding outputd TTS socket {}", path.display()))?;
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
-    let slots = TtsClientSlots::new(TTS_MAX_CLIENTS);
     thread::Builder::new()
         .name("outputd-tts-ipc".to_string())
         .stack_size(crate::HELPER_STACK_BYTES)
@@ -270,15 +263,18 @@ pub fn spawn_tts_server(
             for stream in listener.incoming() {
                 match stream {
                     Ok(stream) => {
-                        let Some(slot) = slots.try_acquire() else {
-                            if metrics.mark_connection_rejected() {
+                        let slot = match metrics.slots.try_acquire() {
+                            Ok(slot) => slot,
+                            // The pool counts every refusal for STATUS; only
+                            // the first is worth a journal line.
+                            Err(1) => {
                                 eprintln!(
                                     "event=outputd.tts_socket.connection_rejected \
                                      max_clients={TTS_MAX_CLIENTS}"
                                 );
+                                continue;
                             }
-                            drop(stream);
-                            continue;
+                            Err(_) => continue,
                         };
                         if let Err(e) = spawn_tts_client(
                             stream,

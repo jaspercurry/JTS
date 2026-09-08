@@ -1281,11 +1281,7 @@ impl OutputdState {
                     m.dropped_commands.load(Ordering::Relaxed),
                 );
                 buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "connections_rejected",
-                    m.connections_rejected.load(Ordering::Relaxed),
-                );
+                push_kv_u64(&mut buf, "connections_rejected", m.slots.rejected());
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,

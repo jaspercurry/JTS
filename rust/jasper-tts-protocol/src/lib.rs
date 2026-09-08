@@ -27,7 +27,7 @@
 
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -741,14 +741,17 @@ pub fn is_frame_timeout(err: &io::Error) -> bool {
     )
 }
 
-/// Bounded pool of per-connection server slots.
+/// Bounded pool of per-connection server slots, and the refusals it has
+/// handed back.
 ///
 /// An accept loop takes a slot BEFORE it spawns the reader thread and moves
 /// the slot into that thread, so the slot returns when the thread exits and
-/// retained threads cannot exceed the capacity.
+/// retained threads cannot exceed the capacity. Refusals are counted here, so
+/// a server publishes them without keeping a second counter of its own.
 #[derive(Clone, Debug)]
 pub struct TtsClientSlots {
     in_use: Arc<AtomicUsize>,
+    rejected: Arc<AtomicU64>,
     capacity: usize,
 }
 
@@ -756,25 +759,35 @@ impl TtsClientSlots {
     pub fn new(capacity: usize) -> Self {
         Self {
             in_use: Arc::new(AtomicUsize::new(0)),
+            rejected: Arc::new(AtomicU64::new(0)),
             capacity,
         }
     }
 
-    /// A slot, or `None` once `capacity` are outstanding.
-    pub fn try_acquire(&self) -> Option<TtsClientSlot> {
+    /// A slot, or `Err` carrying this pool's refusal count INCLUDING this
+    /// one — so a caller journals `Err(1)` and lets the counter carry the
+    /// rest.
+    pub fn try_acquire(&self) -> Result<TtsClientSlot, u64> {
         let capacity = self.capacity;
-        self.in_use
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |in_use| {
+        match self
+            .in_use
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |in_use| {
                 (in_use < capacity).then_some(in_use + 1)
-            })
-            .ok()
-            .map(|_| TtsClientSlot {
+            }) {
+            Ok(_) => Ok(TtsClientSlot {
                 in_use: Arc::clone(&self.in_use),
-            })
+            }),
+            Err(_) => Err(self.rejected.fetch_add(1, Ordering::Relaxed) + 1),
+        }
     }
 
     pub fn in_use(&self) -> usize {
-        self.in_use.load(Ordering::Acquire)
+        self.in_use.load(Ordering::Relaxed)
+    }
+
+    /// Connections refused because every slot was taken.
+    pub fn rejected(&self) -> u64 {
+        self.rejected.load(Ordering::Relaxed)
     }
 }
 
@@ -786,7 +799,7 @@ pub struct TtsClientSlot {
 
 impl Drop for TtsClientSlot {
     fn drop(&mut self) {
-        self.in_use.fetch_sub(1, Ordering::AcqRel);
+        self.in_use.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -903,7 +916,6 @@ fn parse_bool_token(value: &str, field: &str) -> io::Result<bool> {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
-    use std::sync::mpsc;
     use std::thread;
 
     fn parse_all(bytes: &[u8]) -> Vec<TtsCommand> {
@@ -1308,50 +1320,25 @@ mod tests {
         drop(writer.join().unwrap());
     }
 
-    /// Beyond the ceiling a connection is refused, the admitted ones keep
-    /// serving, and a slot freed by a departing client readmits the next one.
+    /// Past the ceiling a connection is refused and counted without taking a
+    /// slot, and a slot its holder releases readmits the next one.
     #[test]
-    fn the_client_ceiling_refuses_a_third_connection_and_readmits_after_one_ends() {
+    fn the_client_ceiling_counts_refusals_and_readmits_a_released_slot() {
         let slots = TtsClientSlots::new(2);
-        let (served_tx, served_rx) = mpsc::channel();
+        let first = slots.try_acquire().expect("within the ceiling");
+        let second = slots.try_acquire().expect("within the ceiling");
 
-        let mut live: Vec<_> = (0..2)
-            .map(|_| {
-                let (client, server) = UnixStream::pair().unwrap();
-                let slot = slots.try_acquire().expect("within the ceiling");
-                let served_tx = served_tx.clone();
-                let handle = thread::spawn(move || {
-                    let _slot = slot;
-                    let mut reader = BufReader::new(server);
-                    // Serves every command until the client hangs up, holding
-                    // its slot for exactly that long.
-                    while let Some(command) =
-                        read_command_deadlined(&mut reader, TEST_DEADLINE).unwrap()
-                    {
-                        served_tx.send(command).unwrap();
-                    }
-                });
-                (client, handle)
-            })
-            .collect();
+        assert_eq!(slots.try_acquire().err(), Some(1), "third slot admitted");
+        assert_eq!(slots.try_acquire().err(), Some(2), "refusals not counted");
+        assert_eq!(slots.in_use(), 2, "a refusal must not consume a slot");
+        assert_eq!(slots.rejected(), 2);
 
-        assert!(slots.try_acquire().is_none(), "third connection admitted");
-
-        for (client, _) in &mut live {
-            client.write_all(b"FLUSH\n").unwrap();
-        }
-        for _ in 0..2 {
-            assert_eq!(served_rx.recv().unwrap(), TtsCommand::Flush);
-        }
-
-        let (client, handle) = live.pop().unwrap();
-        drop(client);
-        handle.join().unwrap();
+        drop(second);
         assert_eq!(slots.in_use(), 1);
-        assert!(slots.try_acquire().is_some(), "freed slot not readmitted");
+        let third = slots.try_acquire().expect("released slot not readmitted");
+        assert_eq!(slots.rejected(), 2, "an admission must not count a refusal");
 
-        let (client, handle) = live.pop().unwrap();
-        drop(client);
-        handle.join().unwrap();
+        drop((first, third));
+        assert_eq!(slots.in_use(), 0);
     }
 }
