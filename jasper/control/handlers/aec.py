@@ -92,11 +92,19 @@ class AecRoutes(ControlHandlerMixin):
                 status=502,
             )
             return
-        try:
-            aec_endpoints._kick_aec_reconciler()
-        except (OSError, subprocess.SubprocessError) as e:
+        kick = aec_endpoints._kick_aec_reconciler(reason="aec_leg")
+        if not kick.get("ok"):
             self._send_json(
-                {"error": f"reconciler restart failed: {e}"},
+                {
+                    "error": (
+                        "The wake-detection change was saved, but the "
+                        "reconciler restart could not be scheduled."
+                    ),
+                    "code": "leg_reconcile_failed",
+                    "intent_saved": True,
+                    "requested_leg": leg,
+                    "requested_enabled": enabled_val,
+                },
                 status=502,
             )
             return
@@ -107,7 +115,14 @@ class AecRoutes(ControlHandlerMixin):
             enabled=enabled_val,
             client=self.address_string(),
         )
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_json(
+            {
+                "ok": True,
+                "status": "accepted",
+                **aec_endpoints._aec_full_status(),
+            },
+            status=202,
+        )
         return
 
     def _post_aec_profile(self) -> None:
@@ -132,11 +147,18 @@ class AecRoutes(ControlHandlerMixin):
                 status=400 if isinstance(e, ValueError) else 502,
             )
             return
-        try:
-            aec_endpoints._kick_aec_reconciler()
-        except (OSError, subprocess.SubprocessError) as e:
+        kick = aec_endpoints._kick_aec_reconciler(reason="aec_profile")
+        if not kick.get("ok"):
             self._send_json(
-                {"error": f"reconciler restart failed: {e}"},
+                {
+                    "error": (
+                        "The microphone profile was saved, but the "
+                        "reconciler restart could not be scheduled."
+                    ),
+                    "code": "profile_reconcile_failed",
+                    "intent_saved": True,
+                    "requested_profile": profile,
+                },
                 status=502,
             )
             return
@@ -146,7 +168,14 @@ class AecRoutes(ControlHandlerMixin):
             profile=normalize_audio_input_profile(profile, default=""),
             client=self.address_string(),
         )
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_json(
+            {
+                "ok": True,
+                "status": "accepted",
+                **aec_endpoints._aec_full_status(),
+            },
+            status=202,
+        )
         return
 
     def _post_aec_usb_mic(self) -> None:
