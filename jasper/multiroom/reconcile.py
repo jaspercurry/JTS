@@ -2367,10 +2367,7 @@ def main(argv: list[str] | None = None) -> int:
                             active_leader=False,
                             blocked_reason=endpoint_block_reason,
                             requested_cfg=requested_cfg,
-                            local_sources_allowed=(
-                                not config.local_sources_parked(role.cfg)
-                                and not role.transitioning_from_parked_role
-                            ),
+                            local_sources_allowed=role.local_sources_allowed,
                             path=FOLLOWER_STATUS_FILE,
                         )
                         rc = 1

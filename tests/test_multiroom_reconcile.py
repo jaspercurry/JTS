@@ -832,8 +832,7 @@ def test_decide_role_decision_table(
     expected,
     check_fallback,
 ):
-    """One decision table for the pure pre-apply role derivation, replacing
-    the eight-local + nonlocal-closure version main() used to inline."""
+    """One decision table for the pure pre-apply role derivation."""
     d = decide_role(
         cfg,
         active_box_state=active_box_state,
@@ -3965,10 +3964,9 @@ def test_refused_follower_with_unknown_crossover_state_keeps_sources_denied(
     tmp_path,
     monkeypatch,
 ):
-    """A REQUESTED FOLLOWER refused by the active-endpoint precheck falls back
-    to solo-active; if crossover ownership then can't be proven, sources must
-    stay denied — not granted mid-refusal because the fallback already parked
-    the requested bond (regression pin for the :1844 permission leak)."""
+    """A requested follower refused by the active-endpoint precheck falls back
+    to solo-active; if crossover ownership then cannot be proven, sources
+    stay denied rather than granted with no restore run."""
     import json
 
     requested = _follower(leader_addr="192.168.1.50")
