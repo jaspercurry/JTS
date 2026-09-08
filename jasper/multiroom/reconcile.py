@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
@@ -664,6 +665,116 @@ def desired_snapfifo_path(cfg: GroupingConfig) -> str:
     if cfg.enabled and cfg.error is None and cfg.role == "leader":
         return SNAPFIFO
     return ""
+
+
+@dataclass(frozen=True)
+class RoleDecision:
+    """The pre-apply role/permission decision for one reconcile pass.
+
+    ``cfg`` starts as the request and is never mutated in place; a refused
+    bond calls :meth:`with_fallback` to get a *new* decision with every role
+    flag reset and ``cfg`` forced to ``replace(cfg, enabled=False)`` — the
+    fail-safe-to-solo shape. ``requested_cfg`` never changes; the fallback reads
+    its park reason from it, not from the now-disabled ``cfg``.
+    """
+
+    cfg: GroupingConfig
+    requested_cfg: GroupingConfig
+    plan: ReconcilePlan
+    active: bool
+    active_leader: bool
+    passive_leader: bool
+    active_speaker_leader: bool
+    active_follower: bool
+    active_endpoint: bool
+    box_is_active: bool
+    flat_output_allowed: bool
+    outputd_period_frames: int | None
+    lane: LaneDecision
+    refused_follower_fallback: bool
+    transitioning_from_parked_role: bool
+
+    @property
+    def local_sources_allowed(self) -> bool:
+        """The one shared local-sources permission predicate."""
+        return (
+            not config.local_sources_parked(self.cfg)
+            and not self.refused_follower_fallback
+            and not self.transitioning_from_parked_role
+        )
+
+    def with_fallback(self) -> "RoleDecision":
+        """Reset every derived bond role after a fail-safe refusal.
+
+        ``lane`` is deliberately left as decided pre-fallback: its only reader
+        runs before any fallback, and the env writer derives its own from ``cfg``.
+        """
+        cfg = replace(self.cfg, enabled=False)
+        return replace(
+            self,
+            cfg=cfg,
+            plan=plan(cfg),
+            active=False,
+            active_leader=False,
+            active_follower=False,
+            active_speaker_leader=False,
+            passive_leader=False,
+            active_endpoint=False,
+            refused_follower_fallback=config.local_sources_parked(
+                self.requested_cfg,
+            ),
+        )
+
+
+def decide_role(
+    requested_cfg: GroupingConfig,
+    *,
+    active_box_state: bool | None,
+    flat_output_allowed: bool,
+    outputd_period_frames: int | None,
+    prior_status: dict[str, Any],
+) -> RoleDecision:
+    """Derive the initial role decision from one wizard-owned request. PURE.
+
+    ``transitioning_from_parked_role`` is frozen here from the status file's
+    LAST-published fact: it must never be re-derived after this reconcile
+    writes its own status, or a retried transition would forget it is one.
+    """
+    cfg = requested_cfg
+    transitioning_from_parked_role = (
+        not config.local_sources_parked(requested_cfg)
+        and prior_status.get("local_sources_allowed") is False
+    )
+    active = cfg.enabled and cfg.error is None
+    active_leader = active and cfg.role == "leader"
+    box_is_active = active_box_state is True
+    active_follower = active and cfg.role == "follower" and box_is_active
+    active_speaker_leader = active_leader and box_is_active
+    passive_leader = active_leader and not box_is_active
+    active_endpoint = active_follower or active_speaker_leader
+    lane_decision = member_lane_decision(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=outputd_period_frames,
+    )
+    return RoleDecision(
+        cfg=cfg,
+        requested_cfg=requested_cfg,
+        plan=plan(cfg),
+        active=active,
+        active_leader=active_leader,
+        passive_leader=passive_leader,
+        active_speaker_leader=active_speaker_leader,
+        active_follower=active_follower,
+        active_endpoint=active_endpoint,
+        box_is_active=box_is_active,
+        flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=outputd_period_frames,
+        lane=lane_decision,
+        refused_follower_fallback=False,
+        transitioning_from_parked_role=transitioning_from_parked_role,
+    )
 
 
 # ============================================================
@@ -1626,74 +1737,35 @@ def main(argv: list[str] | None = None) -> int:
 
     install_env_canonical_target_provider()
 
-    cfg = config.load_config()
-    requested_cfg = cfg
+    requested_cfg = config.load_config()
     prior_role_status = read_effective_role_status(FOLLOWER_STATUS_FILE)
-    transitioning_from_parked_role = (
-        not config.local_sources_parked(requested_cfg)
-        and prior_role_status.get("local_sources_allowed") is False
-    )
-    decision = plan(cfg)
-    active = cfg.enabled and cfg.error is None
-    active_leader = active and cfg.role == "leader"
     # An ACTIVE (multi-driver) follower relocates Layer A onto its own CamillaDSP
     # in the bonded path; a DUMB (single-DAC) follower uses outputd's dac_content
     # ChannelPick. The saved topology decides which path this reconcile takes.
     active_box_state, flat_output_allowed = output_topology_state()
-    box_is_active = active_box_state is True
-    active_follower = active and cfg.role == "follower" and box_is_active
-    # An ACTIVE leader is brains + endpoint: camilla#1 bakes the program domain
-    # to the wire AND camilla#2 runs this box's own Layer-A crossover on the
-    # round-tripped stream. A PASSIVE leader keeps the single-camilla pipe bake.
-    active_speaker_leader = active_leader and box_is_active
-    passive_leader = active_leader and not box_is_active
-    # Both active endpoints (the follower AND the active leader's own drivers)
-    # capture the grouping ring and run a camilla-owned channel-pick + split, so
-    # they SHARE the snapclient-writes-the-ring + outputd-dac_content-disabled
-    # wiring.
-    active_endpoint = active_follower or active_speaker_leader
-    # ONE lane decision per pass, read by the bond refusal below and handed to
-    # the env writer, so the refusal and what gets written cannot disagree.
     outputd_period_frames = box_outputd_period_frames()
-    lane_decision = member_lane_decision(
-        cfg,
-        active_endpoint=active_endpoint,
+    role = decide_role(
+        requested_cfg,
+        active_box_state=active_box_state,
         flat_output_allowed=flat_output_allowed,
         outputd_period_frames=outputd_period_frames,
+        prior_status=prior_role_status,
     )
     log_event(
         logger,
         "multiroom.reconcile.start",
         reason=args.reason,
-        enabled=cfg.enabled,
-        role=cfg.role or "(none)",
-        error=cfg.error or "(none)",
-        active_box=("unknown" if active_box_state is None else box_is_active),
-        active_follower=active_follower,
-        active_leader=active_speaker_leader,
-        summary=repr(decision.summary),
+        enabled=role.cfg.enabled,
+        role=role.cfg.role or "(none)",
+        error=role.cfg.error or "(none)",
+        active_box=("unknown" if active_box_state is None else role.box_is_active),
+        active_follower=role.active_follower,
+        active_leader=role.active_speaker_leader,
+        summary=repr(role.plan.summary),
     )
     rc = 0
     endpoint_block_reason = ""
     active_leader_arm_blocked = False
-    refused_follower_fallback = False
-
-    def fall_back_to_solo() -> None:
-        """Reset every derived bond role after a fail-safe refusal."""
-        nonlocal cfg, decision, active, active_leader, active_follower
-        nonlocal active_speaker_leader, passive_leader, active_endpoint
-        nonlocal refused_follower_fallback, rc
-
-        cfg = replace(cfg, enabled=False)
-        refused_follower_fallback = config.local_sources_parked(requested_cfg)
-        decision = plan(cfg)
-        active = False
-        active_leader = False
-        active_follower = False
-        active_speaker_leader = False
-        passive_leader = False
-        active_endpoint = False
-        rc = 1
 
     if active_box_state is None:
         endpoint_block_reason = "active_speaker_topology_unknown"
@@ -1709,13 +1781,11 @@ def main(argv: list[str] | None = None) -> int:
             active_leader=False,
             blocked_reason=endpoint_block_reason,
             requested_cfg=requested_cfg,
-            local_sources_allowed=(
-                not config.local_sources_parked(cfg) and not transitioning_from_parked_role
-            ),
+            local_sources_allowed=role.local_sources_allowed,
             path=FOLLOWER_STATUS_FILE,
         )
         cleared, env_ok = _write_derived_env(
-            outputd_grouping_env(cfg, flat_output_allowed=False),
+            outputd_grouping_env(role.cfg, flat_output_allowed=False),
             path=OUTPUTD_GROUPING_ENV_FILE,
             consumer="outputd",
         )
@@ -1731,15 +1801,15 @@ def main(argv: list[str] | None = None) -> int:
     # reconcile bond. Placed BEFORE snapcast provision / any bond wiring. Only
     # this reason refuses the bond — the other two unarmed shapes (an ACTIVE
     # endpoint, a topology that forbids a flat graph) are legitimate members.
-    if active and lane_decision.reason == LANE_REFUSED_PERIOD:
+    if role.active and role.lane.reason == LANE_REFUSED_PERIOD:
         endpoint_block_reason = LANE_REFUSED_PERIOD
         log_event(
             logger,
             "multiroom.reconcile.dac_content_ring_period_mismatch",
             reason=args.reason,
             outputd_period_frames=(
-                "(unresolved)" if outputd_period_frames is None
-                else outputd_period_frames
+                "(unresolved)" if role.outputd_period_frames is None
+                else role.outputd_period_frames
             ),
             ring_period_frames=DAC_CONTENT_RING_PERIOD_FRAMES,
             detail=(
@@ -1749,7 +1819,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
             level=logging.WARNING,
         )
-        fall_back_to_solo()
+        role = role.with_fallback()
+        rc = 1
 
     # Grouping prerequisite: install.sh ships the snapcast units but never the
     # binaries — that is the grouping opt-in's job (jasper.multiroom.provision).
@@ -1758,7 +1829,7 @@ def main(argv: list[str] | None = None) -> int:
     # surfaced via /state.grouping.provision + the doctor and flips rc, but never
     # raises — the snap units simply fail to start, the box stays solo-safe, and
     # the next reconcile retries.
-    if active:
+    if role.active:
         from .provision import ensure_snapcast_installed
 
         prov = ensure_snapcast_installed()
@@ -1785,16 +1856,16 @@ def main(argv: list[str] | None = None) -> int:
     # so the box keeps playing its own content instead of half-parking silent.
     # This is invariant 5's "refuses to bond" — the unsafe graph never reaches
     # the DACs. The actual CamillaDSP applies happen later, after snapcast is up.
-    if active_endpoint:
+    if role.active_endpoint:
         try:
-            if active_speaker_leader:
+            if role.active_speaker_leader:
                 from .active_leader_config import precheck_active_leader_sync
 
-                precheck_active_leader_sync(cfg)
+                precheck_active_leader_sync(role.cfg)
             else:
                 from .follower_config import precheck_active_follower_sync
 
-                precheck_active_follower_sync(cfg)
+                precheck_active_follower_sync(role.cfg)
         except RuntimeError as e:
             endpoint_block_reason = getattr(
                 e,
@@ -1804,7 +1875,7 @@ def main(argv: list[str] | None = None) -> int:
             # Distinct event per role; both literals stay greppable.
             blocked_event = (
                 "multiroom.reconcile.active_leader_blocked"
-                if active_speaker_leader
+                if role.active_speaker_leader
                 else "multiroom.reconcile.active_follower_blocked"
             )
             log_event(
@@ -1818,7 +1889,8 @@ def main(argv: list[str] | None = None) -> int:
             # like an invalid bond. Reset EVERY role flag — including
             # active_leader, which gates the step-6 stream-binding pin — so a
             # refused bond never partially behaves like a leader/endpoint.
-            fall_back_to_solo()
+            role = role.with_fallback()
+            rc = 1
 
     # A solo-active box needs positive ownership proof BEFORE any role-derived
     # file or unit mutation. Enabled intent alone is insufficient: a partial
@@ -1841,14 +1913,12 @@ def main(argv: list[str] | None = None) -> int:
             active_leader=False,
             blocked_reason=reason,
             requested_cfg=requested_cfg,
-            local_sources_allowed=(
-                not config.local_sources_parked(cfg) and not transitioning_from_parked_role
-            ),
+            local_sources_allowed=role.local_sources_allowed,
             path=FOLLOWER_STATUS_FILE,
         )
         return 1
 
-    if box_is_active and not active_leader and not active_follower:
+    if role.box_is_active and not role.active_leader and not role.active_follower:
         prior_crossover_enabled = _systemctl_unit_state(
             "is-enabled",
             CROSSOVER_UNIT,
@@ -1876,18 +1946,14 @@ def main(argv: list[str] | None = None) -> int:
     # active-leader mode, or the fail-closed block reason if the bond was refused
     # and this reconcile fell back to solo active.
     status_block_reason = endpoint_block_reason
-    if transitioning_from_parked_role and not status_block_reason:
+    if role.transitioning_from_parked_role and not status_block_reason:
         status_block_reason = "role_transition_in_progress"
     role_status_ok = _write_follower_status(
-        active_follower=active_follower,
-        active_leader=active_speaker_leader,
+        active_follower=role.active_follower,
+        active_leader=role.active_speaker_leader,
         blocked_reason=status_block_reason,
         requested_cfg=requested_cfg,
-        local_sources_allowed=(
-            not config.local_sources_parked(cfg)
-            and not refused_follower_fallback
-            and not transitioning_from_parked_role
-        ),
+        local_sources_allowed=role.local_sources_allowed,
         path=FOLLOWER_STATUS_FILE,
     )
     if not role_status_ok:
@@ -1900,7 +1966,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # 1. Derived files — before any unit work.
-    derived = _assemble_args(cfg, active_endpoint=active_endpoint)
+    derived = _assemble_args(role.cfg, active_endpoint=role.active_endpoint)
     wrote = _write_args_file(derived)
     set_keys = [k for k, v in derived.items() if v]
     log_event(
@@ -1914,10 +1980,10 @@ def main(argv: list[str] | None = None) -> int:
     # Paths passed explicitly (module globals read at CALL time); a def-time
     # default would pin the production path.
     outputd_env = outputd_grouping_env(
-        cfg,
-        active_endpoint=active_endpoint,
-        flat_output_allowed=flat_output_allowed,
-        outputd_period_frames=outputd_period_frames,
+        role.cfg,
+        active_endpoint=role.active_endpoint,
+        flat_output_allowed=role.flat_output_allowed,
+        outputd_period_frames=role.outputd_period_frames,
     )
     env_changed, env_ok = _write_derived_env(
         outputd_env,
@@ -1945,9 +2011,9 @@ def main(argv: list[str] | None = None) -> int:
     #    restores its ACTIVE baseline, Layer A intact — NEVER a passive graph,
     #    which would be full-range to a tweeter.
     solo_restore_ok = True
-    if active_leader or active_follower:
+    if role.active_leader or role.active_follower:
         pass
-    elif box_is_active and prior_crossover_owned:
+    elif role.box_is_active and prior_crossover_owned:
         # Unbond of an ACTIVE LEADER: camilla#2 (the crossover unit) is enabled
         # or active only after an active leader armed it. The pre-mutation gate
         # above has already disabled it and positively proved it inactive, so
@@ -1973,7 +2039,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             solo_restore_ok = False
             rc = 1
-    elif box_is_active:
+    elif role.box_is_active:
         try:
             from .follower_config import restore_active_follower_solo_sync
 
@@ -2025,7 +2091,7 @@ def main(argv: list[str] | None = None) -> int:
     # outputd to the active-content lane before camilla#2 is armed. Restarting
     # here would read the grouping TTS env but still use the solo baseline,
     # re-opening the passive lane camilla#2 needs.
-    defer_outputd_restart = active_speaker_leader
+    defer_outputd_restart = role.active_speaker_leader
     outputd_restart_ok = True
     if env_changed and env_ok and not defer_outputd_restart:
         outputd_restart_ok = _restart_outputd()
@@ -2038,7 +2104,7 @@ def main(argv: list[str] | None = None) -> int:
     # goes to jasper-aec-reconcile, NOT jasper-voice directly: that script is the
     # single owner of the voice/bridge units and decides restart-vs-park from
     # this flag plus its own provider + mic gates.
-    voice_env = voice_grouping_env(cfg, active_endpoint=active_endpoint)
+    voice_env = voice_grouping_env(role.cfg, active_endpoint=role.active_endpoint)
     voice_changed, voice_ok = _write_derived_env(
         voice_env,
         path=VOICE_GROUPING_ENV_FILE,
@@ -2072,7 +2138,7 @@ def main(argv: list[str] | None = None) -> int:
     # restart-on-change. The re-derivation itself happens in shairport's
     # ExecStartPre (jasper-apply-airplay-mode reads this file), so the restart in
     # step 4b is what applies it.
-    airplay_env = airplay_grouping_env(cfg)
+    airplay_env = airplay_grouping_env(role.cfg)
     airplay_changed, airplay_ok = _write_derived_env(
         airplay_env,
         path=AIRPLAY_GROUPING_ENV_FILE,
@@ -2092,8 +2158,8 @@ def main(argv: list[str] | None = None) -> int:
     # 4. The unit plan (stops before starts). Probed before it runs — see
     # _plan_changes_units — so the post-role source barrier below knows
     # whether this pass actually moved a unit.
-    units_changed = _plan_changes_units(decision.intents)
-    apply_rc = _apply(decision)
+    units_changed = _plan_changes_units(role.plan.intents)
+    apply_rc = _apply(role.plan)
     rc = max(rc, apply_rc)
 
     # 4b. Re-derive shairport's backend latency offset on a bond/unbond that
@@ -2101,7 +2167,7 @@ def main(argv: list[str] | None = None) -> int:
     # grouping-airplay.env. Skip a bonded FOLLOWER — the plan PARKED its
     # shairport and restarting would un-park it; a follower receives no AirPlay
     # anyway. One restart, only on a real offset change.
-    is_bonded_follower = config.local_sources_parked(cfg)
+    is_bonded_follower = config.local_sources_parked(role.cfg)
     airplay_refresh_ok = True
     if airplay_changed and airplay_ok and not is_bonded_follower:
         # AirPlay may be household-Off. A plain restart ignores unit enablement
@@ -2113,11 +2179,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Bonded apply LAST (snapserver is up → the pipe has its reader; snapclient
     #    is up → the grouping ring has its writer).
-    if passive_leader:
+    if role.passive_leader:
         try:
             from .leader_config import apply_bonded_leader_config_sync
 
-            applied = apply_bonded_leader_config_sync(cfg)
+            applied = apply_bonded_leader_config_sync(role.cfg)
             log_event(
                 logger,
                 "multiroom.reconcile.camilla",
@@ -2133,7 +2199,7 @@ def main(argv: list[str] | None = None) -> int:
                 level=logging.ERROR,
             )
             rc = 1
-    elif active_speaker_leader:
+    elif role.active_speaker_leader:
         # WIRE-UP GUARD — the single top-of-path precondition. The two-instance
         # setup is viable ONLY if the wire is up: camilla#1's bake writes a
         # File/FIFO sink that needs snapserver as its reader, and ONLY a
@@ -2301,10 +2367,7 @@ def main(argv: list[str] | None = None) -> int:
                             active_leader=False,
                             blocked_reason=endpoint_block_reason,
                             requested_cfg=requested_cfg,
-                            local_sources_allowed=(
-                                not config.local_sources_parked(cfg)
-                                and not transitioning_from_parked_role
-                            ),
+                            local_sources_allowed=role.local_sources_allowed,
                             path=FOLLOWER_STATUS_FILE,
                         )
                         rc = 1
@@ -2319,7 +2382,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 rc = 1
 
-    if active_leader and not active_leader_arm_blocked:
+    if role.active_leader and not active_leader_arm_blocked:
         # 6. The stream-binding pin (ANY leader hosts the stream; runs after the
         # camilla apply so snapserver has had its longest warm-up): re-bind every
         # PERSISTED snapcast group to our stream, because a stale server.json
@@ -2347,7 +2410,7 @@ def main(argv: list[str] | None = None) -> int:
     #     (stream / silence / garbage) can produce a full-range driver feed. A
     #     swap failure here keeps CamillaDSP on its prior safe solo-active graph;
     #     the next reconcile retries.
-    if active_follower:
+    if role.active_follower:
         try:
             from .follower_config import apply_prebuilt_follower_config_sync
 
@@ -2374,7 +2437,9 @@ def main(argv: list[str] | None = None) -> int:
     # denies local sources, so a concurrent systemd start cannot enter while the
     # old follower graph is still live. Any failed restore/file/unit step leaves
     # the fail-safe deny in place for the next reconcile to repair.
-    source_grant_pending = refused_follower_fallback or transitioning_from_parked_role
+    source_grant_pending = (
+        role.refused_follower_fallback or role.transitioning_from_parked_role
+    )
     if source_grant_pending:
         transition_landed = all(
             (
@@ -2394,16 +2459,18 @@ def main(argv: list[str] | None = None) -> int:
         # follower->solo/leader transition has no such expected error: every
         # later role-specific step must also have succeeded before sources can be
         # granted.
-        if transitioning_from_parked_role and not refused_follower_fallback:
+        if role.transitioning_from_parked_role and not role.refused_follower_fallback:
             transition_landed = transition_landed and rc == 0
         if transition_landed:
             grant_published = _write_follower_status(
                 active_follower=False,
                 active_leader=(
-                    active_speaker_leader if transitioning_from_parked_role else False
+                    role.active_speaker_leader
+                    if role.transitioning_from_parked_role
+                    else False
                 ),
                 blocked_reason=(
-                    endpoint_block_reason if refused_follower_fallback else ""
+                    endpoint_block_reason if role.refused_follower_fallback else ""
                 ),
                 requested_cfg=requested_cfg,
                 local_sources_allowed=True,
@@ -2415,7 +2482,7 @@ def main(argv: list[str] | None = None) -> int:
                     logger,
                     (
                         "multiroom.reconcile.fallback_source_grant_failed"
-                        if refused_follower_fallback
+                        if role.refused_follower_fallback
                         else "multiroom.reconcile.role_transition_grant_failed"
                     ),
                     reason=endpoint_block_reason,
@@ -2427,7 +2494,7 @@ def main(argv: list[str] | None = None) -> int:
                 logger,
                 (
                     "multiroom.reconcile.fallback_sources_parked"
-                    if refused_follower_fallback
+                    if role.refused_follower_fallback
                     else "multiroom.reconcile.role_transition_sources_parked"
                 ),
                 reason=endpoint_block_reason,
@@ -2439,7 +2506,7 @@ def main(argv: list[str] | None = None) -> int:
     # permission fresh and performs follower park or solo/leader restore for all
     # sources, including USB's arm -> advertise -> start sequence.
     if not _converge_sources_after_role(
-        grouping_active=active,
+        grouping_active=role.active,
         units_changed=units_changed,
     ):
         rc = 1

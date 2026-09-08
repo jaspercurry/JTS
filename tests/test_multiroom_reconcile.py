@@ -35,6 +35,7 @@ from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
     DEFAULT_CODEC,
     GroupingConfig,
+    local_sources_parked,
 )
 from tests._bonded_member import bonded_grouping_env
 
@@ -49,14 +50,17 @@ from jasper.multiroom.dac_content_ring import (
 from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
+    LANE_REFUSED_ACTIVE_ENDPOINT,
     SNAPCLIENT_UNIT,
     SNAPFIFO,
     SNAPSERVER_UNIT,
     ReconcilePlan,
+    RoleDecision,
     UnitIntent,
     _assemble_args,
     _write_args_file,
     airplay_grouping_env,
+    decide_role,
     desired_snapfifo_path,
     main,
     plan,
@@ -663,6 +667,225 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
     assert not target.exists()
     # No leftover temp files in the dir.
     assert list(tmp_path.glob(".snapcast-args.*")) == []
+
+
+# ---------- decide_role: the pre-apply role/permission decision table ----------
+
+
+@pytest.mark.parametrize(
+    (
+        "cfg",
+        "active_box_state",
+        "flat_output_allowed",
+        "period",
+        "prior_status",
+        "expected",
+    ),
+    [
+        pytest.param(
+            _disabled(),
+            False,
+            True,
+            DAC_CONTENT_RING_PERIOD_FRAMES,
+            {},
+            {
+                "active": False,
+                "active_leader": False,
+                "passive_leader": False,
+                "active_speaker_leader": False,
+                "active_follower": False,
+                "active_endpoint": False,
+                "box_is_active": False,
+                "transitioning_from_parked_role": False,
+                "refused_follower_fallback": False,
+                "local_sources_allowed": True,
+                "lane_armed": False,
+                "lane_reason": "",
+            },
+            id="solo",
+        ),
+        pytest.param(
+            _leader(),
+            False,
+            True,
+            DAC_CONTENT_RING_PERIOD_FRAMES,
+            {},
+            {
+                "active": True,
+                "active_leader": True,
+                "passive_leader": True,
+                "active_speaker_leader": False,
+                "active_follower": False,
+                "active_endpoint": False,
+                "box_is_active": False,
+                "transitioning_from_parked_role": False,
+                "refused_follower_fallback": False,
+                "local_sources_allowed": True,
+                "lane_armed": True,
+                "lane_reason": "",
+            },
+            id="passive_leader",
+        ),
+        pytest.param(
+            _leader(),
+            True,
+            False,
+            DAC_CONTENT_RING_PERIOD_FRAMES,
+            {},
+            {
+                "active": True,
+                "active_leader": True,
+                "passive_leader": False,
+                "active_speaker_leader": True,
+                "active_follower": False,
+                "active_endpoint": True,
+                "box_is_active": True,
+                "transitioning_from_parked_role": False,
+                "refused_follower_fallback": False,
+                "local_sources_allowed": True,
+                "lane_armed": False,
+                "lane_reason": LANE_REFUSED_ACTIVE_ENDPOINT,
+            },
+            id="active_leader",
+        ),
+        pytest.param(
+            _follower(),
+            False,
+            True,
+            DAC_CONTENT_RING_PERIOD_FRAMES,
+            {},
+            {
+                "active": True,
+                "active_leader": False,
+                "passive_leader": False,
+                "active_speaker_leader": False,
+                "active_follower": False,
+                "active_endpoint": False,
+                "box_is_active": False,
+                "transitioning_from_parked_role": False,
+                "refused_follower_fallback": False,
+                "local_sources_allowed": False,
+                "lane_armed": True,
+                "lane_reason": "",
+            },
+            id="dumb_follower_box_not_active",
+        ),
+        pytest.param(
+            _follower(),
+            True,
+            False,
+            None,
+            {},
+            {
+                "active": True,
+                "active_leader": False,
+                "passive_leader": False,
+                "active_speaker_leader": False,
+                "active_follower": True,
+                "active_endpoint": True,
+                "box_is_active": True,
+                "transitioning_from_parked_role": False,
+                "refused_follower_fallback": False,
+                "local_sources_allowed": False,
+                "lane_armed": False,
+                "lane_reason": LANE_REFUSED_ACTIVE_ENDPOINT,
+            },
+            id="active_follower",
+        ),
+        pytest.param(
+            _leader(),
+            False,
+            True,
+            DAC_CONTENT_RING_PERIOD_FRAMES,
+            {"local_sources_allowed": False},
+            {
+                "active": True,
+                "active_leader": True,
+                "passive_leader": True,
+                "active_speaker_leader": False,
+                "active_follower": False,
+                "active_endpoint": False,
+                "box_is_active": False,
+                "transitioning_from_parked_role": True,
+                "refused_follower_fallback": False,
+                "local_sources_allowed": False,
+                "lane_armed": True,
+                "lane_reason": "",
+            },
+            id="transitioning_from_parked",
+        ),
+    ],
+)
+def test_decide_role_decision_table(
+    cfg,
+    active_box_state,
+    flat_output_allowed,
+    period,
+    prior_status,
+    expected,
+):
+    """One decision table for the pure pre-apply role derivation."""
+    d = decide_role(
+        cfg,
+        active_box_state=active_box_state,
+        flat_output_allowed=flat_output_allowed,
+        outputd_period_frames=period,
+        prior_status=prior_status,
+    )
+
+    assert isinstance(d, RoleDecision)
+    actual = {
+        "active": d.active,
+        "active_leader": d.active_leader,
+        "passive_leader": d.passive_leader,
+        "active_speaker_leader": d.active_speaker_leader,
+        "active_follower": d.active_follower,
+        "active_endpoint": d.active_endpoint,
+        "box_is_active": d.box_is_active,
+        "transitioning_from_parked_role": d.transitioning_from_parked_role,
+        "refused_follower_fallback": d.refused_follower_fallback,
+        "local_sources_allowed": d.local_sources_allowed,
+        "lane_armed": d.lane.armed,
+        "lane_reason": d.lane.reason,
+    }
+    assert actual == expected
+    assert d.cfg is cfg
+    assert d.requested_cfg is cfg
+    assert d.flat_output_allowed == flat_output_allowed
+    assert d.outputd_period_frames == period
+    assert d.plan == plan(cfg)
+
+
+
+def test_with_fallback_resets_roles_and_keeps_the_requested_facts():
+    """A fail-safe refusal clears every role flag, reads the park reason from
+    the untouched REQUESTED cfg (the disabled cfg would always look unparked),
+    and keeps the pre-mutation facts — on a second fallback too."""
+    requested = _follower()
+    d = decide_role(
+        requested,
+        active_box_state=True,
+        flat_output_allowed=False,
+        outputd_period_frames=None,
+        prior_status={},
+    )
+    fb = d.with_fallback()
+    assert fb.requested_cfg is requested
+    assert fb.cfg == dataclasses.replace(requested, enabled=False)
+    assert not any((
+        fb.active, fb.active_leader, fb.active_follower,
+        fb.active_speaker_leader, fb.passive_leader, fb.active_endpoint,
+    ))
+    assert fb.refused_follower_fallback is local_sources_parked(requested) is True
+    assert fb.transitioning_from_parked_role == d.transitioning_from_parked_role
+    assert fb.box_is_active == d.box_is_active
+    assert fb.flat_output_allowed == d.flat_output_allowed
+    assert fb.outputd_period_frames == d.outputd_period_frames
+    assert fb.lane == d.lane
+    assert fb.plan == plan(fb.cfg)
+    fb2 = fb.with_fallback()
+    assert fb2.requested_cfg is requested
+    assert fb2.refused_follower_fallback is True
 
 
 # ---------- main(): assembles + writes args BEFORE applying the plan ----------
@@ -3727,6 +3950,32 @@ def test_refused_follower_grant_write_failure_keeps_prior_deny(
     assert main([]) == 1
     final = json.loads((tmp_path / "grouping-follower-status.json").read_text())
     assert final["local_sources_allowed"] is False
+
+
+def test_refused_follower_with_unknown_crossover_state_keeps_sources_denied(
+    tmp_path,
+    monkeypatch,
+):
+    """A requested follower refused by the active-endpoint precheck falls back
+    to solo-active; if crossover ownership then cannot be proven, sources
+    stay denied rather than granted with no restore run."""
+    import json
+
+    requested = _follower(leader_addr="192.168.1.50")
+    _patch_main_io(monkeypatch, tmp_path, requested)
+    _refuse_follower_bond(monkeypatch)
+    monkeypatch.setattr(
+        reconcile_mod,
+        "_systemctl_unit_state",
+        lambda _query, _unit: None,
+    )
+
+    assert main([]) == 1
+
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert status["local_sources_allowed"] is False
+    assert status["blocked_reason"] == "crossover_ownership_state_unknown"
+    assert status["active_follower"] is False
 
 
 def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):
