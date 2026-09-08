@@ -36,8 +36,8 @@ import time
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.source_state import airplay_playing_observed
 
-from . import mpris
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -278,9 +278,9 @@ class ShairportSupervisor:
         return data.startswith(b"RTSP/1.0 200 ")
 
     async def is_session_active(self) -> bool:
-        """True when MPRIS reports Playing.
+        """True when a genuine AirPlay session is observed.
 
-        If the MPRIS probe is unknown, fail safe to "active" only
+        If the probe is unknown, fail safe to "active" only
         while systemd still reports shairport-sync live or unknown. A
         dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
@@ -290,7 +290,7 @@ class ShairportSupervisor:
         the counter can arm, so the unit_inactive bypass is reached
         only after the tick confirms the unit is not deliberately off.
         """
-        playing = await mpris.shairport_playing(timeout=2.0)
+        playing = await airplay_playing_observed()
         if playing is None:
             unit_active = await self.is_shairport_unit_active()
             if unit_active is False:

@@ -10,10 +10,10 @@ change immediately. We poll those daemons at 1 Hz so the coordinator's
 canonical `listening_level` reflects user-side movements without
 requiring the user to also tell Jarvis.
 
-AirPlay is intentionally different: its reading is diagnostics-only, never
-dispatched (see `_read_airplay_db`), and receiver→sender reflection stays
-impossible on AirPlay 2 (ADR-0176), so JTS keeps AirPlay speaker volume on
-CamillaDSP.
+AirPlay is intentionally different: its inbound path is shairport's own
+volume hook (deploy/bin/jasper-airplay-volume, ADR-0206), and receiver→sender
+reflection stays impossible on AirPlay 2 (ADR-0176), so JTS keeps AirPlay
+speaker volume on CamillaDSP.
 
 Why polling (not DBus PropertiesChanged subscriptions). The codebase
 already uses `busctl` subprocess for DBus one-shot calls (renderer.py,
@@ -48,12 +48,7 @@ from . import librespot_state
 from .bluealsa_probe import active_transport_path
 from .busctl import run_busctl
 from .log_event import log_event
-from .volume_coordinator import (
-    AIRPLAY_DB_MAX,
-    AIRPLAY_DB_MIN,
-    Source,
-    VolumeCoordinator,
-)
+from .volume_coordinator import Source, VolumeCoordinator
 
 logger = logging.getLogger(__name__)
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
@@ -87,7 +82,6 @@ class VolumeObserver:
         # value will sync the coordinator to the source's current
         # level (correct behavior for source-just-became-active).
         self._last_seen: dict[Source, Optional[float]] = {
-            Source.AIRPLAY: None,
             Source.SPOTIFY: None,
             Source.BLUETOOTH: None,
         }
@@ -96,7 +90,6 @@ class VolumeObserver:
         # alongside the native value so a new mute token is observed even
         # when the renderer number did not change.
         self._last_seen_revision: dict[Source, str | None] = {
-            Source.AIRPLAY: None,
             Source.SPOTIFY: None,
             Source.BLUETOOTH: None,
         }
@@ -176,14 +169,7 @@ class VolumeObserver:
 
         # Exactly one probe, the active source's: the other readings were
         # discarded and each but Spotify's forks a busctl/bluealsa-cli child.
-        if current_active == Source.AIRPLAY:
-            airplay_db = await self._read_airplay_db()
-            if airplay_db is not None:
-                self._last_seen[Source.AIRPLAY] = airplay_db
-                logger.debug(
-                    "airplay sender volume observed at %.1f dB", airplay_db,
-                )
-        elif current_active == Source.SPOTIFY:
+        if current_active == Source.SPOTIFY:
             spotify_pct = await self._read_spotify_percent()
             if spotify_pct is not None:
                 await self._maybe_observe(Source.SPOTIFY, float(spotify_pct))
@@ -236,39 +222,6 @@ class VolumeObserver:
     # not reachable" rather than raising, so a missing daemon doesn't
     # crash the observer.
     # ------------------------------------------------------------------
-
-    async def _read_airplay_db(self) -> Optional[float]:
-        """Read shairport-sync's current AirplayVolume (double dB).
-
-        Diagnostics only — this reading is logged, never dispatched. The
-        canonical inbound path is shairport's own volume hook
-        (deploy/bin/jasper-airplay-volume, ADR-0206), which is
-        event-driven rather than polled and owns the dB→percent map.
-        Returns None on any error; -144 (shairport's mute sentinel) is
-        clamped up to AIRPLAY_DB_MIN so the log line stays in-range.
-        """
-        out = await _busctl_get_property_value(
-            "org.gnome.ShairportSync",
-            "/org/gnome/ShairportSync",
-            "org.gnome.ShairportSync.RemoteControl",
-            "AirplayVolume",
-        )
-        if out is None:
-            return None
-        # busctl Get returns "v d <number>" — parse the trailing number.
-        m = re.search(r"-?\d+(?:\.\d+)?", out)
-        if not m:
-            return None
-        try:
-            db = float(m.group(0))
-        except ValueError:
-            return None
-        # Clamp -144 (mute sentinel) up to AIRPLAY_DB_MIN. Anything
-        # outside the documented range is suspicious and we'd rather
-        # ignore than feed garbage into the coordinator.
-        if db < -150 or db > AIRPLAY_DB_MAX + 1:
-            return None
-        return max(AIRPLAY_DB_MIN, min(AIRPLAY_DB_MAX, db))
 
     async def _read_spotify_percent(self) -> Optional[int]:
         """Read librespot's current volume from the state file written
