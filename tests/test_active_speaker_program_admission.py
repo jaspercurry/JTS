@@ -21,6 +21,7 @@ from jasper.active_speaker.program_admission import (
     ProgramAdmissionError,
     ProgramAdmissionRefusal,
     readmit_program_from_wav,
+    readmit_summed_program_from_wav,
 )
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -39,6 +40,7 @@ def _profile_and_targets(
     woofer_peak: float = 0.0,
     tweeter_peak: float = -65.0,
     max_sweep_duration_s: float = 6,
+    woofer_floor: float = 500,
 ):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
@@ -61,6 +63,8 @@ def _profile_and_targets(
         "drivers": [
             {
                 **common,
+                "hard_excitation_band_hz": [woofer_floor, 20_000],
+                "measurement_band_hz": [woofer_floor, 10_000],
                 "level_duration_limits": _limits(woofer_peak),
                 "target_id": "mono:woofer",
                 "role": "woofer",
@@ -602,3 +606,72 @@ def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_meas
     assert woofer.effective_peak_dbfs < facts["woofer"].cap_dbfs
     assert facts["woofer"].peak_within_cap
     assert prog.segment("sweep_w").n_samples / prog.sample_rate_hz > 4.0
+
+
+@pytest.mark.parametrize(
+    "change, refusal",
+    [
+        ("none", None),
+        ("too_loud", ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP),
+        ("too_long", ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS),
+        ("unprotected_low_band", ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS),
+        ("missing_target", ProgramAdmissionRefusal.TARGET_NOT_MAPPED),
+        ("missing_hp", ProgramAdmissionRefusal.GRAPH_NOT_PROVEN),
+        ("boost_without_headroom", ProgramAdmissionRefusal.GRAPH_NOT_PROVEN),
+        ("wav_length", ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH),
+        ("outside_schedule", ProgramAdmissionRefusal.OUT_OF_SEGMENT_ENERGY),
+    ],
+)
+def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, change, refusal):
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
+    from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
+
+    topology, profile, targets = _profile_and_targets(
+        woofer_floor=500 if change == "unprotected_low_band" else 100,
+        max_sweep_duration_s=4,
+    )
+    applied = _applied_profile(topology)
+    preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
+    graph_yaml = compile_tuning_graph(MeasurementGraphProfile(
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        applied_profile=applied,
+    ), scope="speaker_tune")
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
+        session_volume_db=-20.0, fc_hz=2000,
+        sweep_duration_limits_s={} if change == "too_long" else {"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    if change == "missing_hp":
+        graph_yaml = graph_yaml.replace(
+            "type: LinkwitzRileyHighpass\n      freq: 1600.0000",
+            "type: LinkwitzRileyHighpass\n      freq: 100.0000",
+        )
+    elif change == "boost_without_headroom":
+        graph_yaml = graph_yaml.replace("gain: 2.0000", "gain: 12.0000")
+    wav = tmp_path / "summed.wav"
+    write_program_wav(wav, program)
+    if change in ("too_loud", "wav_length", "outside_schedule"):
+        rate, pcm = wavfile.read(wav)
+        if change == "too_loud":
+            pcm = (pcm.astype(np.int32) * 2).astype(np.int16)
+        elif change == "wav_length":
+            pcm = pcm[:-1]
+        else:
+            pcm[-24000:] = 1000
+        wavfile.write(wav, rate, pcm)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph_yaml, topology=topology,
+        safety_profile=profile,
+        role_targets={"woofer": targets["woofer"]} if change == "missing_target" else targets,
+        session_volume_db=-20.0,
+    )
+    if refusal is None:
+        assert admission.allowed, admission.to_dict()
+        assert {segment.role for segment in admission.segments} == {"woofer", "tweeter"}
+        assert min(segment.band[0] for segment in admission.segments if segment.role == "tweeter") == 150
+        assert admission.channels[0].cap_dbfs == -65
+    else:
+        assert not admission.allowed
+        assert refusal in admission.refusals

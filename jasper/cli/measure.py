@@ -327,6 +327,7 @@ def spec_from_args(args: argparse.Namespace) -> Any:
             position_axis=args.axis,
             vertical_deg=args.vertical_deg,
             regime=args.regime,
+            graph_scope=args.graph_scope,
             polarity=args.polarity,
             inverted_role=args.inverted_role,
             level_ladder_dbfs=tuple(args.level_dbfs),
@@ -398,7 +399,7 @@ def specs_from_args(args: argparse.Namespace) -> tuple[Any, ...]:
 #: a whitespace-only candidate id cannot pass the variant rule.
 _STRING_FIELDS = (
     "kind", "position_axis", "regime", "polarity", "inverted_role",
-    "delayed_role", "candidate_id",
+    "delayed_role", "candidate_id", "graph_scope",
 )
 
 
@@ -459,6 +460,7 @@ def _specs_from_file(args: argparse.Namespace) -> tuple[Any, ...]:
         "position_axis": args.axis,
         "vertical_deg": args.vertical_deg,
         "regime": args.regime,
+        "graph_scope": args.graph_scope,
     }
     specs = []
     for index, entry in enumerate(document):
@@ -511,124 +513,67 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
 
 
 def _bind_compose(
-    *,
-    box: BoxDeclaration,
-    store: Any,
-    session_id: str,
-    cam_factory: Any,
-    config_dir: str,
+    *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
+    config_dir: str, graph: Any,
 ) -> Any:
-    """The host's ``compose``: one routed per-driver program per stimulus.
-
-    One program shape for all three kinds — ``contracts.MEASURE_KINDS`` says a
-    baseline, a candidate check and a re-measure differ by that word and by
-    nothing else. ``kind`` is what the banked record SAYS the take is, not a
-    second stimulus selector.
-
-    The level is the ladder's rung in dBFS folded into the per-role gain plan,
-    or the composer's reference base with no ladder. Both are clamped per role
-    by :func:`~jasper.active_speaker.crossover_v2.programs.back_off_gain`
-    against that driver's declared cap, and admission re-judges the rendered
-    bytes against the same caps at play time.
-    """
-    from jasper.active_speaker.crossover_v2.composition import (
-        bind_program_playback_seams,
-    )
-    from jasper.active_speaker.crossover_v2.program_transaction import (
-        ProgramForStimulus,
-    )
+    from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation
-    from jasper.audio_measurement.program import (
-        BASE_STIMULUS_PEAK_DBFS,
-        write_program_wav,
-    )
+    from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+    from jasper.active_speaker.program_playback import ProgramPlaybackError
+    from jasper.active_speaker.volume_latch import MeasurementFaderDrift, hold_fader_at
 
     excitation = SessionExcitation(
-        roles=box.roles_bands,
-        caps_dbfs=box.caps_dbfs,
-        session_volume_db=box.session_volume_db,
-        fc_hz=box.fc_hz,
+        roles=box.roles_bands, caps_dbfs=box.caps_dbfs,
+        session_volume_db=box.session_volume_db, fc_hz=box.fc_hz,
         sweep_duration_limits_s=box.sweep_duration_limits_s,
     )
-    bundle_dir = Path(store.bundle_dir)
-    minted: list[int] = []
 
-    async def _compose(
-        *,
-        spec: Any,
-        position_deg: int | None = None,
-        prompt: str = "",
-        level_db: float = 0.0,
-        stimulus_dbfs: float | None = None,
-    ) -> Any:
-        peak = (
-            BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else float(stimulus_dbfs)
-        )
-        program = excitation.measure_program(
-            {band.role: peak for band in box.roles_bands}
-        )
-        # One WAV per stimulus, never one per phase: a ladder plays a different
-        # program at every rung, and a shared name would let admission re-read
-        # bytes some other rung wrote.
-        ordinal = len(minted)
-        minted.append(ordinal)
-        wav_rel = f"crossover_v2/{session_id}/{program.phase}_program_{ordinal:02d}.wav"
-        wav_path = bundle_dir / wav_rel
+    def program_for_spec(spec: Any, stimulus_dbfs: float | None) -> Any:
+        peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
+        if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
+            return excitation.measure_program({role.role: peak for role in box.roles_bands})
+        return excitation.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
 
-        def _render() -> Any:
-            wav_path.parent.mkdir(parents=True, exist_ok=True)
-            write_program_wav(str(wav_path), program)
-            return store.identify_artifact(wav_rel)
+    async def before_play(program: Any, artifact: Any, phase: str) -> None:
+        cam = cam_factory()
+        try:
+            await hold_fader_at(
+                box.session_volume_db, lambda: cam.get_volume_db(best_effort=False),
+                context=f"cli_measure:{phase}",
+            )
+        except MeasurementFaderDrift as exc:
+            raise ProgramPlaybackError(str(exc)) from exc
 
-        artifact = await asyncio.to_thread(_render)
-        seams = bind_program_playback_seams(
-            cam_factory(),
-            bundle_dir=str(bundle_dir),
-            artifact=artifact,
-            config_dir=config_dir,
-            program=program,
-            wav_path=str(wav_path),
-            topology=box.topology,
-            safety_profile=box.safety_profile,
-            role_targets=box.role_targets,
-            session_volume_db=box.session_volume_db,
-            declared_sensitivities=box.declared_sensitivities,
-        )
-        return ProgramForStimulus(program=program, seams=seams)
-
-    return _compose
+    return bind_program_composer(
+        program_for_spec=program_for_spec, store=store,
+        capture_session_id=session_id, cam_factory=cam_factory,
+        config_dir=config_dir, topology=box.topology,
+        safety_profile=box.safety_profile, role_targets=box.role_targets,
+        session_volume_db=box.session_volume_db,
+        declared_sensitivities=box.declared_sensitivities,
+        before_play=before_play, graph_yaml=graph.installed_graph_yaml,
+    )
 
 
-@dataclass(frozen=True)
-class _CaptureAnnotatedStore:
-    """The banked store, plus what the microphone said about the take.
+def _wired_setup_reference() -> Mapping[str, Any] | None:
+    from jasper.active_speaker.crossover_v2.sweep_spec import DefaultSetupCalibration
+    from jasper.active_speaker.crossover_v2.wired_stimulus import setup_from_hint
+    from jasper.correction.household_mic import (
+        read_household_mic, resolve_household_mic_calibration,
+    )
 
-    ``TuningSession`` builds a record from what the ENGINE knows, and the engine
-    knows nothing about a microphone; the capture half mints a whole
-    ``CaptureAnswer`` and hands the transaction only the path. Without this seam
-    a CLI take banks poorer than a wizard one — no xrun counters, no mic
-    identity, no calibration reference. Draining is take-and-CLEAR by the
-    capture half's contract, and happens at banking because that is when the
-    two facts belong to the same take.
-    """
-
-    inner: Any
-    capture: Any
-
-    async def bank(self, record: Mapping[str, Any]) -> str:
-        answer = self.capture.take_answer()
-        if answer is None:
-            return await self.inner.bank(record)
-        # Prefixed, because a record is a different namespace from an answer;
-        # ``capture_integrity`` keeps the spelling existing readers know.
-        annotated = {
-            **record,
-            **({"capture_integrity": answer.capture_integrity}
-               if answer.capture_integrity else {}),
-            **({"capture_device": answer.device} if answer.device else {}),
-            **({"capture_setup": answer.setup} if answer.setup else {}),
-        }
-        return await self.inner.bank(annotated)
+    household = read_household_mic()
+    if household is None:
+        return None
+    calibration = resolve_household_mic_calibration(household)
+    if calibration is None:
+        return None
+    return setup_from_hint(DefaultSetupCalibration(
+        mode="upload" if household.provider == "manual_upload" else "serial",
+        model=household.model_key, calibration_id=calibration.calibration_id,
+        resolvable=True,
+    ))
 
 
 async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any]:
@@ -644,6 +589,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     stripping retention protection off a wizard session's evidence — doing that
     before the interlock would hit a LIVE session and then be refused.
     """
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
     from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
@@ -657,7 +603,9 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.wired_capture import resolve_wired_mic
     from jasper.camilla import primary_controller
-    from jasper.web.correction_crossover_v2_wired import WiredStimulusCapture
+    from jasper.active_speaker.crossover_v2.wired_stimulus import (
+        CapturedRecordStore, WiredStimulusCapture,
+    )
 
     # Resolved ONCE for the batch and asked for by ANY spec in it: the trims
     # are a property of the speaker, not of a take. Refused before the door
@@ -693,6 +641,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                 role_channels={"woofer": 0, "tweeter": 1},
                 playback_device=box.playback_device,
                 protection_sections_by_role=box.protection_sections_by_role,
+                applied_profile=load_applied_baseline_profile_state(),
             ),
             measurement_volume_db=box.session_volume_db,
             camilla_factory=cam_factory,
@@ -713,10 +662,11 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             )
             capture = WiredStimulusCapture(
                 device=device, bundle_dir=Path(store.bundle_dir),
+                setup_reference=_wired_setup_reference,
             )
             seams = bind_engine_seams(
                 session_graph=door.graph,
-                records=_CaptureAnnotatedStore(
+                records=CapturedRecordStore(
                     inner=BankedRecordStore(
                         evidence=store,
                         capture_session_id=session_id,
@@ -731,6 +681,7 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
                     session_id=session_id,
                     cam_factory=cam_factory,
                     config_dir=config_dir,
+                    graph=door.graph,
                 ),
                 capture_stimulus=capture,
             )
@@ -963,6 +914,8 @@ def build_parser() -> argparse.ArgumentParser:
         REGIME_REFERENCE_AXIS,
     )
 
+    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
+
     parser = argparse.ArgumentParser(
         prog="jasper-measure",
         description="Measure this speaker once, bank the takes, print their ids",
@@ -993,6 +946,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--kind", choices=MEASURE_KINDS, required=True)
+    parser.add_argument("--graph-scope", choices=GRAPH_SCOPES, default=GRAPH_SCOPE_DRIVERS)
     parser.add_argument(
         # ``append`` rather than a plain value so a SECOND one is visible here
         # and can be refused by name; taking the last one silently would let an

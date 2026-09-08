@@ -12,7 +12,10 @@ them. The schema itself is pinned in ``tests/test_attribution_findings.py``.
 
 from __future__ import annotations
 
+from tests.engine_twin import retained_take_writer
+
 import asyncio
+import hashlib
 import dataclasses
 import json
 import math
@@ -1187,11 +1190,9 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
     state alone is replayable", and the accepted-attempt mapping alongside it.
     ``refs`` is what the durable v2 state persists as its evidence block."""
 
-    from jasper.web import correction_crossover_v2 as v2host
-
     store, bundle_dir = _open_store(tmp_path)
     refs: dict = {}
-    bank = v2host.bind_position_retention(store, CAPTURE, refs, asyncio.run)
+    bank = retained_take_writer(store, CAPTURE, refs, asyncio.run)
 
     class _Result:
         wav = b"take-bytes"
@@ -1216,7 +1217,7 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
     entry = refs["position_artifacts"][0]
     assert entry["take_id"] == "cloud_measure_03_a02"
     assert entry["attempt"] == 2
-    assert entry["wav_sha256"] == "c" * 64
+    assert entry["wav_sha256"] == hashlib.sha256(b"take-bytes").hexdigest()
     assert entry["wav_path"]
     # The path is bundle-relative and really points at the retained bytes.
     assert (bundle_dir / entry["wav_path"]).read_bytes() == b"take-bytes"
@@ -1245,10 +1246,8 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     keep the old label.
     """
 
-    from jasper.web import correction_crossover_v2 as v2host
-
     store, bundle_dir = _open_store(tmp_path)
-    bank = v2host.bind_position_retention(store, CAPTURE, {}, asyncio.run)
+    bank = retained_take_writer(store, CAPTURE, {}, asyncio.run)
 
     class _Result:
         wav = b"take-bytes"

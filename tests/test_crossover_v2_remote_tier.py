@@ -22,7 +22,6 @@ separate concerns:
 from __future__ import annotations
 
 import dataclasses
-import inspect
 import io
 import json
 import logging
@@ -75,7 +74,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.web._common import CSRF_COOKIE_NAME
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-from jasper.web.correction_crossover_v2 import (
+from jasper.active_speaker.crossover_v2.position_gate import (
     POSITION_HOLD_CODE,
     POSITION_HOLD_EXPIRED_CODE,
     POSITION_READY_ENDPOINT,
@@ -447,13 +446,13 @@ def test_the_gate_defers_until_the_driver_releases_and_then_admits():
     assert pending["role"] == POSITION_ROLE_ONAX
     assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
     assert pending["action"]["body"] == {
-        "index": 3, "degrees": -7, "vertical_deg": 0,
+        "index": 3, "attempt": 3, "degrees": -7, "vertical_deg": 0,
     }
     # The phone re-posts the SAME begin throughout a hold; each one defers again
     # without spending anything.
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(3, 3, entry)
-    gate.release(3)
+    gate.release(3, 3)
     assert gate.pending() is None
     gate.gate(3, 3, entry)  # admitted — no raise
     # A released capture stays released across the re-posts still in flight.
@@ -468,7 +467,7 @@ def test_the_gate_holds_each_attempt_separately():
     entry = _entry(22, POSITION_ROLE_OFFAX)
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(5, 5, entry)
-    gate.release(5)
+    gate.release(5, 5)
     gate.gate(5, 5, entry)
     # Same index, next attempt: a fresh hold.
     with pytest.raises(CaptureBeginDeferred):
@@ -481,13 +480,13 @@ def test_a_stale_release_cannot_open_the_next_position():
     gate = PositionGate()
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(3, 3, _entry(-7))
-    gate.release(3)
+    gate.release(3, 3)
     gate.gate(3, 3, _entry(-7))
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(4, 4, _entry(7))
     # The retry still names position 3, which is no longer what is pending.
     with pytest.raises(ValueError, match="measurement 4 is waiting, not 3"):
-        gate.release(3)
+        gate.release(3, 3)
     # …and 4 is still held, so nothing was quietly admitted.
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(4, 4, _entry(7))
@@ -498,7 +497,7 @@ def test_releasing_nothing_is_refused_rather_than_remembered():
     future one — that would admit the next capture without a report."""
     gate = PositionGate()
     with pytest.raises(ValueError, match="no measurement is waiting"):
-        gate.release(1)
+        gate.release(1, 1)
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(1, 1, _entry(0))
 
@@ -565,7 +564,7 @@ def test_the_modal_ceiling_death_announces_no_hold_it_is_about_to_refuse(caplog)
     ``session_ceiling_expired``, rather than a ``position_pending`` announcing
     a hold that is refused in the same breath and never waited a second.
     """
-    logger_name = "jasper.web.correction_crossover_v2"
+    logger_name = "jasper.active_speaker.crossover_v2.position_gate"
     # POSITIVE CONTROL FIRST. ``position_pending`` is an INFO line, so a
     # WARNING-level capture would swallow it and the absence assertion below
     # would pass against ANY implementation — instrument silence read as
@@ -622,7 +621,7 @@ def test_the_ceiling_latch_leaves_an_already_released_begin_alone():
     entry = _entry(0)
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(3, 3, entry)
-    gate.release(3)
+    gate.release(3, 3)
     gate.note_session_ceiling_expired()
     gate.gate(3, 3, entry)  # admitted — no raise
 
@@ -1194,7 +1193,7 @@ def test_the_gate_can_read_a_hand_released_plans_own_entries():
     assert pending["degrees"] == 0
     assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
     # ...and the same release verb admits it, with the same minted payload.
-    gate.release(1)
+    gate.release(1, 1)
     gate.gate(1, 1, plan.entry_for_index(1))
 
 
@@ -1274,20 +1273,6 @@ def test_only_a_hand_walked_shape_is_told_a_person_releases_its_begins():
     assert _hand_released_plan_shape(remote) == remote
     # The tier-less recovery re-arm: one sweep at the mark, nowhere to walk to.
     assert _hand_released_plan_shape(None) is None
-
-
-def test_the_preparer_builds_the_gate_from_the_shapes_own_answer():
-    """One question, one predicate, one construction site — the drift this pins
-    is a stage gaining the second gated shape while another silently keeps
-    running a hand-walked wired round with no hold at all. The two stages used
-    to build the gate at two sites; they now share one, so the count is what
-    says a second one has not grown back."""
-    from jasper.web import correction_crossover_v2 as v2host
-
-    source = inspect.getsource(v2host)
-    assert source.count("PositionGate()") == 1
-    assert source.count("if plan_shape is not None and plan_shape.positions_gated") == 1
-    assert "PositionGate() if plan_shape.externally_positioned" not in source
 
 
 def test_a_hand_walked_wired_round_opens_with_a_gate_and_a_retake(
@@ -1529,7 +1514,7 @@ def test_a_live_hold_reaches_the_envelope_on_the_capture_block():
         assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
         # Another flow's reader must never see this session's hold.
         assert correction_capture._get_capture_slot_for("sync:") is None
-        gate.release(2)
+        gate.release(2, 2)
         assert "position_pending" not in correction_capture._get_capture_slot_for("crossover_v2:")
 
 
@@ -1551,7 +1536,7 @@ def test_a_finished_session_stops_advertising_its_hold():
         assert "position_pending" not in capture
         # …and a late driver POST cannot reach a gate nobody is holding.
         with pytest.raises(ValueError, match="no remote measurement is waiting"):
-            correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 1}'))
+            correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 1, "attempt": 1}'))
 
 
 def test_the_ceiling_detector_reaches_the_live_gate_and_only_when_it_fires():
@@ -1606,8 +1591,7 @@ def test_an_abandoned_hold_stops_being_the_advertised_position():
         gate.gate(1, 3, _entry(0))
     pending = gate.pending()
     assert (pending["index"], pending["attempt"], pending["degrees"]) == (1, 3, 0)
-    # A release already given stays given — abandoning a hold is not a rewind.
-    gate.release(1)
+    gate.release(1, 3)
     gate.gate(1, 3, _entry(0))
 
 
@@ -1616,7 +1600,7 @@ def test_the_release_route_admits_the_pending_capture():
     with _live_remote_slot(gate):
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
-        body = correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 4}'))
+        body = correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 4, "attempt": 4}'))
         assert body["ok"] is True
         assert body["released"]["degrees"] == 7
         gate.gate(4, 4, _entry(7))  # admitted — no raise
@@ -1709,13 +1693,13 @@ def test_the_release_route_answers_409_on_a_stale_index():
             gate.gate(4, 4, _entry(7))
         with _serving() as post:
             status, payload = post(
-                "/crossover/v2/position-ready", b'{"index": 9}',
+                "/crossover/v2/position-ready", b'{"index": 9, "attempt": 4}',
             )
             assert status == 409, payload
             assert b"waiting" in payload
             # The good release still answers 200 on the same server.
             ok_status, ok_payload = post(
-                "/crossover/v2/position-ready", b'{"index": 4}',
+                "/crossover/v2/position-ready", b'{"index": 4, "attempt": 4}',
             )
         assert ok_status == 200, ok_payload
         assert json.loads(ok_payload)["ok"] is True
@@ -1730,7 +1714,7 @@ def test_the_release_route_demands_an_index_it_can_check():
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
         with pytest.raises(ValueError, match="measurement 4 is waiting, not 9"):
-            correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 9}'))
+            correction_handlers._handle_crossover_v2_position_ready(_json_handler('{"index": 9, "attempt": 4}'))
         with pytest.raises(CaptureBeginDeferred):
             gate.gate(4, 4, _entry(7))
 

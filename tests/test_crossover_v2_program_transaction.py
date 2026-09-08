@@ -572,3 +572,98 @@ async def test_an_async_compose_is_awaited_rather_than_passed_through():
     assert outcome.stage_reached == STAGE_RESTORE
     assert outcome.played is True
     assert seams.played == 1, "the awaited program never reached the speaker"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope, phase", [
+    ("drivers", "measure"), ("base", "entry_baseline"),
+    ("speaker_tune", "cloud_verify"), ("candidate", "lateral"),
+])
+async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock(tmp_path, monkeypatch, scope, phase):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from jasper.active_speaker import program_admission, program_playback
+    from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+    from jasper.audio_measurement.program import build_verify_program
+    from tests.test_active_speaker_program_admission import _measure_program
+    import jasper.dsp_apply as dsp_apply
+
+    graph = "devices:\n  samplerate: 48000\nfilters: {}\npipeline: []\n"
+    live = SimpleNamespace(text=graph, locked=False)
+    events = []
+    paths = []
+
+    class Cam:
+        async def normalize_config_raw(self, text, **kwargs):
+            assert live.locked
+            events.append("prove")
+            return text
+
+        async def get_active_config_raw(self, **kwargs):
+            return live.text
+
+    class Store:
+        bundle_dir = tmp_path
+
+        def identify_artifact(self, relative):
+            paths.append(relative)
+            return SimpleNamespace(path=relative)
+
+    @asynccontextmanager
+    async def lock(*args, **kwargs):
+        live.locked = True
+        events.append("lock")
+        try:
+            yield
+        finally:
+            live.locked = False
+
+    async def before_play(program, artifact, actual_phase):
+        assert actual_phase == phase
+        assert live.locked
+        events.append("before_play")
+
+    async def play(*args, **kwargs):
+        assert live.locked
+        events.append("play")
+        return SimpleNamespace(returncode=0)
+
+    def readmit(*args, **kwargs):
+        assert "graph_yaml" not in kwargs
+        assert scope == "drivers"
+        return SimpleNamespace(allowed=True)
+
+    def readmit_summed(*args, **kwargs):
+        assert kwargs["graph_yaml"] == graph
+        assert scope != "drivers"
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lock)
+    monkeypatch.setattr(program_playback, "verified_program_aplay", play)
+    monkeypatch.setattr(program_admission, "readmit_program_from_wav", readmit)
+    monkeypatch.setattr(program_admission, "readmit_summed_program_from_wav", readmit_summed)
+    compose = bind_program_composer(
+        program_for_spec=lambda spec, level: (
+            _measure_program(-20) if scope == "drivers"
+            else build_verify_program(2000, sweep_s=0.2)
+        ),
+        store=Store(), capture_session_id="same-pose", cam_factory=Cam,
+        config_dir=str(tmp_path), topology=None, safety_profile={}, role_targets={},
+        session_volume_db=-20, before_play=before_play, graph_yaml=lambda: graph,
+    )
+    spec = MeasureSpec(
+        kind="baseline", graph_scope=scope, program_phase=phase,
+        candidate_id="banked" if scope == "candidate" else "",
+    )
+    first = await compose(spec=spec)
+    second = await compose(spec=spec)
+    assert paths == [f"crossover_v2/same-pose/{phase}_{ordinal:02d}_program.wav" for ordinal in range(2)]
+    assert len(list((tmp_path / "crossover_v2/same-pose").glob("*_program.wav"))) == 2
+    assert all((tmp_path / relative).is_file() for relative in paths)
+    await program_playback.play_program(first.program, session_volume_plan=_Plan(), **first.seams)
+    assert events == ["lock", "prove", "before_play", "play"]
+    live.text = "devices:\n  samplerate: 44100\nfilters: {}\npipeline: []\n"
+    with pytest.raises(ProgramPlaybackError):
+        await program_playback.play_program(second.program, session_volume_plan=_Plan(), **second.seams)
+    assert events.count("play") == 1

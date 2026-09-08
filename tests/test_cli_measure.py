@@ -308,6 +308,8 @@ CAPTURE_SETUP = {"calibration": {"mode": "stored", "calibration_id": "cal-1"}}
 
 class _Answer:
     wav = b""
+    wav_path = CAPTURE_RELPATH
+    wav_sha256 = "test-capture-digest"
     capture_integrity = CAPTURE_INTEGRITY
     device = CAPTURE_DEVICE
     setup = CAPTURE_SETUP
@@ -345,7 +347,7 @@ def speaker(tmp_path, monkeypatch):
     from jasper.active_speaker.crossover_v2 import program_transaction
     from jasper import measurement_window as coordinator
     from jasper.volume_owner import VolumeOwner, install_volume_owner
-    from jasper.web import correction_crossover_v2_wired as wired
+    from jasper.active_speaker.crossover_v2 import wired_stimulus as wired
 
     class _NoWindow:
         async def __aenter__(self) -> Any:
@@ -973,3 +975,36 @@ def test_an_evidence_store_failure_aborts_as_the_same_partial_result(
     assert len(detail["record_ids"]) == 1
     # Still given back: a partial result is not a stranded speaker.
     assert speaker["cam"].volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+@pytest.mark.parametrize("scope", ["drivers", "base", "speaker_tune", "candidate"])
+def test_flags_and_batch_defaults_select_the_same_graph_scope(tmp_path, scope):
+    args = ["--graph-scope", scope]
+    if scope == "candidate":
+        args += ["--candidate-id", "banked-candidate"]
+    spec = spec_from_args(_args(*args))
+    assert spec.graph_scope == scope
+    batch = tmp_path / "specs.json"
+    batch.write_text(json.dumps([{"candidate_id": spec.candidate_id}]))
+    batch_args = _args("--graph-scope", scope, "--specs", str(batch))
+    assert specs_from_args(batch_args)[0].graph_scope == scope
+
+
+@pytest.mark.parametrize("state", ["available", "missing_record", "missing_calibration"])
+def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, state):
+    from types import SimpleNamespace
+    from jasper.correction import household_mic
+
+    household = SimpleNamespace(model_key="umik-2", provider="manual_upload")
+    monkeypatch.setattr(household_mic, "read_household_mic", lambda: None if state == "missing_record" else household)
+    monkeypatch.setattr(
+        household_mic, "resolve_household_mic_calibration",
+        lambda record: None if state == "missing_calibration" else SimpleNamespace(calibration_id="stored-calibration"),
+    )
+    setup = measure._wired_setup_reference()
+    if state == "available":
+        assert setup == {"calibration": {
+            "mode": "stored", "calibration_id": "stored-calibration", "model": "umik-2",
+        }}
+    else:
+        assert setup is None

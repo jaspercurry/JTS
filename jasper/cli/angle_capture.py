@@ -60,7 +60,6 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest,
     AngleStop,
     announced_indexes,
-    candidate_measure_axes,
     request_for_program,
     resolve_request,
     walk_price,
@@ -126,7 +125,7 @@ PROGRAM_SIZES = tuple(sorted({
 #: writes the walk for the next session and `serve` drives the arm through it;
 #: `plan` and `withdraw` do neither.
 AUTHORITY_TIER = (
-    "mutating (`stage` writes, `serve` moves the arm; `plan`/`withdraw` do not)"
+    "mutating (`stage`/`withdraw` write; `serve` moves the arm; `plan`/`show` are reads)"
 )
 
 
@@ -224,22 +223,15 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
-    """The banked candidates this walk cycles, judged before it is staged.
-
-    Each fingerprint goes through the bank's own door, so one that names
-    nothing refuses in the bank's vocabulary rather than a second one; what a
-    candidate may VARY is the seam's
-    (:func:`~jasper.active_speaker.angle_capture.candidate_measure_axes`),
-    asked here so a walk no session could play is refused at staging instead of
-    at the open.
-    """
+    """Resolve banked artifacts; an empty candidate id selects the base graph."""
     fingerprints = tuple(
-        field.strip()
+        "" if field.strip() == "base" else field.strip()
         for field in (args.candidates or "").split(",")
         if field.strip()
     )
     for fingerprint in fingerprints:
-        candidate_measure_axes(find_banked_candidate(fingerprint).candidate)
+        if fingerprint:
+            find_banked_candidate(fingerprint)
     return fingerprints
 
 
@@ -254,7 +246,7 @@ def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
     """
     parser: argparse.ArgumentParser = args.parser
     if args.regime is not None:
-        parser.error("--regime goes with --angles; programs play per_driver at every pose")
+        parser.error("--regime goes with --angles; --candidates selects summed program captures")
     if args.program == "spot":
         if args.azimuth is None:
             parser.error("--program spot needs --azimuth (and --elevation for a raised pose)")
@@ -743,12 +735,11 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--candidates",
         help=(
-            "--program only: comma-separated banked candidate fingerprints to "
-            "cycle at every pose, adjacent so the microphone moves once per "
-            "pose. Each is played as the ALIGNMENT it was minted with; a "
-            "candidate carrying linearization EQ, or minted against another "
-            "crossover corner, is refused. Omit to measure the speaker as it "
-            "stands"
+            "--program only: comma-separated base and banked fingerprints, "
+            "e.g. base,fpA,fpB. Take a summed capture of each at every pose "
+            "before moving. Candidates play their full filters, trims and "
+            "alignment; base selects the base graph. Room correction and "
+            "household preference EQ are excluded. Omit for per-driver captures"
         ),
     )
     parser.add_argument(
@@ -759,7 +750,7 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "--angles only: what to play at each angle -- per_driver (the "
             "forward model's input, the default), summed (the system "
             "response), or both (paired, so the microphone moves once per "
-            "angle). A program plays per_driver at every pose"
+            "angle). Programs use per_driver unless --candidates selects summed captures"
         ),
     )
     parser.add_argument(

@@ -23,7 +23,6 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import math
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -36,17 +35,19 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
     PHASE_MEASURE,
 )
-from jasper.active_speaker.crossover_v2.contracts import (
-    POLARITY_INVERTED,
-    POLARITY_NORMAL,
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    POSITION_BATCH_CONFIG_KEY,
+    POSITION_BATCH_SIZE_KEY,
+    POSITION_BATCH_START_KEY,
 )
-from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
+from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
+from jasper.cli import angle_capture as cli
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 _FC_HZ = 2000.0
@@ -557,12 +558,7 @@ def test_a_composed_walk_is_the_stops_in_order_as_poses() -> None:
 
 
 def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
-    """A session lateral group plays MEASURE's per-driver object at every pose.
-
-    Taking a summed stop would therefore bank a per-driver capture under a
-    request for the system response — a silent narrowing, which is the one
-    outcome worse than a refusal.
-    """
+    """Sessions without summed support refuse summed and mixed requests."""
     for request in (
         ac.summed_at([0]),
         ac.both_at([7]),  # mixed: one per-driver stop is not enough
@@ -1006,30 +1002,26 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _fake_preset(*, upper: str = "tweeter") -> object:
-    """A preset shaped only as ``preset_crossover_geometry`` reads one."""
-    return SimpleNamespace(crossover_regions=(SimpleNamespace(
-        fc_hz=2000.0,
-        target_type="LinkwitzRiley",
-        order=4,
-        lower_driver="woofer",
-        upper_driver=upper,
-    ),))
+@pytest.mark.parametrize("raw,cycle", [
+    (None, ()),
+    ("base", ("",)),
+    (" base, fp-a,fp-b ", ("", "fp-a", "fp-b")),
+    ("fp-a,fp-b", ("fp-a", "fp-b")),
+])
+def test_cli_resolves_only_banked_members_and_preserves_summed_base(monkeypatch, raw, cycle):
+    resolved = []
+    monkeypatch.setattr(cli, "find_banked_candidate", lambda fingerprint: resolved.append(fingerprint))
+    argv = ["plan", "--program", "tournament", "--size", "full"]
+    if raw is not None:
+        argv += ["--candidates", raw]
+    request = cli._build_request(cli.build_parser().parse_args(argv))
+    program = mp.program("tournament", "full")
 
-
-def _fake_candidate(
-    *, linearization: dict | None = None, preset: object | None = None,
-    polarity: str | None = None, delay_role: str | None = None,
-    delay_us: float | None = None,
-) -> object:
-    return SimpleNamespace(
-        fingerprint="fp-a",
-        linearization=linearization or {},
-        source_preset=_fake_preset() if preset is None else preset,
-        alignment=SimpleNamespace(
-            polarity=polarity, delay_role=delay_role, delay_us=delay_us,
-        ),
-    )
+    assert resolved == [fingerprint for fingerprint in cycle if fingerprint]
+    assert [stop.candidate_id for stop in request.stops] == list(cycle or ("",)) * program.capture_count
+    assert {stop.regime for stop in request.stops} == {
+        ac.REGIME_SUMMED if cycle else ac.REGIME_PER_DRIVER,
+    }
 
 
 @pytest.mark.parametrize(
@@ -1068,80 +1060,88 @@ def test_candidates_expand_pose_major_candidate_minor(
     ]
     assert len(runs) == len(program.poses)
     assert len(set(runs)) == program.mic_move_count
-
-
-def test_a_candidate_implies_the_alignment_axes_a_measure_pose_can_play() -> None:
-    """The MEASURE graph carries alignment and nothing else, so that is all a
-    banked candidate may change about a stop -- and the flipped branch is the
-    region's upper driver, the convention the candidate was minted under."""
-    axes = ac.candidate_measure_axes(
-        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=250.0)
-    )
-
-    assert axes == {
-        "polarity": POLARITY_INVERTED,
-        "inverted_role": "tweeter",
-        "delayed_role": "woofer",
-        "delay_us": 250.0,
+    assert {stop.regime for stop in request.stops} == {
+        ac.REGIME_SUMMED if candidates else ac.REGIME_PER_DRIVER,
     }
-    # A candidate minted with no alignment plays the ordinary graph.
-    assert ac.candidate_measure_axes(_fake_candidate())["polarity"] == (
-        POLARITY_NORMAL
+
+
+def _candidate_batch_plan():
+    request = ac.request_for_program(
+        mp.program("tournament", "full"), candidates=("", "fp-a", "fp-b"),
     )
+    prompts = ac.session_lateral_walk(
+        request, externally_positioned=False, base_entries=2,
+        plans_cloud_group=False, supported_summed_candidates=True,
+    )
+    return flow.build_v2_session_spec(
+        _ROLES_BANDS, _FC_HZ,
+        acknowledgement_binding="candidate-batch-test",
+        plan_shape=dataclasses.replace(flow.resolve_plan_shape("full"), hand_released_positions=True),
+        include_lateral=True, include_cloud_measure=False,
+        lateral_prompts=prompts,
+        lateral_candidate_ids=tuple(stop.candidate_id for stop in request.stops),
+    ).capture_plan
 
 
-def test_a_branch_no_measurement_graph_carries_refuses_by_name() -> None:
-    """The flipped branch is read off the candidate's own crossover, so a
-    region whose upper driver is not a branch the graph carries would reach
-    ``MeasureSpec`` as a pair it refuses."""
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.candidate_measure_axes(
-            _fake_candidate(polarity="invert", preset=_fake_preset(upper="horn"))
+@pytest.mark.parametrize("candidates", [("",), ("", "fp-a", "fp-b"), ("fp-a",)])
+def test_summed_candidate_walk_requires_the_supported_execution_path(candidates):
+    request = ac.request_for_program(mp.program("tournament", "express"), candidates=candidates)
+    with pytest.raises(ac.LateralWalkRefused) as exc:
+        ac.session_lateral_walk(
+            request, externally_positioned=False, base_entries=2, plans_cloud_group=False,
         )
-
-    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
-
-
-def test_a_polarity_only_candidate_states_no_half_delay() -> None:
-    """The candidate model allows ``(0.0, role)`` and ``MeasureSpec`` refuses
-    it, so an alignment that delays nothing must reach the spec naming nothing
-    -- otherwise a walk stages and then dies at the open with its document
-    already consumed."""
-    axes = ac.candidate_measure_axes(
-        _fake_candidate(polarity="invert", delay_role="woofer", delay_us=0.0)
-    )
-
-    assert (axes["delayed_role"], axes["delay_us"]) == ("", 0.0)
-    # The whole point: the spec these axes are for accepts them.
-    spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **axes)
-    assert (spec.polarity, spec.inverted_role) == (POLARITY_INVERTED, "tweeter")
+    assert exc.value.reason == ac.WALK_REGIME_UNSUPPORTED
+    assert len(ac.session_lateral_walk(
+        request, externally_positioned=False, base_entries=2, plans_cloud_group=False,
+        supported_summed_candidates=True,
+    )) == len(request.stops)
 
 
-@pytest.mark.parametrize(
-    ("candidate", "reason"),
-    [
-        (
-            _fake_candidate(linearization={"tweeter": {"filters": [{}]}}),
-            ac.WALK_CANDIDATE_NOT_MEASURABLE,
-        ),
-        (
-            _fake_candidate(delay_role="horn", delay_us=250.0),
-            ac.WALK_CANDIDATE_NOT_MEASURABLE,
-        ),
-        (
-            _fake_candidate(preset=SimpleNamespace(crossover_regions=())),
-            ac.WALK_CANDIDATE_NOT_MEASURABLE,
-        ),
-    ],
-    ids=["linearization", "unknown-delayed-branch", "unreadable"],
-)
-def test_a_candidate_this_graph_cannot_play_refuses_in_the_walk_vocabulary(
-    candidate: object, reason: str,
-) -> None:
-    """Both refusals are walk refusals, so an adopting session and the staging
-    door report them under one vocabulary."""
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.candidate_measure_axes(candidate)
+def test_three_configs_at_three_poses_use_three_placement_grants():
+    entries = [entry for entry in _candidate_batch_plan().entries if entry.kind_label == "lateral"]
+    gate = PositionGate()
+    grants = []
+    for offset, entry in enumerate(entries):
+        index = entry.index + 1
+        if offset % 3 == 0:
+            with pytest.raises(CaptureBeginDeferred):
+                gate.gate(index, index, entry)
+            pending = gate.pending()
+            grants.append((pending["degrees"], pending["vertical_deg"]))
+            gate.release(**{name: pending["action"]["body"][name] for name in ("index", "attempt")})
+        gate.gate(index, index, entry)
+        assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 3 + 1)
+        assert entry.screen[POSITION_BATCH_SIZE_KEY] == "3"
+        assert entry.screen[POSITION_BATCH_START_KEY] == str(index - offset % 3)
+        assert entry.screen["candidate_id"] == ("", "fp-a", "fp-b")[offset % 3]
+        if offset % 3:
+            assert entry.screen["auto_advance"] == flow.AUTO_ADVANCE_COUNTDOWN
+    assert len(grants) == len(set(grants)) == 3
 
-    assert excinfo.value.reason == reason
-    assert reason in ac.WALK_REFUSAL_REASONS
+
+def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
+    first, second, third = [
+        entry for entry in _candidate_batch_plan().entries if entry.kind_label == "lateral"
+    ][:3]
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(3, 3, first)
+    gate.release(3, 3)
+    gate.gate(3, 3, first)
+    gate.gate(4, 4, second)
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(4, 5, second)
+    assert gate.pending()["hand_released"] is True
+    for index, attempt in ((3, 3), (4, 4), (4, None)):
+        with pytest.raises(ValueError):
+            gate.release(index, attempt)
+    assert gate.pending()["attempt"] == 5
+    gate.release(4, 5)
+    gate.gate(4, 5, second)
+    gate.abandon_hold()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(4, 5, second)
+    gate.release(4, 5)
+    gate.abandon_hold()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(5, 6, third)

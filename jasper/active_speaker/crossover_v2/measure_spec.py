@@ -32,6 +32,7 @@ from .contracts import (
     REGIME_NEAR_FIELD,
     REGIME_REFERENCE_AXIS,
 )
+from .journey import CAPTURE_PHASES
 
 __all__ = [
     "DISTORTION_VS_LEVEL_NOT_IMPLEMENTED",
@@ -40,6 +41,8 @@ __all__ = [
     "VERTICAL_AXIS_NOT_IMPLEMENTED",
     "CapabilityStub",
     "MeasureSpec",
+    "GRAPH_SCOPES",
+    "GRAPH_SCOPE_DRIVERS",
     "inverted_roles_for",
     "level_trims_for",
     "measurement_delays_for",
@@ -117,6 +120,8 @@ _STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 #: Every code :func:`stubbed_capabilities` can return, so a caller can CHECK a
 #: code rather than trust it. Derived from the table above, never re-listed.
 STUB_CODES = frozenset(_STUBS)
+GRAPH_SCOPE_DRIVERS = "drivers"
+GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, "base", "speaker_tune", "candidate")
 
 
 @dataclass(frozen=True)
@@ -170,8 +175,21 @@ class MeasureSpec:
     #: measure through some other box's level match. False on every other
     #: capture, which is what keeps their graphs byte-identical.
     level_matched: bool = False
+    graph_scope: str = GRAPH_SCOPE_DRIVERS
+    program_phase: str = ""
 
     def __post_init__(self) -> None:
+        if self.graph_scope not in GRAPH_SCOPES:
+            raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
+        if self.graph_scope == "candidate" and not self.candidate_id.strip():
+            raise ValueError("candidate graph_scope requires candidate_id")
+        if self.graph_scope != GRAPH_SCOPE_DRIVERS and (
+            self.polarity != POLARITY_NORMAL or self.inverted_role
+            or self.delayed_role or self.delay_us or self.level_matched
+        ):
+            raise ValueError("graph overlays require drivers graph_scope")
+        if self.program_phase and self.program_phase not in CAPTURE_PHASES:
+            raise ValueError(f"program_phase must be one of {CAPTURE_PHASES}")
         if self.kind not in MEASURE_KINDS:
             raise ValueError(
                 f"a measure kind must be one of {MEASURE_KINDS}, got {self.kind!r}"

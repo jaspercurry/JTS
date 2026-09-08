@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
 )
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2_flow import (
     POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
@@ -506,13 +507,47 @@ def test_a_pose_replays_the_anchors_own_program_object():
     fakes = FakeSeams()
     c = _lateral_conductor(fakes)
     _walk(c, through=FIRST_LATERAL_INDEX)
-    played = dict(fakes.played)
-    assert played[PHASE_LATERAL] is played[PHASE_MEASURE]
+    assert c.program_for_phase(PHASE_LATERAL) is c.program_for_phase(PHASE_MEASURE)
     # …and therefore is NOT the summed sweep every cloud position plays.
     assert PHASE_LATERAL not in flow.SUMMED_SWEEP_PHASES
 
 
 # --- retained evidence --------------------------------------------------------
+
+
+@pytest.mark.parametrize("has_sum", [True, False])
+@pytest.mark.parametrize("candidate_id", ["", "candidate-a"])
+def test_summed_pose_retains_only_its_measured_sum(has_sum, candidate_id):
+    from jasper.active_speaker.crossover_v2.spatial import TakeClaim
+    from tests.crossover_v2_fixtures import _verify_analysis
+
+    fakes = FakeSeams()
+    records = []
+    fakes.verify = lambda program: replace(
+        _verify_analysis(program),
+        **({} if has_sum else {"summed_response": None}),
+    )
+    c = _lateral_conductor(
+        fakes, lateral_claims=(TakeClaim(candidate_id=candidate_id),) * LATERAL_COUNT,
+        measure_specs_by_index={
+            index: MeasureSpec(
+                kind="candidate", graph_scope="candidate" if candidate_id else "base",
+                candidate_id=candidate_id,
+            )
+            for index in range(FIRST_LATERAL_INDEX, LAST_LATERAL_INDEX + 1)
+        },
+    )
+    c._seams = replace(c._seams, bank_take=bank_into(records, phase=PHASE_LATERAL))
+    verdict = _walk(c, through=FIRST_LATERAL_INDEX)[-1]
+    assert verdict["accepted"] is has_sum
+    assert c.program_for_phase(PHASE_LATERAL) is c.program_for_phase(flow.PHASE_CLOUD_MEASURE)
+    assert fakes.apply_done is False
+    if has_sum:
+        assert len(records) == 1
+        assert records[0]["candidate_id"] == candidate_id
+        assert [curve["role"] for curve in records[0]["curves"]] == ["summed"]
+    else:
+        assert records == []
 
 
 def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity():

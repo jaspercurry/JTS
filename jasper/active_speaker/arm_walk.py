@@ -290,7 +290,7 @@ class Session(Protocol):
 
     def poll(self) -> Poll: ...
 
-    def release(self, index: int) -> tuple[int, str]:
+    def release(self, index: int, attempt: int) -> tuple[int, str]:
         """POST position-ready. Returns ``(http_status, body)``."""
 
     def complete(self) -> tuple[int, str]:
@@ -415,8 +415,8 @@ class LoopbackSession(WizardClient):
             return poll_from_status(None)
         return poll_from_status(payload if isinstance(payload, Mapping) else None)
 
-    def release(self, index: int) -> tuple[int, str]:
-        return self.post(POSITION_READY_PATH, {"index": int(index)})
+    def release(self, index: int, attempt: int) -> tuple[int, str]:
+        return self.post(POSITION_READY_PATH, {"index": int(index), "attempt": int(attempt)})
 
     def complete(self) -> tuple[int, str]:
         return self.post(COMPLETE_PATH, {})
@@ -733,7 +733,7 @@ class ArmWalk:
                              index=pending.index, settled_s=round(settled, 1),
                              floor_s=SETTLE_FLOOR_S)
             return EXIT_SETTLE_FLOOR
-        status, body = self._session.release(pending.index)
+        status, body = self._session.release(pending.index, pending.attempt)
         if status != 200:
             # A release is a REQUEST the session may refuse (409/403/400/0);
             # none of those began a capture, so counting it as served would

@@ -125,6 +125,10 @@ class FakeGraph:
     measurement_delays: list = field(default_factory=list)
     #: One entry per install: the level match that stimulus asked for.
     level_trims: list = field(default_factory=list)
+    scopes: list = field(default_factory=list)
+
+    def select_scope(self, scope: str, candidate_id: str = "") -> None:
+        self.scopes.append((scope, candidate_id))
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
@@ -390,3 +394,23 @@ async def open_session(
         yield session, fakes
     finally:
         await session.close()
+
+
+def retained_take_writer(store, capture_session_id, refs, run_async, *, retention=None, **kwargs):
+    from jasper.web.correction_crossover_v2 import bind_position_retention, _record_store
+    from jasper.active_speaker.crossover_v2.wired_stimulus import (
+        CapturedRecordStore, WiredCaptureAnswer, place_wired_answer,
+    )
+    from pathlib import Path
+
+    retention = retention or bind_position_retention(store, refs, **kwargs)
+    records = CapturedRecordStore(_record_store(store, capture_session_id), None,
+                                  enrich=retention.enrich, after_bank=retention.after_bank)
+    def bank(result, metadata):
+        retention(result, metadata)
+        answer = place_wired_answer(
+            Path(store.bundle_dir), WiredCaptureAnswer(wav=result.wav),
+            phase=metadata.get("phase", ""), group=metadata.get("take_id", ""),
+        ) if isinstance(getattr(result, "wav", None), bytes) else None
+        return run_async(records.bank_answer(metadata, answer))
+    return bank

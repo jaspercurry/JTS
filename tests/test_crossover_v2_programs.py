@@ -467,3 +467,15 @@ def test_the_flow_re_exports_resolve_to_the_one_definition():
     assert flow.GAIN_CAP_BACKOFF_DB == programs.GAIN_CAP_BACKOFF_DB
     assert flow.PILOT_LEVEL_DELTA_DB == programs.PILOT_LEVEL_DELTA_DB
     assert flow.courtesy_prelude_for_phase is programs.courtesy_prelude_for_phase
+
+
+@pytest.mark.parametrize("limit", [1.0, 2.0, 4.0])
+def test_summed_sweep_fits_the_tightest_role_duration(limit):
+    excitation = _excitation(
+        {"woofer": 0.0, "tweeter": -65.0},
+        sweep_duration_limits_s={"woofer": 4.0, "tweeter": limit},
+    )
+    for program in (excitation.verify_program(), excitation.cloud_program()):
+        sweeps = [segment for segment in program.stimulus_segments() if segment.kind == "summed_sweep"]
+        assert len(sweeps) == 1
+        assert 0.9 * limit < sweeps[0].n_samples / program.sample_rate_hz <= limit

@@ -33,6 +33,7 @@ the re-homed zero-run disclosure.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import io
 import logging
 import threading
@@ -66,6 +67,7 @@ from jasper.audio_measurement.wired_capture import (
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
+from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 
 from tests.test_wired_capture import UMIK2_USB_ID, _make_card
 from tests.wired_capture_fixtures import FakePcm
@@ -77,7 +79,7 @@ RATE = 48_000
 def _fast_paced(monkeypatch):
     """Test pacing: the production post-roll (1.0 s) and retry settle (3.0 s)
     are budget allowances for a real room, not something a fake PCM needs."""
-    monkeypatch.setattr(v2wired, "WIRED_POST_ROLL_S", 0.01)
+    monkeypatch.setattr(core_capture, "WIRED_POST_ROLL_S", 0.01)
     monkeypatch.setattr(v2wired, "WIRED_RETRY_SETTLE_S", 0.01)
 
 
@@ -262,17 +264,15 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
         return "wired-run"
 
     monkeypatch.setattr(v2wired, "build_v2_wired_run_and_consume", _wired_builder)
-    device = _device()
     complete = threading.Event()
     retake = threading.Event()
 
     assert v2host._build_wired_run(
         "conductor",
         volume="vol", stop_event=threading.Event(), stop_lock=threading.Lock(),
-        position_gate=None, evidence_refs={}, wired_device=device,
+        position_gate=None, evidence_refs={},
         ceiling_s=42.0, complete_event=complete, retake_event=retake,
     ) == "wired-run"
-    assert built["device"] is device
     assert built["ceiling_s"] == 42.0
     assert built["complete_event"] is complete
     assert built["retake_event"] is retake
@@ -321,7 +321,7 @@ class FakeConductor:
         if self._authorize is not None:
             self._authorize(index, attempt, entry)
 
-    def on_armed(self, state=None):
+    def play_stimulus(self):
         self.events.append(("on_armed",))
         if self._on_armed is not None:
             self._on_armed()
@@ -417,10 +417,40 @@ def _build(conductor, volume, *, plan=None, monkeypatch=None, persists=None,
         )
     kwargs.setdefault("stop_event", threading.Event())
     kwargs.setdefault("stop_lock", threading.Lock())
-    kwargs.setdefault("device", _device())
+    device = kwargs.pop("device", _device())
     kwargs.setdefault("ceiling_s", 30.0)
     kwargs.setdefault("complete_event", threading.Event())
-    kwargs.setdefault("recorder_factory", _recorder_factory())
+    recorder_factory = kwargs.pop("recorder_factory", _recorder_factory())
+    supplied_capture = kwargs.pop("capture_stimulus", None)
+    stimulus = kwargs.pop("play_stimulus", conductor.play_stimulus if isinstance(conductor, FakeConductor) else lambda: None)
+    from tempfile import TemporaryDirectory
+    bundle = TemporaryDirectory()
+    Path(bundle.name, "info.json").write_text('{"bundle_schema_version":1}')
+
+    def capture(index, attempt, entry):
+        if supplied_capture is not None:
+            answer = supplied_capture(index, attempt, entry)
+        else:
+            half = core_capture.WiredStimulusCapture(
+                device=device, bundle_dir=Path(bundle.name),
+                recorder_factory=lambda rate, budget: recorder_factory(budget),
+                setup_reference=lambda: core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2()),
+            )
+            program = SimpleNamespace(
+                phase=getattr(entry, "kind_label", "verify"), sample_rate_hz=RATE,
+                total_samples=int(getattr(entry, "duration_ms", 200) * RATE / 1000),
+            )
+            async def play():
+                stimulus()
+            asyncio.run(half.around(play, program=program))
+            answer = half.take_answer()
+        if answer is None:
+            raise CaptureFailed("no take")
+        if isinstance(answer, Mapping) and "accepted" in answer:
+            return answer
+        return conductor.consume_capture(index, attempt, answer)
+
+    kwargs["capture_stimulus"] = capture
     kwargs.setdefault("poll_interval_s", 0.01)
     return v2wired.build_v2_wired_run_and_consume(
         conductor, volume=volume.hooks(), **kwargs
@@ -430,6 +460,23 @@ def _build(conductor, volume, *, plan=None, monkeypatch=None, persists=None,
 def _run(runner, plan=None):
     session = _wired_session(plan if plan is not None else _plan())
     return asyncio.run(runner(session))
+
+
+def test_restore_failure_is_terminal_after_a_completed_capture(monkeypatch):
+    terminal = []
+    class FailingVolume(VolumeRecorder):
+        def hooks(self):
+            hooks = super().hooks()
+            async def close():
+                await hooks.close()
+                raise RuntimeError("restore failed")
+            return v2host.V2VolumeHooks(open=hooks.open, close=close, abandon=hooks.abandon)
+    volume = FailingVolume()
+    runner = _build(FakeConductor(), volume, monkeypatch=monkeypatch, terminal=terminal, persists=[])
+    with pytest.raises(RuntimeError):
+        _run(runner)
+    assert volume.events == ["open", "close"]
+    assert terminal == [REASON_INTERNAL_ERROR]
 
 
 def test_happy_walk_drives_the_conversation_in_order(monkeypatch):
@@ -1121,7 +1168,7 @@ def test_the_real_gate_publishes_the_retakes_own_target(monkeypatch):
                     stop.wait(0.02)
                     continue
                 abandoned_hold_had_to_be_released.append(key)
-            gate.release(pending["index"])
+            gate.release(pending["index"], pending["attempt"])
             stop.wait(0.01)
 
     stop = threading.Event()
@@ -1284,7 +1331,6 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=V2FlowSeams(
-            play=lambda phase, program: played.append(phase),
             analyze=v2host.bind_production_analyze(
                 resolve_calibration=_resolver, meta={},
             ),
@@ -1301,17 +1347,7 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
         post_apply_verifies=None,
     )
     volume = VolumeRecorder()
-    runner = v2wired.build_v2_wired_run_and_consume(
-        conductor,
-        volume=volume.hooks(),
-        stop_event=threading.Event(),
-        stop_lock=threading.Lock(),
-        device=session.device,
-        ceiling_s=30.0,
-        complete_event=threading.Event(),
-        recorder_factory=_recorder_factory(),
-        poll_interval_s=0.01,
-    )
+    runner = _build(conductor, volume, device=session.device, play_stimulus=lambda: played.append("verify"))
     asyncio.run(runner(session))
 
     # The program actually played while the recorder rolled.
@@ -1345,7 +1381,7 @@ def test_wired_setup_reference_is_the_stored_household_shape(monkeypatch):
     monkeypatch.setattr(
         v2host, "default_setup_calibration_for_v2", lambda: hint,
     )
-    setup = v2wired._wired_setup_reference(v2host)
+    setup = core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2())
     assert setup == {
         "calibration": {
             "mode": "stored",
@@ -1360,11 +1396,11 @@ def test_wired_setup_reference_is_none_when_unresolvable(monkeypatch):
         v2host, "default_setup_calibration_for_v2",
         lambda: SimpleNamespace(resolvable=False, calibration_id="x", model="m"),
     )
-    assert v2wired._wired_setup_reference(v2host) is None
+    assert core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2()) is None
     monkeypatch.setattr(
         v2host, "default_setup_calibration_for_v2", lambda: None,
     )
-    assert v2wired._wired_setup_reference(v2host) is None
+    assert core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2()) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1539,6 +1575,8 @@ def _capture_half(tmp_path, *, factory=None):
             pcm_factory=lambda: FakePcm([(64, [(1000, 0)] * 64)]),
         )
 
+    if tmp_path.is_dir() and not (tmp_path / "info.json").exists():
+        (tmp_path / "info.json").write_text('{"bundle_schema_version":1}')
     return v2wired.WiredStimulusCapture(
         device=_device(),
         bundle_dir=tmp_path,
@@ -1679,12 +1717,6 @@ def test_the_capture_half_records_into_this_sessions_bundle():
 # layer 6: the ENGINE MEASURE LEG
 # --------------------------------------------------------------------------- #
 #
-# The wired walk's MEASURE capture runs through `TuningSession.measure()`: the
-# engine plays the stimulus through the real play transaction, the shared
-# capture half records across it and banks the path, and the walk's verdict
-# grades the very take the engine banked. Every other index keeps the walk's
-# own recorder + `on_armed` path, and every engine failure surfaces as the
-# exception type the runner's arms already classify.
 
 
 class _LegSession:
@@ -1693,13 +1725,19 @@ class _LegSession:
     measurement_level_db = -22.0
 
     def __init__(self, outcome=None):
+        self.restores = 0
+        self.records = None
         self.specs: list = []
         self._outcome = outcome
+
+    async def restore_graph(self):
+        self.restores += 1
 
     async def measure(self, spec):
         self.specs.append(spec)
         if self._outcome is not None:
             return self._outcome
+        await self.records.bank({})
         return SimpleNamespace(stimuli=(SimpleNamespace(
             record_id="rec-1", banked=True, incident="", level_db=-22.0,
         ),))
@@ -1744,46 +1782,42 @@ class _FakeAbortTarget:
 
 
 def _leg(tuning=None, half=None, phase_map=None):
-    def _run_async(coro):
-        return asyncio.run(coro)
-
+    tuning = tuning or _LegSession()
+    half = half or _LegCaptureHalf()
+    class Records:
+        enrich = after_bank = None
+        async def bank(self, record):
+            await asyncio.to_thread(self.enrich, half.take_answer(), record)
+    records = Records()
+    tuning.records = records
+    retention = SimpleNamespace(pending={}, enrich=lambda *args: {}, after_bank=lambda *args: None)
+    from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt
+    conductor = SimpleNamespace(
+        consume_capture=lambda index, attempt, answer: {"accepted": True, "answer": answer},
+        note_take_banked=lambda record: None,
+        _prompt_shown_for=lambda phase, index: CloudPositionPrompt("keep still"),
+    )
     return v2host._bind_engine_measure_leg(
-        tuning=tuning if tuning is not None else _LegSession(),
-        stimulus_capture=half if half is not None else _LegCaptureHalf(),
-        index_phase_map=phase_map if phase_map is not None else {
-            1: "check", 2: "measure", 3: "cloud_measure",
-        },
-        run_async=_run_async,
+        tuning=tuning, stimulus_capture=half, records=records,
+        conductor=conductor, retention=retention,
+        index_phase_map=phase_map or {1: "check", 2: "measure", 3: "cloud_measure"},
+        run_async=asyncio.run,
     )
 
 
-def test_the_engine_leg_claims_exactly_the_measure_indices(_held_window):
-    """CHECK and the prompted walks stay on the flow callbacks; MEASURE is
-    the one phase the engine can drive end-to-end today (kind exists, program
-    routed and re-admittable, graph discipline matches install-at-open)."""
+@pytest.mark.parametrize("phase,scope,kind", [
+    ("check", "drivers", "candidate"), ("measure", "drivers", "candidate"),
+    ("lateral", "drivers", "candidate"), ("cloud_measure", "base", "candidate"),
+    ("entry_baseline", "base", "candidate"), ("verify", "speaker_tune", "verify"),
+    ("cloud_verify", "speaker_tune", "verify"),
+])
+def test_every_phase_selects_its_program_and_graph(_held_window, phase, scope, kind):
     tuning = _LegSession()
-    leg = _leg(tuning=tuning)
-
-    assert leg(1, 1, entry=None) is None
-    assert leg(3, 1, entry=None) is None
-    assert tuning.specs == [], "an unclaimed index must not reach the engine"
-
-    answer = leg(2, 1, entry=None)
-
-    assert answer == "the-engine-take"
-    assert [spec.kind for spec in tuning.specs] == ["candidate"]
+    leg = _leg(tuning=tuning, phase_map={1: phase})
+    assert leg(1, 1, entry=None)["answer"] == "the-engine-take"
+    assert [(spec.program_phase, spec.graph_scope, spec.kind) for spec in tuning.specs] == [(phase, scope, kind)]
 
 
-def test_a_stage_with_no_measure_index_binds_no_leg():
-    """A verify-only stage's map has no MEASURE, so there is no closure at
-    all — the walk's signature stays None and its behavior is untouched."""
-    from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
-
-    assert _leg(phase_map={1: PHASE_VERIFY}) is None
-    assert v2host._bind_engine_measure_leg(
-        tuning=_LegSession(), stimulus_capture=None,
-        index_phase_map={2: "measure"}, run_async=lambda c: c,
-    ) is None
 
 
 def test_the_walk_consumes_the_engine_take_for_the_claimed_index(monkeypatch):
@@ -1799,7 +1833,7 @@ def test_the_walk_consumes_the_engine_take_for_the_claimed_index(monkeypatch):
         return _recorder_factory()(max_capture_s)
 
     def _engine_leg(index, attempt, entry):
-        return "the-engine-take" if index == 2 else None
+        return "the-engine-take" if index == 2 else v2wired.WiredCaptureAnswer(wav=b"first")
 
     runner = _build(
         conductor, volume, monkeypatch=monkeypatch, persists=persists,
@@ -1810,11 +1844,11 @@ def test_the_walk_consumes_the_engine_take_for_the_claimed_index(monkeypatch):
 
     kinds = [event[0] for event in conductor.events]
     assert kinds == [
-        "authorize", "on_armed", "consume", "authorize", "consume",
+        "authorize", "consume", "authorize", "consume",
     ], "the engine leg replaces on_armed for its index and nothing else"
     assert conductor.answers[1] == "the-engine-take"
     assert isinstance(conductor.answers[0], v2wired.WiredCaptureAnswer)
-    assert len(recorded) == 1, "the walk's recorder must not roll for the engine take"
+    assert recorded == []
 
 
 def test_an_engine_leg_failure_lands_in_the_runners_existing_arms(monkeypatch):
@@ -1891,9 +1925,10 @@ def test_an_unproven_level_is_not_a_walk_event(_held_window):
     outcome = SimpleNamespace(stimuli=(SimpleNamespace(
         record_id="", banked=False, incident="unproven_level", level_db=None,
     ),))
-    leg = _leg(tuning=_LegSession(outcome=outcome))
-
-    assert leg(2, 1, entry=None) == "the-engine-take"
+    tuning = _LegSession(outcome=outcome)
+    leg = _leg(tuning=tuning)
+    assert leg(2, 1, entry=None)["answer"] == "the-engine-take"
+    assert tuning.restores == 1
 
 
 def test_a_multi_stimulus_outcome_is_refused_as_a_wiring_fault(_held_window):
@@ -1941,7 +1976,7 @@ def test_the_engine_play_registers_as_the_windows_abort_target(monkeypatch):
     monkeypatch.setattr(v2host, "_session_abort_target", target)
     leg = _leg()
 
-    assert leg(2, 1, entry=None) == "the-engine-take"
+    assert leg(2, 1, entry=None)["answer"] == "the-engine-take"
     assert len(target.registered) == 1, "the measure task must be registered"
     assert target.cleared == 1, "and cleared when the play ends"
 
@@ -1992,7 +2027,10 @@ def test_take_answer_is_take_and_clear(tmp_path):
     assert half.take_answer() is None, "the second ask must not re-serve the take"
 
 
-def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path):
+@pytest.mark.parametrize("accepted,write_fails,restore_fails", [
+    (True, False, False), (False, False, False), (True, True, False), (False, False, True),
+])
+def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path, accepted, write_fails, restore_fails):
     """The lane's landing pin, at test altitude: a REAL `TuningSession` over a
     REAL `ProgramPlaybackTransaction` with the REAL wired capture half (fake
     recorder, fake play seams) — driven exactly as the walk drives the leg.
@@ -2009,6 +2047,67 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path):
     )
     from tests.engine_twin import FakeSeams, tuning_session
     import dataclasses as _dc
+    import hashlib
+    import json
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+    from jasper.active_speaker.crossover_v2.session_graph import MeasurementSessionGraph, SessionGraphError
+    from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_2_way"), calibration_id="", sessions_dir=tmp_path,
+    )
+    bundle = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
+    refs = {}
+    retention = v2host.bind_position_retention(store, refs)
+    cited = []
+    consumed = []
+
+    entry_path = tmp_path / "normal.yml"
+    entry_path.write_text("normal: tested-candidate\n")
+    class Cam:
+        live = entry_path.read_text()
+        fail_restore = restore_fails
+        async def get_config_file_path(self, **kwargs):
+            return str(entry_path)
+        async def set_active_config_raw(self, yaml_text, **kwargs):
+            if self.fail_restore and yaml_text == "normal: tested-candidate\n":
+                return False
+            self.live = yaml_text
+            return True
+    cam = Cam()
+    async def confirm_live(device, yaml_text):
+        assert device.live == yaml_text
+
+    class Consumer:
+        def _prompt_shown_for(self, phase, index):
+            return CloudPositionPrompt(
+                "retry pose", offset_cm=57.735, lateral_sign=1,
+                vertical_offset_cm=26.795, vertical_sign=1,
+            )
+
+        def consume_capture(self, index, attempt, answer):
+            assert cam.live == "normal: tested-candidate\n"
+            entry_path.write_text("normal: restored-incumbent\n")
+            cam.live = entry_path.read_text()
+            consumed.append(answer)
+            if accepted:
+                assert retention(answer, {
+                    "take_id": "entry_baseline_01_a01", "phase": "entry_baseline",
+                    "index": index, "attempt": attempt,
+                    "graph_fingerprint": "analysis-context", "level_db": 900,
+                    "candidate_id": "analysis-context", "position_deg": 15,
+                }) == ""
+            return {"accepted": accepted}
+
+        def note_take_banked(self, record):
+            path = bundle / "evidence/v1/artifacts/crossover_v2/capture/positions" / f"{record['take_id']}.json"
+            assert path.exists()
+            cited.append(record["take_id"])
 
     class _PassingPlan:
         measurement_volume_db = -22.0
@@ -2040,7 +2139,7 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path):
                 "writer_lock": self._writer_lock,
             }
 
-    half = _capture_half(tmp_path)
+    half = _capture_half(bundle)
     program = _StimulusProgram()
 
     def _compose(**_kw):
@@ -2050,27 +2149,102 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path):
         compose=_compose, session_volume_plan=_PassingPlan(), capture=half,
     )
     fakes = FakeSeams()
-    fakes = _dc.replace(fakes, play=transaction)
+    inner = BankedRecordStore(store, "capture")
+    if write_fails:
+        class FailedStore:
+            async def bank(self, record):
+                raise OSError("record write failed")
+        inner = FailedStore()
+    records = core_capture.CapturedRecordStore(inner, half)
+    graph = MeasurementSessionGraph(
+        emit=lambda *args: "temporary: drivers\n",
+        emit_scoped=lambda scope, candidate_id: f"temporary: {scope}\ncandidate: {candidate_id}\n",
+        cam_factory=lambda: cam, writer_lock=_PlaySeams()._writer_lock, confirm_live=confirm_live,
+    )
+    fakes = _dc.replace(fakes, play=transaction, records=records, graph=graph)
     session, fakes = tuning_session(fakes)
     asyncio.run(session.open())
 
     leg = v2host._bind_engine_measure_leg(
         tuning=session,
         stimulus_capture=half,
-        index_phase_map={1: "check", 2: "measure"},
+        index_phase_map={1: "cloud_verify"},
+        specs_by_index={1: MeasureSpec(kind="candidate", graph_scope="candidate", candidate_id="candidate-fp")},
         run_async=asyncio.run,
+        records=records, conductor=Consumer(), retention=retention,
     )
-    answer = leg(2, 1, entry=None)
-
-    assert isinstance(answer, v2wired.WiredCaptureAnswer)
-    [record] = fakes.records.banked
-    assert record["kind"] == "candidate"
+    if restore_fails:
+        with pytest.raises(SessionGraphError):
+            leg(1, 1, entry=None)
+        assert graph.installed and not consumed and not cited
+        cam.fail_restore = False
+    elif write_fails:
+        with pytest.raises(OSError):
+            leg(1, 1, entry=None)
+        assert cited == [] and refs == {}
+    else:
+        assert leg(1, 1, entry=None) == {"accepted": accepted}
+    asyncio.run(session.close())
+    assert cam.live == entry_path.read_text()
+    assert cam.live == ("normal: tested-candidate\n" if restore_fails else "normal: restored-incumbent\n")
+    assert len(consumed) == (0 if restore_fails else 1)
+    assert len(list(bundle.rglob("*.wav"))) == 1
+    sidecars = list((bundle / "evidence/v1/artifacts/crossover_v2/capture/positions").glob("*.json"))
+    if write_fails:
+        assert sidecars == []
+        return
+    assert len(sidecars) == 1
+    record = json.loads(sidecars[0].read_text())
+    assert record["take_id"] == ("entry_baseline_01_a01" if accepted else "candidate_00_a00")
+    assert cited == ([] if restore_fails else [record["take_id"]])
+    assert (record["position_deg"], record["vertical_deg"], record["prompt"]) == (30, 15, "retry pose")
+    assert record["candidate_id"] == "candidate-fp"
+    assert record["graph_scope"] == "candidate"
+    assert record["measurement_status"] == "captured"
+    if restore_fails:
+        assert record["graph_restore_status"] == "failed"
+        assert "analysis_verdict" not in record
+    else:
+        assert record["analysis_verdict"] == {"accepted": accepted}
+    assert record["graph_fingerprint"] == hashlib.sha256(b"temporary: candidate\ncandidate: candidate-fp\n").hexdigest()[:16]
+    assert record["measure_kind"] == "candidate"
     assert record["level_db"] == session.measurement_level_db, (
         "the record carries the PROVEN level, not a declared one"
     )
-    banked_wav = tmp_path / record["wav_path"]
+    banked_wav = bundle / record["wav_path"]
     assert banked_wav.exists(), "the record points at bytes that exist"
-    assert banked_wav.read_bytes() == answer.wav, (
-        "the verdict grades the very take the engine banked"
+    if consumed:
+        assert banked_wav.read_bytes() == consumed[0].wav
+    manifest = json.loads((bundle / "artifact_manifest.json").read_text())
+    raw = next(row for row in manifest["artifacts"] if row["path"] == record["wav_path"])
+    assert raw["sha256"] == record["wav_sha256"] == hashlib.sha256(banked_wav.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_recorder_start_drains_and_aborts_before_return(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    events = []
+    class Recorder:
+        def start(self):
+            entered.set()
+            assert release.wait(1)
+            events.append("started")
+        def abort(self):
+            events.append("aborted")
+    half = core_capture.WiredStimulusCapture(
+        device=_device(), bundle_dir=tmp_path, recorder_factory=lambda *args: Recorder(),
     )
-    asyncio.run(session.close())
+    async def play():
+        events.append("played")
+    task = asyncio.create_task(half.around(play, program=_StimulusProgram()))
+    assert await asyncio.to_thread(entered.wait, 1)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 1)
+    assert events == ["started", "aborted"]
+    assert half.take_answer() is None

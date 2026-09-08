@@ -982,6 +982,8 @@ def build_verify_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     courtesy_prelude: bool = False,
+    roles: Sequence[RoleBand] = (),
+    sweep_duration_limits_s: Mapping[str, float] | None = None,
 ) -> ExcitationProgram:
     """Compose the VERIFY program (design §5.2): a mono full-band summed
     sweep played through the applied production graph. ``fc_hz`` widens the
@@ -989,8 +991,8 @@ def build_verify_program(
     ``fc_hz=None`` is the NO-CROSSOVER mode, requiring ``measurement_band_hz``.
     ``leading_pilot_gains_db`` and ``courtesy_prelude`` are opt-ins (module
     docstring); the pilot rides its own band to avoid the
-    crossover notch. VERIFY has no program-admission gate, so the prelude's
-    compose-time clamp is the only level guard for it.
+    crossover notch. Scoped measurement callers also re-admit the rendered WAV
+    against their selected protected graph before playback.
     """
     if fc_hz is None:
         if measurement_band_hz is None:
@@ -1010,6 +1012,12 @@ def build_verify_program(
     f2_hz = VERIFY_F_HI_HZ
     if not f1_hz < f2_hz:
         raise ValueError("verify sweep band collapsed")
+    if sweep_duration_limits_s:
+        if not roles:
+            raise ValueError("summed duration limits require the driven roles")
+        sweep_s = null_confirm_sweep_duration_s(
+            f1_hz, f2_hz, roles, sweep_duration_limits_s, nominal_s=sweep_s,
+        )
 
     segments: list[ProgramSegment] = []
     cursor = 0

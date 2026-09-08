@@ -500,23 +500,14 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
 def round_program_dir(
     session_dir: Path, round_dir: Path, phases: Iterable[str]
 ) -> Path:
-    """Where this round's ``<phase>_program.wav`` files live, for ``phases``.
-
-    Two shapes, chosen by structure alone, never a flag. ``round_dir``
-    (:func:`round_artifact_dir`'s return value) wins whenever it holds ANY of
-    ``phases``' program WAVs. Otherwise the sibling
-    ``<session_dir>/crossover_v2/<capture>/``, which is where the product's sole
-    producer (``_play`` in :mod:`jasper.web.correction_crossover_v2`) actually
-    writes them — ``evidence/v1/artifacts/`` carries no ``*_program.wav``.
-    Shared with :mod:`jasper.cli.round_views.classify_features` and
-    :func:`~.round_views._find_program_wav` so the location fact has one owner.
-    """
     phases = tuple(phases)
-    if any((round_dir / f"{phase}_program.wav").is_file() for phase in phases):
-        return round_dir
-    sibling = session_dir / "crossover_v2" / round_dir.name
-    if any((sibling / f"{phase}_program.wav").is_file() for phase in phases):
-        return sibling
+    for directory in (round_dir, session_dir / "crossover_v2" / round_dir.name):
+        if any(
+            (directory / f"{phase}_program.wav").is_file()
+            or any(directory.glob(f"{phase}_*_program.wav"))
+            for phase in phases
+        ):
+            return directory
     return round_dir
 
 

@@ -949,8 +949,7 @@ def _default_setup_calibration_for_spec() -> Any | None:
 
     Never binding. The measurement source reads the hint and mints the
     capture's own ``setup.calibration`` reference from it when it is marked
-    ``resolvable: true`` (``correction_crossover_v2_wired
-    ._wired_setup_reference``). Fail-soft: any resolution miss yields no hint
+    ``resolvable: true``. Any resolution miss yields no hint
     rather than blocking the capture.
 
     ``resolvable`` is a SECOND, freshly-taken resolver call — not inferred

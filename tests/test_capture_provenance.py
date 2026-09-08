@@ -17,6 +17,7 @@ is this file's pin: it reproduces exactly that pair.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -31,23 +32,16 @@ from jasper.active_speaker.capture_provenance import (
     observe_capture_provenance,
     record_capture_provenance,
 )
-# The phase these tests drive is the SESSION phase: it is the first argument of
-# ``bind_production_play``'s seam, which branches on
-# ``phase in SUMMED_SWEEP_PHASES`` — and it is also the phase that reaches
-# ``provenance.stimulus.phase``, because a composed program object serves
-# several phases and its own ``phase`` names only one of them. Until
-# master-plan ticket 2.9 gave the stimulus family its ``PROGRAM_`` prefix, this
-# file imported ``PHASE_CHECK`` from ``jasper.audio_measurement.program`` and
-# was right only by accident: the two families spelled the name identically and
-# valued it identically, so the wrong import produced the right string.
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
+    PHASE_CLOUD_VERIFY,
     PHASE_VERIFY,
 )
 from jasper.audio_measurement.program import (
     FrequencyBand,
     RoleBand,
     build_check_program,
+    build_verify_program,
 )
 from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
@@ -122,8 +116,12 @@ class _FakeCam:
         self.active_raw = active_raw
         self.reads: list[str] = []
         self.volume_writes: list[float] = []
+        self.locked = False
+        self.require_locked_reads = False
 
     async def get_volume_db(self, *, best_effort: bool = False) -> float | None:
+        if self.require_locked_reads:
+            assert self.locked
         self.reads.append("volume")
         if self._volume_reads:
             return self._volume_reads.pop(0)
@@ -139,13 +137,20 @@ class _FakeCam:
         return self.config_path
 
     async def get_active_config_raw(self, *, best_effort: bool = False) -> str | None:
+        if self.require_locked_reads:
+            assert self.locked
         self.reads.append("active_raw")
         return self.active_raw
+
+    async def normalize_config_raw(self, text: str, *, best_effort=False) -> str:
+        assert self.locked
+        return text
 
 
 class _FakePlan:
     def __init__(self, measurement_volume_db: float | None = -20.0) -> None:
         self.measurement_volume_db = measurement_volume_db
+        self.holds: list[str] = []
 
     def assert_ready(self, now: Any = None) -> None:
         return None
@@ -162,6 +167,7 @@ class _FakePlan:
         """
         from jasper.active_speaker.volume_latch import hold_fader_at
 
+        self.holds.append(context)
         if self.measurement_volume_db is None:
             return None
         return await hold_fader_at(
@@ -403,10 +409,15 @@ def test_resolving_the_cam_or_the_plan_happens_inside_the_belt(
 
 
 class _FakeWindow:
+    def __init__(self, cam):
+        self.cam = cam
+
     async def __aenter__(self) -> "_FakeWindow":
+        self.cam.locked = True
         return self
 
     async def __aexit__(self, *exc: Any) -> bool:
+        self.cam.locked = False
         return False
 
 
@@ -415,116 +426,113 @@ class _FakeEvidenceStore:
         self.bundle_dir = bundle_dir
 
     def identify_artifact(self, rel: str) -> Any:
-        return SimpleNamespace(fingerprint="fake", sha256="b" * 64)
+        return SimpleNamespace(
+            fingerprint="fake", sha256=hashlib.sha256((self.bundle_dir / rel).read_bytes()).hexdigest(),
+        )
 
 
 def _drive_one_capture(
-    monkeypatch,
-    tmp_path,
-    *,
-    phase: str,
-    cam: _FakeCam,
+    monkeypatch, tmp_path, *, phase: str, cam: _FakeCam,
+    graph_scope: str | None = None, plan: _FakePlan | None = None,
 ) -> dict[str, Any] | None:
-    """Play one phase then analyze one capture, returning what the carry holds.
-
-    Real ``play_program`` for the CHECK/MEASURE branch — the graph load, the
-    writer lock and the ``play_wav`` handoff run in their production order, so
-    WHEN the provenance is observed is genuinely under test. Only the transport
-    below ``bind_program_playback_seams`` is faked.
-
-    **Nothing here arms observation.** There is no marker, no environment
-    variable and no flag: this is a household-default session, and what it
-    returns is what the banking seam would drain (``bind_position_retention``
-    calls the same ``take()`` on the same recorder). A ``None`` return means
-    the play seam observed nothing at all.
-    """
-    from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker.crossover_v2 import composition as composition_mod
-    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
-    from jasper.active_speaker import program_playback as playback_mod
-    from jasper.audio_measurement import program as program_mod
+    """Run the shared session, composer and analyzer with hardware stand-ins."""
+    from jasper import dsp_apply
+    from jasper.active_speaker import program_admission, program_playback
+    from jasper.active_speaker.crossover_v2 import door
+    from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.active_speaker.crossover_v2.session import TuningSession
     from jasper.audio_measurement import program_analysis as pa_mod
-    from jasper import measurement_window as coordinator
+    from tests.engine_twin import FakeGraph, FakeRecords, FakeVolume
 
-    monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _FakeWindow())
-    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
-    monkeypatch.setattr(
-        camilla_yaml_mod, "emit_active_speaker_program_config",
-        lambda *a, **k: ROUTING_GRAPH_YAML,
-    )
+    scope = graph_scope or ("drivers" if phase == PHASE_CHECK else "speaker_tune")
+    program = _program() if scope == "drivers" else build_verify_program(2000.0, sweep_s=0.3)
+    plan = plan or _FakePlan()
+    entry_graph = cam.active_raw
+    cam.require_locked_reads = True
+    played = []
 
-    async def _fake_aplay(bundle_dir, artifact, *, alsa_device=None, timeout_s=60.0):
+    class Graph(FakeGraph):
+        async def install(self, *args):
+            fingerprint = await super().install(*args)
+            selected_scope = self.scopes[-1][0] if self.scopes else "drivers"
+            self.submitted = ROUTING_GRAPH_YAML if selected_scope == "drivers" else APPLIED_GRAPH_YAML
+            cam.active_raw = self.submitted
+            return fingerprint
+
+        def installed_graph_yaml(self):
+            return self.submitted
+
+        async def restore(self):
+            await super().restore()
+            cam.active_raw = entry_graph
+
+    async def emit(bundle_dir, artifact, *, timeout_s):
+        assert cam.locked
+        assert cam.reads[-1] == "active_raw"
+        assert plan.holds == [f"capture:{phase}"]
+        played.append(cam.active_raw)
         return SimpleNamespace(ok=True)
 
-    monkeypatch.setattr(playback_mod, "verified_program_aplay", _fake_aplay)
+    class Capture:
+        async def around(self, play, *, program):
+            await play()
+            (tmp_path / "capture.wav").write_bytes(_mono_wav_bytes())
+            return "capture.wav"
 
-    # What SetConfig does on the real daemon: the running graph changes, the
-    # persisted config path does NOT. Wave 6b moved that swap out of the play
-    # seams and into the session graph, so the model moved with it — this pair
-    # is the whole reason ``graph.kind`` exists, and stubbing it away would
-    # leave the two-captures-one-path test asserting nothing.
-    async def _install(self) -> str:
-        cam.active_raw = ROUTING_GRAPH_YAML
-        return "probe"
-
-    async def _restore(self) -> None:
-        cam.active_raw = APPLIED_GRAPH_YAML
-
-    monkeypatch.setattr(session_graph_mod.MeasurementSessionGraph, "install", _install)
-    monkeypatch.setattr(session_graph_mod.MeasurementSessionGraph, "restore", _restore)
-
-    def _fake_seams(cam_arg, **kwargs):
-        async def play_wav() -> Any:
-            return SimpleNamespace(ok=True)
-
-        async def readmit() -> Any:
-            return SimpleNamespace(allowed=True, refusals=())
-
-        return {
-            "play_wav": play_wav,
-            "readmit": readmit,
-            "writer_lock": lambda: _FakeWindow(),
-        }
-
-    monkeypatch.setattr(composition_mod, "bind_program_playback_seams", _fake_seams)
-    monkeypatch.setattr(
-        pa_mod, "analyze_program_capture", lambda *a, **k: "analysis"
-    )
-    v2host.set_volume_plan_for_tests(_FakePlan())
-
-    recorder = CaptureProvenanceRecorder()
-    # The SECOND recorder, the one the banking seam drains. Threaded here so
-    # this helper reads the carry exactly where production reads it.
-    carry = CaptureProvenanceRecorder()
-    play = v2host.bind_production_play(
-        run_async=asyncio.run,
+    graph, records = Graph(), FakeRecords()
+    monkeypatch.setattr(door, "bind_measurement_graph", lambda *a, **kw: graph)
+    monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _FakeWindow(cam))
+    monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
+    for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
+        monkeypatch.setattr(program_admission, name, lambda *a, **kw: SimpleNamespace(allowed=True))
+    monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
+    v2host.set_volume_plan_for_tests(plan)
+    recorder, carry = CaptureProvenanceRecorder(), CaptureProvenanceRecorder()
+    production = v2host.bind_production_play(
         camilla_factory=lambda: cam,
         evidence_store=_FakeEvidenceStore(tmp_path),
         capture_session_id="cap_provenance_probe",
-        topology=object(),
-        preset=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
-        provenance=recorder,
+        topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:Test", safety_profile={}, role_targets={},
+        session_volume_db=-20.0, provenance=recorder,
+        program_for_phase=lambda phase: program,
     )
-    program = _program()
-    play(phase, program)
+    spec = MeasureSpec(
+        kind="verify" if phase == PHASE_VERIFY else "candidate",
+        graph_scope=scope, candidate_id="candidate-fp" if scope == "candidate" else "",
+        program_phase=phase,
+    )
+    session = TuningSession(
+        session_id="cap_provenance_probe", measurement_level_db=-20.0,
+        seams=bind_engine_seams(
+            session_graph=production.graph, records=records,
+            volume_claim=FakeVolume(proven_db=-20.0), session_volume_plan=plan,
+            compose_stimulus=production.compose, capture_stimulus=Capture(),
+        ),
+    )
 
+    async def run():
+        async with session:
+            outcome = await session.measure(spec)
+            assert outcome.stimuli[0].incident == ""
+
+    asyncio.run(run())
+    assert graph.scopes == [(scope, spec.candidate_id)]
+    assert played == [ROUTING_GRAPH_YAML if scope == "drivers" else APPLIED_GRAPH_YAML]
+    assert cam.active_raw == entry_graph
+    record, = records.banked
+    assert (record["graph_scope"], record["candidate_id"], record["wav_path"]) == (
+        scope, spec.candidate_id, "capture.wav",
+    )
     analyze = v2host.bind_production_analyze(
         resolve_calibration=lambda setup, device: None,
-        meta={},
-        provenance=recorder,
-        carry=carry,
+        meta={}, provenance=recorder, carry=carry,
     )
     analyze(
         program,
-        SimpleNamespace(wav=_mono_wav_bytes(), setup=None, device=None),
-        MeasurementPriors(crossover_fc_hz=2000.0),
-        MeasurementGeometry(),
-        phase=phase,
+        SimpleNamespace(wav=(tmp_path / "capture.wav").read_bytes(), setup=None, device=None),
+        MeasurementPriors(crossover_fc_hz=2000.0), MeasurementGeometry(), phase=phase,
     )
     carried = carry.take()
     return carried.to_dict() if carried is not None else None
@@ -563,23 +571,15 @@ def test_a_household_capture_carries_provenance_with_nothing_to_arm(
     )
     assert provenance["main_volume_db"] == -20.0
     assert provenance["session_volume_db"] == -20.0
-    assert provenance["stimulus"]["wav_sha256"] == "b" * 64
-    assert provenance["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
+    program_path, = tmp_path.glob("crossover_v2/cap_provenance_probe/*_program.wav")
+    assert provenance["stimulus"]["wav_sha256"] == hashlib.sha256(program_path.read_bytes()).hexdigest()
+    assert provenance["graph"]["kind"] == "tuning_measurement"
 
 
 def test_two_captures_share_a_config_path_and_still_report_different_graphs(
     monkeypatch, tmp_path
 ):
-    """THE PIN — a config label is not a graph.
-
-    Both captures below report the SAME ``graph.config_path``, because the
-    program-routing load leaves the persisted path pointing at the durable
-    anchor. Anything that derived ``kind`` from that path would give both
-    captures the same answer, which is precisely the reading that cost the
-    2026-08-19 session its evening. ``kind`` comes from the playback branch
-    that did (or did not) perform the swap, so the two differ; the running
-    graph's own fingerprint differs alongside it as corroboration.
-    """
+    """Graph swaps retain the config path; provenance must name the played graph."""
     # Both faders sit at the declared measurement volume, so neither capture is
     # refused by the play path's hold and both reach the carry.
     routed = _drive_one_capture(
@@ -596,8 +596,7 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
     assert routed["graph"]["config_path"] == ANCHOR_PATH
     assert summed["graph"]["config_path"] == ANCHOR_PATH
     # ...and yet these captures went through different transfer functions.
-    assert routed["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
-    assert summed["graph"]["kind"] == GRAPH_KIND_APPLIED
+    assert routed["graph"]["kind"] == summed["graph"]["kind"] == "tuning_measurement"
     assert routed["graph"]["fingerprint"] != summed["graph"]["fingerprint"]
 
 
@@ -615,11 +614,11 @@ def test_the_stimulus_phase_is_the_capture_s_own_not_the_program_object_s(
     seam was called with, which is also the phase the banked record carries.
     """
     provenance = _drive_one_capture(
-        monkeypatch, tmp_path, phase=PHASE_VERIFY, cam=_FakeCam(volume_db=-20.0),
+        monkeypatch, tmp_path, phase=PHASE_CLOUD_VERIFY, cam=_FakeCam(volume_db=-20.0),
     )
     assert provenance is not None
-    assert _program().phase != PHASE_VERIFY
-    assert provenance["stimulus"]["phase"] == PHASE_VERIFY
+    assert build_verify_program(2000.0, sweep_s=0.3).phase != PHASE_CLOUD_VERIFY
+    assert provenance["stimulus"]["phase"] == PHASE_CLOUD_VERIFY
 
 
 def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
@@ -641,7 +640,7 @@ def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
     assert provenance is not None
     assert provenance["main_volume_db"] is None
     # The capture itself is intact — the rest of the record still landed.
-    assert provenance["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
+    assert provenance["graph"]["kind"] == "tuning_measurement"
     assert "result=volume_disagreement" in caplog.text
 
 
@@ -668,97 +667,15 @@ def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
     assert carry.take() is None
 
 
-def test_the_engine_compose_leg_observes_and_holds_like_the_flow_leg(
-    monkeypatch, tmp_path,
-):
-    """Wrapper parity: the engine leg's stimulus carries the same provenance
-    block and the same mid-lock fader proof a flow-leg stimulus does.
-
-    `bind_production_play`'s compose is what `TuningSession.measure` plays
-    through, and `_play_body`'s two wrappers — the #2925 hold (outermost) and
-    the provenance observation — must ride it identically, or a MEASURE take
-    banked off the engine leg names no graph and no fader while its flow-leg
-    twin names both. Asserted at the composed seams' own `play_wav`: awaiting
-    it records the observation, proves (never writes) the fader, and only
-    then plays.
-    """
-    from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker.crossover_v2 import composition as composition_mod
-    from jasper.audio_measurement import program as program_mod
-    from jasper.active_speaker.crossover_v2.contracts import (
-        MEASURE_KIND_CANDIDATE,
+@pytest.mark.parametrize("scope", ["drivers", "base", "speaker_tune", "candidate"])
+def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_path, scope):
+    phase = PHASE_CHECK if scope == "drivers" else PHASE_CLOUD_VERIFY
+    cam, plan = _FakeCam(volume_db=-20.0), _FakePlan()
+    carried = _drive_one_capture(
+        monkeypatch, tmp_path, phase=phase, cam=cam, graph_scope=scope, plan=plan,
     )
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-
-    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
-    monkeypatch.setattr(
-        camilla_yaml_mod, "emit_active_speaker_program_config",
-        lambda *a, **k: ROUTING_GRAPH_YAML,
-    )
-    played: list[str] = []
-
-    def _fake_seams(cam_arg, **kwargs):
-        async def play_wav() -> Any:
-            played.append("played")
-            return SimpleNamespace(ok=True)
-
-        async def readmit() -> Any:
-            return SimpleNamespace(allowed=True, refusals=())
-
-        return {
-            "play_wav": play_wav,
-            "readmit": readmit,
-            "writer_lock": lambda: _FakeWindow(),
-        }
-
-    monkeypatch.setattr(composition_mod, "bind_program_playback_seams", _fake_seams)
-
-    class _HoldRecordingPlan(_FakePlan):
-        def __init__(self) -> None:
-            super().__init__()
-            self.holds: list[str] = []
-
-        async def hold_measurement_volume(
-            self, get_main_volume_db: Any, *, context: str = "",
-        ) -> float | None:
-            self.holds.append(context)
-            return await super().hold_measurement_volume(
-                get_main_volume_db, context=context,
-            )
-
-    plan = _HoldRecordingPlan()
-    v2host.set_volume_plan_for_tests(plan)
-    cam = _FakeCam(volume_db=-20.0)
-    recorder = CaptureProvenanceRecorder()
-    production = v2host.bind_production_play(
-        run_async=asyncio.run,
-        camilla_factory=lambda: cam,
-        evidence_store=_FakeEvidenceStore(tmp_path),
-        capture_session_id="engine_compose_probe",
-        topology=object(),
-        preset=object(),
-        role_channels={"woofer": 0, "tweeter": 1},
-        playback_device="hw:Test",
-        safety_profile={},
-        role_targets={},
-        session_volume_db=-20.0,
-        provenance=recorder,
-    )
-
-    prepared = asyncio.run(production.compose(
-        spec=MeasureSpec(kind=MEASURE_KIND_CANDIDATE),
-        program_for_phase=lambda phase: _program(),
-    ))
-    asyncio.run(prepared.seams["play_wav"]())
-
-    carried = recorder.take()
-    assert carried is not None, "the compose leg observes when a recorder is bound"
-    assert carried.to_dict()["main_volume_db"] == -20.0
-    assert plan.holds == ["capture:measure"], (
-        "the #2925 hold runs for the engine leg's stimulus, per stimulus"
-    )
-    assert cam.volume_writes == [], (
-        "the hold proves the declared measurement volume; it never writes it"
-    )
-    assert played == ["played"], "the stimulus still plays, after both wrappers"
-    v2host.set_volume_plan_for_tests(None)
+    assert carried is not None
+    assert carried["main_volume_db"] == -20.0
+    assert carried["stimulus"]["phase"] == phase
+    assert plan.holds == [f"capture:{phase}"]
+    assert cam.volume_writes == []

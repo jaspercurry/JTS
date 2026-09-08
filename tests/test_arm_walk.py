@@ -129,7 +129,7 @@ class FakeSession:
     def poll(self) -> aw.Poll:
         return self._queue[0]
 
-    def release(self, index: int) -> tuple[int, str]:
+    def release(self, index: int, attempt: int) -> tuple[int, str]:
         self.released.append(index)
         if len(self._queue) > 1:
             self._queue.pop(0)
@@ -195,7 +195,7 @@ class LiveThen:
         self._polls += 1
         return _IN_FLIGHT_QUIET if self._polls == 1 else self._terminal
 
-    def release(self, index: int) -> tuple[int, str]:  # pragma: no cover
+    def release(self, index: int, attempt: int) -> tuple[int, str]:  # pragma: no cover
         raise AssertionError("nothing is ever pending in this double")
 
     def complete(self) -> tuple[int, str]:  # pragma: no cover
@@ -914,7 +914,7 @@ def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
             # session opens and asks for a position.
             return residue if self._polls <= 2 else _pending(1, 7)
 
-        def release(self, index: int) -> tuple[int, str]:
+        def release(self, index: int, attempt: int) -> tuple[int, str]:
             self.released.append(index)
             return 200, '{"ok": true}'
 
@@ -1246,7 +1246,7 @@ def test_every_request_carries_the_speakers_own_host():
         aw.POSITION_READY_PATH: '{"ok": true}',
     })
     session.poll()
-    session.release(4)
+    session.release(4, 7)
     assert opener.requests
     for request in opener.requests:
         assert request.get_header("Host") == "jts3.local"
@@ -1257,11 +1257,11 @@ def test_a_release_carries_the_double_submit_token_and_the_index():
         wc.CSRF_PAGE_PATH: '<meta name="jts-csrf" content="tok123">',
         aw.POSITION_READY_PATH: '{"ok": true}',
     })
-    assert session.release(4) == (200, '{"ok": true}')
+    assert session.release(4, 7) == (200, '{"ok": true}')
     post = opener.requests[-1]
     assert post.get_method() == "POST"
     assert post.get_header("X-csrf-token") == "tok123"
-    assert json.loads(post.data.decode()) == {"index": 4}
+    assert json.loads(post.data.decode()) == {"index": 4, "attempt": 7}
     # The token is minted once and reused, not re-fetched per POST.
     session.complete()
     assert sum(1 for r in opener.requests
@@ -1273,11 +1273,11 @@ def test_a_failed_first_mint_is_retried_rather_than_cached_forever():
     pages = {wc.CSRF_PAGE_PATH: "<html>the wizard is still starting</html>",
              aw.POSITION_READY_PATH: '{"ok": true}'}
     session, opener = _loopback(pages)
-    session.release(1)
+    session.release(1, 1)
     assert opener.requests[-1].get_header("X-csrf-token") == ""
 
     pages[wc.CSRF_PAGE_PATH] = '<meta name="jts-csrf" content="tok456">'
-    session.release(1)
+    session.release(1, 1)
     assert opener.requests[-1].get_header("X-csrf-token") == "tok456"
     # …and once a REAL token is in hand it is cached, not re-fetched.
     minted_before = sum(1 for r in opener.requests

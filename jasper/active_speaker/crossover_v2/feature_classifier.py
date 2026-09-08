@@ -566,11 +566,7 @@ def load_round_captures(
     round refuses under is read off those rows through
     :data:`_REFUSAL_FOR_CAPTURE_REASON`.
     """
-    # The listing and the binding map are separate because a round directory
-    # really does hold byte-identical programs (``_play`` banks the first
-    # summed-sweep phase's bytes again as ``summed_program.wav``) that collapse
-    # into ONE hash key, so a refusal naming the map's values would omit files
-    # that are on disk.
+    # Different takes and legacy aliases may have identical program bytes.
     banked_programs = sorted(round_dir.glob("*_program.wav"))
     programs = {
         sha256_file(path): path

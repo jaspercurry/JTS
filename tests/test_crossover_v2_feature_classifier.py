@@ -1724,17 +1724,14 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     )
 
 
-def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys):
-    """The exact composition docs/testing-tooling.md shows: a banked round.
-
-    ``bank-crossover-round.sh`` tars a live Pi session bundle verbatim, so its
-    program WAVs land in a sibling ``crossover_v2/<capture>/`` directory,
-    never inside the JSON receipts one. Before this fix, pointing the CLI at
-    exactly this shape refused ``classification_program_missing`` with
-    ``programs_present: []`` on a real banked round; this reproduces that
-    failure synthetically and asserts it is now classified instead.
-    """
+@pytest.mark.parametrize("ordinal_names", [False, True])
+def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys, ordinal_names):
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
+    if ordinal_names:
+        programs = list((bundle / "crossover_v2/wired-TEST").glob("*_program.wav"))
+        assert programs
+        for path in programs:
+            path.rename(path.with_name(path.name.replace("_program.wav", "_00_program.wav")))
     code = cli.main(["classify-features", str(bundle), "--dumps", str(dumps)])
     assert code == cli.EXIT_OK
     round_dir, _ = round_artifact_dir(bundle)

@@ -72,28 +72,10 @@ _Poses = dict[tuple[int, int], dict[str, dict[str, _Curve]]]
 
 
 def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
-    """Every lateral take's curves, keyed pose -> role -> candidate.
+    """Latest retained curve per pose, role and complete configuration.
 
-    **Latest attempt wins**, on :func:`~.position_cycle.read_pose_curve_pair`'s
-    rule and for its reason: a superseded take stays on disk as the honest walk
-    record and the index's path order is chronological, so a later row
-    overwrites the one it replaced. A take naming NO candidate is counted and
-    dropped rather than folded in under a blank id, which would put two
-    configs' curves in one row.
-
-    Two consequences a reader has to know, neither of them a defect this
-    function can fix alone:
-
-    * A candidate VISITED TWICE at one bearing (an A/B/A walk) reads as its
-      latest visit, because that key holds one curve. What moved between the
-      two visits is drift, which is
-      :func:`~.round_views.repeatability_spread`'s question.
-    * A candidate whose only take is the ENGINE's capture record is invisible
-      here: that record carries a ``candidate_id`` and no ``phase``
-      (:func:`~.evidence_packet._candidates_block` names the same hazard), so
-      a phase-narrowed selection passes it. It also carries no ``curves``, so
-      there would be nothing to compare — the packet's ``candidates`` block
-      stays where a caller goes to see that a round played them at all.
+    An explicit base scope is named by its played graph hash. Legacy unnamed
+    takes remain unattributed; a blank candidate id alone proves no baseline.
     """
     poses: _Poses = {}
     unattributed = 0
@@ -101,7 +83,11 @@ def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
         if row.position_deg is None:
             continue
         by_role = poses.setdefault((row.position_deg, row.vertical_deg), {})
-        if not row.candidate_id:
+        config_id = row.candidate_id or (
+            f"base:{row.graph_fingerprint}"
+            if row.graph_scope == "base" and row.graph_fingerprint else ""
+        )
+        if not config_id:
             unattributed += 1
             continue
         curves = read_take_curves(
@@ -124,7 +110,7 @@ def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
             if not np.any(finite):
                 continue
             freqs_hz, magnitude_db = freqs_hz[finite], magnitude_db[finite]
-            by_role.setdefault(role, {})[row.candidate_id] = _Curve(
+            by_role.setdefault(role, {})[config_id] = _Curve(
                 row.path, freqs_hz, magnitude_db,
                 # The DECLARED sweep clamped to the grid actually banked. What
                 # the intersection below spans is then covered by every

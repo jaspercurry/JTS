@@ -2,29 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One measurement graph per session — the real filler for the graph seam.
-
-The graph routed stimuli play through is already a session constant, so it is
-installed once. :meth:`install` is idempotent and that IS the whole health
-check: it proves the running graph is still the one it submitted and reloads
-only when it is not (rulings S6 and S10 — a graph that can be put back is put
-back and disclosed, never a refusal to play). A summed sweep steps it aside
-rather than sharing it. Neither swap ducks the fader (wave 6d): the session
-already holds the fader at its declared measurement level inside the
-measurement window and nothing is playing, so there is no household programme
-for a gain step to be loud against. Async for the reason the seam is: CamillaDSP
-over a websocket (ADR-0179).
-"""
+"""Own graph selection, liveness and entry restoration for one measurement session."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
+from .measure_spec import GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +26,11 @@ __all__ = ["MeasurementSessionGraph", "SessionGraphError"]
 EmitYaml = Callable[
     [tuple[str, ...], Mapping[str, float], Mapping[str, float]], str
 ]
+EmitScopedYaml = Callable[[str, str], str]
 #: ``(inverted_roles, delays, level trims)`` — what makes one graph variant
 #: distinct from another, and therefore what the emit cache is keyed by.
 _VariantKey = tuple[
-    tuple[str, ...], tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]
+    str, str, tuple[str, ...], tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]
 ]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
@@ -74,14 +65,19 @@ class MeasurementSessionGraph:
         cam_factory: CamFactory,
         writer_lock: WriterLock,
         confirm_live: ConfirmLive,
+        emit_scoped: EmitScopedYaml | None = None,
     ) -> None:
         self._emit = emit
+        self._emit_scoped = emit_scoped
+        self._scope = GRAPH_SCOPE_DRIVERS
+        self._candidate_id = ""
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
         self._yaml: dict[_VariantKey, str] = {}
         self._installed_yaml: str | None = None
         self._entry_config_path: str | None = None
+        self._entry_yaml: str | None = None
         self._entry_scope_fingerprint: str | None = None
         self._comparability_boundary = False
 
@@ -110,37 +106,47 @@ class MeasurementSessionGraph:
         """
         return self._comparability_boundary
 
+    def select_scope(self, scope: str, candidate_id: str = "") -> None:
+        if scope not in GRAPH_SCOPES:
+            raise SessionGraphError(f"unknown graph scope: {scope}")
+        if scope == "candidate" and not candidate_id.strip():
+            raise SessionGraphError("candidate scope requires candidate_id")
+        if scope != GRAPH_SCOPE_DRIVERS and self._emit_scoped is None:
+            raise SessionGraphError("no scoped graph emitter is bound")
+        self._scope = scope
+        self._candidate_id = candidate_id if scope == "candidate" else ""
+
     def graph_yaml(
         self,
         inverted_roles: tuple[str, ...] = (),
         measurement_delays_us: Mapping[str, float] | None = None,
         level_trims_db: Mapping[str, float] | None = None,
     ) -> str:
-        """The emitted graph, emitted at most once per MEASUREMENT VARIANT.
-
-        The emitter runs its fail-closed proofs on every call
-        (``_assert_program_graph_proven``), so caching the text is what makes
-        *"once, before the first stimulus"* a structural fact. R-1 makes that
-        once per VARIANT: a sign-flipped branch, a candidate delay and
-        a per-driver level match are three different graphs with three
-        fingerprints, and every variant pays the same proofs.
-        """
+        """Emit and prove each selected graph once; cache its submitted text."""
         delays = dict(measurement_delays_us or {})
         trims = dict(level_trims_db or {})
-        # The delay and the trims are part of the variant KEY, not just the
-        # payload: a level-matched capture and its unmatched twin differ ONLY in
-        # these gains, so a cache that did not key on them would serve the
-        # untrimmed graph and bank a record claiming a level match.
+        if self._scope != GRAPH_SCOPE_DRIVERS and (inverted_roles or delays or trims):
+            raise SessionGraphError("graph overlays require drivers scope")
         key = (
+            self._scope, self._candidate_id,
             inverted_roles,
             tuple(sorted(delays.items())),
             tuple(sorted(trims.items())),
         )
         cached = self._yaml.get(key)
         if cached is None:
-            cached = self._emit(inverted_roles, delays, trims)
+            if self._scope == GRAPH_SCOPE_DRIVERS:
+                cached = self._emit(inverted_roles, delays, trims)
+            else:
+                assert self._emit_scoped is not None
+                cached = self._emit_scoped(self._scope, self._candidate_id)
             self._yaml[key] = cached
         return cached
+
+    def installed_graph_yaml(self) -> str:
+        if self._installed_yaml is None:
+            raise SessionGraphError("no measurement graph is installed")
+        return self._installed_yaml
 
     async def install(
         self,
@@ -183,8 +189,9 @@ class MeasurementSessionGraph:
                         "no current DSP config to restore after the session; "
                         "refusing to install the measurement graph"
                     )
+                self._entry_yaml = Path(entry).read_text(encoding="utf-8")
                 self._entry_config_path = str(entry)
-                self._observe_entry_graph(self._entry_config_path)
+                self._observe_entry_graph(self._entry_yaml)
             result, stomped = await self._reason_for_loading(cam, yaml_text)
             log_event(
                 logger,
@@ -196,6 +203,8 @@ class MeasurementSessionGraph:
                 # than silently measured through (ruling S10).
                 level=logging.WARNING if stomped else logging.INFO,
                 fingerprint=_fingerprint(yaml_text),
+                graph_scope=self._scope,
+                candidate_id=self._candidate_id,
                 inverted_roles=",".join(inverted_roles),
                 measurement_delays_us=",".join(
                     f"{role}:{us:g}"
@@ -231,37 +240,23 @@ class MeasurementSessionGraph:
             return "reinstall", True
         return "variant", False
 
-    def _observe_entry_graph(self, path: str) -> None:
-        """Bank this session's entry tuning scope, or disclose that it moved.
+    def _observe_entry_graph(self, yaml_text: str) -> None:
+        """Disclose tuning changes between restore/install brackets.
 
-        Runs at every ENTRY-graph take: the first install, and each install after
-        a summed sweep put the household's graph back (:meth:`restore` clears the
-        path, so the next install re-reads it). The first take is the anchor;
-        every later one is the comparison, and a mismatch is
-        :data:`~.tuning_scope.COMPARABILITY_BOUNDARY`.
-
-        SCOPED, which is what keeps it quiet (#3489): a household ``/sound/``
-        save rewrites this file and moves its whole-graph content hash, but
-        preference EQ sits above everything a round measures through and is
-        excluded.
-
-        Never raises, and the install never depends on it. An unreadable or
-        unparseable entry graph costs the fingerprint, not the capture: the
-        session anchors on the first entry graph it CAN name. The hash is taken
-        from the entry config FILE — the text :meth:`restore` will put back — so
-        a live-only graph change that left the statefile alone is invisible here.
+        Preference EQ is outside tuning scope. An unparseable entry loses this
+        comparison, but its saved text remains available for restoration.
         """
         from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 
         try:
-            current = tuning_scope_fingerprint(_read_text(path))
+            current = tuning_scope_fingerprint(yaml_text)
         except (OSError, RuntimeError, ValueError):
             log_event(
                 logger,
                 "active_speaker.session_graph",
                 action="entry_graph",
                 result="unnameable",
-                entry_config_path=path,
+                entry_config_path=self._entry_config_path,
                 exc_info=True,
             )
             return
@@ -302,12 +297,7 @@ class MeasurementSessionGraph:
                 raise SessionGraphError("CamillaDSP rejected the candidate patch")
 
     async def restore(self) -> None:
-        """Put the entry graph back. Idempotent, and safe after a failed install.
-
-        A no-op when nothing is installed, so every drain path can call it
-        without asking first, and a second call after one that raised does not
-        double-restore.
-        """
+        """Restore the saved entry text; retain it until confirmed live."""
         # The one restore verdict, shared with the commissioning swap paths.
         # Its catch set is what keeps ``CamillaUnavailable`` — a bare
         # ``Exception`` subclass — from escaping as an unlogged raise.
@@ -316,18 +306,18 @@ class MeasurementSessionGraph:
         entry = self._entry_config_path
         if entry is None:
             return
-        # Cleared FIRST: a restore that raises must not leave this session
-        # believing it still owns a graph, or the next drain re-enters the same
-        # failing path and the caller's error is replaced by a later one.
-        self._entry_config_path = None
-        self._installed_yaml = None
+        assert self._entry_yaml is not None
+        entry_yaml = self._entry_yaml
         cam = self._cam_factory()
 
         async def _put_back() -> bool:
             async with self._writer_lock():
-                return await cam.set_active_config_raw(
-                    _read_text(entry), best_effort=False, duck=False,
-                )
+                if not await cam.set_active_config_raw(
+                    entry_yaml, best_effort=False, duck=False,
+                ):
+                    return False
+                await self._confirm_live(cam, entry_yaml)
+                return True
 
         took_effect, raise_message = await attempt_graph_restore(_put_back)
         if not took_effect:
@@ -352,6 +342,9 @@ class MeasurementSessionGraph:
                     "audio"
                 )
             )
+        self._entry_config_path = None
+        self._entry_yaml = None
+        self._installed_yaml = None
         log_event(
             logger,
             "active_speaker.session_graph",
@@ -381,9 +374,3 @@ class MeasurementSessionGraph:
         if not loaded:
             raise SessionGraphError("the measurement graph load was not confirmed")
         await self._confirm_live(cam, yaml_text)
-
-
-def _read_text(path: str) -> str:
-    from pathlib import Path
-
-    return Path(path).read_text(encoding="utf-8")

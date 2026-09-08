@@ -453,7 +453,6 @@ class FakeSeams:
     check: Any = _check_analysis
     measure: Any = _measure_analysis
     verify: Any = _verify_analysis
-    played: list = field(default_factory=list)
     analyzed: list = field(default_factory=list)
     published_checks: list = field(default_factory=list)
     published_candidates: list = field(default_factory=list)
@@ -528,7 +527,6 @@ class FakeSeams:
             return factory(program)
 
         return V2FlowSeams(
-            play=lambda phase, program: self.played.append((phase, program)),
             analyze=analyze,
             publish_check=lambda plan, ambient: self.published_checks.append(plan),
             publish_candidate=self.published_candidates.append,
@@ -800,7 +798,6 @@ def _run_phase(conductor, index, attempt) -> dict:
     # past the cloud group; since the two-stage split (work order D1) the
     # confirmation is its own explicit signal and rides no begin at all.
     conductor.authorize_begin(index, attempt)
-    conductor.on_armed()
     return conductor.consume_capture(index, attempt, _capture())
 
 

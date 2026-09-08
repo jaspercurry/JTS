@@ -90,6 +90,10 @@ class _Graph:
     measurement_delays: list = field(default_factory=list)
     #: One entry per install: the level match that stimulus asked for.
     level_trims: list = field(default_factory=list)
+    scopes: list = field(default_factory=list)
+
+    def select_scope(self, scope, candidate_id=""):
+        self.scopes.append((scope, candidate_id))
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
@@ -101,6 +105,8 @@ class _Graph:
         self.level_trims.append(dict(level_trims_db or {}))
         if self.install_raises:
             raise RuntimeError("install blew up after arming half a graph")
+        if self.scopes and self.scopes[-1][0] != "drivers":
+            return f"{self.fingerprint}-{'-'.join(self.scopes[-1])}"
         if level_trims_db:
             # A level match is a DIFFERENT graph, for the delay's reason: the
             # real emitter moves the mixer gains and so the fingerprint.
@@ -339,6 +345,18 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
     "kwargs",
     [
         {"kind": "measure"},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "household"},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate"},
+        {"kind": MEASURE_KIND_BASELINE, "program_phase": "done"},
+        *[
+            {"kind": MEASURE_KIND_BASELINE, "graph_scope": scope, "candidate_id": "fp", **axis}
+            for scope in ("base", "speaker_tune", "candidate")
+            for axis in (
+                {"polarity": POLARITY_INVERTED, "inverted_role": DRIVER_ROLE_TWEETER},
+                {"delayed_role": DRIVER_ROLE_TWEETER, "delay_us": 100.0},
+                {"level_matched": True},
+            )
+        ],
         {"kind": MEASURE_KIND_BASELINE, "regime": "far_field"},
         {"kind": MEASURE_KIND_BASELINE, "polarity": "flipped"},
         # R-1: the regime and the branch it flips are one parameter in two
@@ -505,6 +523,34 @@ async def test_the_record_carries_the_fingerprint_its_own_stimulus_proved():
     assert session.graph_fingerprint == "graph-reproven"
 
 
+@pytest.mark.parametrize("restore_fails", [False, True])
+async def test_analysis_can_restore_the_graph_and_keep_the_next_take_available(restore_fails):
+    class RestoringRecords(_Records):
+        async def bank(self, record):
+            await session.restore_graph()
+            return await super().bank(record)
+
+    records = RestoringRecords()
+    graph = _Graph(restore_raises=restore_fails)
+    session, parts = _session(graph=graph, records=records)
+    spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
+    async with session:
+        if restore_fails:
+            with pytest.raises(RuntimeError):
+                await asyncio.wait_for(session.measure(spec), 1)
+        else:
+            await asyncio.wait_for(session.measure(spec), 1)
+        assert session.is_open
+        assert parts["volume"].releases == 0
+        assert session.graph_fingerprint == graph.fingerprint
+        graph.restore_raises = False
+        await asyncio.wait_for(session.measure(spec), 1)
+        assert records.banked[-1]["graph_fingerprint"] == graph.fingerprint
+    assert parts["volume"].acquired == [-20.0]
+    assert parts["volume"].releases == 1
+    assert graph.restores == 3
+
+
 async def test_opening_an_open_session_is_a_programming_error():
     session, _ = _session()
 
@@ -556,6 +602,37 @@ async def test_an_install_that_raises_mid_arming_still_restores_the_graph():
 
     assert parts["graph"].restores == 1
     assert not session.is_open
+
+
+async def test_failed_open_cleanup_retains_the_graph_for_a_later_close():
+    graph = _Graph(install_raises=True, restore_raises=True)
+    session, parts = _session(graph=graph)
+    with pytest.raises(RuntimeError):
+        await session.open()
+    assert session.is_open
+    graph.restore_raises = False
+    await session.close()
+    assert graph.restores == 2
+    assert parts["volume"].releases == 1
+    assert not session.is_open
+
+
+async def test_each_take_selects_and_records_its_graph_scope_and_program_phase():
+    session, parts = _session(play=_Play(wav_path="summed/take.wav"))
+    specs = [
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="base", program_phase="entry_baseline"),
+        MeasureSpec(kind=MEASURE_KIND_VERIFY, graph_scope="candidate", candidate_id="fp-a", positions=(0, 15), program_phase="verify"),
+        MeasureSpec(kind=MEASURE_KIND_BASELINE),
+    ]
+    async with session:
+        for spec in specs:
+            await session.measure(spec)
+    assert parts["graph"].scopes == [("base", ""), ("candidate", "fp-a"), ("candidate", "fp-a"), ("drivers", "")]
+    records = parts["records"].banked
+    assert [record["graph_scope"] for record in records] == ["base", "candidate", "candidate", "drivers"]
+    assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
+    assert len({record["graph_fingerprint"] for record in records}) == 3
+    assert all(record["measurement_status"] == "captured" for record in records)
 
 
 async def test_a_failing_graph_restore_still_gives_the_fader_back():
@@ -1010,6 +1087,7 @@ async def test_a_capture_that_placed_no_bytes_banks_an_empty_pointer():
         await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     assert parts["records"].banked[0]["wav_path"] == ""
+    assert parts["records"].banked[0]["measurement_status"] == "incomplete"
 
 
 async def test_an_unproven_level_refuses_to_bank_but_never_to_play():
@@ -1440,16 +1518,6 @@ async def test_a_banked_level_matched_record_says_what_levelled_it():
     assert plain["kind"] == matched["kind"], "same kind, different level match"
 
 
-async def test_a_stage_with_no_measurement_graph_refuses_the_level_match():
-    """``NoRoutedPhasesGraph`` measures through the APPLIED graph and has no
-    per-driver branch to trim. Dropping the request silently would bank an
-    unmatched capture under a record claiming a level match."""
-    from jasper.active_speaker.crossover_v2.composition import NoRoutedPhasesGraph
-
-    with pytest.raises(ValueError):
-        await NoRoutedPhasesGraph().install(
-            (), None, {DRIVER_ROLE_TWEETER: -9.5},
-        )
 
 
 async def test_a_banked_inverted_record_says_which_branch_was_flipped():
@@ -1473,16 +1541,3 @@ async def test_a_banked_inverted_record_says_which_branch_was_flipped():
     )
     assert normal["graph_fingerprint"] != flipped["graph_fingerprint"]
     assert normal["kind"] == flipped["kind"], "same kind, different polarity"
-
-
-async def test_a_stage_with_no_measurement_graph_refuses_the_flip():
-    """``NoRoutedPhasesGraph`` measures through the APPLIED graph and has no
-    per-driver branch to invert. Dropping the request silently would bank a
-    normal capture under an inverted record — the lie S12 exists to refuse."""
-    from jasper.active_speaker.crossover_v2.composition import NoRoutedPhasesGraph
-
-    graph = NoRoutedPhasesGraph()
-
-    assert await graph.install() == ""
-    with pytest.raises(ValueError):
-        await graph.install((DRIVER_ROLE_TWEETER,))

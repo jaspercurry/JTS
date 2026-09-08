@@ -2,15 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The one entry that plays a compiled excitation program (CHECK / MEASURE).
+"""Play an admitted excitation artifact under the shared DSP writer lock.
 
-:func:`play_program` acquires the session volume assertion but never opens or
-closes the session — one session spans every phase and the flow owns
-open/close. The graph is not this module's business:
-``crossover_v2.session_graph.MeasurementSessionGraph`` installs and proves it
-once per session; the writer lock held across the play is only what stops
-another DSP writer replacing the graph mid-capture. VERIFY does not come
-through here — it plays a summed sweep through the APPLIED production graph.
+The session owns volume and graph selection. Bound playback seams prove the
+selected graph and fader live before emitting the verified WAV.
 """
 
 from __future__ import annotations
@@ -91,7 +86,7 @@ async def play_program(
     play_wav: PlayWav,
     writer_lock: WriterLock,
 ) -> ProgramPlaybackResult:
-    """Play one CHECK/MEASURE program through the session's measurement graph.
+    """Play one admitted program through the session's measurement graph.
 
     Fail-closed in order: the session volume assertion, then fresh re-admission
     from the rendered WAV bytes (a refusal raises before any audio), then the
