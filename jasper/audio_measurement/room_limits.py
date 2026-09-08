@@ -4,13 +4,14 @@
 
 """Every code-computed limit on a Layer-3 room candidate, as pure numpy.
 
-Four families, one owner: the per-frequency cut depth the cross-position
-spread supports; the room target curves; the taper that returns the
-correction to flat below the ceiling (`See ADR-0256` rules 1-2 — the ceiling
-is the applied tune's trusted floor and arrives here as an argument, never
-derived); and the evidence a proposed low-frequency BOOST must show before it
-is admitted (`See docs/room-correction-regime-plan.md` D5: spatial
-persistence, a modally plausible shape, bounded headroom).
+Three families, one owner: the per-frequency cut depth the cross-position
+spread supports; the taper that returns the correction to flat below the
+ceiling (`See ADR-0256` rules 1-2 — the ceiling is the applied tune's trusted
+floor and arrives here as an argument, never derived); and the evidence a
+proposed low-frequency BOOST must show before it is admitted
+(`See docs/room-correction-regime-plan.md` D5: spatial persistence, a modally
+plausible shape, bounded headroom). A preference tilt is Layer 4 and is never
+measured, so no target curve lives here.
 
 Nothing here reads a file, knows what a candidate is, or decides policy: a
 caller supplies the median, the spread and the ceiling, and gets arrays and
@@ -47,9 +48,6 @@ __all__ = [
     "ceiling_taper",
     "cut_floor_db",
     "depth_fraction",
-    "flat_target",
-    "harman_target",
-    "house_curve",
 ]
 
 #: Design band floor, Hz — :func:`jasper.audio_measurement.peq.design_peq`'s
@@ -119,44 +117,6 @@ def allowed_depth_db(
     ``max_cut_db``.
     """
     return np.asarray(base_max_cut_db * depth_fraction(std_db), dtype=np.float64)
-
-
-def flat_target(freqs: np.ndarray) -> np.ndarray:
-    """Flat target — all zeros, in dB."""
-    return np.zeros_like(freqs, dtype=np.float64)
-
-
-def harman_target(freqs: np.ndarray) -> np.ndarray:
-    """Harman in-room target curve (Olive 2013, AES 8994), in dB on ``freqs``.
-
-    A +4 dB shelf at or below 60 Hz returning to 0 dB at 100 Hz, then a
-    -1 dB/octave tilt reaching about -7.6 dB at 20 kHz.
-    """
-    db = np.zeros_like(freqs, dtype=np.float64)
-
-    sub_mask = freqs <= 60.0
-    db[sub_mask] = 4.0
-
-    transition_mask = (freqs > 60.0) & (freqs < 100.0)
-    if transition_mask.any():
-        f = freqs[transition_mask]
-        x = np.log2(f / 60.0) / np.log2(100.0 / 60.0)
-        db[transition_mask] = 4.0 * (1.0 - x)
-
-    # -1 dB/octave above 100 Hz.
-    above_mask = freqs >= 100.0
-    db[above_mask] = -np.log2(freqs[above_mask] / 100.0)
-
-    return db
-
-
-def house_curve(freqs: np.ndarray, warmth: float = 1.0) -> np.ndarray:
-    """House curve: linear interpolant between flat and Harman.
-
-    ``warmth`` 0 = flat, 1 = full Harman; clamped to [-1, 2].
-    """
-    w = float(np.clip(warmth, -1.0, 2.0))
-    return harman_target(freqs) * w
 
 
 def ceiling_taper(freqs_hz: Any, ceiling_hz: float) -> np.ndarray:

@@ -42,8 +42,19 @@ def compose_candidate(
 
     ``room_correction`` is a room prescription door's own output, carried onto
     the child whole: the door is the only writer, and the candidate re-derives
-    the room layer's limits from it at construction.
+    the room layer's limits from it at construction. It cannot travel with a
+    tune change -- a room set is fitted to the tune it was measured through, so
+    ``roles``, ``alignment`` or ``blend`` beside it is refused; and a base's own
+    room set is dropped rather than inherited, disclosed as
+    ``analysis["room_source"]["dropped_from_base"]`` (ADR-0256: a room session
+    under a moved tune is disclosed-stale).
     """
+    if room_correction and (roles or alignment is not None or blend is not None):
+        raise CandidateBankRefusal(
+            "composition_room_with_tune_change",
+            "a room set is measured through one tune: compose the tune change "
+            "first, then prescribe the room against a round that played it",
+        )
     preset = base.candidate.source_preset
     sources = {role: roles.get(role, base) for role in base.candidate.role_attenuations_db}
     if set(roles) - set(sources):
@@ -89,6 +100,8 @@ def compose_candidate(
             "prescription_sha256": room_prescription_sha256,
             ROOM_MEDIAN_FIELD: room["basis"][ROOM_MEDIAN_FIELD],
         }
+    elif base.candidate.room_correction:
+        analysis["room_source"] = {"dropped_from_base": base.fingerprint}
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND,
         analysis=analysis,

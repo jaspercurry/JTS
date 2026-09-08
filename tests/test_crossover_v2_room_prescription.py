@@ -35,13 +35,16 @@ from jasper.active_speaker.measured_crossover_candidate import (
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
+    FILTER_BOOST_TOO_HIGH,
     FILTER_COUNT_EXCEEDED,
     FILTER_CUT_TOO_DEEP,
     FILTER_OUTSIDE_REGION,
     FILTER_Q_OUT_OF_RANGE,
+    LAYOUT_UNAVAILABLE,
     ROOM_MEDIAN_MISMATCH,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_PRESCRIPTION_KIND,
+    SIDE_MALFORMED,
     TAPER_VIOLATED,
     RoomPrescriptionRefused,
     read_room_median,
@@ -52,7 +55,9 @@ from jasper.camilla_config_contract import PeqFilter
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_crossover_v2_candidate_republish import _publish
+from tests.test_crossover_v2_driver_prescription import applied_profile
 
 #: The digest the fixture document echoes when the test does not care which.
 MEDIAN_SHA256 = "a" * 64
@@ -69,6 +74,8 @@ CEILING_HZ = 350.0
 #: Seats in the fixture cloud. Five of them see the dip, which clears the 70%
 #: presence bar by one seat.
 SEATS = 7
+#: The sides the fixture speaker declares -- a mono cabinet declares one.
+SIDES = ("mono",)
 
 
 def _bell(freq_hz: float, center_hz: float, depth_db: float, sigma: float) -> float:
@@ -146,6 +153,7 @@ def _read(document: dict[str, Any], median: dict[str, Any] | None = None):
         room_median=read_room_median(median or _room_median()),
         room_median_sha256=MEDIAN_SHA256,
         round_id="round-7",
+        sides=SIDES,
     )
 
 
@@ -155,6 +163,7 @@ def test_no_document_is_the_deterministic_path():
         room_median=read_room_median(_room_median()),
         room_median_sha256=MEDIAN_SHA256,
         round_id="round-7",
+        sides=SIDES,
     ) is None
 
 
@@ -223,6 +232,16 @@ def test_a_median_whose_rows_do_not_match_its_grid_is_not_evidence():
             id="more_filters_than_a_side_may_hold",
         ),
         pytest.param(
+            FILTER_BOOST_TOO_HIGH,
+            {"filters": [{"freq": DIP_HZ, "q": 3.0, "gain": 20000.0}]},
+            {},
+            id="boost_past_the_cap_the_probe_cannot_evaluate",
+        ),
+        pytest.param(
+            SIDE_MALFORMED, {"sides": {"left": ACCEPTED_FILTERS}}, {},
+            id="a_side_this_speaker_does_not_declare",
+        ),
+        pytest.param(
             ROOM_MEDIAN_MISMATCH, {"sha256": "b" * 64}, {},
             id="answers_a_different_median",
         ),
@@ -268,6 +287,14 @@ def bank(tmp_path, monkeypatch) -> Path:
 
 
 @pytest.fixture
+def applied(tmp_path: Path) -> str:
+    """The applied-profile SSOT the door reads this speaker's sides off."""
+    path = tmp_path / "applied-profile.json"
+    path.write_text(json.dumps(applied_profile(preset=_two_way_preset("mono"))))
+    return str(path)
+
+
+@pytest.fixture
 def evidence(tmp_path: Path) -> tuple[str, str]:
     """The two files every room verb takes: the median and one document.
 
@@ -284,10 +311,13 @@ def evidence(tmp_path: Path) -> tuple[str, str]:
     return str(document), str(median)
 
 
-def test_propose_judges_a_room_document_against_its_median(evidence, capsys):
+def test_propose_judges_a_room_document_against_its_median(
+    evidence, applied, capsys,
+):
     document, median = evidence
     assert cli.main([
         "propose", "--prescription", document, "--room-median", median,
+        "--applied-profile", applied,
     ]) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["accepted"] is True
@@ -301,15 +331,44 @@ def test_propose_judges_a_room_document_against_its_median(evidence, capsys):
     assert "compose" in answer["next"] and "--room-prescription" in answer["next"]
 
 
-def test_stage_refuses_the_room_class(evidence, tmp_path, capsys):
+def test_stage_refuses_the_room_class(evidence, applied, tmp_path, capsys):
     document, median = evidence
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"round_receipt": {"round_ordinal": 3}}))
     assert cli.main([
         "stage", "--prescription", document, "--room-median", median,
-        "--state", str(state),
+        "--applied-profile", applied, "--state", str(state),
     ]) == 1
     assert json.loads(capsys.readouterr().out)["reason"] == cli.ROOM_NOT_STAGEABLE
+
+
+@pytest.mark.parametrize("readable, reason", [
+    (True, SIDE_MALFORMED),
+    (False, LAYOUT_UNAVAILABLE),
+])
+def test_propose_takes_the_sides_from_the_applied_profile(
+    evidence, applied, tmp_path, capsys, readable, reason,
+):
+    """Which sides exist is the speaker's fact, not the document's.
+
+    A propose that reads different ones refuses and says which it expected; one
+    that can read none refuses too, because it is a dry run of a compose that
+    will resolve them from the base candidate's own preset.
+    """
+
+    document, median = evidence
+    body = json.loads(Path(document).read_text())
+    body["sides"] = {"left": body["sides"].pop("mono")}
+    path = tmp_path / "left.json"
+    path.write_text(json.dumps(body))
+    assert cli.main([
+        "propose", "--prescription", str(path), "--room-median", median,
+        "--applied-profile", applied if readable else str(tmp_path / "absent.json"),
+    ]) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["reason"] == reason
+    if readable:
+        assert answer["detail"]["evidence"]["expected_sides"] == ["mono"]
 
 
 def test_compose_carries_the_room_set_onto_the_candidate(evidence, bank, capsys):

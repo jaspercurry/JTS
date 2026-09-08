@@ -77,6 +77,7 @@ from .blend_prescription import (
 __all__ = [
     "BOOST_NOT_ADMITTED",
     "FILTER_CUT_TOO_DEEP",
+    "LAYOUT_UNAVAILABLE",
     "ROOM_COMPOSED_TOLERANCE_DB",
     "ROOM_MEDIAN_ARTIFACT",
     "ROOM_MEDIAN_FIELD",
@@ -134,6 +135,9 @@ ROOM_COMPOSED_TOLERANCE_DB = 0.5
 ROOM_MEDIAN_MISMATCH = "room_median_mismatch"
 #: No median artifact, or one this door cannot read into limits.
 ROOM_MEDIAN_UNAVAILABLE = "room_median_unavailable"
+#: No readable applied profile, so nothing can say which sides this speaker
+#: declares -- the median's sibling: evidence the door must have to judge at all.
+LAYOUT_UNAVAILABLE = "layout_unavailable"
 #: A cut past the depth this bin's cross-position spread supports.
 FILTER_CUT_TOO_DEEP = "filter_cut_too_deep"
 #: A boost the spatial evidence does not admit; the evidence carries the
@@ -157,6 +161,7 @@ ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     COMPOSED_BOOST_EXCEEDED,
     ROOM_MEDIAN_MISMATCH,
     ROOM_MEDIAN_UNAVAILABLE,
+    LAYOUT_UNAVAILABLE,
     FILTER_CUT_TOO_DEEP,
     BOOST_NOT_ADMITTED,
     TAPER_VIOLATED,
@@ -407,8 +412,9 @@ def room_prescription_response_format() -> dict[str, Any]:
                 "operator": "the person who ran it",
             },
             "sides": (
-                "one entry per declared side (a mono speaker declares one), "
-                f"each 0 to {ROOM_MAX_FILTERS_PER_SIDE} objects of "
+                "one entry per side this speaker declares, keyed by exactly "
+                "those side names (a mono layout declares one side, named "
+                f"`mono`), each 0 to {ROOM_MAX_FILTERS_PER_SIDE} objects of "
                 "{freq: <Hz>, q: <number>, gain: <dB>}"
             ),
         },
@@ -500,8 +506,8 @@ def _parse_filter(side: str, position: int, entry: Any) -> dict[str, Any]:
 
 
 def _parse_sides(raw: Any) -> dict[str, tuple[dict[str, Any], ...]]:
-    """The per-side filter lists' shape. Which sides EXIST is the layout's
-    fact, checked where the layout is known — at the candidate boundary."""
+    """The per-side filter lists' shape; the door checks the NAMES against the
+    layout's own sides once the shape is known."""
     if not isinstance(raw, Mapping) or not raw:
         _refuse(
             SIDE_MALFORMED,
@@ -633,6 +639,18 @@ def _check_bounds(
                     f"{ROOM_PEQ_Q_MAX:g}",
                     q=q,
                     q_range=[ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX],
+                )
+            # BEFORE the underflow probe below, which OVERFLOWS above
+            # ~+12330 dB: a gain past the absolute cap can never be legal, so
+            # it refuses by slug rather than raising out of the arithmetic.
+            if gain > ROOM_MAX_FILTER_BOOST_DB:
+                _refuse(
+                    FILTER_BOOST_TOO_HIGH,
+                    f"{where} boosts {gain:.2f} dB, past the "
+                    f"{ROOM_MAX_FILTER_BOOST_DB:g} dB a room filter may spend",
+                    gain_db=gain,
+                    max_boost_db=ROOM_MAX_FILTER_BOOST_DB,
+                    freq_hz=freq,
                 )
             # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and the biquad
             # evaluator divides by it.
@@ -766,12 +784,14 @@ def read_room_prescription(
     room_median: RoomMedian | None,
     room_median_sha256: str | None,
     round_id: str,
+    sides: Sequence[str],
 ) -> RoomPrescription | None:
     """THE request gate. One point, and the one place every bound is applied.
 
     ``None`` when there is no prescription. Otherwise a validated
     :class:`RoomPrescription`, or :class:`RoomPrescriptionRefused` naming which
-    gate said no.
+    gate said no. ``sides`` is the layout's own declared side names, which the
+    document's keys must be exactly.
 
     Order is deliberate — shape, identity, provenance, per-filter bounds, the
     spatial bar for each boost, then the composed cascade — because each stage
@@ -781,16 +801,23 @@ def read_room_prescription(
     """
     if raw is None:
         return None
-    sides, echoed, model, operator, rationale, dropped = _parse_prescription(raw)
+    prescribed, echoed, model, operator, rationale, dropped = _parse_prescription(raw)
+    if set(prescribed) != set(sides):
+        _refuse(
+            SIDE_MALFORMED,
+            f"this speaker declares {sorted(sides)}, so a prescription must "
+            f"key its sides by exactly those names, not {sorted(prescribed)}",
+            expected_sides=sorted(sides),
+        )
     median = _checked_median(room_median, room_median_sha256, echoed, round_id)
     # Built once: the per-filter bound and the composed one read the same
     # per-bin floor, on the same grid the median declared it on.
     floor_db = cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz)
-    prescription_class = _check_bounds(sides, median, floor_db)
-    admissions = _check_boosts(sides, median)
-    boost_db_total = _check_composed(sides, median, floor_db)
+    prescription_class = _check_bounds(prescribed, median, floor_db)
+    admissions = _check_boosts(prescribed, median)
+    boost_db_total = _check_composed(prescribed, median, floor_db)
     return RoomPrescription(
-        sides=sides,
+        sides=prescribed,
         prescription_class=prescription_class,
         room_median_sha256=echoed,
         prescriber_model=model,

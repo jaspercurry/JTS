@@ -773,22 +773,26 @@ def _room_correction(**overrides: object) -> dict:
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "layout, overrides",
     [
-        pytest.param({"sides": {"left": [], "right": []}}, id="side_key_mismatch"),
+        pytest.param("mono", {"sides": {"left": [], "right": []}}, id="side_key_mismatch"),
         pytest.param(
+            "mono",
             {"sides": _mono_side({"freq": 400.0, "q": 3.0, "gain": -4.0})},
             id="freq_above_ceiling",
         ),
         pytest.param(
+            "mono",
             {"sides": _mono_side({"freq": 15.0, "q": 3.0, "gain": -4.0})},
             id="freq_below_band_floor",
         ),
         pytest.param(
+            "mono",
             {"sides": _mono_side({"freq": 45.0, "q": 0.5, "gain": -4.0})},
             id="q_out_of_range",
         ),
         pytest.param(
+            "mono",
             {
                 "sides": _mono_side({"freq": 120.0, "q": 2.0, "gain": 2.0}),
                 "boost_db_total": 2.0,
@@ -797,6 +801,7 @@ def _room_correction(**overrides: object) -> dict:
             id="boost_not_admitted",
         ),
         pytest.param(
+            "mono",
             {
                 "sides": _mono_side({"freq": 45.0, "q": 3.0, "gain": 7.0}),
                 "boost_db_total": 7.0,
@@ -805,6 +810,7 @@ def _room_correction(**overrides: object) -> dict:
             id="boost_over_filter_cap",
         ),
         pytest.param(
+            "mono",
             {
                 "basis": _room_basis(admitted_boosts_hz=[45.0, 60.0]),
                 "sides": _mono_side(
@@ -817,6 +823,7 @@ def _room_correction(**overrides: object) -> dict:
             id="side_total_boost_over_cap",
         ),
         pytest.param(
+            "mono",
             {
                 "sides": _mono_side(
                     *({"freq": 40.0 + i, "q": 2.0, "gain": -1.0} for i in range(9))
@@ -824,25 +831,38 @@ def _room_correction(**overrides: object) -> dict:
             },
             id="too_many_filters_per_side",
         ),
-        pytest.param({"ceiling_hz": 600.0}, id="ceiling_outside_clamp"),
+        pytest.param("mono", {"ceiling_hz": 600.0}, id="ceiling_outside_clamp"),
         pytest.param(
+            "mono",
             {"basis": _room_basis(room_median_sha256="not-a-digest")},
             id="malformed_sha",
         ),
         pytest.param(
+            "mono",
             {"boost_db_total": 1.0, "level_cost_db": 1.0},
             id="boost_db_total_disagrees_with_sides",
         ),
-        pytest.param({"level_cost_db": 1.0}, id="level_cost_disagrees_with_boost"),
-        pytest.param({"window": "ungated"}, id="unknown_top_level_key"),
+        pytest.param("mono", {"level_cost_db": 1.0}, id="level_cost_disagrees_with_boost"),
+        pytest.param("mono", {"window": "ungated"}, id="unknown_top_level_key"),
+        pytest.param(
+            "stereo",
+            {"sides": {
+                "left": [{"freq": 45.0, "q": 3.0, "gain": -4.0}],
+                "right": [{"freq": 45.0, "q": 3.0, "gain": -4.0}],
+            }},
+            id="a_layout_with_more_than_one_side",
+        ),
     ],
 )
-def test_room_correction_refuses_a_set_outside_the_room_limits(overrides):
+def test_room_correction_refuses_a_set_outside_the_room_limits(layout, overrides):
     """The persistence-boundary second check on the door's output: every room
     limit is re-derived here, so a set that never went through the door — or
-    one edited after it did — cannot reach an apply."""
+    one edited after it did — cannot reach an apply. The stereo row is a set
+    the layout DOES declare, refused because only one side is emitted."""
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        _candidate(room_correction=_room_correction(**overrides))
+        _candidate(
+            preset=_preset(layout), room_correction=_room_correction(**overrides),
+        )
     assert excinfo.value.code == "room_correction_invalid"
 
 

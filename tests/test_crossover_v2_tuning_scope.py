@@ -42,6 +42,7 @@ from jasper.active_speaker.measurement_emit import (
     compile_tuning_graph,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     candidate_room_peqs,
 )
@@ -360,17 +361,46 @@ def test_the_room_candidate_scope_always_names_its_candidate():
     ).candidate_id == "fp-a"
 
 
+def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
+    """A room candidate whose speaker layer IS the fixture's applied tune.
+
+    Every part is read back out of the applied snapshot, so the fixture stays
+    the one source of the tune. ``polarity="invert"`` because that snapshot's
+    corrections invert the tweeter while the declared preset does not, and
+    ``linearization_gain`` moves one filter off the applied tune.
+    """
+
+    snapshot = tuning_profile.applied_profile["recomposition_snapshot"]
+    corrections = snapshot["corrections"]
+    linearization = deepcopy(snapshot["linearization"])
+    if linearization_gain is not None:
+        linearization["woofer"][0]["gain"] = linearization_gain
+    return MeasuredCrossoverCandidate(
+        program_id="room-trial", analysis={"source": "prescribed"},
+        source_preset=tuning_profile.preset,
+        role_attenuations_db={
+            role: entry["gain_db"] for role, entry in corrections.items()
+        },
+        alignment=MeasuredCrossoverAlignment(
+            corrections["woofer"]["delay_ms"] * 1000.0, "woofer", "invert",
+        ),
+        linearization={
+            role: {"filters": filters} for role, filters in linearization.items()
+        },
+        blend_correction=tuple(snapshot["blend_correction"]),
+        room_correction=_room_correction(),
+    )
+
+
 def test_a_room_candidate_graph_rides_the_applied_speaker_tune(tuning_profile):
     """Layer 3 plays the candidate's room set through the tune below it.
 
-    The candidate's own linearization and blend gains differ from the applied
-    profile's, so filter-for-filter equality with the ``speaker_tune`` graph is
-    what proves the room scope carries the APPLIED tune and not the candidate's.
+    Filter-for-filter equality with the ``speaker_tune`` graph, once the room
+    PEQs are set aside, is what proves the room scope adds the room layer and
+    changes nothing else about the tune underneath it.
     """
 
-    candidate = replace(
-        _trial_candidate(tuning_profile), room_correction=_room_correction(),
-    )
+    candidate = _room_candidate(tuning_profile)
     text = compile_tuning_graph(
         tuning_profile, scope="room_candidate", candidate=candidate,
     )
@@ -386,14 +416,19 @@ def test_a_room_candidate_graph_rides_the_applied_speaker_tune(tuning_profile):
     assert not set(room["filters"]) & sound_filter_slot_names()
 
 
-@pytest.mark.parametrize("named, reason", [
-    (False, "measurement_candidate_required"),
-    (True, "measurement_candidate_no_room"),
+@pytest.mark.parametrize("candidate, reason", [
+    (lambda profile: None, "measurement_candidate_required"),
+    (_trial_candidate, "measurement_candidate_no_room"),
+    (
+        lambda profile: _room_candidate(profile, linearization_gain=-9.0),
+        "measurement_candidate_tune_mismatch",
+    ),
 ])
-def test_the_room_scope_refuses_a_candidate_with_no_room_set(tuning_profile, named, reason):
+def test_the_room_scope_refuses_what_it_cannot_prove(tuning_profile, candidate, reason):
+    """A room trial is only evidence when it plays the tune that will apply."""
+
     with pytest.raises(MeasurementGraphRefused) as exc:
         compile_tuning_graph(
-            tuning_profile, scope="room_candidate",
-            candidate=_trial_candidate(tuning_profile) if named else None,
+            tuning_profile, scope="room_candidate", candidate=candidate(tuning_profile),
         )
     assert exc.value.reason == reason

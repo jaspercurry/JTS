@@ -21,10 +21,12 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPE_DRIVERS,
     GRAPH_SCOPES,
 )
+from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_room_peqs,
     compile_candidate_config,
+    driver_corrections,
     prove_candidate_config,
 )
 from jasper.active_speaker.profile import (
@@ -122,6 +124,19 @@ def compile_tuning_graph(
             if not room_peqs:
                 raise MeasurementGraphRefused(
                     "measurement_candidate_no_room", candidate.fingerprint,
+                )
+            # A room trial proves the room set THROUGH the accepted tune
+            # (docs/measurement-loop-doctrine.md §1a), so the candidate that
+            # applies afterwards must carry that same speaker layer.
+            if (
+                driver_corrections(candidate) != snapshot.get("corrections")
+                or linearization_filters_by_role(candidate.linearization)
+                != snapshot.get("linearization", {})
+                or [dict(f) for f in candidate.blend_correction]
+                != snapshot.get("blend_correction", [])
+            ):
+                raise MeasurementGraphRefused(
+                    "measurement_candidate_tune_mismatch", candidate.fingerprint,
                 )
         else:
             # The shared reducer skips malformed records. Refuse before reduction

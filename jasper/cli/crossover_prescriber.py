@@ -21,7 +21,7 @@ import json
 import logging
 import shlex
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,9 @@ from jasper.active_speaker.candidate_bank import (
     banked_candidates,
     find_banked_candidate,
     publish_authored_candidate,
+)
+from jasper.active_speaker.baseline_profile import (
+    load_applied_baseline_profile_state,
 )
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
@@ -84,6 +87,7 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
     staged_prescription_pending,
 )
 from jasper.active_speaker.crossover_v2.room_prescription import (
+    LAYOUT_UNAVAILABLE,
     ROOM_MEDIAN_ARTIFACT,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_PRESCRIPTION_KIND,
@@ -104,9 +108,15 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     recent_round_sessions,
     round_inputs,
 )
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError,
+    ActiveSpeakerPreset,
+    SIDES_BY_LAYOUT,
+)
 from jasper.active_speaker.seat_level_reference import (
     seat_level_reference_volume_db,
 )
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 # One owner for how this tool is spelled under sudo: an SSH session gets no
 # EnvironmentFile and /opt/jasper/.venv is not on the default PATH.
 from jasper.active_speaker.tuning_handoff import ORIENTATION_COMMAND
@@ -164,7 +174,12 @@ def _cmd_compose(args: argparse.Namespace) -> int:
         )
     root = Path(args.root) if args.root else None
     try:
-        room_fields, room_sha256 = _composed_room(args)
+        base = find_banked_candidate(args.base, root=root)
+        # The base's own preset is the layout: a composed child carries it,
+        # so its room set must be keyed by the sides that preset declares.
+        room_fields, room_sha256 = _composed_room(
+            args, SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
+        )
         sources = {}
         for value in args.role:
             role, separator, fingerprint = value.partition("=")
@@ -172,7 +187,7 @@ def _cmd_compose(args: argparse.Namespace) -> int:
                 raise CandidateBankRefusal("composition_role_invalid", "use one ROLE=FINGERPRINT per role")
             sources[role] = find_banked_candidate(fingerprint, root=root)
         candidate = compose_candidate(
-            find_banked_candidate(args.base, root=root), sources,
+            base, sources,
             alignment=find_banked_candidate(args.alignment, root=root) if args.alignment else None,
             blend=find_banked_candidate(args.blend, root=root) if args.blend else None,
             expected_effect=args.expected_effect,
@@ -242,8 +257,51 @@ def _room_median_path(args: argparse.Namespace, resolved: Path | None = None) ->
     )
 
 
+def _applied_profile_path(args: argparse.Namespace) -> Path | None:
+    """Where this invocation's applied-profile SSOT is.
+
+    :func:`_load_packet`'s own resolution -- the flag, else the round's own
+    copy -- with the on-box default standing in when ``--room-median`` alone
+    named the evidence and there is no round to ask.
+    """
+    if args.applied_profile:
+        return Path(args.applied_profile)
+    if args.session_dir:
+        return round_inputs(Path(args.session_dir)).applied_profile_path
+    return baseline_profile_state_path()
+
+
+def _layout_sides(args: argparse.Namespace) -> tuple[str, ...]:
+    """The side names this speaker's applied preset declares.
+
+    Read through ``load_applied_baseline_profile_state``, the same owner of
+    "what is this speaker playing" the packet builder reads. A propose that
+    cannot name the sides is not a dry run of the compose that will, so an
+    unreadable profile refuses here rather than assuming a layout.
+    """
+    path = _applied_profile_path(args)
+    profile = load_applied_baseline_profile_state(path) if path else None
+    snapshot = (profile or {}).get("recomposition_snapshot")
+    raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
+    if isinstance(raw, Mapping):
+        try:
+            return SIDES_BY_LAYOUT[
+                ActiveSpeakerPreset.from_mapping(dict(raw)).channel_map.layout
+            ]
+        except (ActiveSpeakerConfigError, KeyError, TypeError, ValueError):
+            pass
+    raise RoomPrescriptionRefused(
+        LAYOUT_UNAVAILABLE,
+        "a room prescription is keyed by the sides this speaker declares, and "
+        f"{path or 'no applied profile this round names'} does not declare them",
+    )
+
+
 def _room_gate(
-    document: Mapping[str, Any], args: argparse.Namespace, path: Path
+    document: Mapping[str, Any],
+    args: argparse.Namespace,
+    path: Path,
+    sides: Sequence[str],
 ) -> RoomPrescription:
     """The room door, against the median this invocation named.
 
@@ -262,6 +320,7 @@ def _room_gate(
         room_median=median,
         room_median_sha256=sha256,
         round_id=round_id,
+        sides=sides,
     )
     if prescription is None:  # pragma: no cover - `document` is never None
         raise RoomPrescriptionRefused(
@@ -270,13 +329,15 @@ def _room_gate(
     return prescription
 
 
-def _composed_room(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+def _composed_room(
+    args: argparse.Namespace, sides: Sequence[str]
+) -> tuple[dict[str, Any], str]:
     """The candidate fields ``compose`` contributes from a room prescription."""
     if not args.room_prescription:
         return {}, ""
     payload = read_source_bytes(args.room_prescription)
     prescription = _room_gate(
-        read_prescription_bytes(payload), args, _room_median_path(args)
+        read_prescription_bytes(payload), args, _room_median_path(args), sides
     )
     return (
         room_prescription_to_candidate_fields(prescription),
@@ -465,7 +526,7 @@ def _gate(
     document = read_prescription_bytes(payload)
     if document.get("kind") == ROOM_PRESCRIPTION_KIND:
         median_path = _room_median_path(args)
-        room = _room_gate(document, args, median_path)
+        room = _room_gate(document, args, median_path, _layout_sides(args))
         return (
             payload,
             room,

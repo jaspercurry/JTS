@@ -191,6 +191,14 @@ def _validated_room_correction(
     if not raw:
         return {}
     _ROOM_INVALID = "room_correction_invalid"
+    if len(layout_sides) > 1:
+        _refuse(
+            _ROOM_INVALID,
+            "the emitter takes one room PEQ list, so a room set on a "
+            f"{len(layout_sides)}-sided layout would emit only "
+            f"{layout_sides[0]!r}; remove this bound when per-side room "
+            "emission lands (ADR-0258)",
+        )
     if set(raw) != _ROOM_CORRECTION_KEYS:
         _refuse(
             _ROOM_INVALID,
@@ -735,10 +743,10 @@ class MeasuredCrossoverCandidate:
 def candidate_room_peqs(
     candidate: MeasuredCrossoverCandidate,
 ) -> tuple[PeqFilter, ...]:
-    """The room PEQs of the layout's FIRST declared side; ``()`` when absent.
+    """The room PEQs of the layout's one declared side; ``()`` when absent.
 
-    The emitter takes one list, so a stereo candidate's remaining sides are
-    carried but not yet emitted; a mono layout declares exactly one side.
+    The emitter takes one list, which is why ``_validated_room_correction``
+    refuses a room set on a multi-sided layout at all (ADR-0258).
     """
 
     if not candidate.room_correction:

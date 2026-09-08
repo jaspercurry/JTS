@@ -297,6 +297,39 @@ def test_compose_requires_explicit_structural_sources_and_matching_roles(bank, c
         assert getattr(child, field) == getattr(other, field)
 
 
+@pytest.mark.parametrize("change", [None, "roles", "alignment", "blend"])
+def test_a_room_set_never_travels_with_a_tune_change(bank, change):
+    """A room set is fitted to the tune it was measured through (ADR-0256).
+
+    So a compose that moves the tune under a prescribed room set is refused,
+    and one that inherits nothing carries no room set forward -- it discloses
+    that the base's own was dropped rather than silently reusing it.
+    """
+
+    base = _candidate(room_correction=_room_correction())
+    other = _candidate(trims={"woofer": -1.0, "tweeter": -3.5})
+    for name, candidate in (("base", base), ("other", other)):
+        _publish(bank, candidate, bundle=name)
+    base_row = find_banked_candidate(base.fingerprint, root=bank)
+    other_row = find_banked_candidate(other.fingerprint, root=bank)
+
+    if change is None:
+        child = compose_candidate(base_row, {})
+        assert child.room_correction == {}
+        assert child.analysis["room_source"] == {
+            "dropped_from_base": base.fingerprint,
+        }
+        return
+    with pytest.raises(CandidateBankRefusal) as refusal:
+        compose_candidate(
+            base_row,
+            {"woofer": other_row} if change == "roles" else {},
+            room_correction=_room_correction(),
+            **({change: other_row} if change != "roles" else {}),
+        )
+    assert refusal.value.code == "composition_room_with_tune_change"
+
+
 # --- the round trip: republish, then apply can reach it ---------------------
 
 

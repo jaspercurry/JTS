@@ -145,14 +145,3 @@ def test_admit_boost_refuses_unusable_evidence_instead_of_raising():
     assert not finding.admitted
     assert finding.reason == "dip_too_shallow"
 
-
-def test_target_curves_anchor_the_shelf_and_the_tilt():
-    db = room_limits.harman_target(np.array([60.0, 100.0, 200.0]))
-    assert db[0] == 4.0
-    assert db[1] == 0.0
-    # -1 dB/octave above 100 Hz.
-    assert db[2] == pytest.approx(-1.0)
-
-    freqs = np.array([30.0, 60.0, 200.0])
-    assert list(room_limits.house_curve(freqs, 0.0)) == list(room_limits.flat_target(freqs))
-    assert list(room_limits.house_curve(freqs)) == list(room_limits.harman_target(freqs))
