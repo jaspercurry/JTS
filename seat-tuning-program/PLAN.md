@@ -281,9 +281,18 @@ appends to §9, and comments once on #4502 with the PR links.
   session is pointed at that file. The brief is re-verified against HEAD when
   written; the plan holds the what and why, the brief the how. The orchestrator
   reviews the merged diff before the next brief.
-- Model split: Sonnet verifies citations and sweeps prose; Opus implements and
-  reviews; the top model designs, adjudicates premises, and holds the
-  non-negotiable review.
+- Sessions are spawned by the owner from `briefs/KICKOFF-TEMPLATE.md`, filled
+  per lane by the orchestrating session; the snippet links the issue, the plan
+  and the brief and carries the standing rules below.
+- Model split: the lane session orchestrates and delegates — Sonnet verifies
+  citations, reads and sweeps prose; Opus implements and relocates; the lane
+  session keeps design, the non-negotiable review and final judgment.
+- Standing engineering values (owner, 2026-09-08): simple, elegant, modular;
+  80/20; one owner per concern; single source of truth; clear boundaries (the
+  package-boundary tests are the contract); observability where a fact matters
+  (log event, `/state`, doctor); reliability over cleverness; leave every file
+  touched smaller unless the feature genuinely grew; add rows at the engine's
+  extension points, never a new framework, daemon, database, knob or doc tier.
 - Every session: `git fetch origin`; branch from fresh `origin/main`; verify
   premises first and stop a row whose premise is false; `scripts/test-fast`
   (final sentinel only; `scripts/test-merge` for import-structure and deletion
