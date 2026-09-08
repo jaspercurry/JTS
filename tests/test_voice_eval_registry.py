@@ -11,14 +11,12 @@ import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
-from types import SimpleNamespace
 
 import pytest
 from jasper.audio_io import confirmed_tts_flush
 from jasper.config import Config
 from jasper.tools import ToolRegistry, dispatch_tool, tool
 from jasper.voice import trace
-from jasper.usage import UsageStore, pricing_for_model
 from jasper.voice.session import AudioOutChunk, TurnCapture, TurnUsage
 from tests._live_turn_fake import FakeLiveTurn
 from tests.voice_eval import harness as harness_mod
@@ -158,77 +156,6 @@ def test_build_test_registry_constructs_with_backends_unconfigured(monkeypatch):
         _cleanup(test_state)
 
 
-def test_harness_writes_transcript_on_drain_timeout(monkeypatch, tmp_path):
-    class FakeTurn(FakeLiveTurn):
-        def __init__(self) -> None:
-            super().__init__()
-            self.released = False
-
-        async def send_audio(self, _pcm: bytes) -> None:
-            return None
-
-        async def end_input(self) -> None:
-            return None
-
-        async def wait_for_interrupt(self):
-            await asyncio.Event().wait()
-
-        async def audio_out_chunks(self):
-            while True:
-                await asyncio.sleep(0.1)
-                if False:  # pragma: no cover - keeps this an async generator
-                    yield b""
-
-        def server_turn_complete(self) -> bool:
-            return False
-
-        async def release(self) -> None:
-            self.released = True
-
-    class FakeConnection:
-        def __init__(self, turn: FakeTurn) -> None:
-            self.turn = turn
-
-        async def acquire_turn(self) -> FakeTurn:
-            return self.turn
-
-    async def fake_synth(_text: str, *, cache_dir):
-        return tmp_path / "prompt.wav"
-
-    transcript_calls: list[tuple[str, list[str], bytes]] = []
-
-    def fake_write_transcript(prompt, trace, audio, **kwargs):
-        transcript_calls.append((prompt, [event.kind for event in trace.events], audio))
-        return tmp_path / "turn.md", tmp_path / "turn.response.wav"
-
-    turn = FakeTurn()
-    harness = harness_mod.VoiceEvalHarness.__new__(harness_mod.VoiceEvalHarness)
-    harness.cfg = SimpleNamespace(voice_provider="gemini", active_voice_model="gemini-3.1-flash-live-preview")
-    harness._pricing = pricing_for_model(harness.cfg.active_voice_model)
-    harness._usage_store = UsageStore(":memory:")
-    harness.audio_cache_dir = tmp_path
-    harness._session_id = "session-test"
-
-    async def fake_ensure_connection():
-        return FakeConnection(turn)
-
-    harness._ensure_connection = fake_ensure_connection
-
-    monkeypatch.setattr(harness_mod.tts, "synth", fake_synth)
-    monkeypatch.setattr(harness_mod, "_load_wav_pcm", lambda _path: b"")
-    monkeypatch.setattr(harness_mod, "_write_transcript", fake_write_transcript)
-
-    with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(harness.ask("hello", turn_timeout_sec=0.01))
-
-    assert turn.released is True
-    assert len(transcript_calls) == 1
-    prompt, kinds, audio = transcript_calls[0]
-    assert prompt == "hello"
-    assert audio == b""
-    assert "turn_end" in kinds
-
-
 def test_tts_cache_write_publishes_with_replace(monkeypatch, tmp_path):
     real_replace = os.replace
     promoted: list[tuple[str, str]] = []
@@ -266,8 +193,20 @@ def test_tts_cache_write_failure_does_not_publish_partial_file(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("provider", ["gemini", "openai", "grok"])
-@pytest.mark.parametrize("outcome", ["answer", "no_audio", "no_transcript", "interrupt"])
-async def test_harness_shared_contract_and_evidence(monkeypatch, tmp_path, provider, outcome):
+@pytest.mark.parametrize("outcome,complete,observed_usage", [
+    ("answer", True, True),
+    ("no_audio", True, True),
+    ("no_transcript", True, True),
+    ("interrupt", False, False),
+    ("interrupt", False, True),
+    ("timeout", False, False),
+    ("timeout", False, True),
+    ("interrupt", True, True),
+    ("timeout", True, True),
+])
+async def test_harness_shared_contract_and_evidence(
+    monkeypatch, tmp_path, provider, outcome, complete, observed_usage,
+):
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", provider)
     for key in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
         monkeypatch.setenv(key, "offline-key")
@@ -286,7 +225,7 @@ async def test_harness_shared_contract_and_evidence(monkeypatch, tmp_path, provi
         "input_tokens": 100, "output_tokens": 50,
         "input_token_details": {"text_tokens": 100},
         "output_token_details": {"audio_tokens": 50},
-    })
+    }) if observed_usage else TurnUsage()
 
     class Turn(FakeLiveTurn):
         def __init__(self):
@@ -306,6 +245,11 @@ async def test_harness_shared_contract_and_evidence(monkeypatch, tmp_path, provi
             if outcome != "no_audio":
                 for _ in range(3 if outcome == "interrupt" else 1):
                     yield AudioOutChunk(b"\x02\0" * 24, "answer")
+            if outcome == "timeout":
+                await asyncio.Event().wait()
+
+        def server_turn_complete(self):
+            return complete
 
         async def wait_for_interrupt(self):
             await self.interrupted.wait()
@@ -355,11 +299,13 @@ async def test_harness_shared_contract_and_evidence(monkeypatch, tmp_path, provi
     monkeypatch.setattr(harness_mod, "TRACES_DIR", tmp_path)
     harness = harness_mod.VoiceEvalHarness(cfg)
     try:
-        if outcome == "no_audio":
-            with pytest.raises(AssertionError):
-                await harness.ask("hello")
+        result = None
+        if outcome in ("no_audio", "timeout"):
+            with pytest.raises(TimeoutError if outcome == "timeout" else AssertionError):
+                await harness.ask("hello", turn_timeout_sec=0.05)
         elif outcome == "interrupt":
-            assert confirmed_tts_flush(await harness.ask_with_barge_in("hello"))
+            result, ack = await harness._run_turn("hello", 30.0, interrupt=True)
+            assert confirmed_tts_flush(ack)
         else:
             result = await harness.ask("hello")
             result.trace.events.clear()
@@ -370,20 +316,32 @@ async def test_harness_shared_contract_and_evidence(monkeypatch, tmp_path, provi
                     result.require_spoken_text()
             else:
                 assert result.require_spoken_text() == "Final native text"
-            if provider == "grok":
-                assert result.estimated_cost_usd == pytest.approx(harness._pricing.flat_per_hour_usd / 60, abs=0.001)
-            else:
-                assert result.estimated_cost_usd == harness._pricing.estimate_cost(usage.breakdown)
         assert pauses == [harness_mod.MicCapture.OUTPUT_FRAME_SAMPLES / 16000, 34 / 32000]
         assert b"".join(turn.sent) == pcm
         assert [len(chunk) for chunk in turn.sent] == [harness_mod.MicCapture.OUTPUT_FRAME_SAMPLES * 2, 34]
         assert turn.end_input_calls == turn.release_calls == 1
+        assert len(list(tmp_path.glob("*.md"))) == 1
         assert len(list(tmp_path.glob("*.response.wav"))) == 1
         events = [json.loads(line) for line in next(tmp_path.glob("*.jsonl")).read_text().splitlines()]
         final = events[-1]["payload"]
-        assert final["estimated_cost_usd"] is not None
-        assert final["usage"]["input_tokens"] == 100
-        assert final["outcome"] == {"no_audio": "AssertionError", "interrupt": "interrupted"}.get(outcome, "complete")
+        if provider == "grok":
+            expected_cost = pytest.approx(harness._pricing.flat_per_hour_usd / 60, abs=0.001)
+        elif complete:
+            expected_cost = harness._pricing.estimate_cost(usage.breakdown)
+        else:
+            expected_cost = None
+        expected_status = "incomplete" if expected_cost is None else "estimated"
+        assert final["estimated_cost_usd"] == expected_cost
+        assert final["cost_status"] == expected_status
+        assert final["usage"]["input_tokens"] == usage.input_tokens
+        assert final["usage"]["output_tokens"] == usage.output_tokens
+        if result is not None:
+            assert result.usage == usage
+            assert result.estimated_cost_usd == expected_cost
+            assert result.cost_status == expected_status
+        assert final["outcome"] == {
+            "no_audio": "AssertionError", "interrupt": "interrupted", "timeout": "TimeoutError",
+        }.get(outcome, "complete")
         if outcome == "interrupt":
             assert len(final["simulated_flush"]["events"]) == 1
     finally:

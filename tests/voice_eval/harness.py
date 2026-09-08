@@ -22,6 +22,7 @@ import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, time as datetime_time
 from pathlib import Path
+from typing import Literal
 
 from jasper import transit
 from jasper.audio_io import MicCapture
@@ -75,6 +76,7 @@ class TurnResult:
     capture: TurnCapture | None
     usage: TurnUsage
     estimated_cost_usd: float | None
+    cost_status: Literal["estimated", "incomplete", "unpriced"]
     tool_call_records: list[ToolCallRecord]
 
     @property
@@ -339,6 +341,8 @@ def _write_transcript(
     audio: bytes,
     *,
     capture: TurnCapture | None,
+    estimated_cost_usd: float | None,
+    cost_status: str,
     records: list[ToolCallRecord],
     out_dir: Path,
 ) -> tuple[Path, Path]:
@@ -373,6 +377,9 @@ def _write_transcript(
     lines.append(f"- **Provider**: `{trace.provider}`")
     lines.append(f"- **Turn id**: `{trace.turn_id}`")
     lines.append(f"- **Session id**: `{trace.session_id}`")
+    lines.append(f"- **Estimated cost (USD)**: "
+                 f"{estimated_cost_usd if estimated_cost_usd is not None else 'unavailable'} "
+                 f"({cost_status})")
     lines.append(f"- **Duration**: "
                  f"{(trace.events[-1].ts - trace.started_at):.2f}s"
                  if trace.events else "- **Duration**: n/a")
@@ -587,6 +594,7 @@ class VoiceEvalHarness:
             outcome = type(error).__name__
             raise
         finally:
+            server_complete = turn is not None and turn.server_turn_complete()
             if turn is not None:
                 capture, usage = turn.capture(), turn.usage()
                 try:
@@ -594,28 +602,33 @@ class VoiceEvalHarness:
                 except Exception:  # noqa: BLE001
                     logger.warning("voice-eval: turn.release() raised", exc_info=True)
             cost = None
+            cost_status: Literal["estimated", "incomplete", "unpriced"] = "unpriced"
             if not self._pricing.label.startswith("unpriced:"):
-                cost = (
-                    self._usage_store.spend_last_24h_usd() - prior_spend
-                    if self._pricing.flat_per_hour_usd > 0
-                    else self._pricing.estimate_cost(usage.breakdown or {
+                cost_status = "incomplete"
+                if self._pricing.flat_per_hour_usd > 0:
+                    cost = self._usage_store.spend_last_24h_usd() - prior_spend
+                elif server_complete:
+                    cost = self._pricing.estimate_cost(usage.breakdown or {
                         "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
                     })
-                )
+                if cost is not None:
+                    cost_status = "estimated"
             trace.append("turn_end", {"capture": asdict(capture) if capture else None,
                                       "usage": asdict(usage), "audio_bytes": len(sink.audio),
                                       "outcome": outcome, "estimated_cost_usd": cost,
+                                      "cost_status": cost_status,
                                       "simulated_flush": sink.flush_ack})
             reset_active(token)
             md_path, wav_path = _write_transcript(
-                prompt, trace, sink.audio, capture=capture, records=self._tool_records,
+                prompt, trace, sink.audio, capture=capture,
+                estimated_cost_usd=cost, cost_status=cost_status, records=self._tool_records,
                 out_dir=TRANSCRIPTS_DIR,
             )
             logger.info("voice-eval: model=%s outcome=%s estimated_cost_usd=%s transcript=%s",
                         self.cfg.active_voice_model, outcome, cost, md_path)
         return TurnResult(
             prompt=prompt, trace=trace, audio=sink.audio, capture=capture, usage=usage,
-            estimated_cost_usd=cost, tool_call_records=self._tool_records,
+            estimated_cost_usd=cost, cost_status=cost_status, tool_call_records=self._tool_records,
             transcript_path=md_path, response_audio_path=wav_path,
         ), sink.flush_ack
 

@@ -27,6 +27,10 @@ from `LiveTurn.capture()`. A scenario that needs text calls
 means unavailable evidence, not a pass. Unparseable required answers fail.
 Tool results are recorded at the executor boundary. Token counts come from
 `LiveTurn.usage()`, including the provider's modality breakdown where present.
+Unfinished token usage stays visible, but its cost is `null` with
+`cost_status=incomplete` until the adapter reports server completion. Such
+costs cannot count as zero in a complete run total. Grok's cost uses measured
+billable activity through release, even for interrupted or timed-out turns.
 
 Each turn writes gitignored evidence:
 
