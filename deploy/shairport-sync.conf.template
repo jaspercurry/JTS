@@ -119,6 +119,9 @@ general = {
 };
 
 sessioncontrol = {
+    // Both hooks return after publishing; HTTP delivery is detached. Waiting
+    // here orders volume messages and the session marker without an audio stall.
+    wait_for_completion = "yes";
     // 60 is the FLOOR shairport-sync accepts, not a tuned value:
     // shairport.c:1203-1216 rejects anything in 1..59 with a warning and
     // silently substitutes 60 (4.3.7 took any integer, so this lane ran

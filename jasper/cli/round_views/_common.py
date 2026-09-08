@@ -41,9 +41,7 @@ from jasper.cli._refusal import (
 )
 from jasper.cli._report import write_report
 
-#: Authority tier for the generated tool-menu index
-#: (docs/tuning-operator-runbook.md's "The tool menu"; ADR-0204).
-AUTHORITY_TIER = "advisory (classify-features projects a ring into the bundle)"
+AUTHORITY_TIER = "advisory (analysis views save artifacts; `classify-features` also updates the bundle)"
 
 #: What every round-directory positional takes, said once. Both shapes, named
 #: in the order an operator meets them: the live one is what a round leaves on

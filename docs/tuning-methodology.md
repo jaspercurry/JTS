@@ -231,3 +231,9 @@ measurements; listening quality also needs the human's judgment.
 
 The [instruction comparison](../tests/fixtures/tuning_instruction_comparison.json)
 records a controlled planning trial, including its frozen inputs and limits.
+For future executed evaluations, add actual mic placements/moves, Start actions,
+recovery interventions, elapsed seconds, and input/output tokens to the result
+record, with links to measurements and final graph/volume readback. Separate
+planned effort from observed effort; record unavailable counts as unknown.
+After a model upgrade, compare the same cases with one old workaround removed.
+Judge evidence use, recovery, and resulting state; no tool sequence is required.
