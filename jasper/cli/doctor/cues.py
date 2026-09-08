@@ -15,7 +15,7 @@ from ...cues.manager import AudioCueManager
 from ...cues.registry import CUES, CueDef
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult
+from ._shared import CheckResult, _nested_dict
 
 # Machine-stable reason codes (AGENTS.md: tests pin status + reason, never detail prose).
 REASON_CUE_CACHE_MISSING = "cue_cache_missing"
@@ -73,14 +73,6 @@ def check_cue_cache(cfg: Config) -> CheckResult:
             )
             return CheckResult("cue cache", status, detail, reason=reason)
     return CheckResult("cue cache", "ok", f"{len(CUES)} cue(s) cached")
-
-
-def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
-    """Drill a nested dict out of a jasper-control HTTP payload along
-    ``keys``, fail-soft to None on any shape mismatch."""
-    for key in keys:
-        payload = payload.get(key) if isinstance(payload, dict) else None
-    return payload if isinstance(payload, dict) else None
 
 
 def _read_cue_delivery_state() -> dict[str, Any] | None:

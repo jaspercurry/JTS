@@ -21,6 +21,7 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     CheckResult,
+    _nested_dict,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
     _systemctl_unavailable_result,
@@ -338,14 +339,6 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
         "ok",
         "supervisor snapshots quiet",
     )
-
-
-def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
-    """Drill a nested dict out of a jasper-control HTTP payload along
-    ``keys``, fail-soft to None on any shape mismatch."""
-    for key in keys:
-        payload = payload.get(key) if isinstance(payload, dict) else None
-    return payload if isinstance(payload, dict) else None
 
 
 def _read_resilience_state() -> dict[str, Any] | None:
