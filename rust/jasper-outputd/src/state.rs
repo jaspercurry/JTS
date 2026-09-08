@@ -1269,27 +1269,24 @@ impl OutputdState {
                 buf.push(',');
                 push_kv_u64(&mut buf, "requests", m.requests.load(Ordering::Relaxed));
                 buf.push(',');
+                let counters = &m.counters;
                 push_kv_u64(
                     &mut buf,
                     "dropped_audio_frames",
-                    m.dropped_audio_frames.load(Ordering::Relaxed),
+                    counters.dropped_audio_frames(),
                 );
+                buf.push(',');
+                push_kv_u64(&mut buf, "dropped_commands", counters.dropped_commands());
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,
-                    "dropped_commands",
-                    m.dropped_commands.load(Ordering::Relaxed),
+                    "connections_rejected",
+                    counters.connections_rejected(),
                 );
                 buf.push(',');
-                push_kv_u64(&mut buf, "connections_rejected", m.slots.rejected());
+                push_kv_u64(&mut buf, "tts_clients", counters.tts_clients());
                 buf.push(',');
-                push_kv_u64(&mut buf, "tts_clients", m.slots.in_use() as u64);
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "frame_timeouts",
-                    m.frame_timeouts.load(Ordering::Relaxed),
-                );
+                push_kv_u64(&mut buf, "frame_timeouts", counters.frame_timeouts());
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,

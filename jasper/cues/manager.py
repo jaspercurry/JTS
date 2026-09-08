@@ -31,7 +31,8 @@ import logging
 import os
 import time
 import wave
-from typing import Any, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
 from ..audio_io import wait_tts_drained_owned
@@ -100,10 +101,6 @@ def _preview(text: str, limit: int = 40) -> str:
 # sample-counted drain deadline, which is the source of truth for both
 # the old sounddevice path and the outputd path.
 _PLAY_DRAIN_BUFFER_SEC = 0.2
-
-
-async def _wait_tts_drained(tts: Any) -> None:
-    await wait_tts_drained_owned(tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC)
 
 
 def _profile_token(value: str, fallback: str) -> str:
@@ -326,8 +323,21 @@ class AudioCueManager:
         file, IO error). Never raises except on cancellation, which
         stays propagated — failure-path callers must be able to call
         this without further error handling."""
+        return await self._record_attempt(self._play_inner(slug, set()), slug)
+
+    async def _record_attempt(
+        self,
+        attempt: Awaitable[tuple[str, str, str, bool]],
+        slug: str,
+    ) -> bool:
+        """Run one attempt and write exactly one record for it.
+
+        Cancellation propagates (and is recorded as skipped); every
+        other exception is swallowed, so a failure-path caller can play
+        a cue without error handling of its own.
+        """
         try:
-            outcome, reason, record_slug, ok = await self._play_inner(slug, set())
+            outcome, reason, record_slug, ok = await attempt
         except asyncio.CancelledError:
             self._record(OUTCOME_SKIPPED, REASON_CANCELLED, slug)
             raise
@@ -416,7 +426,9 @@ class AudioCueManager:
             )
             return OUTCOME_FAILED, REASON_WRITE_ERROR, slug, False
         finally:
-            await _wait_tts_drained(self._tts)
+            await wait_tts_drained_owned(
+                self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
+            )
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
             slug, len(pcm), audio_duration_sec,
@@ -457,20 +469,9 @@ class AudioCueManager:
             )
             return False
 
-    async def speak_text(self, text: str) -> bool:
-        return await self._speak_text(text)
-
-    async def speak_text_guarded(
+    async def speak_text(
         self,
         text: str,
-        should_play: Callable[[], bool],
-    ) -> bool:
-        return await self._speak_text(text, should_play=should_play)
-
-    async def _speak_text(
-        self,
-        text: str,
-        *,
         should_play: Callable[[], bool] | None = None,
     ) -> bool:
         """Render arbitrary `text` via TTS and play through TtsPlayout.
@@ -487,41 +488,35 @@ class AudioCueManager:
         Failure semantics match `play()` — returns False on any error (no
         backend, no TtsPlayout, network failure, IO error) and raises only
         on cancellation. Callers should not need extra error handling.
+
+        `should_play` is re-asked either side of synthesis: a caller
+        whose output episode ended meanwhile must not be spoken.
         """
-        try:
-            outcome, reason, ok = await self._speak_inner(
-                text, should_play=should_play,
-            )
-        except asyncio.CancelledError:
-            self._record(OUTCOME_SKIPPED, REASON_CANCELLED, _DYNAMIC_TEXT_SLUG)
-            raise
-        except Exception as e:  # noqa: BLE001
-            self._record_unexpected(_DYNAMIC_TEXT_SLUG, e)
-            return False
-        self._record(outcome, reason, _DYNAMIC_TEXT_SLUG)
-        return ok
+        return await self._record_attempt(
+            self._speak_inner(text, should_play=should_play),
+            _DYNAMIC_TEXT_SLUG,
+        )
 
     async def _speak_inner(
         self,
         text: str,
         *,
         should_play: Callable[[], bool] | None,
-    ) -> tuple[str, str, bool]:
-        """One speak_text attempt as (outcome, reason, ok) — see
-        `_play_inner`."""
+    ) -> tuple[str, str, str, bool]:
+        """One speak_text attempt, shaped as `_play_inner`'s result."""
         if self._tts is None:
             logger.warning("cue speak_text: no TtsPlayout configured")
-            return OUTCOME_FAILED, REASON_NO_PLAYOUT, False
+            return OUTCOME_FAILED, REASON_NO_PLAYOUT, _DYNAMIC_TEXT_SLUG, False
         if self._backend is None:
             logger.warning("cue speak_text: no TTS backend configured")
-            return OUTCOME_FAILED, REASON_NO_BACKEND, False
+            return OUTCOME_FAILED, REASON_NO_BACKEND, _DYNAMIC_TEXT_SLUG, False
 
         path = dynamic_text_path(
             self._sounds_dir, text, self._voice, self._model,
         )
         if should_play is not None and not should_play():
             logger.info("cue speak_text: skipped stale dynamic text")
-            return OUTCOME_SKIPPED, REASON_STALE_TEXT, False
+            return OUTCOME_SKIPPED, REASON_STALE_TEXT, _DYNAMIC_TEXT_SLUG, False
         if not os.path.isfile(path):
             try:
                 await asyncio.to_thread(
@@ -530,24 +525,29 @@ class AudioCueManager:
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("cue speak_text: synthesis failed: %s", e)
-                return OUTCOME_FAILED, REASON_SYNTHESIS_ERROR, False
+                return (
+                    OUTCOME_FAILED, REASON_SYNTHESIS_ERROR,
+                    _DYNAMIC_TEXT_SLUG, False,
+                )
 
         try:
             pcm, audio_duration_sec = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue speak_text: could not read %s: %s", path, e)
-            return OUTCOME_FAILED, REASON_READ_ERROR, False
+            return OUTCOME_FAILED, REASON_READ_ERROR, _DYNAMIC_TEXT_SLUG, False
         if should_play is not None and not should_play():
             logger.info("cue speak_text: skipped stale dynamic text")
-            return OUTCOME_SKIPPED, REASON_STALE_TEXT, False
+            return OUTCOME_SKIPPED, REASON_STALE_TEXT, _DYNAMIC_TEXT_SLUG, False
 
         try:
             await self._write_pcm(self._tts, pcm, model="dynamic-text")
         except Exception as e:  # noqa: BLE001
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
-            return OUTCOME_FAILED, REASON_WRITE_ERROR, False
+            return OUTCOME_FAILED, REASON_WRITE_ERROR, _DYNAMIC_TEXT_SLUG, False
         finally:
-            await _wait_tts_drained(self._tts)
+            await wait_tts_drained_owned(
+                self._tts, fallback_sec=_PLAY_DRAIN_BUFFER_SEC,
+            )
         # Dynamic cue text (research results, timer labels) can be personal and
         # the journal is persistent — log a short preview + length at INFO, full
         # text only at DEBUG.
@@ -556,7 +556,7 @@ class AudioCueManager:
             _preview(text), len(text), len(pcm), audio_duration_sec,
         )
         logger.debug("cue speak_text full text: %r", text)
-        return OUTCOME_DELIVERED, REASON_OK, True
+        return OUTCOME_DELIVERED, REASON_OK, _DYNAMIC_TEXT_SLUG, True
 
     async def _write_pcm(self, tts: Any, pcm: bytes, *, model: str) -> None:
         """Hand cue PCM to `tts`, preferring the profiled segment API where

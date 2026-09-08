@@ -38,6 +38,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
 from jasper.active_speaker.crossover_v2.spatial import (
     CLOUD_CURVE_MAX_JSON_POINTS,
+    _decimate_curve_for_json,
     _geometry_guidance_copy,
     _min_clamped_echo_band_width_hz,
 )
@@ -122,21 +123,22 @@ def _unlocked_cloud(n: int = 6) -> list:
     return captures
 
 
-# --------------------------------------------------------------------------- #
-# Drift guard (N5 review finding, 2026-07-26)
-# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("size", [0, 1, 512, 513, 1023, 1024, 1535])
+def test_cloud_curve_serialization_bounds_paired_ordered_samples(size):
+    freqs = np.arange(size, dtype=float)
+    magnitudes = -0.25 * freqs
 
+    curve = _decimate_curve_for_json(freqs, magnitudes)
+    kept = curve["freqs_hz"]
 
-def test_cloud_curve_max_json_points_mirrors_the_verify_priors_decimation_cap():
-    """``CLOUD_CURVE_MAX_JSON_POINTS``'s own comment states the mirror is
-    deliberate (independent constant only because importing
-    ``correction_crossover_v2.MAX_PERSISTED_SUM_POINTS`` would be a
-    circular import) — pinned so the two curve-decimation caps cannot drift
-    apart silently, the same way ``tests/test_env_load_mirrors_unit.py``
-    pins ``ENV_FILES`` against the units that source it."""
-    from jasper.web.correction_crossover_v2 import MAX_PERSISTED_SUM_POINTS
-
-    assert CLOUD_CURVE_MAX_JSON_POINTS == MAX_PERSISTED_SUM_POINTS
+    assert len(kept) <= CLOUD_CURVE_MAX_JSON_POINTS
+    assert len(kept) == len(curve["magnitude_db"])
+    np.testing.assert_array_equal(curve["magnitude_db"], -0.25 * np.asarray(kept))
+    if size:
+        assert kept[0] == freqs[0]
+        assert np.all(np.diff(kept) > 0)
+    if size <= CLOUD_CURVE_MAX_JSON_POINTS:
+        np.testing.assert_array_equal(kept, freqs)
 
 
 # --------------------------------------------------------------------------- #

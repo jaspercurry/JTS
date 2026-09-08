@@ -2823,6 +2823,40 @@ class WakeLoop:
         if first_base_error is not None:
             raise first_base_error
 
+    def _log_no_answer(
+        self,
+        event: str,
+        /,
+        *,
+        end_reason: str,
+        counted: bool = False,
+        **fields: object,
+    ) -> bool:
+        """Journal one no-answer turn; say whether it is owed a cue.
+
+        An ending the household or the daemon chose (`end_reason` in
+        `NO_ANSWER_CUE_SUPPRESSED_REASONS`) is not "asked and got no
+        answer": it names itself in the record and is neither counted,
+        nor warned about, nor spoken about — but it is still journalled,
+        or a zero-answer turn would leave no trace at all.
+        """
+        suppressed = end_reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+        if counted and not suppressed:
+            self._silent_responses_session += 1
+            fields["count"] = self._silent_responses_session
+        log_event(
+            logger,
+            event,
+            fields={
+                "provider": self._cfg.voice_provider,
+                "model": _active_model(self._cfg),
+                **fields,
+                **({"suppressed": end_reason} if suppressed else {}),
+            },
+            level=logging.INFO if suppressed else logging.WARNING,
+        )
+        return not suppressed
+
     async def _end_turn(self, reason: str = "ended") -> None:
         # Re-entrancy guard. `_end_turn_inner` awaits repeatedly and only
         # clears _session_id and flips _state at its last lines, so the
@@ -3000,24 +3034,16 @@ class WakeLoop:
                 # No frame ever left the mic before teardown (idle-watchdog
                 # reap of a wake that fired on noise, or a push-to-talk
                 # release before any audio was captured) — distinct from
-                # `silent`, which requires bytes sent but no reply. An
-                # ending the household or the daemon chose reaches this
-                # routinely, so it is journalled the way its sibling
-                # `input_ended` arm journals one — named, not counted, not
-                # spoken about, and not a warning.
-                suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
-                log_event(
-                    logger,
+                # `silent`, which requires bytes sent but no reply. Nothing
+                # was ever asked, so no answer is owed and no cue plays.
+                self._log_no_answer(
                     "turn.silent_response",
-                    provider=self._cfg.voice_provider,
-                    model=_active_model(self._cfg),
+                    end_reason=reason,
                     reason="no_audio_sent",
                     bytes_sent=bytes_sent,
                     chunks_received=chunks_received,
                     turn_lost=lost_mid_reply,
                     endpointer=self._endpointer_label(),
-                    **({"suppressed": reason} if suppressed else {}),
-                    level=logging.INFO if suppressed else logging.WARNING,
                 )
             elif (
                 bytes_sent > 0
@@ -3026,36 +3052,27 @@ class WakeLoop:
             ):
                 model = _active_model(self._cfg)
                 if self._input_ended:
-                    # An ending the household or the daemon chose is not
-                    # "asked and got no answer", so it is neither counted
-                    # nor spoken about — but it is still journalled, or a
-                    # zero-answer turn would leave no trace at all.
-                    if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS:
-                        log_event(
-                            logger,
-                            "turn.silent_response",
-                            provider=self._cfg.voice_provider,
-                            model=model,
-                            suppressed=reason,
-                            chunks_received=chunks_received,
-                            turn_lost=lost_mid_reply,
-                        )
-                    else:
-                        self._silent_responses_session += 1
-                        log_event(
-                            logger,
-                            "turn.silent_response",
-                            provider=self._cfg.voice_provider,
-                            model=model,
-                            reason=reason,
-                            bytes_sent=bytes_sent,
-                            chunks_received=chunks_received,
-                            turn_lost=lost_mid_reply,
-                            count=self._silent_responses_session,
-                            endpointer=self._endpointer_label(),
-                            level=logging.WARNING,
-                        )
-                        play_no_answer_cue = True
+                    # A chosen ending carries no diagnosis at all — no
+                    # `reason=`, `bytes_sent=` or `endpointer=` — so a
+                    # journal filter on those fields keeps excluding a turn
+                    # nobody asked a question of.
+                    diagnosis: dict[str, object] = (
+                        {}
+                        if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                        else {
+                            "reason": reason,
+                            "bytes_sent": bytes_sent,
+                            "endpointer": self._endpointer_label(),
+                        }
+                    )
+                    play_no_answer_cue = self._log_no_answer(
+                        "turn.silent_response",
+                        end_reason=reason,
+                        counted=True,
+                        **diagnosis,
+                        chunks_received=chunks_received,
+                        turn_lost=lost_mid_reply,
+                    )
                 elif silent and self._manual_endpoint_this_turn:
                     # Split from `recording_timeout` below, which diagnoses
                     # a silence detector that never tripped after a wake —
@@ -3098,50 +3115,31 @@ class WakeLoop:
                     # The link dropped mid-utterance, before anything ended
                     # input: `silent` is False by construction once the turn
                     # is lost, so no branch above owns this and the turn
-                    # would otherwise end with no line and no cue. Nobody
-                    # chose the ending, so it counts and it is spoken about.
-                    suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
-                    if not suppressed:
-                        self._silent_responses_session += 1
-                    log_event(
-                        logger,
+                    # would otherwise end with no line and no cue.
+                    play_no_answer_cue = self._log_no_answer(
                         "turn.silent_response",
-                        provider=self._cfg.voice_provider,
-                        model=model,
+                        end_reason=reason,
+                        counted=True,
                         reason="connection_lost",
                         bytes_sent=bytes_sent,
                         chunks_received=chunks_received,
                         turn_lost=lost_mid_reply,
-                        count=self._silent_responses_session,
                         endpointer=self._endpointer_label(),
-                        **({"suppressed": reason} if suppressed else {}),
-                        level=logging.INFO if suppressed else logging.WARNING,
                     )
-                    play_no_answer_cue = not suppressed
             elif (
                 bytes_sent > 0
                 and self._turn.audio_dropped_bytes() > 0
                 and not expected_research_silence_dismiss
             ):
                 # The model answered and the playout queue hit its byte
-                # ceiling, so the tail was dropped: the household heard an
-                # answer that stopped part-way, which is what the
-                # internal_error cue says. An ending the household or the
-                # daemon chose is journalled but not cued, as in the
-                # sibling arms above. See ADR-0254.
-                suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
-                log_event(
-                    logger,
+                # ceiling, so the tail was dropped. See ADR-0254.
+                play_no_answer_cue = self._log_no_answer(
                     "turn.truncated_response",
-                    provider=self._cfg.voice_provider,
-                    model=_active_model(self._cfg),
+                    end_reason=reason,
                     dropped_bytes=self._turn.audio_dropped_bytes(),
                     chunks_received=chunks_received,
                     endpointer=self._endpointer_label(),
-                    **({"suppressed": reason} if suppressed else {}),
-                    level=logging.INFO if suppressed else logging.WARNING,
                 )
-                play_no_answer_cue = not suppressed
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
                 if drain_wait_sec is not None else ""

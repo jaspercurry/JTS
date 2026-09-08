@@ -582,10 +582,14 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert int(fields["chunks_received"]) == turn["chunks"]
     assert fields["turn_lost"] == ("true" if turn.get("turn_lost") else "false")
     if suppressed:
-        # No count and no WARN, but the turn is not invisible.
+        # No count and no WARN, but the turn is not invisible. It carries
+        # no diagnosis either, so a journal filter on `reason=` keeps
+        # excluding a turn nobody asked a question of.
         assert records[0].levelno == logging.INFO
         assert fields["suppressed"] == suppressed
-        assert "count" not in fields
+        assert not fields.keys() & {
+            "count", "reason", "bytes_sent", "endpointer",
+        }
         return
     assert records[0].levelno == logging.WARNING
     assert int(fields["bytes_sent"]) == 4096

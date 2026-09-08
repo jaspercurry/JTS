@@ -1185,6 +1185,7 @@ impl StateServer {
         buf.push_str(r#""tts":{"#);
         match &self.tts_metrics {
             Some(metrics) => {
+                let counters = &metrics.counters;
                 push_kv_bool(buf, "enabled", true);
                 buf.push(',');
                 push_kv_u64(buf, "pending_frames", metrics.pending_frames());
@@ -1195,15 +1196,15 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "protocol_errors", metrics.protocol_errors());
                 buf.push(',');
-                push_kv_u64(buf, "dropped_commands", metrics.dropped_commands());
+                push_kv_u64(buf, "dropped_commands", counters.dropped_commands());
                 buf.push(',');
-                push_kv_u64(buf, "connections_rejected", metrics.connections_rejected());
+                push_kv_u64(buf, "connections_rejected", counters.connections_rejected());
                 buf.push(',');
-                push_kv_u64(buf, "tts_clients", metrics.tts_clients());
+                push_kv_u64(buf, "tts_clients", counters.tts_clients());
                 buf.push(',');
-                push_kv_u64(buf, "frame_timeouts", metrics.frame_timeouts());
+                push_kv_u64(buf, "frame_timeouts", counters.frame_timeouts());
                 buf.push(',');
-                push_kv_u64(buf, "dropped_audio_frames", metrics.dropped_audio_frames());
+                push_kv_u64(buf, "dropped_audio_frames", counters.dropped_audio_frames());
                 buf.push(',');
                 push_kv_u64(
                     buf,
