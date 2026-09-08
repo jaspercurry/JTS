@@ -372,6 +372,34 @@ async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monke
         await conn.stop()
 
 
+@pytest.mark.parametrize("error_type, code, transient", [
+    ("invalid_request_error", "invalid_parameter", False),
+    ("server_error", "server_error", True),
+    ("rate_limit_error", "rate_limit_exceeded", True),
+    ("invalid_request_error", "rate_limit_exceeded", True),
+])
+async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, transient):
+    from openai.types.realtime import RealtimeErrorEvent
+    from jasper.voice._supervisor import is_transient
+
+    class RejectedSetup(_FakeConn):
+        async def send(self, event):
+            self._inbox.put_nowait(RealtimeErrorEvent.model_validate({
+                "type": "error", "event_id": "setup_error",
+                "error": {"type": error_type, "code": code, "message": "setup failed"},
+            }))
+
+    conn = OpenAIRealtimeConnection(
+        api_key="fake", connect_factory=lambda **_: _FakeAsyncCM(RejectedSetup()),
+    )
+    with pytest.raises((ValueError, RuntimeError)) as failure:
+        await conn._open_session()
+    assert is_transient(failure.value) is transient
+    assert conn.wake_cue() == (CANT_CONNECT_CUE_SLUG if transient else NEEDS_ATTENTION_CUE_SLUG)
+    assert conn.is_paused()
+    await conn.stop()
+
+
 async def test_reasoning_effort_skipped_for_non_dash2_models():
     """``reasoning.effort`` is only meaningful on reasoning-capable
     models (gpt-realtime-2). On gpt-realtime-mini it must be omitted —

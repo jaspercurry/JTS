@@ -1041,10 +1041,15 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     if etype == "session.updated":
                         break
                     if etype == "error":
-                        raise ValueError(_event_field(event, "error"))
+                        error = _event_field(event, "error")
+                        invalid = (
+                            _event_field(error, "type") == "invalid_request_error"
+                            and _event_field(error, "code") != "rate_limit_exceeded"
+                        )
+                        raise (ValueError if invalid else RuntimeError)(error)
                 else:
                     raise ConnectionError("session closed before setup acknowledgement")
-        except BaseException as e:
+        except BaseException as e:  # noqa: BLE001
             if isinstance(e, TimeoutError):
                 e.args = ("session setup acknowledgement timed out",)
             logger.warning(
