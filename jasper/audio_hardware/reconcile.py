@@ -273,6 +273,11 @@ class Pass:
         """A probe this pass could not run left an owned value unwritten, so
         the state it produced is not one a later ``--changed`` may skip
         against. A marker file, read by the shim's stamp writer."""
+        if self.print_env:
+            # --print-env promises no mutations (install.sh evals it
+            # mid-install) and writes no stamp, so there is nothing here for a
+            # marker to invalidate.
+            return
         try:
             self.degraded_marker.parent.mkdir(parents=True, exist_ok=True)
             self.degraded_marker.touch()
@@ -369,6 +374,7 @@ class Pass:
         # noqa reason: the classifier walks sysfs, /proc and an `aplay` spawn; a
         # failure of ANY shape must still leave the DAC-role policy below to run.
         except Exception:  # noqa: BLE001
+            self.mark_degraded()
             self.log(f"state_{action}_failed", path=self.state_path)
             return
         # A record missing either of the two facts the whole thing hangs off is
@@ -593,6 +599,7 @@ class Pass:
         # noqa reason: a validator that cannot answer must REJECT the candidate,
         # never abort the pass — the refusal is what preserves the running env.
         except Exception as exc:  # noqa: BLE001
+            self.mark_degraded()
             ok, lines = False, (f"{type(exc).__name__}: {exc}",)
         detail = "; ".join(lines)
         if ok:
@@ -804,6 +811,7 @@ class Pass:
         # noqa reason: named in the reason token, so an operator reads WHICH
         # contract failure kept the box passive rather than an unhelpful `unknown`.
         except Exception as exc:  # noqa: BLE001
+            self.mark_degraded()
             detail = getattr(exc, "name", None) or type(exc).__name__
             return (
                 False,
@@ -836,6 +844,7 @@ class Pass:
         # noqa reason: three-valued by design — a probe that failed for any reason
         # answers "no answer", which the caller reports as the transient it is.
         except Exception:  # noqa: BLE001
+            self.mark_degraded()
             return None, False
         if width:
             return int(width), False
@@ -864,6 +873,7 @@ class Pass:
         # noqa reason: any failure preserves the previous edge format; writing a
         # guess would silently narrow a wide DAC edge.
         except Exception:  # noqa: BLE001
+            self.mark_degraded()
             return "", ""
         if fmt and profile is not None:
             return fmt, profile.outputd_sink
@@ -943,6 +953,7 @@ class Pass:
         # noqa reason: a route plan that cannot be built leaves fanin.env alone;
         # the pass still reconciles the DAC.
         except Exception:  # noqa: BLE001
+            self.mark_degraded()
             self.log("route_env_skip", reason="audio_config_unavailable")
             return False
         changed = self.set_env_file_var(
@@ -978,6 +989,7 @@ class Pass:
         # noqa reason: the fallback CLEARS the floor keys, so any failure leaves
         # the box on packaged defaults rather than on another DAC's floor.
         except Exception:  # noqa: BLE001
+            self.mark_degraded()
             summary = {}
             actions = tuple(
                 RuntimeEnvAction(action="unset", key=key, value="")
@@ -1483,6 +1495,7 @@ class Pass:
         # noqa reason: a convergence that cannot decide fails the pass through its
         # own return, which is what blocks CamillaDSP at boot.
         except Exception as exc:  # noqa: BLE001
+            self.mark_degraded()
             self.log(
                 "runtime_graph",
                 result="failed",

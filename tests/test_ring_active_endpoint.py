@@ -14,9 +14,11 @@ an operator explicitly arms one.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
+import tokenize
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -654,6 +656,39 @@ def test_the_accepted_device_rides_the_decision_so_the_marker_derives_from_it():
 # --------------------------------------------------------------------------
 
 
+def _lane_writes_outside_the_pair_helper(source: str) -> list[str]:
+    """Code lines naming the lane key outside ``set_outputd_active_lane_pair``.
+
+    The key reaches the file inside an ACTION TUPLE and the writer call is on
+    another line, so a scan requiring both on one line matches nothing and
+    guards nothing. Docstrings and comments are stripped (the helper's own
+    prose names the key, and so does this module's), leaving only lines that a
+    reader would have to call a write.
+    """
+    lines = source.splitlines()
+    blanked: set[int] = set()
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            blanked.update(range(node.lineno - 1, node.end_lineno))
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            index = token.start[0] - 1
+            lines[index] = lines[index][: token.start[1]]
+    code = "\n".join("" if i in blanked else line for i, line in enumerate(lines))
+    before, _, rest = code.partition("    def set_outputd_active_lane_pair(")
+    assert rest, "the pair helper is gone — every write site is now unguarded"
+    _, _, after = rest.partition("\n    def ")
+    return [
+        line.strip()
+        for line in (before + after).splitlines()
+        if "JASPER_OUTPUTD_ACTIVE_LANE" in line
+    ]
+
+
 def test_every_active_lane_write_site_writes_the_pair():
     """Walk EVERY write of the lane key and fail on one that skips its pair.
 
@@ -676,11 +711,24 @@ def test_every_active_lane_write_site_writes_the_pair():
     helper, _, after = rest.partition("\n    def ")
     outside = before + after
 
-    lane_writes = [
-        line.strip()
-        for line in outside.splitlines()
-        if "JASPER_OUTPUTD_ACTIVE_LANE" in line and "set_env_file_var" in line
-    ]
+    # Self-check FIRST: the scan below is only a guard if it catches the shape
+    # a regression actually has — a key stated in an action tuple, with the
+    # writer call on another line.
+    violation = (
+        "class Pass:\n"
+        "    def set_outputd_active_lane_pair(self, lane):\n"
+        '        return self.set_env_file_var(self.target, [("X", lane)])\n'
+        "\n"
+        "    def rogue(self):\n"
+        "        actions = [\n"
+        '            ("JASPER_OUTPUTD_ACTIVE_LANE", "1"),\n'
+        "        ]\n"
+        "        return self.set_env_file_var(self.target, actions)\n"
+    )
+    assert _lane_writes_outside_the_pair_helper(violation), (
+        "the scan below cannot see a direct lane write, so it guards nothing"
+    )
+    lane_writes = _lane_writes_outside_the_pair_helper(text)
     assert lane_writes == [], (
         "these lines write JASPER_OUTPUTD_ACTIVE_LANE directly instead of "
         f"through set_outputd_active_lane_pair: {lane_writes}"

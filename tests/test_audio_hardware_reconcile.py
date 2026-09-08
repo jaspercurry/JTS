@@ -3557,30 +3557,6 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
     assert "commission_mute" not in rendered
 
 
-def test_reconcile_degraded_marker_path_matches_the_output_hardware_helper(
-    monkeypatch, tmp_path: Path
-):
-    """``RECONCILE_DEGRADED_MARKER`` (the shim's stamp guard) and
-    ``output_hardware.degraded_marker_path`` (the doctor's evidence) must
-    resolve to the same file under the same
-    ``JASPER_OUTPUT_HARDWARE_STATE_PATH`` -- one path for one fact."""
-    from jasper.output_hardware import degraded_marker_path
-
-    state_path = tmp_path / "output_hardware.json"
-    result = _run_reconcile(
-        tmp_path,
-        INNOMAKER_LISTING,
-        "--reason",
-        "test",
-        extra_env={"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(state_path)},
-        patches=_CONTENT_FORMAT_PROBE_FAILS,
-    )
-    assert result.returncode == 0, result.stderr
-
-    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
-    assert degraded_marker_path().is_file()
-
-
 # --- the content-lane format axis ---------------------------------------------
 # The reconciler is the single writer of JASPER_OUTPUTD_CONTENT_FORMAT, and its
 # value comes from the SAME function that decides what CamillaDSP emits
@@ -3676,6 +3652,98 @@ _EDGE_FORMAT_PROBE_FAILS = {
         RuntimeError("registry unavailable")
     )
 }
+
+
+_LANE_CAP_ANSWERS_FOUR = {
+    "jasper.audio_hardware.dac.active_outputd_lane_channels_for": lambda _id: 4
+}
+
+# Every probe whose failure leaves an owned value UNWRITTEN, with the exit that
+# failure produces. The two renderers are deliberately absent: a failed render
+# leaves the previous artifact in place and states so on its own event, which
+# is why the shell reconciler marked degraded only when the probe could not be
+# reached at all.
+_PROBE_FAILURES = {
+    "observe": ({"jasper.cli.output_hardware.observe": _raises(OSError("no /proc"))}, 0),
+    "outputd_env_validator": (
+        {"jasper.cli.audio_config.validate_outputd_env": _raises(RuntimeError("gone"))},
+        78,
+    ),
+    "active_graph_decision": (
+        {
+            **_LANE_CAP_ANSWERS_FOUR,
+            "jasper.active_speaker.runtime_contract.outputd_active_lane_decision": (
+                _raises(RuntimeError("contract gone"))
+            ),
+        },
+        0,
+    ),
+    "active_lane_cap": ({_LANE_CAP_TARGET: _raises(RuntimeError("registry gone"))}, 0),
+    "edge_format": (_EDGE_FORMAT_PROBE_FAILS, 0),
+    "content_format": (_CONTENT_FORMAT_PROBE_FAILS, 0),
+    "route_plan": (
+        {"jasper.audio_runtime_plan.route_owned_env_actions": _raises(ValueError("x"))},
+        0,
+    ),
+    "latency_floor": (
+        {"jasper.cli.audio_config.outputd_floor_plan": _raises(RuntimeError("gone"))},
+        0,
+    ),
+    "runtime_graph": ({}, 1),
+}
+
+
+@pytest.mark.parametrize("probe", sorted(_PROBE_FAILURES))
+def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
+    monkeypatch, tmp_path: Path, probe: str
+):
+    """A pass that could not run one of its probes left an owned value
+    unwritten, so its result is NOT a state the shim's ``--changed`` may skip
+    against — an operator following the doctor's remedy must get a real pass.
+
+    The marker is also the doctor's own evidence, so this pins that the path
+    the pass writes and ``output_hardware.degraded_marker_path`` reads are one
+    file under one ``JASPER_OUTPUT_HARDWARE_STATE_PATH``.
+    """
+    from jasper.output_hardware import degraded_marker_path
+
+    patches, expected_rc = _PROBE_FAILURES[probe]
+    state_path = tmp_path / "output_hardware.json"
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(state_path)},
+        patches=patches,
+        converge=_raises(RuntimeError("selector gone")) if probe == "runtime_graph"
+        else _converged,
+    )
+    assert result.returncode == expected_rc, result.stderr
+
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
+    assert degraded_marker_path().is_file()
+
+
+def test_a_pass_whose_probes_all_answered_is_not_marked_degraded(
+    monkeypatch, tmp_path: Path
+):
+    """The control for the parametrization above: without it every arm would
+    pass on a marker some unrelated path always writes."""
+    from jasper.output_hardware import degraded_marker_path
+
+    state_path = tmp_path / "output_hardware.json"
+    result = _run_reconcile(
+        tmp_path,
+        INNOMAKER_LISTING,
+        "--reason",
+        "test",
+        extra_env={"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(state_path)},
+    )
+    assert result.returncode == 0, result.stderr
+
+    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(state_path))
+    assert not degraded_marker_path().exists()
 
 
 def test_reconcile_leaves_content_format_alone_when_the_policy_probe_is_absent(
