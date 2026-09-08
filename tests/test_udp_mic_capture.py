@@ -2,26 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `UdpMicCapture` and `make_mic_capture`.
-
-The UDP transport replaces the snd-aloop LoopbackAEC path that the
-bridge previously used to deliver AEC'd mic to jasper-voice (see
-the `UdpMicCapture` docstring in jasper/audio_io.py for why). These
-tests pin the contract that voice's WakeLoop relies on:
-
-  - Each datagram becomes one int16 numpy frame yielded by `frames()`.
-  - Same frame shape as `MicCapture` (1280 samples @ 16 kHz).
-  - The factory dispatches to UDP for `udp:<port>` / `udp://HOST:PORT`.
-  - Malformed UDP forms raise ValueError at parse time (typo guard).
-  - Malformed packets are dropped, not propagated as crashes.
-"""
+"""Capture input order, gaps, and device lifetime without hardware."""
 from __future__ import annotations
 
 import asyncio
 import socket
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
+
+from tests._sounddevice_stub import stub_sounddevice
+from jasper.audio_io import CAPTURE_MAX_FRAMES, _CaptureQueue, _UdpMicProtocol
 
 from jasper.audio_io import (
     MicCapture,
@@ -122,29 +115,35 @@ async def test_udp_capture_receives_one_frame():
         assert received.tolist() == frame.tolist()
 
 
-async def test_udp_capture_drops_odd_byte_count():
-    """A malformed sender (or a corrupted packet) sending an odd byte
-    count must NOT crash the daemon — drop and log."""
-    cap = UdpMicCapture(host="127.0.0.1", port=0)
-    async with cap as bound:
-        port = bound._transport.get_extra_info("sockname")[1]
+async def test_udp_capture_marks_only_the_frame_after_malformed_pcm():
+    queue = _CaptureQueue()
+    protocol = _UdpMicProtocol(queue)
+    for data in (b"\x01\x00", b"bad", b"\x02\x00", b"\x03\x00"):
+        protocol.datagram_received(data, None)
+    for tag, gap in ((1, False), (2, True), (3, False)):
+        assert (await queue.get()).tolist() == [tag]
+        assert queue.last_frame.discontinuity is gap
 
-        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            # 3 bytes — can't be an int16 frame.
-            sender.sendto(b"\x01\x02\x03", ("127.0.0.1", port))
-            # Follow with a valid frame so we can verify the receiver
-            # is still running after the malformed drop.
-            good = np.array([1, 2, 3, 4], dtype=np.int16)
-            sender.sendto(good.tobytes(), ("127.0.0.1", port))
-        finally:
-            sender.close()
 
-        gen = bound.frames()
-        received = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
-        # The malformed packet was dropped; the next yielded frame
-        # is the good one.
-        assert received.tolist() == [1, 2, 3, 4]
+@pytest.mark.parametrize("failure_at", ["start", "stop"])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_direct_capture_closes_device_when_lifecycle_fails(
+    monkeypatch, failure_at, close_fails,
+):
+    failure = RuntimeError(failure_at)
+    stream = Mock()
+    getattr(stream, failure_at).side_effect = failure
+    if close_fails:
+        stream.close.side_effect = RuntimeError("close")
+    stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=lambda **kwargs: stream))
+    monkeypatch.setattr("jasper.audio_io._log_audio_open_failure", Mock())
+    cap = MicCapture("unused")
+    with pytest.raises(RuntimeError) as caught:
+        async with cap:
+            pass
+    assert caught.value is failure
+    stream.close.assert_called_once_with()
+    assert cap._stream is None
 
 
 async def test_udp_capture_drops_empty_datagram():
@@ -177,9 +176,6 @@ async def test_udp_capture_frame_size_constant_matches_micapture():
 
 @pytest.mark.parametrize("transport", ["portaudio", "udp"])
 async def test_capture_overload_keeps_recent_order_and_bounds_notifications(transport):
-    from types import SimpleNamespace
-    from jasper.audio_io import CAPTURE_MAX_FRAMES, _CaptureQueue, _UdpMicProtocol
-
     queue = _CaptureQueue()
     notifications = []
     queue._loop = SimpleNamespace(call_soon_threadsafe=notifications.append)
@@ -201,8 +197,6 @@ async def test_capture_overload_keeps_recent_order_and_bounds_notifications(tran
 
 
 async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
-    from jasper.audio_io import _CaptureQueue
-
     queue = _CaptureQueue()
     now = [10.0]
     monkeypatch.setattr("jasper.audio_io.time.monotonic", lambda: now[0])

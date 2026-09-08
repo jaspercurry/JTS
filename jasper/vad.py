@@ -94,13 +94,7 @@ class SpeechVAD:
             ) from e
 
     def predict(self, frame_int16: np.ndarray) -> float:
-        """Predict speech probability for a 16 kHz int16 mono frame.
-
-        Accepts any frame size; openWakeWord's VAD chunks internally
-        based on its frame_size param. Returns 0-1: max sub-chunk
-        score, which answers "did ANY part of this frame look like
-        speech?" — the right question for gating mic forwarding.
-        """
+        """Return openWakeWord's mean sub-chunk speech score for 16 kHz PCM."""
         result = self._vad.predict(frame_int16)
         if isinstance(result, (list, np.ndarray)):
             arr = np.asarray(result).flatten()

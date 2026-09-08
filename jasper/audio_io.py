@@ -12,7 +12,7 @@ import socket
 import subprocess
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
@@ -202,19 +202,10 @@ class _CaptureQueue:
 
 
 class MicCapture:
-    """Continuous mono 16 kHz mic capture, exposed as an asyncio queue.
+    """Capture channel 0 as 80 ms mono frames at 16 kHz.
 
-    Output frames: 1280 samples (80 ms) of 16 kHz int16 mono — the
-    openWakeWord-recommended frame size and small enough to keep Gemini
-    Live responsive. Consumers (wake-word, Gemini session) see 16 kHz
-    mono regardless of what the underlying mic does.
-
-    Capture-side rate/channels are configurable because not every mic
-    supports 16 kHz mono natively. PortAudio (sounddevice's backend) does
-    NOT do automatic ALSA `plughw` resampling — opening a 48 kHz-only mic
-    at 16 kHz raises `Invalid sample rate`. So we open at the device's
-    supported rate (16000 for XVF3800, 48000 for MiniDSP UMIK-2 et al.),
-    take channel 0, and polyphase-downsample to 16 kHz here.
+    PortAudio does not resample: the source must support the requested
+    capture rate, which must be an integer multiple of the output rate.
     """
 
     OUTPUT_RATE = 16000
@@ -289,21 +280,25 @@ class MicCapture:
             )
             self._stream.start()
         except Exception as e:  # noqa: BLE001
-            # Common causes: chip not enumerated (USB-OUT shared
-            # bus reset), or device-name typo. (The pre-PR-2
-            # "bridge daemon down" failure mode is now handled by
-            # UdpMicCapture's separate code path.) Dump full ALSA +
-            # PortAudio state so the next restart's log shows what
-            # was visible at failure.
+            if self._stream is not None:
+                with suppress(Exception):
+                    self._stream.close()
+                self._stream = None
             _log_audio_open_failure("MicCapture", self._device, e)
             raise
         return self
 
     async def __aexit__(self, *exc) -> None:
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+            except BaseException:
+                with suppress(Exception):
+                    stream.close()
+                raise
+            else:
+                stream.close()
 
     async def frames(self):
         if self._queue is None:
@@ -371,21 +366,21 @@ class UdpMicCapture:
 class _UdpMicProtocol(asyncio.DatagramProtocol):
     def __init__(self, queue: _CaptureQueue) -> None:
         self._queue = queue
+        self._gap_pending = False
 
     def datagram_received(self, data: bytes, _addr) -> None:
         if not data:
             return
-        # Defensive: a malformed sender could send odd byte counts.
-        # `np.frombuffer` would raise a ValueError; we'd rather drop
-        # the bad packet and keep the daemon healthy.
         if len(data) % 2 != 0:
+            self._gap_pending = True
             logger.warning(
                 "UdpMicCapture: dropping malformed packet (%d bytes, odd)",
                 len(data),
             )
             return
         chunk = np.frombuffer(data, dtype=np.int16)
-        self._queue.put_nowait(chunk)
+        self._queue.put_nowait(chunk, discontinuity=self._gap_pending)
+        self._gap_pending = False
 
 
 def parse_udp_device(device: str) -> tuple[str, int] | None:
