@@ -763,7 +763,11 @@ impl Config {
         // leader that plays silence forever with a climbing starvation counter
         // (or, on the central ring, as CamillaDSP restart-looping on attach) —
         // loud in /state but three layers from its cause. Name it here instead.
-        let ring_reader = if dac_content_ring.is_some() {
+        // The fake backend (`run_fake`, the reconciler's no-DAC state) attaches
+        // no ring, so it keeps running at any period.
+        let ring_reader = if backend == BackendMode::Fake {
+            None
+        } else if dac_content_ring.is_some() {
             Some("JASPER_OUTPUTD_DAC_CONTENT_LANE")
         } else if content_bridge_mode == ContentBridgeMode::ShmRing {
             Some("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring")
@@ -1127,6 +1131,7 @@ mod tests {
             (
                 "central ring at the packaged default period: the writer could never open it",
                 &[
+                    ("JASPER_OUTPUTD_BACKEND", Some("alsa")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
                     ("JASPER_OUTPUTD_PERIOD_FRAMES", None),
                 ],
@@ -1166,6 +1171,7 @@ mod tests {
             (
                 "period is not the ring's slot: the writer could never open it",
                 &[
+                    ("JASPER_OUTPUTD_BACKEND", Some("alsa")),
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("512")),
                 ],
@@ -1179,6 +1185,13 @@ mod tests {
                 );
             });
         }
+        // The reconciler's no-DAC state: backend fake with the period unset.
+        // Nothing attaches a ring there, so the slot guard must not park it.
+        with_env(&[("JASPER_OUTPUTD_PERIOD_FRAMES", None)], || {
+            let cfg = Config::from_env().unwrap();
+            assert_eq!(cfg.backend, BackendMode::Fake);
+            assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
+        });
     }
 
     #[test]
