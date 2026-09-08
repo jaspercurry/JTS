@@ -3024,6 +3024,89 @@ def test_findings_answers_a_round_that_banked_none_rather_than_refusing(
     assert answer["echo_band_hz"] is None
 
 
+@pytest.mark.parametrize("has_verify,has_axis", [(True, True), (False, True), (False, False)])
+def test_selected_seat_views_share_preparation_and_keep_standalone_results(
+    tmp_path, monkeypatch, capsys, has_verify, has_axis,
+):
+    from jasper.cli.round_views import main, seats
+
+    round_dir = _make_round_dir(tmp_path, "selected", position_curves={
+        "seat-1": ("onax" if has_axis else "offax", _flat_curve(ripple_db=2)),
+        "seat-2": ("offax", _flat_curve(ripple_db=1)),
+    })
+    if has_verify:
+        _bank_verify_measured(round_dir, measured_db=_flat_curve(ripple_db=1))
+    expected = {}
+    for view in ("per-seat", "agreement", "directivity", "co-metrics"):
+        assert main([view, str(round_dir), "--out", "-"]) == 0
+        expected[view] = json.loads(capsys.readouterr().out)
+    calls = {}
+    for name in ("_load_round", "verify_pose_curve", "per_seat_curves"):
+        original = getattr(seats, name)
+        def counted(*args, _name=name, _original=original, **kwargs):
+            calls[_name] = calls.get(_name, 0) + 1
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(seats, name, counted)
+    assert main([
+        "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics", "--out", "-",
+    ]) == 0
+    results = json.loads(capsys.readouterr().out)["results"]
+    assert {view: row["detail"] for view, row in results.items()} == expected
+    assert calls == {"_load_round": 1, "verify_pose_curve": 1, "per_seat_curves": 1}
+    for row in results.values():
+        assert row["sources"]["bundle"] == str(round_dir / "bundle/sess1")
+        assert row["sources"]["session"]["capture_session_id"] == "cap1"
+        assert row["sources"]["packet_fingerprint"]
+        assert row["parameters"] and row["units"] and row["coverage"]
+        assert row["out"] is None
+    assert results["per-seat"]["coverage"]["verify_pose_included"] is has_verify
+    assert results["co-metrics"]["coverage"]["pooled_window_bearings_deg"] == []
+    if not has_verify:
+        assert results["agreement"]["outcome"] == "unavailable"
+        assert results["agreement"]["reason"] == "insufficient_agreement_seats"
+    if not has_axis:
+        assert results["directivity"]["outcome"] == "unavailable"
+        assert results["co-metrics"]["coverage"]["on_axis"] is False
+
+
+@pytest.mark.parametrize("failure,code", [("calculation", 1), ("write", 3)])
+def test_selected_view_failure_keeps_good_sibling_artifacts(tmp_path, monkeypatch, capsys, failure, code):
+    from jasper.cli.round_views import main, seats
+
+    round_dir = _make_round_dir(tmp_path, "siblings", position_curves={
+        "seat-1": ("onax", _flat_curve()),
+    })
+    if failure == "calculation":
+        def refuse(_round):
+            raise RoundViewsError("unavailable test view")
+        monkeypatch.setattr(seats, "directivity_view", refuse)
+    else:
+        (round_dir / "directivity.json").mkdir()
+    assert main([
+        "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics",
+    ]) == code
+    results = json.loads(capsys.readouterr().out)["results"]
+    for view in ("per-seat", "agreement", "co-metrics"):
+        assert Path(results[view]["out"]).is_file()
+        assert results[view]["bytes"] > 0
+    assert results["directivity"]["outcome"] == ("refused" if code == 1 else "unwritable")
+    assert results["directivity"]["out"] is None
+
+
+def test_default_per_seat_does_no_optional_work(tmp_path, monkeypatch, capsys):
+    from jasper.cli.round_views import main, seats
+
+    round_dir = _make_round_dir(tmp_path, "default", position_curves={"seat": ("onax", _flat_curve())})
+    def unexpected(*args, **kwargs):
+        raise AssertionError("unrequested analysis")
+    for name in ("agreement_table", "directivity_view", "audibility_co_metrics"):
+        monkeypatch.setattr(seats, name, unexpected)
+    assert main(["per-seat", str(round_dir), "--out", "-"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["seats"]) == 1
+    assert "results" not in result
+
+
 def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, capsys):
     from jasper.cli.round_views import main, build_parser
 
@@ -3048,3 +3131,23 @@ def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, c
     assert rows["directivity.json"]["required_inputs"] == []
     assert rows[POSITION_CYCLE_FILENAME]["next_command"] is None
     assert rows[POSITION_CYCLE_FILENAME]["repair_reason"] == "banked_pose_index_missing"
+
+
+@pytest.mark.parametrize("bad_norm", [False, True])
+def test_composed_custom_output_preserves_details_and_independent_calculations(tmp_path, capsys, bad_norm):
+    from jasper.cli.round_views import main
+
+    round_dir = _make_round_dir(tmp_path, "custom", position_curves={"seat": ("onax", _flat_curve())})
+    out = tmp_path / "directivity.json"
+    args = ["per-seat", str(round_dir), "--include", "agreement", "directivity", "--out", str(out)]
+    if bad_norm:
+        args += ["--norm-lo", "50000", "--norm-hi", "60000"]
+    assert main(args) == (1 if bad_norm else 0)
+    results = json.loads(capsys.readouterr().out)["results"]
+    detail = json.loads(Path(results["directivity"]["out"]).read_text())
+    assert detail["directivity"]["evaluable"] is True
+    if bad_norm:
+        assert results["agreement"]["outcome"] == results["per-seat"]["outcome"] == "refused"
+    else:
+        assert json.loads(out.read_text())["seats"][0]["position_id"] == "seat"
+        assert len({row["out"] for row in results.values()}) == 3
