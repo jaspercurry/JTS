@@ -300,6 +300,7 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-08: Wave 0b brief written: `briefs/wave-0b-decisions.md`.
 - 2026-09-08: `briefs/` added: `wave-0-decisions.md` (the brief Wave 0 ran
   from, recovered) and `reference-right-size-cleanup-brief.md` (what the
   cleanup program was told, kept here so our rows do not collide with it).
