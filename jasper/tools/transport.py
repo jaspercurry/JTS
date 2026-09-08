@@ -44,6 +44,14 @@ GNOME_DEST = "org.gnome.ShairportSync"
 GNOME_PATH = "/org/gnome/ShairportSync"
 GNOME_REMOTE_IFACE = "org.gnome.ShairportSync.RemoteControl"
 
+_PLAYER_METHODS = {
+    "next": "Next",
+    "previous": "Previous",
+    "pause": "Pause",
+    "play": "Play",
+    "toggle": "PlayPause",
+}
+
 
 async def _airplay_remote_available() -> bool:
     """True iff shairport's gnome RemoteControl reports Available=true,
@@ -201,6 +209,8 @@ def make_transport_dispatcher(renderer, router):
         return bool(playback and playback.get("is_playing"))
 
     async def _spotify_call(sp, action: str, device_id: str | None) -> None:
+        if action == "toggle":
+            action = "pause" if await _spotify_is_playing(sp) else "play"
         fn = {
             "next": sp.next_track,
             "previous": sp.previous_track,
@@ -208,13 +218,6 @@ def make_transport_dispatcher(renderer, router):
             "play": sp.start_playback,
         }[action]
         await asyncio.to_thread(fn, device_id=device_id)
-
-    async def _spotify_toggle(sp, device_id: str | None) -> None:
-        # Spotipy has no native toggle — query then dispatch.
-        if await _spotify_is_playing(sp):
-            await asyncio.to_thread(sp.pause_playback, device_id=device_id)
-        else:
-            await asyncio.to_thread(sp.start_playback, device_id=device_id)
 
     async def _dispatch(action: str) -> dict:
         source = await _detect_source(renderer)
@@ -226,10 +229,7 @@ def make_transport_dispatcher(renderer, router):
                 matched = await _resolve_airplay_account(router)
                 if matched is not None:
                     device_id = await _spotify_active_device_id(matched.sp)
-                    if action == "toggle":
-                        await _spotify_toggle(matched.sp, device_id)
-                    else:
-                        await _spotify_call(matched.sp, action, device_id)
+                    await _spotify_call(matched.sp, action, device_id)
                     logger.info(
                         "airplay+spotify: %s routed to account=%s device_id=%s",
                         action, matched.account.name, device_id,
@@ -250,18 +250,7 @@ def make_transport_dispatcher(renderer, router):
                         f"to link their spotify account at {hostname}/spotify.",
                         "source": "airplay",
                     }
-                # MPRIS PlayPause is a single-call native toggle —
-                # cleaner than state-query-then-dispatch, and the
-                # only path that works for AirPlay senders we can't
-                # introspect (browser tabs, Apple Music, etc.).
-                method = {
-                    "next": "Next",
-                    "previous": "Previous",
-                    "pause": "Pause",
-                    "play": "Play",
-                    "toggle": "PlayPause",
-                }[action]
-                await _mpris_call(method)
+                await _mpris_call(_PLAYER_METHODS[action])
                 return {"ok": True, "source": "airplay"}
             if source == "spotify":
                 if router is None:
@@ -286,24 +275,14 @@ def make_transport_dispatcher(renderer, router):
                         }
                     return {"error": "no spotify account configured"}
                 device_id = await _spotify_active_device_id(active.sp)
-                if action == "toggle":
-                    await _spotify_toggle(active.sp, device_id)
-                else:
-                    await _spotify_call(active.sp, action, device_id)
+                await _spotify_call(active.sp, action, device_id)
                 return {
                     "ok": True,
                     "source": "spotify",
                     "account": active.account.name,
                 }
             if source == "bluetooth":
-                method = {
-                    "next": "Next",
-                    "previous": "Previous",
-                    "pause": "Pause",
-                    "play": "Play",
-                    "toggle": "PlayPause",
-                }[action]
-                await _bluetooth_call(method)
+                await _bluetooth_call(_PLAYER_METHODS[action])
                 return {"ok": True, "source": "bluetooth"}
             if source == "usbsink":
                 return {

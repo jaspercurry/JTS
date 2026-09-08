@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.peering.avahi.
-
-Renders the template into a tmp_path so we don't touch real
-/etc/avahi/services. avahi-daemon reload is monkey-patched to a
-no-op so tests don't shell out.
-
-Reload ownership note: ``render_and_install`` now lets the shared
-``jasper.net.avahi_service.render_service`` own the reload (it reloads only on
-``RenderResult.WROTE``), so the render-path reload fires through
-``jasper.net.avahi_service.reload_avahi``. ``uninstall`` still drives peering's
-own ``_reload_avahi``. The autouse fixture suppresses BOTH so no test
-shells out; the unchanged-render test asserts against the render-path
-reload (``avahi_service.reload_avahi``).
-"""
+"""Peering Avahi files use temporary paths and a stubbed reload."""
 from __future__ import annotations
 
 
@@ -42,12 +29,9 @@ _TEMPLATE = """<?xml version="1.0" standalone='no'?>
 
 @pytest.fixture(autouse=True)
 def _no_reload(monkeypatch):
-    """Suppress the real avahi-daemon reload during tests, on BOTH paths:
-    the render path (now owned by avahi_service.render_service →
-    avahi_service.reload_avahi) and the uninstall path (peering's own
-    _reload_avahi)."""
-    monkeypatch.setattr(avahi_mod, "_reload_avahi", lambda: None)
-    monkeypatch.setattr(avahi_service, "reload_avahi", lambda: None)
+    calls = []
+    monkeypatch.setattr(avahi_service, "reload_avahi", lambda: calls.append(1))
+    return calls
 
 
 def test_render_substitutes_all_tokens(tmp_path):
@@ -118,28 +102,35 @@ def test_unknown_token_refused(tmp_path):
     assert not rendered.exists()
 
 
-def test_uninstall_is_idempotent(tmp_path):
-    """Removing a non-existent file shouldn't raise (called on every
-    mode=off transition, even when peering was never on)."""
-    avahi_mod.uninstall(rendered_path=str(tmp_path / "nope.xml"))  # no raise
-
-
-def test_uninstall_removes_existing(tmp_path):
+@pytest.mark.parametrize("reload", [True, False])
+def test_uninstall_reloads_only_after_removal(tmp_path, _no_reload, reload):
     target = tmp_path / "rendered.xml"
     target.write_text("anything")
-    avahi_mod.uninstall(rendered_path=str(target))
+    avahi_mod.uninstall(rendered_path=str(target), reload_avahi=reload)
     assert not target.exists()
+    assert _no_reload == ([1] if reload else [])
+    _no_reload.clear()
+    avahi_mod.uninstall(rendered_path=str(target), reload_avahi=reload)
+    assert _no_reload == []
 
 
-def test_skip_write_when_unchanged(tmp_path, monkeypatch):
+def test_uninstall_failure_does_not_reload(tmp_path, monkeypatch, _no_reload):
+    target = tmp_path / "rendered.xml"
+    target.write_text("anything")
+
+    def fail_unlink(path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(avahi_mod.os, "unlink", fail_unlink)
+    avahi_mod.uninstall(rendered_path=str(target))
+    assert target.exists()
+    assert _no_reload == []
+
+
+def test_skip_write_when_unchanged(tmp_path, _no_reload):
     """Idempotent re-render: if the rendered output matches what's on
     disk, skip the write. Avoids spamming avahi reload on every
-    daemon restart.
-
-    The reload is now owned by avahi_service.render_service (it fires only
-    on RenderResult.WROTE), so the no-reload assertion patches the
-    render-path reload — jasper.net.avahi_service.reload_avahi — not peering's
-    own _reload_avahi (which now only drives uninstall)."""
+    daemon restart."""
     template = tmp_path / "template.xml"
     template.write_text(_TEMPLATE)
     rendered = tmp_path / "rendered.xml"
@@ -151,12 +142,7 @@ def test_skip_write_when_unchanged(tmp_path, monkeypatch):
         rendered_path=str(rendered),
     )
     original = rendered.read_text()
-    rendered.stat().st_mtime_ns
-
-    # Track reload calls during second invocation. render_service drives
-    # the reload now, so patch avahi_service.reload_avahi.
-    reload_calls = []
-    monkeypatch.setattr(avahi_service, "reload_avahi", lambda: reload_calls.append(1))
+    _no_reload.clear()
 
     # Second call with same params — should be a no-op write (UNCHANGED).
     avahi_mod.render_and_install(
@@ -167,53 +153,21 @@ def test_skip_write_when_unchanged(tmp_path, monkeypatch):
     # File content unchanged; reload not triggered.
     assert rendered.read_text() == original
     # Can't reliably assert mtime equality (filesystems have varying precision) — the load-bearing thing is no reload.
-    assert reload_calls == []
+    assert _no_reload == []
 
 
-def test_render_reload_is_driven_by_render_service(tmp_path, monkeypatch):
-    """On an actual write, the reload fires through the shared
-    avahi_service.reload_avahi (render_service owns it) — not peering's own
-    _reload_avahi. This pins the reload-ownership move: render_and_install
-    passes reload=reload_avahi down and no longer drives the reload itself.
-    """
+@pytest.mark.parametrize("reload", [True, False])
+def test_render_reloads_after_write(tmp_path, _no_reload, reload):
     template = tmp_path / "template.xml"
     template.write_text(_TEMPLATE)
     rendered = tmp_path / "rendered.xml"
-
-    render_path_reloads: list = []
-    peering_reloads: list = []
-    monkeypatch.setattr(avahi_service, "reload_avahi", lambda: render_path_reloads.append(1))
-    monkeypatch.setattr(avahi_mod, "_reload_avahi", lambda: peering_reloads.append(1))
 
     ok = avahi_mod.render_and_install(
         peer_id="alice", room="kitchen", primary=True,
         template_path=str(template),
         rendered_path=str(rendered),
-        reload_avahi=True,
-    )
-    assert ok is True
-    # The write went through render_service, so its reload fired once;
-    # peering's own _reload_avahi (uninstall-only now) was NOT called.
-    assert render_path_reloads == [1]
-    assert peering_reloads == []
-
-
-def test_render_reload_false_suppresses_reload(tmp_path, monkeypatch):
-    """reload_avahi=False is forwarded to render_service as reload=False, so
-    even a real write does not reload (install.sh batches its own)."""
-    template = tmp_path / "template.xml"
-    template.write_text(_TEMPLATE)
-    rendered = tmp_path / "rendered.xml"
-
-    render_path_reloads: list = []
-    monkeypatch.setattr(avahi_service, "reload_avahi", lambda: render_path_reloads.append(1))
-
-    ok = avahi_mod.render_and_install(
-        peer_id="alice", room="kitchen", primary=True,
-        template_path=str(template),
-        rendered_path=str(rendered),
-        reload_avahi=False,
+        reload_avahi=reload,
     )
     assert ok is True
     assert rendered.exists()
-    assert render_path_reloads == []
+    assert _no_reload == ([1] if reload else [])

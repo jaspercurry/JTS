@@ -13,11 +13,7 @@
 > (that plan's Supersessions section). Preserved for primary-source
 > archaeology — specific facts (seams, symbol names, the §5/§9 repository
 > claims) will drift over time. Read this for the narrative, not for current
-> state. That supersession still holds: this document replaced the
-> prescriptive schema/lexicon approach in
-> [`tuning-bench-design.md`](tuning-bench-design.md) and
-> [`tuning-bench-execution-plan.md`](tuning-bench-execution-plan.md), and
-> neither comes back.
+> state.
 > No implementation ships from this document.
 >
 > Amended and adversarially re-reviewed 2026-07-28 with a verified-seam
@@ -1531,13 +1527,6 @@ snapshot are not part of this direction:
   workbench seam is proven;
 - a new implementation of any measurement math already owned by
   `jasper.audio_measurement`.
-
-Useful evidence and operational traps recorded in those historical documents
-remain valuable input during implementation. They are not current
-architecture. The load-bearing subset — the verified kernel traps, the
-isolation-lease facts, and the transport split — has been inlined into §5
-and §9's per-rung seams and traps; consult the historical docs for
-narrative context, not for contracts.
 
 ## 13. Deferred
 

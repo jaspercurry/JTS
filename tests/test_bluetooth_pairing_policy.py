@@ -165,11 +165,15 @@ def test_no_code_agent_startup_floor_uses_adapter_close_api():
     assert calls == [False]
 
 
-def test_no_code_agent_closes_pairable_when_window_is_not_open():
+@pytest.mark.parametrize(
+    ("pairable", "discoverable", "expected"),
+    ((False, False, False), (False, True, False), (True, False, True), (True, True, False)),
+)
+def test_no_code_agent_closes_only_pairable_outside_a_window(pairable, discoverable, expected):
     calls: list[bool] = []
 
     async def fake_state() -> dict[str, bool]:
-        return {"discoverable": False, "pairable": True}
+        return {"discoverable": discoverable, "pairable": pairable}
 
     async def fake_close(value: bool) -> None:
         calls.append(value)
@@ -181,28 +185,8 @@ def test_no_code_agent_closes_pairable_when_window_is_not_open():
         ),
     )
 
-    assert closed is True
-    assert calls == [False]
-
-
-def test_no_code_agent_leaves_open_pairing_window_alone():
-    calls: list[bool] = []
-
-    async def fake_state() -> dict[str, bool]:
-        return {"discoverable": True, "pairable": True}
-
-    async def fake_close(value: bool) -> None:
-        calls.append(value)
-
-    closed = asyncio.run(
-        no_code_agent._enforce_pairable_floor_once(
-            read_state=fake_state,
-            close_pairing_window=fake_close,
-        ),
-    )
-
-    assert closed is False
-    assert calls == []
+    assert closed is expected
+    assert calls == ([False] if expected else [])
 
 
 def _assert_rejected(exc: BaseException) -> None:
@@ -440,21 +424,19 @@ def test_floor_watch_runs_the_unbonded_trust_sweep():
     assert swept == 1
 
 
-def test_floor_needs_two_observations_before_closing_a_window():
-    """A single observation would lower the bondable flag mid-pair.
-
-    An outbound pair raises Pairable for the whole Pair() call -- up to its
-    60 s timeout on a remote that needs a button press -- from a different
-    process, and reads pairable-without-discoverable the entire time. Closing
-    on the first sighting makes the bond silently not form, which is the
-    defect this watch would cause rather than catch.
-    """
+@pytest.mark.parametrize("final_read", ("unchanged", "open", "failed"))
+async def test_floor_needs_two_observations_and_a_fresh_read(final_read):
     closes: list[bool] = []
     stop = asyncio.Event()
     passes = 0
+    reads = 0
 
     async def read_state():
-        return {"pairable": True, "discoverable": False}
+        nonlocal reads
+        reads += 1
+        if reads == 3 and final_read == "failed":
+            raise RuntimeError("adapter unavailable")
+        return {"pairable": True, "discoverable": reads == 3 and final_read == "open"}
 
     async def close_pairing_window(value):
         closes.append(value)
@@ -462,32 +444,25 @@ def test_floor_needs_two_observations_before_closing_a_window():
     async def sweep():
         nonlocal passes
         passes += 1
-        # Observe how many closes happened after ONE pass, then let a second
-        # pass run and stop.
         if passes == 1:
-            assert closes == [], "closed on a single observation"
+            assert closes == []
         if passes >= 2:
             stop.set()
         return ()
 
-    async def scenario():
-        await asyncio.wait_for(
-            no_code_agent._pairable_floor_watch(
-                stop,
-                interval=0.01,
-                read_state=read_state,
-                close_pairing_window=close_pairing_window,
-                sweep=sweep,
-            ),
-            timeout=2.0,
-        )
+    await asyncio.wait_for(
+        no_code_agent._pairable_floor_watch(
+            stop,
+            interval=0.01,
+            read_state=read_state,
+            close_pairing_window=close_pairing_window,
+            sweep=sweep,
+        ),
+        timeout=2.0,
+    )
 
-    try:
-        asyncio.run(scenario())
-    except asyncio.TimeoutError:
-        pass
-
-    assert closes == [False], "second consecutive observation must close"
+    assert reads == 3
+    assert closes == ([False] if final_read == "unchanged" else [])
 
 
 class _AgentManagerStub:

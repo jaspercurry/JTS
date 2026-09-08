@@ -27,14 +27,9 @@ SINCE="${SINCE:-5 minutes ago}"
 
 PATTERN='event=|wake detected|turn ended|source transition|preempting|active source'
 
-# `-u 'jasper-*'` uses systemd unit-name globbing (supported by
-# journalctl since v245). Captures every jasper-* daemon without
-# enumerating them — adds new units automatically as they're added
-# to install.sh. Pi-side grep filters down to event-relevant lines
-# before the bytes ever cross SSH.
-remote_cmd="journalctl --output=short-iso -f --since '${SINCE}' \
-    -u 'jasper-*' \
-    | grep --line-buffered -E '${PATTERN}'"
+# journalctl expands the unit glob; grep filters before logs cross SSH.
+remote_cmd="$(quote_args journalctl --output=short-iso -f --since "$SINCE" -u 'jasper-*') \
+    | $(quote_args grep --line-buffered -E "$PATTERN")"
 
 exec ssh -o BatchMode=yes -o ConnectTimeout=5 \
     "${PI_USER}@${PI_HOST}" "${remote_cmd}"
