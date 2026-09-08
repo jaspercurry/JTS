@@ -783,7 +783,7 @@ class Pass:
 
     # -- registry and graph probes ------------------------------------------
 
-    def active_graph_status(self, cap_channels: object) -> tuple[bool, Any]:
+    def active_graph_status(self, cap_channels: int) -> tuple[bool, Any]:
         """The active-graph cutover gate. DRIVE WHAT WE USE, not the DAC's
         full channel count.
 
@@ -795,17 +795,13 @@ class Pass:
         ``(False, reason)`` and every caller fails closed.
         """
         try:
-            cap = int(cap_channels)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return False, "active_graph_cap_channels_invalid"
-        try:
             # lazy: 5k lines of contract the --print-env path never reaches.
             from jasper.active_speaker.runtime_contract import (
                 outputd_active_lane_decision,
             )
 
             decision = outputd_active_lane_decision(
-                cap,
+                cap_channels,
                 statefile_path=self.camilla_statefile,
                 crossover_statefile_path=self.camilla2_statefile,
                 topology_path=self.output_topology_path,
@@ -822,13 +818,16 @@ class Pass:
             return False, decision.reason
         return True, (str(decision.width), decision.endpoint_device or "")
 
-    def active_lane_channels_for_dac(self, dac_id: str) -> str:
-        """A recognized single DAC's active-lane channel CAP. THREE-VALUED:
-        ``<n>`` the cap, ``none`` the registry answering "no active lane", and
-        ``""`` no answer at all — the probe itself failed. The last two need
-        different remedies, so they must not collapse."""
+    def active_lane_channels_for_dac(self, dac_id: str) -> tuple[int | None, bool]:
+        """A recognized single DAC's active-lane channel CAP, and whether the
+        registry ITSELF answered "this DAC declares no active lane".
+
+        THREE-VALUED: ``(n, False)`` the cap, ``(None, True)`` the registry's
+        own "no active lane", and ``(None, False)`` no answer at all — the probe
+        itself failed. The last two need different remedies, so they must not
+        collapse."""
         if not dac_id:
-            return ""
+            return None, False
         try:
             from jasper.audio_hardware.dac import (
                 active_outputd_lane_channels_for,
@@ -840,10 +839,10 @@ class Pass:
         # noqa reason: three-valued by design — a probe that failed for any reason
         # answers "no answer", which the caller reports as the transient it is.
         except Exception:  # noqa: BLE001
-            return ""
+            return None, False
         if width:
-            return str(width)
-        return "none" if known else ""
+            return int(width), False
+        return None, bool(known)
 
     def final_edge_format_for_dac(self, dac_id: str) -> tuple[str, str]:
         """A recognized DAC's declared final-edge ALSA format AND its outputd
@@ -1225,17 +1224,18 @@ class Pass:
         active_channels = ""
         active_endpoint_device = ""
         graph_status = ""
-        active_lane_cap = self.active_lane_channels_for_dac(self.output_dac_id)
+        active_lane_cap, declares_no_lane = self.active_lane_channels_for_dac(
+            self.output_dac_id
+        )
         # Three outcomes, three remedies. All resolve passive (fail-closed);
         # they differ only in what an operator reading the journal should do.
-        if active_lane_cap == "none":
+        if declares_no_lane:
             # The registry answered: this DAC declares no active outputd lane,
             # so the width gate never ran. Fixed only by choosing a different
             # layout at /sound/setup/. Same literal as that save-guard's
             # refusal reason.
             graph_status = "dac_no_active_lane"
-            active_lane_cap = ""
-        elif active_lane_cap:
+        elif active_lane_cap is not None:
             ok, payload = self.active_graph_status(active_lane_cap)
             if ok:
                 active_mode = True
@@ -1928,7 +1928,7 @@ def _install_signal_traps(run: Pass) -> dict[int, Any]:
     signal, which is the only place the cause is recorded."""
 
     def handler(signum: int, _frame: Any) -> None:
-        status, name = _SIGNAL_EXITS[signum]
+        status, name = _SIGNAL_EXITS[signal.Signals(signum)]
         run.signalled = name
         raise SystemExit(status)
 
