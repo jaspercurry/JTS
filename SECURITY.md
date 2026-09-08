@@ -104,6 +104,10 @@ automatically (embedded in each page behind the read guard, read by
 - `POST /system/poweroff` / `POST /system/reboot` — power off / reboot.
 - `POST /system/restart/voice` / `POST /system/restart/audio` — restart the
   assistant / the audio chain.
+- `POST /system/audio-quality` — rewrites the resampler choice, re-renders
+  `asound.conf`, and restarts every music renderer.
+- `POST /system/usb-latency` — changes the USB buffer target and reconciles the
+  CamillaDSP coupling, pausing audio for every listener.
 - `POST /usb-forensics` — enable/disable the bounded USB sampler, freeze its
   local evidence, or request the gadget-only repair restart.
 - `POST /mic/mute` — the legacy route behind the dashboard's Voice assistant
@@ -119,6 +123,10 @@ automatically (embedded in each page behind the read guard, read by
   AEC build.
 - `POST /aec/commission` — starts the audible chip-AEC re-measurement
   oneshot, which stops voice and the AEC stack for minutes.
+- `POST /measurement/hold` / `POST /measurement/release` — take or drop the
+  cross-process measurement mutex. A hold gates household volume observations
+  and locks out every other measurement; a release can un-gate somebody's live
+  capture mid-sweep.
 - `POST /grouping/set` — rewires multiroom output routing. This route
   **additionally** accepts a distinct **household credential**
   (`X-JTS-Household`) for the cross-device bond fan-out — a paired peer

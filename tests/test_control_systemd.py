@@ -168,6 +168,13 @@ def test_readwritepaths_pins_control_write_contracts():
         "directory must lose the render, not the whole control plane. "
         f"Got {paths!r}"
     )
+    assert "-/var/lib/camilladsp/configs" in paths, (
+        "ReadWritePaths must include /var/lib/camilladsp/configs; the /system "
+        "usb-latency control runs the coupling reconcile in-process, which "
+        "takes the shared DSP-writer lock at .dsp_apply.lock there. The `-` "
+        "is required: a box without the directory must lose the reconcile, "
+        f"not the whole control plane. Got {paths!r}"
+    )
     assert "/etc/avahi/services" in paths, (
         "ReadWritePaths must include /etc/avahi/services; wake-response "
         "peering renders /etc/avahi/services/jasper-peer.service from inside "

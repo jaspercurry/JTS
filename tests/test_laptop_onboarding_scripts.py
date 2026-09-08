@@ -22,6 +22,9 @@ LIB = ROOT / "scripts" / "_lib.sh"
 USE = ROOT / "scripts" / "use"
 ENV_LOCAL = ROOT / ".env.local"
 ISOLATED_SCRIPTS = (DEPLOY, ONBOARD, LIB, USE)
+# Resolved before any test prepends the fake-remote bin dir, so the shim below
+# can hand real work back to a real interpreter.
+REAL_PYTHON3 = shutil.which("python3")
 
 
 def fake_peer_id(host: str) -> str:
@@ -248,6 +251,28 @@ exit 0
 """
 
 
+# deploy-to-pi.sh's USB-gadget advisory resolves PI_HOST through
+# `python3 - "$PI_HOST"` running socket.getaddrinfo
+# (resolve_pi_host_ipv4_addrs). These tests drive the REAL hostname
+# jts3.local, so without this shim the suite's verdict depends on what the
+# laptop's mDNS happens to answer. Shadow only that stdin script — exit 0
+# with no output, the "address unknown, skip the advisory" path CI takes —
+# and exec the real interpreter for everything else, so _lib.sh's
+# `python3 jasper/usb_network.py advisory-cidrs` keeps working. Mirrors
+# test_lib_deploy_direction.py's `_git_shim_dir`: shadow one binary, pass
+# the rest through.
+FAKE_PYTHON3 = r"""#!/usr/bin/env bash
+if [[ "$1" == "-" ]]; then
+    script="$(cat)"
+    if [[ "$script" == *getaddrinfo* ]]; then
+        exit 0
+    fi
+    exec "@PYTHON3@" "$@" <<< "$script"
+fi
+exec "@PYTHON3@" "$@"
+"""
+
+
 @contextmanager
 def isolated_checkout(env_local: str | None, *, dirty: bool = False):
     """Clone a disposable checkout with independent state and index."""
@@ -302,6 +327,10 @@ class FakeRemote:
         self._write_executable(self.bin / "ping", FAKE_PING)
         self._write_executable(self.bin / "sleep", FAKE_SLEEP)
         self._write_executable(self.bin / "ssh-keygen", FAKE_SSH_KEYGEN)
+        assert REAL_PYTHON3, "python3 not found on PATH"
+        self._write_executable(
+            self.bin / "python3", FAKE_PYTHON3.replace("@PYTHON3@", REAL_PYTHON3)
+        )
         test_case.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
 
     @staticmethod
@@ -879,7 +908,13 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                         "event=deploy.install_poll_reconnected", result.stderr
                     )
                 else:
-                    self.assertNotIn("install_poll_reconnect", result.stderr)
+                    # Anchored to the emitted event line, not the substring:
+                    # the gadget-network advisory's prose names the same event
+                    # in parentheses.
+                    self.assertNotIn(
+                        "event=deploy.install_poll_reconnect host=",
+                        result.stderr,
+                    )
                 if "FAKE_LAUNCH_RC" in overrides:
                     self.assertIn(
                         "event=deploy.install_launch_uncertain", result.stderr
