@@ -22,6 +22,7 @@ from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.active_speaker.crossover_v2.round_captures import (
     RoundCapturesRefused,
     discover_captures,
+    doc_pose_key,
 )
 from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round
 
@@ -145,3 +146,43 @@ def test_a_missing_input_is_refused_by_name(
         discover_captures(make(tmp_path))
     assert excinfo.value.reason == reason
     assert excinfo.value.detail.items() >= evidence.items()
+
+
+@pytest.mark.parametrize(
+    ("doc", "key"),
+    [
+        (
+            {"position_deg": 0, "vertical_deg": 0, "mark_distance_m": 1.0},
+            "az+0.00_el+0.00_d+1.00",
+        ),
+        # No ``pose_kind``: the doc is the bearing it always was, and a stray
+        # offset is not a seat.
+        (
+            {
+                "position_deg": 0, "vertical_deg": 0, "mark_distance_m": 1.0,
+                "seat_offset_m": [0.3, 0.0, 0.0],
+            },
+            "az+0.00_el+0.00_d+1.00",
+        ),
+        (
+            {
+                "position_deg": 0, "vertical_deg": 0, "mark_distance_m": None,
+                "pose_kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0],
+            },
+            "seat_az+0.00_el+0.00_dna_r+0.30_f+0.00_u+0.00",
+        ),
+        (
+            {
+                "position_deg": 0, "vertical_deg": 0, "mark_distance_m": 0.3,
+                "pose_kind": "close", "seat_offset_m": None,
+            },
+            "close_az+0.00_el+0.00_d+0.30",
+        ),
+    ],
+    ids=["bearing", "offset-without-a-kind", "seat", "close"],
+)
+def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
+    doc: dict, key: str
+) -> None:
+    """A kind prefixes the key; a bearing's stays byte-identical (#3503)."""
+    assert doc_pose_key(doc) == key

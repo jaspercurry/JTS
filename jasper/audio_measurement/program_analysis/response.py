@@ -268,8 +268,13 @@ def _driver_response(
     n_fft: int,
     radiated_band_hz: tuple[float, float] | None = None,
     capture_segment: np.ndarray | None = None,
+    gate_exempt_reason: str | None = None,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
+
+    ``gate_exempt_reason`` keeps the room in: the response is the arrival
+    window ungated, with :func:`gating.exempt_gating_block` saying why and no
+    validity floor claimed (a seat take, ADR-0260).
 
     ``radiated_band_hz`` is the band this capture's excitation actually drove —
     the caller's segment sweep bounds. It is the ONLY input the pre/post-gate
@@ -292,20 +297,26 @@ def _driver_response(
         pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
     )
     ir = deconv.apply_arrival_window(full_ir, window)
-    gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
-    applied = fragment["floor_source"] is not None
-    delta = gate_disclosure.pre_post_gate_delta(
-        ir, gated_ir, sample_rate,
-        trusted_floor_hz=fragment["f_trusted_hz"],
-        radiated_band_hz=radiated_band_hz,
-    )
-    gating_block = {
-        "applied": applied,
-        "exempt_reason": None,
-        **fragment,
-        "pre_post_gate_delta": delta,
-    }
-    validity_floor_hz = _gate_floor_hz(fragment)
+    if gate_exempt_reason is not None:
+        gated_ir = ir
+        gating_block = gating.exempt_gating_block(
+            ir, sample_rate, reason=gate_exempt_reason
+        )
+        validity_floor_hz = None
+    else:
+        gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+        delta = gate_disclosure.pre_post_gate_delta(
+            ir, gated_ir, sample_rate,
+            trusted_floor_hz=fragment["f_trusted_hz"],
+            radiated_band_hz=radiated_band_hz,
+        )
+        gating_block = {
+            "applied": fragment["floor_source"] is not None,
+            "exempt_reason": None,
+            **fragment,
+            "pre_post_gate_delta": delta,
+        }
+        validity_floor_hz = _gate_floor_hz(fragment)
 
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))

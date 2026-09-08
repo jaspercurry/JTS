@@ -88,6 +88,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.spatial import (
     LateralPose,
+    MARK_DISTANCE_M,
+    POSITION_AXIS_HORIZONTAL,
+    PositionGeometry,
     entry_baseline_record,
     lateral_pose_record,
 )
@@ -815,7 +818,9 @@ def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]
             curves=(),
         )
         record = lateral_pose_record(
-            pose, position_deg=angle, lateral_consumer="forward_model",
+            pose,
+            geometry=PositionGeometry(POSITION_AXIS_HORIZONTAL, angle, MARK_DISTANCE_M),
+            lateral_consumer="forward_model",
             session_id="capture-1", graph_fingerprint="fp-applied",
             captured_at="2026-08-26T00:00:00Z",
             wav_sha256=f"pose-sha-{index}",

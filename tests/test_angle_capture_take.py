@@ -36,6 +36,7 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
     POLARITY_INVERTED,
     POLARITY_NORMAL,
 )
@@ -45,10 +46,12 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.crossover_v2 import door
 from jasper.active_speaker.crossover_v2.wired_stimulus import (
     CapturedRecordStore, WiredCaptureAnswer,
 )
+from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.playback import PlaybackObservation
 from jasper.audio_measurement.program import RoleBand
@@ -641,6 +644,96 @@ def test_staged_walk_composes_and_analyzes_each_declared_graph(
     assert [{curve["role"] for curve in record["curves"]} for record in records] == [expected_roles] * len(lateral_indexes)
     assert [record["candidate_id"] for record in records] == list(candidate_ids or ("",))
     assert len(list((tmp_path / "crossover_v2/scope-walk").glob("*.wav"))) == len(lateral_indexes)
+
+
+def _seat_index_phases(prompts):
+    return flow.build_v2_cloud_index_phase_map(
+        plan_shape=_hand_shape(), include_cloud_measure=False,
+        include_lateral=True, lateral_prompts=prompts,
+    )
+
+
+def test_a_seat_walk_reaches_the_session_and_plays_the_applied_tune_whole(slot):
+    """A seat stop names no candidate, so it plays the APPLIED tune WHOLE.
+
+    Which is the VERIFY shape at the speaker's own graph, never the base or
+    candidate scope a summed bearing walk selects: the room is measured
+    through the speaker stage it sits on. The pose the household is reading is
+    the pose that spec carries, in the program's own order.
+    """
+    program = mp.program("seat", "express")
+    spool.stage_angle_request(ac.request_for_program(program))
+
+    prompts, _consumer, specs, _trims, _claims = _take()
+
+    assert [(prompt.kind, prompt.seat_offset_m) for prompt in prompts] == [
+        (pose.kind, pose.seat_offset_m) for pose in program.poses
+    ]
+    lateral_indexes = [
+        index for index, phase in _seat_index_phases(prompts).items()
+        if phase == PHASE_LATERAL
+    ]
+    assert [
+        (specs[index].kind, specs[index].graph_scope, specs[index].candidate_id,
+         specs[index].pose_prompts)
+        for index in lateral_indexes
+    ] == [
+        (MEASURE_KIND_VERIFY, "speaker_tune", "", (prompt.text,))
+        for prompt in prompts
+    ]
+
+
+def test_a_seat_take_is_analyzed_ungated_and_banks_its_kind(slot):
+    """The room stays in the read, and the banked take says where it was.
+
+    The exemption reaches the analyze seam for the WALK's captures only — the
+    session's own CHECK and MEASURE are gated as ever. Each pose banks its
+    category, the offset from the head it was stated from, no mark distance,
+    and whether its own analysis gated — so seven-of-these at one bearing key
+    apart instead of collapsing onto each other.
+    """
+    program = mp.program("seat", "express")
+    spool.stage_angle_request(ac.request_for_program(program))
+    prompts, consumer, specs, _trims, claims = _take()
+    index_phases = _seat_index_phases(prompts)
+    fakes = FakeSeams()
+    records, analyses = [], []
+    seams = fakes.seams()
+
+    def analyze(*args, **kwargs):
+        analyses.append(seams.analyze(*args, **kwargs))
+        return analyses[-1]
+
+    conductor = _conductor(
+        fakes, index_phase_map=index_phases, lateral_prompts=prompts,
+        lateral_consumer=consumer, lateral_claims=claims,
+        measure_specs_by_index=specs,
+        seams=replace(
+            seams, analyze=analyze,
+            bank_take=bank_into(records, phase=PHASE_LATERAL),
+        ),
+    )
+    _run_phase(conductor, 1, 1)
+    _run_phase(conductor, 2, 1)
+    lateral_indexes = [
+        index for index, phase in index_phases.items() if phase == PHASE_LATERAL
+    ]
+    for index in lateral_indexes:
+        assert _run_phase(conductor, index, 1)["accepted"] is True
+
+    assert [geometry.gate_exempt_reason for *_head, geometry in fakes.analyzed] == (
+        [None, None] + [gating.SEAT_EXEMPT] * len(lateral_indexes)
+    )
+    assert [
+        (record["pose_kind"], record["seat_offset_m"], record["mark_distance_m"],
+         record["gating_applied"])
+        for record in records
+    ] == [
+        (mp.POSE_KIND_SEAT, list(pose.seat_offset_m), None,
+         bool(analysis.summed_response.gating["applied"]))
+        for pose, analysis in zip(program.poses, analyses[-len(records):])
+    ]
+    assert len({doc_pose_key(record) for record in records}) == len(records)
 
 
 @pytest.mark.parametrize("delay_us", [0.0, 250.0])

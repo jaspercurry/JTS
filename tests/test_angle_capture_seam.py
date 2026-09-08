@@ -15,19 +15,24 @@ review: this feature is NOT a route around the retired lateral-walk statistic.
 4. mover parity, and the record/receipt shape the shipped consumers read;
 5. the ELEVATION axis -- the same construction one plane over, its per-mover
    reach, and the one clause it adds to what a household reads;
-6. the PROGRAM door -- a named table becomes a walk, in the table's order.
+6. the PROGRAM door -- a named table becomes a walk, in the table's order;
+7. CATEGORIZED poses -- a seat or close take says where it was stated from,
+   and every bearing resolves byte-identically to before they existed.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import itertools
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.journey import (
@@ -46,8 +51,15 @@ from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
-from jasper.active_speaker.crossover_v2.spatial import cloud_position_record
+from jasper.active_speaker.crossover_v2.spatial import (
+    cloud_position_record,
+    pose_kind_fields,
+)
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
+from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.cli import angle_capture as cli
+from tests.crossover_v2_banked_round import bank_seat_round
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 _FC_HZ = 2000.0
@@ -1145,3 +1157,272 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
     gate.abandon_hold()
     with pytest.raises(CaptureBeginDeferred):
         gate.gate(5, 6, third)
+
+
+# --------------------------------------------------------------------------- #
+# 7. categorized poses: a seat is stated from the head, a close from the baffle
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def spool_slot(tmp_path, monkeypatch):
+    """A writable pending slot, and an idle speaker.
+
+    Same shape and same reason as the take suite's: without the redirects a
+    staged document would land in the real ``/var/lib/jasper`` and read
+    whatever measurement state the machine running the suite happens to hold.
+    """
+    spool.set_angle_request_spool_path_for_tests(tmp_path / "angle_request.json")
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH",
+        tmp_path / "session_volume.json",
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.session_volume_plan.read_measurement_hold", lambda: None,
+    )
+    try:
+        yield
+    finally:
+        spool.set_angle_request_spool_path_for_tests(None)
+
+
+@pytest.mark.parametrize(
+    ("program_id", "size"),
+    [("seat", "cube"), ("seat", "express"), ("close", "spot")],
+    ids=["seat/cube", "seat/express", "close/spot"],
+)
+def test_a_categorized_program_walks_summed_whatever_the_candidates_say(
+    program_id: str, size: str,
+) -> None:
+    """The room is measured THROUGH the speaker stage it sits on.
+
+    So a seat or close pose is a SUMMED capture even with no candidate named,
+    which for a bearing selects per-driver. The category, the standoff and the
+    head offset ride from the table's pose onto the stop unchanged.
+    """
+    program = mp.program(program_id, size)
+    request = ac.request_for_program(program, candidates=())
+
+    assert {stop.regime for stop in request.stops} == {ac.REGIME_SUMMED}
+    assert [(s.kind, s.distance_m, s.seat_offset_m) for s in request.stops] == [
+        (p.kind, p.distance_m, p.seat_offset_m) for p in program.poses
+    ]
+    price = ac.walk_price(request)
+    assert (price["mic_moves"], price["captures"]) == (
+        program.mic_move_count, program.capture_count,
+    )
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [
+        ac.AngleStop(
+            0, ac.REGIME_SUMMED,
+            kind=mp.POSE_KIND_SEAT, seat_offset_m=(0.0, 0.0, 0.0),
+        ),
+        ac.AngleStop(0, ac.REGIME_SUMMED, kind=mp.POSE_KIND_CLOSE, distance_m=0.3),
+    ],
+    ids=["seat", "close"],
+)
+def test_an_arm_reaches_bearings_at_the_mark_and_nothing_else(
+    stop: ac.AngleStop,
+) -> None:
+    """The arm TURNS at the mark, so no pose stated from anywhere else is its.
+
+    Refused at statement time, in the same words a bearing past its envelope
+    is refused in -- a person walks the same stop without argument.
+    """
+    with pytest.raises(ac.LateralWalkRefused) as excinfo:
+        ac.AngleCaptureRequest(stops=(stop,), mover=ac.MOVER_ARM)
+
+    assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
+    assert ac.AngleCaptureRequest(stops=(stop,), mover=ac.MOVER_HUMAN).stops == (stop,)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"kind": "nearfield"},
+        {"kind": mp.POSE_KIND_SEAT},
+        {"seat_offset_m": (0.0, 0.0, 0.0)},
+        {"kind": mp.POSE_KIND_SEAT, "seat_offset_m": (0.0, 0.0)},
+        {"distance_m": 0},
+        {"distance_m": -1},
+    ],
+    ids=[
+        "unknown-kind", "seat-with-no-offset", "bearing-with-an-offset",
+        "an-offset-of-two", "no-distance", "a-distance-behind-the-speaker",
+    ],
+)
+def test_a_stop_refuses_a_kind_it_cannot_state(fields: dict) -> None:
+    """A stop states a place completely or refuses -- never half of one."""
+    with pytest.raises(flow.CrossoverV2FlowError):
+        ac.AngleStop(0, ac.REGIME_SUMMED, **fields)
+
+
+def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
+    """Seven places around one head, each its own sentence and no mark at all.
+
+    A seat pose has no bearing to be at, so ``at_mark`` is false for every one
+    of them and the geometry claims no mark distance -- the take record says
+    where the head was instead.
+    """
+    program = mp.program("seat", "cube")
+    stops = ac.resolve_request(ac.request_for_program(program))
+
+    assert len(stops) == len({stop.prompt.text for stop in stops}) == 7
+    assert not any(stop.prompt.at_mark for stop in stops)
+    for stop, pose in zip(stops, program.poses):
+        geometry = flow.position_geometry(stop.prompt)
+        assert (geometry.kind, geometry.degrees, geometry.mark_distance_m) == (
+            mp.POSE_KIND_SEAT, 0, None,
+        )
+        assert geometry.seat_offset_m == pose.seat_offset_m
+
+
+def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:
+    """The close reference is on the design axis, at a standoff it declares."""
+    stop, = ac.resolve_request(ac.request_for_program(mp.program("close", "spot")))
+    geometry = flow.position_geometry(stop.prompt)
+
+    assert (geometry.kind, geometry.degrees, geometry.seat_offset_m) == (
+        mp.POSE_KIND_CLOSE, 0, None,
+    )
+    assert geometry.mark_distance_m == mp.CLOSE_DISTANCE_M
+    assert flow.position_angle_deg(stop.prompt) == 0
+
+
+#: The four sentences ``baseline/express`` prompts, transcribed from a walk
+#: resolved BEFORE poses had a kind. Copy is the half of a walk a person acts
+#: on, so it is stated here literally rather than re-derived.
+_ON_AXIS = (
+    "Leave the microphone on the design axis (0°). "
+    "On the mark, 1 m out, pointed at the speaker."
+)
+_LEFT_20 = (
+    "Turn the microphone to -20° (20° LEFT of the design axis). "
+    "Keep it 1 m from the speaker and pointed at it."
+)
+_RIGHT_20 = (
+    "Turn the microphone to +20° (20° RIGHT of the design axis). "
+    "Keep it 1 m from the speaker and pointed at it."
+)
+_RAISED = (
+    "Keep the microphone on the design axis (0°), and 10° {word} mark "
+    "height — that is 7 in (18 cm) at the declared 1 m. "
+    "On the mark, 1 m out, pointed at the speaker."
+)
+
+#: ``baseline/express``, as it resolved before ADR-0260's poses existed:
+#: ``(angle_deg, elevation_deg, prompt text, degrees, vertical_deg)`` per stop,
+#: in walk order and with the anchor's four repeats spelled out.
+_GOLDEN_BASELINE_EXPRESS = (
+    (0, 0, _ON_AXIS, 0, 0),
+    (0, 0, _ON_AXIS, 0, 0),
+    (0, 0, _ON_AXIS, 0, 0),
+    (0, 0, _ON_AXIS, 0, 0),
+    (-20, 0, _LEFT_20, -20, 0),
+    (20, 0, _RIGHT_20, 20, 0),
+    (0, -10, _RAISED.format(word="BELOW"), 0, -10),
+    (0, 10, _RAISED.format(word="ABOVE"), 0, 10),
+)
+
+
+@pytest.mark.parametrize(
+    ("candidates", "regime", "phase", "price"),
+    [
+        ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
+         {"mic_moves": 5, "captures": 8, "ceiling_min": 46}),
+        (("", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
+         {"mic_moves": 5, "captures": 16, "ceiling_min": 60}),
+    ],
+    ids=["no-cycle", "two-candidates"],
+)
+def test_the_shipped_programs_resolve_exactly_as_before(
+    candidates: tuple[str, ...], regime: str, phase: str, price: dict,
+) -> None:
+    """The pose category is ADDITIVE: every bearing walk is what it always was.
+
+    Transcribed from a walk captured before poses had a kind -- copy, order,
+    repeats, advance policy, geometry and price -- so a categorized pose that
+    leaked into the bearing path fails here rather than in a household's
+    prompt. A bearing's geometry adds NO keys to the take record either.
+    """
+    request = ac.request_for_program(
+        mp.program("baseline", "express"), candidates=candidates,
+    )
+    stops = ac.resolve_request(request)
+    geometries = [flow.position_geometry(stop.prompt) for stop in stops]
+
+    assert [
+        (stop.angle_deg, stop.elevation_deg, stop.regime, stop.program_phase,
+         dict(stop.screen), stop.prompt.text,
+         geometry.axis, geometry.degrees, geometry.mark_distance_m,
+         geometry.vertical_deg)
+        for stop, geometry in zip(stops, geometries)
+    ] == [
+        (angle, elevation, regime, phase, {"auto_advance": "tap"}, text,
+         "horizontal", degrees, 1.0, vertical)
+        for angle, elevation, text, degrees, vertical in _GOLDEN_BASELINE_EXPRESS
+        # Candidate-MINOR: the cycle repeats under each pose, in place.
+        for _candidate in (candidates or ("",))
+    ]
+    assert [pose_kind_fields(geometry) for geometry in geometries] == [{}] * len(stops)
+    assert ac.walk_price(request) == price
+
+
+def test_a_bearing_walk_stages_the_document_it_always_did(spool_slot) -> None:
+    """The spooled stop is additive too, and reads back as what was staged.
+
+    A bearing's entry carries the four keys it always carried; a categorized
+    one adds ONLY what is true of it -- a seat has no standoff, a close has no
+    head offset -- and both survive the round trip through the document.
+    """
+    bearing_keys = {"angle_deg", "regime", "elevation_deg", "candidate_id"}
+    for program_id, size, extra in (
+        ("baseline", "express", set()),
+        ("seat", "cube", {"kind", "seat_offset_m"}),
+        ("close", "spot", {"kind", "distance_m"}),
+    ):
+        request = ac.request_for_program(mp.program(program_id, size))
+        spool.stage_angle_request(request)
+        document = json.loads(
+            spool.angle_request_spool_path().read_text(encoding="utf-8")
+        )
+
+        assert [set(entry) for entry in document["stops"]] == (
+            [bearing_keys | extra] * len(request.stops)
+        )
+        assert spool.peek_staged_angle_request().stops == request.stops
+        taken = spool.take_staged_angle_request()
+        assert taken.stops == request.stops
+        assert all(
+            stop.seat_offset_m is None
+            or all(isinstance(metres, float) for metres in stop.seat_offset_m)
+            for stop in taken.stops
+        )
+
+
+def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
+    tmp_path: Path,
+) -> None:
+    """The cube reaches the bundle as seven takes nothing can confuse.
+
+    The evidence a later reader opens: each take says it is a seat take, says
+    its response kept the room, claims no mark distance, and keys to its own
+    place -- so seven poses at one bearing are seven poses, not one measured
+    seven times.
+    """
+    bundle, = (bank_seat_round(tmp_path) / "bundle").iterdir()
+    rows = bundle_measurements(bundle, phase=PHASE_LATERAL)
+    takes = [
+        json.loads(take_artifact_path(bundle, row.path).read_text(encoding="utf-8"))
+        for row in rows
+    ]
+
+    assert len(takes) == 7
+    assert {take["pose_kind"] for take in takes} == {mp.POSE_KIND_SEAT}
+    assert {take["gating_applied"] for take in takes} == {False}
+    assert {take["mark_distance_m"] for take in takes} == {None}
+    assert {curve["role"] for take in takes for curve in take["curves"]} == {"summed"}
+    assert len({doc_pose_key(take) for take in takes}) == 7

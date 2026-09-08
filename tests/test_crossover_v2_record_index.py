@@ -123,7 +123,7 @@ async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
             curves=(),
         )
         return spatial.lateral_pose_record(
-            pose, position_deg=0, lateral_consumer="forward_model",
+            pose, geometry=spatial._DESIGN_AXIS_GEOMETRY, lateral_consumer="forward_model",
             session_id="sess-1", graph_fingerprint="fp-applied",
             captured_at="2026-08-28T11:22:33Z", wav_sha256=f"sha-{index}",
             claim=spatial.TakeClaim(candidate_id=candidate_id),
