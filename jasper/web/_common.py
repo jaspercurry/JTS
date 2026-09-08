@@ -87,7 +87,9 @@ from ..env_file import read_env_file, write_env_file  # noqa: F401
 from ..env_load import parse_env_file
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..install_profile import BUILD_MANIFEST_FILE
+from ..local_sources.markers import local_sources_allowed
 from ..log_event import log_event
+from ..multiroom.config import LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
 from ..secret_redaction import redact_secrets
 from ..voice.provider_state import read_active_provider
 
@@ -635,20 +637,13 @@ def bonded_follower_park_reason() -> str:
     ``"role_transition_in_progress"`` (any other reconciler-reported reason,
     collapsed so callers never have to branch on — or leak to a client —
     the reconciler's own internal `blocked_reason` vocabulary).
-    """
-    try:
-        from ..multiroom.config import (
-            LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER,
-            load_config,
-        )
-        from ..multiroom.effective_role import (
-            effective_local_sources_park_reason,
-        )
 
-        reason = effective_local_sources_park_reason(load_config())
-    except Exception:  # noqa: BLE001 — fail-open
-        return ""
-    if reason is None:
+    A presentation mapping over the reconciler-facing verdict
+    (:func:`jasper.local_sources.markers.local_sources_allowed`), which
+    honours a prior reconciler deny when the grouping config cannot be read.
+    """
+    allowed, reason = local_sources_allowed()
+    if allowed:
         return ""
     if reason == LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER:
         return reason

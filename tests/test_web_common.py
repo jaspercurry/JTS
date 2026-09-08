@@ -811,31 +811,37 @@ def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
     assert "stereo pair" in html and "/sound/pair/" in html
 
 
-def test_bonded_follower_park_reason_bounds_to_two_values(monkeypatch):
+@pytest.mark.parametrize("verdict, expected", [
+    # Not parked: a solo/leader speaker, OR a config read failure with NO
+    # prior reconciler deny — markers.local_sources_allowed fails open on
+    # that path (tests/test_local_source_markers.py covers which).
+    ((True, None), ""),
+    # An active bonded follower passes through verbatim — the pair-member
+    # case UI copy already names it.
+    ((False, "bonded_follower"), "bonded_follower"),
+    # A config read failure WITH a prior reconciler deny: markers fails
+    # CLOSED and returns the deny's raw blocked_reason (possibly already
+    # "role_transition_in_progress", possibly something more specific);
+    # either way it collapses here so a client never sees the reconciler's
+    # internal blocked_reason vocabulary.
+    ((False, "role_transition_in_progress"), "role_transition_in_progress"),
+    ((False, "some_other_blocked_reason"), "role_transition_in_progress"),
+])
+def test_bonded_follower_park_reason_bounds_to_two_values(monkeypatch, verdict, expected):
     """/bluetooth/state (issue #3349) needs the WHY, not just the bool
     bonded_follower_active() already gives — but only as one of two bounded
     presentation values, never the reconciler's raw blocked_reason
-    vocabulary verbatim."""
-    import jasper.multiroom.config as mrc
-    import jasper.multiroom.effective_role as er
+    vocabulary verbatim.
+
+    A thin presentation mapping over the markers verdict
+    (jasper.local_sources.markers.local_sources_allowed) — patched directly
+    at that seam. The fail-open-without-a-prior-deny vs
+    fail-closed-with-one distinction on an actual config read error is
+    markers' own contract, pinned in tests/test_local_source_markers.py."""
     import jasper.web._common as common
 
-    monkeypatch.setattr(mrc, "load_config", lambda: object())
-
-    monkeypatch.setattr(er, "effective_local_sources_park_reason", lambda cfg: None)
-    assert common.bonded_follower_park_reason() == ""
-
-    monkeypatch.setattr(
-        er, "effective_local_sources_park_reason",
-        lambda cfg: mrc.LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER,
-    )
-    assert common.bonded_follower_park_reason() == "bonded_follower"
-
-    for other_reason in ("role_transition_in_progress", "some_other_blocked_reason"):
-        monkeypatch.setattr(
-            er, "effective_local_sources_park_reason", lambda cfg, r=other_reason: r,
-        )
-        assert common.bonded_follower_park_reason() == "role_transition_in_progress"
+    monkeypatch.setattr(common, "local_sources_allowed", lambda: verdict)
+    assert common.bonded_follower_park_reason() == expected
 
 
 def test_local_web_host_prefers_mdns_and_rejects_raw_ips():
