@@ -3407,19 +3407,6 @@ def _flat_cutover_event(stderr: str) -> dict[str, str]:
     return fields
 
 
-def _fake_jasper_sound_cli(tmp_path: Path) -> Path:
-    """A ``jasper-sound`` shim backed by the REAL CLI, so this is end-to-end."""
-    script = tmp_path / "jasper-sound"
-    script.write_text(
-        "#!/usr/bin/env bash\n"
-        f"exec {sys.executable} -c "
-        "'from jasper.cli.sound import main; raise SystemExit(main())' \"$@\"\n",
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
-
-
 def _mono_topology_payload() -> dict:
     return {
         "artifact_schema_version": 1,
@@ -3446,7 +3433,6 @@ def _cutover_env(tmp_path: Path) -> dict[str, str]:
     conf_dir = tmp_path / "camilladsp"
     conf_dir.mkdir(exist_ok=True)
     return {
-        "JASPER_SOUND_CLI": str(_fake_jasper_sound_cli(tmp_path)),
         "JASPER_CAMILLA_CONF_DIR": str(conf_dir),
         "PYTHONPATH": str(ROOT),
     }
