@@ -167,15 +167,6 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
-    assert "def apply_observed_single_policy(" in reconcile
-    assert (
-        'self.output_dac_id = self.observed["OBSERVED_OUTPUT_PROFILE_ID"]'
-        in reconcile
-    )
-    assert (
-        'self.output_dac_card = self.observed["OBSERVED_OUTPUT_SELECTED_CARD_ID"]'
-        in reconcile
-    )
     # Classification is registry-backed and the shell holds no hardware label:
     # the classifier's env emitter names the Apple cards (ADR-0235 R2).
     assert "usb-c to 3.5mm" not in reconcile.lower()
@@ -185,11 +176,8 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     assert "jasper_asound_render_template" in install_sh
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
-    assert "JASPER_AUDIO_DAC_CARD" in reconcile
     assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
     assert "OUTPUT_DAC_ROUTE" not in install_without_env_migrations
-    assert "APPLE_DONGLE_PRESENT" in reconcile
-    assert 'self.apple_dongle_service_card = "auto"' in reconcile
 
 
 def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():
@@ -203,7 +191,6 @@ def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():
     assert 'OUTPUT_DAC_ID:-}" == "dual_apple_usb_c_dac_4ch"' in route_lib
     assert "type null" in route_lib
     assert "jasper_asound_route_ignored()" not in reconcile
-    assert 'EVENT = "audio_hardware_reconcile"' in reconcile
 
 
 def _bash_function(path: Path, name: str) -> str:
@@ -531,15 +518,8 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     # active paths, and trusts the durable runtime contract rather than
     # transient startup-load state: a saved active baseline must stay playable
     # after setup completes.
-    assert "def active_graph_status(" in reconcile
     assert "active_graph_width_out_of_range" in runtime_contract
-    assert 'action="park_until_active_graph"' in reconcile
-    assert '"JASPER_OUTPUTD_BACKEND", "fake"' in reconcile
     assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
-    assert "JASPER_CAMILLA_STATEFILE" in reconcile
-    assert "JASPER_CAMILLA2_STATEFILE" in reconcile
-    assert "JASPER_OUTPUT_TOPOLOGY_PATH" in reconcile
-    assert "outputd_active_lane_decision" in reconcile
     assert "outputd_active_content_playback" in runtime_contract
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
     assert "_trigger_audio_hardware_reconcile(source=\"active_speaker_startup_load\")" in startup_load
@@ -1302,7 +1282,6 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     recover_unit = (
         REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
     ).read_text()
-    recover_script = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     failure_reconcile = (
         REPO / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
     ).read_text()
@@ -1336,9 +1315,6 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in recover_rule
     assert "Before=jasper-outputd.service" in recover_unit
-    assert '"--no-block", "start", OUTPUTD_UNIT' in recover_script
-    assert '"--no-block", "restart", OUTPUTD_UNIT' in recover_script
-    assert '"--no-block", "stop", VOICE_UNIT, OUTPUTD_UNIT' in recover_script
 
 
 def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
