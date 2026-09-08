@@ -236,22 +236,14 @@ async def test_gemini_turn_without_usage_metadata_reports_zero():
 
 
 async def test_acquire_turn_rolls_back_active_turn_when_activity_start_fails():
-    """A failed activity_start must not leave the turn slot occupied.
-
-    `acquire_turn` assigns `_active_turn` before sending activity_start;
-    if that send raises (WS dropped in the gap), the slot must roll back
-    — otherwise every later acquire gets "a turn is already active"
-    until a reconnect clears it. Observed wedging the 2026-06-11 eval
-    runs; on the daemon it self-heals only because the supervisor's
-    reconnect detaches the turn.
-    """
+    """A failed activity_start must not leave the turn slot occupied."""
     conn = GeminiLiveConnection(api_key="fake", model="fake")
     conn._connected_event.set()
 
-    async def _raise():
+    async def _raise(*args, **kwargs):
         raise RuntimeError("ws closed mid-send")
 
-    conn._send_activity_start = _raise
+    conn._send_realtime_input = _raise
 
     with pytest.raises(RuntimeError, match="ws closed mid-send"):
         await conn.acquire_turn()

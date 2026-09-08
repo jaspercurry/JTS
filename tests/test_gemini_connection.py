@@ -2,23 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reconnect state-machine tests for `GeminiLiveConnection`.
-
-These tests exercise the persistent-single Live connection without
-touching the network: a fake `connect_factory` stands in for
-`client.aio.live.connect` and the tests drive its event source to
-simulate `setupComplete`, audio chunks, `GoAway`, WebSocket close, and
-`session_resumption_update` events. The real SDK is never imported into
-the test path beyond the `types` module (used for marker classes like
-`ActivityStart`).
-
-Coverage matches the handoff doc's "How to actually test this" list:
-- successful connect → in-turn → idle → in-turn cycle
-- GoAway mid-turn → reconnect with last resumption handle → resume
-- WS close 1006 → reconnect with backoff → eventually succeed
-- repeated failures → eventually surface FAILED state, daemon pauses
-- idle reset: connection healthy but idle > threshold → close + reopen fresh
-"""
+"""Gemini session lifecycle against an in-memory SDK transport."""
 from __future__ import annotations
 
 import asyncio
@@ -32,6 +16,7 @@ import pytest
 from jasper.voice._base import close_code_and_reason
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
+    request_planned_reopen,
     run_reconnect_with_backoff,
 )
 from tests._gemini_fakes import GoAway as _GoAway
@@ -40,11 +25,13 @@ from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
 from tests._gemini_fakes import ServerContent as _ServerContent
 
 try:
+    from google.genai import types
+
     from jasper.voice.gemini_session import (
         ConnectionState,
         GeminiLiveConnection,
     )
-    from jasper.tools import ToolRegistry
+    from jasper.tools import ToolRegistry, tool
     _HAVE_GENAI = True
 except ImportError:
     _HAVE_GENAI = False
@@ -76,6 +63,7 @@ class _FakeSession:
         self.sent_client_content: list[dict] = []
         self.sent_tool_responses: list[Any] = []
         self.closed = False
+        self.setup_complete = types.LiveServerSetupComplete()
 
     async def send_realtime_input(self, **kwargs) -> None:
         self.sent_realtime.append(kwargs)
@@ -217,6 +205,12 @@ async def _wait_until(predicate, timeout: float = 2.0):
             return
         await asyncio.sleep(0.01)
     raise AssertionError(f"predicate never became true within {timeout}s")
+
+
+async def _complete_turn(turn, session):
+    await turn.end_input()
+    session.feed(_Resp(server_content=_ServerContent(turn_complete=True)))
+    await _wait_until(turn.server_turn_complete)
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +405,7 @@ async def test_go_away_triggers_reconnect_and_marks_active_turn_lost():
         await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
         # Active turn is marked lost.
         await _wait_until(lambda: turn.turn_lost(), timeout=3.0)
-        # Resumption handle was reused on the second config.
-        assert factory.configs[1].session_resumption.handle == "hndl-go"
+        assert factory.configs[1].session_resumption.handle is None
     finally:
         await conn.stop()
 
@@ -557,6 +550,7 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         sess1.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stale")))
         await _wait_until(lambda: conn._resumption_handle == "hndl-stale")
         turn1 = await conn.acquire_turn()
+        await _complete_turn(turn1, sess1)
         await turn1.release()
 
         # Wait past the context-reset window.
@@ -601,10 +595,12 @@ async def test_idle_context_reset_reopens_through_the_supervisor():
     await conn.start(registry, "system")
     try:
         turn1 = await conn.acquire_turn()
+        await _complete_turn(turn1, factory.sessions[0])
         await turn1.release()
         await asyncio.sleep(0.05)
 
         turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
+        await _complete_turn(turn2, factory.sessions[-1])
         await turn2.release()
         await _wait_until(
             lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
@@ -637,6 +633,7 @@ async def test_context_reset_disabled_when_threshold_is_zero():
         sess1.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stable")))
         await _wait_until(lambda: conn._resumption_handle == "hndl-stable")
         turn1 = await conn.acquire_turn()
+        await _complete_turn(turn1, sess1)
         await turn1.release()
 
         # Long idle — would trigger reset if enabled.
@@ -1425,4 +1422,200 @@ async def test_the_first_connect_reads_as_paused_while_it_dials():
         release.set()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(task, timeout=5.0)
+        await conn.stop()
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_sdk_setup_acknowledgement_is_required(accepted):
+    conn, factory = _make_conn()
+    original_connect = factory.__call__
+
+    def connect(**kwargs):
+        cm = original_connect(**kwargs)
+        cm._session.setup_complete = types.LiveServerSetupComplete() if accepted else None
+        return cm
+
+    conn._connect_factory = connect
+    if accepted:
+        await conn._open_session()
+        assert not conn.is_paused()
+    else:
+        with pytest.raises(RuntimeError):
+            await conn._open_session()
+        assert conn.is_paused()
+        assert not conn._connected_event.is_set()
+        assert conn.last_failure_detail()
+        assert factory.sessions[0].closed
+    await conn.stop()
+
+
+@pytest.mark.parametrize("boundary", ["release", "reconnect"])
+async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
+    conn, factory = _make_conn()
+    entered, resume = asyncio.Event(), asyncio.Event()
+    calls = []
+    registry = ToolRegistry()
+
+    @tool()
+    async def action() -> dict:
+        """Run an action."""
+        calls.append(True)
+        entered.set()
+        await resume.wait()
+        return {"ok": True}
+
+    registry.register(action)
+    await conn.start(registry, "")
+    dispatch = None
+    try:
+        old = await conn.acquire_turn()
+        old_session = factory.sessions[0]
+        old_session.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="old-context")))
+        await _wait_until(lambda: conn._resumption_handle == "old-context")
+        dispatch = asyncio.create_task(old._on_response(_Resp(
+            tool_call=types.LiveServerToolCall(function_calls=[
+                types.FunctionCall(id=f"call_{i}", name="action", args={}) for i in range(2)
+            ]),
+            usage_metadata=types.UsageMetadata(prompt_token_count=100, response_token_count=50),
+        )))
+        await asyncio.wait_for(entered.wait(), 1)
+        if boundary == "release":
+            await old.release()
+        else:
+            old_session.feed_error(ConnectionError("disconnected"))
+            await _wait_until(lambda: len(factory.sessions) == 2 and conn._connected_event.is_set())
+        fresh = await conn.acquire_turn()
+        assert factory.configs[-1].session_resumption.handle is None
+        capture_before = fresh.capture()
+        usage_before = dict(conn._cumulative_usage)
+        resume.set()
+        await dispatch
+        assert calls == [True]
+        assert all(not session.sent_tool_responses for session in factory.sessions)
+        assert fresh.capture() == capture_before
+        assert conn._cumulative_usage == usage_before
+        assert not fresh.server_turn_complete()
+    finally:
+        resume.set()
+        if dispatch is not None:
+            await dispatch
+        await conn.stop()
+
+
+@pytest.mark.parametrize("send", ["audio", "text", "end_input"])
+@pytest.mark.parametrize("boundary", ["release", "reconnect"])
+async def test_queued_input_cannot_cross_a_gemini_turn_boundary(send, boundary):
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    old = await conn.acquire_turn()
+    old_session = factory.sessions[0]
+    await conn._send_lock.acquire()
+    pending = {
+        "audio": lambda: old.send_audio(b"pcm"),
+        "text": lambda: old.send_text_context("old instruction"),
+        "end_input": old.end_input,
+    }[send]
+    sending = asyncio.create_task(pending())
+    releasing = None
+    try:
+        await asyncio.sleep(0)
+        if boundary == "release":
+            releasing = asyncio.create_task(old.release())
+            await _wait_until(lambda: old._released)
+        else:
+            old_session.feed_error(ConnectionError("disconnected"))
+            await _wait_until(lambda: len(factory.sessions) == 2 and conn._connected_event.is_set())
+        conn._send_lock.release()
+        await sending
+        if releasing is not None:
+            await releasing
+        fresh = await conn.acquire_turn()
+        assert old_session.sent_client_content == []
+        assert [set(call) for call in old_session.sent_realtime] == [{"activity_start"}]
+        assert [set(call) for call in factory.sessions[-1].sent_realtime] == [{"activity_start"}]
+        assert not fresh.server_turn_complete()
+    finally:
+        if conn._send_lock.locked():
+            conn._send_lock.release()
+        await sending
+        if releasing is not None:
+            await releasing
+        await conn.stop()
+
+
+async def test_gemini_acquire_cannot_return_a_disconnected_turn():
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    old_session = factory.sessions[0]
+    entered, resume = asyncio.Event(), asyncio.Event()
+    send = old_session.send_realtime_input
+
+    async def blocked_send(**kwargs):
+        entered.set()
+        await resume.wait()
+        await send(**kwargs)
+
+    old_session.send_realtime_input = blocked_send
+    acquiring = asyncio.create_task(conn.acquire_turn())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        old_session.feed_error(ConnectionError("disconnected"))
+        await _wait_until(lambda: old_session.closed)
+        resume.set()
+        with pytest.raises(RuntimeError):
+            await acquiring
+        fresh = await conn.acquire_turn()
+        assert not fresh.turn_lost()
+        assert len(factory.sessions) == 2
+    finally:
+        resume.set()
+        await asyncio.gather(acquiring, return_exceptions=True)
+        await conn.stop()
+
+
+async def test_gemini_input_is_closed_after_end_input():
+    conn, factory = _make_conn()
+    await conn.start(ToolRegistry(), "")
+    try:
+        turn = await conn.acquire_turn()
+        await turn.send_audio(b"first")
+        await turn.end_input()
+        await turn.send_audio(b"late")
+        await turn.send_text_context("late")
+        await turn.end_input()
+        session = factory.sessions[0]
+        assert [set(call) for call in session.sent_realtime] == [
+            {"activity_start"}, {"audio"}, {"activity_end"},
+        ]
+        assert session.sent_client_content == []
+    finally:
+        await conn.stop()
+
+
+async def test_closing_gemini_receive_cannot_request_another_reconnect():
+    conn, factory = _make_conn()
+    entered = asyncio.Event()
+
+    async def receive():
+        entered.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            raise ConnectionError("socket closed during teardown") from None
+
+    def connect(**kwargs):
+        cm = factory(**kwargs)
+        if len(factory.sessions) == 1:
+            cm._session._receive = receive
+        return cm
+
+    conn._connect_factory = connect
+    await conn.start(ToolRegistry(), "")
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        request_planned_reopen(conn)
+        await _wait_until(lambda: conn._connected_event.is_set())
+        assert len(factory.sessions) == 2
+        assert not conn._reconnect_event.is_set()
+    finally:
         await conn.stop()
