@@ -179,21 +179,16 @@ write_reconcile_stamp() {
     return 0
 }
 
+# Only --changed is described here, because only --changed is this script's. The
+# ban on an interpreter is ExecCondition='s alone, so --help may start one for
+# the verbs the pass itself owns rather than keeping a second copy of its help.
 usage() {
     cat <<'EOF'
-Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--no-restart]
-                                       [--changed]
-
-Detect the current final-output DAC role and reconcile owned JTS state:
-  - registered single DAC present -> outputd_dac targets it; Apple mixer helpers disabled
-  - Apple USB-C dongle present -> outputd_dac targets Apple; Apple helpers enabled
-  - no recognized output DAC -> Apple helpers disabled; unknown/fallback id recorded
-
---print-env prints shell-quoted role variables for install.sh and performs no mutations.
---no-restart updates files/service enablement but does not restart outputd/voice.
 --changed performs no mutations: it exits 0 when a pass is needed and 1 when the
   inputs match the stamp the last successful pass left (systemd ExecCondition).
+
 EOF
+    "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile --help
 }
 
 # Scan for the verbs this shell owns; every argument is forwarded verbatim, so

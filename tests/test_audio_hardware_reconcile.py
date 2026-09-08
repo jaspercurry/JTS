@@ -1530,13 +1530,16 @@ def test_help_publishes_no_event_because_reading_usage_is_not_a_pass(
 ) -> None:
     """Every other exit reports itself; an operator reading usage must not.
 
-    The shim answers `--help` without starting an interpreter, so the usage it
-    prints is the one that documents its own `--changed`.
+    One usage, both halves: the shim documents its own `--changed` and hands
+    the rest to the pass's own parser (the interpreter ban is
+    `ExecCondition=`'s alone, and `--help` is not that).
     """
     result = _run_shim(tmp_path, "", "--help")
 
     assert result.returncode == 0, result.stderr
     assert "--changed" in result.stdout
+    assert "--print-env" in result.stdout
+    assert "--no-restart" in result.stdout
     assert _event_names(result.stderr) == [], result.stderr
 
 
@@ -4037,3 +4040,76 @@ def test_changed_check_reruns_while_the_degraded_marker_is_present(
     )
     assert check.returncode == 0, check.stderr
     _assert_states(check.stderr, "event=audio_hardware_reconcile.changed ")
+
+
+# The shim's `${VAR:-default}` list is what --changed hashes. A default that
+# drifts from the module's own is not a loud failure: the fingerprint covers a
+# path nothing reads, and the pass the box needs is condition-skipped instead.
+_SHIM_DEFAULT = re.compile(
+    r'^[A-Z_0-9]+="\$\{([A-Z_0-9]+):-([^}]*)\}"$', re.MULTILINE
+)
+# Declared by the shim alone: which interpreter runs the pass is not a path the
+# pass reads, so no module states a default for it.
+_SHIM_ONLY_ENV = {"JASPER_OUTPUT_HARDWARE_PYTHON"}
+
+
+def _module_defaults() -> dict[str, str]:
+    """What the Python side answers for each env seam, with nothing set."""
+    import inspect
+
+    from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
+    from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
+    from jasper.audio_runtime_plan import (
+        DEFAULT_CAMILLA2_STATEFILE_PATH,
+        DEFAULT_CAMILLA_STATEFILE_PATH,
+    )
+    from jasper.output_hardware import probe_system_cards
+    from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        run = reconcile_module.Pass(
+            reason="drift", print_env=True, no_restart=True
+        )
+        return {
+            "JASPER_ENV_FILE": run.env_file,
+            "JASPER_OUTPUTD_ENV_FILE": run.outputd_env_file,
+            "JASPER_FANIN_ENV_FILE": run.fanin_env_file,
+            "JASPER_ASOUND_SOURCE_TEMPLATE": run.asound_source_template,
+            "JASPER_ASOUND_TEMPLATE": run.asound_template,
+            "JASPER_OUTPUT_HARDWARE_STATE_PATH": run.state_path,
+            "JASPER_I2S_HAT_INTENT_FILE": run.i2s_hat_intent_file,
+            "JASPER_I2S_HAT_REBOOT_REQUIRED_PATH": run.i2s_hat_reboot_required_path,
+            "JASPER_INSTALL_PROFILE_FILE": run.install_profile_file,
+            "JASPER_OUTPUT_TOPOLOGY_PATH": run.output_topology_path,
+            "JASPER_CAMILLA_CONF_DIR": run.camilla_conf_dir,
+            # Spelled by the pass AND by the plan module that reads the same
+            # two files; all three have to agree.
+            "JASPER_CAMILLA_STATEFILE": DEFAULT_CAMILLA_STATEFILE_PATH,
+            "JASPER_CAMILLA2_STATEFILE": DEFAULT_CAMILLA2_STATEFILE_PATH,
+            # Read by the boot-config and classifier layers, not by the pass.
+            "JASPER_PI_MODEL_FILE": DEFAULT_MODEL_PATH,
+            "JTS_BOOT_CONFIG_FILE": DEFAULT_BOOT_CONFIG_PATH,
+            "JASPER_UDC_CLASS_DIR": DEFAULT_UDC_CLASS_DIR,
+            "JASPER_PROC_ASOUND": str(
+                inspect.signature(probe_system_cards)
+                .parameters["proc_asound"]
+                .default
+            ),
+        }
+
+
+def test_the_shim_and_the_pass_agree_on_every_default_path():
+    shim = dict(_SHIM_DEFAULT.findall(SCRIPT.read_text(encoding="utf-8")))
+    expected = _module_defaults()
+
+    assert set(shim) - _SHIM_ONLY_ENV == set(expected), (
+        "a shim variable has no module-side default to compare against (or "
+        "the reverse) — an unguarded default here condition-skips a pass the "
+        "box needs"
+    )
+    assert {k: v for k, v in shim.items() if k in expected} == expected
+    # The camilla statefiles are the one pair the pass spells for itself.
+    with mock.patch.dict(os.environ, {}, clear=True):
+        run = reconcile_module.Pass(reason="drift", print_env=True, no_restart=True)
+    assert run.camilla_statefile == expected["JASPER_CAMILLA_STATEFILE"]
+    assert run.camilla2_statefile == expected["JASPER_CAMILLA2_STATEFILE"]
