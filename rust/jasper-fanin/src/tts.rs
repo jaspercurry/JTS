@@ -1736,7 +1736,7 @@ mod tests {
 
     use std::io::Cursor;
 
-    const TEST_FRAME_DEADLINE: Duration = Duration::from_millis(150);
+    const TEST_FRAME_DEADLINE: Duration = Duration::from_millis(20);
 
     fn spawn_test_tts_client(
         tx: &SyncSender<QueuedTtsCommand>,

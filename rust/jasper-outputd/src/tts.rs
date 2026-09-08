@@ -1165,7 +1165,7 @@ mod tests {
                     flush_tx,
                     epoch,
                     metrics,
-                    Duration::from_millis(150),
+                    Duration::from_millis(20),
                 );
             })
         };

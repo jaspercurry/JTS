@@ -1293,7 +1293,7 @@ mod tests {
         assert!(TtsAudioSamples::Narrow(Vec::new()).is_empty());
     }
 
-    const TEST_DEADLINE: Duration = Duration::from_millis(150);
+    const TEST_DEADLINE: Duration = Duration::from_millis(20);
 
     /// A client that announces a payload and then stops writing is cut loose.
     #[test]
@@ -1315,7 +1315,7 @@ mod tests {
         let (client, server) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(server);
         let writer = thread::spawn(move || {
-            thread::sleep(TEST_DEADLINE * 4);
+            thread::sleep(TEST_DEADLINE * 3);
             (&client).write_all(b"FLUSH\n").unwrap();
             client
         });
