@@ -2,14 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The graph identity a round compares against: layers measured THROUGH.
-Hashes the candidate layer and below (structure, linearization, blend, trim,
-headroom, limiters); drops preference-EQ slots — content-derived, not
-name-derived, since the name survives an out-of-band rewrite (#3489). Two
-namespaces only: round candidate vs compiled baseline, never compared across.
-Blind spots: ``active_baseline_headroom.output_trim_db`` moves this on a
-``match_loudness`` EQ save; ``SUMMED_SWEEP_PHASES`` measures the standing
-production graph (EQ included) while this fingerprint stays put.
+"""Compare standing graph changes with preference slots excluded.
+
+This does not remove room or preference headroom. Capture identity must use
+the actual emitted/readback graph's fingerprint.
 """
 
 from __future__ import annotations

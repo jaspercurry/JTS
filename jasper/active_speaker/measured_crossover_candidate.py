@@ -84,6 +84,7 @@ from .profile import (
     ActiveSpeakerPreset,
     CrossoverRegion,
     required_driver_roles,
+    declared_role_delays,
 )
 
 SCHEMA_VERSION = 1
@@ -586,16 +587,11 @@ def driver_corrections(
     preset = effective_preset(candidate)
     polarity = _role_polarity(preset)
     roles = required_driver_roles(preset.way_count)
-    delay_role = candidate.alignment.delay_role
-    delay_ms = 0.0
-    if delay_role is not None:
-        assert candidate.alignment.delay_us is not None  # all-or-nothing invariant
-        # Same single quantizer as effective_preset and the delay_graph proof.
-        delay_ms = quantized_delay_ms(candidate.alignment.delay_us)
+    delays = declared_role_delays(preset)
     return {
         role: {
             "gain_db": candidate.role_attenuations_db[role],
-            "delay_ms": delay_ms if role == delay_role else 0.0,
+            "delay_ms": delays.get(role, 0.0),
             "inverted": polarity[role],
         }
         for role in roles
