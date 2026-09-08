@@ -269,25 +269,27 @@ def test_flat_cutover_has_exactly_one_writer():
     three different components write it at three different times (deploy, boot /
     udev / topology-save, reset). If any of them emits its own copy, the graph a
     box boots depends on which ran last — and one of them would inevitably ship
-    a different file mode or skip the width match. `jasper-sound
-    render-flat-cutover` is the single entry; this fails if a second writer
-    (an inline heredoc, a direct emitter call) reappears in the shell layer.
+    a different file mode or skip the width match.
+    `jasper.sound.camilla_yaml.render_flat_cutover_configs` is the single
+    writer; this fails if a second one (an inline heredoc, a direct emitter
+    call) reappears in either caller.
     """
     reconcile = (
         Path(__file__).resolve().parent.parent
-        / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
+        / "jasper" / "audio_hardware" / "reconcile.py"
     ).read_text()
     install = INSTALL_SH.read_text()
 
+    assert "render-flat-cutover" in install
+    assert "render_flat_cutover_configs" in reconcile
     for name, body in (("install.sh", install), ("reconciler", reconcile)):
-        assert "render-flat-cutover" in body, name
-        # The emitter is reached through the CLI, never spelled directly in bash.
+        # The emitter is reached through the one entry, never spelled directly.
         assert "emit_flat_outputd_cutover_config" not in body, name
 
     # The reconciler renders BEFORE it can restart the audio graph, so a restart
     # loads this pass's graph rather than the previous topology's.
-    render = reconcile.index("render_flat_cutover_if_needed\n")
-    assert render < reconcile.index("restart_audio_if_needed 1")
+    render = reconcile.index("self.render_flat_cutover_if_needed()")
+    assert render < reconcile.index("self.restart_audio_if_needed()")
 
 
 def test_unit_documents_no_config_recovery_path():
