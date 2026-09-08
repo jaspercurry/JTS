@@ -783,7 +783,7 @@ def read_bridge_stats_snapshot() -> dict[str, Any] | None:
     clean.
     """
     data = read_bridge_stats()
-    if not isinstance(data, dict):
+    if data is None:
         return None
     counters = data.get("counters")
     if not isinstance(counters, dict):
