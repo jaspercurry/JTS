@@ -1616,15 +1616,15 @@ async def test_begin_turn_centralizes_feedback_prefix_without_reordering(
     async def inner(**_kwargs) -> None:
         events.append("inner")
 
-    def schedule(coro, *, name: str):
-        assert name == "listening-chirp-on"
+    def schedule(episode, coro):
+        assert gate.is_current(episode)
         coro.close()
         events.append("chirp")
         return None
 
     monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", prepare)
     monkeypatch.setattr(wl, "_begin_turn_inner", inner)
-    monkeypatch.setattr(wl, "_create_fire_and_forget_task", schedule)
+    monkeypatch.setattr(wl._assistant_output, "start_turn_feedback", schedule)
 
     await wl._begin_turn(listening_feedback=listening_feedback)
 
@@ -1763,7 +1763,11 @@ async def test_failed_begin_cleanup_runs_every_phase_after_phase_failure(
         )
     else:
         assert (
-            event_fields(caplog, "turn.begin_cleanup_phase_failed")["phase"]
+            event_fields(
+                caplog,
+                "turn.begin_cleanup_phase_failed" if failed_phase == "usage_session_close"
+                else "turn.output_cleanup_failed",
+            )["phase"]
             == failed_phase
         )
 
@@ -2440,3 +2444,53 @@ async def test_old_coordinator_resumes_new_daemon_after_drain_timeout() -> None:
         await server.wait_closed()
         await _close_window(wl)
         shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+async def test_failed_begin_drains_opening_feedback_without_completion_chirp():
+    from unittest.mock import AsyncMock
+
+    wl = wake_loop_for_tests()
+    accepted, finish_write, draining, finish_drain = (asyncio.Event() for _ in range(4))
+    writes = []
+
+    async def write(pcm, **_kwargs):
+        writes.append(pcm)
+        accepted.set()
+        await finish_write.wait()
+
+    async def drain():
+        draining.set()
+        await finish_drain.wait()
+
+    async def fail(**_kwargs):
+        await accepted.wait()
+        raise RuntimeError("acquisition failed")
+
+    wl._tts.write_segment = write
+    wl._tts.wait_drained = drain
+    wl._ducker.restore = AsyncMock()
+    wl._begin_turn_inner = fail
+    beginning = asyncio.create_task(wl._begin_turn(listening_feedback=True))
+    try:
+        await wait_signalled(accepted, "opening feedback", producer=beginning)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not beginning.done()
+        assert wl._output_gate.active_kind == "turn"
+        wl._ducker.restore.assert_not_awaited()
+        finish_write.set()
+        await wait_signalled(draining, "opening feedback drain", producer=beginning)
+        assert not beginning.done()
+        assert wl._output_gate.active_kind == "turn"
+        finish_drain.set()
+        with pytest.raises(RuntimeError):
+            await beginning
+    finally:
+        finish_write.set()
+        finish_drain.set()
+        await asyncio.gather(beginning, return_exceptions=True)
+
+    assert writes == [wl._assistant_output._chirp_on_pcm]
+    wl._ducker.restore.assert_awaited_once()
+    assert not wl._output_gate.is_active
+    assert wl._turn is None

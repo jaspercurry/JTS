@@ -2,26 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression: _end_turn must be idempotent / non-reentrant.
-
-Before the fix, _end_turn ran a multi-second teardown (telemetry,
-peering notify, bg-task join, end_input with a 2 s timeout, release,
-chirp, duck restore) and only flipped self._state to WAKE at its very
-last line, clearing self._session_id just before. A concurrent
-mic-mute (control socket) or the next main-loop session frame arriving
-inside that window re-entered _end_turn and hit
-`assert self._session_id is not None` after it had been cleared — the
-main-loop path did not swallow the AssertionError, crashing the daemon
-(session drop + corrupted usage row).
-
-The fix guards teardown with a dedicated `self._ending` flag held across
-the whole teardown, so a second concurrent entrant short-circuits,
-leaving exactly one teardown. The flag is used instead of an early
-`_state = WAKE` flip on purpose: `_state` must stay SESSION through the
-teardown (which plays a chirp on the single PortAudio stream) so the
-supervisor-cue / timer-announce / mic-loop gates that key on SESSION keep
-holding and nothing collides with the teardown chirp.
-"""
+"""Turn completion retains ownership until output and cleanup finish."""
 
 from __future__ import annotations
 
@@ -276,3 +257,63 @@ async def test_turn_ownership_covers_final_chirp_physical_tail(
     await teardown
     assert wl._state is State.WAKE
     assert not wl._output_gate.is_active
+
+
+@pytest.mark.parametrize("phase", ["outcome", "peering", "segment", "release", "drain", "restore", "meter"])
+@pytest.mark.parametrize("cancellation", ["caller", "operation"])
+async def test_end_turn_finishes_owned_cleanup_before_propagating_cancel(
+    phase, cancellation,
+):
+    from unittest.mock import AsyncMock, Mock
+
+    from jasper.voice_daemon import State
+
+    wl = _make_wakeloop()
+    turn = wl._turn
+    wl._turn_output_episode = await wl._output_gate.begin_turn()
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def step(name):
+        calls.append(name)
+        if name == phase:
+            entered.set()
+            if cancellation == "operation":
+                raise asyncio.CancelledError()
+            await proceed.wait()
+
+    wl._wake_telemetry.stage = lambda _stage: step("outcome")
+    wl._peering.session_ended = lambda _reason: step("peering")
+    wl._tts.end_segment = lambda: step("segment")
+    turn.release = lambda: step("release")
+    wl._tts.wait_drained = lambda: step("drain")
+    wl._ducker.restore = lambda: step("restore")
+    wl._tts.resume_content_meter = lambda: step("meter")
+    wl._assistant_output.listening_chirp = AsyncMock()
+    wl._content_activity.resume = Mock()
+    cleanup = asyncio.create_task(wl._end_turn())
+    try:
+        await wait_signalled(entered, phase, producer=cleanup)
+        if cancellation == "caller":
+            for _ in range(3):
+                cleanup.cancel()
+                await asyncio.sleep(0)
+            assert not cleanup.done()
+            assert wl._state is State.SESSION
+            assert wl._output_gate.is_active
+            proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+    finally:
+        proceed.set()
+        await asyncio.gather(cleanup, return_exceptions=True)
+
+    assert calls == ["outcome", "peering", "segment", "release", "drain", "restore", "meter"]
+    assert wl._usage_store.close_calls == 1
+    assert wl._state is State.WAKE
+    assert wl._turn is None
+    assert not wl._output_gate.is_active
+    assert wl._ending is False
+    wl._content_activity.resume.assert_called_once()
+    await wl._end_turn()
+    assert wl._usage_store.close_calls == 1

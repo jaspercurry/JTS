@@ -226,6 +226,9 @@ class AssistantOutput:
         self._cues = cues
         self._volume_coordinator = volume_coordinator
         self._output_gate = AssistantOutputGate()
+        self._opening_feedback: tuple[
+            AssistantOutputEpisode | None, asyncio.Task[None]
+        ] | None = None
         # One admission authority for assistant audio, asked twice: the gate
         # refuses an episode that has not started yet, this hook refuses the
         # bytes of one that already had (issue #1913).
@@ -505,7 +508,9 @@ class AssistantOutput:
         cues = self._cues
         if cues is None:
             if episode is not None:
-                await self._output_gate.end(episode)
+                await self.finish_ducked_episode_after_drain(
+                    episode, self._ducker.restore, cleanup_label=f"cue {slug}",
+                )
             # Cues are how the user hears why the speaker did not respond.
             # With no cue manager the speaker is silent on every failure, so
             # make that state diagnosable in the journal. Once per daemon
@@ -784,6 +789,54 @@ class AssistantOutput:
         await self._tts.prepare_assistant_context(
             **prepare_kwargs,
         )
+
+    def start_turn_feedback(
+        self, episode: AssistantOutputEpisode | None, operation: Coroutine[object, object, None],
+    ) -> None:
+        self._opening_feedback = (
+            episode, asyncio.create_task(operation, name="listening-chirp-on"),
+        )
+
+    async def finish_turn_episode(
+        self,
+        episode: AssistantOutputEpisode | None,
+        *,
+        completed: bool,
+    ) -> None:
+        """Release only this turn's output, after its completion feedback drains."""
+        first_base_error: BaseException | None = None
+        steps: list[tuple[str, Callable[[], object], bool]] = []
+        opening = self._opening_feedback
+        if opening is not None and opening[0] == episode:
+            steps.append(("opening_feedback", lambda: opening[1], True))
+        if completed:
+            steps.append(("chirp", lambda: self.listening_chirp(going_on=False), True))
+        steps.extend((
+            ("drain", lambda: wait_tts_drained_owned(self._tts), True),
+            ("duck_restore", self._ducker.restore, True),
+            ("volume_session", lambda: self._volume_coordinator.note_voice_session(False), False),
+            ("content_meter_resume", self._tts.resume_content_meter, False),
+            ("output_episode_release", lambda: self._output_gate.end_turn(episode), True),
+        ))
+        for phase, operation, needs_output in steps:
+            # Research transfers the episode and duck, not the turn's meters.
+            if needs_output and (
+                episode is None or not self._output_gate.is_current(episode)
+            ):
+                continue
+            error = await capture_cleanup_error(operation)
+            if isinstance(error, Exception):
+                log_event(
+                    logger, "turn.output_cleanup_failed", phase=phase,
+                    exc_type=type(error).__name__, err=str(error),
+                    level=logging.WARNING,
+                )
+            elif first_base_error is None:
+                first_base_error = error
+        if self._opening_feedback is opening:
+            self._opening_feedback = None
+        if first_base_error is not None:
+            raise first_base_error
 
     async def begin_turn_episode(
         self,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
@@ -505,26 +506,7 @@ class _ResearchTurnHost:
         await self._loop._cleanup_after_failed_begin()
 
     async def play_cancel_timeout_cue(self) -> None:
-        """Answer a wake the confirmation window's opener never released.
-
-        The opener holds the turn episode, which `_play_cue`'s own "admin"
-        admission cannot preempt — it would skip the cue and leave this
-        wake silent. Take that ownership away rather than lend the cue the
-        opener's episode: nothing cancels the opener here, so it resumes
-        into its own teardown, whose duck restore and gate release would
-        cut a cue playing on a turn-kind episode. Both teardown paths
-        re-ask `is_current` at each of their output actions, so a
-        surrendered opener writes nothing and releases nothing. The
-        succession is one lock hold, not an end followed by a begin: a
-        `begin_turn` waiter queued on the idle signal would otherwise take
-        the gate in between and the wake would go unanswered (NN-6).
-
-        The handover refuses in two cases, and then nothing was ended: the
-        opener's episode is still current — it still owns output, and its
-        duck and its gate release are still its own to do — or it was
-        already gone, and whoever holds the gate now owns them instead.
-        Both leave `_play_cue` to ask for its own admission.
-        """
+        """Transfer the stalled opener's output and duck to its refusal cue."""
         loop = self._loop
         surrendered = loop._turn_output_episode
         cue_episode = (
@@ -533,16 +515,9 @@ class _ResearchTurnHost:
             )
             if surrendered is not None else None
         )
-        played = await loop._play_cue(
+        await loop._play_cue(
             INTERNAL_ERROR_CUE_SLUG, episode=cue_episode,
         )
-        if cue_episode is not None and not played:
-            # Only on the handover, and only when no cue took the gate to
-            # duck and restore: this arm ended the episode whose teardown
-            # would have handed the opener's duck back, so it hands it
-            # back itself. On a refusal the duck is not this arm's to
-            # touch.
-            await loop._ducker.restore()
 
 
 class WakeLoop:
@@ -2500,12 +2475,10 @@ class WakeLoop:
                 # the no-context fallback.
                 await self._begin_turn_output_episode()
                 await self._prepare_assistant_loudness_context()
-                # Fire-and-forget so the "Now listening" chirp overlaps turn
-                # opening instead of adding ~70 ms to time-to-listen. It is not
-                # a response task: any completed `_bg_tasks` member ends a turn.
-                self._create_fire_and_forget_task(
+                # Overlap turn acquisition; output cleanup joins the chirp.
+                self._assistant_output.start_turn_feedback(
+                    self._turn_output_episode,
                     self._play_listening_chirp(going_on=True),
-                    name="listening-chirp-on",
                 )
             await self._begin_turn_inner(
                 pre_roll=pre_roll,
@@ -2523,10 +2496,11 @@ class WakeLoop:
                 )
                 if acquiring_at_begin:
                     self._acquiring = False
-                if cleanup_error is not None and not isinstance(
-                    cleanup_error,
-                    asyncio.CancelledError,
+                if isinstance(cleanup_error, asyncio.CancelledError) and not isinstance(
+                    sys.exception(), asyncio.CancelledError,
                 ):
+                    raise cleanup_error
+                if cleanup_error is not None:
                     log_event(
                         logger,
                         "turn.begin_cleanup_failed",
@@ -2689,20 +2663,6 @@ class WakeLoop:
         turn = self._turn
         session_id = self._session_id
         episode = self._turn_output_episode
-        # A concurrent path can take this turn's output ownership away while
-        # it is mid-begin (the research-window cancel timeout does) and this
-        # coroutine still resumes. Restoring a duck or ending an episode we
-        # no longer hold would cut whatever owns output now.
-        #
-        # Asked again at every guarded action rather than once: every phase
-        # below is an await, and the surrender can land inside any of them
-        # (`turn.release` blocks on the provider). A single answer read at
-        # the top is stale by the time it is used.
-        def owns_output() -> bool:
-            return (
-                episode is not None and self._output_gate.is_current(episode)
-            )
-
         # First, so `total_ms` is the failure moment rather than the failure
         # plus the cleanup awaits below.
         await run_phase(
@@ -2711,46 +2671,36 @@ class WakeLoop:
         )
         if turn is not None:
             await run_phase("turn_release", turn.release)
-        if owns_output():
-            await run_phase("duck_restore", self._ducker.restore)
         await run_phase(
-            "volume_session",
-            lambda: self._volume_coordinator.note_voice_session(False),
+            "output_cleanup",
+            lambda: self._assistant_output.finish_turn_episode(episode, completed=False),
         )
-        await run_phase("content_resume", self._content_activity.resume)
-        await run_phase("content_meter_resume", self._tts.resume_content_meter)
         if session_id is not None:
             await run_phase(
                 "usage_session_close",
                 lambda: self._usage_store.close_session(session_id, 0, 0),
             )
 
-        def reset_local_state() -> None:
-            self._turn = None
-            self._session_id = None
-            self._bg_tasks = set()
-            self._bg_end_scheduled = False
-            self._push_to_talk.active_source = None
-            self._state = State.WAKE
-
-        await run_phase("local_state_reset", reset_local_state)
-        await run_phase(
-            "refractory_reset",
-            lambda: setattr(
-                self,
-                "_refractory_until",
-                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
-            ),
-        )
-        if owns_output():
-            await run_phase(
-                "output_episode_release",
-                lambda: self._output_gate.end_turn(episode),
-            )
-        self._turn_output_episode = None
+        await run_phase("local_state_reset", self._reset_turn)
 
         if first_base_error is not None:
             raise first_base_error
+
+    def _reset_turn(self) -> None:
+        try:
+            self._content_activity.resume()
+        finally:
+            self._turn = None
+            self._session_id = None
+            self._turn_output_episode = None
+            self._bg_tasks = set()
+            self._bg_end_scheduled = False
+            self._push_to_talk.active_source = None
+            self._barge_in_active = False
+            self._state = State.WAKE
+            self._refractory_until = (
+                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
+            )
 
     def _log_no_answer(
         self,
@@ -2787,41 +2737,43 @@ class WakeLoop:
         return not suppressed
 
     async def _end_turn(self, reason: str = "ended") -> None:
-        # Re-entrancy guard. `_end_turn_inner` awaits repeatedly and only
-        # clears _session_id and flips _state at its last lines, so the
-        # control-socket mute_mic handler and the mic loop's
-        # _handle_session_frame can both enter it; a second entrant would trip
-        # `assert self._session_id is not None` and crash the daemon.
-        #
-        # It is a dedicated _ending flag, NOT an early flip of _state to WAKE:
-        # _state must stay SESSION for the whole teardown, because the teardown
-        # plays a chirp on the single TTS stream and the coroutines that could
-        # collide with it gate on SESSION (play_supervisor_cue skips,
-        # announce_timer defers, the mic loops route to
-        # _handle_session_frame). An early WAKE would let a supervisor cue or
-        # timer announcement garble the teardown chirp, or — during a
-        # mute-initiated teardown, before _mic_muted is set — let a fresh wake
-        # frame begin a new turn that this teardown then tears down.
+        # SESSION must cover the chirp and refusal cue so neither wakes itself.
         if self._ending or self._turn is None:
             return
         self._ending = True
         try:
-            await self._end_turn_inner(reason)
+            await await_output_cleanup_owned(
+                self._end_turn_inner(reason), task_name="turn-end-cleanup",
+            )
         finally:
             self._ending = False
 
     async def _end_turn_inner(self, reason: str = "ended") -> None:
-        # Capture drain timing before any await adds latency: time from last
-        # server activity to turn end, meaningful only when audio was actually
-        # received (otherwise it is the abort timeout, logged separately by the
-        # caller).
-        drain_wait_sec: float | None = None
-        if self._turn is not None and self._turn.last_chunk_at() > 0:
-            drain_wait_sec = max(
-                0.0, time.monotonic() - self._turn.last_activity_at(),
-            )
+        episode = self._turn_output_episode
+        play_no_answer_cue = False
+        try:
+            play_no_answer_cue = await self._record_and_release_turn(reason, episode)
+        finally:
+            try:
+                await self._assistant_output.finish_turn_episode(episode, completed=True)
+                self._barge_in_active = False
+                if play_no_answer_cue:
+                    # A paused connection owns its remedy cue. Keep SESSION
+                    # through its drain so the cue cannot wake the detectors.
+                    error = await capture_cleanup_error(lambda: self._play_cue(
+                        self._connection.wake_cue()
+                        if self._connection.is_paused() else INTERNAL_ERROR_CUE_SLUG
+                    ))
+                    if isinstance(error, Exception):
+                        logger.warning("teardown no-answer cue failed: %s", error)
+                    elif error is not None:
+                        raise error
+            finally:
+                self._reset_turn()
+        await self._research.drain()
+
+    async def _record_turn_outcome(self, reason: str) -> None:
         self._emit_turn_timeline("complete")
-        research_window = self._research.window_snapshot()
         # `_user_speech_seen` false means the session got no real user input:
         # a likely false positive (music transient, TTS bleed) or a changed
         # mind. Either way the outcome is 'no_speech', which dual-stream
@@ -2848,314 +2800,184 @@ class WakeLoop:
                 music_db_at_turn=self._content_activity.music_dbfs,
             )
 
-        # Notify the peering daemon before the slow cleanup so peers
-        # un-suppress promptly: waiting for our chirp and duck restore would
-        # add ~300 ms of suppression before other devices can arbitrate a
-        # fresh wake. No-op when peering is off or the session was untracked.
-        await self._peering.session_ended(reason)
-
-        for t in self._bg_tasks:
-            t.cancel()
-        for t in self._bg_tasks:
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        self._bg_tasks = set()
-        self._bg_end_scheduled = False
-
-        episode = self._turn_output_episode
-        # Same fact as `_cleanup_after_failed_begin`, asked again at every
-        # guarded action because awaits separate them: a teardown that no
-        # longer owns output must not write to it, unduck it, or end what
-        # does. Ownership can be taken away mid-teardown (the
-        # research-window cancel timeout does it), and every guarded action
-        # below is an output write like any other — mixed into the sound
-        # that took the gate it would garble it, and a drain wait would
-        # hold this teardown open for someone else's audio. Whatever owns
-        # output now drains its own.
-        def owns_output() -> bool:
-            return (
-                episode is not None and self._output_gate.is_current(episode)
+    async def _record_and_release_turn(
+        self, reason: str, episode: AssistantOutputEpisode | None,
+    ) -> bool:
+        drain_wait_sec: float | None = None
+        if self._turn is not None and self._turn.last_chunk_at() > 0:
+            drain_wait_sec = max(
+                0.0, time.monotonic() - self._turn.last_activity_at(),
             )
-
-        # play_responses reaches its own end_segment() only when the provider
-        # closes the audio iterator at turn end: OpenAI does (response.done),
-        # Gemini's closes only on release(), which runs after the cancel above.
-        # Without this call the cancelled playback task discards the passive
-        # loudness measurement, so Gemini earns no source profile and fanin
-        # plays it at the louder fallback gain. Idempotent — the meter clears
-        # on first save. Guarded like the writes below: END_SEGMENT goes down
-        # the shared TTS stream and schedules the assistant source-profile
-        # save, so a surrendered opener sending it would close the segment of
-        # whatever took the gate and bill that audio to this turn.
-        if owns_output():
-            try:
+        research_window = self._research.window_snapshot()
+        turn = self._turn
+        assert turn is not None
+        phases: list[tuple[str, Callable[[], object]]] = [
+            ("turn_outcome", lambda: self._record_turn_outcome(reason)),
+            ("peering_end", lambda: self._peering.session_ended(reason)),
+            ("background_stop", lambda: cancel_tracked_tasks(self._bg_tasks)),
+        ]
+        async def end_segment() -> None:
+            if episode is not None and self._output_gate.is_current(episode):
                 await self._tts.end_segment()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("teardown end_segment failed: %s", e)
+
+        phases.append(("end_segment", end_segment))
+        if self._input_ended or self._user_speech_seen or self._manual_endpoint_this_turn:
+            phases.append(("end_input", lambda: asyncio.wait_for(turn.end_input(), timeout=2.0)))
+        phases.append(("turn_release", turn.release))
+        release_base_error: BaseException | None = None
+        for phase, operation in phases:
+            error = await capture_cleanup_error(operation)
+            if isinstance(error, Exception):
+                log_event(
+                    logger, "turn.cleanup_phase_failed", phase=phase,
+                    exc_type=type(error).__name__, err=str(error), level=logging.WARNING,
+                )
+            elif release_base_error is None:
+                release_base_error = error
 
         play_no_answer_cue = False
-        if self._turn is not None:
-            # `_manual_endpoint_this_turn` is the third term because on a
-            # push-to-talk turn `_user_speech_seen` never flips (nothing
-            # scores those frames). Without it, a turn torn down mid-hold —
-            # idle watchdog, stop event, a release that never came — would
-            # skip end_input() entirely.
-            if (self._input_ended or self._user_speech_seen
-                    or self._manual_endpoint_this_turn):
-                try:
-                    await asyncio.wait_for(self._turn.end_input(), timeout=2.0)
-                except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-                    logger.debug("end_input ignored: %s", e)
+        usage = turn.usage()
+        assert self._session_id is not None
+        cost = self._usage_store.close_session(
+            self._session_id,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage=usage.breakdown,
+        )
+        if research_window.job is None:
             try:
-                await self._turn.release()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("turn release error (ignored): %s", e)
-
-            usage = self._turn.usage()
-            assert self._session_id is not None
-            cost = self._usage_store.close_session(
-                self._session_id,
-                usage.input_tokens,
-                usage.output_tokens,
-                usage=usage.breakdown,
+                capture = turn.capture()
+            except (RuntimeError, TypeError, ValueError) as exc:
+                log_event(
+                    logger,
+                    "turn.capture_failed",
+                    exc_type=type(exc).__name__,
+                    level=logging.WARNING,
+                )
+                capture = None
+            if capture is not None:
+                self._conversation_capture.record(
+                    capture.user_text,
+                    capture.assistant_text,
+                    data_json=capture.data,
+                    session_id=self._session_id,
+                    mic_muted=self._mic_muted,
+                )
+        bytes_sent = turn.bytes_sent()
+        chunks_received = turn.chunks_received()
+        expected_research_silence_dismiss = (
+            research_window.undecided
+            and not self._user_speech_seen
+            and not self._input_ended
+        )
+        lost_mid_reply = (
+            turn.turn_lost()
+            and not turn.server_turn_complete()
+        )
+        silent = chunks_received == 0 and not turn.turn_lost()
+        if bytes_sent == 0 and not expected_research_silence_dismiss:
+            self._log_no_answer(
+                "turn.silent_response",
+                end_reason=reason,
+                reason="no_audio_sent",
+                bytes_sent=bytes_sent,
+                chunks_received=chunks_received,
+                turn_lost=lost_mid_reply,
+                endpointer=self._endpointer_label(),
             )
-            if research_window.job is None:
-                try:
-                    capture = self._turn.capture()
-                except (RuntimeError, TypeError, ValueError) as exc:
-                    log_event(
-                        logger,
-                        "turn.capture_failed",
-                        exc_type=type(exc).__name__,
-                        level=logging.WARNING,
-                    )
-                    capture = None
-                if capture is not None:
-                    self._conversation_capture.record(
-                        capture.user_text,
-                        capture.assistant_text,
-                        data_json=capture.data,
-                        session_id=self._session_id,
-                        mic_muted=self._mic_muted,
-                    )
-            # Per-turn no-answer detection, gated on whether the wake loop
-            # explicitly ended input (silence detector, hard cap, or manual
-            # end). Bytes sent with `_input_ended` never flipped means the
-            # model never got a clean end-of-utterance signal before the
-            # watchdog closed the turn — a different fault from a model that
-            # was asked and answered with silence, or a link that dropped
-            # before it finished.
-            bytes_sent = self._turn.bytes_sent()
-            chunks_received = self._turn.chunks_received()
-            expected_research_silence_dismiss = (
-                research_window.undecided
-                and not self._user_speech_seen
-                and not self._input_ended
-            )
-            lost_mid_reply = (
-                self._turn.turn_lost()
-                and not self._turn.server_turn_complete()
-            )
-            silent = chunks_received == 0 and not self._turn.turn_lost()
-            if bytes_sent == 0 and not expected_research_silence_dismiss:
-                # No frame ever left the mic before teardown (idle-watchdog
-                # reap of a wake that fired on noise, or a push-to-talk
-                # release before any audio was captured) — distinct from
-                # `silent`, which requires bytes sent but no reply. Nothing
-                # was ever asked, so no answer is owed and no cue plays.
-                self._log_no_answer(
+        elif (
+            bytes_sent > 0
+            and (silent or lost_mid_reply)
+            and not expected_research_silence_dismiss
+        ):
+            model = _active_model(self._cfg)
+            if self._input_ended:
+                diagnosis: dict[str, object] = (
+                    {}
+                    if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
+                    else {
+                        "reason": reason,
+                        "bytes_sent": bytes_sent,
+                        "endpointer": self._endpointer_label(),
+                    }
+                )
+                play_no_answer_cue = self._log_no_answer(
                     "turn.silent_response",
                     end_reason=reason,
-                    reason="no_audio_sent",
+                    counted=True,
+                    **diagnosis,
+                    chunks_received=chunks_received,
+                    turn_lost=lost_mid_reply,
+                )
+            elif silent and self._manual_endpoint_this_turn:
+                log_event(
+                    logger,
+                    "turn.silent_response",
+                    provider=self._cfg.voice_provider,
+                    model=model,
+                    reason="hold_timeout",
+                    bytes_sent=bytes_sent,
+                    chunks_received=chunks_received,
+                    turn_lost=lost_mid_reply,
+                    idle_timeout_sec=float(self._cfg.idle_timeout_sec),
+                    endpointer=self._endpointer_label(),
+                    level=logging.WARNING,
+                )
+            elif silent:
+                log_event(
+                    logger,
+                    "turn.silent_response",
+                    provider=self._cfg.voice_provider,
+                    model=model,
+                    reason="recording_timeout",
+                    bytes_sent=bytes_sent,
+                    chunks_received=chunks_received,
+                    turn_lost=lost_mid_reply,
+                    endpointer=self._endpointer_label(),
+                    level=logging.WARNING,
+                )
+            else:
+                play_no_answer_cue = self._log_no_answer(
+                    "turn.silent_response",
+                    end_reason=reason,
+                    counted=True,
+                    reason="connection_lost",
                     bytes_sent=bytes_sent,
                     chunks_received=chunks_received,
                     turn_lost=lost_mid_reply,
                     endpointer=self._endpointer_label(),
                 )
-            elif (
-                bytes_sent > 0
-                and (silent or lost_mid_reply)
-                and not expected_research_silence_dismiss
-            ):
-                model = _active_model(self._cfg)
-                if self._input_ended:
-                    # A chosen ending carries no diagnosis at all — no
-                    # `reason=`, `bytes_sent=` or `endpointer=` — so a
-                    # journal filter on those fields keeps excluding a turn
-                    # nobody asked a question of.
-                    diagnosis: dict[str, object] = (
-                        {}
-                        if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
-                        else {
-                            "reason": reason,
-                            "bytes_sent": bytes_sent,
-                            "endpointer": self._endpointer_label(),
-                        }
-                    )
-                    play_no_answer_cue = self._log_no_answer(
-                        "turn.silent_response",
-                        end_reason=reason,
-                        counted=True,
-                        **diagnosis,
-                        chunks_received=chunks_received,
-                        turn_lost=lost_mid_reply,
-                    )
-                elif silent and self._manual_endpoint_this_turn:
-                    # Split from `recording_timeout` below, which diagnoses
-                    # a silence detector that never tripped after a wake —
-                    # neither exists on a button turn, so sharing the reason
-                    # would send an operator hunting a wake-threshold
-                    # problem that isn't there. The button was held past the
-                    # point where the idle watchdog gave up on the model.
-                    log_event(
-                        logger,
-                        "turn.silent_response",
-                        provider=self._cfg.voice_provider,
-                        model=model,
-                        reason="hold_timeout",
-                        bytes_sent=bytes_sent,
-                        chunks_received=chunks_received,
-                        turn_lost=lost_mid_reply,
-                        idle_timeout_sec=float(self._cfg.idle_timeout_sec),
-                        endpointer=self._endpointer_label(),
-                        level=logging.WARNING,
-                    )
-                elif silent:
-                    # The silence detector never tripped, so the idle
-                    # watchdog ended the turn before the wake loop asked
-                    # for a response. Usual causes: a low-confidence wake
-                    # firing on background audio, or a user speaking past
-                    # the idle window without a pause.
-                    log_event(
-                        logger,
-                        "turn.silent_response",
-                        provider=self._cfg.voice_provider,
-                        model=model,
-                        reason="recording_timeout",
-                        bytes_sent=bytes_sent,
-                        chunks_received=chunks_received,
-                        turn_lost=lost_mid_reply,
-                        endpointer=self._endpointer_label(),
-                        level=logging.WARNING,
-                    )
-                else:
-                    # The link dropped mid-utterance, before anything ended
-                    # input: `silent` is False by construction once the turn
-                    # is lost, so no branch above owns this and the turn
-                    # would otherwise end with no line and no cue.
-                    play_no_answer_cue = self._log_no_answer(
-                        "turn.silent_response",
-                        end_reason=reason,
-                        counted=True,
-                        reason="connection_lost",
-                        bytes_sent=bytes_sent,
-                        chunks_received=chunks_received,
-                        turn_lost=lost_mid_reply,
-                        endpointer=self._endpointer_label(),
-                    )
-            elif (
-                bytes_sent > 0
-                and self._turn.audio_dropped_bytes() > 0
-                and not expected_research_silence_dismiss
-            ):
-                # The model answered and the playout queue hit its byte
-                # ceiling, so the tail was dropped. See ADR-0254.
-                play_no_answer_cue = self._log_no_answer(
-                    "turn.truncated_response",
-                    end_reason=reason,
-                    dropped_bytes=self._turn.audio_dropped_bytes(),
-                    chunks_received=chunks_received,
-                    endpointer=self._endpointer_label(),
-                )
-            drain_part = (
-                f", drain wait {drain_wait_sec:.2f}s"
-                if drain_wait_sec is not None else ""
+        elif (
+            bytes_sent > 0
+            and turn.audio_dropped_bytes() > 0
+            and not expected_research_silence_dismiss
+        ):
+            play_no_answer_cue = self._log_no_answer(
+                "turn.truncated_response",
+                end_reason=reason,
+                dropped_bytes=turn.audio_dropped_bytes(),
+                chunks_received=chunks_received,
+                endpointer=self._endpointer_label(),
             )
-            # Writer-side pacing visibility: nonzero means TTS writes slept to
-            # stay under the IPC owner's pending budget. Fanin logs drops, but
-            # over-pacing has no receiver-side signature, so this is the only
-            # journal evidence of it.
-            paced_sec = self._tts.take_paced_sec()
-            paced_part = f", paced {paced_sec:.2f}s" if paced_sec > 0.05 else ""
-            logger.info(
-                "turn ended: in=%d out=%d tokens, est $%.4f "
-                "(sent=%dB, recv=%d chunks%s%s%s)",
-                usage.input_tokens, usage.output_tokens, cost,
-                bytes_sent, chunks_received, drain_part,
-                paced_part,
-                ", turn_lost" if self._turn.turn_lost() else "",
-            )
+        drain_part = (
+            f", drain wait {drain_wait_sec:.2f}s"
+            if drain_wait_sec is not None else ""
+        )
+        paced_sec = self._tts.take_paced_sec()
+        paced_part = f", paced {paced_sec:.2f}s" if paced_sec > 0.05 else ""
+        logger.info(
+            "turn ended: in=%d out=%d tokens, est $%.4f "
+            "(sent=%dB, recv=%d chunks%s%s%s)",
+            usage.input_tokens, usage.output_tokens, cost,
+            bytes_sent, chunks_received, drain_part,
+            paced_part,
+            ", turn_lost" if turn.turn_lost() else "",
+        )
 
-        if owns_output():
-            # "Done listening" chirp, bookending the wake chirp on every path
-            # into _end_turn. Awaited so it lands in the TTS queue before the
-            # unduck below, behind any LLM-response tail still buffered: the
-            # audible order is response → chirp → music returns.
-            await self._play_listening_chirp(going_on=False)
-
-        # Asked again rather than sharing the chirp's answer: the chirp is
-        # itself an await, and a surrender landing inside it would leave
-        # this drain holding the teardown open for the new owner's audio.
-        if owns_output():
-            try:
-                # Queue completion is not acoustic completion. Keep the turn's
-                # output/duck ownership until the final chirp has cleared the
-                # physical route, for both fan-in and member-local outputd TTS.
-                await self._tts.wait_drained()
-            except (
-                AttributeError, OSError, RuntimeError, TypeError, ValueError,
-            ) as e:
-                logger.warning("teardown TTS drain wait failed: %s", e)
-
-        if owns_output():
-            await self._ducker.restore()
-        self._volume_coordinator.note_voice_session(False)
-        self._content_activity.resume()
-        await self._tts.resume_content_meter()
-        self._session_id = None
-        self._push_to_talk.active_source = None
-        # Per-turn, and read by `_handle_session_frame`'s input-closed
-        # branch: left set, the cue below scores its own audio for a
-        # barge-in against a turn that has already been released.
-        self._barge_in_active = False
-        if owns_output():
-            await self._output_gate.end_turn(episode)
-        self._turn_output_episode = None
         self._research.finish_window(research_window)
-        try:
-            if play_no_answer_cue:
-                # After the gate release (`_play_cue` takes an "admin"
-                # episode of its own and will not preempt the turn's) and
-                # before State.WAKE: a cue is seconds of assistant speech,
-                # and only State.SESSION with `_input_ended` keeps it off
-                # the wake detectors — WAKE_REFRACTORY_SEC is 0.2 s and
-                # cannot cover it.
-                # A paused connection owns its own remedy cue; claiming an
-                # internal fault over one would be a false alarm (see the
-                # internal_error CueDef).
-                await self._play_cue(
-                    self._connection.wake_cue()
-                    if self._connection.is_paused()
-                    else INTERNAL_ERROR_CUE_SLUG
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("teardown no-answer cue failed: %s", e)
-        finally:
-            # Unskippable: State.SESSION on a released turn drops every mic
-            # frame at `_handle_session_frame`'s input-closed branch, and
-            # the next `_end_turn` trips the `_session_id` assert.
-            self._turn = None
-            self._state = State.WAKE
-            # No detector.reset() here: `_handle_wake_frame` reset every
-            # detector when the wake fired and none was fed a frame since
-            # (state was SESSION), so a second reset would only delay the
-            # buffer refilling when refractory expires.
-            self._refractory_until = (
-                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
-            )
-        await self._research.drain()
+        if release_base_error is not None:
+            raise release_base_error
+        return play_no_answer_cue
 
 
 def _active_model(*args, **kwargs):
