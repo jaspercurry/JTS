@@ -30,6 +30,7 @@ from jasper.voice._base import BaseLiveConnection
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
+    request_planned_reopen,
     run_reconnect_with_backoff,
 )
 from jasper.voice.openai_session import (
@@ -3216,4 +3217,38 @@ async def test_release_cleanup_keeps_its_original_socket_during_reconnect():
         assert not conn._reconnect_event.is_set()
     finally:
         resume.set()
+        await conn.stop()
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+@pytest.mark.parametrize("ending", ["error", "closed"])
+async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending):
+    entered = asyncio.Event()
+    wires = []
+
+    class ClosingConnection(_FakeConn):
+        async def __anext__(self):
+            if self._inbox.empty():
+                entered.set()
+            try:
+                return await super().__anext__()
+            except asyncio.CancelledError:
+                if ending == "error":
+                    raise ConnectionError("socket closed during teardown") from None
+                raise StopAsyncIteration from None
+
+    def connect(**kwargs):
+        wire = ClosingConnection() if not wires else _FakeConn()
+        wires.append(wire)
+        return _FakeAsyncCM(wire)
+
+    conn = conn_cls(api_key="fake", connect_factory=connect, backoff_schedule=(0.0,))
+    await conn.start(ToolRegistry(), "")
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        request_planned_reopen(conn)
+        await _wait_until(lambda: conn._connected_event.is_set())
+        assert len(wires) == 2
+        assert not conn._reconnect_event.is_set()
+    finally:
         await conn.stop()

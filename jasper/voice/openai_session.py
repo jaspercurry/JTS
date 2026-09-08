@@ -1144,9 +1144,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            self._on_receive_loop_error(e)
+            if self._conn is conn:
+                self._on_receive_loop_error(e)
             return
-        if not self._stopping.is_set():
+        if self._conn is conn and not self._stopping.is_set():
             logger.warning(
                 f"{self._log_tag} receive iteration ended cleanly "
                 "(server closed, likely the 60-minute hard cap); reconnecting",
