@@ -389,8 +389,8 @@ class Pass:
     # -- the observed record ------------------------------------------------
 
     def observe_output_hardware_state(self, *, write: bool) -> None:
-        # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+        # lazy: patch target — the tests replace it on the source module,
+        # which only a per-call import sees.
         from jasper.cli.output_hardware import observe, observed_output
 
         action = "written" if write else "observed"
@@ -451,14 +451,15 @@ class Pass:
     # -- I2S HAT boot intent ------------------------------------------------
 
     def reconcile_i2s_hat_boot(self) -> None:
-        # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+        # lazy: patch target — the tests replace `reconcile_boot_config` on the
+        # source module, which only a per-call import sees; the rest travel with
+        # it rather than splitting one statement across two homes.
         from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
         from jasper.audio_hardware.usb_port_role import (
             DEFAULT_MODEL_PATH,
             reconcile_boot_config,
         )
-        from jasper.cli.usb_port_role import boot_role_events  # lazy: with its sibling
+        from jasper.cli.usb_port_role import boot_role_events
         from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
         try:
@@ -603,8 +604,8 @@ class Pass:
         self.outputd_env_stage = None
 
     def validate_outputd_env_stage(self) -> bool:
-        # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+        # lazy: patch target — the tests replace it on the source module,
+        # which only a per-call import sees.
         from jasper.cli.audio_config import validate_outputd_env
 
         stage = self.outputd_env_stage
@@ -854,8 +855,8 @@ class Pass:
         if not dac_id:
             return None, False
         try:
-            # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+            # lazy: patch target — the tests replace it on the source
+            # module, which only a per-call import sees.
             from jasper.audio_hardware.dac import (
                 active_outputd_lane_channels_for,
                 is_known_profile_id,
@@ -885,8 +886,8 @@ class Pass:
         if not dac_id:
             return "", ""
         try:
-            # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+            # lazy: patch target — the tests replace it on the source
+            # module, which only a per-call import sees.
             from jasper.audio_hardware.dac import by_id, final_edge_format_for
 
             fmt = final_edge_format_for(dac_id)
@@ -942,8 +943,8 @@ class Pass:
         with its own declaration, and the two legitimately differ.
         """
         try:
-            # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+            # lazy: patch target — the tests replace it on the source
+            # module, which only a per-call import sees.
             from jasper.fanin_coupling import content_lane_format_for_coupling
 
             return content_lane_format_for_coupling()
@@ -1785,8 +1786,8 @@ class Pass:
         self.apply_observed_single_policy()
         self.apply_observed_composite_policy()
 
-        # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
+        # lazy: patch target — the tests replace it on the source module,
+        # which only a per-call import sees.
         from jasper.camilla_config_contract import outputd_capture_device_for_playback
 
         if not outputd_capture_device_for_playback(DEFAULT_OUTPUTD_PLAYBACK_DEVICE):
