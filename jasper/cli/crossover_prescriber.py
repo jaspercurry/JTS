@@ -36,11 +36,15 @@ from ._refusal import (
 from .round_views import default_out
 from .round_views._common import ARTIFACT_BY_VIEW, context_artifacts
 
-from jasper.active_speaker.angle_capture import (
-    LateralWalkRefused,
-    candidate_measure_axes,
+from jasper.active_speaker.candidate_bank import (
+    CandidateBankRefusal,
+    banked_candidates,
+    find_banked_candidate,
+    publish_authored_candidate,
 )
-from jasper.active_speaker.candidate_bank import banked_candidates
+from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
+from jasper.audio_measurement.bundles import BundleError
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
@@ -98,7 +102,7 @@ from jasper.identity.reader import (
 )
 
 #: Authority tier for the generated tool-menu index (ADR-0204).
-AUTHORITY_TIER = "advisory (`stage` mutates)"
+AUTHORITY_TIER = "advisory (`stage` and `compose` mutate)"
 
 #: This tool's console-script name, as ``pyproject.toml`` installs it: the
 #: parser's own ``prog`` and the ``next`` command every answer prints.
@@ -136,6 +140,41 @@ def _read_packet_file(path: Path) -> dict[str, Any]:
             f"{type(packet).__name__}"
         )
     return packet
+
+
+def _cmd_compose(args: argparse.Namespace) -> int:
+    root = Path(args.root) if args.root else None
+    try:
+        sources = {}
+        for value in args.role:
+            role, separator, fingerprint = value.partition("=")
+            if not separator or not role or not fingerprint or role in sources:
+                raise CandidateBankRefusal("composition_role_invalid", "use one ROLE=FINGERPRINT per role")
+            sources[role] = find_banked_candidate(fingerprint, root=root)
+        candidate = compose_candidate(
+            find_banked_candidate(args.base, root=root), sources,
+            alignment=find_banked_candidate(args.alignment, root=root) if args.alignment else None,
+            blend=find_banked_candidate(args.blend, root=root) if args.blend else None,
+            expected_effect=args.expected_effect,
+            observation_refs=args.observation_ref,
+            rationale=args.rationale,
+        )
+    except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
+        return failed(EXIT_REFUSED, exc.code, exc.detail)
+    except (ValueError, TypeError, KeyError) as exc:
+        return failed(EXIT_REFUSED, "composition_invalid", str(exc))
+    try:
+        published = publish_authored_candidate(candidate, root=root)
+    except CandidateBankRefusal as exc:
+        return failed(EXIT_REFUSED, exc.code, exc.detail)
+    except (OSError, BundleError) as exc:
+        return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
+    return answered({
+        "candidate_fingerprint": published.fingerprint,
+        "out": str(published.path),
+        "measurement_status": "unmeasured",
+        "adopted": False,
+    })
 
 
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
@@ -743,22 +782,10 @@ def _declared_section(
 
 
 def _candidate_records() -> list[dict[str, Any]]:
-    """Every banked candidate a walk could cycle, with the verdict staging will give it.
-
-    The bank belongs to the SPEAKER rather than to this round, so it is read
-    through its own listing reader and not from the packet; that reader's scan
-    bound sizes this list. ``reason`` carries the seam's sentence rather than
-    its slug: every refusal here is ``walk_candidate_not_measurable``, so only
-    the sentence says which of the three shapes a candidate has.
-    """
+    """The validated candidate artifacts available for a summed trial."""
     records: list[dict[str, Any]] = []
     for banked in banked_candidates():
         candidate = banked.candidate
-        measurable, reason = True, None
-        try:
-            candidate_measure_axes(candidate)
-        except LateralWalkRefused as exc:
-            measurable, reason = False, exc.detail
         minted = preset_crossover_geometry(candidate.source_preset)
         corner: dict[str, Any] | None = None
         if minted is not None:
@@ -772,6 +799,7 @@ def _candidate_records() -> list[dict[str, Any]]:
         alignment = candidate.alignment
         records.append({
             "fingerprint": banked.fingerprint,
+            "measurement_status": candidate.analysis.get("measurement_status", "not_reported"),
             "bundle_session_id": banked.bundle_session_id,
             "capture_session_id": banked.capture_session_id,
             "corner": corner,
@@ -780,15 +808,13 @@ def _candidate_records() -> list[dict[str, Any]]:
                 "delay_us": alignment.delay_us,
                 "delay_role": alignment.delay_role,
             },
-            "measurable": measurable,
-            "reason": reason,
         })
     return records
 
 
-def _measurable_fingerprints(candidates: list[dict[str, Any]]) -> list[str]:
-    """The banked candidates a walk may stage, in bank order."""
-    return [one["fingerprint"] for one in candidates if one["measurable"]]
+def _candidate_fingerprints(candidates: list[dict[str, Any]]) -> list[str]:
+    """Available artifact identities; capture validates each graph against this speaker."""
+    return [one["fingerprint"] for one in candidates]
 
 
 def _degree_list(block: dict[str, Any], key: str) -> list[int]:
@@ -876,8 +902,7 @@ def _banked_section(
         if walk["available"]
         else f"; no walk takes ({walk['reason']})"
     ) + (
-        f"; {len(candidates)} banked candidate(s), "
-        f"{len(_measurable_fingerprints(candidates))} measurable"
+        f"; {len(candidates)} banked candidate artifact(s)"
         if candidates
         else "; no banked candidate"
     )
@@ -1008,13 +1033,13 @@ def _next_commands(
         commands.append(shlex.join([
             PROG, "packet", *evidence, *(["--state", state] if state else []),
         ]))
-    measurable = _measurable_fingerprints(sections["banked"]["candidates"])
+    candidate_ids = _candidate_fingerprints(sections["banked"]["candidates"])
     # One candidate is not a comparison: a tournament exists to put two of them
     # at one pose, adjacent, so the microphone moves once.
-    if len(measurable) > 1:
+    if len(candidate_ids) > 1:
         commands.append(shlex.join([
             "jasper-angle-capture", "stage",
-            "--program", "tournament", "--candidates", ",".join(measurable),
+            "--program", "tournament", "--candidates", ",".join(candidate_ids),
         ]))
     if not sections["staged"]["available"]:
         commands.append(
@@ -1376,6 +1401,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    compose = sub.add_parser("compose", help="combine banked candidate parts into an unmeasured candidate")
+    compose.add_argument("--base", required=True, metavar="FINGERPRINT")
+    compose.add_argument("--role", action="append", default=[], metavar="ROLE=FINGERPRINT")
+    compose.add_argument("--alignment", metavar="FINGERPRINT", help="alignment source; defaults to base")
+    compose.add_argument("--blend", metavar="FINGERPRINT", help="blend source; defaults to base")
+    compose.add_argument("--expected-effect", default="", help="expected change; no measurement claim")
+    compose.add_argument("--observation-ref", action="append", default=[], help="path or take reference to existing observations")
+    compose.add_argument("--rationale", default="")
+    compose.add_argument("--root", help="candidate source and output bank; defaults to the speaker's bank")
+    compose.set_defaults(func=_cmd_compose)
 
     status = sub.add_parser(
         "status",

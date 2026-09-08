@@ -380,6 +380,17 @@ def test_live_and_banked_history_survive_live_retention(tmp_path):
     assert build_crossover_evidence_packet(banked_bundle)["structural_history"] == expected
 
 
+def test_authored_candidate_does_not_claim_a_measured_history_round(tmp_path):
+    root = tmp_path / "sessions"
+    current = _sibling_bundle(root, "r1", started_at=1.0, trim_db={"woofer": -1.0})
+    _sibling_bundle(
+        tmp_path / "campaigns", "authored", started_at=2.0,
+        trim_db={"woofer": -4.0}, analysis={"measurement_status": "unmeasured"},
+    )
+    history = build_crossover_evidence_packet(current)["structural_history"]
+    assert [row["round_id"] for row in history["rounds"]] == ["capture_r1"]
+
+
 def test_the_history_is_empty_when_no_round_banked_a_candidate(tmp_path):
     root = tmp_path / "bundles"
     root.mkdir()

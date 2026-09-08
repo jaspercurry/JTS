@@ -522,22 +522,12 @@ def test_a_raised_walk_publishes_its_elevations():
 def test_the_bank_lists_what_a_walk_may_stage_and_offers_the_cycle(
     tmp_path, capsys, bank
 ):
-    """The candidates an LLM may stage, and the one command that cycles them.
-
-    Every banked candidate is listed with what tells it apart -- its corner and
-    the alignment it was minted with -- and with the verdict the staging door
-    will give it, which is the SEAM's own
-    (``angle_capture.candidate_measure_axes``) rather than a second opinion
-    spelled here. The cycle is offered over the measurable ones only, so a
-    printed command cannot be one the door would refuse; below two there is
-    nothing to compare.
-    """
     plain = _candidate()
     flipped = _candidate(alignment=MeasuredCrossoverAlignment(
         delay_us=250.0, delay_role="tweeter", polarity=POLARITY_INVERT,
     ))
-    unplayable = _candidate(linearization={"woofer": {"filters": []}})
-    for index, candidate in enumerate((plain, flipped, unplayable)):
+    filtered = _candidate(linearization={"woofer": {"filters": []}})
+    for index, candidate in enumerate((plain, flipped, filtered)):
         _publish(bank, candidate, capture=f"capture-{index}")
     session, _ = _speaker_dirs(tmp_path)
 
@@ -548,7 +538,7 @@ def test_the_bank_lists_what_a_walk_may_stage_and_offers_the_cycle(
         for record in payload["banked"]["candidates"]
     }
     assert set(listed) == {
-        one.fingerprint for one in (plain, flipped, unplayable)
+        one.fingerprint for one in (plain, flipped, filtered)
     }
     assert listed[flipped.fingerprint]["corner"] == {
         "between_roles": ["woofer", "tweeter"],
@@ -561,13 +551,10 @@ def test_the_bank_lists_what_a_walk_may_stage_and_offers_the_cycle(
         "delay_us": 250.0,
         "delay_role": "tweeter",
     }
-    assert listed[plain.fingerprint]["measurable"] is True
-    # A candidate carrying linearization EQ is listed with why, not hidden.
-    assert listed[unplayable.fingerprint]["measurable"] is False
-    assert listed[unplayable.fingerprint]["reason"]
+    assert all("measurable" not in record for record in listed.values())
     assert (
         "jasper-angle-capture stage --program tournament --candidates "
-        f"{plain.fingerprint},{flipped.fingerprint}"
+        f"{plain.fingerprint},{flipped.fingerprint},{filtered.fingerprint}"
     ) in payload["next"]
 
 

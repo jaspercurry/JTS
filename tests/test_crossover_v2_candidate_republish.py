@@ -23,16 +23,33 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker.crossover_v2 import coordinator
+from jasper.active_speaker.candidate_bank import (
+    CandidateBankRefusal,
+    banked_candidates,
+    find_banked_candidate,
+    publish_authored_candidate,
+)
+from jasper.active_speaker.candidate_trials import require_candidate_trial
+from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.bundles import latest_bundle
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.session_graph import _fingerprint as graph_fingerprint
+from jasper.active_speaker.round_bank import bank_round
+from jasper.audio_measurement.bundles import record_artifact
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
+from jasper.cli import crossover_prescriber
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
 
-from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_measured_crossover_candidate import _candidate, _preset
 
 BUNDLE = "bundle0000aa"
 CAPTURE = "capture-session-1"
@@ -72,6 +89,167 @@ def _publish(root: Path, candidate, *, bundle=BUNDLE, capture=CAPTURE) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(candidate.to_dict()), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("layout", ["live", "bank", "campaign"])
+def test_compose_reuses_losing_parts_without_claiming_measurement(bank, capsys, layout):
+    peak = {"biquad_type": "Peaking", "freq": 500.0, "q": 1.0, "gain": -2.0}
+    base = replace(
+        _candidate(alignment=MeasuredCrossoverAlignment(120.0, "tweeter", "keep")),
+        blend_correction=[peak],
+    )
+    parents = {
+        "base": base,
+        "a": replace(_candidate(
+            trims={"woofer": -1.0, "tweeter": -6.0},
+            linearization={"woofer": {"filters": [peak], "residual_rms_db": 0.2}},
+            linearization_outcome="fitted",
+        ), analysis={"measurement_status": "measured", "outcome": "restored", "verified": True}),
+        "b": _candidate(
+            trims={"woofer": -8.0, "tweeter": -2.0},
+            linearization={"tweeter": {
+                "filters": [{**peak, "freq": 6000.0, "gain": -1.5}],
+                "verify_residual_rms_db": 0.1,
+            }},
+        ),
+    }
+    for name, candidate in parents.items():
+        root = bank if layout == "live" else bank / (name if layout == "campaign" else "") / "bundle"
+        _publish(root, candidate, bundle=name)
+    active_info = bank / "active" / "info.json"
+    active_info.parent.mkdir()
+    active_info.write_text('{"state":"open"}')
+    argv = [
+        "compose", "--root", str(bank), "--base", base.fingerprint,
+        "--role", f"woofer={parents['a'].fingerprint}",
+        "--role", f"tweeter={parents['b'].fingerprint}",
+        "--expected-effect", "reduce the two peaks",
+        "--observation-ref", "round-a/packet.json",
+        "--rationale", "test the useful parts together; causality remains unresolved",
+    ]
+    assert crossover_prescriber.main(argv) == 0
+    answer = json.loads(capsys.readouterr().out)
+    child = find_banked_candidate(answer["candidate_fingerprint"], root=bank)
+    assert answer["adopted"] is False
+    assert answer["measurement_status"] == "unmeasured"
+    assert child.fingerprint not in {parent.fingerprint for parent in parents.values()}
+    assert child.candidate.role_attenuations_db == {"woofer": -1.0, "tweeter": -2.0}
+    assert child.candidate.alignment == base.alignment
+    assert child.candidate.blend_correction == base.blend_correction
+    assert child.candidate.linearization_outcome == ""
+    assert child.candidate.trim_decision == child.candidate.exclusion_evidence == {}
+    for role, parent in (("woofer", parents["a"]), ("tweeter", parents["b"])):
+        part = child.candidate.linearization[role]
+        assert set(part) == {"filters", "headroom_cost_db"}
+        assert part["filters"] == parent.linearization[role]["filters"]
+        assert child.candidate.analysis["role_sources"][role]["fingerprint"] == parent.fingerprint
+    assert child.candidate.analysis["measurement_status"] == "unmeasured"
+    assert "verified" not in child.candidate.analysis
+    assert child.candidate.analysis["expected_effect"] == "reduce the two peaks"
+    assert child.candidate.analysis["observation_refs"] == ["round-a/packet.json"]
+    info = json.loads((child.path.parents[5] / "info.json").read_text())
+    assert info["captures"] == info["summed_captures"] == []
+    assert info["verification"] is None
+    assert info["kind"] == "jts_authored_candidate_bundle"
+    assert "state" not in info
+    assert child.path.is_relative_to(bank.parent / "campaigns")
+    assert json.loads(active_info.read_text()) == {"state": "open"}
+    assert latest_bundle(bank)["bundle_dir"] == str(active_info.parent)
+    assert crossover_prescriber.main(argv) == 0
+    assert json.loads(capsys.readouterr().out) == answer
+    assert sum(one.fingerprint == child.fingerprint for one in banked_candidates(root=bank)) == 1
+
+
+def test_default_candidate_lookup_survives_live_session_retention(bank):
+    candidate = _candidate()
+    live = _publish(bank, candidate)
+    saved = _publish(bank.parent / "campaigns" / "round-1" / "bundle", candidate)
+    assert len(banked_candidates()) == 2
+    assert find_banked_candidate(candidate.fingerprint).fingerprint == candidate.fingerprint
+    live.unlink()
+    assert find_banked_candidate(candidate.fingerprint).path == saved
+
+
+@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest"])
+def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
+    parent = _candidate()
+    _publish(bank, parent)
+    child = compose_candidate(find_banked_candidate(parent.fingerprint), {})
+    publish_authored_candidate(child)
+    with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+        republish.handle_v2_republish({"fingerprint": child.fingerprint})
+    assert refusal.value.code == "candidate_trial_required"
+    assert v2host.load_v2_state() is None
+
+    bundle = bank / "trial"
+    bundle.mkdir()
+    (bundle / "info.json").write_text(json.dumps({
+        "bundle_schema_version": 1, "session_id": "trial", "state": "complete",
+    }))
+    wav = bundle / "capture.wav"
+    wav.write_bytes(b"recorded capture bytes")
+    record_artifact(
+        bundle, wav, kind="jts_capture_wav", sensitivity="audio",
+        recomputable=False, generated_by="test",
+    )
+    record = {
+        "kind": POSITION_EVIDENCE_KIND, "measure_kind": "candidate",
+        "session_id": "trial-capture", "take_id": "candidate_00_attempt_0",
+        "candidate_id": parent.fingerprint if fault == "parent" else child.fingerprint,
+        "graph_scope": "drivers" if fault == "scope" else "candidate",
+        "graph_fingerprint": "" if fault == "graph" else graph_fingerprint("submitted: graph\n"),
+        "incident": "stimulus_play_failed" if fault == "incident" else "",
+        "level_db": None if fault == "level" else -25.0,
+        "measurement_status": "planned" if fault == "status" else "captured",
+        "wav_path": wav.name,
+    }
+    positions = bundle / "evidence/v1/artifacts/crossover_v2/trial-capture/positions"
+    positions.mkdir(parents=True)
+    (positions / "candidate_00_attempt_0.json").write_text(json.dumps(record))
+    if fault == "missing":
+        wav.unlink()
+    elif fault == "changed":
+        wav.write_bytes(b"changed capture bytes!")
+    elif fault == "manifest":
+        (bundle / "artifact_manifest.json").unlink()
+    saved = bank_round(bundle, campaign_root=bank.parent / "campaigns").path
+    shutil.rmtree(bundle)
+    if fault:
+        with pytest.raises(v2host.CrossoverV2Refused) as refusal:
+            republish.handle_v2_republish({"fingerprint": child.fingerprint})
+        assert refusal.value.code == "candidate_trial_required"
+        assert v2host.load_v2_state() is None
+    else:
+        proof = require_candidate_trial(child)
+        assert proof["candidate_id"] == child.fingerprint
+        assert Path(proof["record_path"]).is_relative_to(saved)
+        answer = republish.handle_v2_republish({"fingerprint": child.fingerprint})
+        assert answer["candidate"]["fingerprint"] == child.fingerprint
+        assert answer["verify_priors_restored"] is False
+        assert v2host._update_current_review("authored", child.fingerprint, None, {})
+
+
+@pytest.mark.parametrize("change", ["alignment", "blend", "preset", "role"])
+def test_compose_requires_explicit_structural_sources_and_matching_roles(bank, change):
+    base, other = _candidate(), replace(
+        _candidate(alignment=MeasuredCrossoverAlignment(250.0, "tweeter", "invert")),
+        blend_correction=[{"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": -1.0}],
+    )
+    if change == "preset":
+        other = _candidate(preset=_preset("stereo"))
+    for name, candidate in (("base", base), ("other", other)):
+        _publish(bank, candidate, bundle=name)
+    base_row = find_banked_candidate(base.fingerprint, root=bank)
+    other_row = find_banked_candidate(other.fingerprint, root=bank)
+    if change in {"preset", "role"}:
+        role = "midrange" if change == "role" else "woofer"
+        with pytest.raises(CandidateBankRefusal) as refusal:
+            compose_candidate(base_row, {role: other_row})
+        assert refusal.value.code == f"composition_{'role_unknown' if change == 'role' else 'preset_mismatch'}"
+    else:
+        child = compose_candidate(base_row, {}, **{change: other_row})
+        field = "blend_correction" if change == "blend" else "alignment"
+        assert getattr(child, field) == getattr(other, field)
 
 
 # --- the round trip: republish, then apply can reach it ---------------------

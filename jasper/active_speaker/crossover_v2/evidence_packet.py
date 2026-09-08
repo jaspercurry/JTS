@@ -2061,7 +2061,10 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
         round_dir, _reason = round_artifact_dir(bundle_dir)
         if round_dir is None:
             continue
-        axes = _structural_axes_of(_read_candidate(round_dir))
+        candidate = _read_candidate(round_dir)
+        if _mapping(candidate.get("analysis")).get("measurement_status") == "unmeasured":
+            continue
+        axes = _structural_axes_of(candidate)
         # Emptiness, not falsiness: a committed delay of exactly 0.0 µs and a
         # polarity of ``keep`` are both readings.
         if all(
