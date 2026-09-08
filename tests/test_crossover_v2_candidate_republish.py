@@ -20,6 +20,7 @@ door that closes that gap, and the two things it must never become:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -36,8 +37,10 @@ from jasper.active_speaker.candidate_bank import (
     publish_authored_candidate,
 )
 from jasper.active_speaker.candidate_trials import require_candidate_trial
+from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore
+from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.candidate_parts import compose_candidate
-from jasper.active_speaker.bundles import latest_bundle
+from jasper.active_speaker.bundles import latest_bundle, open_bundle
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.session_graph import _fingerprint as graph_fingerprint
 from jasper.active_speaker.round_bank import bank_round
@@ -48,6 +51,7 @@ from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_republish as republish
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _preset
+from tests.active_speaker_fixtures import mono_output_topology
 
 BUNDLE = "bundle0000aa"
 CAPTURE = "capture-session-1"
@@ -172,7 +176,7 @@ def test_default_candidate_lookup_survives_live_session_retention(bank):
     assert find_banked_candidate(candidate.fingerprint).path == saved
 
 
-@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest"])
+@pytest.mark.parametrize("fault", [None, "parent", "scope", "incident", "level", "status", "graph", "missing", "changed", "manifest", "edited_labels", "legacy_labels"])
 def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
     parent = _candidate()
     _publish(bank, parent)
@@ -183,11 +187,8 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
     assert refusal.value.code == "candidate_trial_required"
     assert v2host.load_v2_state() is None
 
-    bundle = bank / "trial"
-    bundle.mkdir()
-    (bundle / "info.json").write_text(json.dumps({
-        "bundle_schema_version": 1, "session_id": "trial", "state": "complete",
-    }))
+    info = open_bundle(mono_output_topology(mode="active_3_way"), calibration_id="", sessions_dir=bank)
+    bundle = Path(info["bundle_dir"])
     wav = bundle / "capture.wav"
     wav.write_bytes(b"recorded capture bytes")
     record_artifact(
@@ -205,15 +206,27 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
         "measurement_status": "planned" if fault == "status" else "captured",
         "wav_path": wav.name,
     }
-    positions = bundle / "evidence/v1/artifacts/crossover_v2/trial-capture/positions"
-    positions.mkdir(parents=True)
-    (positions / "candidate_00_attempt_0.json").write_text(json.dumps(record))
+    store = BankedRecordStore(CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"]), "trial-capture")
+    record_id = asyncio.run(store.bank(record))
+    path = bundle / "evidence/v1/artifacts" / record_id
+    if fault == "edited_labels":
+        edited = json.loads(path.read_text())
+        edited["graph_fingerprint"] = graph_fingerprint("different: graph\n")
+        path.write_text(json.dumps(edited))
+    elif fault == "legacy_labels":
+        manifest = bundle / "artifact_manifest.json"
+        data = json.loads(manifest.read_text())
+        data["artifacts"] = [row for row in data["artifacts"] if row["path"] == wav.name]
+        manifest.write_text(json.dumps(data))
     if fault == "missing":
         wav.unlink()
     elif fault == "changed":
         wav.write_bytes(b"changed capture bytes!")
     elif fault == "manifest":
         (bundle / "artifact_manifest.json").unlink()
+    info_path = bundle / "info.json"
+    saved_info = json.loads(info_path.read_text())
+    info_path.write_text(json.dumps({**saved_info, "state": "complete"}))
     saved = bank_round(bundle, campaign_root=bank.parent / "campaigns").path
     shutil.rmtree(bundle)
     if fault:

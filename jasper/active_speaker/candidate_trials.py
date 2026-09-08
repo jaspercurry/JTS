@@ -52,13 +52,22 @@ def require_candidate_trial(candidate: Any, *, root: Path | None = None) -> dict
                     continue
                 wav = relative_artifact_path(bundle, record.get("wav_path") or "")
                 artifacts = read_artifact_manifest(bundle).get("artifacts", [])
-                capture: dict[str, Any] = next((item for item in artifacts if item.get("path") == wav), {})
-                raw = bundle / wav
-                if (
-                    not capture.get("sha256") or raw.stat().st_size <= 0
-                    or raw.stat().st_size != capture.get("byte_size")
-                    or sha256_file(raw) != capture["sha256"]
-                ):
+                identities = {item.get("path"): item for item in artifacts}
+                record_path = relative_artifact_path(bundle, path)
+                if wav not in identities.get(record_path, {}).get("dependencies", []):
+                    continue
+                intact = True
+                for relative in (record_path, wav):
+                    identity = identities.get(relative, {})
+                    raw = bundle / relative
+                    if (
+                        not identity.get("sha256") or raw.stat().st_size <= 0
+                        or raw.stat().st_size != identity.get("byte_size")
+                        or sha256_file(raw) != identity["sha256"]
+                    ):
+                        intact = False
+                        break
+                if not intact:
                     continue
             except (OSError, ValueError, TypeError, AttributeError, BundleError):
                 continue
