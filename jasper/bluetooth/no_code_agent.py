@@ -63,18 +63,7 @@ async def _enforce_pairable_floor_once(
     read_state=adapter_state,
     close_pairing_window=set_discoverable,
 ) -> bool:
-    try:
-        snapshot = await read_state()
-    except Exception as exc:  # noqa: BLE001
-        log_event(
-            logger,
-            "bluetooth_agent.pairable_floor_probe_failed",
-            err=repr(exc),
-            level=logging.WARNING,
-        )
-        return False
-
-    if snapshot.get("pairable") and not snapshot.get("discoverable"):
+    if await _pairable_outside_window(read_state=read_state):
         return await _close_pairing_window_floor(
             "pairable_outside_window",
             close_pairing_window=close_pairing_window,
