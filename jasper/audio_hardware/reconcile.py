@@ -49,6 +49,7 @@ from jasper.atomic_io import (
     env_lock_path,
     read_regular_bytes_nofollow,
 )
+from jasper.cli.output_hardware import ObservedOutput
 from jasper.env_file import read_env_file, read_env_file_text
 from jasper.env_file import remove as env_remove
 from jasper.env_file import upsert as env_upsert
@@ -87,26 +88,6 @@ EnvAction = tuple[str, str | None]
 
 _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
                  signal.SIGINT: (130, "INT")}
-
-# The `jasper.cli.output_hardware` fields this reconciler consumes, at what an
-# ABSENT record means (ADR-0235 R2).
-_CLEARED_OBSERVATION = {
-    "OBSERVED_OUTPUT_PROFILE_ID": "",
-    "OBSERVED_OUTPUT_PROFILE_STATUS": "",
-    "OBSERVED_OUTPUT_PROFILE_KIND": "",
-    "OBSERVED_OUTPUT_HEADPHONE_CONTROL": "",
-    "OBSERVED_OUTPUT_SELECTED_CARD_ID": "",
-    "OBSERVED_OUTPUT_CHILD_DEVICE_IDS": "",
-    "OBSERVED_OUTPUT_APPLE_CARD_IDS": "",
-    "OBSERVED_OUTPUT_BLOCKER_CODES": "",
-    "OBSERVED_OUTPUT_RECORD_CHANGED": "0",
-    "OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE": "",
-    "OBSERVED_OUTPUT_DUAL_MAPPING_OK": "0",
-    "OBSERVED_OUTPUT_DUAL_MAPPING_REASON": "",
-    "OBSERVED_OUTPUT_DUAL_ORDER_SOURCE": "",
-    "OBSERVED_OUTPUT_DUAL_DAC_A_PCM": "",
-    "OBSERVED_OUTPUT_DUAL_DAC_B_PCM": "",
-}
 
 # jasper_env_quote_value's safe charset (deploy/lib/jasper-env-file.sh): a
 # value outside it is quoted for the shell.
@@ -297,8 +278,7 @@ class Pass:
         # than the one it replaced. The mixer pin reads that record, so it is
         # the one thing that has to re-run it.
         self.record_changed = False
-        self.observed = dict(_CLEARED_OBSERVATION)
-        self.observed_valid = False
+        self.observed = ObservedOutput()
         self.dual_apple_dac_a_pcm = ""
         self.dual_apple_dac_b_pcm = ""
         self.dual_apple_order_source = ""
@@ -403,12 +383,14 @@ class Pass:
     # -- the observed record ------------------------------------------------
 
     def observe_output_hardware_state(self, *, write: bool) -> None:
-        from jasper.cli.output_hardware import env_values, observe
+        # lazy: patch target — tests/test_audio_hardware_reconcile.py replaces
+        # `observe` on the source module, which only a per-call import sees.
+        from jasper.cli.output_hardware import observe, observed_output
 
         action = "written" if write else "observed"
         try:
             state, cards, record_changed = observe(write=write)
-            values = env_values(state, cards, record_changed=record_changed)
+            observed = observed_output(state, cards, record_changed=record_changed)
         # noqa reason: the classifier walks sysfs, /proc and an `aplay` spawn; a
         # failure of ANY shape must still leave the DAC-role policy below to run.
         except Exception:  # noqa: BLE001
@@ -416,22 +398,19 @@ class Pass:
             return
         # A record missing either of the two facts the whole thing hangs off is
         # not one anything below may read.
-        if not values["OBSERVED_OUTPUT_PROFILE_ID"] or not values[
-            "OBSERVED_OUTPUT_PROFILE_STATUS"
-        ]:
-            self.observed = dict(_CLEARED_OBSERVATION)
+        if not observed.valid:
+            self.observed = ObservedOutput()
             self.log(
                 f"state_{action}_failed",
                 reason="invalid_payload",
                 path=self.state_path,
             )
             return
-        self.observed = values
-        self.observed_valid = True
-        if values["OBSERVED_OUTPUT_RECORD_CHANGED"] == "1":
+        self.observed = observed
+        if observed.record_changed:
             self.record_changed = True
-        if values["OBSERVED_OUTPUT_APPLE_CARD_IDS"]:
-            self.dongle_card = values["OBSERVED_OUTPUT_APPLE_CARD_IDS"].split(" ")[0]
+        if observed.apple_card_ids:
+            self.dongle_card = observed.apple_card_ids[0]
             self.apple_dongle_present = "1"
             # apple_dongle_service_card stays "auto": ALSA card ids are not
             # stable across a re-enumeration and the mixer units bake this
@@ -442,25 +421,25 @@ class Pass:
             # this is gated on the write.
             try:
                 self.publish_management_transport_marker(
-                    values["OBSERVED_OUTPUT_USB_MANAGEMENT_TRANSPORT_AVAILABLE"]
+                    observed.management_transport_available
                 )
             except OSError:
                 pass
         self.log(
             f"state_{action}",
             path=self.state_path,
-            profile_id=values["OBSERVED_OUTPUT_PROFILE_ID"] or "unknown",
-            status=values["OBSERVED_OUTPUT_PROFILE_STATUS"] or "unknown",
-            blockers=_log_token(values["OBSERVED_OUTPUT_BLOCKER_CODES"] or "none"),
+            profile_id=observed.profile_id or "unknown",
+            status=observed.status or "unknown",
+            blockers=_log_token(",".join(observed.blocker_codes) or "none"),
         )
 
-    def publish_management_transport_marker(self, available: str) -> None:
+    def publish_management_transport_marker(self, available: bool | None) -> None:
         """Read by jasper-usbgadget's composition with ``test -e``. In /run so
         a reboot clears it before the boot config it describes can change.
         Truncated in place rather than replaced: an unlink would leave a window
         where a true->true republish reads as false."""
         marker = self.management_transport_marker
-        if available != "true":
+        if not available:
             marker.unlink(missing_ok=True)
             return
         _ensure_dir(marker.parent, 0o755)
@@ -532,10 +511,10 @@ class Pass:
         profile, not just InnoMaker: a HAT can be the composite's child device
         rather than the top-level profile_id."""
         desired = self.i2s_hat_desired_profile
-        if not self.i2s_hat_boot_changed or not self.observed_valid:
+        if not self.i2s_hat_boot_changed or not self.observed.valid:
             return
-        observed = self.observed["OBSERVED_OUTPUT_PROFILE_ID"]
-        children = self.observed["OBSERVED_OUTPUT_CHILD_DEVICE_IDS"].split()
+        observed = self.observed.profile_id
+        children = self.observed.child_device_ids
         if desired and desired in children:
             observed = desired
         marker = Path(self.i2s_hat_reboot_required_path)
@@ -738,7 +717,7 @@ class Pass:
         what makes this pass's verdict authoritative enough to overrule the env
         on disk. Returns whether it parked.
         """
-        if not self.observed_valid:
+        if not self.observed.valid:
             return False
         effective = self.outputd_env_effective()
         if effective.get("JASPER_OUTPUTD_BACKEND", "alsa") != "alsa":
@@ -1030,44 +1009,44 @@ class Pass:
     def apply_observed_single_policy(self) -> None:
         """Consume the classifier's verdict for ordinary single devices, so a
         newly registered DAC needs no second hardware rule here."""
-        if self.observed["OBSERVED_OUTPUT_PROFILE_STATUS"] != "ready":
+        if self.observed.status != "ready":
             return
-        if not self.observed["OBSERVED_OUTPUT_SELECTED_CARD_ID"]:
+        if not self.observed.selected_card_id:
             return
-        self.output_dac_card = self.observed["OBSERVED_OUTPUT_SELECTED_CARD_ID"]
-        self.output_dac_id = self.observed["OBSERVED_OUTPUT_PROFILE_ID"]
+        self.output_dac_card = self.observed.selected_card_id
+        self.output_dac_id = self.observed.profile_id
         self.output_dac_recognized = True
 
     def apply_observed_composite_policy(self) -> None:
-        if self.observed["OBSERVED_OUTPUT_PROFILE_KIND"] != "composite":
+        if self.observed.kind != "composite":
             return
         # The parked shape, up front: a composite is NAMED whatever its status,
         # so every branch leaves these exactly here except the one that arms.
-        self.output_dac_id = self.observed["OBSERVED_OUTPUT_PROFILE_ID"]
+        self.output_dac_id = self.observed.profile_id
         self.output_dac_card = ""
         self.output_dac_recognized = False
         self.apple_dongle_present = "1"
         self.apple_dongle_service_card = "auto"
-        if self.observed["OBSERVED_OUTPUT_PROFILE_STATUS"] != "ready":
+        if self.observed.status != "ready":
             self.log(
                 "dual_apple_detected",
-                status=self.observed["OBSERVED_OUTPUT_PROFILE_STATUS"] or "unknown",
+                status=self.observed.status or "unknown",
                 action="park_until_ready",
             )
             return
-        if self.observed["OBSERVED_OUTPUT_DUAL_MAPPING_OK"] != "1":
+        if not self.observed.dual_mapping_ok:
             self.log(
                 "dual_apple_detected",
                 status="ready",
                 action="park_unstable_child_order",
                 topology_path=self.output_topology_path,
-                reason=self.observed["OBSERVED_OUTPUT_DUAL_MAPPING_REASON"]
+                reason=self.observed.dual_mapping_reason
                 or "unknown",
             )
             return
-        self.dual_apple_order_source = self.observed["OBSERVED_OUTPUT_DUAL_ORDER_SOURCE"]
-        self.dual_apple_dac_a_pcm = self.observed["OBSERVED_OUTPUT_DUAL_DAC_A_PCM"]
-        self.dual_apple_dac_b_pcm = self.observed["OBSERVED_OUTPUT_DUAL_DAC_B_PCM"]
+        self.dual_apple_order_source = self.observed.dual_order_source
+        self.dual_apple_dac_a_pcm = self.observed.dual_dac_a_pcm
+        self.dual_apple_dac_b_pcm = self.observed.dual_dac_b_pcm
         # The composite sink is rigidly 4-channel in outputd, so the dual
         # branch needs the gate's pass/fail and its ENDPOINT DEVICE but not the
         # returned width. The endpoint field must not be discarded: the marker
@@ -1151,7 +1130,7 @@ class Pass:
                 outputd_env=self.outputd_env_file,
             )
         changed = self.set_env_file_var(target, prelude)
-        composite = self.observed["OBSERVED_OUTPUT_PROFILE_KIND"] == "composite"
+        composite = self.observed.kind == "composite"
         if composite and self.output_dac_recognized:
             changed = self._apply_composite_runtime_env(content_format) or changed
         elif self.output_dac_recognized:
@@ -1551,7 +1530,7 @@ class Pass:
         # The monitor exists to re-pin ONE mixer control, so the DAC declaring
         # that control is the whole condition for running it — the classifier
         # answers it off the registry (ADR-0235 R2).
-        apple_output = bool(self.observed["OBSERVED_OUTPUT_HEADPHONE_CONTROL"])
+        apple_output = bool(self.observed.headphone_control)
         # The pin is enabled on every box: which controls a DAC pins is the
         # registry's answer, and jasper-dac-init is where it is asked.
         self.systemctl_required("enable", DAC_INIT_UNIT)
@@ -1598,7 +1577,7 @@ class Pass:
             output_dac_card=self.output_dac_card,
             recognized=int(self.output_dac_recognized),
             observed_blockers=_log_token(
-                self.observed["OBSERVED_OUTPUT_BLOCKER_CODES"] or "none"
+                ",".join(self.observed.blocker_codes) or "none"
             ),
         )
 
