@@ -1832,6 +1832,38 @@ def test_the_shim_maps_a_signal_to_the_status_systemd_expects(
     assert process.returncode == 143, stderr
 
 
+def test_a_signalled_changed_predicate_exits_rather_than_dying_of_the_signal(
+    tmp_path: Path,
+) -> None:
+    """`--changed` is the unit's ExecCondition=, where exit 1..254 skips the
+    unit and death BY SIGNAL fails it. A shell's own `$?` is 143 either way,
+    so this reads the wait status (Popen reports -15 for the signal death): a
+    SIGTERM landing in the fingerprint must leave the unit skippable."""
+    # A FIFO with no writer: the fingerprint's `cat` blocks on it, which is the
+    # window a TimeoutStartSec SIGTERM lands in.
+    blocking = tmp_path / "blocking-topology"
+    os.mkfifo(blocking)
+    process = subprocess.Popen(
+        ["bash", str(SCRIPT), "--reason", "test", "--changed"],
+        cwd=ROOT,
+        env=_reconcile_env(
+            tmp_path,
+            APPLE_LISTING,
+            extra_env={"JASPER_OUTPUT_TOPOLOGY_PATH": str(blocking)},
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    time.sleep(2)
+    assert process.poll() is None, "the predicate never reached the blocking read"
+    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    _, stderr = process.communicate(timeout=180)
+
+    assert process.returncode == 143, (process.returncode, stderr)
+
+
 @pytest.mark.parametrize("blocked", [False, True])
 def test_state_written_carries_the_classifier_blocker_codes(
     tmp_path: Path, blocked: bool

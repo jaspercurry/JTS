@@ -209,6 +209,15 @@ OUTPUT_DAC_RECOGNIZED=0
 EOF
 }
 
+# The mapped exit code systemd expects for each signal, wherever this script is
+# when it arrives. Installed BEFORE the --changed predicate below because that
+# verb runs as an ExecCondition=, where a death by signal fails the unit while
+# any exit in 1..254 only skips it. The pass names the signal on its own
+# terminal event.
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+
 # Scan for the verbs this shell owns; every argument is forwarded verbatim, so
 # the Python parser stays the one that rejects an unknown one.
 args=("$@")
@@ -279,13 +288,6 @@ if [[ "$CHECK_CHANGED" == "1" ]]; then
         "fingerprint=${changed_fp_token:-none} stamp=${changed_stamp_token:-none}"
     exit 0
 fi
-
-# The mapped exit code systemd expects for each signal, whether or not the pass
-# below was still running when it arrived. The pass names the signal on its own
-# terminal event.
-trap 'exit 143' TERM
-trap 'exit 129' HUP
-trap 'exit 130' INT
 
 if [[ "$PRINT_ENV" == "1" ]]; then
     print_env_rc=0
