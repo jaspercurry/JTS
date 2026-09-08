@@ -322,11 +322,7 @@ class GeminiLiveTurn(BaseLiveTurn):
             if getattr(sc, "interrupted", False):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
-                while True:
-                    try:
-                        self._audio_q.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
+                self.drop_pending_audio()
                 self._interrupt_event.set()
                 logger.info("model interrupted by user")
 

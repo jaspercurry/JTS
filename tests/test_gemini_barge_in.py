@@ -204,3 +204,29 @@ async def test_server_interrupt_drops_queued_audio_and_does_not_complete():
     # The trailing turn_complete is what actually completes the turn.
     await turn._on_response(_Resp(server_content=_SC(turn_complete=True)))
     assert turn.server_turn_complete() is True
+
+
+async def _collect(iterator) -> list:
+    return [chunk async for chunk in iterator]
+
+
+async def test_server_interrupt_keeps_the_end_of_audio_sentinel():
+    """The interrupt drain shares ``drop_pending_audio``'s sentinel rule.
+
+    A connection drop or a release can queue the terminal sentinel before
+    the server's ``interrupted`` arrives. A drain that ate it would leave
+    ``audio_out_chunks()`` awaiting a chunk that can never come, and the
+    turn would never end."""
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = _turn(conn)
+    conn._active_turn = turn
+
+    await turn._on_response(_Resp(data=b"pre-1"))
+    turn._on_connection_lost()
+    assert turn._audio_q.qsize() == 2
+
+    await turn._on_response(_Resp(server_content=_SC(interrupted=True)))
+
+    assert await asyncio.wait_for(
+        _collect(turn.audio_out_chunks()), timeout=1.0,
+    ) == [], "pre-interrupt audio must be dropped, the sentinel kept"
