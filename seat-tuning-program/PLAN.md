@@ -113,8 +113,30 @@ wanted by all three; rows 5.1 and 6.1 wait for it to be quiet.
   `room_peqs_right` (`sound/camilla_yaml.py:344-375`). One headroom gain absorbs
   room and linearization boosts; bass boost is emitted per driver
   (`camilla_yaml.py:497-610`).
-- Wired kernel: `jasper/audio_measurement/wired_capture.py`; answer minting
-  lands with PR #4138.
+- Wired kernel: the recorder, zero-run scan and integrity report live in the
+  leaf (`jasper/audio_measurement/wired_capture.py`). Since PR #4138 was cut,
+  main moved `WiredCaptureAnswer`, `mint_wired_answer`, `make_wired_recorder`
+  and `WiredStimulusCapture` into the engine
+  (`jasper/active_speaker/crossover_v2/wired_stimulus.py`); #4138 puts the first
+  three in the leaf and adds `require_wired_mic` plus a null-door intactness
+  gate. The leaf home is the one this program needs: the bass bench cannot
+  import `active_speaker` (the emitter already imports `bass_extension`), and
+  the CLIs should not. #4138 is gated on an owner `jasper-null` hardware run.
+- Household mic record: `read_household_mic` / `resolve_household_mic_calibration`
+  in `jasper/correction/household_mic.py`; `_calibration_root`,
+  `_household_mic_path`, `_default_setup_calibration_for_spec` in
+  `jasper/web/correction_capture.py`; `default_setup_calibration_for_v2` in
+  `jasper/web/correction_crossover_v2.py`. All move to `audio_measurement`
+  beside `mic_identity.py` and `calibration.py` before `jasper/correction/`
+  goes (ADR-0255 §3). This also clears #4138's held-back item.
+- Bass, by module at main (lines): keep `alignment` 160, `targets` 177,
+  `adapters/` 938, `limiter_evidence` 1,213 (pure math and the frozen protocol);
+  keep `bench/` 5,682 for the limiter campaign, shrink after it has run once;
+  `profile` 632 is absorbed by the scheduled candidate (3.3); delete `ladder`
+  611 and the apply/bypass/recover transaction in `__init__` 665 with their
+  tests. The bench imports only its own submodules, so the deletions do not
+  touch it. The emitter's bass stage (`camilla_yaml.py:497-610`) and
+  `classify_bass_extension_graph` generalize to N biquads per rung.
 - Distortion-versus-level: `jasper/audio_measurement/distortion.py`,
   `round-views distortion`. Declared geometry: `jasper-declare-geometry`.
 - **The room product is entangled with the shared measurement daemon.**
@@ -166,9 +188,10 @@ disjoint files.
 
 | Row | Lane | Concern | Tag | Proof | Gate |
 |---|---|---|---|---|---|
-| 1.1 | A | **Census, then move.** Grep every importer of `jasper.correction.*`, `jasper.calibration_agent.*` and the room handlers from `jasper/web/correction_crossover_v2*.py`, `active_speaker/`, `cli/`, `multiroom/`, `doctor/`. Move the shared pieces named in ADR-0259 before any deletion. | D | census in the PR body; boundary tests green | code-review |
+| 1.1 | A | **Census, then move.** Grep every importer of `jasper.correction.*`, `jasper.calibration_agent.*` and the room handlers from `jasper/web/correction_crossover_v2*.py`, `active_speaker/`, `cli/`, `multiroom/`, `doctor/`. Move the shared pieces named in ADR-0259 before any deletion: `level_match` beside `audio_measurement/ramp.py`; the household mic record and its three path/hint helpers to `audio_measurement`; `SNR_BANDS_HZ` to `snr_policy`; the variance-cap rule and room target math to `audio_measurement`; the shared capture slot stays in the daemon. | D | census in the PR body; boundary tests green | code-review |
 | 1.2 | A | **Delete the room product.** `jasper/correction/` orchestration whole (session, acceptance, autolevel, browser_audio, confidence, envelope, status, state_guard, runtime_integrity, runtime_safety, strategy, failures, evidence, replay_artifacts, bundles, bundle_tools, interop, fir_runtime, artifacts, acoustic_quality after its SNR table moves, `_numbers`); the room routes and handlers in `correction_setup.py`/`correction_handlers.py`/`correction_capture.py` (the crossover, sync, calibration and healthz routes stay); `web/correction_room_flow.py`; `web/correction_tuning.py`; `jasper/calibration_agent/` and `jasper-calibration-agent`; `jasper-correction-bundle`; the room JS (`deploy/assets/correction/js/main.js` room modules, `shared/js/measurement-audio.js`); doctor's room section re-pointed at the applied candidate or dropped; all their tests. SUPERSEDED verdict per module. | D | grep proof; `scripts/test-merge` green; the speaker walk still opens a v2 session on a fixture | code-review; D-tier |
 | 1.3 | A | **Delete the bass wizard.** `bass_extension/ladder.py`, the apply/bypass/recover transaction in `bass_extension/__init__.py`, `tests/test_bass_extension_plan_status.py`, and the three superseded wave docs. Keep `alignment`, `targets`, `adapters`, `limiter_evidence`, `profile` (absorbed by 3.3), `bench/`. | D | grep proof; `/state.bass_extension` still reports | code-review |
+| 1.0 | B | **Land PR #4138, rebased.** Reconcile with main: `WiredCaptureAnswer`, `mint_wired_answer`, `make_wired_recorder` move from `crossover_v2/wired_stimulus.py` to the leaf `audio_measurement/wired_capture.py`; `WiredStimulusCapture` stays in the engine; keep its `require_wired_mic` and the null-door intactness gate. Its own gate holds: one owner `jasper-null` run confirming a clean take reports zero zero-runs and zero block gaps. Coordinate with the right-size orchestrator, who owns the PR. | R | the PR's four hardware checks; AST identity of moved bodies | owner null run, then code-review |
 | 1.4 | B | **Pose vocabulary.** `ProgramPose` gains kind (bearing / seat / close) and distance; `mark_distance_m` becomes per-take; the seat kind carries an offset from the head. Programs: `seat/cube` (head + six face centres at 30 cm; prompts in plain words) and `close/spot` (~0.3 m on the design axis). Human mover via the existing position-ready walk. | P | `jasper-angle-capture plan` lists both; a fixture round banks seven seat takes with the kind recorded | code-review |
 | 1.5 | B | **Room views.** Ungated analysis as an option over banked takes; `room-median` (median, spread, per-position deviation below the ceiling), `room-persistence` (features holding across ≥ N positions), `room-ceiling` (the applied candidate's trusted floor clamped per ADR-0256, fallback disclosed). | V | three `ARTIFACT_BY_VIEW` rows; inventory lists them; ADR-0237 stdout | code-review |
 | 1.6 | — | First wired seat-cube session on jts3 through the applied tune. | H | banked round, integrity clean | owner |
@@ -220,7 +243,7 @@ disjoint files.
 
 - **After Wave 0b, four lanes start at once:** A retire (1.1–1.3) · B program
   and views (1.4, 1.5, 1.7) · C room candidate on fixtures (2.1–2.3) · D bass
-  (3.1–3.5). 1.4 and 3.1 also wait for PR #4138.
+  (3.1–3.5). 1.4 and 3.1 wait for row 1.0 (PR #4138 landed).
 - **Joins:** 2.4 needs 1.6; 4.x needs 3.x; 5.1 needs 2.1 and 4.3; 6.1 needs the
   emitter free.
 - **Hardware on jts3, in order:** an adopted speaker tune from the
@@ -255,4 +278,7 @@ knobs · any browser or relay capture · an operator-less wizard.
   program: room and bass are layers of the one toolbox (was: separate
   products); bass has no nearfield rung (was: nearfield plant fit); poses are
   flexible and categorized (the ~0.3 m close reference stays); delete now what
-  the vision retires. Tracking issue: #4502.
+  the vision retires. Tracking issue: #4502. PR #4138 (wired kernel to the
+  leaf) adopted as row 1.0 after finding main had since moved the same kernel
+  into the engine; the bass code is kept where it is pure math or the frozen
+  protection protocol and deleted where it was the wizard (§4).
