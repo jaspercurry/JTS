@@ -237,3 +237,25 @@ record, with links to measurements and final graph/volume readback. Separate
 planned effort from observed effort; record unavailable counts as unknown.
 After a model upgrade, compare the same cases with one old workaround removed.
 Judge evidence use, recovery, and resulting state; no tool sequence is required.
+
+## 11. Room
+
+Room correction is a layer of this toolbox, not a separate product
+([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)):
+an ungated seat-cube program through the applied tune, corrected below
+the applied tune's trusted floor
+([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)),
+with every take categorized by kind, distance and window
+([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md)).
+This section is written in the wave that lands the seat program and the room
+views.
+
+## 12. Bass
+
+Bass extension is fitted on the seat-cube median to an extended-corner target
+per rung, with no nearfield rung; protection is declared plant facts, the
+in-room distortion-versus-level ladder and the limiter evidence
+([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md);
+[ADR-0257](adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md)).
+`close-reference` stays the on-demand room-gain split. This section is written
+in the wave that lands the bass fit view and the protection ladder.

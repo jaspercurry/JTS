@@ -2,7 +2,10 @@
 
 - **Date:** 2026-09-08
 - **Status:** Accepted. Supersedes
-  [ADR-0018](0018-bass-extension-stays-parked.md).
+  [ADR-0018](0018-bass-extension-stays-parked.md). §1 is amended by
+  [ADR-0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md);
+  §3's nearfield protection basis is superseded by
+  [ADR-0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md).
 
 ## Context
 

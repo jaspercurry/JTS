@@ -17,7 +17,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | accepted |
 | [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230 |
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | accepted |
-| [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | accepted |
+| [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
 
 ## Deploy, install & system
 
@@ -233,6 +233,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0230](0230-the-summed-graph-commissioning-lane-is-deleted.md) | The summed-graph commissioning lane is deleted | accepted |
 | [0237](0237-a-tuning-tools-stdout-is-its-answer.md) | A tuning tool's stdout is its answer | accepted |
 | [0255](0255-every-product-measures-through-the-wired-microphone.md) | Every product measures through the wired microphone | accepted |
-| [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | accepted |
-| [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | accepted |
+| [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | §4 seat default amended by 0260 |
+| [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | §1 amended by 0259, §3 superseded by 0260 |
 | [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |
+| [0259](0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) | Room correction and bass extension are layers of the one tuning toolbox | accepted |
+| [0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) | Poses are flexible and categorized, and bass extension has no nearfield rung | accepted |
