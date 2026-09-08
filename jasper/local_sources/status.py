@@ -40,7 +40,7 @@ from ..install_profile import (
     install_profile_allows_local_sources,
     read_install_profile,
 )
-from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..music_sources import SOURCE_SPECS, Source
 from ..output_hardware import current_usb_data_role
 from ..service_units import read_unit_states
 from ..source_intent import read_source_intents
@@ -50,7 +50,6 @@ from .registry import local_source_lifecycle
 logger = logging.getLogger(__name__)
 
 _BLUETOOTH_STATE_TIMEOUT_SEC = 5.0
-_WIZARD_KEY_BY_SOURCE = {spec.id: spec.wizard_key for spec in MUSIC_SOURCE_SPECS}
 
 
 def _intent_unit(source: Source) -> str:
@@ -487,7 +486,7 @@ def enable_blocker(source: Source) -> str:
     profile, then combined adapter/unit availability (Bluetooth, reported via
     :func:`bluetooth_unavailable_reason`).
     """
-    wizard_key = _WIZARD_KEY_BY_SOURCE[source]
+    wizard_key = SOURCE_SPECS[source].wizard_key
     if not _profile_allows_local_sources():
         return SOURCE_UNAVAILABLE[wizard_key]
     if source == Source.BLUETOOTH:
