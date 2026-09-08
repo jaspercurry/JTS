@@ -37,21 +37,25 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import (
+    ENV_FILE_LOCK_TIMEOUT_SECONDS,
     advisory_file_lock,
     atomic_write_text,
     env_lock_path,
     read_regular_bytes_nofollow,
 )
-from jasper.env_file import read_value
+from jasper.env_file import read_env_file, read_env_file_text
 from jasper.env_file import remove as env_remove
 from jasper.env_file import upsert as env_upsert
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
+from jasper.output_hardware import DEFAULT_TOPOLOGY_PATH
+from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +77,13 @@ DEFAULT_OUTPUTD_PLAYBACK_DEVICE = "outputd_content_playback"
 # pinned equal by tests/test_ring_active_endpoint.py.
 RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "jts_ring_active_playback"
 
-# Matches deploy/lib/jasper-env-file.sh's `flock -w 10` on the same lock file,
-# so a bash writer and this one back off over the same bound.
-ENV_FILE_LOCK_TIMEOUT_SECONDS = 10.0
 ENV_FILE_MODE = 0o640
 ENV_DIR_MODE = 0o750
+
+#: One env-file mutation: ``(key, value)`` to state it, ``(key, None)`` to drop
+#: it. A list of these is what reaches the file, so one stage's whole intent for
+#: one file is applied under a single hold of that file's lock.
+EnvAction = tuple[str, str | None]
 
 _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
                  signal.SIGINT: (130, "INT")}
@@ -141,21 +147,10 @@ def _log_token(value: str) -> str:
     return _LOG_TOKEN_UNSAFE.sub("_", value)
 
 
-def _read_text(path: str | os.PathLike[str]) -> str:
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-def _env_value(path: str | os.PathLike[str], key: str) -> str:
-    """The value an env file states for ``key``; ``""`` when it states none."""
-    return read_value(_read_text(path), key) or ""
-
-
-def _states_key(path: str | os.PathLike[str], key: str) -> bool:
-    """Is ``key`` stated at all? Stating it EMPTY is not omitting it."""
-    return read_value(_read_text(path), key) is not None
+def _env_action(action: Any) -> EnvAction:
+    """One :class:`jasper.audio_runtime_plan.RuntimeEnvAction` as an
+    :data:`EnvAction`. Untyped so the plan module stays a lazy import."""
+    return action.key, action.value if action.action == "set" else None
 
 
 def _ensure_dir(path: Path, mode: int) -> None:
@@ -170,15 +165,16 @@ def _ensure_dir(path: Path, mode: int) -> None:
 
 
 def _rewrite_env_file(
-    path: str | os.PathLike[str], key: str, value: str | None
+    path: str | os.PathLike[str], actions: Sequence[EnvAction]
 ) -> bool:
-    """Upsert (or, for ``value=None``, drop) one key under the file's own lock.
+    """Fold every action onto one env file under ONE hold of its own lock.
 
     That lock is the SAME one the bash env-file writers take
     (``atomic_io.env_lock_path`` == ``jasper_env_lock_path`` in
     ``deploy/lib/jasper-env-file.sh``), so this writer and the remaining shell
-    writers of one file exclude each other (ADR-0235 G8). Returns whether the
-    file changed; raises ``OSError`` when the write or the lock failed.
+    writers of one file exclude each other (ADR-0235 G8). A ``None`` value drops
+    the key. Returns whether the file changed; raises ``OSError`` when the write
+    or the lock failed.
     """
     fspath = os.fspath(path)
     _ensure_dir(Path(fspath).parent, ENV_DIR_MODE)
@@ -189,12 +185,15 @@ def _rewrite_env_file(
             text = read_regular_bytes_nofollow(fspath).decode("utf-8")
         except FileNotFoundError:
             text = ""
-        if value is None:
-            new_text, changed = env_remove(text, key)
-        else:
-            new_text, changed = env_upsert(text, key, value)
+        changed = False
+        for key, value in actions:
+            if value is None:
+                text, moved = env_remove(text, key)
+            else:
+                text, moved = env_upsert(text, key, value)
+            changed = changed or moved
         if changed:
-            atomic_write_text(fspath, new_text, mode=ENV_FILE_MODE)
+            atomic_write_text(fspath, text, mode=ENV_FILE_MODE)
     return changed
 
 
@@ -271,9 +270,10 @@ class Pass:
             env.get("JASPER_INSTALL_PROFILE_FILE") or "/var/lib/jasper/install_profile"
         )
         self.output_topology_path = (
-            env.get("JASPER_OUTPUT_TOPOLOGY_PATH")
-            or "/var/lib/jasper/output_topology.json"
+            env.get("JASPER_OUTPUT_TOPOLOGY_PATH") or DEFAULT_TOPOLOGY_PATH
         )
+        self._topology: Any | None = None
+        self._topology_read = False
         self.camilla_statefile = (
             env.get("JASPER_CAMILLA_STATEFILE")
             or "/var/lib/camilladsp/outputd-statefile.yml"
@@ -341,9 +341,19 @@ class Pass:
                 [self.systemctl, *args],
                 stderr=subprocess.DEVNULL if quiet else None,
                 check=False,
+                timeout=SYSTEMCTL_TIMEOUT_SEC,
             ).returncode
         except OSError:
             return 127
+        except subprocess.TimeoutExpired:
+            # An unresponsive manager is a FAILED call, not a reason to hang a
+            # pass that runs from udev. 124 is timeout(1)'s own code.
+            self.log(
+                "systemctl_timeout",
+                command=" ".join(args),
+                timeout_sec=SYSTEMCTL_TIMEOUT_SEC,
+            )
+            return 124
 
     def systemctl_required(self, *args: str) -> None:
         rc = self.systemctl_call(*args)
@@ -352,36 +362,30 @@ class Pass:
 
     # -- env files ----------------------------------------------------------
 
-    def set_env_file_var(self, path: str, key: str, value: str) -> bool:
-        """Upsert one key, or fail the pass.
+    def set_env_file_var(self, path: str, actions: Sequence[EnvAction]) -> bool:
+        """Apply one stage's whole intent for one file, or fail the pass.
 
         A refused lock writes NOTHING, and the callers' ``changed`` idiom would
         read that as "changed" and restart jasper-outputd onto the old
         lane/PCM/format. A write that did not happen fails the pass instead.
         """
-        changed = self.try_set_env_file_var(path, key, value)
+        changed = self.try_set_env_file_var(path, actions)
         if changed is None:
             raise _Abort(1)
         return changed
 
-    def try_set_env_file_var(self, path: str, key: str, value: str) -> bool | None:
+    def try_set_env_file_var(
+        self, path: str, actions: Sequence[EnvAction]
+    ) -> bool | None:
         """The same write, reported rather than fatal: ``None`` when it did not
         land, so a caller can keep its journal line honest."""
         try:
-            return _rewrite_env_file(path, key, value)
+            return _rewrite_env_file(path, actions)
         except OSError:
-            self.log("env_write_failed", file=path, key=key)
+            self.log(
+                "env_write_failed", file=path, key=",".join(k for k, _ in actions)
+            )
             return None
-
-    def unset_env_file_var(self, path: str, key: str) -> None:
-        try:
-            _rewrite_env_file(path, key, None)
-        except OSError:
-            self.log("env_write_failed", file=path, key=key)
-            raise _Abort(1) from None
-
-    def set_env_var_if_changed(self, key: str, value: str) -> bool:
-        return self.set_env_file_var(self.env_file, key, value)
 
     def repair_generated_env_permissions(self) -> None:
         for path in (self.outputd_env_file, self.fanin_env_file):
@@ -673,19 +677,21 @@ class Pass:
 
     # -- the endpoint contract ----------------------------------------------
 
-    def outputd_env_effective(self, key: str, fallback: str) -> str:
-        """The value outputd RUNS for one of its env keys.
+    def outputd_env_effective(self) -> dict[str, str]:
+        """Every env key outputd RUNS, from BOTH LAYERS in the unit's
+        ``EnvironmentFile=`` order (later wins), read ONCE.
 
-        BOTH LAYERS, in the unit's ``EnvironmentFile=`` order (later wins), so
-        an operator key in jasper.env — which this reconciler honours by
-        DROPPING its own line from outputd.env — is visible here. UNSET vs
-        EMPTY: outputd's ``env_str`` falls back only on an UNSET variable, so a
-        stated-but-empty key keeps its stated value.
+        An operator key in jasper.env — which this reconciler honours by
+        DROPPING its own line from outputd.env — is therefore visible here.
+        UNSET vs EMPTY: outputd's ``env_str`` falls back only on an UNSET
+        variable, so a stated-but-empty key keeps its stated value, which is why
+        callers resolve their fallback with ``.get(key, fallback)`` rather than
+        ``or``.
         """
-        for path in (self.outputd_env_file, self.env_file):
-            if _states_key(path, key):
-                return _env_value(path, key)
-        return fallback
+        return {
+            **read_env_file(self.env_file),
+            **read_env_file(self.outputd_env_file),
+        }
 
     def asound_artifact_parks_outputd_dac(self) -> bool:
         """Does the ALSA artifact ON DISK render ``pcm.outputd_dac`` as null?
@@ -695,7 +701,7 @@ class Pass:
         so the alias outputd actually opens is whatever an earlier pass left.
         Fail closed — an absent or unreadable template is not evidence.
         """
-        text = _read_text(self.asound_template)
+        text = read_env_file_text(self.asound_template)[0] or ""
         if not text:
             return False
         depth = 0
@@ -734,15 +740,12 @@ class Pass:
         """
         if not self.observed_valid:
             return False
-        if self.outputd_env_effective("JASPER_OUTPUTD_BACKEND", "alsa") != "alsa":
+        effective = self.outputd_env_effective()
+        if effective.get("JASPER_OUTPUTD_BACKEND", "alsa") != "alsa":
             return False
-        if self.outputd_env_effective("JASPER_OUTPUTD_SINK", "single_alsa") != (
-            "single_alsa"
-        ):
+        if effective.get("JASPER_OUTPUTD_SINK", "single_alsa") != "single_alsa":
             return False
-        if self.outputd_env_effective("JASPER_OUTPUTD_DAC_PCM", "outputd_dac") != (
-            "outputd_dac"
-        ):
+        if effective.get("JASPER_OUTPUTD_DAC_PCM", "outputd_dac") != "outputd_dac":
             return False
         if not self.asound_artifact_parks_outputd_dac():
             return False
@@ -750,7 +753,7 @@ class Pass:
         # satisfied is (this pass's caller must still log action=park).
         if (
             self.try_set_env_file_var(
-                self.outputd_env_file, "JASPER_OUTPUTD_BACKEND", "fake"
+                self.outputd_env_file, [("JASPER_OUTPUTD_BACKEND", "fake")]
             )
             is None
         ):
@@ -783,6 +786,30 @@ class Pass:
 
     # -- registry and graph probes ------------------------------------------
 
+    def saved_topology(self) -> Any | None:
+        """The saved output topology, parsed at most ONCE per pass and handed to
+        every consumer that takes the object rather than the path.
+
+        ``None`` when the strict load raised: the consumer then loads the path
+        itself and produces its own fail-closed reason, exactly as it did before
+        anything was shared. ``OutputTopology`` is frozen, so one object is safe
+        to hand to several consumers.
+        """
+        if not self._topology_read:
+            self._topology_read = True
+            try:
+                # lazy: 2k lines the --print-env path never reaches (ADR-0226).
+                from jasper.output_topology import load_output_topology_strict
+
+                self._topology = load_output_topology_strict(
+                    self.output_topology_path
+                )
+            # noqa reason: a topology this pass cannot read is the consumer's own
+            # fail-closed case to report, not a reason to abort here.
+            except Exception:  # noqa: BLE001
+                self._topology = None
+        return self._topology
+
     def active_graph_status(self, cap_channels: int) -> tuple[bool, Any]:
         """The active-graph cutover gate. DRIVE WHAT WE USE, not the DAC's
         full channel count.
@@ -804,6 +831,7 @@ class Pass:
                 cap_channels,
                 statefile_path=self.camilla_statefile,
                 crossover_statefile_path=self.camilla2_statefile,
+                topology=self.saved_topology(),
                 topology_path=self.output_topology_path,
             )
         # noqa reason: named in the reason token, so an operator reads WHICH
@@ -870,22 +898,23 @@ class Pass:
             return fmt, profile.outputd_sink
         return "", ""
 
-    def emit_dac_format_for_recognized(self, dac_id: str) -> bool:
-        """Emit a recognized DAC's declared edge format AND sink, or skip BOTH
-        when the registry probe is unavailable — one lookup answers both, so
-        they degrade together.
+    def dac_format_actions_for_recognized(
+        self, dac_id: str
+    ) -> tuple[list[EnvAction], str]:
+        """A recognized DAC's declared edge format AND sink as env actions, plus
+        the format the file will state — or NO actions when the registry probe
+        is unavailable, since one lookup answers both and they degrade together.
 
         Empty is a MEANINGFUL value on the format key (outputd reads it as
         S16_LE), so writing it on a lost probe would silently NARROW a wide
         edge with no error anywhere. Preserving the previous value is the loud
         option: on a same-pass id change the stale value parks outputd at exit
-        78 rather than converting audio wrongly. Returns whether either key
-        changed.
+        78 rather than converting audio wrongly.
         """
         dac_format, dac_sink = self.final_edge_format_for_dac(dac_id)
         if not dac_format:
-            preserved = _env_value(
-                self.outputd_env_target, "JASPER_OUTPUTD_DAC_FORMAT"
+            preserved = read_env_file(self.outputd_env_target).get(
+                "JASPER_OUTPUTD_DAC_FORMAT", ""
             )
             self.log(
                 "dac_format_skip",
@@ -894,15 +923,11 @@ class Pass:
                 preserved=preserved or "absent",
                 outputd_env=self.outputd_env_file,
             )
-            return False
-        changed = self.set_env_file_var(
-            self.outputd_env_target, "JASPER_OUTPUTD_DAC_FORMAT", dac_format
-        )
-        if self.set_env_file_var(
-            self.outputd_env_target, "JASPER_OUTPUTD_SINK", dac_sink
-        ):
-            changed = True
-        return changed
+            return [], preserved
+        return [
+            ("JASPER_OUTPUTD_DAC_FORMAT", dac_format),
+            ("JASPER_OUTPUTD_SINK", dac_sink),
+        ], dac_format
 
     def resolved_content_format(self) -> str:
         """The CamillaDSP -> outputd content lane's sample format, from the one
@@ -945,20 +970,10 @@ class Pass:
         except Exception:  # noqa: BLE001
             self.log("route_env_skip", reason="audio_config_unavailable")
             return False
-        changed = False
-        for action in actions:
-            if action.action == "set":
-                moved = self.set_env_file_var(
-                    self.fanin_env_file, action.key, action.value
-                )
-            elif _states_key(self.fanin_env_file, action.key):
-                self.unset_env_file_var(self.fanin_env_file, action.key)
-                moved = True
-            else:
-                moved = False
-            if moved:
-                changed = True
-                self.route_fanin_changed = True
+        changed = self.set_env_file_var(
+            self.fanin_env_file, [_env_action(action) for action in actions]
+        )
+        self.route_fanin_changed = changed
         self.log(
             "route_env",
             fanin_env=self.fanin_env_file,
@@ -977,7 +992,6 @@ class Pass:
         from jasper.audio_runtime_plan import OUTPUTD_LATENCY_KEYS, RuntimeEnvAction
         from jasper.cli.audio_config import outputd_floor_plan
 
-        self.latency_floor_changed = False
         try:
             summary, actions = outputd_floor_plan(
                 profile_id=dac_id,
@@ -992,15 +1006,9 @@ class Pass:
                 RuntimeEnvAction(action="unset", key=key, value="")
                 for key in OUTPUTD_LATENCY_KEYS
             )
-        for action in actions:
-            if action.action == "set":
-                if self.set_env_file_var(
-                    self.outputd_env_target, action.key, action.value
-                ):
-                    self.latency_floor_changed = True
-            elif _states_key(self.outputd_env_target, action.key):
-                self.unset_env_file_var(self.outputd_env_target, action.key)
-                self.latency_floor_changed = True
+        self.latency_floor_changed = self.set_env_file_var(
+            self.outputd_env_target, [_env_action(action) for action in actions]
+        )
         self.log(
             "latency_floor",
             output_dac_id=dac_id,
@@ -1109,49 +1117,32 @@ class Pass:
             if lane == "1" and endpoint_device == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
             else ""
         )
-        changed = self.set_env_file_var(
-            self.outputd_env_target, "JASPER_OUTPUTD_ACTIVE_LANE", lane
-        )
-        if self.set_env_file_var(
+        return self.set_env_file_var(
             self.outputd_env_target,
-            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT",
-            ring_endpoint,
-        ):
-            changed = True
-        return changed
-
-    def drop_retired_content_pcm(self) -> bool:
-        """The RETIRED content lane's capture PCM, HEALED rather than restated.
-
-        outputd stopped reading this key with the lane (ADR-0100), so this
-        reconciler no longer states it — but a box that reconciled before that
-        carries the old line, and a per-key upsert never touches a key nobody
-        writes. Present-but-empty defeats the absent-key default in
-        jasper.audio_runtime_plan's retired-route describer, and on an
-        ACTIVE -> PASSIVE move the leftover can fail the staged validator
-        outright. REMOVED, never written empty.
-
-        REMOVAL CONDITION: dies with that describer's read.
-        """
-        if not _states_key(self.outputd_env_target, "JASPER_OUTPUTD_CONTENT_PCM"):
-            return False
-        self.unset_env_file_var(
-            self.outputd_env_target, "JASPER_OUTPUTD_CONTENT_PCM"
+            [
+                ("JASPER_OUTPUTD_ACTIVE_LANE", lane),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", ring_endpoint),
+            ],
         )
-        return True
 
     def apply_audio_runtime_env(self) -> bool:
-        changed = self.drop_retired_content_pcm()
         target = self.outputd_env_target
+        # The RETIRED content lane's capture PCM, HEALED rather than restated.
+        # outputd stopped reading this key with the lane (ADR-0100), so this
+        # reconciler no longer states it — but a box that reconciled before that
+        # carries the old line, and a per-key upsert never touches a key nobody
+        # writes. Present-but-empty defeats the absent-key default in
+        # jasper.audio_runtime_plan's retired-route describer, and on an
+        # ACTIVE -> PASSIVE move the leftover can fail the staged validator
+        # outright. REMOVED, never written empty.
+        # REMOVAL CONDITION: dies with that describer's read.
+        prelude: list[EnvAction] = [("JASPER_OUTPUTD_CONTENT_PCM", None)]
         # The CONTENT lane's width is a function of the fan-in coupling, never
         # of the DAC, so unlike the edge format it is emitted once ahead of the
         # per-hardware branches and is always definitive.
         content_format = self.resolved_content_format()
         if content_format:
-            if self.set_env_file_var(
-                target, "JASPER_OUTPUTD_CONTENT_FORMAT", content_format
-            ):
-                changed = True
+            prelude.append(("JASPER_OUTPUTD_CONTENT_FORMAT", content_format))
         else:
             self.mark_degraded()
             self.log(
@@ -1159,6 +1150,7 @@ class Pass:
                 reason="coupling_probe_unavailable",
                 outputd_env=self.outputd_env_file,
             )
+        changed = self.set_env_file_var(target, prelude)
         composite = self.observed["OBSERVED_OUTPUT_PROFILE_KIND"] == "composite"
         if composite and self.output_dac_recognized:
             changed = self._apply_composite_runtime_env(content_format) or changed
@@ -1170,27 +1162,23 @@ class Pass:
 
     def _apply_composite_runtime_env(self, content_format: str) -> bool:
         target = self.outputd_env_target
-        changed = False
         self.outputd_active_mode = "0"
         self.outputd_active_channels = ""
-        for key, value in (
+        actions: list[EnvAction] = [
             ("JASPER_OUTPUTD_BACKEND", "alsa"),
             ("JASPER_OUTPUTD_DAC_PCM", self.output_dac_id),
             ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", self.dual_apple_dac_a_pcm),
             ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", self.dual_apple_dac_b_pcm),
-        ):
-            changed = self.set_env_file_var(target, key, value) or changed
-        # Two LIVE outputd keys (DAC_FORMAT, SINK) from one registry probe; a
-        # lost probe skips BOTH.
-        changed = self.emit_dac_format_for_recognized(self.output_dac_id) or changed
-        dac_format = _env_value(target, "JASPER_OUTPUTD_DAC_FORMAT")
+        ]
+        format_actions, dac_format = self.dac_format_actions_for_recognized(
+            self.output_dac_id
+        )
+        actions += format_actions
         # Composite width is fixed at 4 (two stereo children); clear the
         # single-sink width knob so a stale value cannot reach outputd, which
         # rejects != 4 on this sink.
-        changed = (
-            self.set_env_file_var(target, "JASPER_OUTPUTD_ACTIVE_CHANNELS", "")
-            or changed
-        )
+        actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""))
+        changed = self.set_env_file_var(target, actions)
         # Deliberately narrower than the single-DAC branch: an ALOOP composite
         # keeps its unconditional clear. `active_lane` is inert on a composite
         # at runtime, so writing =1 there would change no behaviour but WOULD
@@ -1247,24 +1235,21 @@ class Pass:
             # failed. Transient — the next pass converges — so this must NOT be
             # reported as the permanent dac_no_active_lane.
             graph_status = "lane_probe_failed"
-        for key, value in (
+        actions: list[EnvAction] = [
             ("JASPER_OUTPUTD_BACKEND", "alsa"),
             ("JASPER_OUTPUTD_DAC_PCM", "outputd_dac"),
             ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", ""),
             ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", ""),
-        ):
-            changed = self.set_env_file_var(target, key, value) or changed
-        changed = self.emit_dac_format_for_recognized(self.output_dac_id) or changed
-        dac_format = _env_value(target, "JASPER_OUTPUTD_DAC_FORMAT")
+        ]
+        format_actions, dac_format = self.dac_format_actions_for_recognized(
+            self.output_dac_id
+        )
+        actions += format_actions
         if active_mode:
             self.outputd_active_mode = "1"
             self.outputd_active_channels = active_channels
-            changed = (
-                self.set_env_file_var(
-                    target, "JASPER_OUTPUTD_ACTIVE_CHANNELS", active_channels
-                )
-                or changed
-            )
+            actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", active_channels))
+            changed = self.set_env_file_var(target, actions)
             # An active 2-way speaker is ALSO 2-channel, so outputd's bare
             # content_channels==2 check would wrongly permit its post-crossover
             # TTS mixer / content bridge here. Mark the lane explicitly so
@@ -1291,10 +1276,8 @@ class Pass:
         # Clear the width knob so outputd defaults to stereo, and the lane PAIR
         # so a stale =1 cannot keep the stereo-only features fenced off on an
         # ordinary passive DAC.
-        changed = (
-            self.set_env_file_var(target, "JASPER_OUTPUTD_ACTIVE_CHANNELS", "")
-            or changed
-        )
+        actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""))
+        changed = self.set_env_file_var(target, actions)
         changed = self.set_outputd_active_lane_pair("", "") or changed
         self.log(
             "runtime_env",
@@ -1308,31 +1291,30 @@ class Pass:
         return changed
 
     def _apply_parked_runtime_env(self, content_format: str) -> bool:
-        target = self.outputd_env_target
-        changed = False
         self.outputd_active_mode = "0"
         self.outputd_active_channels = ""
-        for key, value in (
-            ("JASPER_OUTPUTD_BACKEND", "fake"),
-            ("JASPER_OUTPUTD_SINK", "single_alsa"),
-            ("JASPER_OUTPUTD_DAC_PCM", "outputd_dac"),
-            ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", ""),
-            ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", ""),
-            # Unrecognized/parked: no profile to query, so clear rather than
-            # query. Explicit empty, not omitted: this reconciler-owned file
-            # always states a definitive value for every conditional key, so a
-            # hot-swap to an unrecognized card cannot leave a stale format.
-            ("JASPER_OUTPUTD_DAC_FORMAT", ""),
-            ("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""),
-        ):
-            changed = self.set_env_file_var(target, key, value) or changed
+        changed = self.set_env_file_var(
+            self.outputd_env_target,
+            [
+                ("JASPER_OUTPUTD_BACKEND", "fake"),
+                ("JASPER_OUTPUTD_SINK", "single_alsa"),
+                ("JASPER_OUTPUTD_DAC_PCM", "outputd_dac"),
+                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", ""),
+                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", ""),
+                # Unrecognized/parked: no profile to query, so clear rather than
+                # query. Explicit empty, not omitted: this reconciler-owned file
+                # always states a definitive value for every conditional key, so
+                # a hot-swap to an unrecognized card cannot leave a stale format.
+                ("JASPER_OUTPUTD_DAC_FORMAT", ""),
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""),
+            ],
+        )
         changed = self.set_outputd_active_lane_pair("", "") or changed
-        dac_format = _env_value(target, "JASPER_OUTPUTD_DAC_FORMAT")
         self.log(
             "runtime_env",
             mode="parked",
             content_format=content_format or "unset",
-            dac_format=dac_format or "unset",
+            dac_format="unset",
             outputd_env=self.outputd_env_file,
             changed=int(changed),
         )
@@ -1479,7 +1461,9 @@ class Pass:
         from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
         try:
-            result = render_flat_cutover_configs(config_dir=self.camilla_conf_dir)
+            result = render_flat_cutover_configs(
+                config_dir=self.camilla_conf_dir, topology=self.saved_topology()
+            )
         except (OutputTopologyError, OSError, ValueError) as exc:
             self.log(
                 "flat_cutover",
@@ -1780,12 +1764,14 @@ class Pass:
         # validation rejects the stage.
         outputd_committed = 0
         self.stage_outputd_env()
-        for key, value in (
-            ("JASPER_AUDIO_DAC_ID", self.output_dac_id),
-            ("JASPER_AUDIO_DAC_CARD", self.output_dac_card),
+        if self.set_env_file_var(
+            self.env_file,
+            [
+                ("JASPER_AUDIO_DAC_ID", self.output_dac_id),
+                ("JASPER_AUDIO_DAC_CARD", self.output_dac_card),
+            ],
         ):
-            if self.set_env_var_if_changed(key, value):
-                env_changed = dac_env_changed = 1
+            env_changed = dac_env_changed = 1
         if self.apply_audio_runtime_env():
             outputd_env_changed = 1
         # A route change also counts toward env_changed so the outputd/audio
