@@ -112,9 +112,17 @@ node scripts/check-balance-trim-parity.mjs
 Python sides: `tests/test_sound_peq_response.py` and
 `tests/test_active_speaker_baseline_profile.py::test_sensitivity_trim_matches_shared_parity_fixture`.
 
+**`tests/js/` invocation patterns.** A file under `tests/js/` is run one of two
+ways, never a third: (a) a harness the `js` CI job invokes directly by path
+(`.github/workflows/tests.yml`'s `js` job: `sound_profile_harness.mjs`,
+`dialog_harness.mjs`, `correction_render_harness.mjs`, plus the parity
+scripts above), or (b) a `*_test.mjs` file pytest discovers by glob, e.g.
+`tests/test_crossover_wizard_js.py`'s
+`_JS_DIR.glob("crossover_*_test.mjs")`. A new JS test is written as one of
+these two.
+
 **Node-on-runner reliance.** Some browser modules are behaviourally tested by a
-Node harness invoked from pytest (`tests/test_relay_worker_js.py`,
-`tests/test_capture_page_js.py`, `tests/test_dialog_helper.py`,
+Node harness invoked from pytest (`tests/test_dialog_helper.py`,
 `tests/test_landing_page_html.py`) behind a `shutil.which("node")` skip-guard.
 `pytest-matrix` has no `actions/setup-node` step — it relies on the runner image
 shipping Node. If that wiring changes, these flip to **green-by-skip** and lose

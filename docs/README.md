@@ -15,7 +15,7 @@ state are authoritative when prose conflicts with either.
 ## Current engineering references
 
 - [Agent and contributor rules](../AGENTS.md)
-- [Architecture decision records](adr/)
+- [Architecture decision records](adr/README.md)
 - [Audio paths](audio-paths.md)
 - [Extension contracts](extensibility.md)
 - [Testing and measurement tools](testing-tooling.md)

@@ -64,11 +64,8 @@ scripts/test-fast
 
 That runs the fast local lane without a Pi, mic, or speaker. The audio
 I/O, network calls, and systemd surfaces are mocked in the default suite.
-Before publishing substantial work, run `scripts/test-merge`; that mirrors
-the full hardware-free pytest lane (four pytest-xdist workers) and also
-runs the `lint-imports` layers contract and the lenient, baselined `mypy`
-gate as steps before pytest. The full CI lane additionally runs
-`ruff check .`, which stays covered locally by `scripts/test-fast`.
+Before publishing substantial work, run `scripts/test-merge` — see
+[Tests](#tests) below for what it runs.
 
 The Ubuntu CI path also installs `portaudio19-dev`, then replays the
 committed lock with
