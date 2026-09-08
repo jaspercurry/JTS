@@ -224,10 +224,11 @@ class LiveTurn(Interruptible, Protocol):
         ...
 
     async def release(self) -> None:
-        """Release the turn back to the connection. Idempotent. Sends
-        `activity_end` if it hasn't been sent yet, drains the playback
-        queue, and removes the turn from the connection's active slot
-        so a subsequent `acquire_turn()` can succeed."""
+        """Release this turn and its pending input/output. Idempotent.
+
+        An abandoned response must not reach a later turn. The adapter
+        clears input or reopens the session before another turn can start.
+        """
         ...
 
     def last_activity_at(self) -> float:
@@ -266,9 +267,8 @@ class LiveTurn(Interruptible, Protocol):
         ...
 
     def turn_lost(self) -> bool:
-        """True if the underlying connection dropped mid-turn (e.g. the
-        WebSocket closed, GoAway timed out before audio finished). The
-        daemon should treat this like "turn ended" but log the loss."""
+        """True if the connection dropped or the response failed before
+        completion. The daemon ends the turn and plays its failure cue."""
         ...
 
     def server_turn_complete(self) -> bool:
