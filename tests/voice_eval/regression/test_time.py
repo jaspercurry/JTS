@@ -112,23 +112,17 @@ async def test_what_time_is_it(harness, trial: int) -> None:
         f"See transcript: {result.transcript_path}"
     )
 
-    # 4. Spoken reality — the model's spoken time matches the wall
-    # clock within 2 minutes (looser than the tool tolerance because
-    # the model rounds to "10:14" vs "10:14:32"). Skips if no
-    # transcript captured. Catches the stale-system-prompt bug
-    # directly: pre-fix the model speaks whatever time was baked at
-    # connection-open, often hours stale.
-    if result.spoken_text:
-        spoken_time = harness.extract_time_from_text(result.spoken_text)
-        if spoken_time is not None:
-            now_local = oracles.time_now_local()
-            spoken_dt = datetime.combine(now_local.date(), spoken_time)
-            now_naive = now_local.replace(tzinfo=None)
-            assert oracles.time_within_seconds(
-                spoken_dt, now_naive, seconds=120,
-            ), (
-                f"[trial {trial}] model spoke {spoken_time} but wall "
-                f"clock is {now_naive.time()}. Spoken text: "
-                f"{result.spoken_text!r}. "
-                f"See transcript: {result.transcript_path}"
-            )
+    result.require_spoken_text()
+    spoken_time = harness.extract_time_from_text(result.spoken_text)
+    assert spoken_time is not None, result.transcript_path
+    now_local = oracles.time_now_local()
+    spoken_dt = datetime.combine(now_local.date(), spoken_time)
+    now_naive = now_local.replace(tzinfo=None)
+    assert oracles.time_within_seconds(
+        spoken_dt, now_naive, seconds=120,
+    ), (
+        f"[trial {trial}] model spoke {spoken_time} but wall "
+        f"clock is {now_naive.time()}. Spoken text: "
+        f"{result.spoken_text!r}. "
+        f"See transcript: {result.transcript_path}"
+    )

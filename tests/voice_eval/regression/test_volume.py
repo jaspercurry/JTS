@@ -261,22 +261,19 @@ async def test_get_volume_reports_current_level(harness, trial: int) -> None:
             f"See transcript: {result.transcript_path}"
         )
 
-        # 3. Spoken reality — the model's spoken number matches the
-        # tool's reported level. Skips when no transcript captured.
-        # tol=2 absorbs the model rounding to a tens boundary.
-        if result.spoken_text:
-            spoken_nums = harness.extract_minutes_from_text(result.spoken_text)
-            assert spoken_nums, (
-                f"[trial {trial}] no number in spoken volume answer: "
-                f"{result.spoken_text!r}. "
-                f"See transcript: {result.transcript_path}"
-            )
-            assert any(abs(n - seeded) <= 2 for n in spoken_nums), (
-                f"[trial {trial}] tool reported {seeded}% but model spoke "
-                f"{spoken_nums} — pure hallucination of the level. "
-                f"Spoken text: {result.spoken_text!r}. "
-                f"See transcript: {result.transcript_path}"
-            )
+        result.require_spoken_text()
+        spoken_nums = harness.extract_minutes_from_text(result.spoken_text)
+        assert spoken_nums, (
+            f"[trial {trial}] no number in spoken volume answer: "
+            f"{result.spoken_text!r}. "
+            f"See transcript: {result.transcript_path}"
+        )
+        assert any(abs(n - seeded) <= 2 for n in spoken_nums), (
+            f"[trial {trial}] tool reported {seeded}% but model spoke "
+            f"{spoken_nums} — pure hallucination of the level. "
+            f"Spoken text: {result.spoken_text!r}. "
+            f"See transcript: {result.transcript_path}"
+        )
     finally:
         await coord.set_listening_level(prior)
 

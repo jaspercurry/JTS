@@ -10,7 +10,16 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from jasper.tools import ToolExecutor, ToolRegistry
-from jasper.voice.trace import emit
+from .turn_trace import active
+
+
+@dataclass
+class ToolCallRecord:
+    name: str
+    args: dict[str, Any]
+    result: Any = None
+    elapsed_ms: int = 0
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -19,6 +28,7 @@ class _TracingExecutor:
 
     name: str
     executor: ToolExecutor
+    records: Callable[[], list[ToolCallRecord]] | None = None
 
     @property
     def fn(self) -> Callable[..., Any]:
@@ -30,26 +40,41 @@ class _TracingExecutor:
 
     async def execute(self, args: dict[str, Any]) -> Any:
         started = time.monotonic()
+        trace = active()
+
+        def emit(kind: str, payload: dict) -> None:
+            if trace is not None:
+                trace.append(kind, payload)
+
+        record = ToolCallRecord(self.name, dict(args))
+        if self.records is not None:
+            self.records().append(record)
         emit("tool_call", {"name": self.name, "args": dict(args)})
         try:
             result = await self.executor.execute(args)
         except Exception as e:  # noqa: BLE001
+            record.error = repr(e)
+            record.elapsed_ms = int((time.monotonic() - started) * 1000)
             emit("tool_return", {
                 "name": self.name,
                 "result": None,
-                "elapsed_ms": int((time.monotonic() - started) * 1000),
-                "error": repr(e),
+                "elapsed_ms": record.elapsed_ms,
+                "error": record.error,
             })
             raise
+        record.result = result
+        record.elapsed_ms = int((time.monotonic() - started) * 1000)
         emit("tool_return", {
             "name": self.name,
             "result": result,
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "elapsed_ms": record.elapsed_ms,
         })
         return result
 
 
-def traced_registry(registry: ToolRegistry) -> ToolRegistry:
+def traced_registry(
+    registry: ToolRegistry, *, records: Callable[[], list[ToolCallRecord]] | None = None,
+) -> ToolRegistry:
     """Return a new `ToolRegistry` with every tool executor wrapped
     to emit `tool_call` and `tool_return` events on the active trace.
 
@@ -71,6 +96,6 @@ def traced_registry(registry: ToolRegistry) -> ToolRegistry:
         # providers — only the executor is wrapped for trace emission.
         new.tools[name] = replace(
             tool,
-            executor=_TracingExecutor(tool.name, tool.executor),
+            executor=_TracingExecutor(tool.name, tool.executor, records),
         )
     return new

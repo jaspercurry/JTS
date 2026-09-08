@@ -183,13 +183,11 @@ async def test_bus_outage_speaks_error(harness, trial: int, monkeypatch) -> None
         f"mixing both is a contradiction. See {result.transcript_path}"
     )
 
-    # 3. Reality (spoken) — the model must not narrate the outage as
-    # "no buses." Skips gracefully if no transcript was captured.
-    if result.spoken_text:
-        spoken = result.spoken_text.lower()
-        assert "no bus" not in spoken and "no more bus" not in spoken, (
-            f"[trial {trial}] model narrated the outage as 'no buses': "
-            f"{result.spoken_text!r}. The tool returned {{error}}; the "
-            f"model should surface trouble reaching the feed. "
-            f"See transcript: {result.transcript_path}"
-        )
+    result.require_spoken_text()
+    spoken = result.spoken_text.lower()
+    assert "no bus" not in spoken and "no more bus" not in spoken, (
+        f"[trial {trial}] model narrated the outage as 'no buses': "
+        f"{result.spoken_text!r}. The tool returned {{error}}; the "
+        f"model should surface trouble reaching the feed. "
+        f"See transcript: {result.transcript_path}"
+    )

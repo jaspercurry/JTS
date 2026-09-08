@@ -166,18 +166,14 @@ async def test_play_owned_playlist_covers(harness, trial: int) -> None:
         f"See transcript: {result.transcript_path}"
     )
 
-    # 4. Spoken reality — the model's spoken confirmation should
-    # mention "cover" (it speaks the tool's `confirm` field, which
-    # contains the resolved playlist name). Skips when no transcript
-    # captured.
-    if result.spoken_text:
-        spoken = result.spoken_text.lower()
-        assert "cover" in spoken, (
-            f"[trial {trial}] model's spoken response doesn't mention "
-            f"'cover' — likely played the wrong thing or didn't confirm. "
-            f"Spoken text: {result.spoken_text!r}. "
-            f"See transcript: {result.transcript_path}"
-        )
+    result.require_spoken_text()
+    spoken = result.spoken_text.lower()
+    assert "cover" in spoken, (
+        f"[trial {trial}] model's spoken response doesn't mention "
+        f"'cover' — likely played the wrong thing or didn't confirm. "
+        f"Spoken text: {result.spoken_text!r}. "
+        f"See transcript: {result.transcript_path}"
+    )
 
 
 @pytest.mark.parametrize("trial", range(PASS_K))
