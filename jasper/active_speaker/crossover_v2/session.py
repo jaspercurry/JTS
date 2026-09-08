@@ -28,7 +28,9 @@ from .measure_spec import (
     measurement_delays_for,
     stubbed_capabilities,
 )
-from .playback_transaction import PlaybackOutcome
+from jasper.audio_measurement.playback import PlaybackObservation
+
+from .playback_transaction import PlaybackInterrupted, PlaybackOutcome
 from .session_seams import EngineSeams
 from .spatial import take_id_for
 
@@ -128,6 +130,7 @@ class StimulusOutcome:
     level_db: float | None
     record_id: str
     incident: str = ""
+    playback: PlaybackObservation = field(default_factory=PlaybackObservation)
 
     @property
     def banked(self) -> bool:
@@ -198,6 +201,7 @@ class TuningSession:
     _volume_held: bool = field(default=False, init=False)
     _spent: bool = field(default=False, init=False)
     _graph_fingerprint: str = field(default="", init=False)
+    last_playback: PlaybackObservation = field(default_factory=PlaybackObservation, init=False)
     _banked: list[str] = field(default_factory=list, init=False)
     #: How many takes this session has minted an id for, in memory only: a
     #: persisted registry of minted ids would be a second index over the bank,
@@ -468,13 +472,18 @@ class TuningSession:
             level_trims_for(spec, self.level_match_trims_db),
         )
         proven_level_db = await self._proven_level()
-        outcome: PlaybackOutcome = await self.seams.play.run(
-            spec=spec,
-            position_deg=bearing,
-            prompt=prompt,
-            level_db=self.measurement_level_db,
-            stimulus_dbfs=stimulus_dbfs,
-        )
+        try:
+            outcome: PlaybackOutcome = await self.seams.play.run(
+                spec=spec,
+                position_deg=bearing,
+                prompt=prompt,
+                level_db=self.measurement_level_db,
+                stimulus_dbfs=stimulus_dbfs,
+            )
+        except PlaybackInterrupted as exc:
+            self.last_playback = exc.playback
+            raise
+        self.last_playback = outcome.playback
         record_id = ""
         incident = outcome.incident
         if outcome.played:
@@ -488,6 +497,7 @@ class TuningSession:
         return StimulusOutcome(
             position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
             level_db=proven_level_db, record_id=record_id, incident=incident,
+            playback=outcome.playback,
         )
 
     def _next_take_id(self, kind: str) -> str:
@@ -611,5 +621,6 @@ class TuningSession:
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,
             "incident": outcome.incident,
+            "playback": outcome.playback.as_dict(),
             "wav_path": outcome.wav_path,
         }

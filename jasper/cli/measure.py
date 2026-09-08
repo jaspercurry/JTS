@@ -142,6 +142,7 @@ class MeasureInterrupted(RuntimeError):
         self.reason = reason
         self.detail = detail
         self.record_ids = list(session.banked_record_ids)
+        self.playback = session.last_playback.as_dict()
         self.bundle_dir = str(store.bundle_dir)
         self.session_id = str(session.session_id)
         #: WHICH spec was in flight, and its zero-based place in the batch: the
@@ -784,6 +785,7 @@ def _spec_report(outcome: Any, graph_fingerprint: str) -> dict[str, Any]:
         "graph_fingerprint": graph_fingerprint,
         "n_takes": len(outcome.record_ids),
         "incidents": [s.incident for s in outcome.stimuli if s.incident],
+        "playback": [s.playback.as_dict() for s in outcome.stimuli],
         "stubs": [stub.code for stub in stubbed_capabilities(outcome.spec)],
     }
 
@@ -853,6 +855,7 @@ def _interrupted(exc: MeasureInterrupted) -> int:
         "session_id": exc.session_id,
         "bundle_dir": exc.bundle_dir,
         "record_ids": exc.record_ids,
+        "playback": exc.playback,
         "stopped_at": {
             "index": exc.spec_index,
             "candidate_id": exc.spec.candidate_id,

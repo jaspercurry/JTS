@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -367,7 +368,7 @@ def speaker(tmp_path, monkeypatch):
         # readiness assertion, the graph install, the capture roll and the bank
         # — is the production path.
         played.append(program)
-        return object()
+        return SimpleNamespace(playback=SimpleNamespace(cleanup_state="not_needed", returncode=0))
 
     async def _compose(**_kwargs: Any) -> ProgramForStimulus:
         return ProgramForStimulus(program=object(), seams={})
@@ -438,6 +439,10 @@ def test_one_run_opens_measures_banks_and_puts_the_speaker_back(speaker, capsys)
     assert payload["specs"][0]["graph_fingerprint"]
     assert payload["specs"][0]["n_takes"] == 1
     assert payload["specs"][0]["incidents"] == []
+    assert payload["specs"][0]["playback"][0] == {
+        "emission": "completed", "failure_code": None,
+        "cleanup_state": "not_needed", "returncode": 0,
+    }
     # stdout IS the answer: the bank verb, spelled with this run's own bundle.
     assert payload["next"] == f"jasper-round bank {payload['bundle_dir']}"
     assert payload["bundle_dir"] in captured.err

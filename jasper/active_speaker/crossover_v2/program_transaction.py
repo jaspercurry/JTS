@@ -14,11 +14,15 @@ report ``ready``. ``wav_path`` comes from the injected ``StimulusCapture``;
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Protocol
 
-from jasper.audio_measurement.playback import PlaybackError
+from jasper.audio_measurement.playback import (
+    PlaybackError, PlaybackObservation, WavPlaybackCancelled,
+    WavPlaybackCancelledBeforeSpawn,
+)
 
 from ..program_playback import (
     ProgramPlaybackError,
@@ -31,6 +35,7 @@ from .playback_transaction import (
     STAGE_READY,
     STAGE_RESTORE,
     PlaybackOutcome,
+    PlaybackInterrupted,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -191,75 +196,67 @@ class ProgramPlaybackTransaction:
             # seam keeps raising for.
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_NOT_COMPOSED,
+                playback=PlaybackObservation(emission="not_started"),
             )
 
         played = False
+        observation = PlaybackObservation(emission="not_started")
 
         async def _play() -> None:
-            nonlocal played
-            await play_program(
+            nonlocal played, observation
+            observation = PlaybackObservation()
+            result = await play_program(
                 prepared.program,
                 session_volume_plan=self._session_volume_plan,
                 **dict(prepared.seams),
             )
             played = True
+            observation = PlaybackObservation(
+                emission="completed",
+                cleanup_state=getattr(result.playback, "cleanup_state", None),
+                returncode=getattr(result.playback, "returncode", None),
+            )
 
         wav_path = ""
+        stage, incident = STAGE_RESTORE, ""
         try:
             if self._capture is None:
                 await _play()
             else:
-                wav_path = await self._capture.around(
-                    _play, program=prepared.program,
-                )
+                wav_path = await self._capture.around(_play, program=prepared.program)
+        except (WavPlaybackCancelled, WavPlaybackCancelledBeforeSpawn) as exc:
+            observation = (
+                exc.observation if isinstance(exc, WavPlaybackCancelled)
+                else PlaybackObservation(emission="not_started")
+            )
+            raise PlaybackInterrupted(observation) from exc
+        except asyncio.CancelledError as exc:
+            raise PlaybackInterrupted(observation) from exc
         except SessionVolumePlanError:
-            # `assert_ready()` refused, so `ready` never completed and the
-            # ladder has no rung that says so.
-            return PlaybackOutcome(
-                stage_reached=STAGE_READY, incident=STIMULUS_LEVEL_NOT_READY,
-            )
+            stage, incident = STAGE_READY, STIMULUS_LEVEL_NOT_READY
+            observation = PlaybackObservation(emission="not_started")
         except ProgramPlaybackRefused:
-            # Refused BEFORE any audio, so `admit` did not complete.
-            return PlaybackOutcome(
-                stage_reached=STAGE_READY, incident=STIMULUS_ADMISSION_REFUSED,
-            )
+            stage, incident = STAGE_READY, STIMULUS_ADMISSION_REFUSED
+            observation = PlaybackObservation(emission="not_started")
         except StimulusCaptureError:
-            # `played` is the whole discriminator, and it is OBSERVED: the
-            # capture half arms before the stimulus and stops after it, so its
-            # faults sit on both sides of a play that may or may not have run.
-            if not played:
-                return PlaybackOutcome(
-                    stage_reached=STAGE_READY, incident=STIMULUS_NOT_CAPTURED,
-                )
-            return PlaybackOutcome(
-                stage_reached=STAGE_RESTORE, incident=STIMULUS_NOT_CAPTURED,
-            )
+            stage = STAGE_RESTORE if played else STAGE_READY
+            incident = STIMULUS_NOT_CAPTURED
         except ProgramPlaybackError:
-            # Past admission and inside the writer lock: `lock` completed and
-            # `play` did not, and the refusal is `play_program`'s OWN family.
-            return PlaybackOutcome(
-                stage_reached=STAGE_LOCK, incident=STIMULUS_PLAY_FAILED,
-            )
-        except (PlaybackError, OSError):
-            # Same stage, DIFFERENT family: the emission mechanism died rather
-            # than the program being refused. Named types rather than a bare
-            # ``RuntimeError``, so a mis-bound seam still surfaces as one.
-            return PlaybackOutcome(
-                stage_reached=STAGE_LOCK, incident=STIMULUS_EMISSION_FAILED,
-            )
+            stage, incident = STAGE_LOCK, STIMULUS_PLAY_FAILED
+        except PlaybackError as exc:
+            stage, incident = STAGE_LOCK, STIMULUS_EMISSION_FAILED
+            observation = exc.observation
+        except OSError:
+            stage, incident = STAGE_LOCK, STIMULUS_EMISSION_FAILED
 
-        if wav_path:
-            return PlaybackOutcome(
-                stage_reached=STAGE_RESTORE, wav_path=wav_path,
-            )
-        # Played, restored, and no bytes to point a reader at. Which of the two
-        # reasons it is turns on whether anything was ever going to record.
-        return PlaybackOutcome(
-            stage_reached=STAGE_RESTORE,
-            incident=(
+        if not incident and not wav_path:
+            incident = (
                 STIMULUS_CAPTURE_NOT_BOUND if self._capture is None
                 else STIMULUS_NOT_CAPTURED
-            ),
+            )
+        return PlaybackOutcome(
+            stage_reached=stage, incident=incident, wav_path=wav_path,
+            playback=observation,
         )
 
 
