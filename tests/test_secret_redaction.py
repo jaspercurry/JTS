@@ -93,6 +93,14 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
      "https://example.com/?lat=40.65&key=<redacted>&lon=-73.9", True),
     ("httpx_error_repr_with_url", _HTTPX_REPR % "SECRET_VAL",
      _HTTPX_REPR % "<redacted>", True),
+    # The single-use OAuth authorization code arrives as a query parameter,
+    # so a wizard's stdlib request line carries it verbatim. Python-only:
+    # no KEY=value file the bash redactor guards can hold one, and the
+    # journal it also scrubs was already written through this redactor.
+    # `state` is a spent CSRF nonce, not a credential, and stays readable.
+    ("url_oauth_callback_request_line",
+     '"GET /callback?code=SECRET123&state=NONCE456 HTTP/1.1" 303 -',
+     '"GET /callback?code=<redacted>&state=NONCE456 HTTP/1.1" 303 -', False),
     # The value run stops at `&` and `)`: three call sites feed `repr(e)`.
     ("url_access_token_keeps_query_tail",
      "GET /api?access_token=abc123def&lat=40.6&lon=-73.9 200",
