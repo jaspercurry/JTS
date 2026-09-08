@@ -455,6 +455,37 @@ def test_outputd_service_warns_when_transport_evidence_is_unavailable(monkeypatc
     assert r.reason == audio_runtime_outputd.REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
 
 
+@pytest.mark.parametrize(
+    "tts_overrides, reason",
+    [
+        (
+            {"connections_rejected": 3},
+            audio_runtime_outputd.REASON_OUTPUTD_TTS_CONNECTIONS_REJECTED,
+        ),
+        (
+            {"frame_timeouts": 2},
+            audio_runtime_outputd.REASON_OUTPUTD_TTS_FRAME_TIMEOUTS,
+        ),
+    ],
+    ids=["connections-rejected", "frame-timeouts"],
+)
+def test_outputd_service_reports_tts_ceiling_counters_without_escalating(
+    monkeypatch, tts_overrides, reason
+):
+    """Cumulative-since-start ceiling counters surface via `reason`, never a
+    forced `warn` — the same idiom as dropped_commands, which also never
+    escalates severity on its own."""
+    _seed_units()
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["tts"].update(tts_overrides)
+    _patch_status_reader(monkeypatch, json.dumps(payload).encode())
+
+    r = audio_runtime_outputd.check_outputd_service()
+
+    assert r.status == "ok", r.detail
+    assert r.reason == reason
+
+
 def test_outputd_service_ok_when_loudness_is_owned_by_fanin(monkeypatch):
     payload = json.loads(_outputd_status_payload().decode())
     payload.pop("assistant_loudness", None)

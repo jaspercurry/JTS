@@ -48,6 +48,8 @@ REASON_OUTPUTD_SAMPLE_RATE_UNEXPECTED = "outputd_sample_rate_unexpected"
 REASON_OUTPUTD_PERIOD_FRAMES_MISSING = "outputd_period_frames_missing"
 REASON_OUTPUTD_PROGRESS_STALE = "outputd_progress_stale"
 REASON_OUTPUTD_TTS_OVER_BUDGET = "outputd_tts_over_budget"
+REASON_OUTPUTD_TTS_CONNECTIONS_REJECTED = "outputd_tts_connections_rejected"
+REASON_OUTPUTD_TTS_FRAME_TIMEOUTS = "outputd_tts_frame_timeouts"
 REASON_OUTPUTD_XRUN_RATE_SUSTAINED = "outputd_xrun_rate_sustained"
 REASON_OUTPUTD_CONTENT_SOURCE_MISMATCH = "outputd_content_source_mismatch"
 REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED = "outputd_transport_route_unpaired"
@@ -780,6 +782,8 @@ def check_outputd_service() -> CheckResult:
     tts_dropped_audio_frames = int(
         tts.get("dropped_audio_frames", 0) or 0
     )
+    tts_connections_rejected = int(tts.get("connections_rejected", 0) or 0)
+    tts_frame_timeouts = int(tts.get("frame_timeouts", 0) or 0)
     loudness_health = _outputd_loudness_health(data)
     if isinstance(loudness_health, CheckResult):
         return loudness_health
@@ -820,11 +824,17 @@ def check_outputd_service() -> CheckResult:
             reason=REASON_OUTPUTD_XRUN_RATE_SUSTAINED,
         )
     status = "warn" if transport_evidence_warning else "ok"
-    evidence_reason = (
-        REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
-        if transport_evidence_warning
-        else ""
-    )
+    # Cumulative-since-start ceiling counters, same idiom as dropped_commands
+    # below: never their own escalation (one boot-time refusal would latch
+    # warn until restart), but worth a pinnable reason when nothing else did.
+    if transport_evidence_warning:
+        evidence_reason = REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN
+    elif tts_connections_rejected:
+        evidence_reason = REASON_OUTPUTD_TTS_CONNECTIONS_REJECTED
+    elif tts_frame_timeouts:
+        evidence_reason = REASON_OUTPUTD_TTS_FRAME_TIMEOUTS
+    else:
+        evidence_reason = ""
     transport_detail = (
         f", {transport_evidence_warning}" if transport_evidence_warning else ""
     )
@@ -843,6 +853,8 @@ def check_outputd_service() -> CheckResult:
         f"tts_over_budget_ms={tts_over_budget_ms}, "
         f"tts_dropped_commands={tts_dropped_commands}, "
         f"tts_dropped_audio_frames={tts_dropped_audio_frames}, "
+        f"tts_connections_rejected={tts_connections_rejected}, "
+        f"tts_frame_timeouts={tts_frame_timeouts}, "
         f"{bridge_detail}, "
         f"{reference_detail}, "
         f"{loudness_detail}, "
