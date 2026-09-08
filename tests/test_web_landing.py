@@ -127,6 +127,14 @@ def test_landing_settings_rows_are_the_nav_manifest_in_order() -> None:
     ]
 
 
+def test_the_manifest_has_exactly_two_hubs() -> None:
+    """ADR-0253 §2. A row hanging under a daemon-served page —
+    `/sound/pair/sync/`, `/sound/speaker/crossover/` — makes that page a parent
+    but not a hub: only a landing row that is also a parent gets a static
+    settings-group page written at install time."""
+    assert hub_paths() == ("/sound/", "/assistant/")
+
+
 @pytest.mark.parametrize("profile", PROFILES)
 @pytest.mark.parametrize("path", hub_paths())
 def test_hub_renders_its_manifest_children_in_order_behind_their_gates(

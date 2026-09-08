@@ -174,7 +174,7 @@ _CROSSOVER_CHILD_LINK = """<section class="info-card">
 
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
-    """The one ``sound-page-data`` island both /sound/ shells render.
+    """The one ``sound-page-data`` island every /sound/ shell renders.
 
     The editor's filter and slope pickers are built from the crossover
     vocabulary carried here, read from the compiler rather than restated, so a
