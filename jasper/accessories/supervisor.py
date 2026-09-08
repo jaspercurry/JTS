@@ -5,12 +5,8 @@
 """Per-task restart supervision for the accessory bridge process.
 
 ``jasper-input`` hosts every accessory bridge in one interpreter (ADR-0225).
-systemd's ``Restart=`` is a *process* contract, so under one roof a fault in
-the BLE mic adapter would take the HID button bridge down with it — and the
-HID bridge is how volume and push-to-talk reach jasper-control. This
-supervisor makes the restart unit the task instead: each bridge runs in its
-own loop, a crash is logged and retried after a fixed backoff, and no bridge
-can end the process or another bridge's run.
+Each bridge restarts independently so a mic fault cannot stop the HID bridge
+that carries volume and push-to-talk.
 """
 from __future__ import annotations
 
@@ -72,6 +68,7 @@ async def _run_forever(
     publish: Publish,
 ) -> None:
     consecutive_failures = 0
+    delay = min(backoff_sec, MAX_RESTART_BACKOFF_SEC)
     while True:
         if entry["last_error"] is not None:
             entry["last_error"] = None
@@ -95,11 +92,11 @@ async def _run_forever(
             )
         else:
             consecutive_failures = 0
+            delay = min(backoff_sec, MAX_RESTART_BACKOFF_SEC)
             log_event(logger, "accessory.bridge_exited", bridge=name)
-        await asyncio.sleep(min(
-            backoff_sec * 2 ** max(consecutive_failures - 1, 0),
-            MAX_RESTART_BACKOFF_SEC,
-        ))
+        await asyncio.sleep(delay)
+        if consecutive_failures:
+            delay = min(delay * 2, MAX_RESTART_BACKOFF_SEC)
 
 
 async def supervise(

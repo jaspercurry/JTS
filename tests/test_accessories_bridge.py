@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tap counter state-machine coverage for the HID accessory bridge.
-
-We exercise `_TapCounter` directly with a fake async poster so the test
-runs in milliseconds (real-time `asyncio.sleep` calls aside, which we
-trim by giving the action a small window_ms). No real network, no httpx
-— the bridge now posts to jasper-control via the typed control client, and
-the unit under test only depends on the poster callable's contract:
-`async post(method, path, body) -> ControlResponse`.
-
-The shape of `_TapCounter` matters: the bridge daemon depends on it
-to translate every VK-01 click into the right transport action, and
-the timing semantics (defer-on-single, immediate-on-triple) are the
-whole point of the gesture.
-"""
+"""Accessory bridge controls, reader lifetime and restart isolation."""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +14,7 @@ from typing import List, Optional
 
 import pytest
 
-from jasper.accessories import bridge as bridge_mod
+from jasper.accessories import bridge as bridge_mod, supervisor
 from jasper.accessories.bridge import (
     COALESCE_WINDOW_SEC, _Coalescer, _post_once, _read_device, _TapCounter,
 )
@@ -984,13 +971,6 @@ async def test_read_device_close_emits_canonical_event(caplog, monkeypatch):
     )
 
 
-# --------------------------------------------------------------------------
-# One process, two supervised bridges (ADR-0225). The isolation contract is
-# the point: the HID bridge is how volume and push-to-talk work, so a mic
-# fault must not stop it, and vice versa.
-# --------------------------------------------------------------------------
-
-
 def _crashing_bridge(attempts: List[str], name: str):
     async def bridge() -> None:
         attempts.append(name)
@@ -1010,11 +990,6 @@ def _healthy_bridge(started: asyncio.Event):
 async def _supervise_until(
     bridges, predicate, *, backoff_sec: float, status_path, detail=None,
 ) -> bool:
-    """Run the supervisor until `predicate` holds; report whether it survived.
-
-    "The process does not exit" is the half that cannot be observed after the
-    fact, so it is asserted on every poll rather than only at the end.
-    """
     task = asyncio.create_task(
         supervise(
             bridges,
@@ -1063,8 +1038,6 @@ async def test_a_restart_waits_out_the_backoff_instead_of_spinning(tmp_path):
     attempts: List[str] = []
     alive = asyncio.Event()
 
-    # An hour of backoff: the failing bridge stays parked in its wait for the
-    # whole test, so a second attempt would mean the backoff is not honoured.
     still_running = await _supervise_until(
         {
             "mic": _crashing_bridge(attempts, "mic"),
@@ -1077,6 +1050,33 @@ async def test_a_restart_waits_out_the_backoff_instead_of_spinning(tmp_path):
 
     assert still_running
     assert attempts == ["mic"]
+
+
+async def test_bridge_backoff_stays_bounded_through_long_failure_runs(
+    monkeypatch, caplog,
+):
+    caplog.set_level(logging.CRITICAL, logger=supervisor.__name__)
+    delays = []
+    attempts = 0
+    entry = {"restarts": 0, "last_error": None}
+
+    async def bridge():
+        nonlocal attempts
+        attempts += 1
+        if attempts != 1030:
+            raise OSError()
+
+    async def sleep(delay):
+        delays.append(delay)
+        if len(delays) == 1032:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(supervisor.asyncio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await supervisor._run_forever("mic", bridge, 2.0, entry, lambda: None)
+
+    assert delays == [2, 4, 8, 16, 32, *([60] * 1024), 2, 2, 4]
+    assert entry == {"restarts": 1031, "last_error": "OSError"}
 
 
 @pytest.mark.parametrize(
