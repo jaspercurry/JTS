@@ -4,6 +4,9 @@ This directory holds one self-contained implementation prompt per
 wave of the Bass Extension program. The architecture plan of record
 is [`docs/HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md);
 these prompts are the execution contracts derived from it.
+**Resumed per [ADR-0257](../adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) (2026-09-08):**
+the relay-based transport in waves 4, 6 and 7 is stale; each is rewritten
+onto the wired capture kernel when it is taken up.
 
 **Operator usage:** start a fresh Codex session per wave and say
 "Read `docs/bass-extension-waves/wave-N-….md` and execute it." Do not

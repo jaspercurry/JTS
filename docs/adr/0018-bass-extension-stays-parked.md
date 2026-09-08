@@ -1,7 +1,8 @@
 # ADR-0018: `jasper/bass_extension/` stays PARKED — neither wired up nor deleted
 
 - **Date:** 2026-08-25
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md)
 
 ## Context
 

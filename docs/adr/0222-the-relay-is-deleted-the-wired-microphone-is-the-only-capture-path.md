@@ -1,7 +1,9 @@
 # ADR-0222: The relay is deleted; the wired microphone on jts.local is the only capture path
 
 - **Date:** 2026-09-02
-- **Status:** Accepted. Supersedes ADR-0188 sections 2 and 3.
+- **Status:** Accepted. Supersedes ADR-0188 sections 2 and 3. The
+  room-correction browser-upload carve-out in Consequences is superseded by
+  [ADR-0255](0255-every-product-measures-through-the-wired-microphone.md).
 
 ## Context
 
