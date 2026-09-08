@@ -1509,7 +1509,7 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
             await asyncio.wait_for(conn.stop(), DEFAULT_SIGNAL_TIMEOUT_S)
             assert old.turn_lost()
             resume.set()
-            await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
             assert calls == [True]
             assert old_session.sent_tool_responses == []
             return
@@ -1530,7 +1530,7 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
         capture_before = fresh.capture()
         usage_before = dict(conn._cumulative_usage)
         resume.set()
-        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert calls == [True]
         assert all(not session.sent_tool_responses for session in factory.sessions)
         assert fresh.capture() == capture_before
@@ -1539,7 +1539,7 @@ async def test_tool_await_cannot_cross_a_gemini_turn_boundary(boundary):
     finally:
         resume.set()
         await conn.stop()
-        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
 @pytest.mark.parametrize("send", ["audio", "text", "end_input", "cancel"])

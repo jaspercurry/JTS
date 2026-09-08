@@ -2870,7 +2870,7 @@ async def test_pending_tool_cannot_block_or_cross_a_turn_boundary(conn_cls, boun
             await asyncio.wait_for(conn.stop(), DEFAULT_SIGNAL_TIMEOUT_S)
             assert old.turn_lost()
             resume.set()
-            await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+            await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
             assert calls == [True]
             assert not any(e.get("item", {}).get("type") == "function_call_output" for e in wire.sent)
             return
@@ -2884,7 +2884,7 @@ async def test_pending_tool_cannot_block_or_cross_a_turn_boundary(conn_cls, boun
         assert fresh_wire is not wire
         baseline = list(fresh_wire.sent)
         resume.set()
-        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
         assert calls == [True]
         assert fresh_wire.sent == baseline
         assert not any(e.get("item", {}).get("type") == "function_call_output" for e in wire.sent)
@@ -2893,7 +2893,7 @@ async def test_pending_tool_cannot_block_or_cross_a_turn_boundary(conn_cls, boun
     finally:
         resume.set()
         await conn.stop()
-        await wait_until(lambda: not conn._tool_tasks, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
+        await wait_until(lambda: not conn._tool_tasks and registry._execution_task is None, timeout=DEFAULT_SIGNAL_TIMEOUT_S)
 
 
 @pytest.mark.parametrize("blocked_event", ["input_audio_buffer.append", "input_audio_buffer.commit"])

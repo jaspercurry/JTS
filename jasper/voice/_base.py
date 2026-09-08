@@ -141,11 +141,10 @@ class BaseLiveTurn:
 
     async def _run_tool_round(self, run: Callable[[], Awaitable[None]]) -> None:
         try:
-            async with self._conn._tool_lock:
-                if self._conn._active_turn is self and not (
-                    self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete
-                ):
-                    await run()
+            if self._conn._active_turn is self and not (
+                self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete
+            ):
+                await run()
         except Exception as exc:  # noqa: BLE001
             if self._conn._active_turn is self and not (self._released or self._turn_lost):
                 self._on_connection_lost()
@@ -336,10 +335,7 @@ class BaseLiveConnection:
         self._last_turn_end_at: float = 0.0
 
         self._receive_task: asyncio.Task | None = None
-        # Retain cancelled rounds until their executors unwind; close never waits on tools.
         self._tool_tasks: set[asyncio.Task[None]] = set()
-        # A tool that delays cancellation must finish before any later turn's actions start.
-        self._tool_lock = asyncio.Lock()
         self._proactive_watchdog_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()

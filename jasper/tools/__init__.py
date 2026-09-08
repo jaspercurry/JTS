@@ -439,6 +439,8 @@ class PackOutcome:
 @dataclass
 class ToolRegistry:
     tools: dict[str, Tool] = field(default_factory=dict)
+    _execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False, compare=False)
+    _execution_task: asyncio.Task | None = field(default=None, init=False, repr=False, compare=False)
     # Tool name -> internal CapabilityPack.name for registries populated by
     # jasper.tools.packs.register_packs. Manual/test registries that call
     # register() directly leave this empty. The mapping is catalog metadata
@@ -456,6 +458,21 @@ class ToolRegistry:
         repr=False,
         compare=False,
     )
+
+    async def _execute(self, tool: Tool, args: dict[str, Any]) -> Any:
+        await self._execution_lock.acquire()
+        task = asyncio.create_task(tool.executor.execute(args), name=f"tool-{tool.name}")
+        self._execution_task = task
+        task.add_done_callback(self._execution_done)
+        # Cancellation of an executor awaiting to_thread cannot stop its real work.
+        # Retain its slot through completion, including after a timeout or turn close.
+        return await asyncio.wait_for(asyncio.shield(task), timeout=tool.timeout)
+
+    def _execution_done(self, task: asyncio.Task) -> None:
+        self._execution_task = None
+        self._execution_lock.release()
+        if not task.cancelled():
+            task.exception()
 
     def register_tool(self, tool: Tool) -> Tool:
         """Register an already-built tool definition/executor pair.
@@ -796,10 +813,8 @@ async def dispatch_tool(
 
     The contract owned here:
       * unknown tool   -> ``{"error": "unknown tool <name>"}``
-      * per-tool timeout -> awaited with ``tool.timeout`` (default
-                          ``DEFAULT_TOOL_TIMEOUT_SEC``); on expiry returns
-                          ``{"error": "<name> timed out"}`` rather than
-                          hanging the session
+      * per-tool timeout -> ``{"error": "<name> timed out"}`` at ``tool.timeout``;
+                          execution retains the registry slot until it finishes
       * any other error  -> ``{"error": str(exc)}``
       * dict result    -> passed straight through
       * scalar result  -> wrapped as ``{"value": <result>}`` so the model
@@ -832,11 +847,7 @@ async def dispatch_tool(
     logger.info("tool %s start args=%s", name, _args_preview(tool, args))
     t_fn = _time.monotonic()
     try:
-        # Anything slower than the tool's budget probably means the
-        # upstream API is genuinely failing — report the timeout rather
-        # than hang the session further. Sync Python executors still run
-        # inline on the event loop, matching the legacy callable path.
-        out = await asyncio.wait_for(tool.executor.execute(args), timeout=tool.timeout)
+        out = await registry._execute(tool, args)
         # Pass dict outputs straight through; only wrap scalars so the
         # model doesn't see {"result": {"ok": true}}.
         payload = out if isinstance(out, dict) else {"value": out}
