@@ -61,17 +61,14 @@ class AudioOutChunk:
 class TurnUsage:
     """One turn's token usage, normalised to a PER-TURN count.
 
-    Adapters normalise even when the provider reports differently, so
-    callers may SUM across turns without multi-counting: OpenAI Realtime
-    sends per-response deltas (summed within the turn); Gemini Live sends
-    a counter cumulative for the WebSocket's lifetime, so its adapter
-    subtracts the baseline captured at turn start.
+    Adapters normalise provider reports so callers may sum across turns
+    without counting repeated usage snapshots twice. Retained context
+    billed again on a later turn remains part of that turn's input count.
 
     `breakdown` is the provider's modality split in the rich form
     `usage.UsageStore.close_session` accepts, so the spend cap can price
-    audio / text / cached input separately. None where the provider
-    exposes no split (Gemini Live) — the cap then prices the two scalars
-    as all-audio.
+    audio / text / cached input separately. When no split is supplied,
+    the cap prices the two scalars as all-audio.
     """
 
     input_tokens: int = 0

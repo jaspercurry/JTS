@@ -17,12 +17,6 @@ class ServerContent:
 
 
 @dataclass
-class Usage:
-    prompt_token_count: int = 0
-    response_token_count: int = 0
-
-
-@dataclass
 class ResumptionUpdate:
     new_handle: str | None = None
 
