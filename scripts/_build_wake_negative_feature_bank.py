@@ -27,12 +27,13 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
 from wake_training import feature_bank as fb
 
 
@@ -344,30 +345,16 @@ def _non_empty(path: Path) -> bool:
 
 
 def _safe_to_remove_output(path: Path, *, bundle_dir: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    bundle_resolved = bundle_dir.expanduser().resolve()
-    blocked = {
-        Path("/").resolve(),
-        Path.home().resolve(),
-        Path.cwd().resolve(),
-        bundle_resolved,
-    }
-    if resolved in blocked:
-        return False
-    if bundle_resolved in resolved.parents:
-        rel = resolved.relative_to(bundle_resolved)
-        return bool(rel.parts and rel.parts[0] == "negative-feature-bank")
-    return _looks_like_negative_feature_bank_output(resolved)
+    return is_safe_wake_pipeline_output(
+        path,
+        owned_root=_default_output_dir(bundle_dir),
+        protected_paths=(bundle_dir,),
+        marker_name="negative_feature_bank.json",
+        marker_matches=_looks_like_negative_feature_bank_output,
+    )
 
 
-def _looks_like_negative_feature_bank_output(path: Path) -> bool:
-    marker = path / "negative_feature_bank.json"
-    if not marker.is_file():
-        return False
-    try:
-        data = fb.read_json(marker)
-    except (OSError, json.JSONDecodeError, ValueError):
-        return False
+def _looks_like_negative_feature_bank_output(data: Mapping[str, Any]) -> bool:
     artifacts = data.get("artifacts")
     return (
         data.get("schema_version") == SCHEMA_VERSION
@@ -465,6 +452,7 @@ def main(argv: list[str] | None = None) -> int:
 
     bundle_dir = Path(args.bundle_dir)
     output_dir = Path(args.output_dir) if args.output_dir else _default_output_dir(bundle_dir)
+    output_dir = output_dir.expanduser()
     if _non_empty(output_dir):
         if not args.force:
             print(f"output directory is not empty: {output_dir} (pass --force)", file=sys.stderr)

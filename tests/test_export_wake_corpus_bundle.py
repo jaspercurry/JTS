@@ -12,6 +12,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 _SCRIPT = (
@@ -294,10 +295,37 @@ def test_manifest_only_keeps_source_paths_without_copy(tmp_path: Path) -> None:
     assert not (out / "audio").exists()
 
 
-def test_force_remove_guard_rejects_source_corpus_and_repo_root(tmp_path: Path) -> None:
+def test_force_remove_guard_rejects_source_corpus_and_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = tmp_path / "enrollment_positives"
-    nested = root / "exports"
-    assert exporter._safe_to_remove_output(tmp_path / "bundle", corpus_dir=root)
+    (root / "metadata").mkdir(parents=True)
+    custom = tmp_path / "bundle"
+    monkeypatch.chdir(tmp_path)
+    exporter.export_bundle(root, Path("bundle"))
+    monkeypatch.chdir(tmp_path.parent)
+    assert exporter._safe_to_remove_output(custom, corpus_dir=root)
+    assert exporter._safe_to_remove_output(exporter._default_output_dir(), corpus_dir=root)
     assert not exporter._safe_to_remove_output(root, corpus_dir=root)
-    assert not exporter._safe_to_remove_output(nested, corpus_dir=root)
+    assert not exporter._safe_to_remove_output(root / "exports", corpus_dir=root)
     assert not exporter._safe_to_remove_output(Path.cwd(), corpus_dir=root)
+
+
+@pytest.mark.parametrize("output_kind", ["ancestor", "unrelated", "copied"])
+def test_force_export_preserves_unowned_directories(
+    tmp_path: Path, output_kind: str,
+) -> None:
+    root = tmp_path / "source" / "corpus"
+    (root / "metadata").mkdir(parents=True)
+    output = root.parent if output_kind == "ancestor" else tmp_path / output_kind
+    output.mkdir(exist_ok=True)
+    sentinel = output / "keep.txt"
+    sentinel.write_text("keep")
+    if output_kind == "copied":
+        original = tmp_path / "original"
+        exporter.export_bundle(root, original)
+        (output / "bundle.json").write_bytes((original / "bundle.json").read_bytes())
+
+    assert exporter.main([str(root), str(output), "--force"]) == 2
+    assert root.is_dir()
+    assert sentinel.read_text() == "keep"

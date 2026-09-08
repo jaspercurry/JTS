@@ -44,7 +44,14 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
+
+try:
+    from _wake_pipeline_common import is_safe_wake_pipeline_output
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
 
 
 SCHEMA_VERSION = 1
@@ -463,6 +470,7 @@ def export_bundle(
     include_deleted: bool = False,
     copy_audio: bool = True,
 ) -> dict[str, Any]:
+    output_dir = output_dir.resolve()
     sessions, clips = _load_clips(
         corpus_dir,
         session_ids=session_ids,
@@ -634,17 +642,25 @@ def _non_empty(path: Path) -> bool:
 
 
 def _safe_to_remove_output(path: Path, *, corpus_dir: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    corpus_resolved = corpus_dir.expanduser().resolve()
-    blocked = {
-        Path("/").resolve(),
-        Path.home().resolve(),
-        Path.cwd().resolve(),
-        corpus_resolved,
-    }
-    if resolved in blocked:
+    if corpus_dir.expanduser().resolve() in path.expanduser().resolve().parents:
         return False
-    return corpus_resolved not in resolved.parents
+    return is_safe_wake_pipeline_output(
+        path,
+        owned_root=DEFAULT_OUTPUT_ROOT,
+        protected_paths=(corpus_dir,),
+        marker_name="bundle.json",
+        marker_matches=_looks_like_bundle_output,
+    )
+
+
+def _looks_like_bundle_output(data: Mapping[str, Any]) -> bool:
+    artifacts = data.get("artifacts")
+    return (
+        data.get("schema_version") == SCHEMA_VERSION
+        and isinstance(artifacts, dict)
+        and artifacts.get("bundle") == "bundle.json"
+        and artifacts.get("manifest_jsonl") == "manifest.jsonl"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

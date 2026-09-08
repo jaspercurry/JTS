@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from tests.wake_feature_bank_fixtures import (
     FakeExtractor,
@@ -217,7 +218,10 @@ def test_rejects_positive_label_kind_options(tmp_path: Path) -> None:
         raise AssertionError("expected positive unlabeled override rejection")
 
 
-def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> None:
+@pytest.mark.parametrize("marker_output", [None, "copied", "custom"])
+def test_force_remove_guard_only_allows_tool_owned_outputs(
+    tmp_path: Path, marker_output: str | None,
+) -> None:
     bundle = tmp_path / "bundle"
     assert negative_builder._safe_to_remove_output(
         bundle / "negative-feature-bank",
@@ -235,10 +239,13 @@ def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> No
     custom.mkdir()
     (custom / "negative_feature_bank.json").write_text(json.dumps({
         "schema_version": negative_builder.SCHEMA_VERSION,
+        "output_dir": str(tmp_path / marker_output) if marker_output else None,
         "kind": "negative_feature_bank",
         "artifacts": {
             "summary": "negative_feature_bank.json",
             "feature_manifest": "negative_feature_manifest.jsonl",
         },
     }))
-    assert negative_builder._safe_to_remove_output(custom, bundle_dir=bundle)
+    assert negative_builder._safe_to_remove_output(custom, bundle_dir=bundle) is (
+        marker_output == "custom"
+    )
