@@ -2492,7 +2492,7 @@ class WakeLoop:
         # sites in run() / _manual_mic_loop / _wake_leg_loop), so the level
         # fields below go stale, not just missing, while either is set.
         mic_feeding = not (self._mic_muted or self._measurement_active.is_set())
-        return {
+        status = {
             "state": self._state.name,
             "input_ended": self._input_ended,
             "spend_allowed": self._spend_cap.allowed(),
@@ -2578,6 +2578,12 @@ class WakeLoop:
             "barge_in_reconcile": self._barge_in_reconcile.value,
             "research": self._research.status(),
         }
+        # Cue-delivery health (AudioCueManager.snapshot()) — omitted, not
+        # null, when no manager is attached (a manager-less test/CLI
+        # WakeLoop), so the key's mere presence means a manager exists.
+        if self._cues is not None:
+            status["cues"] = self._cues.snapshot()
+        return status
 
     async def _shadow_vad_score_raw(self, frame) -> None:
         """Score a raw-stream frame through the shadow Silero VAD.
