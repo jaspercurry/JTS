@@ -25,11 +25,16 @@
 //! Python consumer and barge-in truncation parse, plus assistant loudness
 //! decisions.
 
+use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
+
+use jasper_daemon::HELPER_STACK_BYTES;
 
 pub mod assistant_reference;
 pub mod loudness;
@@ -691,23 +696,16 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
 }
 
 // ---------------------------------------------------------------------
-// Server bounds — one definition, consumed by both daemons' accept loops
-// and per-connection reader threads.
+// The server half — bounds, counters and accept loop, defined once and
+// consumed by both daemons.
 // ---------------------------------------------------------------------
 
 /// How long a client may take to finish a command it has ALREADY started
-/// writing — a stall bound, not a latency target: a healthy writer puts a
-/// whole [`MAX_AUDIO_BYTES`] frame on the socket in well under 100 ms.
-/// See ADR-0254.
+/// writing — a stall bound, not a latency target. See ADR-0254.
 pub const TTS_FRAME_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Concurrent client connections a TTS server retains. Real load is one
-/// long-lived voice-daemon connection plus at most a couple of transient
-/// probes (cue park, assistant volume, doctor). The rest is headroom over
-/// leaked connections: idling forever is legitimate here — the daemon's own
-/// connection does it — so a ceiling near real load would let a handful of
-/// leaks refuse that daemon its reconnect. Sixteen reader threads reserve
-/// 8 MiB of stack. See ADR-0254.
+/// Concurrent client connections a TTS server retains; sixteen reader
+/// threads reserve 8 MiB of stack. See ADR-0254.
 pub const TTS_MAX_CLIENTS: usize = 16;
 
 /// Read one command, bounding only the time spent MID-FRAME.
@@ -807,6 +805,156 @@ impl Drop for TtsClientSlot {
     fn drop(&mut self) {
         self.in_use.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+/// The socket-side tallies both TTS servers publish in their STATUS `tts`
+/// block: the client-slot pool plus what the reader threads refused, timed
+/// out on, or dropped. Cloneable handle over shared atomics — reader
+/// threads write, the state server reads. See ADR-0254.
+///
+/// Each daemon embeds this in its own metrics type; everything else those
+/// types hold (queue depth, loudness, ledger state) is per-daemon.
+#[derive(Clone, Debug)]
+pub struct TtsServerCounters {
+    slots: TtsClientSlots,
+    frame_timeouts: Arc<AtomicU64>,
+    dropped_commands: Arc<AtomicU64>,
+    dropped_audio_frames: Arc<AtomicU64>,
+}
+
+impl Default for TtsServerCounters {
+    fn default() -> Self {
+        Self {
+            slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
+            frame_timeouts: Arc::new(AtomicU64::new(0)),
+            dropped_commands: Arc::new(AtomicU64::new(0)),
+            dropped_audio_frames: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl TtsServerCounters {
+    /// The pool [`serve`] draws connection slots from.
+    pub fn slots(&self) -> &TtsClientSlots {
+        &self.slots
+    }
+
+    /// One AUDIO command shed because the playout queue was full — the
+    /// command and the frames it carried are counted together.
+    pub fn mark_dropped_audio(&self, frames: u64) {
+        self.dropped_commands.fetch_add(1, Ordering::Relaxed);
+        self.dropped_audio_frames
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    pub fn mark_frame_timeout(&self) {
+        self.frame_timeouts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn connections_rejected(&self) -> u64 {
+        self.slots.rejected()
+    }
+
+    pub fn tts_clients(&self) -> u64 {
+        self.slots.in_use() as u64
+    }
+
+    pub fn frame_timeouts(&self) -> u64 {
+        self.frame_timeouts.load(Ordering::Relaxed)
+    }
+
+    pub fn dropped_commands(&self) -> u64 {
+        self.dropped_commands.load(Ordering::Relaxed)
+    }
+
+    pub fn dropped_audio_frames(&self) -> u64 {
+        self.dropped_audio_frames.load(Ordering::Relaxed)
+    }
+}
+
+/// Bind `path` and serve TTS clients on it, returning once it is listening.
+///
+/// One detached thread accepts; each admitted connection gets its own
+/// thread running `handle`, which holds that connection's slot until it
+/// returns. `daemon` (`fanin` / `outputd`) names the owner in thread names,
+/// error contexts and `event=` lines; `log` takes those lines at whatever
+/// level the caller journals at. `handle` owns the wire session — the
+/// queueing, epoch and metric policy behind it stays per-daemon.
+pub fn serve<H>(
+    daemon: &'static str,
+    path: &Path,
+    slots: TtsClientSlots,
+    log: impl Fn(String) + Send + 'static,
+    handle: H,
+) -> io::Result<()>
+where
+    H: Fn(UnixStream) + Clone + Send + 'static,
+{
+    let context = |e: &io::Error, what: String| io::Error::new(e.kind(), format!("{what}: {e}"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            context(
+                &e,
+                format!("creating {daemon} TTS socket parent {}", parent.display()),
+            )
+        })?;
+    }
+    let _ = fs::remove_file(path);
+    let listener = UnixListener::bind(path).map_err(|e| {
+        context(
+            &e,
+            format!("binding {daemon} TTS socket {}", path.display()),
+        )
+    })?;
+    thread::Builder::new()
+        .name(format!("{daemon}-tts-ipc"))
+        .stack_size(HELPER_STACK_BYTES)
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let stream = match stream {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        log(format!(
+                            "event={daemon}.tts_socket.accept_failed detail={e}"
+                        ));
+                        continue;
+                    }
+                };
+                // Best-effort: a socket that refuses the option is still
+                // worth serving. See ADR-0254.
+                let _ = stream.set_write_timeout(Some(TTS_FRAME_DEADLINE));
+                let slot = match slots.try_acquire() {
+                    Ok(slot) => slot,
+                    // Every refusal is counted for STATUS; only the first
+                    // and every 100th afterward are worth a journal line, so
+                    // a real ceiling stays visible past one transient
+                    // refusal at boot.
+                    Err(count) if count == 1 || count % 100 == 0 => {
+                        log(format!(
+                            "event={daemon}.tts_socket.connection_rejected \
+                             max_clients={TTS_MAX_CLIENTS} count={count}"
+                        ));
+                        continue;
+                    }
+                    Err(_) => continue,
+                };
+                let handle = handle.clone();
+                let spawned = thread::Builder::new()
+                    .name(format!("{daemon}-tts-client"))
+                    .stack_size(HELPER_STACK_BYTES)
+                    .spawn(move || {
+                        // Held for the connection's life; released when this
+                        // thread ends.
+                        let _slot = slot;
+                        handle(stream);
+                    });
+                if let Err(e) = spawned {
+                    log(format!("event={daemon}.tts_socket.spawn_failed detail={e}"));
+                }
+            }
+        })
+        .map_err(|e| context(&e, format!("spawning {daemon} TTS IPC accept thread")))?;
+    Ok(())
 }
 
 fn validate_token(value: &str, field: &str) -> io::Result<()> {
@@ -922,7 +1070,6 @@ fn parse_bool_token(value: &str, field: &str) -> io::Result<bool> {
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
-    use std::thread;
 
     fn parse_all(bytes: &[u8]) -> Vec<TtsCommand> {
         let mut reader = Cursor::new(bytes.to_vec());
@@ -1346,5 +1493,83 @@ mod tests {
 
         drop((first, third));
         assert_eq!(slots.in_use(), 0);
+    }
+
+    /// The counters both daemons embed: an AUDIO drop bumps the command and
+    /// the frame tally together, and refusals reach STATUS through the pool
+    /// the ceiling opens at.
+    #[test]
+    fn the_server_counters_tally_drops_timeouts_and_refusals() {
+        let counters = TtsServerCounters::default();
+        counters.mark_dropped_audio(480);
+        counters.mark_dropped_audio(240);
+        counters.mark_frame_timeout();
+
+        assert_eq!(counters.dropped_commands(), 2);
+        assert_eq!(counters.dropped_audio_frames(), 720);
+        assert_eq!(counters.frame_timeouts(), 1);
+
+        let held: Vec<_> = (0..TTS_MAX_CLIENTS)
+            .map(|_| counters.slots().try_acquire().expect("within the ceiling"))
+            .collect();
+        assert_eq!(counters.tts_clients(), TTS_MAX_CLIENTS as u64);
+        assert!(counters.slots().try_acquire().is_err());
+        assert_eq!(counters.connections_rejected(), 1);
+        drop(held);
+        assert_eq!(counters.tts_clients(), 0);
+    }
+
+    /// [`serve`] creates its socket's parent, hands every admitted connection
+    /// to `handle` on its own thread, refuses past the ceiling with ONE
+    /// journal line, and readmits when a handler returns its slot.
+    #[test]
+    fn serve_admits_up_to_the_ceiling_and_readmits_a_released_slot() {
+        let dir = std::env::temp_dir().join(format!("jts-tts-serve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("tts.sock");
+        let slots = TtsClientSlots::new(1);
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+
+        serve(
+            "test",
+            &path,
+            slots.clone(),
+            move |line| log_tx.send(line).unwrap(),
+            move |stream| {
+                // Runs until the client hangs up, so the slot stays held.
+                seen_tx.send(()).unwrap();
+                let mut reader = BufReader::new(stream);
+                while matches!(read_command(&mut reader), Ok(Some(_))) {}
+            },
+        )
+        .expect("serve failed to bind");
+
+        let first = UnixStream::connect(&path).expect("first client refused");
+        seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let second = UnixStream::connect(&path).expect("connect past the ceiling");
+        let rejected = log_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            rejected.contains("event=test.tts_socket.connection_rejected")
+                && rejected.contains("count=1"),
+            "unexpected log line: {rejected}"
+        );
+        assert_eq!(slots.rejected(), 1);
+        drop(second);
+
+        // The handler returns on EOF, and its slot returns with the thread.
+        drop(first);
+        let freed = std::time::Instant::now();
+        while slots.in_use() != 0 {
+            assert!(freed.elapsed() < Duration::from_secs(5), "slot never freed");
+            std::hint::spin_loop();
+        }
+        let third = UnixStream::connect(&path).expect("readmission refused");
+        seen_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        assert_eq!(slots.rejected(), 1, "readmission counted as a refusal");
+        drop(third);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
