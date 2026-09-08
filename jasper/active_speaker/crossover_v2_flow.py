@@ -1342,7 +1342,7 @@ class CrossoverV2Session:
 
     @property
     def last_attempt_decision(self) -> dict[str, Any] | None:
-        """The kernel's last decision, or the explicit no-floor status."""
+        """The latest comparison advice, or the explicit no-floor status."""
         return (
             dict(self._last_attempt_decision)
             if self._last_attempt_decision is not None else None
@@ -4047,22 +4047,14 @@ class CrossoverV2Session:
                 notes=record.integrity.reasons,
             ).to_dict()
         elif self._attempt_floor is None:
-            # Usable capture, no adopted claim floor: the attempt is recorded
-            # ungraded rather than graded against nothing.
-            decision = {
-                "decision": None,
-                "reason": ATTEMPT_REASON_NO_FLOOR,
-                "attempts_used": len(prospective),
-                "budget": AttemptBudget().to_dict(),
-                "improved": None,
-                "magnitude_db": None,
-                "improvement_db": None,
-                "floor": None,
-                "basis_attempt_ids": [attempt_id],
-                "provenance": record.provenance,
-                "repeats_over_cap": False,
-                "notes": [],
-            }
+            decision = LoopDecision(
+                decision=None,
+                reason=ATTEMPT_REASON_NO_FLOOR,
+                attempts_used=len(prospective),
+                budget=AttemptBudget(),
+                basis_attempt_ids=(attempt_id,),
+                provenance=record.provenance,
+            ).to_dict()
         else:
             decision = decide_next(prospective, self._attempt_floor).to_dict()
         self._last_attempt_decision = decision
