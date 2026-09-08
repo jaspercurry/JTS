@@ -3,7 +3,7 @@
 **Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258). Next: Wave 0b (two
 ADRs), then four lanes in parallel. **Owner:** jaspercurry. **Orchestrating
 session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
-issue:** see §9. **Where this lives:** branch
+issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
 Decisions live in `docs/adr/` on `main`; this file holds the vision, the plan,
 the wave rows, the coordination rules and the status log.
@@ -255,5 +255,4 @@ knobs · any browser or relay capture · an operator-less wizard.
   program: room and bass are layers of the one toolbox (was: separate
   products); bass has no nearfield rung (was: nearfield plant fit); poses are
   flexible and categorized (the ~0.3 m close reference stays); delete now what
-  the vision retires. Tracking issue opened on GitHub (number recorded by the
-  session that opens it).
+  the vision retires. Tracking issue: #4502.
