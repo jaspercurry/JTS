@@ -45,6 +45,7 @@ from jasper.cli._refusal import (
 )
 
 from . import (
+    bass_fit,
     candidates,
     classify_features,
     close_reference,
@@ -98,7 +99,7 @@ __all__ = [
 _FAMILIES = (
     grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
     frequency, distortion, classify_features, findings, close_reference, delay,
-    room, inventory,
+    room, bass_fit, inventory,
 )
 
 
