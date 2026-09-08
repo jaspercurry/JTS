@@ -157,25 +157,14 @@ def read_state(path: str = PEERING_ENV_FILE) -> dict[str, str]:
 
 
 def state_enabled(state: Mapping[str, str]) -> bool:
-    """Return whether a peering state mapping resolves to ON.
-
-    The persisted file wins, with process env as a fallback for older/manual
-    deployments. This preserves the old web-helper behavior while keeping the
-    ownership in the peering package instead of a deleted page module.
-    """
-    raw = (
-        state.get("JASPER_PEERING", "")
-        or os.environ.get("JASPER_PEERING", "")
-    )
+    """Saved keys win, including blank values; absent keys use process env."""
+    raw = state.get("JASPER_PEERING", os.environ.get("JASPER_PEERING", ""))
     return _parse_mode(raw) is PeeringMode.ON
 
 
 def state_primary(state: Mapping[str, str]) -> bool:
     """Return whether the state mapping marks this speaker primary."""
-    raw = (
-        state.get("JASPER_PEER_PRIMARY", "")
-        or os.environ.get("JASPER_PEER_PRIMARY", "")
-    )
+    raw = state.get("JASPER_PEER_PRIMARY", os.environ.get("JASPER_PEER_PRIMARY", ""))
     return _parse_bool(raw)
 
 
@@ -251,19 +240,16 @@ def load_config(
 
     Precedence (highest wins):
       1. `overrides` arg (test injection)
-      2. process environment (systemd-merged /etc/jasper/jasper.env
-         + EnvironmentFile=/var/lib/jasper/peering.env)
-      3. env_file directly (if process env hasn't been refreshed —
-         not the normal path; we double-read for the doctor's
-         no-restart-required case)
+      2. wizard-owned env_file, read fresh on each call
+      3. process environment, for keys absent from the file
       4. compiled defaults
 
     Malformed values fall through to defaults rather than crashing
     the daemon at startup. A broken JASPER_PEERING value silently
     resolves to `off` — fail-safe, never fail-on.
     """
-    src = dict(read_env_file_or_warn(env_file, logger=logger))
-    src.update({k: v for k, v in os.environ.items() if k.startswith("JASPER_PEER")})
+    src = {k: v for k, v in os.environ.items() if k.startswith("JASPER_PEER")}
+    src.update(read_state(env_file))
     if overrides:
         src.update(overrides)
 

@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.peering.config.
-
-Pure logic — no I/O beyond the env file the loader reads. Exercises
-the precedence ladder (env-file < process env < overrides), parsing
-of malformed values, and the peer_id idempotency contract.
-"""
+"""Peering config precedence, parsing and persistent peer identity."""
 from __future__ import annotations
 
 import os
@@ -31,13 +26,6 @@ from jasper.peering.config import (
 
 
 def test_default_mode_is_off(tmp_path, monkeypatch):
-    """No env file, no process env → mode resolves to OFF.
-
-    This is the load-bearing default for the whole project: a single-Pi
-    household must never accidentally enable peering. If this test ever
-    fails, the default flipped — likely a bug, almost certainly not
-    what we want.
-    """
     _clear_peer_env(monkeypatch)
     cfg = load_config(
         env_file=str(tmp_path / "peering.env"),
@@ -47,7 +35,7 @@ def test_default_mode_is_off(tmp_path, monkeypatch):
     assert cfg.enabled is False
 
 
-def test_env_file_mode_on(tmp_path, monkeypatch):
+def test_load_rereads_saved_mode(tmp_path, monkeypatch):
     _clear_peer_env(monkeypatch)
     env_file = tmp_path / "peering.env"
     env_file.write_text("JASPER_PEERING=on\n")
@@ -57,6 +45,10 @@ def test_env_file_mode_on(tmp_path, monkeypatch):
     )
     assert cfg.mode is PeeringMode.ON
     assert cfg.enabled is True
+    env_file.write_text("JASPER_PEERING=off\n")
+    assert load_config(
+        env_file=str(env_file), peer_id_file=str(tmp_path / "peer_id"),
+    ).enabled is False
 
 
 @pytest.mark.parametrize(
@@ -90,34 +82,35 @@ def test_mode_parsing(value, expected_mode, tmp_path, monkeypatch):
 # ---------- precedence ladder ----------
 
 
-def test_process_env_overrides_file(tmp_path, monkeypatch):
-    """A wizard write to the file is the normal source of truth, but
-    if the operator sets JASPER_PEERING in /etc/jasper/jasper.env, the
-    process env's value reflects what systemd merged. Process env wins
-    over a stale file (matches the wake-wizard precedence)."""
+@pytest.mark.parametrize("source", ["file", "override"])
+@pytest.mark.parametrize(
+    "key,process,value,field,expected",
+    [
+        ("JASPER_PEERING", "on", "off", "enabled", False),
+        ("JASPER_PEERING", "off", "on", "enabled", True),
+        ("JASPER_PEERING", "on", "", "enabled", False),
+        ("JASPER_PEER_PRIMARY", "1", "0", "primary", False),
+        ("JASPER_PEER_PRIMARY", "1", "", "primary", False),
+        ("JASPER_PEER_ROOM", "old-room", "new-room", "room", "new-room"),
+        ("JASPER_PEER_ARB_WINDOW_MS", "400", "200", "arb_window_ms", 200),
+        ("JASPER_PEER_BREAK_THRESHOLD", "0.9", "0.8", "break_threshold", 0.8),
+    ],
+)
+def test_config_precedence(key, process, value, field, expected, source, tmp_path, monkeypatch):
     _clear_peer_env(monkeypatch)
+    monkeypatch.setenv(key, process)
     env_file = tmp_path / "peering.env"
-    env_file.write_text("JASPER_PEERING=off\n")
-    monkeypatch.setenv("JASPER_PEERING", "on")
+    env_file.write_text(f"{key}={value if source == 'file' else process}\n")
+    overrides = {key: value} if source == "override" else {}
     cfg = load_config(
         env_file=str(env_file),
         peer_id_file=str(tmp_path / "peer_id"),
+        overrides=overrides,
     )
-    assert cfg.mode is PeeringMode.ON
-
-
-def test_overrides_arg_wins(tmp_path, monkeypatch):
-    """Test injection — overrides arg beats both env file and process env."""
-    _clear_peer_env(monkeypatch)
-    env_file = tmp_path / "peering.env"
-    env_file.write_text("JASPER_PEERING=on\n")
-    monkeypatch.setenv("JASPER_PEERING", "on")
-    cfg = load_config(
-        env_file=str(env_file),
-        peer_id_file=str(tmp_path / "peer_id"),
-        overrides={"JASPER_PEERING": "off"},
-    )
-    assert cfg.mode is PeeringMode.OFF
+    assert getattr(cfg, field) == expected
+    state = read_state(str(env_file)) | overrides
+    assert cfg.enabled == state_enabled(state)
+    assert cfg.primary == state_primary(state)
 
 
 # ---------- numeric parsing ----------
@@ -242,16 +235,20 @@ def test_read_state_uses_canonical_quoted_value_semantics(tmp_path, monkeypatch)
     }
 
 
-def test_state_helpers_preserve_web_precedence(monkeypatch):
-    """Persisted state wins, with process env only as a manual fallback."""
+@pytest.mark.parametrize("file_exists", [False, True])
+def test_missing_keys_use_process_fallback(tmp_path, monkeypatch, file_exists):
     _clear_peer_env(monkeypatch)
     monkeypatch.setenv("JASPER_PEERING", "on")
     monkeypatch.setenv("JASPER_PEER_PRIMARY", "1")
-
-    assert state_enabled({}) is True
-    assert state_primary({}) is True
-    assert state_enabled({"JASPER_PEERING": "off"}) is False
-    assert state_primary({"JASPER_PEER_PRIMARY": "0"}) is False
+    env_file = tmp_path / "peering.env"
+    if file_exists:
+        env_file.write_text("JASPER_PEER_ROOM=living-room\n")
+    cfg = load_config(
+        env_file=str(env_file), peer_id_file=str(tmp_path / "peer_id"),
+    )
+    state = read_state(str(env_file))
+    assert cfg.enabled == state_enabled(state) is True
+    assert cfg.primary == state_primary(state) is True
 
 
 # ---------- peer_id idempotency ----------
