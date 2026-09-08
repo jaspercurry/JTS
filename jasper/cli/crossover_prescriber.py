@@ -104,11 +104,8 @@ from jasper.identity.reader import (
     speaker_url,
 )
 
-#: Authority tier for the generated tool-menu index (ADR-0204).
-AUTHORITY_TIER = "advisory (`stage` and `compose` mutate)"
+AUTHORITY_TIER = "advisory (`packet`/`propose`/`compose` save artifacts; `stage` writes pending state; `status` reads)"
 
-#: This tool's console-script name, as ``pyproject.toml`` installs it: the
-#: parser's own ``prog`` and the ``next`` command every answer prints.
 PROG = "jasper-crossover-prescriber"
 
 #: What happens to a document in the spool; ``stage`` and ``status`` both say it.
