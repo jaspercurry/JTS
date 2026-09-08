@@ -14,9 +14,9 @@
 # An optional second argument overrides the jasper-control base URL, which
 # only tests pass; shairport never does.
 #
-# Fire-and-forget by contract: shairport runs both with cmd_blocking off, a
-# dropped volume nudge is harmless, and a wedged hook is not — so every
-# failure path exits 0 having done nothing. The value is delivered to
+# shairport waits for publication so sender messages cannot overtake each
+# other. HTTP delivery runs detached: audio startup never waits for the
+# control daemon or the settling loop. Every failure path exits 0. Delivery to
 # jasper-control's /volume/set as a SOURCE-ATTRIBUTED observation, so the
 # coordinator's active-source gate, echo window, measurement hold and the
 # CamillaDSP clamps all apply unchanged. This script never touches a fader.
@@ -65,6 +65,10 @@ pct="$(
 printf '%s\n' "$pct" > "${state}.tmp.$$" 2>/dev/null || exit 0
 mv -f "${state}.tmp.$$" "$state" 2>/dev/null || exit 0
 
+# Claim before detaching: burst losers publish but start no delivery process.
+exec 9>"$lock" || exit 0
+flock -n 9 || exit 0
+
 # Deliver one level, $2 carrying any extra JSON fields. `last` advances only
 # on a 2xx. A 409 (active-speaker output not ready) or a timeout therefore
 # retries the same value on the next pass instead of being recorded as
@@ -92,6 +96,7 @@ post() {
     return 1
 }
 
+(
 last=""
 attempt=0
 # Three tenures is the ceiling. A tenure ends either settled (nothing left to
@@ -109,8 +114,10 @@ while [ "$attempt" -lt 3 ]; do
     # and is safe ONLY because it runs foreground-synchronous: backgrounding
     # ANY of them would hold the flock past this tenure and silently
     # self-block the next acquire.
-    exec 9>"$lock" || exit 0
-    flock -n 9 || exit 0
+    if [ "$attempt" -gt 1 ]; then
+        exec 9>"$lock" || exit 0
+        flock -n 9 || exit 0
+    fi
     # 25 passes x 200 ms covers a five-second drag. 200 ms is half
     # CamillaDSP's 400 ms fader ramp, so a held key reads as one continuous
     # ramp instead of a ramp restarted per message.
@@ -169,6 +176,6 @@ while [ "$attempt" -lt 3 ]; do
     newest="$(cat "$state" 2>/dev/null)" || exit 0
     [ "$newest" = "$last" ] && exit 0
 done
-# Without this the exhausted-tenure path would exit with the status of the
-# test above (1), against the fire-and-forget contract at the top of the file.
+) </dev/null >/dev/null 2>&1 &
+exec 9>&-
 exit 0

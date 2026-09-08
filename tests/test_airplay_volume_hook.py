@@ -72,13 +72,17 @@ def _hook_argv(*args: str, port: int | None = None) -> list[str]:
     return argv
 
 
-def _run_hook(*args: str, runtime_dir: Path, port: int | None = None) -> None:
+def _run_hook(
+    *args: str, runtime_dir: Path, port: int | None = None, wait_for_delivery: bool = True,
+) -> None:
     subprocess.run(
         _hook_argv(*args, port=port),
         env=_hook_env(runtime_dir),
         check=True,
         timeout=60,
     )
+    if port is not None and wait_for_delivery:
+        _wait_for_delivery(runtime_dir)
 
 
 # ---------- the hook's dB → canonical-percent map --------------------------
@@ -159,6 +163,8 @@ class _Recorder(BaseHTTPRequestHandler):
     # One arrival time per post, same index — how a pin says "immediately".
     times: list[float] = []
     statuses: list[int] = []
+    delivered: int | None = None
+    changed = threading.Condition()
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
         length = int(self.headers.get("Content-Length") or 0)
@@ -172,6 +178,10 @@ class _Recorder(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+        with type(self).changed:
+            if 200 <= status < 300:
+                type(self).delivered = type(self).posts[-1][1]["percent"]
+            type(self).changed.notify_all()
 
     def log_message(self, *args: object) -> None:
         """Silence the default stderr access log."""
@@ -187,6 +197,7 @@ def control_stub():
     _Recorder.posts = []
     _Recorder.times = []
     _Recorder.statuses = []
+    _Recorder.delivered = None
     server = HTTPServer(("127.0.0.1", 0), _Recorder)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -196,6 +207,17 @@ def control_stub():
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def _wait_for_delivery(runtime_dir: Path) -> None:
+    expected = int((runtime_dir / STATE_NAME).read_text(encoding="utf-8"))
+    with _Recorder.changed:
+        assert _Recorder.changed.wait_for(lambda: _Recorder.delivered == expected, timeout=10)
+    assert _FLOCK is not None
+    subprocess.run(
+        [_FLOCK, "-w", "10", str(runtime_dir / "airplay-volume.lock"), "true"],
+        check=True, timeout=15,
+    )
 
 
 @requires_flock
@@ -249,7 +271,7 @@ def test_a_rejected_write_is_retried_rather_than_recorded_as_delivered(
 def test_hook_survives_an_unreachable_control_daemon(tmp_path):
     """A lost volume nudge is harmless; a hook that fails back into shairport
     is not. Port 1 is privileged and unbound, so curl fails immediately."""
-    _run_hook("-10.000000", runtime_dir=tmp_path, port=1)
+    _run_hook("-10.000000", runtime_dir=tmp_path, port=1, wait_for_delivery=False)
 
 
 @requires_flock
@@ -278,42 +300,34 @@ def _db_for(percent: float) -> str:
 def _fire_burst(
     percents, *, runtime_dir: Path, port: int, spacing: float,
 ) -> None:
-    """Fire one hook invocation per volume message, the way shairport does.
-
-    Each spawn is scheduled `spacing` after the PREVIOUS one actually
-    returned, not against an idealized absolute clock: a starved runner
-    that falls behind schedule then stretches the burst instead of firing
-    every remaining spawn back-to-back, which would pile on exactly the
-    fork/fd pressure it has none left to spare.
-    """
-    env = _hook_env(runtime_dir)
-    running = []
+    """Model shairport's parent wait; only publication delays the next message."""
     next_at = time.monotonic()
     for percent in percents:
         delay = next_at - time.monotonic()
         if delay > 0:
             time.sleep(delay)
-        running.append(
-            subprocess.Popen(_hook_argv(_db_for(percent), port=port), env=env)
+        _run_hook(
+            _db_for(percent), runtime_dir=runtime_dir, port=port, wait_for_delivery=False,
         )
         next_at = time.monotonic() + spacing
-    for process in running:
-        assert process.wait(timeout=60) == 0
+    _wait_for_delivery(runtime_dir)
 
 
 @requires_flock
+@pytest.mark.parametrize("delayed_percent", [None, 90])
 def test_hook_coalesces_a_drag_burst_and_still_lands_the_final_value(
-    control_stub, tmp_path,
+    control_stub, tmp_path, monkeypatch, delayed_percent,
 ):
-    """macOS emits a burst during a slider drag or a held volume key. Posting
-    each one would build a coordinator per message on a 1 GB Pi; dropping all
-    but the first would leave the speaker at the wrong level. The hook has to
-    thin the burst AND finish on the newest value.
+    """A delayed child must not publish an older value after the sender's last."""
+    original_argv = _hook_argv
 
-    The assertions are shaped to survive a slow runner: a slower box coalesces
-    harder (fewer posts), and the holder re-reads the published value after
-    releasing the lock, so the last post is the last value either way.
-    """
+    def argv(*args, **kwargs):
+        command = original_argv(*args, **kwargs)
+        if delayed_percent is not None and args[0] == _db_for(delayed_percent):
+            return ["sh", "-c", 'sleep 0.35; exec "$@"', "delayed-hook", *command]
+        return command
+
+    monkeypatch.setattr(sys.modules[__name__], "_hook_argv", argv)
     messages = list(range(0, 101, 5))
 
     _fire_burst(
@@ -448,6 +462,7 @@ def test_template_points_shairport_at_the_installed_hook():
         f"{INSTALLED_HOOK_PATH} --session-start"
     )
     assert INSTALLED_HOOK_PATH in installer
+    assert template_string_value(conf, "wait_for_completion") == "yes"
 
 
 def test_template_leaves_the_lane_at_unity_so_camilla_is_the_only_fader():
