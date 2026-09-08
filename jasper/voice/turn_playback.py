@@ -39,12 +39,12 @@ async def _flush_for_interrupt(turn: LiveTurn, tts: TtsPlayout) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning("TTS interrupt flush failed: %s", e)
     confirmed = confirmed_tts_flush(ack)
-    log_event(
-        logger,
-        "tts_flush.playout_ack" if confirmed else "barge.flush_failed",
-        local_stop="confirmed" if confirmed else "unconfirmed",
-        level=logging.INFO if confirmed else logging.WARNING,
-    )
+    if confirmed:
+        log_event(logger, "tts_flush.playout_ack", local_stop="confirmed")
+    else:
+        log_event(
+            logger, "barge.flush_failed", local_stop="unconfirmed", level=logging.WARNING,
+        )
     turn.clear_interrupted()
     dropped = turn.drop_pending_audio()
     if dropped:
