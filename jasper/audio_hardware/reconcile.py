@@ -1550,6 +1550,7 @@ class Pass:
             "runtime_graph",
             result="ok",
             apply_mode="write-statefile",
+            selected=result.decision.selected_config_path,
             detail=_log_token(
                 f"{result.decision.status}:"
                 f"{'wrote' if result.statefile_written else 'unchanged'}"

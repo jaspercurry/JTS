@@ -68,6 +68,9 @@ def _fake_renderer(tmp_path: Path) -> tuple[Path, Path]:
     return fake, tmp_path / "render.log"
 
 
+SELECTED_CONFIG_PATH = "/var/lib/camilladsp/configs/sound_current.yml"
+
+
 def _converged(**kwargs: Any) -> SimpleNamespace:
     """Default success seam for tests not about graph convergence itself."""
     return SimpleNamespace(
@@ -75,7 +78,12 @@ def _converged(**kwargs: Any) -> SimpleNamespace:
         error=None,
         statefile_written=True,
         topology=None,
-        decision=SimpleNamespace(ok=True, status="select_flat", reason="ok"),
+        decision=SimpleNamespace(
+            ok=True,
+            status="select_flat",
+            reason="ok",
+            selected_config_path=SELECTED_CONFIG_PATH,
+        ),
     )
 
 
@@ -902,12 +910,9 @@ def test_runtime_convergence_only_writes_statefile(tmp_path: Path) -> None:
     (call,) = result.converge_calls
     assert call["write_statefile"] is True
     assert call["statefile_path"] == str(tmp_path / "outputd-statefile.yml")
-    assert (
-        stderr_event(result.stderr, "audio_hardware_reconcile.runtime_graph")[
-            "apply_mode"
-        ]
-        == "write-statefile"
-    )
+    fields = stderr_event(result.stderr, "audio_hardware_reconcile.runtime_graph")
+    assert fields["apply_mode"] == "write-statefile"
+    assert fields["selected"] == SELECTED_CONFIG_PATH
 
 
 # --- I2S HAT boot intent ------------------------------------------------------
