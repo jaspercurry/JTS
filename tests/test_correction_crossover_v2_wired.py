@@ -59,10 +59,14 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 )
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.wired_capture import (
+    CODE_WIRED_MIC_MISSING,
+    WiredCaptureAnswer,
     WiredCaptureError,
     WiredMicDevice,
+    WiredMicMissing,
     WiredRecorder,
     decode_wav_to_mono,
+    setup_from_hint,
 )
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 from jasper.web import correction_crossover_v2 as v2host
@@ -102,14 +106,6 @@ def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
     _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
     device = v2wired.resolve_v2_wired_mic(proc_asound=tmp_path)
     assert device.model_key == "minidsp_umik2"
-
-
-def test_no_mic_discloses_instead_of_measuring_anyway(tmp_path):
-    """ADR-0188: wired is THE acoustic-measurement path, so absence is
-    DISCLOSED and the session refuses to guess."""
-    with pytest.raises(v2wired.WiredMicMissing) as caught:
-        v2wired.resolve_v2_wired_mic(proc_asound=tmp_path)
-    assert caught.value.code == v2wired.CODE_WIRED_MIC_MISSING
 
 
 # --------------------------------------------------------------------------- #
@@ -154,14 +150,14 @@ def test_two_wired_sessions_mint_distinct_identities():
 
 
 def test_the_wired_answer_satisfies_the_seam_contract():
-    answer = v2wired.WiredCaptureAnswer(wav=b"")
+    answer = WiredCaptureAnswer(wav=b"")
     assert isinstance(answer, CaptureAnswer)
 
 
 @pytest.mark.parametrize(
     "raised, expected_code",
     [
-        (v2wired.WiredMicMissing, v2wired.CODE_WIRED_MIC_MISSING),
+        (WiredMicMissing, CODE_WIRED_MIC_MISSING),
         (WiredCaptureError, ""),
     ],
 )
@@ -199,7 +195,7 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
     v2host.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         def _no_mic():
-            raise v2wired.WiredMicMissing("no mic")
+            raise WiredMicMissing("no mic")
 
         monkeypatch.setattr(v2wired, "resolve_v2_wired_mic", _no_mic)
         monkeypatch.setattr(
@@ -239,7 +235,7 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
                 {}, status={}, run_async=None, camilla_factory=None,
                 verify_only=preparer == "verify",
             )
-        assert caught.value.code == v2wired.CODE_WIRED_MIC_MISSING
+        assert caught.value.code == CODE_WIRED_MIC_MISSING
     finally:
         v2host.set_state_path_for_tests(None)
 
@@ -434,7 +430,7 @@ def _build(conductor, volume, *, plan=None, monkeypatch=None, persists=None,
             half = core_capture.WiredStimulusCapture(
                 device=device, bundle_dir=Path(bundle.name),
                 recorder_factory=lambda rate, budget: recorder_factory(budget),
-                setup_reference=lambda: core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2()),
+                setup_reference=lambda: setup_from_hint(v2host.default_setup_calibration_for_v2()),
             )
             program = SimpleNamespace(
                 phase=getattr(entry, "kind_label", "verify"), sample_rate_hz=RATE,
@@ -1374,35 +1370,6 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
     assert state["session_id"].startswith("wired-")
 
 
-def test_wired_setup_reference_is_the_stored_household_shape(monkeypatch):
-    hint = SimpleNamespace(
-        resolvable=True, calibration_id="cal-123", model="minidsp_umik2",
-    )
-    monkeypatch.setattr(
-        v2host, "default_setup_calibration_for_v2", lambda: hint,
-    )
-    setup = core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2())
-    assert setup == {
-        "calibration": {
-            "mode": "stored",
-            "calibration_id": "cal-123",
-            "model": "minidsp_umik2",
-        }
-    }
-
-
-def test_wired_setup_reference_is_none_when_unresolvable(monkeypatch):
-    monkeypatch.setattr(
-        v2host, "default_setup_calibration_for_v2",
-        lambda: SimpleNamespace(resolvable=False, calibration_id="x", model="m"),
-    )
-    assert core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2()) is None
-    monkeypatch.setattr(
-        v2host, "default_setup_calibration_for_v2", lambda: None,
-    )
-    assert core_capture.setup_from_hint(v2host.default_setup_calibration_for_v2()) is None
-
-
 # --------------------------------------------------------------------------- #
 # 5. hosting: the local kind + the completion endpoint
 # --------------------------------------------------------------------------- #
@@ -1836,7 +1803,7 @@ def test_the_walk_consumes_the_engine_take_for_the_claimed_index(monkeypatch):
         return _recorder_factory()(max_capture_s)
 
     def _engine_leg(index, attempt, entry):
-        return "the-engine-take" if index == 2 else v2wired.WiredCaptureAnswer(wav=b"first")
+        return "the-engine-take" if index == 2 else WiredCaptureAnswer(wav=b"first")
 
     runner = _build(
         conductor, volume, monkeypatch=monkeypatch, persists=persists,
@@ -1850,7 +1817,7 @@ def test_the_walk_consumes_the_engine_take_for_the_claimed_index(monkeypatch):
         "authorize", "consume", "authorize", "consume",
     ], "the engine leg replaces on_armed for its index and nothing else"
     assert conductor.answers[1] == "the-engine-take"
-    assert isinstance(conductor.answers[0], v2wired.WiredCaptureAnswer)
+    assert isinstance(conductor.answers[0], WiredCaptureAnswer)
     assert recorded == []
 
 
@@ -2026,7 +1993,7 @@ def test_take_answer_is_take_and_clear(tmp_path):
     asyncio.run(half.around(_play, program=_StimulusProgram()))
 
     first = half.take_answer()
-    assert isinstance(first, v2wired.WiredCaptureAnswer)
+    assert isinstance(first, WiredCaptureAnswer)
     assert half.take_answer() is None, "the second ask must not re-serve the take"
 
 

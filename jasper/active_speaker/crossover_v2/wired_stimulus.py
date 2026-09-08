@@ -2,12 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One wired recording and one annotated take record, shared by every door."""
+"""One wired recording placed in a bundle, and one annotated take record.
+
+The capture kernel itself — the answer type, the minter, the recorder factory
+and the capture budget — is the LEAF's
+(:mod:`jasper.audio_measurement.wired_capture`), so the bass bench and the CLI
+doors reach it without importing this package. What stays here is what needs
+the engine: placing the raw bytes in a bundle's artifact registry, and the
+play-seam capture half that drives the recorder around a program.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import math
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -21,70 +28,12 @@ from jasper.active_speaker.bundles import (
     CAPTURE_KIND_SEQUENTIAL, capture_artifact_relpath, register_capture,
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
-from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.wired_capture import (
-    WiredCaptureError, WiredMicDevice, WiredRecorder,
-    build_capture_integrity_report, encode_wav_s32, scan_zero_runs,
-    select_capture_channel,
+    WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
+    WiredCaptureError, WiredMicDevice, make_wired_recorder, mint_wired_answer,
 )
 
 from .program_transaction import StimulusCaptureError
-
-# Covers buffered playback and decay after the program's own tail.
-WIRED_POST_ROLL_S = 1.0
-# Recorder rolls across admission, graph proof and the writer lock.
-WIRED_PRE_PLAY_ALLOWANCE_S = 20.0
-
-
-@dataclass(frozen=True)
-class WiredCaptureAnswer:
-    wav: bytes
-    device: Mapping[str, Any] | None = None
-    setup: Mapping[str, Any] | None = None
-    capture_integrity: Mapping[str, Any] | None = None
-    wav_path: str = ""
-    wav_sha256: str = ""
-
-
-def setup_from_hint(hint: Any) -> Mapping[str, Any] | None:
-    if hint is None or not getattr(hint, "resolvable", False):
-        return None
-    return {"calibration": {
-        "mode": "stored", "calibration_id": str(hint.calibration_id),
-        "model": str(hint.model),
-    }}
-
-
-def mint_wired_answer(
-    recording: Any, *, device: WiredMicDevice, setup: Mapping[str, Any] | None = None,
-) -> WiredCaptureAnswer:
-    channel, mono, rms_dbfs = select_capture_channel(recording)
-    zero_count, zero_runs = scan_zero_runs(mono)
-    wav, frames = encode_wav_s32(mono, sample_rate_hz=recording.sample_rate_hz)
-    return WiredCaptureAnswer(
-        wav=wav, setup=setup,
-        capture_integrity=build_capture_integrity_report(
-            recording, encoded_frames=frames,
-            zero_run_count=zero_count, zero_runs=zero_runs,
-        ),
-        device={
-            "label": f"{device.model_label} ({device.card_id})", "wired": True,
-            "card": device.card_id, "usb_id": device.usb_id,
-            "model_key": device.model_key, "pcm": device.pcm,
-            "channel_selected": channel,
-            "channel_rms_dbfs": [round(value, 1) if math.isfinite(value) else None for value in rms_dbfs],
-        },
-    )
-
-
-def make_wired_recorder(
-    device: WiredMicDevice, *, sample_rate_hz: int, max_capture_s: float,
-) -> WiredRecorder:
-    return WiredRecorder(
-        device.pcm, sample_rate_hz=sample_rate_hz,
-        channels=int(SUPPORTED_MODELS.get(device.model_key, {}).get("capture_channels", 2)),
-        max_capture_s=max_capture_s,
-    )
 
 
 def place_wired_answer(

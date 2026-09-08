@@ -559,7 +559,7 @@ def _bind_compose(
 
 def _wired_setup_reference() -> Mapping[str, Any] | None:
     from jasper.active_speaker.crossover_v2.sweep_spec import DefaultSetupCalibration
-    from jasper.active_speaker.crossover_v2.wired_stimulus import setup_from_hint
+    from jasper.audio_measurement.wired_capture import setup_from_hint
     from jasper.correction.household_mic import (
         read_household_mic, resolve_household_mic_calibration,
     )
@@ -602,7 +602,10 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
     from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
-    from jasper.audio_measurement.wired_capture import resolve_wired_mic
+    from jasper.audio_measurement.wired_capture import (
+        WiredMicMissing,
+        require_wired_mic,
+    )
     from jasper.camilla import primary_controller
     from jasper.active_speaker.crossover_v2.wired_stimulus import (
         CapturedRecordStore, WiredStimulusCapture,
@@ -619,12 +622,11 @@ async def _measure(specs: tuple[Any, ...], box: BoxDeclaration) -> dict[str, Any
             "this box has banked no per-driver level evidence, so a "
             "level-matched take would measure unmatched branches",
         )
-    device = resolve_wired_mic()
-    if device is None:
-        raise BoxNotMeasurable(
-            REFUSE_NO_MIC,
-            "no measurement microphone answered; connect the UMIK and re-run",
-        )
+    try:
+        device = require_wired_mic()
+    except WiredMicMissing as exc:
+        # The kernel owns the sentence; this door owns only its exit code.
+        raise BoxNotMeasurable(REFUSE_NO_MIC, str(exc)) from exc
 
     session_id = f"measure-{secrets.token_hex(4)}"
     config_dir = str(DEFAULT_CAMILLA_CONFIG_DIR)

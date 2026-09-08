@@ -43,6 +43,12 @@ from tests.test_active_speaker_program_admission import _profile_and_targets
 
 FC_HZ = 2000.0
 
+#: A take the recorder says arrived whole, in the kernel's own wire spelling.
+_INTACT = {
+    "frames": 4096, "encoded_frames": 4096, "block_gaps": 0,
+    "block_gap_frames": 0, "zero_run_count": 0, "zero_runs": [],
+}
+
 
 def _roles(woofer=(500.0, 3000.0), tweeter=(1500.0, 10_000.0)):
     return [
@@ -723,15 +729,13 @@ def test_a_missing_microphone_exits_as_json_not_a_traceback(tmp_path, monkeypatc
     the absence of output. The sibling door renders the same case as refusal
     JSON; this matches it.
     """
-    from jasper.audio_measurement.wired_capture import WiredCaptureError
-
-    def _no_mic():
-        raise WiredCaptureError("no measurement microphone answered")
-
     monkeypatch.setattr(null_door, "_context", lambda: _fake_context())
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
-    monkeypatch.setattr(null_door, "_resolve_mic", _no_mic)
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_capture.resolve_wired_mic",
+        lambda **kw: None,
+    )
 
     code = null_door.main(["--bundle-dir", str(tmp_path)])
 
@@ -758,7 +762,19 @@ def _fake_context():
     )
 
 
-def _hardware_free_walk(monkeypatch, *, depth_db: float = -20.0) -> None:
+def _answer(*, capture_integrity=None):
+    """What the wired kernel hands the walk back, on a hardware-free box."""
+    return SimpleNamespace(
+        wav=b"\x00" * 8,
+        device={"card": "UMIK2", "model_key": "minidsp_umik2"},
+        setup=None,
+        capture_integrity=capture_integrity or _INTACT,
+    )
+
+
+def _hardware_free_walk(
+    monkeypatch, *, depth_db: float = -20.0, integrity=None,
+) -> None:
     """Everything one walk needs that a hardware-free box cannot have.
 
     The box declaration, the microphone, the emission and the depth read; the
@@ -768,13 +784,14 @@ def _hardware_free_walk(monkeypatch, *, depth_db: float = -20.0) -> None:
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
     monkeypatch.setattr(
-        null_door, "_resolve_mic", lambda: SimpleNamespace(pcm=None),
+        "jasper.audio_measurement.wired_capture.require_wired_mic",
+        lambda **kw: SimpleNamespace(pcm=None),
     )
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
 
-    async def _play(*_args, **_kwargs) -> bytes:
+    async def _play(*_args, **_kwargs):
         assert _kwargs["graph_yaml"] == "installed-graph"
-        return b"\x00" * 8
+        return _answer(capture_integrity=integrity)
 
     monkeypatch.setattr(null_door, "_play_and_capture", _play)
     monkeypatch.setattr(null_door, "_depth", lambda *_a, **_k: (depth_db, _span()))
@@ -943,7 +960,10 @@ def test_a_refused_run_writes_no_stimulus(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(null_door, "_context", lambda: context)
     monkeypatch.setattr(null_door, "_level_trims", lambda _c: ({}, "none"))
-    monkeypatch.setattr(null_door, "_resolve_mic", lambda: object())
+    monkeypatch.setattr(
+        "jasper.audio_measurement.wired_capture.require_wired_mic",
+        lambda **kw: object(),
+    )
     monkeypatch.setattr(null_door, "_protection_sections", lambda _c: None)
 
     def _refuse(**_kw):
@@ -1000,3 +1020,75 @@ def test_rows_land_beside_the_takes(tmp_path):
     path = null_door._write_row(tmp_path / "null_runs", _row(depth_db=-9.0, span=_span()))
     assert path.parent == tmp_path / "null_runs"
     assert path.suffix == ".json"
+
+
+def test_a_measured_row_carries_what_the_recorder_said_about_the_take(
+    tmp_path, monkeypatch, capsys,
+):
+    """A null take banks the same capture evidence a wizard take does.
+
+    Before the wired kernel was shared, this door hand-rolled its capture and
+    banked only a sha256: no frame ledger, no zero-run scan, no mic identity.
+    A grader could not tell a clean null from one read off a lossy capture.
+    """
+    _hardware_free_walk(monkeypatch, depth_db=-18.5)
+    _install_door(monkeypatch)
+
+    code = null_door.main([
+        "--bundle-dir", str(tmp_path), "--delays", "0", "--polarity", "keep",
+    ])
+
+    assert code == null_door.EXIT_OK
+    capsys.readouterr()
+    row = json.loads(
+        next((tmp_path / null_door.NULL_RUNS_DIR).glob("*.json")).read_text()
+    )
+    assert row["status"] == "measured"
+    assert row["capture_integrity"] == _INTACT
+    assert row["capture_device"]["model_key"] == "minidsp_umik2"
+    assert (row["capture_intact"], row["capture_faults"]) == (True, [])
+    # DISCLOSED, unchanged: this door resolves no household calibration.
+    assert row["calibrated"] is False
+
+
+@pytest.mark.parametrize(
+    "report, fault",
+    [
+        (
+            {**_INTACT, "zero_run_count": 3,
+             "zero_runs": [{"offset": 0, "len": 512}]},
+            "zero_fill_runs",
+        ),
+        ({**_INTACT, "encoded_frames": 4000}, "worklet->encoder"),
+        ({**_INTACT, "block_gap_frames": 64}, "render_graph"),
+        ({**_INTACT, "truncated": True}, "truncated"),
+    ],
+    ids=["zero-runs", "unbalanced", "block-gaps", "truncated"],
+)
+def test_a_lossy_take_is_still_graded_with_its_faults_disclosed(
+    tmp_path, monkeypatch, capsys, report, fault,
+):
+    """DISCLOSURE, not refusal, until hardware says otherwise.
+
+    A take the recorder says was not whole is still read for a depth, and the
+    row says so — the integrity report, ``capture_intact: false`` and the
+    fault list — so a grader can tell it from a clean one. Promotion condition
+    lives beside ``null_door._capture_faults``.
+    """
+    _hardware_free_walk(monkeypatch, depth_db=-18.5, integrity=report)
+    _install_door(monkeypatch)
+
+    code = null_door.main([
+        "--bundle-dir", str(tmp_path), "--delays", "0", "--polarity", "keep",
+    ])
+
+    assert code == null_door.EXIT_OK
+    capsys.readouterr()
+    row = json.loads(
+        next((tmp_path / null_door.NULL_RUNS_DIR).glob("*.json")).read_text()
+    )
+    assert row["status"] == "measured"
+    assert row["depth_db"] == -18.5
+    assert row["capture_integrity"] == report
+    assert row["capture_intact"] is False
+    assert row["capture_faults"] == [fault]
