@@ -105,8 +105,6 @@ class TurnHost(Protocol):
 
     def condition(self) -> HostCondition: ...
 
-    def turn_episode_active(self) -> bool: ...
-
     def hold_wake_refractory(self, sec: float) -> None: ...
 
     def record_conversation_turn(
@@ -126,8 +124,6 @@ class TurnHost(Protocol):
     ) -> None: ...
 
     async def end_turn(self, reason: str) -> None: ...
-
-    async def cleanup_after_failed_begin(self) -> None: ...
 
     async def play_cancel_timeout_cue(self) -> None: ...
 
@@ -432,8 +428,6 @@ class ResearchAnnouncer:
                     job.id,
                     e,
                 )
-                if self._host.turn_episode_active():
-                    await self._host.cleanup_after_failed_begin()
                 return
             logger.exception(
                 "research confirmation window failed; reading immediately "
@@ -441,8 +435,6 @@ class ResearchAnnouncer:
                 job.id,
                 e,
             )
-            if self._host.turn_episode_active():
-                await self._host.cleanup_after_failed_begin()
             await self._read_immediately(job)
         finally:
             if reset_window:

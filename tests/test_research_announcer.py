@@ -435,7 +435,7 @@ async def test_research_announcements_do_not_overlap_during_drain():
     assert opened == ["first", "second"]
 
 
-async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
+async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path, request):
     path = tmp_path / "research.db"
     store = ResearchJobStore(str(path))
     assert store.add(
@@ -454,6 +454,7 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
         opened.append(job.id)
 
     sched = ResearchScheduler(_UnusedClient(), db_path=str(path))
+    request.addfinalizer(sched.close)
     announcer.open_confirmation_window = _open  # type: ignore[method-assign]
     announcer.set_scheduler(sched)
     sched.set_on_done(announcer.announce_ready)
@@ -471,7 +472,9 @@ async def test_restart_restore_holds_unannounced_jobs_until_wake(tmp_path):
     assert host.spoken == [READY_PROMPT]
     assert opened == ["done1"]
     assert host.cues == ["research_failed"]
-    rows = {job.id: job for job in ResearchJobStore(str(path)).all()}
+    restored = ResearchJobStore(str(path))
+    request.addfinalizer(restored.close)
+    rows = {job.id: job for job in restored.all()}
     assert rows["done1"].announced is True
     assert rows["done1"].read is False
     assert rows["run1"].status == FAILED

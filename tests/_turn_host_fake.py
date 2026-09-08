@@ -65,14 +65,12 @@ class FakeTurnHost:
         for name, value in condition.items():
             assert hasattr(self, name), f"unknown condition field {name!r}"
             setattr(self, name, value)
-        self.turn_episode = False
         self.spoken: list[str] = []
         self.cues: list[str] = []
         self.begun: list[str | None] = []
         self.ended: list[str] = []
         self.refractory_holds: list[float] = []
         self.conversation_turns: list[tuple[str | None, str | None, dict]] = []
-        self.cleanup_calls = 0
         self.cancel_timeout_cues = 0
         self.play_result = True
         self.cue_result = True
@@ -90,9 +88,6 @@ class FakeTurnHost:
             spend_allowed=self.spend_allowed,
             connection_paused=self.connection_paused,
         )
-
-    def turn_episode_active(self) -> bool:
-        return self.turn_episode
 
     def hold_wake_refractory(self, sec: float) -> None:
         self.refractory_holds.append(sec)
@@ -124,9 +119,6 @@ class FakeTurnHost:
 
     async def end_turn(self, reason: str) -> None:
         self.ended.append(reason)
-
-    async def cleanup_after_failed_begin(self) -> None:
-        self.cleanup_calls += 1
 
     async def play_cancel_timeout_cue(self) -> None:
         self.cancel_timeout_cues += 1
