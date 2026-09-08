@@ -729,10 +729,10 @@ def test_done_renders_the_floor_stop_sentence_from_kernel_output():
         attempts_loop={"last_decision": decision.to_dict(), "store_count": 2},
     ))
 
-    assert env["verdict_text"].endswith(
-        "Stopped: the change in prediction tracking from the previous attempt "
-        "(0.09 dB) is below what this instrument can distinguish (floor 0.17 dB)."
-    )
+    baseline = build_crossover_envelope_v2(_done_status())
+    assert env["screen"] == baseline["screen"] == "done"
+    assert env["next_action"] == baseline["next_action"]
+    assert env["alternate_actions"] == baseline["alternate_actions"]
 
 
 def test_done_describes_tracking_fidelity_without_claiming_crossover_quality():
@@ -838,10 +838,10 @@ def test_done_does_not_blame_the_mic_when_the_sitting_is_merely_unrecorded():
             "basis_attempt_ids": ["candidate-a", "candidate-b"],
         }},
     ))
-    assert env["verdict_text"].endswith(
-        "Stopped because the latest attempt could not be compared reliably."
-    )
-    assert "different position" not in env["verdict_text"]
+    baseline = build_crossover_envelope_v2(_done_status())
+    assert env["screen"] == "done"
+    assert env["next_action"] == baseline["next_action"]
+    assert env["alternate_actions"] == baseline["alternate_actions"]
 
 
 def test_first_attempt_sentence_formats_the_kernel_provenance():
@@ -5939,3 +5939,20 @@ def test_each_kept_round_offers_another_round_as_a_choice(ordinal, adoption, row
     assert "room" == env["next_action"]["id"]
     assert actions["round_remeasure"]["endpoint"] == "/sound/speaker/crossover/v2/session"
     assert actions["round_remeasure"]["body"] == {}
+
+
+@pytest.mark.parametrize("reason", [
+    "below_claim_floor", "attempt_not_comparable", "budget_exhausted",
+    "no_material_improvement_predicted", "in_spec", "ungraded_no_floor",
+])
+def test_attempt_advice_preserves_next_experiment_actions(reason):
+    base = _done_status(round_receipt={"row": "keep_for_iteration"})
+    baseline = build_crossover_envelope_v2(base)
+    base["crossover_v2"]["attempts_loop"] = {
+        "last_decision": {"authority": "advisory", "reason": reason},
+    }
+    advice = build_crossover_envelope_v2(base)
+    assert advice["screen"] == "done"
+    assert advice["next_action"] == baseline["next_action"]
+    assert advice["alternate_actions"] == baseline["alternate_actions"]
+    assert not advice["busy"]
