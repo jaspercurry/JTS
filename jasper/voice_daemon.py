@@ -3155,7 +3155,10 @@ class WakeLoop:
                 # The model answered and the playout queue hit its byte
                 # ceiling, so the tail was dropped: the household heard an
                 # answer that stopped part-way, which is what the
-                # internal_error cue says. See ADR-0254.
+                # internal_error cue says. An ending the household or the
+                # daemon chose is journalled but not cued, as in the
+                # sibling arms above. See ADR-0254.
+                suppressed = reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
                 log_event(
                     logger,
                     "turn.truncated_response",
@@ -3164,9 +3167,10 @@ class WakeLoop:
                     dropped_bytes=self._turn.audio_dropped_bytes(),
                     chunks_received=chunks_received,
                     endpointer=self._endpointer_label(),
-                    level=logging.WARNING,
+                    **({"suppressed": reason} if suppressed else {}),
+                    level=logging.INFO if suppressed else logging.WARNING,
                 )
-                play_no_answer_cue = True
+                play_no_answer_cue = not suppressed
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
                 if drain_wait_sec is not None else ""

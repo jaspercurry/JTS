@@ -561,14 +561,18 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert fields["reason"] == turn.get("reason", "test")
 
 
-@pytest.mark.parametrize("dropped, cues", [(2048, ["internal_error"]), (0, [])])
+@pytest.mark.parametrize("dropped, reason, suppressed", [
+    (2048, "test", None), (2048, "stopping", "stopping"), (0, "test", None),
+])
 async def test_an_answer_truncated_by_the_playout_ceiling_is_heard(
-    dropped, cues, caplog,
+    dropped, reason, suppressed, caplog,
 ):
     """An answer that hit `AUDIO_OUT_QUEUE_MAX_BYTES` stopped part-way,
     which is exactly what the internal_error cue says (ADR-0254). Chunks
     arrived, so none of the silent-response arms fire and nothing else
-    would tell the household the tail is missing.
+    would tell the household the tail is missing — unless the ending was
+    one the household or the daemon chose, which is journalled at INFO
+    and not spoken about, as in the silent-response arms.
 
     Mutation: the same answered turn with no dropped bytes says nothing.
     """
@@ -576,19 +580,23 @@ async def test_an_answer_truncated_by_the_playout_ceiling_is_heard(
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         await _torn_down_mid_hold(
             wl=wl, manual=False, chunks=3, input_ended=True,
-            user_speech=True, dropped=dropped,
+            user_speech=True, dropped=dropped, reason=reason,
         )
 
-    assert wl._cues.played == cues
+    cued = bool(dropped) and not suppressed
+    assert wl._cues.played == (["internal_error"] if cued else [])
     # Not a silent response: the count and its event stay untouched.
     assert wl._silent_responses_session == 0
     assert not event_records(caplog, "turn.silent_response")
     records = event_records(caplog, "turn.truncated_response")
-    assert len(records) == len(cues)
+    assert len(records) == (1 if dropped else 0)
     if not records:
         return
-    assert records[0].levelno == logging.WARNING
+    assert records[0].levelno == (
+        logging.INFO if suppressed else logging.WARNING
+    )
     fields = event_fields(caplog, "turn.truncated_response")
+    assert fields.get("suppressed") == suppressed
     assert int(fields["dropped_bytes"]) == dropped
     assert int(fields["chunks_received"]) == 3
 
