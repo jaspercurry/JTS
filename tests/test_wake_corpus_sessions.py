@@ -94,8 +94,11 @@ def test_list_sessions_marks_active(tmp_path: Path) -> None:
         b.shutdown()
 
 
-def test_list_sessions_skips_corrupt_files(tmp_path: Path) -> None:
-    """A single corrupt JSON file must not break the whole list."""
+@pytest.mark.parametrize("bad_data", [
+    "{not valid json",
+    json.dumps({"session_id": "bad", "aec3_sweep_source": "not-a-real-source"}),
+])
+def test_list_sessions_skips_corrupt_files(tmp_path: Path, bad_data: str) -> None:
     out = tmp_path / "out"
     md = out / "metadata"
     md.mkdir(parents=True)
@@ -103,29 +106,7 @@ def test_list_sessions_skips_corrupt_files(tmp_path: Path) -> None:
         "session_id": "good", "member": "jasper",
         "ports": {}, "clips": [],
     }))
-    (md / "enroll_jasper_bad.json").write_text("{not valid json")
-
-    b = wake_corpus_setup.RecordingBackend(output_dir=out)
-    sessions = b.list_sessions()
-    assert len(sessions) == 1
-    assert sessions[0]["session_id"] == "good"
-
-
-def test_list_sessions_skips_bad_aec3_sweep_source(tmp_path: Path) -> None:
-    """A sidecar with an unrecognized aec3_sweep_source raises inside the
-    per-file parse (Aec3SweepConfigError, a ValueError) and must be
-    skipped like any other malformed file, not 500 the whole list."""
-    out = tmp_path / "out"
-    md = out / "metadata"
-    md.mkdir(parents=True)
-    (md / "enroll_jasper_good.json").write_text(json.dumps({
-        "session_id": "good", "member": "jasper",
-        "ports": {}, "clips": [],
-    }))
-    (md / "enroll_jasper_bad.json").write_text(json.dumps({
-        "session_id": "bad", "member": "jasper",
-        "ports": {}, "clips": [], "aec3_sweep_source": "not-a-real-source",
-    }))
+    (md / "enroll_jasper_bad.json").write_text(bad_data)
 
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
     sessions = b.list_sessions()
@@ -162,9 +143,9 @@ def test_list_sessions_survives_delete_race_after_glob(
     assert sessions[0]["session_id"] == "good"
 
 
-def test_load_session_switches_active(backend, tmp_path: Path) -> None:
-    """load_session swaps the in-memory active session to an
-    existing one on disk."""
+def test_load_session_switches_active(
+    backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     backend.begin_session("jasper", include_raw_mic_0=True)
     first_id = backend.session_id()
     backend.start_recording("quiet", "near")
@@ -176,7 +157,16 @@ def test_load_session_switches_active(backend, tmp_path: Path) -> None:
     second_id = backend.session_id()
     assert first_id != second_id
 
-    # Switch back to the first session
+    metadata = tmp_path / "out" / "metadata" / f"enroll_jasper_{first_id}.json"
+    read_text = Path.read_text
+
+    def read_once(path: Path, *args, **kwargs) -> str:
+        data = read_text(path, *args, **kwargs)
+        if path == metadata:
+            path.write_text("{unavailable after lookup")
+        return data
+
+    monkeypatch.setattr(Path, "read_text", read_once)
     result = backend.load_session(first_id)
     assert result["session_id"] == first_id
     assert result["include_raw_mic_0"] is True
@@ -202,6 +192,7 @@ def test_load_session_refuses_during_recording(backend) -> None:
 def test_session_transition_refuses_while_recording_start_is_reserved(
     backend,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     transition: str,
 ) -> None:
     """Session ownership cannot change during the slow UDP-bind window."""
@@ -232,8 +223,10 @@ def test_session_transition_refuses_while_recording_start_is_reserved(
             else:
                 backend.delete_session(active_session_id)
         assert backend.session_id() == active_session_id
-        active_metadata = backend._find_session_metadata(active_session_id)
-        assert active_metadata is not None and active_metadata.is_file()
+        active_metadata = (
+            tmp_path / "out" / "metadata" / f"enroll_brittany_{active_session_id}.json"
+        )
+        assert active_metadata.is_file()
     finally:
         release.set()
         thread.join(timeout=2)

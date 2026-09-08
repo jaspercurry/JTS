@@ -157,21 +157,24 @@ async def test_recovery_before_threshold_resets_counter():
     assert sup.consecutive_failures == 0
 
 
-async def test_failure_attribution_each_probe_type():
-    """When sshd / jasper_control / loadavg fails individually, the
-    failed_probe name is recorded so the operator can debug."""
+@pytest.mark.parametrize("failed_probe", ["sshd", "jasper_control", "loadavg"])
+@pytest.mark.parametrize("failure", [False, OSError(), asyncio.CancelledError()])
+async def test_probe_failure_attribution_and_cancellation(failed_probe, failure):
     sup = _FakeSupervisor()
-    sup.probe_results = [(False, True, True)]
-    await sup._tick()
-    assert sup.last_failed_probe == "sshd"
-
-    sup.probe_results = [(True, False, True)]
-    await sup._tick()
-    assert sup.last_failed_probe == "jasper_control"
-
-    sup.probe_results = [(True, True, False)]
-    await sup._tick()
-    assert sup.last_failed_probe == "loadavg"
+    probes = ["sshd", "jasper_control", "loadavg"]
+    index = probes.index(failed_probe)
+    outcomes = [True] * index + [failure] + [asyncio.CancelledError()] * (2 - index)
+    sup.probe_results = [outcomes] * 3
+    if isinstance(failure, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await sup._tick()
+        assert sup.consecutive_failures == sup.reboot_calls == 0
+        assert sup.last_failed_probe is None
+    else:
+        for _ in range(3):
+            await sup._tick()
+        assert sup.last_failed_probe == failed_probe
+        assert sup.reboot_calls == 1
 
 
 async def test_disabled_sshd_probe_skips_to_other_liveness_checks():
@@ -283,16 +286,6 @@ async def test_sshd_port_zero_env_disables_only_sshd_probe(caplog):
         in r.getMessage()
         for r in caplog.records
     )
-
-
-async def test_probe_exception_counts_as_failure():
-    """If a probe raises (network error, OS error), it counts as a
-    failure but doesn't crash the supervisor."""
-    sup = _FakeSupervisor()
-    sup.probe_results = [(OSError("simulated"), True, True)] * 3
-    for _ in range(3):
-        await sup._tick()
-    assert sup.reboot_calls == 1
 
 
 def test_control_health_overload_response_counts_as_alive():

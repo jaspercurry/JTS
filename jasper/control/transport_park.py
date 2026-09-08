@@ -252,7 +252,7 @@ def _assess(
         # still an empty draft — a fresh box must not park on never-configured.
         topology = load_output_topology_strict()
     if env is None:
-        env = outputd_reconciled_env()
+        env = outputd_reconciled_env(require_readable=True)
 
     contract = classify_output_contract(topology)
     stereo_ring = ring_channels_for_topology(topology)
@@ -409,30 +409,6 @@ def _assess(
         converge_refused=converge_refused,
         endpoint_armed_without_active_modes=endpoint_armed_without_active_modes,
     )
-
-
-def classify(
-    topology: "OutputTopology | None" = None,
-    env: Mapping[str, str] | None = None,
-) -> tuple[TransportPark, ...]:
-    """Every park this box is in, in the order ADR-0178 lists them.
-
-    A TUPLE rather than one winning verdict: the classes answer different
-    questions (three topology shapes, one runtime pin) and a box can genuinely
-    be in two — a bonded mono speaker is waiting on both #3117 and #3118. A
-    single verdict would force an invented precedence and hide the other
-    tracked issue from the operator who has to clear both.
-
-    ``()`` — no park — is the answer for every ring-eligible box, and for an
-    UNCONFIGURED topology, which holds silence through the speaker-setup park
-    (#2135) and is not this module's to re-report. It is NOT by itself proof
-    the ring can serve the box; :func:`snapshot` carries that distinction as
-    ``unclassified``.
-
-    Raises ``OutputTopologyError`` on a corrupt or unreadable topology when
-    ``topology`` is not supplied; :func:`snapshot` is the fail-soft caller.
-    """
-    return _assess(topology, env).parks
 
 
 def snapshot(

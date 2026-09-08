@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from jasper.sound.profile import SimpleEq, SoundProfile
 from jasper.sound.settings import (
     HEADROOM_TRIM_MAX_DB,
@@ -30,9 +32,10 @@ def test_missing_file_fails_soft_to_defaults(tmp_path: Path):
     assert load_sound_settings(tmp_path / "nope.json") == SoundSettings()
 
 
-def test_corrupt_file_fails_soft_to_defaults(tmp_path: Path):
+@pytest.mark.parametrize("content", [b"{not valid json", b"\xff"])
+def test_corrupt_file_fails_soft_to_defaults(tmp_path: Path, content):
     p = tmp_path / "sound_settings.json"
-    p.write_text("{not valid json")
+    p.write_bytes(content)
     assert load_sound_settings(p) == SoundSettings()
 
 

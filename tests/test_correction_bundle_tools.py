@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import numpy as np
@@ -99,15 +101,12 @@ async def test_bundle_inspect_recompute_and_export(tmp_path: Path):
 
 
 async def test_banked_responses_are_read_back_without_a_replay(tmp_path: Path):
-    """The artifact the analysis banked is what `inspect_bundle` reports.
-
-    Proved by mutating the banked file and reading the mutation back: a
-    value that could not have come from deconvolving the WAV is the only
-    way to show the bytes are being opened rather than re-derived.
-    """
     sess = await _complete_one_position_bundle(tmp_path)
     response_path = sess.bundle_dir / "analysis" / "p0_response.json"
-    payload = json.loads(response_path.read_text())
+    banked = response_path.read_bytes()
+    payload = json.loads(banked)
+    assert banked == (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    assert stat.S_IMODE(response_path.stat().st_mode) == 0o600
     payload["direct_arrival"] = {"marker": "read-from-disk"}
     response_path.write_text(json.dumps(payload))
 
@@ -122,6 +121,29 @@ async def test_banked_responses_are_read_back_without_a_replay(tmp_path: Path):
     assert row["analysis_curve"]["freq_count"] > 0
     assert row["analysis_curve"]["f_min_hz"] < row["analysis_curve"]["f_max_hz"]
     assert bundle_tools.inspect_bundle(sess.bundle_dir)["banked_responses"] == rows
+
+
+async def test_replay_publish_failure_preserves_banked_response(tmp_path: Path, monkeypatch):
+    sess = await _complete_one_position_bundle(tmp_path)
+    response_path = sess.bundle_dir / "analysis" / "p0_response.json"
+    banked = response_path.read_bytes()
+    real_replace = os.replace
+
+    def fail_response_replace(source, target):
+        if Path(target) == response_path:
+            raise OSError("response publication failed")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_response_replace)
+
+    result = sess._smooth_capture(
+        sess.capture_path_for_position(0), capture_kind="measurement", position_index=0,
+    )
+
+    assert result[-1] is None
+
+    assert response_path.read_bytes() == banked
+    assert not list(response_path.parent.glob(".*.tmp"))
 
 
 async def test_the_replay_grades_each_capture_against_its_banked_curve(

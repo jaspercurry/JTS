@@ -17,6 +17,7 @@ import jasper.active_speaker._common as _common
 import jasper.active_speaker.setup_status as setup_status_mod
 from jasper.cli.doctor import active_speaker
 from jasper.cli.doctor._evidence import evidence
+from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_BAKE_CONFIG_PATH
 
 from .test_doctor_audio import _point_at_config
 
@@ -344,13 +345,22 @@ _SAVED_SOUND_PROFILE = {
 }
 
 
+@pytest.mark.parametrize(
+    "active_name",
+    [
+        "v1.yml",
+        "grouping_active_leader.yml",
+        "grouping_active_leader_other.yml",
+        "grouping_active_leader_bake.yml.bak",
+        "grouping_active_leader_crossover_extra.yml",
+    ],
+)
 def test_check_sound_profile_warns_when_saved_profile_not_active(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path, active_name,
 ):
     profile = tmp_path / "sound_profile.json"
     profile.write_text(json.dumps(_SAVED_SOUND_PROFILE))
-    _point_at_config(monkeypatch, tmp_path, "# base\n")
+    _point_at_config(monkeypatch, tmp_path, "# base\n", name=active_name)
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
 
     r = active_speaker.check_sound_profile()
@@ -362,28 +372,18 @@ def test_check_sound_profile_warns_when_saved_profile_not_active(
 @pytest.mark.parametrize(
     "active_name",
     [
-        # The four shapes the check's old literal set did not know about.
         "sound_reset_s1_1717000000.yml",
         "sound_snapshot_s1_1717000000.yml",
         "sound_lean_current.yml",
         "grouping_leader.yml",
+        Path(LEADER_BAKE_CONFIG_PATH).name,
+        Path(CROSSOVER_CONFIG_PATH).name,
     ],
 )
 def test_check_sound_profile_accepts_every_jts_generated_active_name(
     monkeypatch, tmp_path, active_name,
 ):
-    """One owner decides what "JTS-generated" means, and the doctor asks it.
-
-    `check_sound_profile` held a second, narrower copy of that predicate as a
-    literal set and had fallen four shapes behind
-    :func:`jasper.sound.camilla_yaml.is_jts_generated_config`, so it told a
-    household its saved profile was not reflected in a graph that
-    demonstrably carries it. Permanent since #2572: the reconcile now leaves a
-    content-identical graph running under whatever it is named.
-
-    The negative half is
-    `test_check_sound_profile_warns_when_saved_profile_not_active` above.
-    """
+    """The doctor recognizes graphs emitted by every supported JTS writer."""
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile, build_sound_filters
 

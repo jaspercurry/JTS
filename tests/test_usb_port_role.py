@@ -48,86 +48,48 @@ def _serialized_role(**overrides) -> dict[str, object]:
     return raw
 
 
-def test_zero_without_registered_i2s_defaults_host_when_dac_is_absent() -> None:
+@pytest.mark.parametrize(
+    "model,config,active,observed,desired,available,management,reboot,reason",
+    [
+        (ZERO, HOST, "host", "unknown", "host", False, False, False,
+         "shared_otg_defaults_host_without_i2s"),
+        (ZERO, HOST, "host", "apple_usb_c_dongle", "host", False, False, False,
+         "shared_otg_usb_output_requires_host"),
+        (ZERO, I2S + PERIPHERAL, "peripheral", "unknown", "peripheral", True, True,
+         False, "available"),
+        (PI5, PERIPHERAL, "peripheral", "apple_usb_c_dongle", "peripheral", True,
+         True, False, "available"),
+        (ZERO, PERIPHERAL, "peripheral", "unknown", "host", False, True, True,
+         "role_change_pending_reboot"),
+        (PI5, PERIPHERAL, "unknown", "unknown", "peripheral", False, False, False,
+         "dedicated_host_ports_leave_otg_available"),
+        ("Acme SBC", PERIPHERAL, "peripheral", "unknown", "unknown", False, False,
+         False, "unsupported_board"),
+    ],
+)
+def test_usb_role_availability_and_saved_state(
+    model, config, active, observed, desired, available, management, reboot, reason,
+) -> None:
     state = resolve_usb_port_role(
-        board_model=ZERO,
-        boot_config=HOST,
-        active_role="host",
+        board_model=model, boot_config=config, active_role=active,
+        observed_output_profile_id=observed,
     )
 
-    assert state.desired_role == "host"
-    assert state.gadget_available is False
-    assert state.management_transport_available is False
-    assert state.reboot_required is False
-    assert state.reason == "shared_otg_defaults_host_without_i2s"
+    assert state.desired_role == desired
+    assert state.gadget_available is available
+    assert state.management_transport_available is management
+    assert state.reboot_required is reboot
+    assert state.reason == reason
+    raw = state.to_dict()
+    assert UsbPortRoleState.from_mapping(raw) == state
+    for field in ("gadget_available", "management_transport_available", "reboot_required"):
+        for invalid in (not raw[field], int(raw[field]), None):
+            assert UsbPortRoleState.from_mapping({**raw, field: invalid}) is None
+    assert UsbPortRoleState.from_mapping({**raw, "reason": "invalid"}) is None
 
 
-def test_zero_observed_usb_dac_requires_shared_otg_host() -> None:
-    state = resolve_usb_port_role(
-        board_model=ZERO,
-        boot_config=HOST,
-        active_role="host",
-        observed_output_profile_id="apple_usb_c_dongle",
-    )
-
-    assert state.desired_role == "host"
-    assert state.reason == "shared_otg_usb_output_requires_host"
-
-
-def test_zero_registered_i2s_allows_peripheral_even_before_card_appears() -> None:
-    state = resolve_usb_port_role(
-        board_model=ZERO,
-        boot_config=I2S + PERIPHERAL,
-        active_role="peripheral",
-        observed_output_profile_id="unknown",
-    )
-
-    assert state.configured_i2s_overlays == ("hifiberry-dac8x",)
-    assert state.desired_role == "peripheral"
-    assert state.gadget_available is True
-    assert state.management_transport_available is True
-    assert state.reason == "available"
-
-
-def test_pi5_separate_host_ports_allow_usb_dac_and_peripheral() -> None:
-    state = resolve_usb_port_role(
-        board_model=PI5,
-        boot_config=PERIPHERAL,
-        active_role="peripheral",
-        observed_output_profile_id="apple_usb_c_dongle",
-    )
-
-    assert state.desired_role == "peripheral"
-    assert state.gadget_available is True
-    assert state.decision_reason == "dedicated_host_ports_leave_otg_available"
-
-
-def test_legacy_zero_peripheral_role_is_pending_host_reboot() -> None:
-    state = resolve_usb_port_role(
-        board_model=ZERO,
-        boot_config=PERIPHERAL,
-        active_role="peripheral",
-    )
-
-    assert state.desired_role == "host"
-    assert state.gadget_available is False
-    assert state.reboot_required is True
-    assert state.management_transport_available is True
-    assert state.reason == "role_change_pending_reboot"
-
-
-def test_unknown_board_is_fail_closed_and_never_requests_mutation() -> None:
-    state = resolve_usb_port_role(
-        board_model="Acme SBC",
-        boot_config=PERIPHERAL,
-        active_role="peripheral",
-    )
-
-    assert state.desired_role == "unknown"
-    assert state.gadget_available is False
-    assert state.reboot_required is False
-    assert state.reason == "unsupported_board"
-    assert render_boot_config(PERIPHERAL, state.desired_role) == PERIPHERAL
+def test_unknown_role_never_requests_boot_config_mutation() -> None:
+    assert render_boot_config(PERIPHERAL, "unknown") == PERIPHERAL
 
 
 def test_reconcile_refuses_a_hand_written_overlay_collision(

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import env_load
 from jasper.env_load import bounded_env_float, bounded_env_int, read_env_file_or_warn
 
 
@@ -135,3 +136,27 @@ def test_read_env_file_or_warn_logs_via_injected_logger_only_when_unreadable(
     finally:
         if present:
             path.chmod(0o644)
+
+
+@pytest.mark.parametrize("unreadable_layer", range(3))
+def test_outputd_env_readability_preserves_layering_and_optional_files(
+    tmp_path, monkeypatch, unreadable_layer,
+):
+    paths = [tmp_path / name for name in ("base.env", "outputd.env", "grouping.env")]
+    monkeypatch.setenv("JASPER_ENV_FILE", str(paths[0]))
+    monkeypatch.setattr(env_load, "OUTPUTD_ENV_PATH", str(paths[1]))
+    monkeypatch.setattr(env_load, "OUTPUTD_GROUPING_ENV_FILE", str(paths[2]))
+    assert env_load.outputd_reconciled_env(require_readable=True) == {}
+
+    for index, path in enumerate(paths):
+        path.write_text(f"VALUE={index}\n")
+    assert env_load.outputd_reconciled_env(require_readable=True) == {"VALUE": "2"}
+    paths[2].write_text("VALUE=\n")
+    assert env_load.outputd_reconciled_env(require_readable=True) == {"VALUE": ""}
+
+    paths[unreadable_layer].unlink()
+    paths[unreadable_layer].mkdir()
+    expected = {"VALUE": "1" if unreadable_layer == 2 else ""}
+    assert env_load.outputd_reconciled_env() == expected
+    with pytest.raises(OSError):
+        env_load.outputd_reconciled_env(require_readable=True)

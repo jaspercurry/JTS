@@ -396,26 +396,12 @@ def _read_wake_word_status() -> dict[str, Any]:
 
 def _chip_aec_gate(
     env: dict[str, str],
-    state: dict[str, Any],
     *,
+    testing_requested: bool,
     mic_available: bool,
 ) -> dict[str, Any]:
     """Resolve chip-AEC gate status for /aec without probing devices."""
 
-    selection = normalize_audio_input_profile(
-        str(state.get("profile") or ""),
-        default=infer_audio_input_profile(
-            AecIntent(
-                mode=str(state.get("mode") or "auto"),
-                raw_enabled=bool(state.get("leg_raw")),
-                dtln_enabled=bool(state.get("leg_dtln")),
-                chip_aec_enabled=bool(state.get("leg_chip_aec")),
-                chip_aec_150_enabled=bool(state.get("leg_chip_aec_150")),
-                chip_aec_210_enabled=bool(state.get("leg_chip_aec_210")),
-            ),
-        ),
-    )
-    testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
     dac_gate = effective_chip_aec_dac_gate(env, testing_requested=testing_requested)
     # Fold the input-mic fact into the DAC-only gate so blockers +
     # recommended_action use chip_aec.policy's single canonical vocabulary
@@ -492,7 +478,9 @@ def _build_aec_full_status() -> dict:
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
     mic_probe = probe_xvf_mic()
     chip_gate = _chip_aec_gate(
-        env, state, mic_available=mic_probe.chip_aec_supported,
+        env,
+        testing_requested=state["profile"] == PROFILE_XVF_CHIP_AEC_TESTING,
+        mic_available=mic_probe.chip_aec_supported,
     )
     requested_intent = AecIntent(
         mode=state["mode"],

@@ -62,9 +62,55 @@ class UsbPortRoleState:
     configured_i2s_overlays: tuple[str, ...] = ()
 
     @classmethod
+    def _from_roles(
+        cls,
+        *,
+        board_model: str,
+        board_topology: BoardUsbTopology,
+        desired_role: UsbDataRole,
+        configured_role: UsbDataRole,
+        active_role: UsbDataRole,
+        decision_reason: str,
+        configured_i2s_overlays: tuple[str, ...],
+    ) -> "UsbPortRoleState":
+        reboot_required = (
+            desired_role != "unknown"
+            and (
+                configured_role != desired_role
+                or (active_role != "unknown" and active_role != desired_role)
+            )
+        )
+        gadget_available = desired_role == configured_role == active_role == "peripheral"
+        management_transport_available = (
+            board_topology != "unsupported" and active_role == "peripheral"
+        )
+        if board_topology == "unsupported":
+            reason = "unsupported_board"
+        elif reboot_required:
+            reason = "role_change_pending_reboot"
+        elif gadget_available:
+            reason = "available"
+        else:
+            reason = decision_reason
+
+        return cls(
+            board_model=board_model.replace("\x00", "").strip(),
+            board_topology=board_topology,
+            desired_role=desired_role,
+            configured_role=configured_role,
+            active_role=active_role,
+            gadget_available=gadget_available,
+            reboot_required=reboot_required,
+            reason=reason,
+            decision_reason=decision_reason,
+            management_transport_available=management_transport_available,
+            configured_i2s_overlays=configured_i2s_overlays,
+        )
+
+    @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "UsbPortRoleState | None":
         try:
-            raw_board_model = raw["board_model"]
+            board_model = raw["board_model"]
             board_topology = str(raw["board_topology"])
             desired_role = str(raw["desired_role"])
             configured_role = str(raw["configured_role"])
@@ -73,14 +119,7 @@ class UsbPortRoleState:
             decision_reason = str(raw["decision_reason"])
         except (KeyError, TypeError, ValueError):
             return None
-        if not isinstance(raw_board_model, str):
-            return None
-        board_model = raw_board_model.replace("\x00", "").strip()
-        if board_topology not in {
-            "shared_otg_port",
-            "separate_host_ports",
-            "unsupported",
-        }:
+        if not isinstance(board_model, str):
             return None
         if board_usb_topology(board_model) != board_topology:
             return None
@@ -130,51 +169,24 @@ class UsbPortRoleState:
             valid_decisions = {"unsupported_board"}
         if decision_reason not in valid_decisions:
             return None
-        expected_reboot = (
-            desired_role != "unknown"
-            and (
-                configured_role != desired_role
-                or (active_role != "unknown" and active_role != desired_role)
-            )
-        )
-        expected_available = (
-            desired_role == "peripheral"
-            and configured_role == "peripheral"
-            and active_role == "peripheral"
-            and not expected_reboot
-        )
-        expected_management_transport = (
-            board_topology != "unsupported" and active_role == "peripheral"
-        )
-        if board_topology == "unsupported":
-            expected_reason = "unsupported_board"
-        elif expected_reboot:
-            expected_reason = "role_change_pending_reboot"
-        elif expected_available:
-            expected_reason = "available"
-        else:
-            expected_reason = decision_reason
-        if (
-            raw.get("gadget_available") is not expected_available
-            or raw.get("reboot_required") is not expected_reboot
-            or raw.get("management_transport_available")
-            is not expected_management_transport
-            or reason != expected_reason
-        ):
-            return None
-        return cls(
+        state = cls._from_roles(
             board_model=board_model,
             board_topology=board_topology,  # type: ignore[arg-type]
             desired_role=desired_role,  # type: ignore[arg-type]
             configured_role=configured_role,  # type: ignore[arg-type]
             active_role=active_role,  # type: ignore[arg-type]
-            gadget_available=expected_available,
-            reboot_required=expected_reboot,
-            reason=reason,
             decision_reason=decision_reason,
-            management_transport_available=expected_management_transport,
             configured_i2s_overlays=overlays,
         )
+        if (
+            raw.get("gadget_available") is not state.gadget_available
+            or raw.get("reboot_required") is not state.reboot_required
+            or raw.get("management_transport_available")
+            is not state.management_transport_available
+            or reason != state.reason
+        ):
+            return None
+        return state
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -262,42 +274,13 @@ def resolve_usb_port_role(
         desired_role = "unknown"
         decision_reason = "unsupported_board"
 
-    reboot_required = (
-        desired_role != "unknown"
-        and (
-            configured_role != desired_role
-            or (active_role != "unknown" and active_role != desired_role)
-        )
-    )
-    gadget_available = (
-        desired_role == "peripheral"
-        and active_role == "peripheral"
-        and configured_role == "peripheral"
-        and not reboot_required
-    )
-    management_transport_available = (
-        topology != "unsupported" and active_role == "peripheral"
-    )
-    if topology == "unsupported":
-        reason = "unsupported_board"
-    elif reboot_required:
-        reason = "role_change_pending_reboot"
-    elif gadget_available:
-        reason = "available"
-    else:
-        reason = decision_reason
-
-    return UsbPortRoleState(
-        board_model=board_model.replace("\x00", "").strip(),
+    return UsbPortRoleState._from_roles(
+        board_model=board_model,
         board_topology=topology,
         desired_role=desired_role,
         configured_role=configured_role,
         active_role=active_role,
-        gadget_available=gadget_available,
-        reboot_required=reboot_required,
-        reason=reason,
         decision_reason=decision_reason,
-        management_transport_available=management_transport_available,
         configured_i2s_overlays=i2s_overlays,
     )
 

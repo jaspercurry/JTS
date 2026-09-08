@@ -70,7 +70,7 @@ _JTS_GENERATED_RE = re.compile(
     r"|sound_snapshot_[A-Za-z0-9]+_\d+|sound_reset_[A-Za-z0-9]+_\d+"
     r"|sound_lean_current"
     r"|correction_measurement_[A-Za-z0-9]+_\d+"
-    r"|grouping_leader|grouping_solo_restore|grouping_follower)\.yml$"
+    r"|grouping_(?:leader|solo_restore|follower|active_leader_(?:bake|crossover)))\.yml$"
 )
 
 def _normalize_width(width: int) -> int:

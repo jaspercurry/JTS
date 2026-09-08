@@ -61,16 +61,6 @@ from .grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
 _PROBE_TIMEOUT_SEC = 5
 
 
-def read_active_follower_status(path: str | None = None) -> dict[str, Any]:
-    """Fresh-read the reconciler's active-follower endpoint status (Slice 3).
-
-    Returns ``{active_follower: bool, blocked_reason: str}`` or ``{}`` when the
-    file is missing / unreadable / malformed. Total + fail-soft: never raises,
-    never reads ``os.environ`` (jasper-control is not restarted on a bond, so a
-    cached env would go stale — the fresh-read contract this module exists for)."""
-    return read_effective_role_status(path)
-
-
 def read_unit_active_states(units: list[str]) -> dict[str, str]:
     """Thin I/O: ``systemctl is-active <units…>`` → ``{unit: state}``.
 
@@ -337,28 +327,6 @@ def _derive_pair_lock(
     }
 
 
-def _runtime_with_pair_lock(
-    runtime: dict[str, Any],
-    cfg: GroupingConfig,
-    *,
-    stream_clients: Any = None,
-    self_name: str = "",
-    want_stream: str = "",
-    local_outputd_status: Any = None,
-) -> dict[str, Any]:
-    runtime = dict(runtime)
-    runtime["pair_lock"] = _derive_pair_lock(
-        cfg,
-        runtime_health=str(runtime.get("health") or ""),
-        runtime_detail=str(runtime.get("detail") or ""),
-        stream_clients=stream_clients,
-        self_name=self_name,
-        want_stream=want_stream,
-        local_outputd_status=local_outputd_status,
-    )
-    return runtime
-
-
 def derive_grouping_runtime(
     cfg: GroupingConfig,
     unit_states: dict[str, str],
@@ -421,16 +389,35 @@ def derive_grouping_runtime(
     Always reports per-unit ``{expected, actual}`` so a dashboard can
     show exactly which leg is down.
     """
+    runtime = _derive_runtime_health(
+        cfg, unit_states, leader_tap_path=leader_tap_path,
+        stream_clients=stream_clients, self_name=self_name, want_stream=want_stream,
+    )
+    runtime["pair_lock"] = _derive_pair_lock(
+        cfg,
+        runtime_health=runtime["health"],
+        runtime_detail=runtime["detail"],
+        stream_clients=stream_clients,
+        self_name=self_name,
+        want_stream=want_stream,
+        local_outputd_status=local_outputd_status,
+    )
+    return runtime
+
+
+def _derive_runtime_health(
+    cfg: GroupingConfig,
+    unit_states: dict[str, str],
+    *,
+    leader_tap_path: str,
+    stream_clients: Any,
+    self_name: str,
+    want_stream: str,
+) -> dict[str, Any]:
     if not cfg.enabled:
-        return _runtime_with_pair_lock(
-            {"health": "off", "detail": "grouping off (solo)", "units": {}},
-            cfg,
-        )
+        return {"health": "off", "detail": "grouping off (solo)", "units": {}}
     if cfg.error is not None:
-        return _runtime_with_pair_lock(
-            {"health": "invalid", "detail": cfg.error, "units": {}},
-            cfg,
-        )
+        return {"health": "invalid", "detail": cfg.error, "units": {}}
 
     from .reconcile import desired_snapfifo_path, plan
 
@@ -454,14 +441,7 @@ def derive_grouping_runtime(
             detail = "leader degraded — " + ", ".join(
                 f"{u}={unit_states.get(u, 'unknown')}" for u in down
             )
-        return _runtime_with_pair_lock(
-            {"health": "degraded", "detail": detail, "units": units},
-            cfg,
-            stream_clients=stream_clients,
-            self_name=self_name,
-            want_stream=want_stream,
-            local_outputd_status=local_outputd_status,
-        )
+        return {"health": "degraded", "detail": detail, "units": units}
 
     # Snap units are up. For a leader, the stream source must ALSO be live:
     # if the role needs a producer (``desired_snapfifo_path``) but nothing
@@ -469,117 +449,75 @@ def derive_grouping_runtime(
     # empty FIFO and followers get silence while every unit reads "active".
     # Surface that as degraded rather than a green-looking-but-dry bond.
     if cfg.role == "leader" and desired_snapfifo_path(cfg) and not leader_tap_path:
-        return _runtime_with_pair_lock(
-            {
-                "health": "degraded",
-                "detail": (
-                    "leader's active CamillaDSP config does not write the "
-                    "snapserver pipe — the stream is silent; the reconciler's "
-                    "bond apply did not land (check "
-                    "jasper-grouping-reconcile's journal)"
-                ),
-                "units": units,
-            },
-            cfg,
-            stream_clients=stream_clients,
-            self_name=self_name,
-            want_stream=want_stream,
-            local_outputd_status=local_outputd_status,
-        )
+        return {
+            "health": "degraded",
+            "detail": (
+                "leader's active CamillaDSP config does not write the "
+                "snapserver pipe — the stream is silent; the reconciler's "
+                "bond apply did not land (check "
+                "jasper-grouping-reconcile's journal)"
+            ),
+            "units": units,
+        }
 
     # Stream-binding + client-audibility truth (leader only; see the
     # stream_clients docstring). Unit states + the pipe config cannot
     # see these — the 2026-06-11 silent-bond class.
     if cfg.role == "leader" and stream_clients is not None:
         if stream_clients == "unreachable":
-            return _runtime_with_pair_lock(
-                {
-                    "health": "degraded",
-                    "detail": (
-                        "snapserver RPC unreachable — client stream bindings "
-                        "cannot be verified (run jasper-grouping-reconcile, "
-                        "check jasper-snapserver)"
-                    ),
-                    "units": units,
-                },
-                cfg,
-                stream_clients=stream_clients,
-                self_name=self_name,
-                want_stream=want_stream,
-                local_outputd_status=local_outputd_status,
-            )
+            return {
+                "health": "degraded",
+                "detail": (
+                    "snapserver RPC unreachable — client stream bindings "
+                    "cannot be verified (run jasper-grouping-reconcile, "
+                    "check jasper-snapserver)"
+                ),
+                "units": units,
+            }
         for row in stream_clients:
             if row.get("connected") and want_stream and row.get("stream_id") != want_stream:
-                return _runtime_with_pair_lock(
-                    {
-                        "health": "degraded",
-                        "detail": (
-                            f"client {row.get('name') or '?'} is bound to stream "
-                            f"{row.get('stream_id') or '(none)'} (want {want_stream}) "
-                            "— it hears silence; run jasper-grouping-reconcile"
-                        ),
-                        "units": units,
-                    },
-                    cfg,
-                    stream_clients=stream_clients,
-                    self_name=self_name,
-                    want_stream=want_stream,
-                    local_outputd_status=local_outputd_status,
-                )
+                return {
+                    "health": "degraded",
+                    "detail": (
+                        f"client {row.get('name') or '?'} is bound to stream "
+                        f"{row.get('stream_id') or '(none)'} (want {want_stream}) "
+                        "— it hears silence; run jasper-grouping-reconcile"
+                    ),
+                    "units": units,
+                }
             if row.get("connected") and (
                 row.get("muted")
                 or row.get("group_muted")
                 or row.get("volume_percent", 100) == 0
             ):
-                return _runtime_with_pair_lock(
-                    {
-                        "health": "degraded",
-                        "detail": (
-                            f"client {row.get('name') or '?'} is muted or at "
-                            "volume 0 in snapcast — its software mixer plays "
-                            "zeros; unmute via the snapcast registry"
-                        ),
-                        "units": units,
-                    },
-                    cfg,
-                    stream_clients=stream_clients,
-                    self_name=self_name,
-                    want_stream=want_stream,
-                    local_outputd_status=local_outputd_status,
-                )
+                return {
+                    "health": "degraded",
+                    "detail": (
+                        f"client {row.get('name') or '?'} is muted or at "
+                        "volume 0 in snapcast — its software mixer plays "
+                        "zeros; unmute via the snapcast registry"
+                    ),
+                    "units": units,
+                }
         if self_name and not any(
             row.get("name") == self_name and row.get("connected")
             for row in stream_clients
         ):
-            return _runtime_with_pair_lock(
-                {
-                    "health": "degraded",
-                    "detail": (
-                        f"leader's own snapclient ({self_name}) is not connected "
-                        "to snapserver — the leader cannot hear its own bond"
-                    ),
-                    "units": units,
-                },
-                cfg,
-                stream_clients=stream_clients,
-                self_name=self_name,
-                want_stream=want_stream,
-                local_outputd_status=local_outputd_status,
-            )
+            return {
+                "health": "degraded",
+                "detail": (
+                    f"leader's own snapclient ({self_name}) is not connected "
+                    "to snapserver — the leader cannot hear its own bond"
+                ),
+                "units": units,
+            }
 
     detail = (
         f"leader streaming (bond {cfg.bond_id})"
         if cfg.role == "leader"
         else f"follower connected to {cfg.leader_addr} (bond {cfg.bond_id})"
     )
-    return _runtime_with_pair_lock(
-        {"health": "ok", "detail": detail, "units": units},
-        cfg,
-        stream_clients=stream_clients,
-        self_name=self_name,
-        want_stream=want_stream,
-        local_outputd_status=local_outputd_status,
-    )
+    return {"health": "ok", "detail": detail, "units": units}
 
 
 def _read_grouping_ring_state() -> RingFlowState:
@@ -773,7 +711,7 @@ def read_grouping_state(
         # item). Gated on cfg.enabled so a solo speaker's snapshot stays
         # byte-for-byte unchanged (no status-file read, no extra key). Read fresh,
         # never os.environ.
-        endpoint = (endpoint_status_reader or read_active_follower_status)()
+        endpoint = (endpoint_status_reader or read_effective_role_status)()
         endpoint_follower = endpoint.get("active_follower")
         endpoint_leader = endpoint.get("active_leader")
         if endpoint_follower or endpoint_leader or endpoint.get("blocked_reason"):

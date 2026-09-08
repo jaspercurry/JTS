@@ -490,55 +490,12 @@ class MeasurementSession:
         )
         # Best-effort: a bundle write failure must not break a transition.
         try:
-            self._write_info_json()
+            self.artifacts.write_info_json()
         except Exception:  # noqa: BLE001
             logger.exception(
                 "bundle info.json write failed (state=%s)", state.value,
             )
 
-
-    def _bundle_relative_path(self, path: Path) -> str | None:
-        return self.artifacts.bundle_relative_path(path)
-
-    def _write_capture_replay_artifacts(
-        self,
-        captured_wav_path: Path,
-        *,
-        capture_kind: str,
-        position_index: int | None,
-        ir: np.ndarray,
-        raw_freqs_hz: np.ndarray,
-        raw_magnitude_db: np.ndarray,
-        smoothed_magnitude_db: np.ndarray,
-        log_freqs_hz: np.ndarray,
-        log_magnitude_db: np.ndarray,
-        direct_arrival: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        return self.artifacts.write_capture_replay_artifacts(
-            captured_wav_path,
-            capture_kind=capture_kind,
-            position_index=position_index,
-            ir=ir,
-            raw_freqs_hz=raw_freqs_hz,
-            raw_magnitude_db=raw_magnitude_db,
-            smoothed_magnitude_db=smoothed_magnitude_db,
-            log_freqs_hz=log_freqs_hz,
-            log_magnitude_db=log_magnitude_db,
-            direct_arrival=direct_arrival,
-        )
-
-    def _record_raw_capture_artifact(
-        self,
-        captured_wav_path: Path,
-        *,
-        capture_kind: str,
-        position_index: int | None = None,
-    ) -> None:
-        self.artifacts.record_raw_capture_artifact(
-            captured_wav_path,
-            capture_kind=capture_kind,
-            position_index=position_index,
-        )
 
     def _refresh_acoustic_quality(self) -> None:
         self.acoustic_quality = acoustic_quality.build_acoustic_quality_report(
@@ -548,18 +505,6 @@ class MeasurementSession:
             repeat_quality=self.repeat_quality,
             repeatability=self.repeatability_report,
             verify_quality=self.verify_quality,
-        )
-
-    def _write_acoustic_quality_json(self) -> None:
-        self.artifacts.write_acoustic_quality_json()
-
-    def _write_runtime_integrity_json(
-        self,
-        *,
-        extra_dependencies: tuple[str, ...] = (),
-    ) -> None:
-        self.artifacts.write_runtime_integrity_json(
-            extra_dependencies=extra_dependencies,
         )
 
     def _log_runtime_integrity_issues(
@@ -608,7 +553,7 @@ class MeasurementSession:
         )
         self._log_runtime_integrity_issues(issues)
         try:
-            self._write_runtime_integrity_json()
+            self.artifacts.write_runtime_integrity_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle runtime_integrity.json write failed")
 
@@ -621,7 +566,7 @@ class MeasurementSession:
     ) -> None:
         if self.sweep_meta is None:
             return
-        rel_path = self._bundle_relative_path(captured_wav_path)
+        rel_path = self.artifacts.bundle_relative_path(captured_wav_path)
         issues = self.runtime_integrity.record_capture(
             captured_wav_path,
             capture_kind=capture_kind,
@@ -633,7 +578,7 @@ class MeasurementSession:
         )
         self._log_runtime_integrity_issues(issues)
         try:
-            self._write_runtime_integrity_json(
+            self.artifacts.write_runtime_integrity_json(
                 extra_dependencies=(rel_path,) if rel_path else (),
             )
         except Exception:  # noqa: BLE001
@@ -662,22 +607,6 @@ class MeasurementSession:
     def verify_capture_path(self) -> Path:
         """Where the post-Apply re-measurement WAV should land."""
         return self.artifacts.verify_capture_path()
-
-    def _write_info_json(self) -> None:
-        """Atomically rewrite info.json with the current session snapshot."""
-        self.artifacts.write_info_json()
-
-    def _write_result_json(self) -> None:
-        """Snapshot the chart curves + verify after design / verify."""
-        self.artifacts.write_result_json()
-
-    def _write_position_analysis_json(self) -> None:
-        """Persist replayable per-position curves and variance bands."""
-        self.artifacts.write_position_analysis_json()
-
-    def _copy_applied_yaml(self) -> None:
-        """Copy the just-emitted correction YAML into the bundle."""
-        self.artifacts.copy_applied_yaml()
 
     async def state_changed_from(
         self,
@@ -787,7 +716,7 @@ class MeasurementSession:
             self._emit("error", {"message": message})
             logger.error("session %s failed: %s", self.session_id, message)
             try:
-                self._write_info_json()
+                self.artifacts.write_info_json()
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "bundle info.json write failed (state=%s)", self.state.value,
@@ -939,7 +868,7 @@ class MeasurementSession:
             normalize_band_hz=ANALYSIS_NORMALIZE_BAND_HZ,
             on_quality_issue=_log_quality_issue,
         )
-        replay_artifact_info = self._write_capture_replay_artifacts(
+        replay_artifact_info = self.artifacts.write_capture_replay_artifacts(
             captured_wav_path,
             capture_kind=capture_kind,
             position_index=position_index,
@@ -1251,7 +1180,7 @@ class MeasurementSession:
                 },
             )
             try:
-                self._write_info_json()
+                self.artifacts.write_info_json()
             except Exception:  # noqa: BLE001
                 logger.exception("bundle info.json write failed (local capture setup)")
         return report
@@ -1265,7 +1194,7 @@ class MeasurementSession:
                 )
             position_index = self.current_position
 
-        self._record_raw_capture_artifact(
+        self.artifacts.record_raw_capture_artifact(
             noise_wav_path,
             capture_kind="noise",
             position_index=position_index,
@@ -1282,8 +1211,8 @@ class MeasurementSession:
         self.noise_floor_db = report.get("rms_dbfs")
         self._refresh_acoustic_quality()
         try:
-            self._write_acoustic_quality_json()
-            self._write_info_json()
+            self.artifacts.write_acoustic_quality_json()
+            self.artifacts.write_info_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle noise capture artifact write failed")
 
@@ -1462,7 +1391,7 @@ class MeasurementSession:
             self.last_capture_path = captured_wav_path
             position_index = self.current_position
 
-        self._record_raw_capture_artifact(
+        self.artifacts.record_raw_capture_artifact(
             captured_wav_path,
             capture_kind="measurement",
             position_index=position_index,
@@ -1502,7 +1431,7 @@ class MeasurementSession:
                 ))
                 self._refresh_acoustic_quality()
                 try:
-                    self._write_acoustic_quality_json()
+                    self.artifacts.write_acoustic_quality_json()
                 except Exception:  # noqa: BLE001
                     logger.exception("bundle acoustic_quality.json write failed")
             async with self._lock:
@@ -1529,7 +1458,7 @@ class MeasurementSession:
         ))
         self._refresh_acoustic_quality()
         try:
-            self._write_acoustic_quality_json()
+            self.artifacts.write_acoustic_quality_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle acoustic_quality.json write failed")
         self.current_position += 1
@@ -1565,7 +1494,7 @@ class MeasurementSession:
             )
             self.last_capture_path = captured_wav_path
 
-        self._record_raw_capture_artifact(
+        self.artifacts.record_raw_capture_artifact(
             captured_wav_path,
             capture_kind="repeat",
             position_index=0,
@@ -1601,7 +1530,7 @@ class MeasurementSession:
                 )
                 self._refresh_acoustic_quality()
                 try:
-                    self._write_acoustic_quality_json()
+                    self.artifacts.write_acoustic_quality_json()
                 except Exception:  # noqa: BLE001
                     logger.exception("bundle acoustic_quality.json write failed")
             async with self._lock:
@@ -1641,7 +1570,7 @@ class MeasurementSession:
             }
         self._refresh_acoustic_quality()
         try:
-            self._write_acoustic_quality_json()
+            self.artifacts.write_acoustic_quality_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle acoustic_quality.json write failed")
 
@@ -1666,7 +1595,7 @@ class MeasurementSession:
             raise
 
         try:
-            self._write_result_json()
+            self.artifacts.write_result_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle result.json write failed")
 
@@ -1722,7 +1651,7 @@ class MeasurementSession:
         self.confidence_report = self._build_confidence_report()
         self.design_report["confidence_report"] = self.confidence_report
         try:
-            self._write_position_analysis_json()
+            self.artifacts.write_position_analysis_json()
         except Exception:  # noqa: BLE001
             self.position_analysis = None
             logger.exception("bundle position_analysis.json write failed")
@@ -1844,7 +1773,7 @@ class MeasurementSession:
             raise
 
         try:
-            self._copy_applied_yaml()
+            self.artifacts.copy_applied_yaml()
         except Exception:  # noqa: BLE001
             logger.exception("bundle applied.yml copy failed")
 
@@ -1931,7 +1860,7 @@ class MeasurementSession:
             await self._set_state(SessionState.ANALYZING)
             self.last_capture_path = captured_wav_path
 
-        self._record_raw_capture_artifact(
+        self.artifacts.record_raw_capture_artifact(
             captured_wav_path,
             capture_kind="verify",
         )
@@ -1963,7 +1892,7 @@ class MeasurementSession:
                 )
                 self._refresh_acoustic_quality()
                 try:
-                    self._write_acoustic_quality_json()
+                    self.artifacts.write_acoustic_quality_json()
                 except Exception:  # noqa: BLE001
                     logger.exception("bundle acoustic_quality.json write failed")
             async with self._lock:
@@ -2006,7 +1935,7 @@ class MeasurementSession:
         )
         self._refresh_acoustic_quality()
         try:
-            self._write_acoustic_quality_json()
+            self.artifacts.write_acoustic_quality_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle acoustic_quality.json write failed")
 
@@ -2039,7 +1968,7 @@ class MeasurementSession:
             )
 
         try:
-            self._write_result_json()
+            self.artifacts.write_result_json()
         except Exception:  # noqa: BLE001
             logger.exception("bundle result.json (verify) write failed")
 
@@ -2122,7 +2051,7 @@ class MeasurementSession:
             level=logging.WARNING if result != "ok" else logging.INFO,
         )
         try:
-            self._write_result_json()
+            self.artifacts.write_result_json()
         except RECOVERABLE_ERRORS:
             logger.exception("bundle result.json (auto-revert) write failed")
 

@@ -76,18 +76,11 @@ def local_sources_allowed() -> tuple[bool, str | None]:
     return reason is None, reason
 
 
-def local_source_allowed(source: Source) -> tuple[bool, str | None]:
-    """Return whether one declared source may start right now.
+def _source_allowed(source: Source) -> tuple[bool, str | None]:
+    """Check source intent and hardware after the shared role permits starts.
 
-    Role-read failures retain the existing availability-biased behavior for a
-    solo speaker.  Intent is different: it is the household's canonical Off
-    switch, so unreadable or malformed intent must fail closed at the start
-    boundary instead of falling back to a shipped default.
+    Unreadable intent must fail closed: it is the household's Off switch.
     """
-
-    allowed, reason = local_sources_allowed()
-    if not allowed:
-        return False, reason
     try:
         enabled = source_intent_enabled(source)
     except RuntimeError as exc:
@@ -125,11 +118,14 @@ def publish_allowed_markers() -> dict[str, tuple[bool, str | None]]:
     """
 
     Path(MARKER_DIR).mkdir(mode=0o755, parents=True, exist_ok=True)
+    role = local_sources_allowed()
     verdicts: dict[str, tuple[bool, str | None]] = {
-        SHARED_LABEL: local_sources_allowed(),
+        SHARED_LABEL: role,
     }
     for lifecycle in local_source_lifecycles():
-        verdicts[lifecycle.source.value] = local_source_allowed(lifecycle.source)
+        verdicts[lifecycle.source.value] = (
+            _source_allowed(lifecycle.source) if role[0] else role
+        )
     for label, (allowed, reason) in verdicts.items():
         _set_marker(label, allowed)
         log_event(

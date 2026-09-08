@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The one CLI runner behind every socket-activated wizard's ``main()``.
-
-Four wizards — bluetooth, chat, correction, system — are each a systemd
-service whose ExecStart runs this same sequence. Everything they differ on
-arrives through the parameters below (#4328).
-"""
+"""CLI lifecycle for socket-activated wizards."""
 from __future__ import annotations
 
 import argparse
@@ -38,17 +33,12 @@ def run_wizard_cli(
     idle_threshold_sec: float = systemd.DEFAULT_IDLE_SHUTDOWN_SEC,
     on_idle_exit: Callable[[], None] | None = None,
 ) -> int:
-    """Run one wizard's whole service lifecycle; return its process exit code.
+    """Run one wizard and release its listener and timer on exit.
 
-    ``start`` runs before the listener is adopted, so a raise there leaves
-    ``main`` without ever serving — correction's claim boundary needs that.
-
-    ``detail`` is a caller-written string: the caller chooses which fields are
-    journal-safe.
-
-    ``configure`` is overridable only for ``correction_setup``, a listed entry
-    in ``tests/test_logging_setup.py``'s ``_ALLOWLIST`` whose stated removal
-    condition (that set emptying) is not met yet.
+    ``start`` precedes socket adoption so correction's claim boundary can
+    refuse to serve. Callers must keep ``detail`` safe for the journal.
+    ``configure`` remains overridable for the correction_setup exception in
+    tests/test_logging_setup.py's _ALLOWLIST until that set is empty.
     """
 
     parser = argparse.ArgumentParser(prog=prog, description=description)
@@ -67,26 +57,26 @@ def run_wizard_cli(
     )
     kwargs = start(args, tracker) if start is not None else {}
 
-    # When socket-activated by systemd, adopt the inherited listener instead
-    # of binding fresh. Direct CLI invocation falls through.
     sockets = systemd.adopt_systemd_sockets()
     target = sockets[0] if sockets else (args.host, args.port)
     server = make_server(target, **kwargs)
-    systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
-    tracker.start()
-
-    note = f" ({detail(args)})" if detail is not None else ""
-    if sockets:
-        logger.info("%s adopting systemd fd%s", prog, note)
-    else:
-        logger.info(
-            "%s listening on http://%s:%d%s", prog, args.host, args.port, note,
-        )
-
-    systemd.notify_ready()
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    systemd.notify_stopping()
+        systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
+        tracker.start()
+        note = f" ({detail(args)})" if detail is not None else ""
+        if sockets:
+            logger.info("%s adopting systemd fd%s", prog, note)
+        else:
+            logger.info(
+                "%s listening on http://%s:%d%s", prog, args.host, args.port, note,
+            )
+        systemd.notify_ready()
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+    finally:
+        tracker.stop()
+        systemd.notify_stopping()
+        server.server_close()
     return 0

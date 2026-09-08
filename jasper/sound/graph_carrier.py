@@ -31,7 +31,6 @@ from typing import cast
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
-from jasper.fanin_coupling import capture_half
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
     FlatChannelPlan,
@@ -330,24 +329,15 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
     ) -> ReemitResult:
-        # CAPTURE HALF ONLY — same rule as apply_capture_precedence, which this
-        # carrier does not route through; see it for why the half is not
-        # optional. Ring B never crosses: the sink is the snapfifo.
-        member_kwargs = self._resolve_member_kwargs(member_kwargs)
-        self._validate_member_kwargs(member_kwargs)
-        member_kwargs = {
-            **member_kwargs,
-            **capture_half(fanin_coupling_capture_kwargs or {}),
-        }
-        room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
-        yaml = emit_sound_config(
+        result = super().reemit(
             profile,
             room_peqs=room_peqs,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            **member_kwargs,
+            member_kwargs=member_kwargs,
+            fanin_coupling_capture_kwargs=fanin_coupling_capture_kwargs,
         )
-        yaml = _restamp_program_bake_source(yaml)
+        yaml = _restamp_program_bake_source(result.yaml)
         if out_path is not None:
             out_path = Path(out_path)
             if not out_path.parent.exists():
@@ -355,7 +345,7 @@ class _ProgramBakeCarrier(_SoundOrCorrectionCarrier):
                     f"parent directory does not exist: {out_path.parent}"
                 )
             atomic_write_text(out_path, yaml, mode=CONFIG_FILE_MODE)
-        return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
+        return ReemitResult(yaml=yaml, room_peq_count=result.room_peq_count)
 
 
 class _ActiveGraphCarrier:

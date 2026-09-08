@@ -54,9 +54,7 @@ _RPC_TIMEOUT_SEC = 1.0
 def rpc_call(
     method: str, params: dict | None = None, *, url: str = SNAPSERVER_RPC_URL,
 ) -> dict | None:
-    """One JSON-RPC call. Returns the ``result`` dict, or None on any
-    failure (connection refused while snapserver boots, timeout, bad
-    payload) — callers treat None as "snapserver unreachable"."""
+    """Return a JSON-RPC result object, or None on failure or a bad payload."""
     body = {"id": 1, "jsonrpc": "2.0", "method": method}
     if params is not None:
         body["params"] = params
@@ -68,7 +66,8 @@ def rpc_call(
     try:
         with urllib.request.urlopen(req, timeout=_RPC_TIMEOUT_SEC) as resp:
             payload = json.loads(resp.read().decode())
-        return payload.get("result")
+        result = payload.get("result")
+        return result if isinstance(result, dict) else None
     except Exception as e:  # noqa: BLE001 — fail-soft by contract
         logger.debug("snapcast rpc %s failed: %s", method, e)
         return None

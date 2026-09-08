@@ -1423,16 +1423,19 @@ def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
     assert _stage_candidate_debris(tmp_path) == []
 
 
-def test_outputd_env_stage_publishes_when_the_hold_is_refused(
+def test_outputd_env_stage_refused_hold_publishes_without_touching_foreign_candidate(
     tmp_path: Path,
 ) -> None:
-    """A hold nobody will hand over must not fail the pass."""
+    """A refused hold permits publication but cannot sweep another holder's stage."""
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_PCM=stale\n", encoding="utf-8")
+    foreign_candidate = tmp_path / ".outputd.env.candidate.live"
+    foreign_content = "JASPER_OUTPUTD_BACKEND=inflight\n"
+    foreign_candidate.write_text(foreign_content, encoding="utf-8")
 
     # Held for the whole reconciler run — spawn_lock_holder's __exit__ kills
     # the holder instead of waiting hold_seconds out — so it always outlasts
-    # the lib's own bounded `flock -w 10`, no matter how loaded the box is.
+    # both stages' `flock -w 10`, no matter how loaded the box is.
     with spawn_lock_holder(outputd_env, hold_seconds=300):
         result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
@@ -1443,27 +1446,8 @@ def test_outputd_env_stage_publishes_when_the_hold_is_refused(
     assert unheld, result.stderr
     assert {fields["reason"] for fields in unheld} == {"stage_lock_unheld"}
     assert _outputd_env_key_present(_outputd_env(tmp_path), "JASPER_OUTPUTD_BACKEND")
-
-
-def test_outputd_env_stage_refused_hold_leaves_a_foreign_candidate_in_place(
-    tmp_path: Path,
-) -> None:
-    """A refused hold must not sweep a live holder's in-flight candidate."""
-    outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_PCM=stale\n", encoding="utf-8")
-    foreign_candidate = tmp_path / ".outputd.env.candidate.live"
-    foreign_candidate.write_text("JASPER_OUTPUTD_BACKEND=inflight\n", encoding="utf-8")
-
-    # This script stages twice per pass (pre- and post-graph-convergence),
-    # each retrying the hold with its own `flock -w 10`. Held for the whole
-    # reconciler run — spawn_lock_holder's __exit__ kills the holder instead
-    # of waiting hold_seconds out — so BOTH attempts always time out, no
-    # matter how loaded the box is.
-    with spawn_lock_holder(outputd_env, hold_seconds=300):
-        result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
-
-    assert result.returncode == 0, result.stderr
     assert _stage_candidate_debris(tmp_path) == [foreign_candidate.name]
+    assert foreign_candidate.read_text(encoding="utf-8") == foreign_content
 
 
 def test_outputd_env_stage_sweeps_debris_from_an_earlier_pass(

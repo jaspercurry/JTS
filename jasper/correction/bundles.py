@@ -352,6 +352,18 @@ def summarize_bundle_collection(
     }
 
 
+def _quality_issues(report: dict[str, Any], kind: str) -> list[BundleIssue]:
+    return [
+        BundleIssue(
+            str(issue.get("code") or kind),
+            issue["severity"],
+            str(issue.get("message") or f"{kind.replace('_', ' ')} issue"),
+        )
+        for issue in report.get("issues") or []
+        if isinstance(issue, dict) and issue.get("severity") in {"warn", "fail"}
+    ]
+
+
 def validate_bundle(
     bundle_dir: Path,
     *,
@@ -453,96 +465,37 @@ def validate_bundle(
                 )
             )
 
-    runtime_path = bundle_dir / "runtime_integrity.json"
-    runtime_summary = info.get("runtime_integrity")
-    if runtime_summary and not runtime_path.exists():
-        issues.append(
-            BundleIssue(
-                "runtime_integrity_json_missing",
-                "warn",
-                "runtime_integrity summary present but runtime_integrity.json missing",
-            )
-        )
-    if runtime_path.exists():
-        try:
-            runtime = _read_json(runtime_path)
-            if not _is_exact_version(runtime.get("artifact_schema_version"), 1):
-                issues.append(
-                    BundleIssue(
-                        "runtime_integrity_schema_version",
-                        "warn",
-                        "runtime_integrity.json schema does not match current version",
-                    )
+    for kind in ("runtime_integrity", "acoustic_quality"):
+        path = bundle_dir / f"{kind}.json"
+        if info.get(kind) and not path.exists():
+            issues.append(
+                BundleIssue(
+                    f"{kind}_json_missing",
+                    "warn",
+                    f"{kind} summary present but {kind}.json missing",
                 )
-            for issue in runtime.get("issues") or []:
-                if not isinstance(issue, dict):
-                    continue
-                severity = issue.get("severity")
-                if severity in {"warn", "fail"}:
+            )
+        if path.exists():
+            try:
+                report = _read_json(path)
+                if not _is_exact_version(report.get("artifact_schema_version"), 1):
                     issues.append(
                         BundleIssue(
-                            str(issue.get("code") or "runtime_integrity"),
-                            severity,
-                            str(issue.get("message") or "runtime integrity issue"),
+                            f"{kind}_schema_version",
+                            "warn",
+                            f"{kind}.json schema does not match current version",
                         )
                     )
-        except BundleError as e:
-            issues.append(BundleIssue("runtime_integrity_json", "fail", str(e)))
-
-    acoustic_path = bundle_dir / "acoustic_quality.json"
-    acoustic_summary = info.get("acoustic_quality")
-    if acoustic_summary and not acoustic_path.exists():
-        issues.append(
-            BundleIssue(
-                "acoustic_quality_json_missing",
-                "warn",
-                "acoustic_quality summary present but acoustic_quality.json missing",
-            )
-        )
-    if acoustic_path.exists():
-        try:
-            acoustic = _read_json(acoustic_path)
-            if not _is_exact_version(acoustic.get("artifact_schema_version"), 1):
-                issues.append(
-                    BundleIssue(
-                        "acoustic_quality_schema_version",
-                        "warn",
-                        "acoustic_quality.json schema does not match current version",
-                    )
-                )
-            for issue in acoustic.get("issues") or []:
-                if not isinstance(issue, dict):
-                    continue
-                severity = issue.get("severity")
-                if severity in {"warn", "fail"}:
-                    issues.append(
-                        BundleIssue(
-                            str(issue.get("code") or "acoustic_quality"),
-                            severity,
-                            str(issue.get("message") or "acoustic quality issue"),
-                        )
-                    )
-        except BundleError as e:
-            issues.append(BundleIssue("acoustic_quality_json", "fail", str(e)))
+                issues.extend(_quality_issues(report, kind))
+            except BundleError as e:
+                issues.append(BundleIssue(f"{kind}_json", "fail", str(e)))
 
     reports = list(info.get("capture_quality") or [])
     if info.get("verify_quality"):
         reports.append(info["verify_quality"])
     for report in reports:
-        if not isinstance(report, dict):
-            continue
-        for issue in report.get("issues") or []:
-            if not isinstance(issue, dict):
-                continue
-            severity = issue.get("severity")
-            if severity in {"warn", "fail"}:
-                issues.append(
-                    BundleIssue(
-                        str(issue.get("code") or "capture_quality"),
-                        severity,
-                        str(issue.get("message") or "capture quality issue"),
-                    )
-                )
+        if isinstance(report, dict):
+            issues.extend(_quality_issues(report, "capture_quality"))
     return issues
 
 

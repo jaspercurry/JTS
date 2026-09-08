@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..atomic_io import atomic_write_text
+from ..atomic_io import CONFIG_FILE_MODE, atomic_write_json
 from ..volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_FLOOR_MAX_DB,
@@ -128,7 +128,7 @@ def load_sound_settings(path: str | Path | None = None) -> SoundSettings:
         return SoundSettings.from_mapping(json.loads(settings_path.read_text()))
     except FileNotFoundError:
         return SoundSettings()
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         logger.warning("could not read sound settings %s: %s", settings_path, e)
         return SoundSettings()
 
@@ -137,10 +137,9 @@ def save_sound_settings(
     settings: SoundSettings, path: str | Path | None = None
 ) -> None:
     settings_path = resolve_settings_path(path)
-    data = json.dumps(settings.to_dict(), indent=2, sort_keys=True) + "\n"
     # 0640 group jasper so the non-root jasper-control can read these
     # (non-secret) sound settings for /state.
-    atomic_write_text(settings_path, data, mode=0o640)
+    atomic_write_json(settings_path, settings.to_dict(), mode=CONFIG_FILE_MODE)
 
 
 def output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:

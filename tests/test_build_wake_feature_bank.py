@@ -11,8 +11,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from wake_training import feature_bank as shared_features
+from scripts import _build_wake_negative_feature_bank as negative_builder
 from tests.wake_feature_bank_fixtures import (
     FakeExtractor,
     write_bundle as _write_bundle,
@@ -207,7 +209,10 @@ def test_rejects_wav_hash_mismatch(tmp_path: Path) -> None:
     assert rejection["actual_sha256"] == shared_features.sha256(wav)
 
 
-def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> None:
+@pytest.mark.parametrize("marker_output", [None, "copied", "custom"])
+def test_force_remove_guard_only_allows_tool_owned_outputs(
+    tmp_path: Path, marker_output: str | None,
+) -> None:
     bundle = tmp_path / "bundle"
     assert builder._safe_to_remove_output(bundle / "feature-bank", bundle_dir=bundle)
     assert not builder._safe_to_remove_output(bundle, bundle_dir=bundle)
@@ -219,9 +224,31 @@ def test_force_remove_guard_only_allows_tool_owned_outputs(tmp_path: Path) -> No
     custom.mkdir()
     (custom / "feature_bank.json").write_text(json.dumps({
         "schema_version": builder.SCHEMA_VERSION,
+        "output_dir": str(tmp_path / marker_output) if marker_output else None,
         "artifacts": {
             "summary": "feature_bank.json",
             "feature_manifest": "feature_manifest.jsonl",
         },
     }))
-    assert builder._safe_to_remove_output(custom, bundle_dir=bundle)
+    assert builder._safe_to_remove_output(custom, bundle_dir=bundle) is (
+        marker_output == "custom"
+    )
+
+
+@pytest.mark.parametrize("tool", [builder, negative_builder])
+def test_cli_checks_expanded_output_before_building(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    output = tmp_path / "features"
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_text("keep")
+
+    def unexpected_build(*args, **kwargs):
+        raise AssertionError("existing output must be checked before feature extraction")
+
+    function = "build_feature_bank" if tool is builder else "build_negative_feature_bank"
+    monkeypatch.setattr(tool, function, unexpected_build)
+    assert tool.main([str(tmp_path / "bundle"), "~/features"]) == 2
+    assert sentinel.read_text() == "keep"

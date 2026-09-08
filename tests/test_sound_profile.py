@@ -321,13 +321,14 @@ def test_missing_profile_has_no_applied_timestamp(tmp_path):
     assert profile.updated_at == ""
 
 
-def test_corrupt_profile_has_no_applied_timestamp(tmp_path):
+@pytest.mark.parametrize("content", [b"{not json", b"\xff"])
+@pytest.mark.parametrize("load, expected", [
+    (load_profile, SoundProfile(updated_at="")), (load_profile_library, ()),
+])
+def test_corrupt_profile_data_falls_back(tmp_path, content, load, expected):
     path = tmp_path / "sound_profile.json"
-    path.write_text("{not json")
-
-    profile = load_profile(path)
-
-    assert profile.updated_at == ""
+    path.write_bytes(content)
+    assert load(path) == expected
 
 
 # ---------------------------------------------------------------------------

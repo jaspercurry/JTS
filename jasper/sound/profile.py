@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
+from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_json
 from jasper.camilla_config_contract import (
     GAINLESS_BIQUAD_TYPES,
     SHELF_Q,
@@ -568,7 +568,7 @@ def load_profile_library(path: str | Path | None = None) -> tuple[ProfileLibrary
         raw = json.loads(library_path.read_text())
     except FileNotFoundError:
         return ()
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         logger.warning("could not read sound profile library %s: %s", library_path, e)
         return ()
     raw_profiles = raw.get("profiles") if isinstance(raw, dict) else raw
@@ -594,22 +594,14 @@ def save_profile_library(
     library_path = Path(
         path or os.environ.get("JASPER_SOUND_PROFILE_LIBRARY_PATH", PROFILE_LIBRARY_PATH)
     )
-    library_path.parent.mkdir(parents=True, exist_ok=True)
     custom_entries = [entry for entry in entries if not entry.builtin][
         :MAX_CUSTOM_PROFILES
     ]
-    data = (
-        json.dumps(
-            {
-                "version": 1,
-                "profiles": [entry.to_dict() for entry in custom_entries],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
+    atomic_write_json(
+        library_path,
+        {"version": 1, "profiles": [entry.to_dict() for entry in custom_entries]},
+        mode=CONFIG_FILE_MODE,
     )
-    atomic_write_text(library_path, data, mode=CONFIG_FILE_MODE)
 
 
 def _new_custom_profile_id(existing: Iterable[ProfileLibraryEntry]) -> str:
@@ -1140,7 +1132,7 @@ def load_profile(path: str | Path | None = None) -> SoundProfile:
         return SoundProfile.from_mapping(json.loads(profile_path.read_text()))
     except FileNotFoundError:
         return SoundProfile(updated_at="")
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         logger.warning("could not read sound profile %s: %s", profile_path, e)
         return SoundProfile(updated_at="")
 
@@ -1149,6 +1141,4 @@ def save_profile(profile: SoundProfile, path: str | Path | None = None) -> None:
     profile_path = Path(
         path or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH)
     )
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n"
-    atomic_write_text(profile_path, data, mode=CONFIG_FILE_MODE)
+    atomic_write_json(profile_path, profile.to_dict(), mode=CONFIG_FILE_MODE)

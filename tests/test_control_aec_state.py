@@ -1173,11 +1173,12 @@ def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
     assert toggles["chip_aec_150"]["status"] == "starting"
 
 
+@pytest.mark.parametrize("profile", ["xvf_chip_aec_testing", "chip_aec_trial"])
 def test_aec_full_status_testing_profile_cannot_bypass_managed_xvf_policy(
-    aec_mode_file, wake_model_file, monkeypatch,
+    aec_mode_file, wake_model_file, monkeypatch, profile,
 ):
     aec_mode_file.write_text(
-        "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec_testing\n"
+        f"JASPER_AUDIO_INPUT_PROFILE={profile}\n"
         "JASPER_AEC_MODE=auto\n"
         "JASPER_WAKE_LEG_RAW=0\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
@@ -1523,17 +1524,6 @@ _APPROVED_DAC_ID = "hifiberry_dac8x"
 _UNAPPROVED_DAC_ID = "mystery_usb_audio_not_in_registry"
 
 
-def _gate_state() -> dict:
-    """Minimal aec_mode.env-shaped state selecting the chip-AEC profile."""
-    return {
-        "mode": "auto",
-        "leg_raw": False,
-        "leg_dtln": False,
-        "leg_chip_aec": True,
-        "profile": "xvf_chip_aec",
-    }
-
-
 @pytest.mark.parametrize(
     ("mic_available", "dac_id", "expected"),
     [
@@ -1555,7 +1545,7 @@ def test_chip_aec_gate_blockers_use_canonical_vocabulary(
     gating itself is pinned alongside the vocabulary."""
     payload = aec_endpoints._chip_aec_gate(
         {"JASPER_AUDIO_DAC_ID": dac_id},
-        _gate_state(),
+        testing_requested=False,
         mic_available=mic_available,
     )
     blockers = payload["blockers"]
@@ -1576,7 +1566,7 @@ def test_chip_aec_gate_blockers_never_emit_foreign_codes():
         for dac_id in (_APPROVED_DAC_ID, _UNAPPROVED_DAC_ID):
             payload = aec_endpoints._chip_aec_gate(
                 {"JASPER_AUDIO_DAC_ID": dac_id},
-                _gate_state(),
+                testing_requested=False,
                 mic_available=mic_available,
             )
             emitted.update(payload["blockers"])
@@ -1591,7 +1581,7 @@ def test_chip_aec_gate_recommended_action_reflects_mic_blocker():
     code never reached the dataclass that recommended_action inspects."""
     payload = aec_endpoints._chip_aec_gate(
         {"JASPER_AUDIO_DAC_ID": _APPROVED_DAC_ID},
-        _gate_state(),
+        testing_requested=False,
         mic_available=False,
     )
     assert BLOCKER_MIC in payload["blockers"]
@@ -1603,7 +1593,7 @@ def test_chip_aec_gate_payload_answers_arming_only_where_it_varies(dac_id):
     """The payload carries only keys a box can actually differ on (#3073 item 3)."""
     payload = aec_endpoints._chip_aec_gate(
         {"JASPER_AUDIO_DAC_ID": dac_id},
-        _gate_state(),
+        testing_requested=False,
         mic_available=True,
     )
 

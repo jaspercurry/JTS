@@ -202,52 +202,50 @@ def test_list_bundles_treats_missing_or_file_sessions_dir_as_empty(
     assert bundles.list_bundles(not_dir) == []
 
 
+@pytest.mark.parametrize("artifact_state", ["missing", "invalid", "issues"])
 def test_validate_bundle_reports_missing_result_and_quality_warnings(
-    tmp_path: Path,
+    tmp_path: Path, artifact_state: str,
 ):
-    d = tmp_path / "aaa"
-    d.mkdir()
-    (d / "info.json").write_text(
-        json.dumps(
-            {
-                "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-                "session_id": "aaa",
-                "state": "ready",
-                "capture_quality": [
-                    {
-                        "issues": [
-                            {
-                                "code": "mic_uncalibrated",
-                                "severity": "warn",
-                                "message": "no measurement-mic calibration was applied",
-                            }
-                        ],
-                    }
+    info = {
+        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        "session_id": "aaa", "state": "ready",
+        "capture_quality": [None, {"issues": [
+            {"code": "mic_uncalibrated", "severity": "warn"},
+            {"severity": "info"}, None,
+        ]}],
+        "verify_quality": {"issues": [
+            {"code": "capture_rms_low", "severity": "warn"},
+            {"severity": "fail"},
+        ]},
+    }
+    expected = [("artifact_manifest_missing", "warn"), ("result_json_missing", "warn")]
+    for kind in ("runtime_integrity", "acoustic_quality"):
+        info[kind] = {"level": "warn"}
+        artifact = tmp_path / f"{kind}.json"
+        if artifact_state == "missing":
+            expected.append((f"{kind}_json_missing", "warn"))
+        elif artifact_state == "invalid":
+            artifact.write_text("not json")
+            expected.append((f"{kind}_json", "fail"))
+        else:
+            artifact.write_text(json.dumps({
+                "artifact_schema_version": 1,
+                "issues": [
+                    {"code": f"{kind}_captured", "severity": "warn"},
+                    {"severity": "fail"}, {"code": "", "severity": "warn"},
+                    {"severity": "info"}, {"code": "unknown"}, None,
                 ],
-                "verify_quality": {
-                    "issues": [
-                        {
-                            "code": "capture_rms_low",
-                            "severity": "warn",
-                            "message": "capture RMS is very low",
-                        }
-                    ],
-                },
-            }
-        )
-    )
+            }))
+            expected.extend([(f"{kind}_captured", "warn"), (kind, "fail"), (kind, "warn")])
+    (tmp_path / "info.json").write_text(json.dumps(info))
+    expected.extend([
+        ("mic_uncalibrated", "warn"), ("capture_rms_low", "warn"),
+        ("capture_quality", "fail"),
+    ])
 
-    issues = bundles.validate_bundle(d)
+    issues = bundles.validate_bundle(tmp_path)
 
-    assert ("result_json_missing", "warn") in {
-        (issue.code, issue.severity) for issue in issues
-    }
-    assert ("mic_uncalibrated", "warn") in {
-        (issue.code, issue.severity) for issue in issues
-    }
-    assert ("capture_rms_low", "warn") in {
-        (issue.code, issue.severity) for issue in issues
-    }
+    assert [(issue.code, issue.severity) for issue in issues] == expected
 
 
 @pytest.mark.parametrize(

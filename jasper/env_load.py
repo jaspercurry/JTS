@@ -201,7 +201,9 @@ def parse_env_file(path: str) -> dict[str, str]:
     return read_env_file_state(path).values
 
 
-def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
+def merged_env_files(
+    paths: "tuple[str, ...] | None" = None, *, require_readable: bool = False,
+) -> dict[str, str]:
     """Return the merged env-file mapping for ``paths``.
 
     Later files win on conflict, matching systemd's
@@ -209,6 +211,9 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     :func:`load_env_files`: some callers need CLI-style "shell wins"
     semantics, while long-lived daemons launching subprocesses need a
     freshly-read view of the wizard-owned SSOT files.
+
+    ``require_readable`` raises on unreadable files so diagnostic callers do
+    not report partial settings as complete. Missing files remain optional.
 
     The base layer resolves through :func:`env_file_path`, so the
     ``JASPER_ENV_FILE`` seam reaches every reader that goes through this
@@ -220,11 +225,16 @@ def merged_env_files(paths: "tuple[str, ...] | None" = None) -> dict[str, str]:
     for path in files:
         if path == BASE_ENV_PATH:
             path = env_file_path()
-        merged.update(parse_env_file(path))
+        state = read_env_file_state(path)
+        if require_readable and state.status == "unreadable":
+            raise OSError(f"unreadable env file {path}: {state.error}")
+        merged.update(state.values)
     return merged
 
 
-def outputd_reconciled_env(outputd_env_path: str | None = None) -> dict[str, str]:
+def outputd_reconciled_env(
+    outputd_env_path: str | None = None, *, require_readable: bool = False,
+) -> dict[str, str]:
     """jasper-outputd's persistent env, read fresh through its own layering.
 
     THE ONE MERGE every surface that reports what outputd is RUNNING consumes —
@@ -251,7 +261,8 @@ def outputd_reconciled_env(outputd_env_path: str | None = None) -> dict[str, str
             BASE_ENV_PATH,
             outputd_env_path or OUTPUTD_ENV_PATH,
             OUTPUTD_GROUPING_ENV_FILE,
-        )
+        ),
+        require_readable=require_readable,
     )
 
 
@@ -265,5 +276,4 @@ def load_env_files(paths: "tuple[str, ...] | None" = None) -> None:
     merged = merged_env_files(paths)
     for key, value in merged.items():
         os.environ.setdefault(key, value)
-
 

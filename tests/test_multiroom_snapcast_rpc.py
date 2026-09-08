@@ -2,15 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""snapcast_rpc — the group→stream binding pin + the health probe.
-
-The 2026-06-11 silent-bond incident class: snapcast persists
-group→stream assignments in server.json; a stale binding (the
-distro-snapserver era's "default") makes a client play zeros behind
-green health. All logic is exercised through an injected fake
-transport — no snapserver, no network.
-"""
+"""Offline checks for Snapcast bindings and health probes."""
 from __future__ import annotations
+
+import json
+from io import BytesIO
+
+import pytest
 
 from jasper.multiroom.snapcast_rpc import (
     ensure_groups_on_stream,
@@ -138,12 +136,18 @@ def test_ensure_counts_failed_setstream():
     assert report["failed"] == 1 and report["fixed"] == 0
 
 
-def test_read_stream_clients_fail_soft():
-    assert read_stream_clients(transport=lambda *a, **k: None) is None
-    rows = read_stream_clients(
-        transport=lambda *a, **k: _status([_group("g", "jts", [_client("jts")])]),
+@pytest.mark.parametrize(("result", "names"), [
+    (None, None), ([], None), (False, None), (1, None), ("invalid", None),
+    ({}, []),
+    (_status([_group("g", "jts", [_client("jts")])]), ["jts"]),
+])
+def test_read_stream_clients_fail_soft(result, names, monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: BytesIO(json.dumps({"result": result}).encode()),
     )
-    assert rows and rows[0]["name"] == "jts"
+    rows = read_stream_clients()
+    assert (None if rows is None else [row["name"] for row in rows]) == names
 
 
 # ---------- ownership-rule semantics (review polish) ----------
