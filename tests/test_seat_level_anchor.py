@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from jasper.active_speaker.seat_level_reference import (
     SeatLevelTarget,
     write_seat_level_reference,
 )
+from jasper.audio_measurement import calibration
 
 ANCHOR_DB_SPL = 77.5
 REFERENCE_VOLUME_DB = -18.0
@@ -136,6 +138,41 @@ def test_the_mic_looked_up_is_the_one_the_anchor_was_banked_with(anchor, monkeyp
 
     assert excinfo.value.reason == slr.ANCHOR_UNUSABLE
     assert seen == {"calibration_file": None, "mic_serial": "8108494"}
+
+
+@pytest.mark.parametrize("stored_serial", ["810-8494", "8108494", "810-8495"])
+def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
+    tmp_path, monkeypatch, anchor, stored_serial,
+):
+    root = tmp_path / "calibrations"
+    record = calibration.store_calibration(
+        text=CAL_WITH_SENS.replace("8108494", stored_serial.replace("-", "")) + "1000\t0\n",
+        provider="minidsp", model="minidsp_umik2", source="vendor_lookup",
+        serial=stored_serial, orientation="0deg", sign_convention="response", root=root,
+    )
+    assert record.serial_hash == calibration.serial_hash(stored_serial)
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    monkeypatch.setattr(calibration, "find_stored_calibration", partial(
+        calibration.find_stored_calibration, root=root,
+    ))
+
+    def no_vendor_fetch(*_args):
+        pytest.fail("stored calibration lookup must not fetch")
+
+    if stored_serial == "810-8495":
+        with pytest.raises(slr.LevelUnresolved) as excinfo:
+            slr.resolve_anchor_level(ceiling_db_spl=CEILING_DB_SPL)
+        assert excinfo.value.reason == slr.ANCHOR_UNUSABLE
+    else:
+        assert slr.resolve_anchor_level(ceiling_db_spl=CEILING_DB_SPL) == slr.ResolvedLevel(
+            anchor_db_spl=ANCHOR_DB_SPL, reference_volume_db=REFERENCE_VOLUME_DB,
+            mic_serial="8108494",
+        )
+        cached = calibration.fetch_vendor_calibration(
+            model_key="minidsp_umik2", serial="8108494", root=root, opener=no_vendor_fetch,
+        )
+        assert cached.calibration_id == record.calibration_id
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
 
 
 def test_the_ceiling_comes_from_the_presets_own_declaration(

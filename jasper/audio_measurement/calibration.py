@@ -781,20 +781,19 @@ def find_stored_calibration(
     orientation: str = "unknown",
     root: Path = DEFAULT_CALIBRATION_DIR,
 ) -> CalibrationRecord | None:
-    """A stored vendor calibration matching serial + model + orientation.
-
-    A measurement mic's calibration is fixed per unit, so the stored copy is
-    authoritative and a repeat lookup skips the vendor round-trip. Returns the
-    most recently fetched match, or ``None``; corrupt records are skipped, not
-    fatal. ``orientation="unknown"`` (the default) matches ANY stored
-    orientation: the write side stamps the REAL inferred orientation, so a
-    literal match would permanently miss the cache for the browser capture flow,
-    which never declares one. A caller naming "0deg"/"90deg" still matches
-    exactly.
-    """
+    """Newest stored calibration for this unit; unknown orientation accepts either."""
     sh = serial_hash(serial)
     if not sh:
         return None
+    hashes: list[str | None] = [sh]
+    normalized = re.sub(r"\s+", "", serial)
+    if (
+        provider == "minidsp" and model_key in ("minidsp_umik1", "minidsp_umik2")
+        and re.fullmatch(r"[0-9]{3}-?[0-9]{4}", normalized)
+    ):
+        # UMIK labels use ###-####; calibration headers use #######.
+        digits = normalized.replace("-", "")
+        hashes.extend(serial_hash(value) for value in (digits, f"{digits[:3]}-{digits[3:]}"))
     model_dir = root / _slug(provider) / _slug(model_key)
     best: CalibrationRecord | None = None
     for path in model_dir.glob("*.json"):
@@ -802,7 +801,7 @@ def find_stored_calibration(
             data = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if data.get("serial_hash") != sh:
+        if data.get("serial_hash") not in hashes:
             continue
         stored_orientation = str(data.get("orientation") or "unknown")
         if orientation != "unknown" and stored_orientation != orientation:
