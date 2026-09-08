@@ -2,37 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Spotify regression scenarios.
+"""Paid Spotify scenarios can change live playback and the queue.
 
-============================================================
-PLAYBACK + COST NOTICE — read carefully before running
-============================================================
-These scenarios trigger REAL playback on the speaker. The
-harness wires up the real OAuth router and real librespot
-device, so when the model calls `spotify_play("Covers")`,
-music actually starts coming out of the speaker. **Skip via
-`JASPER_VOICE_EVAL_SKIP_PLAYBACK=1` if anyone is using the
-speaker.**
+They use real OAuth accounts and the configured player. Prior playback is
+not restored; resume the prior source manually after a run. Set
+JASPER_VOICE_EVAL_SKIP_PLAYBACK=1 to skip these scenarios.
 
-Plus the usual paid LLM API cost per turn. PASS_K = 3 turns
-per scenario function. DO NOT loop or increase PASS_K without
-explicit human approval and confirmation that playback is OK.
-============================================================
+PASS_K = 3 turns per scenario. Announce the count, estimated cost and playback
+side effects before running. Never loop or auto-retry. Increase PASS_K only
+with explicit approval and confirmation that playback is OK.
 
-Each scenario follows the same three-assertion shape as
-`test_subway.py`:
-
-  1. Trajectory: the model called the expected tool.
-  2. Outcome: the tool returned the expected fields.
-  3. Reality: the tool's data is internally consistent (e.g.
-     the resolved name matches the requested name).
-
-We don't have a clean independent oracle for "is Covers in this
-user's Spotify library" — verifying that would require us to also
-authenticate against the same account and enumerate playlists,
-which is essentially what the tool does. So the reality check here
-is shape-based: confirm the tool reported a successful playback
-start with a name that includes the query.
+Checks inspect tool calls and returned names. They do not independently verify
+the account library or prove audible playback. See tests/voice_eval/README.md.
 """
 from __future__ import annotations
 
@@ -95,23 +76,11 @@ async def test_queue_track_routes_to_spotify_queue(
 
 @pytest.mark.parametrize("trial", range(PASS_K))
 async def test_play_owned_playlist_covers(harness, trial: int) -> None:
-    """Asks 'play my Covers playlist' — the model should call
-    `spotify_play` with `kind="playlist"` and `query="Covers"`,
-    the tool's resolver should find a playlist whose name contains
-    "cover", and playback should start.
+    """Resolve and play the household's Covers playlist.
 
-    **KNOWN FAILING (2026-05-21)**: `current_user_playlists` is
-    fetched with `limit=50` and no pagination. If a household
-    member's library has more than 50 playlists and "Covers" is
-    not in the first 50, the resolver returns
-    `_NOT_UNDERSTOOD` and the test fails on assertion 2. The
-    failure documents the bug; when pagination + per-account cache
-    land, this turns green.
-
-    Side-effect: starts playing Covers on the speaker. The fixture
-    doesn't restore the previous source — that's deliberate, the
-    test should leave evidence that something was played. If you
-    were listening to AirPlay, you'll need to resume manually.
+    The library lookup reads current_user_playlists with limit=50 and no
+    pagination. It omits later entries; configured playlists are a separate input.
+    This scenario changes live playback and does not restore the prior source.
     """
     if _playback_skip():
         pytest.skip(
@@ -135,9 +104,6 @@ async def test_play_owned_playlist_covers(harness, trial: int) -> None:
             f"See transcript: {result.transcript_path}",
         )
 
-    # 2. Outcome — the tool returned ok=True (resolver found a
-    # match and start_playback fired). Without pagination, this
-    # is the assertion that fails when Covers is the 51st+ entry.
     res = call.result or {}
     assert res.get("ok"), (
         f"[trial {trial}] spotify_play did not return ok=True. "
@@ -180,19 +146,10 @@ async def test_play_owned_playlist_covers(harness, trial: int) -> None:
 async def test_play_new_artist_song_routes_to_latest_by_artist(
     harness, trial: int,
 ) -> None:
-    """Asks 'play the new Rainbow Kitten Surprise song'. The model
-    must route to `spotify_play_latest_by_artist` (NOT `spotify_play`)
-    — `spotify_play` does catalog search with no temporal grounding
-    and returns the wrong track, which is the bug this scenario was
-    written to lock down (reported 2026-05-22).
+    """Route the artist's latest-release request to spotify_play_latest_by_artist.
 
-    Trajectory assertion is the load-bearing one: if the model calls
-    `spotify_play("new Rainbow Kitten Surprise song")` instead, the
-    test fails on assertion 1 — the symptom of the bug.
-
-    Side-effect: starts playing whatever Spotify reports as RKS's
-    most-recent single/album. Skip via JASPER_VOICE_EVAL_SKIP_PLAYBACK=1
-    if the speaker is in use.
+    This starts live playback and does not restore the prior source. Set
+    JASPER_VOICE_EVAL_SKIP_PLAYBACK=1 to skip it.
     """
     if _playback_skip():
         pytest.skip(
@@ -202,9 +159,6 @@ async def test_play_new_artist_song_routes_to_latest_by_artist(
 
     result = await harness.ask("play the new Rainbow Kitten Surprise song")
 
-    # 1. Trajectory — the model must call the latest-by-artist tool,
-    # not the generic spotify_play. Catching this is the whole point
-    # of the scenario.
     latest_call = result.tool_call("spotify_play_latest_by_artist")
     play_call = result.tool_call("spotify_play")
     assert latest_call is not None, (

@@ -56,7 +56,8 @@ most of the AEC complexity below.
 
 A Raspberry Pi Zero 2 W can run the `streambox` install profile: local
 renderers, outputd/CamillaDSP, and the capability-filtered landing page,
-but no voice, wake word, or mic/AEC.
+but no local wake word or mic/AEC. A paired remote with a microphone enables
+push-to-talk assistant use; see the [microphone reference](jasper/mics/README.md).
 
 ---
 

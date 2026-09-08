@@ -21,7 +21,8 @@ and circular variants, each with 2- and 6-channel firmware.
   not open this endpoint.
 - **Other microphones and Pi Zero voice performance:** evidence gaps.
   Direct microphone configuration does not imply a generic software-AEC3
-  capture path. The Pi Zero 2 W `streambox` profile excludes voice.
+  capture path. The Pi Zero 2 W `streambox` profile excludes local wake/mic/AEC;
+  a paired remote with a microphone enables push-to-talk assistant use.
 
 The software-AEC main input uses `MIC_CHANNEL_INDEX` (channel 1) with
 `SHF_BYPASS=1`; it does not select raw mic 0. The separate raw0 leg uses
