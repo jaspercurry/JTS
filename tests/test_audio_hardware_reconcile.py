@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import json
 import logging
@@ -28,6 +29,7 @@ from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
+from jasper.cli import output_hardware as output_hardware_cli
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
@@ -758,11 +760,13 @@ def test_runtime_convergence_only_writes_statefile(tmp_path: Path) -> None:
 # --- I2S HAT boot intent ------------------------------------------------------
 
 
-def _statusless_observation(*args: Any, **kwargs: Any) -> dict[str, str]:
-    """A classifier answer that stopped stating the profile status."""
-    from jasper.cli.output_hardware import env_values
+_REAL_OBSERVE = output_hardware_cli.observe
 
-    return {**env_values(*args, **kwargs), "OBSERVED_OUTPUT_PROFILE_STATUS": ""}
+
+def _statusless_observation(*args: Any, **kwargs: Any) -> tuple[Any, Any, bool]:
+    """A classifier answer that stopped stating the profile status."""
+    state, cards, record_changed = _REAL_OBSERVE(*args, **kwargs)
+    return dataclasses.replace(state, status=""), cards, record_changed
 
 
 def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
@@ -819,7 +823,7 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     # failed observation (#i2s-hat-intent).
     for extra_env, patches in (
         ({"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}, None),
-        (None, {"jasper.cli.output_hardware.env_values": _statusless_observation}),
+        (None, {"jasper.cli.output_hardware.observe": _statusless_observation}),
         (None, None),
     ):
         for marker_present in (False, True):
