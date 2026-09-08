@@ -77,6 +77,16 @@ REASON_WRITE_ERROR = "write_error"
 REASON_NO_BACKEND = "no_backend"
 REASON_SYNTHESIS_ERROR = "synthesis_error"
 REASON_STALE_TEXT = "stale_text"
+REASON_CANCELLED = "cancelled"
+REASON_ERROR = "error"
+# Refusals raised by the daemon's own output gates, recorded through
+# `note_skipped` because the attempt never reaches play()/speak_text().
+# `measurement_active` is produced by `AssistantOutput.admission_refusal`,
+# which owns that word across the daemon; it is named here only so this
+# closed set matches what `/state.cues` can report.
+REASON_OUTPUT_ACTIVE = "output_active"
+REASON_BUSY = "busy"
+REASON_MEASUREMENT_ACTIVE = "measurement_active"
 
 # `_record()`'s slug for dynamic speech (speak_text) — never the spoken text.
 _DYNAMIC_TEXT_SLUG = "text"
@@ -195,6 +205,12 @@ class AudioCueManager:
             "outcome": outcome, "reason": reason, "slug": slug, "at": time.time(),
         }
 
+    def note_skipped(self, reason: str, slug: str) -> None:
+        """Record a cue the CALLER refused to hand over (an output gate
+        that would not admit it), so `/state` and jasper-doctor see the
+        deafness this manager was never asked about."""
+        self._record(OUTCOME_SKIPPED, reason, slug)
+
     def snapshot(self) -> dict[str, Any]:
         """Bounded cue-delivery health: counts by outcome plus the last
         outcome, for /state and jasper-doctor. Never the cue/dynamic text
@@ -311,22 +327,50 @@ class AudioCueManager:
     async def play(self, slug: str) -> bool:
         """Queue the named cue's audio onto TtsPlayout. Returns True
         on success, False on any error (no TtsPlayout, no cached
-        file, IO error). Never raises — failure-path callers must
-        be able to call this without further error handling."""
-        outcome, reason, ok = await self._play_inner(slug)
-        self._record(outcome, reason, slug)
+        file, IO error). Never raises except on cancellation, which
+        stays propagated — failure-path callers must be able to call
+        this without further error handling."""
+        try:
+            outcome, reason, record_slug, ok = await self._play_inner(slug, set())
+        except asyncio.CancelledError:
+            self._record(OUTCOME_SKIPPED, REASON_CANCELLED, slug)
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._record_unexpected(slug, e)
+            return False
+        self._record(outcome, reason, record_slug)
         return ok
 
-    async def _play_inner(self, slug: str) -> tuple[str, str, bool]:
-        """One play attempt as (outcome, reason, ok), fallback delegation
-        included, so `play()` writes exactly one record per attempt."""
+    def _record_unexpected(self, slug: str, e: Exception) -> None:
+        log_event(
+            logger,
+            "cue.unexpected_error",
+            slug=slug,
+            exc_type=type(e).__name__,
+            err=str(e),
+            level=logging.WARNING,
+        )
+        self._record(OUTCOME_FAILED, REASON_ERROR, slug)
+
+    async def _play_inner(
+        self, slug: str, seen: set[str],
+    ) -> tuple[str, str, str, bool]:
+        """One play attempt as (outcome, reason, recorded slug, ok), fallback
+        delegation included, so `play()` writes exactly one record per
+        attempt. A failing delegate reports ITS slug: that is the cue whose
+        regeneration would fix the silence. `seen` carries the slugs already
+        tried on this attempt so a cyclic registry terminates."""
+        if slug in seen:
+            logger.warning("cue play: fallback cycle at %r", slug)
+            return OUTCOME_FAILED, REASON_NO_CACHE, slug, False
+        seen.add(slug)
         cue = find_cue(slug)
         if cue is None:
             logger.warning("cue play: unknown slug %r", slug)
-            return OUTCOME_FAILED, REASON_UNKNOWN_SLUG, False
+            return OUTCOME_FAILED, REASON_UNKNOWN_SLUG, slug, False
         if self._tts is None:
             logger.warning("cue play: no TtsPlayout configured (slug=%s)", slug)
-            return OUTCOME_FAILED, REASON_NO_PLAYOUT, False
+            return OUTCOME_FAILED, REASON_NO_PLAYOUT, slug, False
 
         # Prefer the current-hash file. If missing, fall back to ANY
         # cached version under the same slug — stale audio beats
@@ -342,17 +386,19 @@ class AudioCueManager:
                 log_event(
                     logger, "cue.play_fallback", slug=slug, fallback=cue.fallback,
                 )
-                outcome, reason, ok = await self._play_inner(cue.fallback)
+                outcome, reason, record_slug, ok = await self._play_inner(
+                    cue.fallback, seen,
+                )
                 if ok:
-                    return OUTCOME_FALLBACK, REASON_OK, True
-                return outcome, reason, False
+                    return OUTCOME_FALLBACK, REASON_OK, slug, True
+                return outcome, reason, record_slug, False
             if stale is None:
                 logger.warning(
                     "cue play: no cached file for %s and no stale "
                     "fallback; user gets silence. Run "
                     "`jasper-cues regenerate` to fix.", slug,
                 )
-                return OUTCOME_FAILED, REASON_NO_CACHE, False
+                return OUTCOME_FAILED, REASON_NO_CACHE, slug, False
             logger.info(
                 "cue play: expected file missing, using stale %s",
                 os.path.basename(stale),
@@ -364,7 +410,7 @@ class AudioCueManager:
             pcm, audio_duration_sec = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue play: could not read %s: %s", path, e)
-            return OUTCOME_FAILED, REASON_READ_ERROR, False
+            return OUTCOME_FAILED, REASON_READ_ERROR, slug, False
 
         try:
             await self._write_pcm(self._tts, pcm, model=f"cue-{cue.slug}")
@@ -372,7 +418,7 @@ class AudioCueManager:
             logger.warning(
                 "cue play: TtsPlayout.write failed (slug=%s): %s", slug, e,
             )
-            return OUTCOME_FAILED, REASON_WRITE_ERROR, False
+            return OUTCOME_FAILED, REASON_WRITE_ERROR, slug, False
         finally:
             await _wait_tts_drained(self._tts)
         logger.info(
@@ -380,7 +426,8 @@ class AudioCueManager:
             slug, len(pcm), audio_duration_sec,
         )
         return (
-            OUTCOME_STALE if stale_used else OUTCOME_DELIVERED, REASON_OK, True,
+            OUTCOME_STALE if stale_used else OUTCOME_DELIVERED,
+            REASON_OK, slug, True,
         )
 
     async def prerender_text(self, text: str) -> bool:
@@ -441,13 +488,20 @@ class AudioCueManager:
         First synthesis takes ~1 s of network round-trip to Gemini TTS;
         subsequent plays of the same text are instant (cache hit).
 
-        Failure semantics match `play()` — never raises; returns False
-        on any error (no backend, no TtsPlayout, network failure, IO
-        error). Callers should not need extra error handling.
+        Failure semantics match `play()` — returns False on any error (no
+        backend, no TtsPlayout, network failure, IO error) and raises only
+        on cancellation. Callers should not need extra error handling.
         """
-        outcome, reason, ok = await self._speak_inner(
-            text, should_play=should_play,
-        )
+        try:
+            outcome, reason, ok = await self._speak_inner(
+                text, should_play=should_play,
+            )
+        except asyncio.CancelledError:
+            self._record(OUTCOME_SKIPPED, REASON_CANCELLED, _DYNAMIC_TEXT_SLUG)
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._record_unexpected(_DYNAMIC_TEXT_SLUG, e)
+            return False
         self._record(outcome, reason, _DYNAMIC_TEXT_SLUG)
         return ok
 

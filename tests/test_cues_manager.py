@@ -22,7 +22,8 @@ from jasper.cues.generator import (
     cue_filename,
     dynamic_text_path,
 )
-from jasper.cues.registry import find
+from jasper.cues import manager as manager_mod
+from jasper.cues.registry import CueDef, find
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields
 
@@ -435,12 +436,8 @@ def test_speak_text_records_outcome(tmp_path, build, expected_ok, outcome, reaso
     ok = asyncio.run(call())
 
     assert ok is expected_ok
-    snap = mgr.snapshot()
-    assert snap["last"]["outcome"] == outcome
-    assert snap["last"]["reason"] == reason
     # Dynamic speech is never keyed by its own text.
-    assert snap["last"]["slug"] == "text"
-    assert snap["counts"][outcome] == 1
+    _assert_outcome(mgr, outcome, reason, slug="text")
 
 
 def test_snapshot_starts_empty(tmp_path):
@@ -720,15 +717,78 @@ def test_play_uses_fallback_cue_when_remedy_cue_is_not_baked(tmp_path):
 
 def test_play_reports_the_delegates_failure_when_the_fallback_is_unbaked(tmp_path):
     """Nothing baked at all: the attempt is one silent failure, reported
-    with the delegate's reason rather than a delivered-looking fallback."""
+    with the DELEGATE's slug and reason rather than a delivered-looking
+    fallback — regenerating the delegate is what would fix the silence."""
     mgr = AudioCueManager(
         sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
         backend=_FakeBackend(), tts_playout=_FakeTtsPlayout(),
     )
+    assert find("provider_out_of_credit").fallback == "cant_connect"
     assert asyncio.run(mgr.play("provider_out_of_credit")) is False
 
-    _assert_outcome(mgr, "failed", "no_cache", slug="provider_out_of_credit")
+    _assert_outcome(mgr, "failed", "no_cache", slug="cant_connect")
     assert mgr.snapshot()["counts"]["fallback"] == 0
+
+
+def test_play_terminates_on_a_fallback_cycle(tmp_path, monkeypatch):
+    """A registry whose fallbacks loop records one failure instead of
+    recursing until RecursionError."""
+    cycle = {
+        "a_cue": CueDef(
+            slug="a_cue", template="a", description="d", fallback="b_cue",
+        ),
+        "b_cue": CueDef(
+            slug="b_cue", template="b", description="d", fallback="a_cue",
+        ),
+    }
+    monkeypatch.setattr(manager_mod, "find_cue", cycle.get)
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=_FakeTtsPlayout(),
+    )
+
+    assert asyncio.run(mgr.play("a_cue")) is False
+
+    _assert_outcome(mgr, "failed", "no_cache", slug="a_cue")
+
+
+def test_play_records_cancellation_and_re_raises(tmp_path):
+    """Barge-in cancels the drain wait on the busiest cue path. The attempt
+    is a recorded skip; the cancellation still reaches the caller."""
+
+    class _CancellingDrain(_FakeTtsPlayout):
+        async def wait_drained(self) -> None:
+            raise asyncio.CancelledError
+
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=_CancellingDrain(),
+    )
+    _hand_write_wav(mgr.expected_path(find("spend_cap_reached")), b"\x00\x00" * 100)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mgr.play("spend_cap_reached"))
+
+    _assert_outcome(mgr, "skipped", "cancelled", slug="spend_cap_reached")
+
+
+def test_play_records_an_unexpected_error_and_returns_false(tmp_path, monkeypatch):
+    """An exception the play path does not classify (a sounds-dir listdir
+    that raises, say) must not escape into a failure handler, and must not
+    leave the attempt unrecorded."""
+    mgr = AudioCueManager(
+        sounds_dir=str(tmp_path), hostname="jts.local", voice="Aoede",
+        tts_playout=_FakeTtsPlayout(),
+    )
+
+    def _boom(_cue):
+        raise OSError("sounds dir unreadable")
+
+    monkeypatch.setattr(mgr, "find_any_cached", _boom)
+
+    assert asyncio.run(mgr.play("spend_cap_reached")) is False
+
+    _assert_outcome(mgr, "failed", "error", slug="spend_cap_reached")
 
 
 def test_regenerate_prunes_wavs_of_retired_slugs(tmp_path):
