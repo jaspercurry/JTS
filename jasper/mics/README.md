@@ -1,74 +1,50 @@
-# `jasper/mics/` — per-microphone profiles
+# `jasper/mics/` — microphone reference
 
-One module per supported mic family. Today the only profile is
-[`xvf3800.py`](xvf3800.py) (Seeed ReSpeaker XVF3800 USB UA). The
-package exists so that mic-family-specific knowledge (USB identity,
-ALSA card name, mixer invariants, firmware variants, geometry,
-validated chip beam plans, and AEC wiring)
-lives in one canonical place instead of being scattered across
-doctor checks, the AEC bridge, the reconciler, and BRINGUP.
+[`xvf3800.py`](xvf3800.py) owns XVF3800 USB identities, ALSA card names,
+mixer controls, firmware variants, geometry, capture channels and chip beam
+plans. It is the only microphone family profile.
 
-## Adding a new mic
+## Capture support and validation
 
-1. Create `jasper/mics/<family-slug>.py` (e.g. `inmp441.py`,
-   `respeaker_4mic_v2.py`).
-2. Mirror the fields and helpers from `xvf3800.py` for whatever
-   actually applies to your mic. The XVF profile is a reference,
-   not an interface — your mic may have no firmware variants, no
-   DFU path, or a totally different mixer scheme. Only include what
-   you need; do NOT pad with `None` or sentinels just to "match
-   the shape."
-3. Wire the profile into the runtime detector/reconciler that selects it. Do
-   not add a cross-family registry until a second family exists to need one
-   (ADR-0235 R5) — a registry with one row is a seam nothing consumes.
-4. If the mic needs to be the active AEC mic, see how the XVF profile reaches
-   the reconciler under "Consumers today" below; its static fallback
-   candidates and mixer control names are still XVF literals in bash
-   (ADR-0235 G10).
+Recognized firmware is not proof of capture performance or a validated chip
+beam plan. The profile recognizes legacy square/circular and Flex linear
+and circular variants, each with 2- and 6-channel firmware.
 
-## Why no `MicProfile` interface?
+- **Legacy square/circular, 6-channel:** the registered production chip-AEC
+  plan is `xvf_square_fixed_150_210`. Its two fixed ASR beams use channels
+  0 and 1. Chip AEC also needs the output reference and commissioning state
+  selected by the reconciler.
+- **Flex, 6-channel:** software AEC3 fallback is implemented. No production
+  chip beam plan is registered for either Flex geometry. Recognition and
+  fallback support do not establish measured wake or echo performance.
+- **2-channel:** direct capture is implemented; the 6-channel bridge does
+  not open this endpoint.
+- **Other microphones and Pi Zero voice performance:** evidence gaps.
+  Direct microphone configuration does not imply a generic software-AEC3
+  capture path. The Pi Zero 2 W `streambox` profile excludes voice.
 
-There's exactly one mic in this registry today. Defining a Protocol
-or abstract base class from one data point is the over-abstraction
-trap — the interface ends up shaped like the first mic and fights
-the second one. When a second mic actually lands, compare it to
-`xvf3800.py`, factor out what's genuinely common, and only then
-define an interface.
+The software-AEC main input uses `MIC_CHANNEL_INDEX` (channel 1) with
+`SHF_BYPASS=1`; it does not select raw mic 0. The separate raw0 leg uses
+channel 2. Channels 2–5 carry raw microphones, while channels 0/1 depend on
+the active chip profile. Channel count alone does not make firmware variants
+interchangeable. See [BRINGUP](../../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu)
+for flashing and commissioning.
 
-This is a deliberate decision, not laziness. See the package
-docstring in [`__init__.py`](__init__.py) for the longer rationale.
+## Consumers
 
-## Consumers today
+- [`jasper.cli.doctor`](../cli/doctor/__init__.py) reads firmware, mixer and
+  bridge status through the profile.
+- [`jasper.aec.bridge_capture`](../aec/bridge_capture.py) reads capture
+  geometry; [`jasper.cli.aec_bridge`](../cli/aec_bridge.py) also consumes
+  chip beam plans.
+- [`jasper.cli.xvf_profile`](../cli/xvf_profile.py) publishes the detected
+  profile as JSON or shell-safe env assignments, including supported card
+  names and mixer controls.
+- [`jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile) consumes
+  that CLI output to select capture, repair the mixer and arm chip AEC.
 
-- [`jasper.cli.doctor`](../cli/doctor/__init__.py) — the
-  `check_xvf_firmware_6ch`, `check_xvf_mixer_state`, and
-  `check_aec_bridge_running` functions read constants and call
-  helpers from `jasper.mics.xvf3800` (no inline literals).
-- [`jasper.aec.bridge_capture`](../aec/bridge_capture.py) — reads
-  `MIC_CHANNEL_INDEX` and the recommended channel count from the XVF
-  profile; [`jasper.cli.aec_bridge`](../cli/aec_bridge.py) consumes those
-  plus the chip beam-plan helpers.
-- [`jasper.cli.xvf_profile`](../cli/xvf_profile.py) — import-cheap
-  resolver/CLI that emits the detected XVF variant, geometry, and
-  beam-plan state as JSON or shell-safe env assignments. Shell-only
-  layers consume this instead of copying geometry rules.
-- [`deploy/bin/jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile)
-  — bash, so it cannot import the profile directly. It calls
-  `python -m jasper.cli.xvf_profile`, writes the resolved `JASPER_XVF_*`
-  env keys, and derives its detected card and chip-AEC gating from them;
-  its fallback candidate list and mixer control names are still literals.
+## Adding a microphone
 
-## What this package is NOT
-
-- **A generic multi-mic framework.** `xvf3800.detect_runtime_profile()`
-  does runtime detection within the XVF3800 family because the legacy
-  square/circular board and Flex linear board share a chip but require
-  different geometry policy. Supporting a totally different mic family
-  still starts with one concrete module, not a premature Protocol.
-- **A firmware-flash framework.** DFU vs I2C-update vs no-firmware-
-  at-all are all wildly different. The `dfu_flash_command()` helper
-  on `xvf3800` is a string-returning convenience for doctor
-  messages, not an abstraction.
-- **A driver layer.** ALSA and the kernel's snd-usb-audio do the
-  driving. Profiles only describe device-specific facts the higher
-  levels need to know about.
+Add one concrete family module with the facts that hardware needs, then wire
+it into detection and reconciliation. Reuse existing profile consumers where
+applicable; include capture and performance evidence for the new path.

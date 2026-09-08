@@ -272,18 +272,15 @@ suspicion, leave it off for long baselines. Do not turn soak sampling into
 
 ## Voice-eval (paid LLM tests)
 
-[`tests/voice_eval/`](../tests/voice_eval/) runs end-to-end scenarios against
-the **live** real-time speech-to-speech provider — **costs money per run**
-(~$0.075 Gemini / $0.15 Grok / $0.60 OpenAI per scenario @ pass^3). It tests
-assistant *behavior* (does it call the right tool, give a sensible answer), not
-wake accuracy or audio quality.
+[`tests/voice_eval/`](../tests/voice_eval/) runs **paid** scenarios against
+live voice providers and tools. It checks tool calls and answers through
+simulated output. The harness owns its
+[evidence limits](../tests/voice_eval/README.md).
 
-Read [`tests/voice_eval/README.md`](../tests/voice_eval/README.md) and
-[AGENTS.md](../AGENTS.md)'s paid-tests non-negotiable **before running
-anything**. Never wrap `harness.ask()` in a retry loop; never auto-rerun on
-flake; state the estimated cost before each invocation.
-
-For audio quality or wake detection, use the offline scorers instead.
+Read its run rules and [AGENTS.md](../AGENTS.md)'s paid-tests non-negotiable
+**before running anything**. Never wrap `harness.ask()` in a retry loop; never auto-rerun on
+flake; state the scenario count, estimated cost and live tool side effects
+before each invocation.
 
 ---
 

@@ -491,86 +491,27 @@ matched, which reference won (`live_content`, `held_content`,
 `held_assistant`, or `first_use_fallback`), and which clamp path applied (`target`, `peak_cap`,
 `fallback_profile`, or `gain_floor`).
 
-## End-of-turn drain — when is the speaker actually silent?
+## End-of-turn drain
 
-The TTS write call returns when bytes are accepted by the current
-transport, **not** when they reach the DAC. On current main, the
-transport is a local Unix socket into `jasper-fanin`; the legacy
-rollback path used PortAudio. Either way, there is still transport
-queue, fan-in/Camilla/outputd tail, and DAC flush ahead of the bytes
-at that point. A naive
-end-of-turn timer that fires "shortly after the last write" can land
-mid-tail, clipping the last word — observed in production
-(PR #311, 2026-05-25) when OpenAI Realtime burst-streamed 10 chunks
-in 730 ms ahead of a 4 s playout.
+TTS writes record bytes accepted by the output transport. They do not prove
+DAC output or what a listener heard. `TtsPlayout` in
+[`jasper/audio_io.py`](../jasper/audio_io.py) estimates a drain deadline from
+accepted sample duration plus `JASPER_TTS_DRAIN_TAIL_SEC`.
+`expected_drain_at()` returns that deadline; `wait_drained()` waits for it.
+[`play_responses()` and `idle_watchdog()`](../jasper/voice/turn_playback.py)
+use the same clock to end a turn.
 
-`TtsPlayout` owns the end-of-turn drain semantic. The fan-in IPC-backed
-implementation extends the same boundary with
-`write_segment()`/`end_segment()` metadata for segment identity, but the
-voice daemon still waits through the stable methods below:
+On interruption, `flush()` sends `FLUSH_SYNC` and resets the drain clock
+only after a valid acknowledgement. A missing or invalid acknowledgement
+leaves the clock intact. Provider truncation uses the acknowledgement's
+per-item ledger: assistant `drained_frames` are summed by `provider_item_id`
+and converted at 48 kHz. Completed items can be absent; a turn-wide maximum
+is not a substitute for an item's boundary.
 
-- `expected_drain_at()` — monotonic deadline when the last-queued
-  sample's tail will have cleared the OS audio stack. Backed by a
-  single `_ring_end_monotonic` float that advances on each `write()`
-  (anchors fresh on now() if the speaker was idle; appends during
-  back-pressure). Reset by `flush()` since barge-in's `abort()`
-  discards the ring. Returns `0.0` when nothing is queued — naturally
-  reads as "already drained" against `time.monotonic()`.
-- `wait_drained()` — single `asyncio.sleep` to the deadline. No
-  polling because the deadline is known up-front.
-
-For interruption, `TtsPlayout.flush()` uses fan-in's
-`FLUSH_SYNC` command and returns the daemon's compact playout
-acknowledgement (`audio_played_ms`, flushed frames, provider item id).
-That acknowledgement is for provider truncation/cancel logic; normal
-end-of-turn still uses `wait_drained()`.
-
-Both end-of-turn paths consult the same primitive:
-
-- `_play_responses` (the consumer) awaits `tts.wait_drained()` after
-  its final write — replaces a fixed `TTS_ALSA_DRAIN_SEC` sleep.
-- `_idle_watchdog` (the server-said-done path) polls
-  `tts.expected_drain_at()` cooperatively — replaces a fixed
-  `POST_RESPONSE_IDLE_TIMEOUT_SEC` margin.
-
-Both anchor on the same math, so they converge on identical timing.
-Whichever observes "drained" first completes its background task and lets
-WakeLoop schedule `_end_turn`; the session-frame done-task check remains
-as a backup, and the loser's task is cancelled cleanly.
-
-The dmix + DAC flush tail itself is configurable:
-`JASPER_TTS_DRAIN_TAIL_SEC` (default 0.085 s, wired through
-`cfg.tts_drain_tail_sec`). Bump on a Pi if you observe truncation;
-lower if end-of-turn feels sluggish.
-
-**Observability.** `_end_turn` logs `drain wait X.XXs` in the
-canonical `turn ended:` line whenever audio was actually received.
-This number is "time from last server activity (response.done or
-last audio.delta) to the daemon recognizing the turn was over."
-Healthy range on the current hardware: ~50-150 ms. Drift above ~150
-ms or provider-asymmetric values are the signal to investigate.
-
-```sh
-ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
-```
-
-**Prior art surveyed** (PR #311) before picking sample-counting:
-
-- **LiveKit Agents** — sample-counted `_pushed_duration` +
-  `wait_for_playout()` future. Closest analog; same pattern we use.
-- **OpenAI wavtools** (older `openai-realtime-console`) — tracks
-  `scheduledEndTime` against `AudioContext.currentTime`. Same idea
-  on a different audio API.
-- **Pipecat** — trailing-silence-pad + EndFrame propagation. The
-  pattern JTS effectively had before this fix; race-prone on tight
-  UX, which is what bit us.
-- **Wyoming (HA Assist)** — protocol round-trip (server sends
-  `AudioStop`, satellite acks `Played` after `aplay` exits).
-  Overkill for an in-process TTS player.
-- **PortAudio callback-based completion** — `outputBufferDacTime` in
-  the stream callback's `time_info` is the most precise signal but
-  requires switching from blocking `write()` to a callback model.
-  Major threading refactor; out of proportion to the fix.
+Fan-in's ledger counts mix commits; outputd estimates drain. Both are
+software evidence. Acoustic completion needs a microphone measurement.
+The voice daemon's `drain wait` log measures its turn-close delay from the
+last server activity, not acoustic latency.
 
 ## Operational notes
 
@@ -766,19 +707,12 @@ tap reads.
   selection. It is the final software/electrical reference; no software
   reference can include DAC, amp, driver, or room acoustics except through
   microphone observation.
-- A 25 dB ducking step is a transient the AEC's adaptive filter has
-  to re-converge through. The old remedy — move the tap downstream of
-  CamillaDSP — is already in place: every AEC reference now comes from
-  outputd's post-DSP speaker monitor, so the duck is inside the
-  reference rather than divergent from it.
-- Chip-AEC addition: production chip-AEC mode and the wake-corpus
-  chip-AEC comparison profile also ask outputd to publish the same final
-  speaker monitor as an XVF USB-IN reference. The UDP tap stays at
-  outputd's 48 kHz graph rate; the XVF USB-IN side output is downsampled
-  to the chip's 16 kHz playback contract. The production path is opt-in via
-  `JASPER_WAKE_LEG_CHIP_AEC=1` / `JASPER_AEC_CHIP_AEC_ENABLED=1`;
-  the recorder owns the same overlay during corpus chip-AEC comparison
-  sessions and removes its test env when corpus mode exits.
+- Chip AEC uses outputd's final speaker buffer as the XVF USB-IN reference,
+  downsampled to the chip's 16 kHz playback contract. The profile and
+  reconciler own production activation; the wake-corpus recorder owns its
+  temporary comparison overlay. The bridge's UDP reference remains at
+  outputd's 48 kHz graph rate. See the
+  [microphone reference](../jasper/mics/README.md) for chip beam-plan support.
 
 ---
 
