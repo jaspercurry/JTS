@@ -14,6 +14,11 @@ LF boosts are proposals below, not current correction guarantees. The old RC1–
 file inventories and delivery/review ladder have been removed; current repository
 rules own review and tests.
 
+Owner rulings of 2026-09-08 ([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)): D1's proposed per-room
+estimator is superseded — the ceiling is derived from the applied tune's trusted
+floor; D6 and D7 are reaffirmed; D2's residual tier above the ceiling is deferred
+to last. D1–D7 stay as written because code and research cite them.
+
 ## D1 — Bandwidth: proposed per-room transition
 
 The proposal separates modal correction below a room-dependent transition from

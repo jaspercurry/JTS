@@ -201,7 +201,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0015](0015-only-an-accepted-verdict-grades-the-round.md) | Only an accepted verdict grades the round — a session ending on a terminal rejection writes no receipt | accepted |
 | [0016](0016-reference-mark-is-an-identity-not-a-coordinate.md) | The reference mark is a stable identity, not a coordinate — and it has exactly one owner | accepted |
 | [0017](0017-retention-keeps-the-raw-capture.md) | Position retention keeps the RAW capture, never a derived summary — and the fail-soft boundary sits at the caller | accepted |
-| [0018](0018-bass-extension-stays-parked.md) | `jasper/bass_extension/` stays PARKED — neither wired up nor deleted | accepted |
+| [0018](0018-bass-extension-stays-parked.md) | `jasper/bass_extension/` stays PARKED — neither wired up nor deleted | superseded by 0257 |
 | [0019](0019-declared-metadata-gap-never-refuses-a-session.md) | A declared-metadata gap on an optional surface never refuses the session — it degrades to the default | accepted |
 | [0179](0179-the-tuning-engines-seams-are-async-and-a-release-completes-before-cancellation-propagates.md) | The tuning engine's seams are async, and a release completes before cancellation propagates | accepted |
 | [0180](0180-the-alignment-trust-floor-discloses-it-does-not-refuse.md) | The alignment trust floor discloses; it stopped refusing at the nanny burn-down | accepted |
@@ -229,6 +229,10 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0214](0214-a-raised-cushion-target-is-a-declared-window-not-a-measurement.md) | A raised cushion target is a declared window, not a measurement | amended by 0250 |
 | [0216](0216-curve-slots-are-fixed-so-a-quiet-save-takes-the-live-edit-path.md) | Curve slots are fixed, so a quiet save takes the live-edit path | accepted |
 | [0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md) | A durable save that moves only a trim writes in place | accepted |
-| [0222](0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md) | The relay is deleted; the wired microphone on jts.local is the only capture path | accepted |
+| [0222](0222-the-relay-is-deleted-the-wired-microphone-is-the-only-capture-path.md) | The relay is deleted; the wired microphone on jts.local is the only capture path | amended by 0255 |
 | [0230](0230-the-summed-graph-commissioning-lane-is-deleted.md) | The summed-graph commissioning lane is deleted | accepted |
 | [0237](0237-a-tuning-tools-stdout-is-its-answer.md) | A tuning tool's stdout is its answer | accepted |
+| [0255](0255-every-product-measures-through-the-wired-microphone.md) | Every product measures through the wired microphone | accepted |
+| [0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md) | The room ceiling follows the applied tune's trusted floor, and room correction is per cabinet | accepted |
+| [0257](0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md) | Bass extension resumes, rebased on wired capture and validated in-room below the ceiling | accepted |
+| [0258](0258-the-topology-vocabulary-is-sides-by-driver-roles-and-cardioid-is-a-variant-of-the-bass-role.md) | The topology vocabulary is sides × driver roles, and cardioid is a variant of the bass role | accepted |

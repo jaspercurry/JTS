@@ -1,5 +1,9 @@
 # Handoff: Bass Extension — volume-scheduled low-frequency alignment (plan of record)
 
+> **Resumed 2026-09-08 ([ADR-0257](adr/0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md)):** the program resumes,
+> rebased on the wired capture kernel. The relay-based transport text in
+> waves 4, 6 and 7 is stale and is rewritten when those waves are taken up.
+
 > **Status: planning brief / execution plan of record (2026-07-19).**
 > Waves 1–3 are merged: numerics, profile/observability, sealed
 > natural-at-rest graph emission, whole-graph proof, and the dormant
