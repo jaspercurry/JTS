@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from jasper.voice.session import TurnUsage
+from tests._cue_spy import SpyCues as _SpyCues
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_field_maps, event_fields, event_records
 from tests._wake_loop import _UNSET, wake_loop_for_tests
@@ -389,17 +390,6 @@ class _TeardownTurn:
 
     async def release(self) -> None:
         self.release_calls += 1
-
-
-class _SpyCues:
-    """Recording cue manager, so the REAL `_play_cue` path runs end to end."""
-
-    def __init__(self) -> None:
-        self.played: list[str] = []
-
-    async def play(self, slug: str) -> bool:
-        self.played.append(slug)
-        return True
 
 
 def _teardown_loop():

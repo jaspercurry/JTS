@@ -26,6 +26,7 @@ from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
 from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
 
 from ._async_wait import wait_signalled
+from ._cue_spy import SpyCues as _SpyCues
 from ._log_events import event_fields, event_records
 from ._wake_loop import wake_loop_for_tests
 
@@ -42,28 +43,6 @@ class _SpyCalls:
         self.called = True
         self.args = args
         self.kwargs = kwargs
-
-
-class _SpyCues:
-    """Stand-in cue manager so the REAL _play_cue path runs end to end.
-
-    Shared: the wake-path tests only reach `play()`, the daemon-lifetime
-    tests also drive the two hooks `run()` wires (`attach_tts` once the
-    playout is open, `prerender_text` from the timer pre-render hook).
-    """
-
-    def __init__(self) -> None:
-        self.played: list[str] = []
-
-    def attach_tts(self, _tts) -> None:
-        return None
-
-    async def prerender_text(self, _text: str) -> bool:
-        return True
-
-    async def play(self, slug: str) -> bool:
-        self.played.append(slug)
-        return True
 
 
 def _make_wake_loop():
