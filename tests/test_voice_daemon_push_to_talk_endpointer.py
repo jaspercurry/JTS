@@ -353,12 +353,14 @@ class _TeardownTurn:
         chunks: int = 3,
         turn_lost: bool = False,
         server_turn_complete: bool = False,
+        dropped: int = 0,
     ) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
         self._chunks = chunks
         self._turn_lost = turn_lost
         self._server_turn_complete = server_turn_complete
+        self._dropped = dropped
 
     def last_chunk_at(self) -> float:
         return 0.0
@@ -377,6 +379,9 @@ class _TeardownTurn:
 
     def chunks_received(self) -> int:
         return self._chunks
+
+    def audio_dropped_bytes(self) -> int:
+        return self._dropped
 
     def usage(self) -> TurnUsage:
         return TurnUsage()
@@ -424,6 +429,7 @@ async def _torn_down_mid_hold(
     server_turn_complete: bool = False,
     reason: str = "test",
     paused: bool = False,
+    dropped: int = 0,
     wl=None,
 ) -> _TeardownTurn:
     """Run the REAL `_end_turn_inner` on a turn where nothing else in the
@@ -439,6 +445,7 @@ async def _torn_down_mid_hold(
         chunks=chunks,
         turn_lost=turn_lost,
         server_turn_complete=server_turn_complete,
+        dropped=dropped,
     )
     wl._turn = turn
     wl._bg_tasks = set()
@@ -552,6 +559,38 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert int(fields["bytes_sent"]) == 4096
     assert int(fields["count"]) == counted
     assert fields["reason"] == turn.get("reason", "test")
+
+
+@pytest.mark.parametrize("dropped, cues", [(2048, ["internal_error"]), (0, [])])
+async def test_an_answer_truncated_by_the_playout_ceiling_is_heard(
+    dropped, cues, caplog,
+):
+    """An answer that hit `AUDIO_OUT_QUEUE_MAX_BYTES` stopped part-way,
+    which is exactly what the internal_error cue says (ADR-0254). Chunks
+    arrived, so none of the silent-response arms fire and nothing else
+    would tell the household the tail is missing.
+
+    Mutation: the same answered turn with no dropped bytes says nothing.
+    """
+    wl = _teardown_loop()
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        await _torn_down_mid_hold(
+            wl=wl, manual=False, chunks=3, input_ended=True,
+            user_speech=True, dropped=dropped,
+        )
+
+    assert wl._cues.played == cues
+    # Not a silent response: the count and its event stay untouched.
+    assert wl._silent_responses_session == 0
+    assert not event_records(caplog, "turn.silent_response")
+    records = event_records(caplog, "turn.truncated_response")
+    assert len(records) == len(cues)
+    if not records:
+        return
+    assert records[0].levelno == logging.WARNING
+    fields = event_fields(caplog, "turn.truncated_response")
+    assert int(fields["dropped_bytes"]) == dropped
+    assert int(fields["chunks_received"]) == 3
 
 
 @pytest.mark.parametrize("layer", ["cue_manager", "play_cue"])

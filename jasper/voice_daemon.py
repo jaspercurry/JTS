@@ -3147,6 +3147,26 @@ class WakeLoop:
                         endpointer=self._endpointer_label(),
                         level=logging.WARNING,
                     )
+            elif (
+                bytes_sent > 0
+                and self._turn.audio_dropped_bytes() > 0
+                and not expected_research_silence_dismiss
+            ):
+                # The model answered and the playout queue hit its byte
+                # ceiling, so the tail was dropped: the household heard an
+                # answer that stopped part-way, which is what the
+                # internal_error cue says. See ADR-0254.
+                log_event(
+                    logger,
+                    "turn.truncated_response",
+                    provider=self._cfg.voice_provider,
+                    model=_active_model(self._cfg),
+                    dropped_bytes=self._turn.audio_dropped_bytes(),
+                    chunks_received=chunks_received,
+                    endpointer=self._endpointer_label(),
+                    level=logging.WARNING,
+                )
+                play_no_answer_cue = True
             drain_part = (
                 f", drain wait {drain_wait_sec:.2f}s"
                 if drain_wait_sec is not None else ""
