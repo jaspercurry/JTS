@@ -3026,6 +3026,41 @@ def test_failed_asound_conf_render_fails_the_pass_without_restarting(tmp_path: P
     assert leftovers == [], leftovers
 
 
+def test_an_unspawnable_asound_renderer_refuses_the_same_way_a_failing_one_does(
+    tmp_path: Path,
+) -> None:
+    """A renderer that cannot be SPAWNED is the shell's 127 — the same refusal.
+
+    Uncaught, the OSError escaped main() (which handles only _Abort and
+    SystemExit), so the mixer pin this pass's own changed record earned never
+    ran and the render template was left behind in /etc/jasper.
+    """
+    live_conf = tmp_path / "asound.conf"
+    live_conf.write_bytes(b"GOOD LIVE ASOUND.CONF\n")
+
+    result = _run_reconcile(
+        tmp_path,
+        DAC8X_AND_APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_template="GOOD LIVE TEMPLATE\n",
+        extra_env={"JASPER_RENDER_ASOUND_CONF": str(tmp_path / "not-installed")},
+    )
+
+    assert result.returncode == 78, result.stderr
+    assert live_conf.read_bytes() == b"GOOD LIVE ASOUND.CONF\n"
+    assert _template(tmp_path) == "GOOD LIVE TEMPLATE\n"
+    assert list(tmp_path.glob("asoundrc.jasper.template.*")) == []
+    assert (
+        "--no-block restart jasper-dac-init.service" in _systemctl_log(tmp_path)
+    ), _systemctl_log(tmp_path)
+    _assert_omits(
+        _systemctl_log(tmp_path),
+        "--no-block restart jasper-outputd.service",
+        "stop jasper-voice.service",
+    )
+
+
 # --- the per-DAC latency floor emit -------------------------------------------
 
 _FLOOR_KEYS = (

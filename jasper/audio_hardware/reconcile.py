@@ -1381,27 +1381,34 @@ class Pass:
         if destination.is_file() and destination.read_bytes() == Path(tmp).read_bytes():
             os.unlink(tmp)
             return False
-        rc = subprocess.run(
-            [self.render_asound_conf],
-            check=False,
-            env={**os.environ, "JASPER_ASOUND_TEMPLATE": tmp},
-        ).returncode
+        try:
+            rc = subprocess.run(
+                [self.render_asound_conf],
+                check=False,
+                env={**os.environ, "JASPER_ASOUND_TEMPLATE": tmp},
+            ).returncode
+        except OSError:
+            # An absent or non-executable renderer is the shell's own 127, and
+            # it refuses for the same reason a nonzero one does. Uncaught it
+            # escaped main() (which handles only _Abort/SystemExit), skipping
+            # the mixer-pin restart and leaking this template.
+            rc = 127
         if rc != 0:
             os.unlink(tmp)
-            self.log(
-                "asound_render_failed",
-                stage="asound_conf",
-                rc=rc,
-                output_dac_id=self.output_dac_id,
-                output_dac_card=_log_token(self.output_dac_card),
-                preserved_existing=1,
+            # Fails the unit for the same reason as a rejected candidate:
+            # nothing has been stopped or restarted yet, while continuing would
+            # restart outputd against an asound.conf naming a different DAC
+            # than the outputd.env this pass already committed.
+            raise _Abort(
+                self.rejected_stage_exit(
+                    "asound_render_failed",
+                    stage="asound_conf",
+                    rc=rc,
+                    output_dac_id=self.output_dac_id,
+                    output_dac_card=_log_token(self.output_dac_card),
+                    preserved_existing=1,
+                )
             )
-            # Fails the unit for the same reason as the rejected-candidate exit
-            # below: nothing has been stopped or restarted yet, while
-            # continuing would restart outputd against an asound.conf naming a
-            # different DAC than the outputd.env this pass already committed.
-            self.restart_dac_init_for_record_change()
-            raise _Abort(78)
         os.replace(tmp, destination)
         self.log(
             "asound_rendered",
