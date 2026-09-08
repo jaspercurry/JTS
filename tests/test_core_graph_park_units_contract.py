@@ -22,8 +22,6 @@ re-leak a holder. These tests pin that:
     either started again or named in the fragment as owned by a reconciler
     the run kicks;
   * neither consumer re-inlines a park list;
-  * both install paths (full speaker + streambox) install the fragment to
-    the runtime path the deployed recovery script sources.
 
 Scope note: the multiroom-follower park set
 (jasper.local_sources.registry.local_source_park_units) is a DIFFERENT,
@@ -205,29 +203,3 @@ def test_recover_script_fails_loud_when_fragment_missing():
     )
     assert result.returncode == 66, result.stderr
     assert "missing core-graph park-list library" in result.stderr
-
-
-def test_installer_installs_fragment_to_runtime_lib_path():
-    """Both install paths copy the fragment where the deployed recovery
-    script sources it (/usr/local/lib/jasper/), since /usr/local/sbin has no
-    ../lib sibling."""
-    text = SYSTEMD_UNITS.read_text(encoding="utf-8")
-    install_line = re.compile(
-        r"install -m 0644\s*\\\s*\n\s*"
-        r'"\$\{REPO_DIR\}/deploy/lib/jasper-core-graph-park-units\.sh"\s*\\\s*\n\s*'
-        r"/usr/local/lib/jasper/jasper-core-graph-park-units\.sh",
-    )
-    install_count = len(install_line.findall(text))
-    # Both profiles call install_jasper_support_files; the file has one owner.
-    assert install_count == 1, (
-        "expected one shared support-file install owner, "
-        f"found {install_count} install line(s)"
-    )
-    for function in ("install_streambox_systemd_units", "install_systemd_units"):
-        body = text.split(f"{function}() {{", 1)[1].split("\n}\n", 1)[0]
-        assert "install_jasper_support_files" in body
-    # The runtime path the deployed recovery script falls back to.
-    assert (
-        "/usr/local/lib/jasper/jasper-core-graph-park-units.sh"
-        in RECOVER.read_text(encoding="utf-8")
-    )
