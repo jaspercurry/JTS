@@ -19,7 +19,10 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Coroutine, Mapping
 
+from jasper.audio_measurement.playback import PlaybackObservation
+
 from ..volume_latch import fader_matches
+from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import (
     MeasureSpec,
@@ -28,9 +31,8 @@ from .measure_spec import (
     measurement_delays_for,
     stubbed_capabilities,
 )
-from jasper.audio_measurement.playback import PlaybackObservation
 
-from .playback_transaction import PlaybackInterrupted, PlaybackOutcome
+from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
 from .session_seams import EngineSeams
 from .spatial import take_id_for
 
@@ -352,11 +354,6 @@ class TuningSession:
                     spec, bearing, prompt, stimulus_dbfs,
                 )
                 stimuli.append(stimulus)
-                # Accounted as each one banks, never after the walk: every
-                # stimulus is a cancel point, and a record written to the store
-                # but missing from this list is one `banked_record_ids` denies.
-                if stimulus.record_id:
-                    self._banked.append(stimulus.record_id)
 
         return MeasureOutcome(spec=spec, stimuli=tuple(stimuli))
 
@@ -473,6 +470,7 @@ class TuningSession:
             level_trims_for(spec, self.level_match_trims_db),
         )
         proven_level_db = await self._proven_level()
+        interruption = None
         try:
             outcome: PlaybackOutcome = await self.seams.play.run(
                 spec=spec,
@@ -483,7 +481,12 @@ class TuningSession:
             )
         except PlaybackInterrupted as exc:
             self.last_playback = exc.playback
-            raise
+            if not exc.wav_path:
+                raise
+            interruption = exc
+            outcome = PlaybackOutcome(
+                STAGE_RESTORE, wav_path=exc.wav_path, playback=exc.playback,
+            )
         self.last_playback = outcome.playback
         record_id = ""
         incident = outcome.incident
@@ -491,10 +494,17 @@ class TuningSession:
             if proven_level_db is None:
                 incident = incident or UNPROVEN_LEVEL
             else:
-                record_id = await self.seams.records.bank(self._record(
-                    spec, bearing, prompt, stimulus_dbfs, outcome,
-                    proven_level_db, self._next_take_id(spec.kind),
-                ))
+                async def _bank() -> str:
+                    written = await self.seams.records.bank(self._record(
+                        spec, bearing, prompt, stimulus_dbfs, outcome,
+                        proven_level_db, self._next_take_id(spec.kind),
+                    ))
+                    self._banked.append(written)
+                    return written
+
+                record_id = await resilient_restore(_bank())
+        if interruption is not None:
+            raise interruption
         return StimulusOutcome(
             position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
             level_db=proven_level_db, record_id=record_id, incident=incident,
