@@ -22,6 +22,7 @@ from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config,
     resolve_system_usb_port_role,
 )
+from jasper.log_event import render_logfmt
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
 
 
@@ -63,6 +64,67 @@ def _env_lines(
         ),
     }
     return "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items())
+
+
+def boot_role_events(
+    state: UsbPortRoleState,
+    *,
+    boot_config_changed: bool = False,
+    hat_profile: str = "",
+    hat_changed: bool = False,
+    hat_collision: I2sHatCollision | None = None,
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    """The ``event=hardware.*`` lines one role resolution publishes, in order.
+
+    One owner of that vocabulary for its two sinks: this CLI prints them on
+    stderr (ADR-0235 R4) and :mod:`jasper.audio_hardware.reconcile` logs them
+    through :func:`jasper.log_event.log_event`.
+    """
+    events: list[tuple[str, dict[str, object]]] = [
+        (
+            "hardware.usb_role_resolved",
+            {
+                "topology": state.board_topology,
+                "desired": state.desired_role,
+                "active": state.active_role,
+                "gadget_available": str(state.gadget_available).lower(),
+                "management_transport_available": str(
+                    state.management_transport_available
+                ).lower(),
+                "reason": state.reason,
+            },
+        )
+    ]
+    if boot_config_changed:
+        events.append(
+            (
+                "hardware.boot_config_changed",
+                {"reboot_required": int(state.reboot_required)},
+            )
+        )
+    if hat_changed:
+        # No `reboot_required` here: whether the running kernel already
+        # carries this overlay is desired-vs-observed, which only the
+        # reconciler's I2S reboot marker can decide (ADR-0233 one owner).
+        events.append(
+            (
+                "hardware.i2s_hat_boot_config_changed",
+                {"profile": hat_profile or "none"},
+            )
+        )
+    if hat_collision is not None:
+        events.append(
+            (
+                "hardware.i2s_hat_boot_config_conflict",
+                {
+                    "managed_overlay": hat_collision.managed_overlay,
+                    "colliding_overlays": ",".join(
+                        hat_collision.colliding_overlays
+                    ),
+                },
+            )
+        )
+    return tuple(events)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,38 +201,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     # Every event= line goes to stderr (ADR-0235 R4): stdout carries the
     # `--env` payload, stderr reaches the journal on every invocation.
-    print(
-        "event=hardware.usb_role_resolved "
-        f"topology={state.board_topology} desired={state.desired_role} "
-        f"active={state.active_role} "
-        f"gadget_available={str(state.gadget_available).lower()} "
-        "management_transport_available="
-        f"{str(state.management_transport_available).lower()} "
-        f"reason={state.reason}",
-        file=sys.stderr,
-    )
-    if changed:
-        print(
-            "event=hardware.boot_config_changed "
-            f"reboot_required={int(state.reboot_required)}",
-            file=sys.stderr,
-        )
-    if args.reconcile_boot and hat_changed:
-        # No `reboot_required` here: whether the running kernel already
-        # carries this overlay is desired-vs-observed, which only the
-        # reconciler's I2S reboot marker can decide (ADR-0233 one owner).
-        print(
-            "event=hardware.i2s_hat_boot_config_changed "
-            f"profile={desired_hat_profile or 'none'}",
-            file=sys.stderr,
-        )
-    if hat_collision is not None:
-        print(
-            "event=hardware.i2s_hat_boot_config_conflict "
-            f"managed_overlay={hat_collision.managed_overlay} "
-            f"colliding_overlays={','.join(hat_collision.colliding_overlays)}",
-            file=sys.stderr,
-        )
+    for name, fields in boot_role_events(
+        state,
+        boot_config_changed=changed,
+        hat_profile=desired_hat_profile or "",
+        hat_changed=args.reconcile_boot and hat_changed,
+        hat_collision=hat_collision,
+    ):
+        print(render_logfmt(name, fields), file=sys.stderr)
     return os.EX_IOERR if durability_failed else 0
 
 

@@ -18,8 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import (
     SafeGraphDecision,
+    apply_safe_graph_decision_to_statefile,
     build_parked_muted_graph,
     materialise_safe_graph_decision,
     parked_safe_graph_decision,
@@ -57,6 +59,87 @@ class TopologyRuntimeMutationResult:
 
     parked: RuntimeConvergenceResult
     convergence: RuntimeConvergenceResult
+
+
+@dataclass(frozen=True)
+class StatefileConvergenceResult:
+    """One boot-statefile seeding pass: the decision and what it wrote."""
+
+    decision: SafeGraphDecision
+    topology: OutputTopology
+    statefile_written: bool
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.decision.ok and self.error is None
+
+
+def converge_boot_statefile(
+    *,
+    topology_path: "str | Path | None" = None,
+    statefile_path: "str | Path | None" = None,
+    current_config_path: "str | Path | None" = None,
+    flat_config_path: "str | Path | None" = None,
+    coupling: str | None = None,
+    applied_baseline_path: "str | Path | None" = None,
+    staged_metadata_path: "str | Path | None" = None,
+    consider_applied_baseline: bool = True,
+    write_statefile: bool = False,
+) -> StatefileConvergenceResult:
+    """Select the safe persisted graph and optionally seed the boot statefile.
+
+    Never touches a live CamillaDSP: the callers that own an ordered live
+    transition are :func:`park_and_commit_topology` and the coupling
+    reconciler. ``coupling`` defaults to the persisted fan-in intent, so a bare
+    caller seeds the graph the box will actually boot.
+    """
+
+    from jasper.active_speaker.state_paths import baseline_profile_state_path
+    from jasper.output_topology import load_output_topology_strict
+
+    if coupling is None:
+        from jasper.fanin.ring_health import read_persisted_coupling
+
+        coupling = read_persisted_coupling()
+    topology = load_output_topology_strict(topology_path)
+    kwargs: dict[str, Any] = {
+        "statefile_path": statefile_path,
+        "current_config_path": current_config_path,
+        "coupling": coupling,
+        "applied_baseline_path": baseline_profile_state_path(applied_baseline_path),
+        "staged_metadata_path": staged_metadata_path,
+        "consider_applied_baseline": consider_applied_baseline,
+    }
+    if flat_config_path is not None:
+        kwargs["flat_config_path"] = flat_config_path
+    decision = safe_graph_for_current_topology(topology, **kwargs)
+    if not (write_statefile and decision.ok):
+        return StatefileConvergenceResult(decision, topology, False)
+    try:
+        decision = compose_selected_flat_graph(
+            decision, topology=topology, coupling=coupling
+        )
+        wrote = apply_safe_graph_decision_to_statefile(
+            decision,
+            statefile_path=statefile_path,
+            # Same topology object the decision was made from, so the
+            # write-time all-muted re-proof cannot be answered by a second,
+            # differently-read topology.
+            topology=topology,
+        )
+    except (
+        ActiveSpeakerConfigError,
+        OSError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+    ) as exc:
+        # Only the parked branch generates bytes, and it refuses to write
+        # anything it cannot re-prove all-muted. Fail the pass: a statefile
+        # pointing at a config we would not write is worse than a red deploy.
+        return StatefileConvergenceResult(decision, topology, False, f"{exc}")
+    return StatefileConvergenceResult(decision, topology, wrote)
 
 
 def _controller(controller_factory: Callable[[], Any] | None) -> Any:
