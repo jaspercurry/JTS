@@ -32,8 +32,8 @@ from .audio_hardware.dac import (
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
     MixerControl,
-    all_profiles as _all_dac_profiles,
     by_id as _dac_profile_by_id,
+    label_for as _dac_label_for,
     mixer_control_groups_for,
     profile_for_card_label as _dac_profile_for_card_label,
 )
@@ -60,19 +60,6 @@ APPLE_USB_VENDOR_ID, APPLE_USB_PRODUCT_ID = APPLE_USB_C_DONGLE.usb_ids[0].split(
     ":",
     1,
 )
-
-SUPPORTED_DEVICE_OUTPUT_COUNTS = {
-    profile.id: profile.physical_output_count
-    for profile in _all_dac_profiles()
-}
-SUPPORTED_DEVICE_LABELS = {
-    profile.id: profile.label
-    for profile in _all_dac_profiles()
-}
-SUPPORTED_CLOCK_DOMAIN_LABELS = {
-    profile.id: profile.clock_domain_label
-    for profile in _all_dac_profiles()
-}
 
 _CARD_RE = re.compile(r"^hw:CARD=([^,\s]+),DEV=(\d+)")
 
@@ -314,7 +301,7 @@ class OutputHardwareState:
         return cls(
             profile_id=profile_id,
             profile_label=_text(raw.get("profile_label"))
-            or SUPPORTED_DEVICE_LABELS.get(profile_id, profile_id),
+            or _dac_label_for(profile_id) or profile_id,
             status=_text(raw.get("status")) or "unknown",
             physical_output_count=_int(raw.get("physical_output_count")) or 0,
             selected_card_id=_text(raw.get("selected_card_id")),
@@ -580,9 +567,9 @@ def classify_output_cards(
             ))
         return OutputHardwareState(
             profile_id=DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-            profile_label=SUPPORTED_DEVICE_LABELS[DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID],
+            profile_label=DUAL_APPLE_USB_C_DAC_4CH.label,
             status=status,
-            physical_output_count=4,
+            physical_output_count=DUAL_APPLE_USB_C_DAC_4CH.physical_output_count,
             selected_card_id=None,
             selected_pcm=None,
             apple_dac_count=2,
@@ -592,16 +579,10 @@ def classify_output_cards(
         )
 
     if len(apple) == 1:
-        card = apple[0]
-        return OutputHardwareState(
-            profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
-            profile_label=SUPPORTED_DEVICE_LABELS[APPLE_USB_C_DONGLE_DEVICE_ID],
-            status="ready",
-            physical_output_count=2,
-            selected_card_id=card.card_id,
-            selected_pcm=card.pcm,
+        return _single_dac_state(
+            apple[0],
+            APPLE_USB_C_DONGLE,
             apple_dac_count=1,
-            child_devices=(card,),
             observed_at=observed_at,
         )
 
@@ -1329,7 +1310,7 @@ def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
             if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID
             else child.card_id,
             "device_id": child.device_id,
-            "device_label": SUPPORTED_DEVICE_LABELS.get(child.device_id, child.label),
+            "device_label": _dac_label_for(child.device_id) or child.label,
             "physical_output_indexes": physical,
             **({"serial": child.serial} if child.serial else {}),
             **({"card_id": child.card_id} if child.card_id else {}),

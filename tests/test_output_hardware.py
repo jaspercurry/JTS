@@ -127,26 +127,19 @@ def test_detected_hardware_identity_changes_with_readiness_or_blocker() -> None:
     assert detected_hardware_identity(ready) != detected_hardware_identity(blocked)
 
 
-def test_static_output_hardware_metadata_matches_dac_registry() -> None:
-    profiles = {profile.id: profile for profile in dac.all_profiles()}
+@pytest.mark.parametrize("profile", [*dac.all_profiles(), None])
+def test_output_labels_use_registry_with_unknown_fallback(profile) -> None:
+    profile_id = profile.id if profile else "unregistered_dac"
+    state = OutputHardwareState.from_mapping({
+        "profile_id": profile_id,
+        "child_devices": [{"card_id": "DAC", "device_id": profile_id, "label": "Card"}],
+    })
 
-    assert output_hardware.SUPPORTED_DEVICE_OUTPUT_COUNTS == {
-        profile.id: profile.physical_output_count
-        for profile in profiles.values()
-    }
-    assert output_hardware.SUPPORTED_DEVICE_LABELS == {
-        profile.id: profile.label
-        for profile in profiles.values()
-    }
-    assert output_hardware.SUPPORTED_CLOCK_DOMAIN_LABELS == {
-        profile.id: profile.clock_domain_label
-        for profile in profiles.values()
-    }
-    assert dac.by_id(output_hardware.HIFIBERRY_DAC8X_STUDIO_DEVICE_ID) is not None
-    assert (
-        f"{output_hardware.APPLE_USB_VENDOR_ID}:"
-        f"{output_hardware.APPLE_USB_PRODUCT_ID}"
-    ) in dac.APPLE_USB_C_DONGLE.usb_ids
+    assert state.profile_label == (profile.label if profile else profile_id)
+    hardware = topology_hardware_from_state(state)
+    assert hardware["child_devices"][0]["device_label"] == (
+        profile.label if profile else "Card"
+    )
 
 
 def test_parse_aplay_listing_classifies_known_output_cards() -> None:
