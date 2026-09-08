@@ -2157,7 +2157,8 @@ async def recover_room_startup_state(sess: Any, cam: Any) -> None:
 
 
 async def _recover_room_startup_state_locked(sess: Any, cam: Any) -> None:
-    recovery = {"required": False, "graph": "unknown", "volume": "unknown"}
+    pending = getattr(sess, "startup_recovery", None) or {}
+    recovery = {"required": pending.get("required", False), "graph": "unknown", "volume": "unknown"}
     try:
         current = await cam.get_config_file_path(best_effort=False)
         if not current or current == "None":

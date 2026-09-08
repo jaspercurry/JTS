@@ -220,6 +220,14 @@ async def test_room_startup_recovers_owned_graph_and_current_household_intent(
         assert envelope["next_action"]["endpoint"] == "/reset"
         if outcome == "volume_failed":
             assert cam.current == str(original.measurement_config_path)
+            cam.path_readable = False
+            await correction_handlers._run_locked_room_reset(fresh, cam)
+            retry = build_envelope(fresh, readiness_blocker=None)
+            assert retry["startup_recovery"]["required"]
+            assert retry["state"] == "failed"
+            assert retry["next_action"]["endpoint"] == "/reset"
+            assert cam.current == str(original.measurement_config_path)
+            cam.path_readable = True
         elif outcome == "volume_deferred":
             assert status["startup_recovery"]["volume"] == "deferred"
             assert cam.db == -36.0
