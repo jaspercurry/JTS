@@ -23,30 +23,12 @@ class ModelStatus(StrEnum):
 
 
 class InterruptReconcile(StrEnum):
-    """How a provider reconciles its conversation history after JTS cuts
-    assistant playback short on a barge-in / local cancel.
+    """Provider history support after interruption.
 
-    This is the barge-in "pack" capability declaration: the robust-barge-in
-    packs (later PRs) branch on this kind, never on provider name, so adding
-    or swapping a provider needs no ``if provider == "openai"`` edit in pack
-    code — same self-similar-registry boundary the transit providers use.
-    The matching adapter methods are ``LiveTurn.cancel_response()`` and
-    ``LiveTurn.truncate_assistant_audio()`` in ``jasper/voice/session.py``.
-
-    Kinds:
-
-    - ``needs_client_truncate`` — the WebSocket transport keeps the full
-      generated assistant turn server-side, so the client must send
-      ``conversation.item.truncate`` at the heard boundary to align history
-      (OpenAI Realtime).
-    - ``server_self_truncates`` — the provider drops the unspoken tail on its
-      own when user activity interrupts (Gemini Live's
-      ``START_OF_ACTIVITY_INTERRUPTS``); there is no client truncate call to
-      synthesize.
-    - ``inherits`` — same wire shape as the provider this adapter subclasses;
-      resolved to the base provider's kind via ``interrupt_reconcile_base``
-      (Grok inherits OpenAI). Lets ``resolve_interrupt_reconcile()`` follow
-      the one real subclass edge instead of duplicating the base's choice.
+    Client truncation uses an owned item's confirmed local ledger boundary.
+    Gemini server truncation retains content already sent to the client; it
+    cannot account for JTS playback queues. JTS reopens without that context
+    after cancellation. INHERITS resolves the adapter's subclass contract.
     """
     NEEDS_CLIENT_TRUNCATE = "needs_client_truncate"
     SERVER_SELF_TRUNCATES = "server_self_truncates"

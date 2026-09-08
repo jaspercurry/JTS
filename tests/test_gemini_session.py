@@ -22,6 +22,8 @@ from tests._gemini_fakes import ServerContent as _SC
 from tests._gemini_fakes import Usage as _Usage
 
 try:
+    from google.genai import types
+
     from jasper.voice.gemini_session import (
         GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
         GeminiLiveConnection,
@@ -34,6 +36,38 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     not _HAVE_GENAI, reason="google-genai not installed in this environment"
 )
+
+
+@pytest.mark.parametrize("transcripts", [False, True])
+async def test_sdk_combined_audio_transcripts_and_completion(transcripts):
+    conn = GeminiLiveConnection(api_key="fake", model="fake")
+    turn = GeminiLiveTurn(conn, started_at=0)
+    conn._active_turn = turn
+    audio = [b"\x01\x00", b"\x02\x00"]
+    response = types.LiveServerMessage(server_content=types.LiveServerContent(
+        model_turn=types.Content(role="model", parts=[
+            types.Part(text="model text is not a native transcript"),
+            *(types.Part(inline_data=types.Blob(data=pcm, mime_type="audio/pcm;rate=24000"))
+              for pcm in audio),
+        ]),
+        input_transcription=types.Transcription(text="hello") if transcripts else None,
+        output_transcription=types.Transcription(text="good day") if transcripts else None,
+        turn_complete=True,
+    ))
+    await turn._on_response(response)
+    chunks = await asyncio.wait_for(_collect_chunks(turn), 1)
+    assert len(chunks) == 1
+    assert chunks[0].pcm == b"".join(audio)
+    assert chunks[0].provider_item_id is None
+    assert turn.server_turn_complete()
+    capture = turn.capture()
+    assert capture.user_text == ("hello" if transcripts else None)
+    assert capture.assistant_text == ("good day" if transcripts else None)
+    assert capture.data["transcripts_available"] is transcripts
+
+
+async def _collect_chunks(turn):
+    return [chunk async for chunk in turn.audio_out_chunks()]
 
 
 def test_secret_literals_reports_the_api_key():

@@ -13,6 +13,7 @@ from google import genai
 from google.genai import types
 from google.genai.live import AsyncSession
 
+from ..log_event import log_event
 from ..tools import dispatch_tool
 from ._base import BaseLiveConnection, BaseLiveTurn
 from ._supervisor import (
@@ -151,10 +152,9 @@ class GeminiLiveTurn(BaseLiveTurn):
         )
         self._usage = dict(self._usage_baseline)
         self._activity_end_sent = False
-        # Gemini Live does not currently expose final text transcripts through
-        # this adapter. Keep bounded metadata so conversation history can show
-        # that an opt-in captured turn happened without storing tool args or
-        # result payloads.
+        self._cancel_requested = False
+        self._user_transcript_parts: list[str] = []
+        self._assistant_transcript_parts: list[str] = []
         self._tool_call_names: list[str] = []
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -231,27 +231,29 @@ class GeminiLiveTurn(BaseLiveTurn):
         return delta if delta >= 0 else observed
 
     def capture(self) -> TurnCapture | None:
-        """Metadata only: Gemini Live surfaces no transcripts here, so
-        `/chat` can show that a turn happened (and which tools it used)
-        without leaking prompts, arguments, or provider payloads."""
+        user = "".join(self._user_transcript_parts).strip() or None
+        assistant = "".join(self._assistant_transcript_parts).strip() or None
         data: dict[str, object] = {
             "kind": "voice_turn",
-            "transcripts_available": False,
+            "transcripts_available": user is not None or assistant is not None,
         }
         if self._tool_call_names:
             data["tools"] = list(self._tool_call_names)
-        return TurnCapture(data=data)
-
-    # ---- Interruptible (Gemini pack) ----
-    # Both methods are no-ops: Gemini has no client cancel call and no
-    # per-response audio item id to truncate against. See ADR-0115 and
-    # ``session.Interruptible``.
+        return TurnCapture(user_text=user, assistant_text=assistant, data=data)
 
     async def cancel_response(self, reason: str) -> None:
-        # No-op: Gemini interruption is provider-side generation state;
-        # there is no client cancel call to synthesize. `reason` reserved
-        # for a future structured-log line.
-        return None
+        if (self._released or self._turn_lost or not self._activity_end_sent
+                or self._cancel_requested):
+            return
+        self._cancel_requested = True
+        self.drop_pending_audio()
+        if not self._server_turn_complete:
+            try:
+                await self._conn._send_realtime_input(self, activity_start=types.ActivityStart())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Gemini cancel failed (%s)", type(e).__name__)
+                self._on_connection_lost()
+        log_event(logger, "barge.cancel", reason=reason, provider="gemini")
 
     async def truncate_assistant_audio(
         self, provider_item_id: str | None, audio_played_ms: int,
@@ -267,7 +269,7 @@ class GeminiLiveTurn(BaseLiveTurn):
     async def _on_response(self, response) -> None:
         # Audio frames live on response.data (raw 24 kHz int16 PCM).
         data = getattr(response, "data", None)
-        if data:
+        if data and not self._cancel_requested and not self._server_turn_complete:
             now = asyncio.get_event_loop().time()
             self._last_activity_at = now
             self._last_chunk_at = now
@@ -286,7 +288,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         # inside its loop too — covers slow / chained dispatches the
         # initial reset here can't see.
         tool_call = getattr(response, "tool_call", None)
-        if tool_call is not None:
+        if tool_call is not None and not self._cancel_requested:
             self._note_activity()
             await self._conn._handle_tool_call(tool_call, self)
             if not self._conn._owns_turn(self):
@@ -296,13 +298,23 @@ class GeminiLiveTurn(BaseLiveTurn):
         turn_just_completed = False
         sc = getattr(response, "server_content", None)
         if sc is not None:
-            if getattr(sc, "turn_complete", False):
+            if not self._cancel_requested:
+                for field, parts in (
+                    ("input_transcription", self._user_transcript_parts),
+                    ("output_transcription", self._assistant_transcript_parts),
+                ):
+                    text = getattr(getattr(sc, field, None), "text", None)
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+            if getattr(sc, "turn_complete", False) and not self._server_turn_complete:
                 self._note_activity()
                 self._server_turn_complete = True
+                self._audio_q.put_nowait(None)
                 turn_just_completed = True
             if getattr(sc, "interrupted", False):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
+                self._cancel_requested = True
                 self.drop_pending_audio()
                 self._interrupt_event.set()
                 logger.info("model interrupted by user")
@@ -516,7 +528,8 @@ class GeminiLiveConnection(BaseLiveConnection):
     async def _on_turn_released(self, turn: GeminiLiveTurn) -> None:
         async with self._send_lock:
             if (self._active_turn is turn and self._session is not None
-                    and turn._session is self._session and not turn._server_turn_complete):
+                    and turn._session is self._session
+                    and (turn._cancel_requested or not turn._server_turn_complete)):
                 # Gemini has no client clear-buffer call. Reopen without the
                 # old handle so abandoned input and tool calls cannot resume.
                 self._on_context_reset()
@@ -598,53 +611,14 @@ class GeminiLiveConnection(BaseLiveConnection):
                     ),
                 ),
             ),
-            # Manual VAD + activity markers. The daemon's wake-word
-            # detector already gates "is the user talking right now",
-            # so server-side automatic VAD adds nothing useful and
-            # makes ambient/music handling fiddly. With manual VAD we
-            # ONLY stream mic frames between activity_start/activity_end,
-            # so the server doesn't see music or background noise at
-            # all between turns.
-            #
-            # NO_INTERRUPTION: server doesn't let user activity interrupt
-            # the model mid-turn. Necessary because we have no working
-            # bleed-vs-real-speech distinguisher in software — Silero VAD
-            # treats TTS bleed as "speech" (which it is — TTS is by design
-            # speech-shaped), so the server-side VAD AND any local VAD
-            # will both fire on the model's own bleed-through. With
-            # NO_INTERRUPTION the server ignores user activity until
-            # turn_complete, so the model always finishes its sentence.
-            #
-            # Barge-in (flag JASPER_BARGE_IN_GEMINI, DEFAULT OFF) keeps THIS
-            # config — manual VAD + NO_INTERRUPTION — even when enabled:
-            # option (a). The
-            # daemon's local Silero-on-AEC gate (request_local_interrupt) is
-            # the sole interruption authority, so this connection never reads
-            # the flag and the flag-OFF/-ON payloads are identical. We do NOT
-            # enable server VAD (option b): it would re-open the
-            # self-interrupt-on-bleed loop this line prevents. Pinned by
-            # tests/test_gemini_barge_in.py.
-            # Manual VAD: client owns turn boundaries via activity_start
-            # / activity_end markers. This is the canonical multi-turn
-            # pattern on a persistent connection — each pair is one
-            # turn, and the server uses them as the unambiguous turn
-            # signal. Auto VAD with pause-resume (stop streaming
-            # between turns) silently breaks on turn 2: the server
-            # never sees a clean turn boundary so it drops turn-2's
-            # audio entirely (0 input_tokens, 0 chunks back).
-            # Sending audio_stream_end instead of activity_end is also
-            # wrong here — that's auto-VAD's "stream paused" signal,
-            # observed to also leave turn 2 silently failing.
-            # The user-silence detector in voice_daemon.py
-            # (END_OF_UTTERANCE_SILENCE_SEC) calls turn.end_input()
-            # the moment Silero sees ~1.2 s of silence after the user
-            # has spoken; that fires the activity_end marker so the
-            # server can process the utterance and begin generating.
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+            # Manual activity remains client-owned, including interruption.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=True,
                 ),
-                activity_handling=types.ActivityHandling.NO_INTERRUPTION,
+                activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
             ),
             session_resumption=self._build_session_resumption(),
         )
@@ -700,7 +674,7 @@ class GeminiLiveConnection(BaseLiveConnection):
         t0 = _time.monotonic()
         session, cm = self._session, self._session_cm
         turn = self._active_turn
-        if turn is not None and not turn._server_turn_complete:
+        if turn is not None and (turn._cancel_requested or not turn._server_turn_complete):
             self._on_context_reset()
         self._session = self._session_cm = None
         self._connected_event.clear()
@@ -854,16 +828,16 @@ class GeminiLiveConnection(BaseLiveConnection):
         responses = []
         t0 = _time.monotonic()
         for fc in tool_call.function_calls:
-            if not self._owns_turn(turn):
+            if not self._owns_turn(turn) or turn._cancel_requested:
                 return
             turn._record_tool_call_name(fc.name)
             payload = await dispatch_tool(self._registry, fc.name, dict(fc.args or {}))
-            if not self._owns_turn(turn):
+            if not self._owns_turn(turn) or turn._cancel_requested:
                 return
             responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=payload))
             turn._note_activity()
         async with self._send_lock:
-            if not self._owns_turn(turn):
+            if not self._owns_turn(turn) or turn._cancel_requested:
                 return
             assert turn._session is not None
             await turn._session.send_tool_response(function_responses=responses)
