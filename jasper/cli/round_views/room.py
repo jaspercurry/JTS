@@ -335,7 +335,7 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
                 break
         else:
             clusters.append((feature, {position: feature}))
-    features = []
+    features: list[dict[str, Any]] = []
     for seed, members in clusters:
         depths = np.asarray([member.depth_db for member in members.values()])
         median_depth = float(np.median(depths))

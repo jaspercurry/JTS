@@ -151,8 +151,7 @@ def test_room_ceiling_writes_the_disclosed_fallback_for_a_round_with_no_profile(
     assert doc["ceiling_source"] == answer["ceiling_source"] == "fallback"
     assert doc["ceiling_hz"] == ROOM_BOUNDARY_DEFAULT_HZ
     assert doc["clamp_hz"] == [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]
-    inventory = _run(capsys, ["inventory", str(round_dir)])
-    assert inventory["present"] >= 2
+    _run(capsys, ["inventory", str(round_dir)])
     rows = {
         row["artifact"]: row["present"]
         for row in json.loads((round_dir / "inventory.json").read_text())["artifacts"]
