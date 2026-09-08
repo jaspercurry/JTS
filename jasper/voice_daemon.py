@@ -795,6 +795,7 @@ class WakeLoop:
         self._input_max_age_ms = 0
         self._input_suspended: set[str] = set()
         self._input_admit_after = 0.0
+        self._input_invalidation_reason = "MUTED"
 
         self._peering = PeeringClient(
             enabled=cfg.peering_enabled, socket_path=cfg.peering_uds_socket,
@@ -1279,33 +1280,29 @@ class WakeLoop:
     async def _prepare_assistant_loudness_context(self) -> None:
         await self._assistant_output.prepare_loudness()
 
-    async def mute_mic(self) -> str:
-        """Stop listening: drop mic frames at the wake-loop gate. If a
-        voice session is currently active, end the turn first so the
-        user gets "stop NOW" semantics rather than the model finishing
-        a half-sentence before going silent.
+    def _invalidate_input(self, reason: str) -> None:
+        self._input_admit_after = time.monotonic()
+        self._input_invalidation_reason = reason
+        self._input_suspended.update(self._legs)
+        self._input_suspended.update(self._push_to_talk.sources)
+        self._pre_roll.clear()
+        self._frozen_pre_roll = None
+        self._acquire_buffer.clear()
+        for rt in self._legs.values():
+            if rt.capture_ring is not None:
+                rt.capture_ring.clear()
 
-        Idempotent — calling twice is harmless. Always returns "ok".
-        """
+    async def mute_mic(self) -> str:
+        """Pause input and end the active turn; repeated calls are no-ops."""
         if self._mic_muted:
             return "ok"
         self._mic_muted = True
+        self._invalidate_input("MUTED")
         if self._state is State.SESSION:
             try:
                 await self._end_turn("mic_muted")
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
-        # Drop already-buffered room audio, not just future frames. The
-        # pre-roll otherwise survives the mute and is replayed into the
-        # first turn after unmute (~560 ms of pre-mute room audio sent
-        # to the LLM); the telemetry capture rings would likewise write
-        # pre-mute audio to disk if a wake fired right after unmute.
-        self._pre_roll.clear()
-        self._frozen_pre_roll = None
-        self._acquire_buffer.clear()
-        for _rt in self._legs.values():
-            if _rt.capture_ring is not None:
-                _rt.capture_ring.clear()
         write_mic_muted(self._cfg.mic_mute_state_path, True)
         log_event(logger, "mic.mute")
         await self._play_mute_click(going_on=False)
@@ -1316,9 +1313,7 @@ class WakeLoop:
         if not self._mic_muted:
             return "ok"
         self._mic_muted = False
-        self._input_admit_after = time.monotonic()
-        self._input_suspended.update(self._legs)
-        self._input_suspended.update(self._push_to_talk.sources)
+        self._invalidate_input("MUTED")
         write_mic_muted(self._cfg.mic_mute_state_path, False)
         log_event(logger, "mic.unmute")
         await self._play_mute_click(going_on=True)
@@ -2448,10 +2443,12 @@ class WakeLoop:
                     )
 
     def _check_input_admission(self, input_epoch: float) -> None:
-        if self._mic_muted or input_epoch != self._input_admit_after:
+        if self._mic_muted:
             raise _InputAdmissionClosed("MUTED")
         if self._measurement_active.is_set():
             raise _InputAdmissionClosed("MEASURING")
+        if input_epoch != self._input_admit_after:
+            raise _InputAdmissionClosed(self._input_invalidation_reason)
 
     async def _begin_turn_inner(
         self,
