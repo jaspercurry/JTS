@@ -520,52 +520,10 @@ def test_the_wide_wire_rule_is_wired_into_the_active_arm(monkeypatch, tmp_path):
     assert "WIDE wire" in detail, detail
 
 
-# --- 1f: the reconciler / emitter walk --------------------------------------
-
-
-def test_the_reconciler_stages_the_composite_active_lane_pair():
-    """``apply_observed_composite_policy`` used to DISCARD the endpoint device
-    ``active_graph_status`` returns, so no composite could ever be staged no
-    matter what the Python preflights admitted."""
-    script = (REPO_ROOT / "jasper" / "audio_hardware" / "reconcile.py").read_text(
-        encoding="utf-8"
-    )
-    assert "self.dual_apple_active_endpoint_device = payload[1]" in script
-    assert 'self.set_outputd_active_lane_pair("1", dual_apple_endpoint)' in script
-
-
-def test_the_ring_conf_journal_carries_the_active_width():
-    """The whitelist arm that stops 1d's headline output being dropped silently.
-
-    ``render_ring_conf_if_needed`` parses the renderer's ``key value`` lines
-    through a ``case`` whose unmatched arm drops the key with NO diagnostic — so
-    a key the renderer prints and this whitelist lacks is invisible rather than
-    wrong, which is the shape that hid ``ring_active_channels`` in the first
-    place. Pinning the ARM (not only the rendered log line) is that same
-    silent-drop lesson applied to the fix for it: a literal log-line pin would
-    still pass if the arm were re-added under a misspelled key and the value
-    came from somewhere else.
-    """
-    script = (REPO_ROOT / "jasper" / "audio_hardware" / "reconcile.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'ring_active_channels=report.get("ring_active_channels")' in script, (
-        "the renderer resolves ring_active_channels; without this field the "
-        "journal line drops it silently"
-    )
-
-
-def test_an_aloop_composite_still_clears_the_pair():
-    """SCOPED TO THE OBSERVED-BROKEN PATH. A composite whose accepted graph does
-    NOT name the ring device keeps the unconditional clear it has today."""
-    script = (REPO_ROOT / "jasper" / "audio_hardware" / "reconcile.py").read_text(
-        encoding="utf-8"
-    )
-    marker = "if dual_apple_endpoint == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE:"
-    assert marker in script
-    _head, _, tail = script.partition(marker)
-    branch = tail.split("\n        self.log(", 1)[0]
-    assert 'self.set_outputd_active_lane_pair("", "")' in branch
+# --- 1f: the emitter walk ---------------------------------------------------
+#
+# The reconciler's own half is pinned behaviourally in
+# tests/test_audio_hardware_reconcile.py, over a real composite pass.
 
 
 def test_outputd_admits_a_composite_active_ring_endpoint():

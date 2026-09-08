@@ -44,29 +44,27 @@ SCRIPT = ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
 SHIPPED_RING_CONF = ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 
 
+def _script(tmp_path: Path, name: str, body: str) -> Path:
+    """An executable stand-in at ``tmp_path/name`` whose whole job is ``body``."""
+    script = tmp_path / name
+    script.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
 def _fake_aplay(tmp_path: Path, listing: str) -> Path:
-    fake = tmp_path / "aplay"
-    fake.write_text(
-        "#!/bin/sh\ncat \"$JASPER_FAKE_APLAY_LISTING\"\n",
-        encoding="utf-8",
-    )
-    fake.chmod(0o755)
     (tmp_path / "aplay-L.txt").write_text(listing, encoding="utf-8")
-    return fake
+    return _script(tmp_path, "aplay", 'cat "$JASPER_FAKE_APLAY_LISTING"\n')
 
 
 def _fake_renderer(tmp_path: Path) -> tuple[Path, Path]:
-    log = tmp_path / "render.log"
-    fake = tmp_path / "jasper-render-asound-conf"
-    fake.write_text(
-        "#!/bin/sh\n"
+    fake = _script(
+        tmp_path,
+        "jasper-render-asound-conf",
         "printf 'render\\n' >> \"$JASPER_RENDER_LOG\"\n"
-        "cp \"$JASPER_ASOUND_TEMPLATE\" \"$JASPER_ASOUND_CONF\"\n"
-        "exit 0\n",
-        encoding="utf-8",
+        'cp "$JASPER_ASOUND_TEMPLATE" "$JASPER_ASOUND_CONF"\n',
     )
-    fake.chmod(0o755)
-    return fake, log
+    return fake, tmp_path / "render.log"
 
 
 def _converged(**kwargs: Any) -> SimpleNamespace:
@@ -374,6 +372,30 @@ def _dual_apple_cards(tmp_path: Path, cards=_DUAL_APPLE_CARDS) -> dict[str, str]
     }
 
 
+def _topology_payload(
+    *,
+    topology_id: str,
+    name: str,
+    hardware: dict,
+    status: str = "ready",
+    speaker_groups: list | None = None,
+    routing: dict | None = None,
+) -> dict:
+    """One saved-topology envelope: the schema keys every payload states,
+    around the hardware the case is actually about."""
+    return {
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": topology_id,
+        "name": name,
+        "status": status,
+        "hardware": hardware,
+        "speaker_groups": speaker_groups or [],
+        "routing": routing or {},
+        "safety": {},
+    }
+
+
 def _dual_apple_topology(tmp_path: Path, *, active: bool = False) -> Path:
     """The saved topology of a dual-Apple pair, pinning its child order.
 
@@ -407,19 +429,14 @@ def _dual_apple_topology(tmp_path: Path, *, active: bool = False) -> Path:
         from tests.test_active_speaker_runtime_contract import _active_topology
 
         payload = _active_topology("stereo", "active_2_way").to_dict()
+        payload.update(
+            {"topology_id": "dual_apple", "name": "Dual Apple", "hardware": hardware}
+        )
     else:
         hardware["outputs"] = []
-        payload = {
-            "artifact_schema_version": 1,
-            "kind": "jts_output_topology",
-            "status": "ready",
-            "speaker_groups": [],
-            "routing": {},
-            "safety": {},
-        }
-    payload.update(
-        {"topology_id": "dual_apple", "name": "Dual Apple", "hardware": hardware}
-    )
+        payload = _topology_payload(
+            topology_id="dual_apple", name="Dual Apple", hardware=hardware
+        )
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text(json.dumps(payload), encoding="utf-8")
     return topology_path
@@ -676,9 +693,12 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
 
     declare_slot_floor()
     conf = _staged_ring_conf(tmp_path)
+    # The listing has to name the profile `declare_slot_floor` declares for, or
+    # the pass short-circuits at `no_declared_floor` and the whitelist below is
+    # compared against the three keys that shape carries.
     result = _run_reconcile(
         tmp_path,
-        INNOMAKER_LISTING,
+        DAC8X_AND_APPLE_LISTING,
         "--reason",
         "test",
         extra_env={"JASPER_RING_CONF_D": str(conf)},
@@ -686,10 +706,11 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
 
     assert result.returncode == 0, result.stderr
     resolved = ring_conf_wire_report(
-        profile_id="innomaker_hifi_amp_pro",
+        profile_id="hifiberry_dac8x",
         conf_d=str(conf),
         output_topology=str(tmp_path / "output_topology.json"),
     )
+    assert resolved["ring_active_channels"], "the shape under test never rendered"
     fields = stderr_event(result.stderr, "audio_hardware_reconcile.ring_conf")
     # `conf` is journalled as a log token, so compare the key set plus the
     # values that travel verbatim.
@@ -910,34 +931,17 @@ def test_record_change_with_i2s_apply_error_restarts_dac_init_before_exit(
 # --- identity: what the registry says reaches env, template and record --------
 
 
-def test_print_env_prefers_dac8x_but_keeps_apple_control_role(tmp_path: Path):
-    result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--print-env")
-
-    assert result.returncode == 0, result.stderr
-    assert "DONGLE_CARD=A" in result.stdout
-    assert "APPLE_DONGLE_PRESENT=1" in result.stdout
-    assert "APPLE_DONGLE_SERVICE_CARD=auto" in result.stdout
-    assert "OUTPUT_DAC_CARD=sndrpihifiberry" in result.stdout
-    assert "OUTPUT_DAC_ID=hifiberry_dac8x" in result.stdout
-    assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
-    assert "OUTPUT_DAC_ROUTE" not in result.stdout
-    assert not (tmp_path / "jasper.env").exists()
-    assert not (tmp_path / "output_hardware.json").exists()
-
-
 def test_the_pass_is_pinned_to_the_checkout_the_shim_ran_from(tmp_path: Path):
     """install.sh runs `--print-env` from the rsynced checkout BEFORE the venv
     is refreshed, so an unpinned spawn pairs the NEW shim with the PREVIOUS
     build's pass and every key that build never emitted reads as empty."""
     log = tmp_path / "pythonpath.log"
-    fake = tmp_path / "recording-python"
-    fake.write_text(
-        "#!/usr/bin/env bash\n"
+    fake = _script(
+        tmp_path,
+        "recording-python",
         'printf \'%s\\n\' "${PYTHONPATH:-}" >> "$JASPER_FAKE_PYTHONPATH_LOG"\n'
         'exec "$JASPER_FAKE_PYTHON_REAL" "$@"\n',
-        encoding="utf-8",
     )
-    fake.chmod(0o755)
     # An inherited PYTHONPATH that is NOT the checkout, so the pin below can
     # only be satisfied by the shim prepending its own tree.
     inherited = str(tmp_path / "inherited-site")
@@ -994,15 +998,6 @@ def test_a_failed_classification_leaves_every_observed_fact_at_its_absent_value(
         "OUTPUT_DAC_RECOGNIZED=0",
     )
     assert not (tmp_path / "output_hardware.json").exists()
-
-
-def test_print_env_recognizes_dac8x_studio_role(tmp_path: Path):
-    result = _run_reconcile(tmp_path, DAC8X_STUDIO_LISTING, "--print-env")
-
-    assert result.returncode == 0, result.stderr
-    assert "OUTPUT_DAC_CARD=DAC8XStudio" in result.stdout
-    assert "OUTPUT_DAC_ID=hifiberry_dac8x_studio" in result.stdout
-    assert "OUTPUT_DAC_RECOGNIZED=1" in result.stdout
 
 
 def _parse_print_env(stdout: str) -> dict[str, str]:
@@ -1081,66 +1076,110 @@ def test_print_env_pins_the_install_contract(
     assert result.returncode == 0, result.stderr
     assert _parse_print_env(result.stdout) == expected
     assert result.stdout.count("\n") == len(expected)
+    # `--print-env` promises no mutations, and install.sh evals it mid-install.
+    assert not (tmp_path / "jasper.env").exists()
+    assert not (tmp_path / "output_hardware.json").exists()
 
 
-def test_reconcile_innomaker_uses_registry_identity_and_renders_raw_hw(
+@pytest.mark.parametrize(
+    ("listing", "dac_id", "dac_card", "dac_format", "apple_output"),
+    [
+        pytest.param(
+            INNOMAKER_LISTING, "innomaker_hifi_amp_pro", "sndrpimerusamp",
+            "S32_LE", False, id="innomaker",
+        ),
+        # The dongle's USB descriptor advertises S16_LE and S24_3LE; the packed
+        # 24-bit edge is the widest it will install. It is also the only
+        # profile declaring the mixer control the drift monitor re-pins.
+        pytest.param(
+            APPLE_LISTING, "apple_usb_c_dongle", "A", "S24_3LE", True, id="apple",
+        ),
+        # An Apple card is PRESENT here and still does not drive: the DAC8x
+        # wins the role, and the monitor follows the profile that drives.
+        pytest.param(
+            DAC8X_AND_APPLE_LISTING, "hifiberry_dac8x", "sndrpihifiberry",
+            "S32_LE", False, id="dac8x-with-apple-present",
+        ),
+        # The Studio driver writes no mixer defaults of its own, so its profile
+        # declares pins — and the boot pin is enabled for it — while the
+        # Apple-only drift monitor stays off.
+        pytest.param(
+            DAC8X_STUDIO_LISTING, "hifiberry_dac8x_studio", "DAC8XStudio",
+            "S16_LE", False, id="dac8x-studio",
+        ),
+    ],
+)
+def test_reconcile_arms_each_recognized_single_dac_role(
     tmp_path: Path,
+    listing: str,
+    dac_id: str,
+    dac_card: str,
+    dac_format: str,
+    apple_output: bool,
 ):
-    result = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "test")
+    """One recognized single DAC, end to end: identity into jasper.env, the
+    declared edge into outputd.env, a raw hw alias into the template, and the
+    unit gate that follows from the profile that DRIVES."""
+    result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
-    env_text = _jasper_env(tmp_path)
-    assert "JASPER_AUDIO_DAC_ID=innomaker_hifi_amp_pro" in env_text
-    assert "JASPER_AUDIO_DAC_CARD=sndrpimerusamp" in env_text
+    _assert_states(
+        _jasper_env(tmp_path),
+        f"JASPER_AUDIO_DAC_ID={dac_id}",
+        f"JASPER_AUDIO_DAC_CARD={dac_card}",
+    )
     outputd_env = _outputd_env(tmp_path)
-    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=\n" in outputd_env
-    assert "JASPER_OUTPUTD_ACTIVE_LANE=\n" in outputd_env
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
-    assert final_edge_format_for("innomaker_hifi_amp_pro") == "S32_LE"
+    _assert_states(
+        outputd_env,
+        "JASPER_OUTPUTD_SINK=single_alsa",
+        f"JASPER_OUTPUTD_DAC_FORMAT={dac_format}",
+        # No active baseline loaded => an ordinary stereo speaker, never the
+        # wide active lane (fail-closed: the gate kept it stereo).
+        "JASPER_OUTPUTD_ACTIVE_CHANNELS=\n",
+        "JASPER_OUTPUTD_ACTIVE_LANE=\n",
+    )
+    assert "single_alsa_active" not in result.stderr
+    # The declared edge, not a value invented here.
+    assert final_edge_format_for(dac_id) == dac_format
+    # The unit owns the TTS socket names; the reconciler is not a second writer.
+    assert not (tmp_path / "tts.env").exists()
     template = _template(tmp_path)
     # No profile-scoped plug: every recognized single DAC renders a raw hw
     # alias, which is what outputd's format request lands on.
     assert "type plug" not in template
-    _assert_states(template, "type hw", "card sndrpimerusamp", "device 0")
-    assert _render_log(tmp_path) == "render\n"
-
-
-def test_reconcile_apple_role_enables_apple_helpers_and_renders(tmp_path: Path):
-    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
-
-    assert result.returncode == 0, result.stderr
-    env_text = _jasper_env(tmp_path)
-    assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
-    assert "JASPER_AUDIO_DAC_CARD=A" in env_text
-    outputd_env = _outputd_env(tmp_path)
-    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # The dongle's USB descriptor advertises S16_LE and S24_3LE; the packed
-    # 24-bit edge is the widest it will install.
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S24_3LE" in outputd_env
-    assert not (tmp_path / "tts.env").exists()
-    template = _template(tmp_path)
-    _assert_states(template, "pcm.outputd_dac", "type hw", "card A")
+    _assert_states(template, "pcm.outputd_dac", "type hw", f"card {dac_card}")
     _assert_no_empty_alsa_card(template)
     assert _render_log(tmp_path) == "render\n"
+
     commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service" in commands
-    assert "enable jasper-headphone-monitor.service" in commands
-    # The pin is RESTARTED: RemainAfterExit makes a `start` a no-op once the
-    # one-shot has run, and at boot it can run before the record it reads
-    # exists.
-    assert "--no-block restart jasper-dac-init.service" in commands
-    # The monitor is ensured idempotently, never restarted: this gate runs on
-    # every udev/reconcile pass and a deploy fires it repeatedly inside the
-    # unit's StartLimitIntervalSec, so a restart-per-pass burns StartLimitBurst
-    # and parks it 'start-limit-hit'.
-    assert "reset-failed jasper-headphone-monitor.service" in commands
-    assert "start jasper-headphone-monitor.service" in commands
-    assert "restart jasper-headphone-monitor.service" not in commands
-    assert "stop jasper-voice.service" in commands
-    assert "reset-failed jasper-outputd.service" in commands
-    assert "--no-block restart jasper-outputd.service" in commands
-    assert "--no-block restart jasper-aec-reconcile.service" in commands
+    # The pin is enabled on every box — a DAC that declares no mixer controls
+    # is jasper-dac-init's own clean exit, not a unit to disable. It is
+    # RESTARTED, because RemainAfterExit makes a `start` a no-op once the
+    # oneshot has run and at boot it can run before the record it reads exists.
+    _assert_states(
+        commands,
+        "enable jasper-dac-init.service",
+        "--no-block restart jasper-dac-init.service",
+        "stop jasper-voice.service",
+        "reset-failed jasper-outputd.service",
+        "--no-block restart jasper-outputd.service",
+        "--no-block restart jasper-aec-reconcile.service",
+    )
+    if apple_output:
+        # The monitor is ensured idempotently, never restarted: this gate runs
+        # on every udev/reconcile pass and a deploy fires it repeatedly inside
+        # the unit's StartLimitIntervalSec, so a restart-per-pass burns
+        # StartLimitBurst and parks it 'start-limit-hit'.
+        _assert_states(
+            commands,
+            "enable jasper-headphone-monitor.service",
+            "reset-failed jasper-headphone-monitor.service",
+            "start jasper-headphone-monitor.service",
+        )
+        _assert_omits(commands, "restart jasper-headphone-monitor.service")
+    else:
+        assert "disable --now jasper-headphone-monitor.service" in commands
+        _assert_omits(commands, "enable jasper-headphone-monitor.service")
 
 
 @pytest.mark.parametrize(
@@ -1173,51 +1212,6 @@ def test_a_refused_env_lock_fails_the_pass_without_restarting(
 
     assert result.returncode != 0
     assert "restart" not in _systemctl_log(tmp_path)
-
-
-def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
-    result = _run_reconcile(tmp_path, DAC8X_AND_APPLE_LISTING, "--reason", "test")
-
-    assert result.returncode == 0, result.stderr
-    env_text = _jasper_env(tmp_path)
-    assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x" in env_text
-    assert "JASPER_AUDIO_DAC_CARD=sndrpihifiberry" in env_text
-    # No active baseline loaded => a DAC8x is an ordinary stereo speaker, NOT
-    # the wide 8-channel active lane (fail-closed: the gate kept it stereo).
-    outputd_env = _outputd_env(tmp_path)
-    assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=\n" in outputd_env
-    assert "JASPER_OUTPUTD_DAC_FORMAT=S32_LE" in outputd_env
-    assert "single_alsa_active" not in result.stderr
-    assert not (tmp_path / "tts.env").exists()
-    template = _template(tmp_path)
-    _assert_states(template, "pcm.outputd_dac", "type hw", "card sndrpihifiberry")
-    _assert_no_empty_alsa_card(template)
-    commands = _systemctl_log(tmp_path)
-    # The pin is enabled on every box — a DAC that declares no mixer controls
-    # is jasper-dac-init's own clean exit, not a unit to disable.
-    assert "enable jasper-dac-init.service" in commands
-    assert "disable --now jasper-headphone-monitor.service" in commands
-    assert "stop jasper-voice.service" in commands
-    assert "--no-block restart jasper-outputd.service" in commands
-    assert "--no-block restart jasper-aec-reconcile.service" in commands
-
-
-def test_reconcile_studio_role_enables_the_mixer_pin_without_the_apple_monitor(
-    tmp_path: Path,
-):
-    """The Studio driver writes no mixer defaults of its own, so its profile
-    declares pins and the boot pin is enabled for it. The drift monitor stays
-    Apple-only."""
-    result = _run_reconcile(tmp_path, DAC8X_STUDIO_LISTING, "--reason", "test")
-
-    assert result.returncode == 0, result.stderr
-    assert "JASPER_AUDIO_DAC_ID=hifiberry_dac8x_studio" in _jasper_env(tmp_path)
-    commands = _systemctl_log(tmp_path)
-    assert "enable jasper-dac-init.service" in commands
-    assert "--no-block restart jasper-dac-init.service" in commands
-    assert "enable jasper-headphone-monitor.service" not in commands
-    assert "disable --now jasper-headphone-monitor.service" in commands
 
 
 def test_reconcile_leaves_an_unchanged_record_pin_alone(tmp_path: Path):
@@ -1989,6 +1983,60 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path)
     assert "order_source=saved_topology" in result.stderr
 
 
+def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
+    tmp_path: Path,
+):
+    """FAIL-CLOSED, at the one arm the legal-endpoint set makes unreachable
+    today: an accepted decision naming NO endpoint device must leave the lane
+    PAIR clear rather than arm the marker off the acceptance alone.
+
+    The pair is one fact with two consumers and outputd bails at startup on the
+    incoherent half-set, so this is what stands between "the legal set grew"
+    and "every composite arms the ring marker".
+    """
+    from jasper.active_speaker.runtime_contract import OutputdActiveLaneDecision
+
+    topology_path = _dual_apple_topology(tmp_path, active=True)
+    result = _run_reconcile(
+        tmp_path,
+        DUAL_APPLE_LISTING,
+        "--reason",
+        "test",
+        extra_env={
+            **_dual_apple_cards(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
+            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+            **_active_graph_env(tmp_path, write_topology=False),
+        },
+        patches={
+            "jasper.active_speaker.runtime_contract.outputd_active_lane_decision":
+                lambda *_a, **_k: OutputdActiveLaneDecision(
+                    ok=True, width=4, reason="accepted", endpoint_device=None
+                ),
+            # The staged validator refuses this pair against a live ring graph,
+            # which is its own job and its own pin. Out of the frame here so the
+            # candidate the WRITER produced reaches disk to be read back.
+            "jasper.cli.audio_config.validate_outputd_env":
+                lambda **_kwargs: (True, ()),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = _outputd_env(tmp_path)
+    # Armed as a composite — and still holding NEITHER half of the pair.
+    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    _assert_states(
+        outputd_env,
+        "JASPER_OUTPUTD_ACTIVE_LANE=\n",
+        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=\n",
+    )
+    assert (
+        stderr_event(result.stderr, "audio_hardware_reconcile.dual_apple_detected")[
+            "active_endpoint"
+        ]
+        == "none"
+    )
+
+
 def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
     """A saved composite with one dongle gone parks instead of taking over.
 
@@ -2078,23 +2126,19 @@ def test_reconcile_saved_single_topology_still_takes_the_single_dongle(
     """
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text(
-        json.dumps({
-            "artifact_schema_version": 1,
-            "kind": "jts_output_topology",
-            "topology_id": "solo",
-            "name": "Solo",
-            "status": "ready",
-            "hardware": {
-                "device_id": "apple_usb_c_dongle",
-                "device_label": "Apple USB-C audio adapter",
-                "physical_output_count": 2,
-                "card_id": "A",
-                "outputs": [],
-            },
-            "speaker_groups": [],
-            "routing": {},
-            "safety": {},
-        }),
+        json.dumps(
+            _topology_payload(
+                topology_id="solo",
+                name="Solo",
+                hardware={
+                    "device_id": "apple_usb_c_dongle",
+                    "device_label": "Apple USB-C audio adapter",
+                    "physical_output_count": 2,
+                    "card_id": "A",
+                    "outputs": [],
+                },
+            )
+        ),
         encoding="utf-8",
     )
 
@@ -2709,16 +2753,12 @@ def _stub_render_lib(tmp_path: Path, body: str) -> Path:
     card-less recognized DAC fails closed (require_output_dac_card -> 64)
     BEFORE the renderer opens the dest.
     """
-    stub = tmp_path / "stub-asound-render.sh"
     real = ROOT / "deploy" / "lib" / "jasper-asound-render.sh"
-    stub.write_text(
-        f"#!/usr/bin/env bash\nsource {real}\n"
-        "jasper_asound_render_template() {\n"
-        f"{body}\n"
-        "}\n",
-        encoding="utf-8",
+    return _script(
+        tmp_path,
+        "stub-asound-render.sh",
+        f"source {real}\njasper_asound_render_template() {{\n{body}\n}}\n",
     )
-    return stub
 
 
 def test_the_render_lib_resolves_the_checkout_sibling_before_the_installed_copy(
@@ -3394,38 +3434,27 @@ def test_render_subcommand_reports_the_wire_and_the_topology_it_resolved(
 
 
 def _flat_cutover_event(stderr: str) -> dict[str, str]:
-    """The flat_cutover log line, parsed into its `key=value` fields."""
-    prefix = "event=audio_hardware_reconcile.flat_cutover "
-    lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
-    assert len(lines) == 1, f"expected exactly one flat_cutover event, got {lines}"
-    fields: dict[str, str] = {}
-    for token in lines[0][len(prefix):].split():
-        key, _, value = token.partition("=")
-        assert key not in fields, key
-        fields[key] = value
-    return fields
+    return stderr_event(stderr, "audio_hardware_reconcile.flat_cutover")
 
 
 def _mono_topology_payload() -> dict:
-    return {
-        "artifact_schema_version": 1,
-        "kind": "jts_output_topology",
-        "topology_id": "mono",
-        "name": "Mono passive output",
-        "status": "verified",
-        "hardware": {
+    return _topology_payload(
+        topology_id="mono",
+        name="Mono passive output",
+        status="verified",
+        hardware={
             "device_id": "innomaker_hifi_amp_pro",
             "device_label": "InnoMaker HiFi AMP Pro",
             "card_id": "sndrpimerusamp",
             "physical_output_count": 2,
         },
-        "speaker_groups": [{
+        speaker_groups=[{
             "id": "main", "label": "Main speaker", "kind": "mono",
             "mode": "full_range_passive",
             "channels": [{"role": "full_range", "physical_output_index": 0}],
         }],
-        "routing": {"mono_group_id": "main"},
-    }
+        routing={"mono_group_id": "main"},
+    )
 
 
 def _cutover_env(tmp_path: Path) -> dict[str, str]:
@@ -3880,9 +3909,7 @@ def _stub_pass(
 ) -> dict[str, str]:
     """A stand-in for the Python pass, so the shim's own stamp contract can be
     driven through each outcome the real pass can reach."""
-    stub = tmp_path / f"stub-pass-{name}"
-    stub.write_text(f"#!/usr/bin/env bash\n{body}\nexit {rc}\n", encoding="utf-8")
-    stub.chmod(0o755)
+    stub = _script(tmp_path, f"stub-pass-{name}", f"{body}\nexit {rc}\n")
     return {"JASPER_OUTPUT_HARDWARE_PYTHON": str(stub)}
 
 
