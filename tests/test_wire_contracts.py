@@ -678,7 +678,7 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
         "active_speaker_setup", "audition", "bass_extension", "renderers",
         "speaker_name", "active_source", "fanin", "outputd", "aec",
         "source_selection", "resilience", "home_assistant", "grouping",
-        "transit", "debug", "tools", "chat", "research", "measurement",
+        "transit", "debug", "tools", "chat", "research", "cues", "measurement",
         "usb_network", "audio_health", "usb_gadget_forensics",
     },
     # jasper.identity.speaker_name.SpeakerNameState. `room` rides with the name so
