@@ -309,6 +309,19 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-08: Lane briefs written and verified against main `f84d7da`/`72bc347`
+  by Sonnet fact-checkers: `briefs/wave-1-program.md` (lane B),
+  `briefs/wave-2-room-candidate.md` (lane C), `briefs/wave-3-bass.md` (lane D).
+  Corrections folded in: the room math cannot be imported across the
+  `active_speaker → correction` boundary and moves to `audio_measurement` in
+  lane C's first commit; no measurement scope includes room PEQ today, so lane C
+  adds a `room_candidate` scope; boost admission is framed as adopting the
+  regime plan's D5 with a room-specific threshold; `bass_extension` is absent
+  from `PACKAGE_BOUNDARIES` and `camilla_yaml` imports it only under
+  `TYPE_CHECKING` (the leaf home for the wired kernel stands for the CLIs, and
+  lane D adds the boundary row); `MeasurementProgram.mic_move_count` is the
+  property name (not `pose_count`); there is no `gate=None` analysis path, so
+  the seat kind is analyzed via the near-field exemption mechanism.
 - 2026-09-08: Row 1.0 LANDED: PR #4510 merged at `72bc34764`; #4138 closed as
   superseded. Lanes B (1.4) and D (3.1) are unblocked.
 - 2026-09-08: Row 1.0 opened as PR #4510 (re-applies #4138 at HEAD; leaf
