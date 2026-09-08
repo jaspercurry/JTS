@@ -1063,7 +1063,9 @@ def test_enhanced_aec_post_persists_then_starts_allowlisted_oneshot(
 
     status, body = _post(f"{base}/aec/enhanced-aec/install", {})
 
-    assert status == 200
+    # The oneshot was handed to systemd, not watched: 202, like every
+    # other handed-off mutation on this route table.
+    assert status == 202
     assert body["state"] == "installing"
     assert calls[0] == ("intent",)
     assert calls[1][0:2] == (

@@ -506,5 +506,5 @@ class AecRoutes(ControlHandlerMixin):
             "aec.enhanced.install_start",
             client=self.address_string(),
         )
-        self._send_json(aec_endpoints._enhanced_aec_status())
+        self._send_accepted(**aec_endpoints._enhanced_aec_status())
         return
