@@ -67,8 +67,8 @@ use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsClientSlots, TtsCommand,
-    TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
+    command_name, is_frame_timeout, read_command_deadlined, TtsCommand, TtsServerCounters,
+    TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -163,10 +163,7 @@ impl FlushSummary {
 pub struct TtsMetrics {
     pub requests: Arc<AtomicU64>,
     pub pending_frames: Arc<AtomicU64>,
-    pub dropped_audio_frames: Arc<AtomicU64>,
-    pub dropped_commands: Arc<AtomicU64>,
-    pub slots: TtsClientSlots,
-    pub frame_timeouts: Arc<AtomicU64>,
+    pub counters: TtsServerCounters,
     pub flush_requests: Arc<AtomicU64>,
     pub flushed_frames: Arc<AtomicU64>,
     pub max_pending_frames: u64,
@@ -183,21 +180,12 @@ impl TtsMetrics {
         Self {
             requests: Arc::new(AtomicU64::new(0)),
             pending_frames: Arc::new(AtomicU64::new(0)),
-            dropped_audio_frames: Arc::new(AtomicU64::new(0)),
-            dropped_commands: Arc::new(AtomicU64::new(0)),
-            slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
-            frame_timeouts: Arc::new(AtomicU64::new(0)),
+            counters: TtsServerCounters::default(),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
             max_pending_frames,
             loudness: Arc::new(Mutex::new(TtsLoudnessSnapshot::default())),
         }
-    }
-
-    fn mark_dropped_audio(&self, frames: u64) {
-        self.dropped_audio_frames
-            .fetch_add(frames, Ordering::Relaxed);
-        self.dropped_commands.fetch_add(1, Ordering::Relaxed);
     }
 
     /// A clone of the shared snapshot cell, handed to `OutputCore` so the audio
@@ -242,7 +230,7 @@ pub fn spawn_tts_server(
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
 ) -> Result<()> {
-    let slots = metrics.slots.clone();
+    let slots = metrics.counters.slots().clone();
     jasper_tts_protocol::serve(
         "outputd",
         &path,
@@ -300,7 +288,7 @@ fn handle_tts_client(
                 }
             }
             Err(e) if is_frame_timeout(&e) => {
-                metrics.frame_timeouts.fetch_add(1, Ordering::Relaxed);
+                metrics.counters.mark_frame_timeout();
                 eprintln!(
                     "event=outputd.tts_socket.frame_timeout deadline_s={}",
                     frame_deadline.as_secs()
@@ -361,7 +349,7 @@ fn try_enqueue_tts_command(
         Ok(()) => true,
         Err(TrySendError::Full(queued)) => {
             let frames = dropped_audio_frames(&queued);
-            metrics.mark_dropped_audio(frames);
+            metrics.counters.mark_dropped_audio(frames);
             eprintln!(
                 "event=outputd.tts_command_dropped reason=queue_full command=audio epoch={} frames={}",
                 queued.epoch, frames,
@@ -597,7 +585,7 @@ impl TtsBridge {
                     if core.pending_assistant_frames().saturating_add(incoming)
                         > self.metrics.max_pending_frames
                     {
-                        self.metrics.mark_dropped_audio(incoming);
+                        self.metrics.counters.mark_dropped_audio(incoming);
                         eprintln!(
                             "event=outputd.tts_command_dropped reason=pending_budget_exceeded command=audio epoch={} frames={} pending_frames={} budget_frames={}",
                             queued.epoch,
@@ -975,7 +963,7 @@ mod tests {
         send(&tx, 0, TtsCommand::Audio(vec![1i16; 16])); // 8 more: over budget
         bridge.drain(&mut core);
         assert_eq!(core.pending_assistant_frames(), 8);
-        assert_eq!(metrics.dropped_audio_frames.load(Ordering::Relaxed), 8);
+        assert_eq!(metrics.counters.dropped_audio_frames(), 8);
     }
 
     #[test]
@@ -1118,7 +1106,7 @@ mod tests {
         client.flush().unwrap();
         handle.join().unwrap();
 
-        assert_eq!(metrics.frame_timeouts.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.counters.frame_timeouts(), 1);
         drop(client);
     }
 }

@@ -31,8 +31,8 @@ use crate::loudness::{
 use crate::mixer::CHANNELS;
 use crate::playout::{PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::{
-    command_name, is_frame_timeout, read_command_deadlined, TtsAudioSamples, TtsClientSlots,
-    TtsCommand, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE, TTS_MAX_CLIENTS,
+    command_name, is_frame_timeout, read_command_deadlined, TtsAudioSamples, TtsCommand,
+    TtsServerCounters, TtsWireWidth, VolumeContext, TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -79,10 +79,7 @@ pub struct TtsMetrics {
     max_pending_frames: Arc<AtomicU64>,
     budget_frames: Arc<AtomicU64>,
     protocol_errors: Arc<AtomicU64>,
-    slots: TtsClientSlots,
-    frame_timeouts: Arc<AtomicU64>,
-    dropped_commands: Arc<AtomicU64>,
-    dropped_audio_frames: Arc<AtomicU64>,
+    pub(crate) counters: TtsServerCounters,
     stale_commands_dropped: Arc<AtomicU64>,
     program_duck_active: Arc<AtomicBool>,
     flush_requests: Arc<AtomicU64>,
@@ -124,10 +121,7 @@ impl Default for TtsMetrics {
             max_pending_frames: Arc::new(AtomicU64::new(0)),
             budget_frames: Arc::new(AtomicU64::new(0)),
             protocol_errors: Arc::new(AtomicU64::new(0)),
-            slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
-            frame_timeouts: Arc::new(AtomicU64::new(0)),
-            dropped_commands: Arc::new(AtomicU64::new(0)),
-            dropped_audio_frames: Arc::new(AtomicU64::new(0)),
+            counters: TtsServerCounters::default(),
             stale_commands_dropped: Arc::new(AtomicU64::new(0)),
             program_duck_active: Arc::new(AtomicBool::new(false)),
             flush_requests: Arc::new(AtomicU64::new(0)),
@@ -192,26 +186,6 @@ impl TtsMetrics {
 
     pub fn protocol_errors(&self) -> u64 {
         self.protocol_errors.load(Ordering::Relaxed)
-    }
-
-    pub fn dropped_commands(&self) -> u64 {
-        self.dropped_commands.load(Ordering::Relaxed)
-    }
-
-    pub fn connections_rejected(&self) -> u64 {
-        self.slots.rejected()
-    }
-
-    pub fn tts_clients(&self) -> u64 {
-        self.slots.in_use() as u64
-    }
-
-    pub fn frame_timeouts(&self) -> u64 {
-        self.frame_timeouts.load(Ordering::Relaxed)
-    }
-
-    pub fn dropped_audio_frames(&self) -> u64 {
-        self.dropped_audio_frames.load(Ordering::Relaxed)
     }
 
     pub fn stale_commands_dropped(&self) -> u64 {
@@ -354,18 +328,8 @@ impl TtsMetrics {
         fetch_max(&self.max_pending_frames, frames);
     }
 
-    fn mark_dropped_audio(&self, frames: u64) {
-        self.dropped_commands.fetch_add(1, Ordering::Relaxed);
-        self.dropped_audio_frames
-            .fetch_add(frames, Ordering::Relaxed);
-    }
-
     fn mark_protocol_error(&self) {
         self.protocol_errors.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn mark_frame_timeout(&self) {
-        self.frame_timeouts.fetch_add(1, Ordering::Relaxed);
     }
 
     fn mark_stale_command_dropped(&self) {
@@ -881,7 +845,7 @@ impl TtsMixer {
                     if self.pending_frames().saturating_add(incoming_frames)
                         > self.max_pending_frames
                     {
-                        self.metrics.mark_dropped_audio(incoming_frames);
+                        self.metrics.counters.mark_dropped_audio(incoming_frames);
                         warn!(
                             "event=fanin.tts_command_dropped reason=pending_budget_exceeded command=audio epoch={} frames={} pending_frames={} budget_frames={}",
                             queued.epoch,
@@ -1297,7 +1261,7 @@ pub fn spawn_tts_server(
     epoch: Arc<AtomicU64>,
     metrics: TtsMetrics,
 ) -> Result<()> {
-    let slots = metrics.slots.clone();
+    let slots = metrics.counters.slots().clone();
     jasper_tts_protocol::serve(
         "fanin",
         &path,
@@ -1362,7 +1326,7 @@ fn handle_tts_client(
                 }
             }
             Err(e) if is_frame_timeout(&e) => {
-                metrics.mark_frame_timeout();
+                metrics.counters.mark_frame_timeout();
                 warn!(
                     "event=fanin.tts_socket.frame_timeout deadline_s={}",
                     frame_deadline.as_secs()
@@ -1422,7 +1386,7 @@ fn try_enqueue_tts_command(
         Ok(()) => true,
         Err(TrySendError::Full(queued)) => {
             let frames = dropped_audio_frames(&queued);
-            metrics.mark_dropped_audio(frames);
+            metrics.counters.mark_dropped_audio(frames);
             warn!(
                 "event=fanin.tts_command_dropped reason=queue_full command=audio epoch={} frames={}",
                 queued.epoch, frames
@@ -1813,7 +1777,7 @@ mod tests {
         client.flush().unwrap();
         handle.join().unwrap();
 
-        assert_eq!(metrics.frame_timeouts(), 1);
+        assert_eq!(metrics.counters.frame_timeouts(), 1);
         assert_eq!(metrics.protocol_errors(), 0);
         drop(client);
     }
@@ -3359,7 +3323,7 @@ mod tests {
         .unwrap();
         mixer.prepare_period();
         assert_eq!(
-            metrics.dropped_audio_frames(),
+            metrics.counters.dropped_audio_frames(),
             4,
             "an over-budget wide payload must be dropped and counted, not queued",
         );
