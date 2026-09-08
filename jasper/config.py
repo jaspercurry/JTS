@@ -38,6 +38,7 @@ from .voice.input_policy import (
     normalize_openai_noise_reduction,
     validate_openai_noise_reduction,
 )
+from .wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST
 from .wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
@@ -252,6 +253,8 @@ class Config:
     mic_device_chip_aec_150: str
     mic_device_chip_aec_210: str
     aec_chip_aec_enabled: bool
+    aec_udp_port: int
+    aec_udp_host: str
     mic_capture_rate: int
     mic_capture_channels: int
     wake_events_dir: str
@@ -589,6 +592,8 @@ class Config:
             # Empty / absent → the leg is not built.
             mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
             mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
+            aec_udp_port=_env_int("JASPER_AEC_UDP_PORT", DEFAULT_AEC_ON_PORT),
+            aec_udp_host=_env("JASPER_AEC_UDP_HOST", DEFAULT_AEC_UDP_HOST),
             aec_chip_aec_enabled=_env_bool(
                 CHIP_AEC_ENABLED_ENV, False,
             ),

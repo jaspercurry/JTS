@@ -2,11 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Import-cheap wake-capture UDP port defaults."""
+"""Import-cheap wake capture UDP addresses and port defaults."""
 from __future__ import annotations
 
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
 from jasper import wake_legs
+
+DEFAULT_AEC_UDP_HOST = "127.0.0.1"
 
 # Wire ports now have a single definition in jasper.wake_legs.REGISTRY
 # (which matches jasper.cli.aec_bridge's OUT_PORT* emit constants). These
@@ -86,3 +88,43 @@ def build_ports(
     if include_aec3_sweep:
         ports.update(aec3_sweep_ports or DEFAULT_AEC3_SWEEP_PORTS)
     return ports
+
+
+def parse_udp_device(device: str) -> tuple[str, int] | None:
+    """If `device` denotes a UDP mic source, return (host, port).
+
+    Accepted forms:
+      - `udp://<host>:<port>`     full URL form
+      - `udp:<port>`              shorthand, host = 127.0.0.1
+
+    Returns None if the device string is not a UDP form, so callers
+    fall through to the PortAudio path. Raises ValueError if the
+    string starts with `udp` but is malformed (typo guard).
+    """
+    if not device.lower().startswith("udp"):
+        return None
+    rest = device[3:]
+    if rest.startswith("://"):
+        rest = rest[3:]
+        if ":" not in rest:
+            raise ValueError(
+                f"udp device {device!r} missing port (expected udp://HOST:PORT)"
+            )
+        host, port_str = rest.rsplit(":", 1)
+    elif rest.startswith(":"):
+        host = DEFAULT_AEC_UDP_HOST
+        port_str = rest[1:]
+    else:
+        raise ValueError(
+            f"udp device {device!r} malformed; "
+            f"use 'udp:PORT' or 'udp://HOST:PORT'"
+        )
+    try:
+        port = int(port_str)
+    except ValueError as e:
+        raise ValueError(
+            f"udp device {device!r} has non-integer port {port_str!r}"
+        ) from e
+    if not (1 <= port <= 65535):
+        raise ValueError(f"udp device {device!r} port {port} out of range")
+    return host, port

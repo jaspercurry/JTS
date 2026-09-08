@@ -765,19 +765,18 @@ def chip_beam_plan_for_variant(
 
 
 def chip_beam_plan_from_env(env: Mapping[str, str]) -> ChipBeamPlan | None:
-    """Return the active chip beam plan from reconciler-applied env.
-
-    Back-compat: older square/circular installs may have chip-AEC enabled
-    without a plan id because the pre-geometry code only had one implicit
-    plan. Treat missing plan + non-linear geometry as the legacy square
-    plan; never do that when the env says the active geometry is linear.
-    """
-
+    """Resolve applied beams; legacy env may omit the square plan id."""
     explicit = chip_beam_plan(env.get("JASPER_XVF_CHIP_BEAM_PLAN", ""))
     if explicit:
         return explicit
     geometry = (env.get("JASPER_XVF_GEOMETRY", "") or "").strip().lower()
-    if geometry == "linear":
+    variant = next((
+        item for item in FIRMWARE_VARIANTS
+        if item.variant_id == env.get("JASPER_XVF_VARIANT", "")
+    ), None)
+    if geometry == "linear" or (
+        variant is not None and chip_beam_plan_for_variant(variant) is None
+    ):
         return None
     truthy = {"1", "true", "yes", "on"}
     if (

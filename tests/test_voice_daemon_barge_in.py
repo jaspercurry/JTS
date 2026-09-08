@@ -19,6 +19,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import pytest
+
+from jasper.config import Config
+
 from tests._live_turn_fake import silent_frame
 from tests._log_events import event_records
 from tests._wake_loop import wake_loop_for_tests
@@ -262,14 +266,33 @@ def test_resolve_defaults_off(monkeypatch, tmp_path):
     assert wl._barge_in_active is False
 
 
-def test_aec_reference_available_classifies_legs():
-    from jasper.voice_daemon import _aec_reference_available
-
-    assert _aec_reference_available("udp:9876") is True
-    assert _aec_reference_available(" UDP:9876 ") is True
-    assert _aec_reference_available("Array") is False
-    assert _aec_reference_available("hw:1,0") is False
-    assert _aec_reference_available("") is False
+@pytest.mark.parametrize("chip", [False, True])
+@pytest.mark.parametrize("device,port,eligible", [
+    ("udp:9876", "9876", True),
+    (" UDP:9876 ", "9876", True),
+    ("udp://127.0.0.1:5555", "5555", True),
+    ("udp:9876", "5555", False),
+    ("udp:9877", "9876", False),
+    ("udp:9999", "9876", False),
+    ("udp://192.0.2.10:9876", "9876", False),
+    ("udp://0.0.0.0:9876", "9876", True),
+    ("Array", "9876", False),
+])
+def test_barge_in_requires_processing_on_the_selected_stream(
+    monkeypatch, tmp_path, chip, device, port, eligible,
+):
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_MIC_DEVICE", device)
+    monkeypatch.setenv("JASPER_AEC_UDP_PORT", port)
+    monkeypatch.delenv("JASPER_AEC_UDP_HOST", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", str(int(chip)))
+    path = tmp_path / "voice_provider.env"
+    path.write_text("JASPER_BARGE_IN_OPENAI=1\n")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
+    wl = wake_loop_for_tests(cfg=Config.from_env())
+    wl._resolve_barge_in_for_turn()
+    assert wl._barge_in_active is eligible
 
 
 def test_disabled_branch_never_calls_playback_handler(monkeypatch):

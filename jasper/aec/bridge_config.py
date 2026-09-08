@@ -28,6 +28,7 @@ from jasper.aec_sweep import (
     load_aec3_sweep_config,
 )
 from jasper import wake_legs
+from jasper.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
 from jasper.log_event import log_event
 from jasper.aec.bridge_telemetry import (
     BRIDGE_STATS_PATH,
@@ -46,12 +47,6 @@ from ..mics import xvf3800 as _mic_profile
 
 # `sounddevice` is imported inside the device validators, not here: the doctor
 # reads the env keys below. tests/test_lazy_imports.py pins it.
-
-# Output transport: UDP localhost. The bridge sends AEC'd mono int16 frames
-# to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's `UdpMicCapture` binds
-# the same port and receives.
-OUT_HOST = "127.0.0.1"
-
 
 def leg_default_port(token: str) -> int:
     return wake_legs.by_token(token).udp_port

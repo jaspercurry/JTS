@@ -48,6 +48,7 @@ from .voice.content_activity import ContentActivityTracker
 from .voice.conversation_capture import ConversationCapture
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
 from .voice.provider_state import read_barge_in_enabled
+from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
 from .voice.push_to_talk import (
@@ -271,20 +272,6 @@ _TURN_TIMELINE_STAGES = (
     # accepted. The ring/CamillaDSP/outputd tail past it is not timeable here.
     "first_write",
 )
-
-
-def _aec_reference_available(mic_device: str) -> bool:
-    """True when the primary session mic leg is fed by the AEC bridge over
-    UDP (``udp:<port>``), i.e. its signal has the speaker's own output
-    (music AND TTS) cancelled against the final-output reference. That is
-    the precondition for in-session barge-in detection: a direct ALSA
-    device (the ``direct_mic`` profile, e.g. ``Array`` / ``hw:...``)
-    carries un-cancelled TTS bleed, so VAD would self-trip the gate every
-    turn — the self-interrupt loop the barge-in guard refuses to enter.
-
-    This is leg/profile *selection*, not an AEC topology change: the "on"
-    leg is the same stream the live session already consumes."""
-    return mic_device.strip().lower().startswith("udp:")
 
 
 class _InputAdmissionClosed(RuntimeError):
@@ -754,16 +741,7 @@ class WakeLoop:
         self._silero_raw_armed_at_ms: int | None = None
         self._silero_aec_armed_at_ms: int | None = None
 
-        # In-session barge-in (full-duplex). DEFAULT OFF: resolved fresh
-        # per turn in _begin_turn from the per-provider SSOT flag, then
-        # gated by AEC-reference availability.
-        # `_barge_in_reference_available` is constant for the daemon
-        # (mic_device is frozen Config); the no-reference WARN is one-shot
-        # per daemon to avoid per-turn log spam on a misconfigured
-        # direct_mic + barge-in-on install.
-        self._barge_in_reference_available: bool = _aec_reference_available(
-            cfg.mic_device,
-        )
+        self._barge_in_reference_available = contract_from_config(cfg).echo_cancelled
         self._barge_in_no_ref_warned: bool = False
         self._barge_in_ptt_warned: bool = False
         # Turns since daemon start that were asked a question and produced no

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.voice import input_policy
+from jasper.config import Config
 from jasper.voice.input_policy import (
     build_effective_speech_input_policy,
     contract_from_config,
@@ -51,22 +51,46 @@ def test_auto_disables_openai_noise_reduction_for_software_aec3_input():
     assert policy.openai_noise_reduction_source == "auto_processed_input"
 
 
-@pytest.mark.parametrize(
-    "mic_device, configured_port, expected_profile",
-    [
-        ("udp:9876", 9876, "xvf_software_aec3"),  # default port
-        ("udp:5555", 5555, "xvf_software_aec3"),  # non-default port that matches
-        ("udp:9876", 5555, "custom_udp"),  # udp device on a different port
-    ],
-)
-def test_udp_mic_device_classified_against_configured_aec3_port(
-    monkeypatch, mic_device, configured_port, expected_profile,
+@pytest.mark.parametrize("chip", [False, True])
+@pytest.mark.parametrize("device,port,host,processed", [
+    ("udp:9876", None, None, True),
+    (" UDP:9876 ", None, None, True),
+    ("udp://127.0.0.1:9876", None, None, True),
+    ("udp:5555", "5555", None, True),
+    ("UDP://127.0.0.1:5555", "5555", None, True),
+    ("udp:9876", "5555", None, False),
+    ("udp:9877", None, None, False),
+    ("udp:9999", None, None, False),
+    ("Array", None, None, False),
+    ("udp://192.0.2.10:9876", None, None, False),
+    ("udp:9876", None, "192.0.2.10", False),
+    ("udp://192.0.2.10:5555", "5555", "192.0.2.10", True),
+    ("udp://0.0.0.0:9876", None, None, True),
+    ("udp://:9876", None, None, True),
+    ("udp://localhost:9876", None, "localhost", True),
+    ("udp://localhost:9876", None, None, False),
+])
+def test_applied_stream_processing_uses_configured_bridge_port(
+    monkeypatch, chip, device, port, host, processed,
 ):
-    monkeypatch.setattr(input_policy, "DEFAULT_AEC_ON_PORT", configured_port)
-
-    contract = contract_from_config(_cfg(mic_device=mic_device))
-
-    assert contract.profile == expected_profile
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_MIC_DEVICE", device)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", str(int(chip)))
+    if port is None:
+        monkeypatch.delenv("JASPER_AEC_UDP_PORT", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_AEC_UDP_PORT", port)
+    if host is None:
+        monkeypatch.delenv("JASPER_AEC_UDP_HOST", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_AEC_UDP_HOST", host)
+    contract = contract_from_config(Config.from_env())
+    assert contract.echo_cancelled is processed
+    assert contract.beamformed is (processed and chip)
+    assert contract.source == device
+    if not processed:
+        assert contract.profile == ("direct_mic" if device == "Array" else "custom_udp")
 
 
 @pytest.mark.parametrize(

@@ -76,6 +76,22 @@ def test_flex_linear_6ch_variant_has_no_production_beam_plan(
     assert "no validated production chip beam plan" in profile.reason
 
 
+@pytest.mark.parametrize("flag", [
+    xvf3800.CHIP_AEC_ENABLED_ENV, xvf3800.CORPUS_CHIP_AEC_ENABLED_ENV,
+])
+@pytest.mark.parametrize("variant", xvf3800.FIRMWARE_VARIANTS)
+def test_known_variant_without_beam_plan_cannot_inherit_square_beams(flag, variant):
+    env = {
+        "JASPER_XVF_VARIANT": variant.variant_id,
+        "JASPER_XVF_GEOMETRY": variant.geometry,
+        flag: "1",
+    }
+    assert xvf3800.chip_beam_plan_from_env(env) == xvf3800.chip_beam_plan_for_variant(variant)
+    assert xvf3800.chip_beam_plan_from_env({flag: "1"}) == xvf3800.SQUARE_FIXED_150_210_PLAN
+    env[flag] = "0"
+    assert xvf3800.chip_beam_plan_from_env(env) is None
+
+
 def test_fixed_profile_and_native_reference_are_single_source_of_truth() -> None:
     assert xvf3800.CHIP_AEC_SYS_DELAY_DEFAULT == -37
     profile = xvf3800.chip_aec_profile_commands(

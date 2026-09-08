@@ -33,6 +33,7 @@ from ...output_hardware import (
     mixer_pins_for_state as _mixer_pins_for_state,
 )
 from ...mic_presence import MicPresence
+from ...wake_ports import parse_udp_device
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -274,7 +275,6 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
         )
     # UDP transport has no ALSA card to validate; `check_aec_bridge_running`
     # (jasper/cli/doctor/aec.py) covers transport liveness.
-    from jasper.audio_io import parse_udp_device
     try:
         if parse_udp_device(cfg.mic_device or ""):
             return CheckResult(
@@ -408,7 +408,6 @@ def check_mic_capture(cfg: Config) -> CheckResult:
         )
     # UDP transport: no PortAudio probe possible. `check_aec_bridge_running`
     # (jasper/cli/doctor/aec.py) already covers whether the transport is alive.
-    from jasper.audio_io import parse_udp_device
     try:
         if parse_udp_device(cfg.mic_device or ""):
             return CheckResult(

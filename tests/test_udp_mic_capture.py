@@ -13,6 +13,8 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from jasper.wake_ports import parse_udp_device
+
 from tests._sounddevice_stub import stub_sounddevice
 from jasper.audio_io import CAPTURE_MAX_FRAMES, _CaptureQueue, _UdpMicProtocol
 
@@ -20,7 +22,6 @@ from jasper.audio_io import (
     MicCapture,
     UdpMicCapture,
     make_mic_capture,
-    parse_udp_device,
 )
 
 
