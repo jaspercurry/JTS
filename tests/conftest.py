@@ -25,6 +25,7 @@ Three pieces here, all load-bearing:
 """
 import contextlib
 import io
+import itertools
 import logging
 import os
 import socketserver
@@ -250,24 +251,47 @@ def _isolate_tts_wire_width_cache():
         _clear()
 
 
-@pytest.fixture(autouse=True)
-def _isolate_startup_hold_marker(tmp_path_factory, monkeypatch):
-    """Point the active-speaker staged-startup hold marker at a per-test path.
+_host_state_dirs = itertools.count()
 
-    ``jasper.active_speaker.startup_hold`` defaults to
-    ``/run/jasper-active-speaker/staged-startup-hold``, which no test user can
-    create. Since the hold became load-bearing —
-    ``load_protected_startup_config`` refuses with
-    ``staged_startup_hold_unavailable`` rather than applying an anchor the next
-    reconcile would undo — an unisolated test would take that refusal from the
-    host's read-only ``/run`` instead of exercising the path it means to. The
-    marker is per-test and starts absent, which is the no-hold baseline; the
-    tests that want a hold take it through the production writer.
+# (env var, file name) — reader module + why absent is the hermetic baseline.
+_HOST_STATE_FILES = (
+    # startup_hold: /run/jasper-active-speaker is unwritable on a test host; absent = no hold.
+    ("JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER", "staged-startup-hold"),
+    # capture_entry_anchor durably stashes the prod CamillaDSP path under /var/lib/jasper;
+    # absent avoids writing (or failing to write) real host state.
+    ("JASPER_ACTIVE_SPEAKER_CAPTURE_ENTRY_STATE", "capture_entry.json"),
+    # session_measurement_volume_db's reference half; absent falls back to the codified
+    # MEASUREMENT_REFERENCE_VOLUME_DB.
+    ("JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", "seat_level_reference.json"),
+    # identity.reader.resolve_hostname's JASPER_HOSTNAME source; absent falls back to the
+    # env-or-DEFAULT_HOSTNAME baseline.
+    ("JASPER_IDENTITY_FILE", "identity.env"),
+    # baseline_profile._measured_level_trims prefers this over guided captures; absent falls
+    # back to the guided captures and then the datasheet estimate.
+    ("JASPER_ACTIVE_SPEAKER_DRIVER_BASE_TRIM_STATE", "driver_base_trim.json"),
+    # output_hardware.load_state defaults to /run/jasper-output-hardware/...; absent means
+    # load_state() returns None, the hermetic baseline.
+    ("JASPER_OUTPUT_HARDWARE_STATE_PATH", "output_hardware.json"),
+    # per-test absent marker so a host's real tripped boot-loop guard can't leak into drift
+    # tests.
+    ("JASPER_BOOTLOOP_MARKER_FILE", "state.json"),
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_state_paths(tmp_path_factory, monkeypatch):
+    """One absent per-test path per host-state file the product reads.
+
+    Named by a process counter, not ``tmp_path_factory.mktemp``: pytest's numbered-dir
+    scan lists the whole basetemp on every call, which at seven calls per test over ~7k
+    tests per xdist worker cost more than the tests themselves.
     """
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER",
-        str(tmp_path_factory.mktemp("startup-hold") / "staged-startup-hold"),
-    )
+    root = tmp_path_factory.getbasetemp() / "host-state"
+    root.mkdir(exist_ok=True)
+    scratch = root / str(next(_host_state_dirs))
+    scratch.mkdir()
+    for env_var, name in _HOST_STATE_FILES:
+        monkeypatch.setenv(env_var, str(scratch / name))
 
 
 @pytest.fixture(autouse=True)
@@ -322,109 +346,6 @@ def _isolate_process_volume_owner():
         yield
     finally:
         volume_owner.install_volume_owner(saved)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
-    """Point the automatic-capture entry stash at a per-test temp file.
-
-    jasper.active_speaker.capture_entry_anchor durably stashes the production
-    CamillaDSP path under /var/lib/jasper by default; any test exercising the
-    automatic capture loaders would otherwise write (or fail to write) real
-    host state on a dev machine.
-    """
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CAPTURE_ENTRY_STATE",
-        str(tmp_path_factory.mktemp("capture-entry") / "capture_entry.json"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_seat_level_reference(tmp_path_factory, monkeypatch):
-    """Point the measured seat-SPL reference at a per-test (absent) temp file.
-
-    ``session_measurement_volume_db`` reads this statefile for the reference
-    half of its derivation, so on a speaker that has actually run the leveling
-    step the default /var/lib/jasper path would silently change the number every
-    session-volume test pins. Absent here means the derivation falls back to the
-    codified ``MEASUREMENT_REFERENCE_VOLUME_DB`` — the hermetic baseline; the
-    tests that exercise a BANKED reference pass their own path explicitly.
-    """
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE",
-        str(tmp_path_factory.mktemp("seat-level") / "seat_level_reference.json"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_identity_file(tmp_path_factory, monkeypatch):
-    """Point the reconciler's identity snapshot at a per-test (absent) file.
-
-    ``jasper.identity.reader.resolve_hostname`` takes its answer from the
-    ``JASPER_HOSTNAME`` that ``jasper-identity-reconcile`` records in
-    /var/lib/jasper/identity.env before anything else, so on a real speaker
-    that file — not the codified default, and not the process environment —
-    would decide every hostname a test leaves unset. Absent here means the
-    hermetic env-or-``DEFAULT_HOSTNAME`` baseline; a test that exercises a
-    RECORDED hostname re-points the same env var at a file it wrote, which
-    is the override the daemon-side reader honours too.
-    """
-    monkeypatch.setenv(
-        "JASPER_IDENTITY_FILE",
-        str(tmp_path_factory.mktemp("identity") / "identity.env"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_driver_base_trim(tmp_path_factory, monkeypatch):
-    """Point the measured driver base trim at a per-test (absent) temp file.
-
-    ``baseline_profile._measured_level_trims`` PREFERS this statefile over the
-    guided captures, so on a speaker that has actually applied a measured level
-    match the default /var/lib/jasper path would silently replace the trim every
-    level-match and profile test pins. Absent here means the derivation falls
-    back to the guided captures and then the datasheet estimate — the hermetic
-    baseline; a test that exercises a BANKED trim re-points the same env var at
-    a file it wrote, which is the override the daemon-side reader honours too.
-    """
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DRIVER_BASE_TRIM_STATE",
-        str(tmp_path_factory.mktemp("driver-base-trim") / "driver_base_trim.json"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
-    """Point the output-hardware reconciler's record at a per-test (absent)
-    temp file.
-
-    ``jasper.output_hardware.load_state`` defaults to
-    ``/run/jasper-output-hardware/output_hardware.json``. A host that
-    happens to hold a record there (a real Pi checkout, or a leftover from a
-    prior manual run) would otherwise make any test that constructs an
-    ``AudioHealthSampler`` with its real default probe non-hermetic:
-    ``jasper.control.audio_health``'s #2812 setup-hint detector reads that
-    record on every tick, so its result — and therefore ``overall.headline``
-    — would depend on ambient host state 19 of the 21 sampler constructions
-    in ``tests/test_audio_health.py`` never explicitly control. Absent here
-    means ``load_state()`` returns ``None`` — the hermetic baseline; tests
-    that want a populated record inject their own via
-    ``output_hardware_probe=``.
-    """
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path_factory.mktemp("output-hardware") / "output_hardware.json"),
-    )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_bootloop_marker(tmp_path_factory, monkeypatch):
-    """Point at a per-test (absent) marker so a host's real tripped boot-loop
-    guard can't leak into drift tests."""
-    monkeypatch.setenv(
-        "JASPER_BOOTLOOP_MARKER_FILE",
-        str(tmp_path_factory.mktemp("bootloop-guard") / "state.json"),
-    )
 
 
 @pytest.fixture(autouse=True)
