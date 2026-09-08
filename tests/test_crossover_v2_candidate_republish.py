@@ -21,6 +21,7 @@ door that closes that gap, and the two things it must never become:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -164,6 +165,10 @@ def test_default_candidate_lookup_survives_live_session_retention(bank):
     assert len(banked_candidates()) == 2
     assert find_banked_candidate(candidate.fingerprint).fingerprint == candidate.fingerprint
     live.unlink()
+    for index in range(65):
+        _publish(bank, _candidate(program_id=f"new-{index}"), bundle=f"new-{index:03}")
+    assert len(banked_candidates()) == 64
+    assert saved.is_file()
     assert find_banked_candidate(candidate.fingerprint).path == saved
 
 
@@ -218,6 +223,12 @@ def test_authored_apply_requires_the_childs_completed_capture(bank, fault):
         assert v2host.load_v2_state() is None
     else:
         proof = require_candidate_trial(child)
+        os.utime(saved, (1, 1))
+        for index in range(33):
+            newer = bank.parent / "campaigns" / f"new-{index:03}"
+            newer.mkdir()
+            (newer / "info.json").write_text(json.dumps({"session_id": newer.name, "started_at": index + 100}))
+        assert require_candidate_trial(child) == proof
         assert proof["candidate_id"] == child.fingerprint
         assert Path(proof["record_path"]).is_relative_to(saved)
         answer = republish.handle_v2_republish({"fingerprint": child.fingerprint})
@@ -422,7 +433,7 @@ def test_a_corrupted_artifact_is_reported_as_unverifiable_not_merely_absent(bank
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
 
-    assert "could not be verified" in str(excinfo.value)
+    assert excinfo.value.code == "not_found"
 
 
 def test_unknown_fingerprint_refuses(bank):
@@ -459,7 +470,7 @@ def test_two_minting_lineages_for_one_fingerprint_refuse_as_ambiguous(bank):
     with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
         republish.handle_v2_republish({"fingerprint": candidate.fingerprint})
 
-    assert "claim this candidate fingerprint" in str(excinfo.value)
+    assert excinfo.value.code == "ambiguous"
 
 
 def test_the_same_artifact_seen_once_is_not_ambiguous(bank):

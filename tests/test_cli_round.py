@@ -377,16 +377,18 @@ def test_wait_answers_the_session_it_watched_stop(monkeypatch, capsys):
     assert opener.posts() == []
 
 
+@pytest.mark.parametrize("matching", [True, False])
 def test_wait_names_the_session_directory_the_bank_verb_takes(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, matching
 ):
-    """The bundle path is the wizard's to know, never its reader's to guess:
-    the ``session_id`` on the envelope is the capture provider's."""
-    bundle = tmp_path / "sessions" / "b0c1d2e3"
-    bundle.mkdir(parents=True)
-    (bundle / "info.json").write_text(
-        json.dumps({"session_id": bundle.name, "started_at": 1.0})
-    )
+    bundle = tmp_path / "sessions" / "older"
+    (bundle / "evidence/v1/artifacts/crossover_v2/s1").mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name, "started_at": 1.0}))
+    newer = tmp_path / "sessions" / "newer"
+    newer.mkdir()
+    (newer / "info.json").write_text(json.dumps({"session_id": newer.name, "started_at": 2.0}))
+    if not matching:
+        (bundle / "evidence/v1/artifacts/crossover_v2/s1").rmdir()
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     opener = _opener(
         v2={"session_id": "s1", "phase": "review",
@@ -400,8 +402,13 @@ def test_wait_names_the_session_directory_the_bank_verb_takes(
     )
 
     assert code == cli.EXIT_OK
-    assert receipt["session_dir"] == str(bundle)
-    assert receipt["next"] == f"jasper-round bank {bundle}"
+    if matching:
+        assert receipt["session_dir"] == str(bundle)
+        assert receipt["next"] == f"jasper-round bank {bundle}"
+    else:
+        assert "session_dir" not in receipt
+        assert "next" not in receipt
+        assert receipt["session_dir_reason"] == "capture_bundle_unavailable"
 
 
 def test_a_rejected_take_the_next_one_replaces_is_not_a_failed_round(

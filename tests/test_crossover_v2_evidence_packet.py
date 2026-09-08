@@ -739,3 +739,15 @@ def test_a_nan_incumbent_gain_serializes_to_null_not_a_bare_nan_token(tmp_path):
     document = json.dumps(packet, allow_nan=False)
     reloaded = json.loads(document)
     assert reloaded["incumbent"]["trim"]["woofer"]["applied_db"] is None
+
+
+@pytest.mark.parametrize("capture_id", ["cap_TESTONLY", "capture-B", None])
+def test_explicit_state_only_supplies_claims_for_its_capture(tmp_path, capture_id):
+    session, state_path = _bundle(tmp_path, state={
+        "session_id": capture_id, "verify": {"outcome": "pass"},
+        "evidence": {"calibration": {"calibration_id": "cal-A"}},
+    })
+    packet = build_crossover_evidence_packet(session, state_path=state_path)
+    assert packet["verify"]["available"] is (capture_id == "cap_TESTONLY")
+    assert bool(packet["identity"]["calibration"]) is (capture_id == "cap_TESTONLY")
+    assert packet["positions"]["available"] is True

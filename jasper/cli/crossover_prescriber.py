@@ -72,6 +72,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     packet_incumbent_linearization,
     packet_positional_evidence,
     packet_region_band_hz,
+    validate_packet,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
     FeatureVerdict,
@@ -134,12 +135,7 @@ def _read_packet_file(path: Path) -> dict[str, Any]:
         raise CrossoverEvidencePacketError(
             f"{path} is not a readable evidence packet: {exc}"
         ) from exc
-    if not isinstance(packet, dict):
-        raise CrossoverEvidencePacketError(
-            f"{path} must hold one evidence packet object, got "
-            f"{type(packet).__name__}"
-        )
-    return packet
+    return validate_packet(packet)
 
 
 def _cmd_compose(args: argparse.Namespace) -> int:
