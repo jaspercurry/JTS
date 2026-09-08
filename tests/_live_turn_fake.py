@@ -24,6 +24,11 @@ def silent_frame() -> np.ndarray:
     return np.zeros(_FRAME_SAMPLES, dtype=np.int16)
 
 
+async def drain_audio_chunks(turn) -> list[AudioOutChunk]:
+    """Every chunk a turn plays out before its terminal sentinel."""
+    return [chunk async for chunk in turn.audio_out_chunks()]
+
+
 class FakeLiveTurn:
     def __init__(
         self,

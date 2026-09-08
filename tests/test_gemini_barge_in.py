@@ -38,6 +38,7 @@ import pytest
 
 from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ServerContent as _SC
+from tests._live_turn_fake import drain_audio_chunks
 
 try:
     from google.genai import types as genai_types
@@ -206,10 +207,6 @@ async def test_server_interrupt_drops_queued_audio_and_does_not_complete():
     assert turn.server_turn_complete() is True
 
 
-async def _collect(iterator) -> list:
-    return [chunk async for chunk in iterator]
-
-
 async def test_server_interrupt_keeps_the_end_of_audio_sentinel():
     """The interrupt drain shares ``drop_pending_audio``'s sentinel rule.
 
@@ -228,5 +225,5 @@ async def test_server_interrupt_keeps_the_end_of_audio_sentinel():
     await turn._on_response(_Resp(server_content=_SC(interrupted=True)))
 
     assert await asyncio.wait_for(
-        _collect(turn.audio_out_chunks()), timeout=1.0,
+        drain_audio_chunks(turn), timeout=1.0,
     ) == [], "pre-interrupt audio must be dropped, the sentinel kept"

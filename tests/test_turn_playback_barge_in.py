@@ -508,14 +508,6 @@ def test_flush_failure_skips_provider_reconcile(caplog):
 # ---------------------------------------------------------------------------
 
 
-class _StubTts:
-    """The watchdog reads only ``expected_drain_at`` off TtsPlayout, which
-    otherwise needs an ALSA device."""
-
-    def expected_drain_at(self) -> float:
-        return 0.0
-
-
 def _completed_turn(pending: int) -> BaseLiveTurn:
     """A real turn the server has finished, holding `pending` unplayed
     chunks and its terminal sentinel."""
@@ -536,7 +528,7 @@ async def test_idle_watchdog_ends_a_turn_whose_playout_stopped_moving(caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await asyncio.wait_for(
             idle_watchdog(
-                turn, _StubTts(), timeout=999.0, response_stall_timeout=0.3,
+                turn, _BaseTts(), timeout=999.0, response_stall_timeout=0.3,
             ),
             timeout=5.0,
         )
@@ -561,7 +553,7 @@ async def test_idle_watchdog_keeps_deferring_while_playout_drains(caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await asyncio.wait_for(
             idle_watchdog(
-                turn, _StubTts(), timeout=999.0, response_stall_timeout=0.3,
+                turn, _BaseTts(), timeout=999.0, response_stall_timeout=0.3,
             ),
             timeout=10.0,
         )

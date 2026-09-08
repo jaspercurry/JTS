@@ -38,6 +38,7 @@ from jasper.voice.openai_session import (
     _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
+from tests._live_turn_fake import drain_audio_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -2774,10 +2775,6 @@ async def test_the_first_connect_reads_as_paused_while_it_dials(conn_cls):
 # ---------------------------------------------------------------------------
 
 
-async def _drain_audio(turn) -> list[bytes]:
-    return [c.pcm async for c in turn.audio_out_chunks()]
-
-
 async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch):
     """The per-turn playout queue is the only PCM carrier and burst
     providers fill it ahead of realtime, so a wedged consumer would grow it
@@ -2810,9 +2807,8 @@ async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch)
         )
 
         turn._audio_q.put_nowait(None)
-        assert await asyncio.wait_for(_drain_audio(turn), timeout=1.0) == [
-            b"12345", b"67890",
-        ]
+        played = await asyncio.wait_for(drain_audio_chunks(turn), timeout=1.0)
+        assert [chunk.pcm for chunk in played] == [b"12345", b"67890"]
     finally:
         await conn.stop()
 
