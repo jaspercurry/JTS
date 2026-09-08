@@ -103,10 +103,15 @@ frozen per round as `declared-geometry.json` (`crossover_v2/round_inputs.py:70,1
 
 **Artifact contract with lane B.** Lane B's `room-median` view writes
 `room_median.json` beside the round: `{"freqs_hz": [...], "median_db": [...],
-"spread_db": [...], "n_positions": int, "positions": [{"id", "deviation_db": [...]}],
+"spread_db": [...], "n_positions": int, "positions": [{"id", "pose_key", "deviation_db": [...]}],
 "ceiling_hz": float, "ceiling_source": "applied_candidate" | "fallback",
-"window": "ungated"}`. Your door consumes that artifact. Until lane B lands,
-build fixtures of that shape by hand; do not build a second median.
+"window": "ungated" | "gated" | "mixed"}`. **As landed (PR #4524,
+`jasper/active_speaker/crossover_v2/room_views.py`):** `window` is computed from
+the takes' `gating_applied`, not pinned; your door refuses anything but
+`"ungated"` with a code. `pose_key` is the only distinguisher between the seven
+seat poses (all at bearing 0°); do not exact-match the key set. Read the numbers
+in-process from `room_views.py` where you can rather than re-parsing the file.
+Do not build a second median.
 
 ## 2. Rows
 

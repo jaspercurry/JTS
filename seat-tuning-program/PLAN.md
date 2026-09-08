@@ -1,8 +1,9 @@
 # Seat-matched tuning — plan of record
 
 **Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258); Wave 0b landed
-(PR #4517, ADR-0259/0260). Four lanes in parallel: A retire, B program, C room
-candidate, D bass. **Owner:** jaspercurry. **Orchestrating
+(PR #4517, ADR-0259/0260). Lane B landed rows 1.4/1.5/1.7 (PRs #4522, #4524,
+#4525); lane C has row 2.3 open (#4520) and 2.1 in progress; lane D in
+progress; lane A not yet spawned. **Owner:** jaspercurry. **Orchestrating
 session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
 issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
@@ -193,10 +194,10 @@ disjoint files.
 | 1.2 | A | **Delete the room product.** `jasper/correction/` orchestration whole (session, acceptance, autolevel, browser_audio, confidence, envelope, status, state_guard, runtime_integrity, runtime_safety, strategy, failures, evidence, replay_artifacts, bundles, bundle_tools, interop, fir_runtime, artifacts, acoustic_quality after its SNR table moves, `_numbers`); the room routes and handlers in `correction_setup.py`/`correction_handlers.py`/`correction_capture.py` (the crossover, sync, calibration and healthz routes stay); `web/correction_room_flow.py`; `web/correction_tuning.py`; `jasper/calibration_agent/` and `jasper-calibration-agent`; `jasper-correction-bundle`; the room JS (`deploy/assets/correction/js/main.js` room modules, `shared/js/measurement-audio.js`); doctor's room section re-pointed at the applied candidate or dropped; all their tests. SUPERSEDED verdict per module. | D | grep proof; `scripts/test-merge` green; the speaker walk still opens a v2 session on a fixture | code-review; D-tier |
 | 1.3 | A | **Delete the bass wizard.** `bass_extension/ladder.py`, the apply/bypass/recover transaction in `bass_extension/__init__.py`, `tests/test_bass_extension_plan_status.py`, and the three superseded wave docs. Keep `alignment`, `targets`, `adapters`, `limiter_evidence`, `profile` (absorbed by 3.3), `bench/`. | D | grep proof; `/state.bass_extension` still reports | code-review |
 | 1.0 | B | **LANDED 2026-09-08 — PR #4510 merged (`72bc34764`), #4138 closed.** The wired kernel in the leaf. Reconcile with main: `WiredCaptureAnswer`, `mint_wired_answer`, `make_wired_recorder` move from `crossover_v2/wired_stimulus.py` to the leaf `audio_measurement/wired_capture.py`; `WiredStimulusCapture` stays in the engine; keep its `require_wired_mic` and the null-door intactness gate. Its own gate holds: one owner `jasper-null` run confirming a clean take reports zero zero-runs and zero block gaps. Coordinate with the right-size orchestrator, who owns the PR. | R | the PR's four hardware checks; AST identity of moved bodies | owner null run, then code-review |
-| 1.4 | B | **Pose vocabulary.** `ProgramPose` gains kind (bearing / seat / close) and distance; `mark_distance_m` becomes per-take; the seat kind carries an offset from the head. Programs: `seat/cube` (head + six face centres at 30 cm; prompts in plain words) and `close/spot` (~0.3 m on the design axis). Human mover via the existing position-ready walk. | P | `jasper-angle-capture plan` lists both; a fixture round banks seven seat takes with the kind recorded | code-review |
-| 1.5 | B | **Room views.** Ungated analysis as an option over banked takes; `room-median` (median, spread, per-position deviation below the ceiling), `room-persistence` (features holding across ≥ N positions), `room-ceiling` (the applied candidate's trusted floor clamped per ADR-0256, fallback disclosed). | V | three `ARTIFACT_BY_VIEW` rows; inventory lists them; ADR-0237 stdout | code-review |
+| 1.4 | B | **LANDED 2026-09-08 — PR #4522 merged (`4d0a0a94f`).** **Pose vocabulary.** `ProgramPose` gains kind (bearing / seat / close) and distance; `mark_distance_m` becomes per-take; the seat kind carries an offset from the head. Programs: `seat/cube` (head + six face centres at 30 cm; prompts in plain words) and `close/spot` (~0.3 m on the design axis). Human mover via the existing position-ready walk. | P | `jasper-angle-capture plan` lists both; a fixture round banks seven seat takes with the kind recorded | code-review |
+| 1.5 | B | **LANDED 2026-09-08 — PR #4524 merged (`9f3ae539b`).** **Room views.** Ungated analysis as an option over banked takes; `room-median` (median, spread, per-position deviation below the ceiling), `room-persistence` (features holding across ≥ N positions), `room-ceiling` (the applied candidate's trusted floor clamped per ADR-0256, fallback disclosed). | V | three `ARTIFACT_BY_VIEW` rows; inventory lists them; ADR-0237 stdout | code-review |
 | 1.6 | — | First wired seat-cube session on jts3 through the applied tune. | H | banked round, integrity clean | owner |
-| 1.7 | B | Runbook "Room" section; menu regenerated. | A | menu `--check` | sanity |
+| 1.7 | B | **LANDED 2026-09-08 — PR #4525 merged (`0cbed8a57`).** Runbook "Room" section; menu regenerated. | A | menu `--check` | sanity |
 
 ### Wave 2 — the room candidate kind (lane C; starts after 0b on fixtures)
 
@@ -204,7 +205,7 @@ disjoint files.
 |---|---|---|---|---|
 | 2.1 | Layer-3 candidate kind: cuts-only bells on the program bus below the ceiling, one set per side (mono = one side). Code-computed limits: per-bin cut depth from spread, a taper to flat over ~1/3 octave below the ceiling (in `design_peq`'s per-bin arrays), boost admission per the regime plan's D5 (persistent in ≥ 5 of 7, modally plausible, N ≥ 3, capped, level cost disclosed). The LLM authors inside the limits; the `propose`/`stage` doors validate. | C | door refuses out-of-limit filters with codes; fixture candidate round-trips through the emitter reader | code-review high |
 | 2.2 | `room-grade` view: re-measured cube against the target below the ceiling, incumbent beside it; regression is a disclosure; restore is the doctrine path. | V | fixture grades; no auto-revert machinery | code-review |
-| 2.3 | Boundary prior view: from declared geometry predict the 2π/4π gain step and the quarter-wave null (c/4d) per wall. Advisory. | V | 85 cm → ≈100 Hz null on a fixture | code-review |
+| 2.3 | **PR #4520 open (reviewed; main merged in and fixes pushed by the orchestrator).** Boundary prior view: from declared geometry predict the 2π/4π gain step and the quarter-wave null (c/4d) per wall. Advisory. | V | 85 cm → ≈100 Hz null on a fixture | code-review |
 | 2.4 | Two seat-cube sessions on jts3: apply a Layer-3 candidate, re-measure, grade. | H | two banked rounds | owner |
 
 ### Wave 3 — the bass candidate kind and protection (lane D)
@@ -310,6 +311,38 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-08 23:45Z: Lane B rows 1.4, 1.5, 1.7 LANDED (owner merged #4522 at
+  `4d0a0a94f` and #4524 at `9f3ae539b`; orchestrator merged #4525 at
+  `0cbed8a57` after review). Post-hoc Opus review against
+  `briefs/wave-1-program.md`: engineering sound, no follow-up PR. Facts every
+  later lane must use: `room_median.json` as written is `freqs_hz`,
+  `median_db`, `spread_db`, `n_positions`, `positions[{id, pose_key,
+  deviation_db}]`, `ceiling_hz`, `ceiling_source` ("applied_candidate" |
+  "fallback"), `window` ("ungated" | "gated" | "mixed" — computed from the
+  takes' `gating_applied`, not the constant the brief pinned; a consumer
+  refuses anything but "ungated"). The ceiling multiplies the persisted raw
+  `1/T` (`exclusion_evidence.validity_floor_hz`) by `TRUSTED_FLOOR_MULTIPLIER`
+  before clamping — verified correct (the trusted figure is a separate,
+  unpersisted key). Notes for a later tidy row, not blocking:
+  `spatial.cloud_position_record` writes `mark_distance_m` twice (`:985` and
+  via `pose_kind_fields`); a geometry-locked retry in `crossover_v2_flow.py`
+  ~`:1708` rebuilds a bare prompt and would drop the pose kind (unreachable
+  today); two function-local imports in `correction_crossover_v2.py`
+  (`:1998`, `:4224`) lack a `# lazy` reason.
+- 2026-09-08 23:45Z: Lane C row 2.3 PR #4520 reviewed (Opus): physics
+  verified independently (null c/4d = 100.9 Hz at 0.85 m; +3 dB at c/8d — the
+  brief's c/12d was wrong; the two-wall dB sum equals the rigid corner
+  image-source product up to the per-wall clamp); advisory contract and
+  package boundaries clean. It conflicted with main in four registry files
+  after #4524; the orchestrator's Opus agent merged main in and pushed the
+  small fixes (consume `ROOM_FLOOR_HZ` and the `ARTIFACT_BY_VIEW` artifact
+  name instead of redeclaring; pin the `boundary_prior_ceiling_invalid`
+  refusal; correct the corner-model prose; drop the unreachable
+  `sound_speed_source == "argument"` branch; derive `_OPTIONAL` from
+  `WALL_FIELD_BY_KEY`). Merges when green. Lane C's 2.1 is in progress on
+  `claude/seat-w2-2-1-room-candidate`; 2.3 landed first.
+- 2026-09-08 23:40Z: Lane A not yet spawned (no session newer than "JTS 0b").
+  Lane D still on its first branch (bench binding), nothing pushed yet.
 - 2026-09-08 ~20:40Z: Owner spawned lanes B (program), C (room candidate) and
   D (bass) as fresh sessions from the kickoff snippets; each is working on its
   brief's first branch (`claude/seat-w1-1-4-seat-cube-program`,
