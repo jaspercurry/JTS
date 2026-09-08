@@ -68,7 +68,22 @@ from jasper.audio_measurement.null_walk import (
     DspPredecessor,
     NullWalkError,
 )
+from jasper.audio_measurement.room_boundary import (
+    ROOM_BOUNDARY_MAX_HZ,
+    ROOM_BOUNDARY_MIN_HZ,
+)
+from jasper.audio_measurement.room_limits import (
+    ROOM_F_LOW_HZ,
+    ROOM_MAX_FILTER_BOOST_DB,
+    ROOM_MAX_FILTERS_PER_SIDE,
+    ROOM_MAX_TOTAL_BOOST_DB,
+    ROOM_PEQ_Q_MAX,
+    ROOM_PEQ_Q_MIN,
+)
+from jasper.camilla_config_contract import PeqFilter
+from jasper.json_fields import finite_float
 
+from ._common import require_sha256_hex
 from .camilla_yaml import (
     _channels_for_role,
     _driver_delay_name,
@@ -80,6 +95,7 @@ from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH
 from .graph_safety import unprotected_tweeter_outputs, view_from_emitted_text
 from .level_trim import MAX_ATTENUATION_DB
 from .profile import (
+    SIDES_BY_LAYOUT,
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     CrossoverRegion,
@@ -117,7 +133,20 @@ _OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
     "trim_decision": dict,
     "exclusion_evidence": dict,
     "blend_correction": list,
+    "room_correction": dict,
 }
+
+_ROOM_CORRECTION_KEYS = frozenset({
+    "sides",
+    "ceiling_hz",
+    "ceiling_source",
+    "basis",
+    "boost_db_total",
+    "level_cost_db",
+})
+_ROOM_BASIS_KEYS = frozenset({"round_id", "room_median_sha256", "admitted_boosts_hz"})
+_ROOM_FILTER_KEYS = frozenset({"freq", "q", "gain"})
+_ROOM_CEILING_SOURCES = frozenset({"applied_candidate", "fallback"})
 
 
 class MeasuredCrossoverCandidateError(ValueError):
@@ -147,6 +176,143 @@ def _region_for_role(preset: ActiveSpeakerPreset, role: str) -> CrossoverRegion:
             f"driver role {role!r} must identify exactly one crossover region",
         )
     return matches[0]
+
+
+def _validated_room_correction(
+    raw: Mapping[str, Any], *, layout_sides: tuple[str, ...]
+) -> dict[str, Any]:
+    """The room PEQ set ``raw`` claims, refused whole if it breaks a room limit.
+
+    Empty is the ordinary case. The room prescription door composes the set and
+    checks it against the measured median; this is the independent second check
+    at the persistence boundary, using only the limits and the layout.
+    """
+
+    if not raw:
+        return {}
+    if set(raw) != _ROOM_CORRECTION_KEYS:
+        _refuse(
+            "room_correction_invalid",
+            f"room_correction keys must be exactly {sorted(_ROOM_CORRECTION_KEYS)}",
+        )
+    ceiling_hz = finite_float(raw["ceiling_hz"])
+    if (
+        ceiling_hz is None
+        or not ROOM_BOUNDARY_MIN_HZ <= ceiling_hz <= ROOM_BOUNDARY_MAX_HZ
+    ):
+        _refuse(
+            "room_correction_invalid",
+            "ceiling_hz must be within "
+            f"{ROOM_BOUNDARY_MIN_HZ}..{ROOM_BOUNDARY_MAX_HZ} Hz",
+        )
+    if raw["ceiling_source"] not in _ROOM_CEILING_SOURCES:
+        _refuse(
+            "room_correction_invalid",
+            f"ceiling_source must be one of {sorted(_ROOM_CEILING_SOURCES)}",
+        )
+    basis = raw["basis"]
+    if not isinstance(basis, Mapping) or set(basis) != _ROOM_BASIS_KEYS:
+        _refuse(
+            "room_correction_invalid",
+            f"basis keys must be exactly {sorted(_ROOM_BASIS_KEYS)}",
+        )
+    if not isinstance(basis["round_id"], str) or not basis["round_id"].strip():
+        _refuse("room_correction_invalid", "basis.round_id must be a non-empty string")
+    try:
+        require_sha256_hex(
+            basis["room_median_sha256"], "basis.room_median_sha256", ValueError
+        )
+    except ValueError as exc:
+        _refuse("room_correction_invalid", str(exc))
+    if not isinstance(basis["admitted_boosts_hz"], list):
+        _refuse("room_correction_invalid", "basis.admitted_boosts_hz must be a list")
+    admitted: list[float] = []
+    for value in basis["admitted_boosts_hz"]:
+        number = finite_float(value)
+        if number is None:
+            _refuse(
+                "room_correction_invalid",
+                "basis.admitted_boosts_hz must be finite numbers",
+            )
+        admitted.append(number)
+    sides = raw["sides"]
+    if not isinstance(sides, Mapping) or set(sides) != set(layout_sides):
+        _refuse(
+            "room_correction_invalid",
+            f"sides must cover exactly {sorted(layout_sides)}",
+        )
+    side_boosts: list[float] = []
+    for side in layout_sides:
+        filters = sides[side]
+        if not isinstance(filters, list) or len(filters) > ROOM_MAX_FILTERS_PER_SIDE:
+            _refuse(
+                "room_correction_invalid",
+                f"side {side!r} must be a list of at most "
+                f"{ROOM_MAX_FILTERS_PER_SIDE} filters",
+            )
+        boost = 0.0
+        for entry in filters:
+            if not isinstance(entry, Mapping) or set(entry) != _ROOM_FILTER_KEYS:
+                _refuse(
+                    "room_correction_invalid",
+                    f"side {side!r} filter keys must be exactly "
+                    f"{sorted(_ROOM_FILTER_KEYS)}",
+                )
+            freq = finite_float(entry["freq"])
+            q = finite_float(entry["q"])
+            gain = finite_float(entry["gain"])
+            if freq is None or q is None or gain is None:
+                _refuse(
+                    "room_correction_invalid",
+                    f"side {side!r} filter values must be finite numbers",
+                )
+            if not ROOM_F_LOW_HZ <= freq <= ceiling_hz:
+                _refuse(
+                    "room_correction_invalid",
+                    f"side {side!r} filter freq must be within "
+                    f"{ROOM_F_LOW_HZ}..{ceiling_hz} Hz",
+                )
+            if not ROOM_PEQ_Q_MIN <= q <= ROOM_PEQ_Q_MAX:
+                _refuse(
+                    "room_correction_invalid",
+                    f"side {side!r} filter q must be within "
+                    f"{ROOM_PEQ_Q_MIN}..{ROOM_PEQ_Q_MAX}",
+                )
+            if gain <= 0.0:
+                continue
+            if gain > ROOM_MAX_FILTER_BOOST_DB:
+                _refuse(
+                    "room_correction_invalid",
+                    f"side {side!r} boost must not exceed "
+                    f"{ROOM_MAX_FILTER_BOOST_DB} dB",
+                )
+            if not any(math.isclose(freq, value) for value in admitted):
+                _refuse(
+                    "room_correction_invalid",
+                    f"side {side!r} boost at {freq} Hz is not an admitted boost",
+                )
+            boost += gain
+        if boost > ROOM_MAX_TOTAL_BOOST_DB:
+            _refuse(
+                "room_correction_invalid",
+                f"side {side!r} total boost must not exceed "
+                f"{ROOM_MAX_TOTAL_BOOST_DB} dB",
+            )
+        side_boosts.append(boost)
+    boost_db_total = finite_float(raw["boost_db_total"])
+    if boost_db_total is None or not math.isclose(
+        boost_db_total, max(side_boosts), abs_tol=1e-9
+    ):
+        _refuse(
+            "room_correction_invalid",
+            "boost_db_total must equal the largest per-side positive gain sum",
+        )
+    level_cost_db = finite_float(raw["level_cost_db"])
+    if level_cost_db is None or not math.isclose(
+        level_cost_db, boost_db_total, abs_tol=1e-9
+    ):
+        _refuse("room_correction_invalid", "level_cost_db must equal boost_db_total")
+    return dict(raw)
 
 
 @dataclass(frozen=True)
@@ -249,6 +415,14 @@ class MeasuredCrossoverCandidate:
     driver. It is also the round's INCUMBENT record: the next round reads it off
     the applied candidate to know what its summed measurement rode through.
 
+    ``room_correction`` is the modal-band PEQ set: ``{"sides": {side: [{freq,
+    q, gain}, ...]}, "ceiling_hz", "ceiling_source", "basis", "boost_db_total",
+    "level_cost_db"}``, where ``basis`` is the round and ``room_median.json``
+    digest the set was prescribed from. The room prescription door is its only
+    writer; :func:`_validated_room_correction` re-checks it here against the
+    room layer's limits. Per-side sets are DATA today — the emitter takes one
+    list (:func:`candidate_room_peqs`) and per-side emission arrives later.
+
     Every optional field above is frozen through the same exact-JSON-data walk,
     participates in the fingerprint when non-empty, and is omitted from the
     fingerprinted core when empty so a candidate from before the field existed
@@ -266,6 +440,7 @@ class MeasuredCrossoverCandidate:
     trim_decision: Mapping[str, Any] = field(default_factory=dict)
     exclusion_evidence: Mapping[str, Any] = field(default_factory=dict)
     blend_correction: Sequence[Mapping[str, Any]] = ()
+    room_correction: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -335,6 +510,14 @@ class MeasuredCrossoverCandidate:
             except NullWalkError as exc:
                 _refuse(f"{name}_invalid", f"{name} must be exact JSON data: {exc}")
             object.__setattr__(self, name, frozen)
+        object.__setattr__(
+            self,
+            "room_correction",
+            _validated_room_correction(
+                self.room_correction,
+                layout_sides=SIDES_BY_LAYOUT[self.source_preset.channel_map.layout],
+            ),
+        )
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
@@ -394,6 +577,8 @@ class MeasuredCrossoverCandidate:
             core["exclusion_evidence"] = dict(self.exclusion_evidence)
         if self.blend_correction:
             core["blend_correction"] = [dict(f) for f in self.blend_correction]
+        if self.room_correction:
+            core["room_correction"] = dict(self.room_correction)
         return core
 
     def to_dict(self) -> dict[str, Any]:
@@ -411,6 +596,7 @@ class MeasuredCrossoverCandidate:
             "trim_decision": dict(self.trim_decision),
             "exclusion_evidence": dict(self.exclusion_evidence),
             "blend_correction": [dict(f) for f in self.blend_correction],
+            "room_correction": dict(self.room_correction),
             "fingerprint": self.fingerprint,
         }
 
@@ -501,6 +687,12 @@ class MeasuredCrossoverCandidate:
                 "blend_correction_malformed",
                 "candidate blend_correction is malformed",
             )
+        # Absent -> {} (era tolerance); present -> validated by __post_init__.
+        room_correction_raw = raw.get("room_correction", {})
+        if not isinstance(room_correction_raw, Mapping):
+            _refuse(
+                "room_correction_malformed", "candidate room_correction is malformed"
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -517,6 +709,7 @@ class MeasuredCrossoverCandidate:
                 trim_decision=dict(trim_decision_raw),
                 exclusion_evidence=dict(exclusion_evidence_raw),
                 blend_correction=list(blend_correction_raw),
+                room_correction=dict(room_correction_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(
@@ -535,6 +728,28 @@ class MeasuredCrossoverCandidate:
                 "declared result",
             )
         return candidate
+
+
+def candidate_room_peqs(
+    candidate: MeasuredCrossoverCandidate,
+) -> tuple[PeqFilter, ...]:
+    """The room PEQs of the layout's FIRST declared side; ``()`` when absent.
+
+    The emitter takes one list, so a stereo candidate's remaining sides are
+    carried but not yet emitted; a mono layout declares exactly one side.
+    """
+
+    if not candidate.room_correction:
+        return ()
+    side = SIDES_BY_LAYOUT[candidate.source_preset.channel_map.layout][0]
+    return tuple(
+        PeqFilter(
+            freq=float(entry["freq"]),
+            q=float(entry["q"]),
+            gain=float(entry["gain"]),
+        )
+        for entry in candidate.room_correction["sides"][side]
+    )
 
 
 def effective_preset(candidate: MeasuredCrossoverCandidate) -> ActiveSpeakerPreset:
