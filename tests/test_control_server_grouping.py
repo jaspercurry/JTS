@@ -145,7 +145,7 @@ def test_grouping_set_delay_burst_coalesces_kicks_and_applies_last_env(
     collapses to one trailing reconciler run. That trailing run re-reads the
     current grouping.env, so the final swept value is never lost.
     """
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     base, _ = server_with_coordinator
     env = tmp_path / "grouping.env"
@@ -320,7 +320,7 @@ def test_grouping_set_trim_only_falls_back_to_reconciler_on_live_apply_failure(
 
 
 def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     run_calls = []
     timers = []
@@ -393,7 +393,7 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
 def test_grouping_trailing_scheduler_falls_back_to_process_timer(
     monkeypatch, tmp_path,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     timers = []
     marks = []
@@ -451,7 +451,7 @@ def test_grouping_trailing_scheduler_falls_back_to_process_timer(
 def test_grouping_trailing_delay_file_is_clamped_and_rounded(
     monkeypatch, tmp_path,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     delay_file = tmp_path / "grouping-reconcile-trailing-delay"
     monkeypatch.setattr(
@@ -738,7 +738,7 @@ def test_grouping_get_fails_readiness_closed_without_hiding_grouping(
     ),
 )
 def test_grouping_optional_field_parser_preserves_omission(omitted: str) -> None:
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     body = {
         "trim_db": -2.5,
@@ -758,7 +758,7 @@ def test_grouping_optional_field_parser_preserves_omission(omitted: str) -> None
 
 
 def test_grouping_optional_numeric_parser_preserves_python_coercions() -> None:
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     parsed, error = srv_mod._parse_grouping_optional_fields({
         "trim_db": True,
@@ -811,7 +811,7 @@ def test_grouping_set_trim_settable_validated_and_preserved(
     """trim_db: settable (validated attenuate-only), rejected when
     garbage or positive, and PRESERVED when omitted — bond/swap fan-outs
     never send it, so a calibrated balance survives role changes."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     writes = []
     monkeypatch.setattr(
@@ -841,7 +841,7 @@ def test_grouping_set_trim_settable_validated_and_preserved(
 def test_grouping_set_latency_and_delay_settable_validated_and_preserved(
     monkeypatch, server_with_coordinator,
 ):
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     writes = []
     monkeypatch.setattr(
@@ -891,7 +891,7 @@ def test_grouping_set_peer_roster_settable_preserved_and_cleared(
     when omitted (swap/trim fan-outs never send them), and CLEARED by an
     explicit empty string (the bond flow clears non-leader members so a
     role flip can't leave a stale roster)."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     writes = []
     monkeypatch.setattr(
@@ -932,7 +932,7 @@ def test_grouping_set_roster_settable_preserved_and_validated(
     """Bond roster (full N-member list): a `roster` list of {addr,name,channel}
     persists the SERIALIZED JASPER_GROUPING_ROSTER; omitted → preserved (key
     absent); a bad member (non-IPv4 addr) → 400; a non-list value → 400."""
-    import jasper.control.server as srv_mod
+    import jasper.control.handlers.grouping as srv_mod
 
     writes = []
     monkeypatch.setattr(

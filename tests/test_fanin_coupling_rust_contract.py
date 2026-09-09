@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin_coupling import (
-    COUPLING_ENV_VAR,
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
@@ -30,6 +30,7 @@ from jasper.fanin_coupling import (
     RING_WIRE_FORMATS,
     resolve_ring_slots,
 )
+from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
 from jasper.ring_assets import RING_CONF_DEFAULT_CHANNELS
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -113,38 +114,32 @@ def _call_sites(fn: str, code: str) -> int:
     return len(re.findall(rf"(?<!\w){re.escape(fn)}\(", code))
 
 
-def test_coupling_selector_env_var_name_agrees():
-    text = _config_rs_text()
-    assert f'"{COUPLING_ENV_VAR}"' in text, (
-        f"Rust must read the coupling selector from {COUPLING_ENV_VAR}"
-    )
-
-
 def test_rust_serves_the_undeclared_key_as_well_as_the_ring_token():
     """The Rust ACCEPT-SET is ``None`` | ``""`` | ``shm_ring`` — all three.
 
-    Ring A is the daemon's only transport (ADR-0100), so this key no longer
-    SELECTS anything on the Rust side; it only has to serve what the fleet can
-    legitimately present and refuse the rest (that refusal half is pinned
-    behaviorally in-crate by `only_a_ring_declaration_or_none_is_served`).
+    Ring A is the daemon's only transport (ADR-0100), so this key SELECTS
+    nothing on either side; Python no longer writes it at all and sweeps a
+    persisted value off migrating boxes
+    (``coupling_reconcile._LEGACY_FANIN_COUPLING_ENV``). Rust still has to serve
+    what the fleet can legitimately present and refuse the rest (that refusal
+    half is pinned behaviorally in-crate by
+    `only_a_ring_declaration_or_none_is_served`).
 
-    UNSET is a first-class served state and this is the row that says so.
-    `coupling-auto` runs ``After=jasper-fanin.service``, so on a fresh or reset
-    box fan-in starts BEFORE the key is written. If Rust refused the undeclared
-    key, that box would park on every first boot; because it serves it, no
-    Python reader may map undeclared → loopback and derive a runtime
-    expectation from it (see ``resolve_coupling``'s docstring, and the doctor's
-    `_fanin_health_from_status`, which expects ``shm_ring`` unconditionally).
+    UNSET is a first-class served state and this is the row the sweep depends
+    on: once the key is gone, every box presents ``None`` and must start.
 
     Shape-level on purpose: it complements the in-crate behavioral pin rather
     than restating it, and what can drift across the language boundary is the
     accept-set's MEMBERSHIP, which is what this reads.
     """
     text = _config_rs_text()
+    assert f'"{_LEGACY_FANIN_COUPLING_ENV}"' in text, (
+        f"Rust must still read {_LEGACY_FANIN_COUPLING_ENV} to refuse a value "
+        "it cannot serve"
+    )
     assert f'None | Some("") | Some("{COUPLING_SHM_RING}") => {{}}' in text, (
         "the Rust accept arm must serve the undeclared key (None), a cleared "
-        f"key (empty), and the {COUPLING_SHM_RING!r} token Python's "
-        "resolve_coupling emits — all three in one arm"
+        f"key (empty), and the {COUPLING_SHM_RING!r} token — all three in one arm"
     )
 
 
@@ -592,3 +587,47 @@ def test_input_resampler_recovery_restarts_capture_pcm():
     # PREPARED. Assert the state-check + restart on the bound handle.
     assert "pcm.state() != State::Running" in recovery_body
     assert ".start()" in recovery_body
+
+
+def _compiled_fanin_lane_labels() -> list[str]:
+    """Scrape fan-in's compiled-in default ``input_renderers`` array."""
+    rs = _config_rs_text()
+    m = re.search(r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S)
+    assert m, "could not find the JASPER_FANIN_INPUT_RENDERERS default in config.rs"
+    # Entries are either a bare "label" literal or a named const spelled
+    # via a `pub const NAME: &str = "...";` reference (issue #3461).
+    consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', rs))
+    raw_items = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
+    return [consts.get(item, item) for item in raw_items]
+
+
+@pytest.mark.parametrize("spec", MUSIC_SOURCE_SPECS, ids=lambda s: s.id.value)
+def test_every_music_source_names_a_real_fanin_lane(spec):
+    """A label absent from fan-in's compiled-in default input_renderers is
+    refused at config (ConfigClassError -> park) UNLESS
+    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
+    the compiled-in default, not the guaranteed runtime outcome."""
+    fanin_labels = _compiled_fanin_lane_labels()
+    assert spec.fanin_label in fanin_labels, (
+        f"MUSIC_SOURCE_SPECS[{spec.id.value}].fanin_label "
+        f"{spec.fanin_label!r} is missing from fan-in's compiled-in default "
+        f"input_renderers {fanin_labels} (scraped from {_FANIN_CONFIG_RS.name})"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    sorted(SOURCE_TO_FANIN_LABEL, key=lambda s: s.value),
+    ids=lambda s: s.value,
+)
+def test_every_source_to_fanin_label_entry_names_a_real_fanin_lane(source):
+    """``SOURCE_TO_FANIN_LABEL`` is the dict control-plane callers actually
+    read (mux's source gate, in particular); pin it directly rather than
+    trusting it stays a faithful projection of MUSIC_SOURCE_SPECS above."""
+    label = SOURCE_TO_FANIN_LABEL[source]
+    fanin_labels = _compiled_fanin_lane_labels()
+    assert label in fanin_labels, (
+        f"SOURCE_TO_FANIN_LABEL[{source.value}] = {label!r} is missing from "
+        f"fan-in's compiled-in default input_renderers {fanin_labels} "
+        f"(scraped from {_FANIN_CONFIG_RS.name})"
+    )

@@ -16,8 +16,6 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from jasper.camilla_config_contract import CamillaFloor
-
 from .hat_eeprom import HatEeprom
 
 
@@ -93,9 +91,9 @@ class LatencyFloor:
 
     The lowest jasper-outputd period / DAC-buffer pair a board runs xrun-free,
     captured as DATA on the profile so a fresh box reproduces it with no
-    per-user config. CamillaDSP's own buffering is the separate
-    :class:`~jasper.camilla_config_contract.CamillaFloor`: it crosses the ring,
-    not the DAC.
+    per-user config. CamillaDSP's own buffering is not here: it crosses the
+    ring, whose geometry is a transport constant
+    (:data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`), not the DAC's.
     """
 
     outputd_period_frames: int
@@ -222,9 +220,6 @@ class DacProfile:
     # wizard-owned env, so a fresh box reproduces the tuned floor with no
     # per-user config (#27).
     latency_floor: LatencyFloor | None = None
-    # CamillaDSP's floor, measured on a box fitted with this DAC. A board with
-    # no measurement declares none and takes the transport default.
-    camilla_floor: CamillaFloor | None = None
 
     def __post_init__(self) -> None:
         if not _ID_RE.match(self.id):
@@ -432,7 +427,6 @@ APPLE_USB_C_DONGLE = DacProfile(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
-    camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Hardware evidence: on jts.local's Apple dongle,
     # `aplay -D hw:A --dump-hw-params` reports FORMAT `S16_LE S24_3LE` at
     # CHANNELS 2 / RATE 48000 — the device advertises exactly two widths and
@@ -533,7 +527,6 @@ HIFIBERRY_DAC8X = DacProfile(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
-    camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Hardware evidence: `aplay --dump-hw-params` on jts3 — Studio silicon
     # under this base overlay/driver, see ADR-0232 — reports FORMAT
     # S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw `hw:` S32_LE
@@ -742,16 +735,10 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
     # on, and the writer needs more than two periods of slack to stay ahead of it.
     # The 128-frame PERIOD is what makes shm_ring reachable at all (it must equal
     # fan-in's compile-time RING_SLOT_FRAMES, which is 128).
-    #
-    # The pair jts4 runs: the ring clamp (#3542) brought this board's former
-    # 1024/4096 CamillaFloor down to 256, scaling the target with it to 1024.
-    # CamillaDSP validated that pair and the box plays on it — not a soak, so
-    # tightening below it needs one on this silicon.
     latency_floor=LatencyFloor(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
     ),
-    camilla_floor=CamillaFloor(chunksize=256, target_level=1024),
     chip_aec_detail=(
         "InnoMaker HiFi AMP Pro needs per-profile chip-AEC timing calibration"
     ),
@@ -826,7 +813,6 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
     ),
-    camilla_floor=CamillaFloor(chunksize=256, target_level=1536),
     # Stays at the S16_LE default while its child profile
     # (APPLE_USB_C_DONGLE, same silicon) declares S24_3LE, and the divergence is
     # a TRANSPORT fact, not a hardware one. outputd's paired composite sink has
@@ -1065,13 +1051,6 @@ def latency_floor_for(profile_id: str) -> LatencyFloor | None:
     if profile is None:
         return None
     return profile.latency_floor
-
-
-def camilla_floor_for(profile_id: str) -> CamillaFloor | None:
-    """The profile-declared CamillaDSP floor, or None (the transport default)."""
-
-    profile = by_id(profile_id)
-    return None if profile is None else profile.camilla_floor
 
 
 def mixer_control_groups_for(

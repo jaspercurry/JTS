@@ -23,8 +23,7 @@ under ``crossover_v2/`` (whose modules forbid importing the flow).
 from __future__ import annotations
 
 import math
-import numbers
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
@@ -40,9 +39,14 @@ from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
     POSE_KIND_BEARING,
     MeasurementProgram,
-    off_the_mark,
+    REGIME_PER_DRIVER,
+    REGIME_SUMMED,
+    REGIME_BRANCHES,
+    REGIMES,
+    validated_capture_purpose,
     pose_place,
     validated_pose,
+    validated_angle,
 )
 from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
@@ -109,17 +113,6 @@ __all__ = [
 ]
 
 
-#: Each driver swept alone, non-overlapping inside ONE capture (regime D of the ratified
-#: Measurement Program v2 schedule); yields per-driver complex transfer functions for
-#: the P2 forward model.
-REGIME_PER_DRIVER = "per_driver"
-
-#: One sweep through the selected summed graph: the system response at that angle.
-REGIME_SUMMED = "summed"
-
-REGIME_BRANCHES = "branches"
-REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES)
-
 #: An external driver turns the microphone and reports the angle reached; the one mover
 #: that auto-advances
 #: (:attr:`~jasper.active_speaker.crossover_v2_flow.V2PlanShape.externally_positioned`),
@@ -181,24 +174,11 @@ _REGIME_PROGRAM_PHASE = {
 
 
 def _validated_angle(angle_deg: object) -> int:
-    """One bearing, checked and normalized -- the validator EVERY door shares
-    (:class:`AngleStop`, :func:`pose_at_angle`, the three request constructors).
-
-    Silent truncation never returns from here: ``0.4`` truncating to ``0``
-    would make a pose just off axis an ON-AXIS capture with
-    ``offset_cm=0.0``, routing around :func:`position_angle_deg`'s zero-sign
-    guard. Accepts any :class:`numbers.Integral` except ``bool`` (excluded
-    because ``bool`` *is* an ``Integral`` subclass, and ``True`` would
-    otherwise sail through as ``+1 deg``); ``np.int64`` passes,
-    ``np.float64`` does not. Returns a plain :class:`int`, converted AFTER
-    the type check so it can never truncate.
-    """
-    if isinstance(angle_deg, bool) or not isinstance(angle_deg, numbers.Integral):
-        raise CrossoverV2FlowError(
-            "an angle is stated in WHOLE degrees -- no rounding, no coercion "
-            f"-- got {angle_deg!r}"
-        )
-    degrees = int(angle_deg)
+    """Normalize a whole-degree bearing and enforce the geometry limit."""
+    try:
+        degrees = validated_angle(angle_deg)
+    except ValueError as exc:
+        raise CrossoverV2FlowError(str(exc)) from None
     if abs(degrees) > MAX_ANGLE_DEG:
         raise CrossoverV2FlowError(
             f"an angle must be within +/-{MAX_ANGLE_DEG} deg of the design "
@@ -230,6 +210,9 @@ class AngleStop:
     kind: str = POSE_KIND_BEARING
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
+    purpose: str | None = None
+    headline: str = ""
+    detail: str = ""
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
@@ -238,12 +221,9 @@ class AngleStop:
         object.__setattr__(
             self, "elevation_deg", _validated_angle(self.elevation_deg)
         )
-        if self.regime not in REGIMES:
-            raise CrossoverV2FlowError(
-                f"stimulus regime must be one of {REGIMES}, got {self.regime!r}"
-            )
         try:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
+            object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
         object.__setattr__(self, "seat_offset_m", offset)
@@ -307,7 +287,7 @@ class AngleCaptureRequest:
             MOVER_MAX_ELEVATION_DEG[self.mover],
             tuple(stop.elevation_deg for stop in self.stops),
         )
-        unreachable = sorted({stop.kind for stop in self.stops if off_the_mark(stop.kind)})
+        unreachable = sorted({stop.kind for stop in self.stops if stop.kind != POSE_KIND_BEARING})
         if unreachable and self.externally_positioned:
             raise LateralWalkRefused(
                 WALK_OVER_MOVER_ENVELOPE,
@@ -456,32 +436,20 @@ def request_for_program(
     delay_us: float = 0.0,
     level_matched: bool = False,
 ) -> AngleCaptureRequest:
-    """The walk one named program asks for, in the table's own order.
-
-    A nonempty candidate tuple uses summed captures; an empty id selects base.
-    Omit candidates for per-driver captures. A seat or close pose is a SUMMED
-    capture whatever ``candidates`` says — the VERIFY shape through the applied
-    tune, since the room is measured through the speaker stage it sits on.
-    A pose's ``repeats``
-    become that many ADJACENT identical stops, so the microphone moves once per DISTINCT
-    pose. The graph flags pass through untouched -- a program states POSE geometry only.
-    ``candidates`` expands POSE-MAJOR, CANDIDATE-MINOR (adjacent stops, one place);
-    ``()`` measures the speaker as it stands. Reach is not re-checked:
-    :class:`AngleCaptureRequest` already refuses a pose beyond the mover's envelope.
-    """
-    if program.program_id == "branches" and (len(candidates) != 1 or not candidates[0]):
+    """Expand a plan position-first, with adjacent repeats and candidate trials."""
+    if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or not candidates[0]):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
                 pose.azimuth_deg,
-                REGIME_BRANCHES if program.program_id == "branches" else
-                REGIME_SUMMED if candidates or off_the_mark(pose.kind) else REGIME_PER_DRIVER,
+                REGIME_SUMMED if candidates and program.regime != REGIME_BRANCHES else program.regime,
                 pose.elevation_deg,
                 candidate,
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
+                purpose=program.purpose, headline=pose.headline, detail=pose.detail,
             )
             for pose in program.poses
             for _ in range(pose.repeats)
@@ -576,6 +544,8 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
             stop.angle_deg, stop.elevation_deg, kind=stop.kind,
             distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m,
         )
+        pose = replace(pose, purpose=stop.purpose, preserve_text=bool(stop.headline or stop.detail),
+                       headline=stop.headline or pose.headline, detail=stop.detail or pose.detail)
         resolved.append(
             ResolvedStop(
                 index=offset + 1,

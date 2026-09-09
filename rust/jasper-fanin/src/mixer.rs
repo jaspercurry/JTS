@@ -493,6 +493,7 @@ const PACE_MIN_SLEEP_NS: u64 = 100_000;
 /// within a second. An ABSENT reader is safe (it drops); a live-but-unpaced one
 /// is fatal.
 struct PeriodPacer {
+    nominal_ns: u64,
     /// The targeted period in nanoseconds — one nominal period
     /// (`period_frames / sample_rate`) less [`PACE_HEADROOM_PERCENT`],
     /// precomputed so the hot loop never divides.
@@ -504,8 +505,23 @@ struct PeriodPacer {
 impl PeriodPacer {
     fn new(period_ns: u64) -> Self {
         Self {
+            nominal_ns: period_ns,
             target_ns: period_ns * (100 - PACE_HEADROOM_PERCENT) / 100,
             deadline_ns: None,
+        }
+    }
+
+    fn set_nominal(&mut self, nominal: bool) {
+        // Snapcast consumes at wall-clock rate. DAC refill headroom would fill
+        // its FIFO, then stall USB capture whenever a whole pipe page drains.
+        let target = if nominal {
+            self.nominal_ns
+        } else {
+            self.nominal_ns * (100 - PACE_HEADROOM_PERCENT) / 100
+        };
+        if target != self.target_ns {
+            self.target_ns = target;
+            self.deadline_ns = None;
         }
     }
 
@@ -800,6 +816,7 @@ struct AutoTrimLaneState {
 /// work loop writes. Distinct from `WriterMetrics`, which is a value snapshot.
 #[derive(Clone)]
 struct RingCounters {
+    nominal_clock: Arc<AtomicBool>,
     published: Arc<AtomicU64>,
     full_waits: Arc<AtomicU64>,
     /// Live-but-STUCK reader drops (issue #1524) — the bounded-wait give-ups
@@ -831,6 +848,7 @@ struct RingCounters {
 impl RingCounters {
     fn new() -> Self {
         Self {
+            nominal_clock: Arc::new(AtomicBool::new(false)),
             published: Arc::new(AtomicU64::new(0)),
             full_waits: Arc::new(AtomicU64::new(0)),
             stuck_reader_drops: Arc::new(AtomicU64::new(0)),
@@ -851,6 +869,7 @@ impl RingCounters {
 /// life, so there is nothing for a later period to update.
 #[derive(Clone)]
 pub struct RingObservability {
+    pub nominal_clock: Arc<AtomicBool>,
     pub path: String,
     pub slots: u32,
     /// The OBSERVED wire vocabulary token (`S16_LE` / `S32_LE`), or `unknown`
@@ -1373,6 +1392,7 @@ impl Mixer {
             attached.channels,
         );
         let ring_observability = RingObservability {
+            nominal_clock: Arc::clone(&counters.nominal_clock),
             path: config.ring_path.clone(),
             slots: config.ring_slots,
             wire_format,
@@ -2006,6 +2026,8 @@ fn write_ring_period(
     // this sleep, so it is floored at `PACE_MIN_SLEEP_NS` even when the deadline
     // has already passed. Every other period is left exactly as the pacer found
     // it: a zero sleep after back-pressure, so the DAC keeps owning the rate.
+    ring.pace
+        .set_nominal(ring.counters.nominal_clock.load(Ordering::Relaxed));
     let mut sleep_ns = ring.pace.pace(now_ns);
     let clockless = !publish_blocked && !dropped_this_period;
     if clockless {
@@ -3802,6 +3824,7 @@ mod tests {
         let counters = RingCounters::new();
         let ring_observability = RingObservability {
             path: out_path.clone(),
+            nominal_clock: Arc::clone(&counters.nominal_clock),
             slots: 8,
             wire_format: RingWireFormat::S16Le.as_str(),
             channels: CHANNELS,
@@ -4160,6 +4183,24 @@ mod tests {
         let blocked = t0 + 10 * target;
         assert_eq!(pacer.pace(blocked), 0);
         assert_eq!(pacer.pace(blocked), target);
+    }
+
+    #[test]
+    fn nominal_clock_keeps_one_period_per_deadline_without_dac_headroom() {
+        let period_ns = 256 * 1_000_000_000 / 48_000;
+        let mut pacer = PeriodPacer::new(period_ns);
+        pacer.set_nominal(true);
+        let t0 = 1_000_000_000;
+        assert_eq!(pacer.pace(t0), 0);
+        for period in 0..1000 {
+            assert_eq!(pacer.pace(t0 + period * period_ns), period_ns);
+        }
+        pacer.set_nominal(false);
+        assert_eq!(
+            pacer.target_ns,
+            period_ns * (100 - PACE_HEADROOM_PERCENT) / 100
+        );
+        assert_eq!(pacer.deadline_ns, None);
     }
 
     /// Reader-absent: `write_ring_period` free-run-drops and paces (never

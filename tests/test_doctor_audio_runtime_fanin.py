@@ -951,41 +951,6 @@ def test_check_skipped_when_no_loaded_capture(monkeypatch, tmp_path):
     assert res.reason == audio_runtime_fanin.REASON_COUPLING_NO_LOADED_CAPTURE
 
 
-# --- check_fanin_coupling_value: persisted coupling value must be recognized --
-
-
-@pytest.mark.parametrize(
-    "raw,status,reason",
-    [
-        (None, "ok", audio_runtime_fanin.REASON_COUPLING_FILE_ABSENT),
-        ("", "ok", ""),
-        ("shm_ring", "ok", ""),
-        ("transport_pipe", "warn", audio_runtime_fanin.REASON_COUPLING_TOKEN_UNKNOWN),
-        ("loopback", "warn", audio_runtime_fanin.REASON_COUPLING_TOKEN_UNKNOWN),
-    ],
-    ids=["absent_file", "absent_key", "declared", "removed_token", "retired_token"],
-)
-def test_check_fanin_coupling_value_reads_the_shared_predicate(
-    monkeypatch, tmp_path, raw, status, reason
-):
-    """ADR-0100: only a value fan-in REFUSES is a finding.
-
-    A migrating box carrying the removed ``transport_pipe`` token (or a typo)
-    warns until the reconciler converges it. An ABSENT or empty key is not that
-    state — fan-in serves the ring for it — so this surface must agree with the
-    daemon rather than with the presence of a token (#3655).
-    """
-    fanin_env = tmp_path / "fanin.env"
-    if raw is not None:
-        fanin_env.write_text(f"JASPER_FANIN_CAMILLA_COUPLING={raw}\n")
-    # The check's own read is the evidence-memoized `fanin_env()`, sourced
-    # from `env_load.FANIN_ENV_PATH`.
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-    res = audio_runtime_fanin.check_fanin_coupling_value()
-    assert res.status == status
-    assert res.reason == reason
-
-
 # --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------
 
 _RING_CFG = """\
@@ -1162,16 +1127,6 @@ def _fanin_case_ok_expected(monkeypatch, tmp_path):
     return audio_runtime_fanin.check_fanin_service()
 
 
-def _fanin_case_expects_ring(persisted):
-    def _case(monkeypatch, tmp_path):
-        _seed_units()
-        monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", lambda: persisted)
-        _patch_status_reader(monkeypatch, _fanin_status_payload())
-        return audio_runtime_fanin.check_fanin_service()
-
-    return _case
-
-
 def _fanin_case_fails_non_ring_transport(monkeypatch, tmp_path):
     _seed_units()
     _patch_status_reader(monkeypatch, _fanin_status_payload(transport="loopback"))
@@ -1277,9 +1232,6 @@ _MALFORMED_LOUDNESS = {"decision_seen": True, "calibrated": False, "final_gain_d
     "setup, expected_status, expected_reason, extra",
     [
         pytest.param(_fanin_case_ok_expected, "ok", "", None, id="test_check_fanin_service_ok_with_expected_status"),
-        pytest.param(_fanin_case_expects_ring("shm_ring"), "ok", None, None, id="test_check_fanin_service_expects_the_ring_whatever_the_file_says[shm_ring]"),
-        pytest.param(_fanin_case_expects_ring("loopback"), "ok", None, None, id="test_check_fanin_service_expects_the_ring_whatever_the_file_says[loopback]"),
-        pytest.param(_fanin_case_expects_ring(None), "ok", None, None, id="test_check_fanin_service_expects_the_ring_whatever_the_file_says[None]"),
         pytest.param(_fanin_case_fails_non_ring_transport, "fail", _F.REASON_FANIN_TRANSPORT_NOT_RING, _SILENT, id="test_check_fanin_service_fails_on_a_non_ring_live_transport"),
         pytest.param(_fanin_case_fails_no_ring_block, "fail", _F.REASON_FANIN_STATUS_MISSING_RING, None, id="test_check_fanin_service_fails_when_status_carries_no_ring_block"),
         pytest.param(_fanin_case_fails_no_output_block, "fail", _F.REASON_FANIN_STATUS_MISSING_OUTPUT, None, id="test_check_fanin_service_fails_when_status_carries_no_output_block"),

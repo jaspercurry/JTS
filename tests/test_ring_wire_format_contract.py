@@ -382,13 +382,14 @@ def test_the_rust_assistant_width_rule_is_the_conjunction_of_both_halves() -> No
     assert else_variant == "Narrow"
 
 
-def test_the_two_languages_reach_the_same_assistant_width_verdict(monkeypatch) -> None:
-    """VERDICT PARITY over the full 2x2, not token parity.
+def test_the_two_languages_reach_the_same_assistant_width_verdict() -> None:
+    """VERDICT PARITY over the format axis, not token parity.
 
     The Rust verdict is evaluated from the rule this file just read out of the
-    source; the Python verdict comes from the live predicate. Both are computed
-    here — neither side is a hand-written expectation, so a change to either
-    that is not matched by the other fails.
+    source, with the transport half held at the literal ``true`` the daemon
+    passes (pinned below); the Python verdict comes from the live predicate.
+    Both are computed here — neither side is a hand-written expectation, so a
+    change to either that is not matched by the other fails.
     """
     from jasper.fanin_coupling import assistant_wire_is_wide
 
@@ -396,28 +397,14 @@ def test_the_two_languages_reach_the_same_assistant_width_verdict(monkeypatch) -
     assert cond == "wire_format_is_wide && coupling_is_shm_ring"
 
     for wire_format in (RING_WIRE_FORMAT, RING_WIRE_FORMAT_WIDE):
-        for coupling in ("loopback", "shm_ring"):
-            # Evaluate the RUST rule's own condition on these two halves.
-            rust_variant = (
-                then_variant
-                if (wire_format == RING_WIRE_FORMAT_WIDE and coupling == "shm_ring")
-                else else_variant
-            )
-            python_wide = assistant_wire_is_wide(
-                wire_format=wire_format, coupling=coupling
-            )
-            assert python_wide is (rust_variant == "Wide"), (
-                f"verdict shear at ({wire_format}, {coupling}): "
-                f"rust={rust_variant} python={'Wide' if python_wide else 'Narrow'}"
-            )
-
-    # The row that made this contract necessary, named so a reader sees it.
-    assert (
-        assistant_wire_is_wide(
-            wire_format=RING_WIRE_FORMAT_WIDE, coupling="loopback"
+        rust_variant = (
+            then_variant if wire_format == RING_WIRE_FORMAT_WIDE else else_variant
         )
-        is False
-    ), "a declared-wide box that never armed the ring writes fan-in's narrow aloop lane"
+        python_wide = assistant_wire_is_wide(wire_format=wire_format)
+        assert python_wide is (rust_variant == "Wide"), (
+            f"verdict shear at {wire_format}: rust={rust_variant} "
+            f"python={'Wide' if python_wide else 'Narrow'}"
+        )
 
 
 # `Config::program_wire_is_wide` passes the TRANSPORT half as a literal. Matched
@@ -441,16 +428,8 @@ def _program_wire_is_wide_body(source: str) -> str:
     return source[start:end]
 
 
-# ``None`` is not in this list: at the VALUE level it means "not supplied" and
-# sends the predicate to its file reader (pinned separately below). A caller
-# holding an absent key hands over ``""``, as `_assistant_width_token` does.
-@pytest.mark.parametrize(
-    "coupling",
-    ["", "   ", "shm_ring", " SHM_RING "],
-    ids=["absent_key", "whitespace", "declared", "declared_noisy"],
-)
-def test_an_undeclared_coupling_is_the_ring_on_both_sides(coupling) -> None:
-    """#3655: the transport half agrees with the literal the daemon passes.
+def test_the_daemon_asserts_the_transport_half_unconditionally() -> None:
+    """#3655: the transport half is a literal, so the Python mirror has none.
 
     ``jasper-fanin`` hands ``from_box_declaration`` a hard-coded ``true`` for the
     transport, because ADR-0100 left one transport and the daemon refuses every
@@ -460,8 +439,6 @@ def test_an_undeclared_coupling_is_the_ring_on_both_sides(coupling) -> None:
     daemon on that same box ran WIDE. The literal is re-read out of the Rust
     source rather than assumed, so relaxing it there fails this.
     """
-    from jasper.fanin_coupling import assistant_wire_is_wide
-
     body = _program_wire_is_wide_body(_config_rs())
     matches = list(_PROGRAM_WIRE_COUPLING_RE.finditer(body))
     assert len(matches) == 1, (
@@ -470,43 +447,24 @@ def test_an_undeclared_coupling_is_the_ring_on_both_sides(coupling) -> None:
         f"{len(matches)} — if it was reshaped or moved, re-point this contract "
         "rather than deleting it"
     )
-    assert matches[0].group("coupling") == "true", (
-        "the daemon no longer asserts the transport half unconditionally; the "
-        "Python mirror below is pinned to that literal"
-    )
-    assert (
-        assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT_WIDE, coupling=coupling)
-        is True
-    )
-    assert (
-        assistant_wire_is_wide(wire_format=RING_WIRE_FORMAT, coupling=coupling)
-        is False
-    ), "the FORMAT half still decides; only the transport half went unconditional"
+    assert matches[0].group("coupling") == "true"
 
 
-def test_the_assistant_width_defaults_to_the_declared_files(monkeypatch) -> None:
-    """Both halves default to a FILE-FRESH read of the same SSOT the daemons use.
+def test_the_assistant_width_defaults_to_the_declared_file(monkeypatch) -> None:
+    """The width defaults to a FILE-FRESH read of the same SSOT the daemons use.
 
     Not ``os.environ``: ``jasper-voice`` and the socket-activated wizards never
     loaded ``fanin.env``, which is the stale-``os.environ`` class AGENTS.md
     canonizes.
     """
-    import jasper.fanin.ring_health as rh
     import jasper.fanin_coupling as fc
 
-    seen = {"format": 0, "coupling": 0}
+    seen = {"format": 0}
 
     def _format() -> str:
         seen["format"] += 1
         return RING_WIRE_FORMAT_WIDE
 
-    def _coupling(*_a, **_k) -> bool:
-        seen["coupling"] += 1
-        return True
-
     monkeypatch.setattr(fc, "read_declared_ring_wire_format", _format)
-    monkeypatch.setattr(rh, "persisted_coupling_feeds_ring", _coupling)
     assert fc.assistant_wire_is_wide() is True
-    assert seen == {"format": 1, "coupling": 1}, (
-        "both halves must be read from their own SSOT reader"
-    )
+    assert seen == {"format": 1}, "the width must be read from its own SSOT reader"

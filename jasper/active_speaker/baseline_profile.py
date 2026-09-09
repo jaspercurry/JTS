@@ -86,7 +86,11 @@ from .level_trim import (
     LevelTrimError,
     attenuation_from_group_deltas,
 )
-from .measured_crossover_candidate import candidate_room_peqs
+from .measured_crossover_candidate import (
+    MeasuredCrossoverCandidateError,
+    candidate_room_peqs,
+    room_peqs_from_correction,
+)
 from .playback_route import (
     OUTPUTD_ACTIVE_LANE_SOURCE,
     active_playback_route_capability,
@@ -1369,6 +1373,7 @@ def _frozen_applied_profile(
         # the Gap 3c bug class. A list, not a mapping, because it describes the
         # SUM rather than a driver.
         "blend_correction": list(applied.get("blend_correction") or []),
+        "room_correction": dict(applied.get("room_correction") or {}),
         "tuning_owner": str(applied.get("tuning_owner") or ""),
         # Quality state belongs to the immutable applied anchor too.  Dropping
         # it here lets an older sensitivity-only profile masquerade as a
@@ -2986,15 +2991,9 @@ def build_baseline_profile_candidate(
         # one is what a "what is applied right now" read (`/state`, the apply
         # observability line) uses without unpacking the snapshot.
         "blend_correction": blend_correction,
-        # The room layer this candidate applies. Top level only, NOT inside
-        # recomposition_snapshot: baseline_candidate_fingerprint hashes that
-        # snapshot. The applied config text is the room PEQs' durable copy, and
-        # only a seam that re-reads it carries them forward --
-        # jasper.sound.graph_carrier's preference-EQ and bass-extension
-        # recomposes, and audition.build_reduced_yaml off the anchor. A
-        # recompose that passes no room_peqs (jasper-active-speaker
-        # baseline-reemit, the setup_status readiness compare) re-emits without
-        # the room layer.
+        # Convenience mirror of the accepted room layer. Recomposition reads
+        # the immutable snapshot below; the mirror supports profiles saved
+        # before the snapshot carried this field.
         "room_correction": room_correction,
         "automatic_candidate": automatic_candidate,
         "tuning_owner": tuning_owner,
@@ -3051,6 +3050,7 @@ def build_baseline_profile_candidate(
             # It is: dropping it here would silently revert the blend
             # correction on the next preference-EQ save.
             "blend_correction": blend_correction,
+            **({"room_correction": room_correction} if room_correction else {}),
             **candidate_graph_context,
         },
     }
@@ -3089,7 +3089,7 @@ def applied_baseline_hardware_match(
     :func:`recompose_applied_baseline_yaml` has always asked these four questions
     inline before emitting; it still asks them, through here. The new caller is
     the unattended roleful gate
-    (``jasper.fanin.coupling_reconcile.ring_roleful_unattended_ready``), which
+    (``jasper.fanin.ring_readiness.ring_roleful_unattended_ready``), which
     must answer "does this box HAVE a hardware-matched applied baseline?" without
     emitting anything. Re-deriving the compare there would put the definition of
     "matches the hardware" in two places — the failure mode where one site is
@@ -3144,7 +3144,7 @@ def recompose_applied_baseline_yaml(
     topology: OutputTopology,
     *,
     applied_profile: Mapping[str, Any],
-    room_peqs: Sequence[PeqFilter] = (),
+    room_peqs: Sequence[PeqFilter] | None = None,
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
     out_path: str | Path | None = None,
@@ -3161,6 +3161,9 @@ def recompose_applied_baseline_yaml(
     crossover previews, and measurement stores are deliberately not parameters:
     captures remain candidates until :func:`apply_baseline_profile` snapshots
     them under an explicit Apply transaction.
+
+    Omitted ``room_peqs`` preserves the accepted room correction in that
+    snapshot. An explicit empty sequence emits the speaker layer alone.
 
     ``playback_device`` is the ONE axis a re-emit may legitimately move, and it
     is opt-in: ``None`` emits against the device the snapshot recorded,
@@ -3208,6 +3211,26 @@ def recompose_applied_baseline_yaml(
             "applied_baseline_snapshot_invalid",
             f"the applied active-speaker snapshot is invalid: {exc}",
         )]
+    if room_peqs is None:
+        room_correction = (
+            snapshot.get("room_correction")
+            if "room_correction" in snapshot
+            else applied_profile.get("room_correction", {})
+        )
+        if not isinstance(room_correction, Mapping):
+            return None, [_issue(
+                "blocker",
+                "applied_baseline_snapshot_invalid",
+                "the applied active-speaker snapshot has invalid room correction data",
+            )]
+        try:
+            room_peqs = room_peqs_from_correction(room_correction, preset)
+        except (MeasuredCrossoverCandidateError, KeyError, TypeError, ValueError) as exc:
+            return None, [_issue(
+                "blocker",
+                "applied_baseline_snapshot_invalid",
+                f"the applied active-speaker snapshot has invalid room correction data: {exc}",
+            )]
     corrections = snapshot.get("corrections")
     # The snapshot's device is the DEFAULT, never the only answer: an explicit
     # ``playback_device`` re-points this evidence at the other transport of the

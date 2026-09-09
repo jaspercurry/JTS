@@ -27,7 +27,7 @@ from ._doctor_audio_runtime_fixtures import (
     _patch_status_reader,
     _seed_units,
 )
-from .doctor_test_support import _own_group, record_active_dac
+from .doctor_test_support import _own_group
 
 _GETCONFIG_READBACK = (
     Path(__file__).parent / "fixtures" / "camilla_readback" / "camilladsp_4.1.3_getconfig.yml"
@@ -371,23 +371,28 @@ def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
     assert r.reason == audio_runtime_camilla.REASON_RING_TARGET_LEVEL_ABOVE_CEILING
 
 
-def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
-    """A clamped box says so, so the running chunk is never unexplained.
+def test_check_camilla_ring_chunk_warns_on_a_target_over_the_ring_capacity(
+    monkeypatch, tmp_path
+):
+    """A target the whole ring cannot hold is a fill the graph never reaches.
 
-    A floorless HiFiBerry DAC8x Studio resolves the 1024 default and runs 256.
-    Not the InnoMaker: since #3542 it declares the already-clamped 256/1024
-    outright, so it no longer takes this path.
+    The shape a pre-ring-geometry config on disk carries: a DAC floor's 1536
+    against a 256-frame ring. It clears CamillaDSP's own chunk x (queuelimit+4)
+    ceiling, so only the transport bound catches it.
     """
     from jasper.fanin_coupling import ring_capacity_frames
 
-    record_active_dac("hifiberry_dac8x_studio")
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+    capacity = ring_capacity_frames()
+    _stage_ring_config(
+        tmp_path, monkeypatch, capacity,
+        extra=f"  queuelimit: 4\n  target_level: {capacity * 2}\n",
+    )
 
     r = audio_runtime_camilla.check_camilla_ring_chunk_fits()
 
-    assert r.status == "ok"
-    assert r.reason == audio_runtime_camilla.REASON_RING_CHUNK_CLAMPED
+    assert r.status == "warn"
+    assert r.reason == audio_runtime_camilla.REASON_RING_TARGET_LEVEL_ABOVE_CAPACITY
+    assert r.speaker_silent is False
 
 
 def test_check_camilla_ring_chunk_not_applicable_off_the_ring(monkeypatch, tmp_path):
@@ -556,7 +561,6 @@ def test_audio_runtime_plan_doctor_passes_a_ring_armed_bonded_box(monkeypatch):
     needed the legacy FIFO round-trip spelling, which no writer emits.
     """
     plan = audio_runtime_plan.build_audio_runtime_plan(
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         route_mode="active_leader",
     )
@@ -584,7 +588,6 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
-        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )
@@ -798,12 +801,12 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
     # Imported BEFORE the patch below: it copies env_load's constants at import
     # time, so importing it inside the patched window would bake in the tmp path.
     import jasper.fanin.coupling_reconcile  # noqa: F401
-    import jasper.fanin.ring_health as ring_health
+    import jasper.fanin.ring_readiness as ring_readiness
     from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
 
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
-    monkeypatch.setattr(ring_health, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(ring_readiness, "FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
 
 

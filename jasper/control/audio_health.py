@@ -50,6 +50,7 @@ from .transport_eligibility import (
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
+from ..platform import wire
 from ..platform.status_socket import MUX_CONTROL_SOCKET_PATH
 from ..platform.uds import MAX_STATUS_BYTES, mux_socket_command
 
@@ -198,7 +199,8 @@ _MONITOR_ERRORS = (
 
 # The shared-path units whose restart interrupts every source, and the incident
 # key stem each one reports under (the stems `_likely_area` already classifies).
-_RESTART_WATCH_UNITS = {
+# Public: `jasper.control.heal_supervisor` stands down when one is not active.
+RESTART_WATCH_UNITS = {
     "jasper-fanin.service": "path.fanin",
     CAMILLA_UNIT_FULL: "path.camilla",
     "jasper-outputd.service": "path.outputd",
@@ -266,7 +268,7 @@ def _read_mux_status(
     try:
         return asyncio.run(
             mux_socket_command(
-                "STATUS",
+                wire.STATUS,
                 socket_path=socket_path,
                 timeout=timeout_sec,
             )
@@ -329,7 +331,6 @@ def _empty_transport() -> dict[str, Any]:
 
 def _transport_state(
     *,
-    coupling: str | None,
     outputd_env: Mapping[str, str],
     camilla_devices: Mapping[str, Any] | None,
     topology: Any,
@@ -356,9 +357,9 @@ def _transport_state(
     from ..transport_coherence import transport_coherence_report
 
     report = transport_coherence_report(
-        coupling=coupling,
         outputd_env=dict(outputd_env),
         camilla_devices=camilla_devices,
+        allow_grouping_capture=True,
     )
     gap = active_lane_capability_gap(topology)
     return {
@@ -439,7 +440,6 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         DEFAULT_CAMILLA_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from ..fanin_coupling import COUPLING_ENV_VAR
     from ..output_topology import load_output_topology
 
     evidence = output_endpoint_evidence_from_statefiles(
@@ -457,13 +457,6 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     # second read of the same two files: this sampler runs every 60 s.
     outputd_env = dict(plan.outputd_env)
     return _transport_state(
-        # The plan's resolved COUPLING TOKEN, never `plan.transport_topology`'s
-        # shape NAME. `transport_coherence_report` re-derives the shape itself
-        # from that token plus outputd's bridge and endpoint marker, so a shape
-        # name here reads as a token naming no transport — on an armed roleful
-        # box the shape is `shm_ring_active`, which is not a coupling, and the
-        # substitution reported a playing speaker as parked (#2376).
-        coupling=str(plan.setting(COUPLING_ENV_VAR).value),
         outputd_env=outputd_env,
         camilla_devices=evidence.devices,
         topology=load_output_topology(),
@@ -1885,7 +1878,7 @@ def _reliability(
         ))
     restarts = sum(
         _as_int(_mapping(_mapping(service_states).get(unit)).get("n_restarts"))
-        for unit in _RESTART_WATCH_UNITS
+        for unit in RESTART_WATCH_UNITS
     )
     if restarts:
         details.append(_detail("Sound restarts since startup", str(restarts)))
@@ -3030,10 +3023,10 @@ class AudioHealthSampler:
             unit: _nonnegative_counter(
                 _mapping(self._service_states.get(unit)).get("n_restarts"),
             )
-            for unit in _RESTART_WATCH_UNITS
+            for unit in RESTART_WATCH_UNITS
         }
         if self._previous_service_restarts is not None:
-            for unit, stem in _RESTART_WATCH_UNITS.items():
+            for unit, stem in RESTART_WATCH_UNITS.items():
                 previous_restarts = self._previous_service_restarts.get(unit)
                 current_restarts = restarts[unit]
                 if previous_restarts is None or current_restarts is None:

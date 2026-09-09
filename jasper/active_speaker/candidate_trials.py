@@ -20,6 +20,7 @@ from jasper.audio_measurement.bundles import (
 from jasper.json_fields import finite_float
 
 from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .measured_crossover_candidate import candidate_trial_scope
 
 
 def require_candidate_trial(candidate: Any, *, root: Path | None = None) -> dict[str, Any] | None:
@@ -35,7 +36,7 @@ def require_candidate_trial(candidate: Any, *, root: Path | None = None) -> dict
     from .crossover_v2.record_index import bundle_measurements  # lazy: pulls the tuning engine
     from .crossover_v2.round_inputs import iter_round_sessions  # lazy: pulls the tuning engine
 
-    scope = "room_candidate" if candidate.room_correction else "candidate"
+    scope = candidate_trial_scope(candidate)
     source = find_banked_candidate(candidate.fingerprint, root=root).path.parents[5]
     for bundle in iter_round_sessions(source):
         for row in bundle_measurements(bundle, candidate_id=candidate.fingerprint):

@@ -26,6 +26,7 @@ mod host_clock;
 mod impulse_tap;
 mod lane_resampler;
 mod mixer;
+mod output_clock;
 mod playout;
 mod source_notify;
 mod state;
@@ -393,6 +394,11 @@ fn run() -> Result<()> {
             sched_policy,
         },
     );
+    let output_clock_thread = output_clock::spawn(
+        Arc::clone(&mixer.ring_observability.nominal_clock),
+        Arc::clone(&shutdown),
+    )
+    .context("spawning output clock watcher")?;
     let state_server_shutdown = Arc::clone(&shutdown);
     let state_thread = std::thread::Builder::new()
         .name("fanin-state-server".into())
@@ -425,6 +431,7 @@ fn run() -> Result<()> {
         let _ = handle.join();
     }
     let _ = state_thread.join();
+    let _ = output_clock_thread.join();
     let _ = tap_writer.join();
     if let Some(handle) = source_notify_thread {
         let _ = handle.join();

@@ -50,7 +50,7 @@ Topology:
                                                           detection.
 
 Every leg's token and UDP port is owned by `jasper.wake_legs`. Why UDP
-rather than an snd-aloop card: see `UdpMicCapture` in jasper/audio_io.py.
+rather than an snd-aloop card: see `UdpMicCapture` in jasper/mic_capture.py.
 
 Reference and mic run on independent clock domains — outputd's DAC-paced
 sender against the XVF chip's USB UAC2 clock — and will drift. AEC3's delay
