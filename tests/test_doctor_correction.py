@@ -28,45 +28,6 @@ from .doctor_test_support import (
 )
 
 
-def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
-    _stub_unit_active_states(
-        monkeypatch, {"jasper-correction-web.socket": "active"},
-    )
-    r = correction.check_correction_web_service()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-@pytest.mark.parametrize(
-    "service_state, reason",
-    [
-        ("active", correction.REASON_WEB_SOCKET_INACTIVE),
-        ("inactive", correction.REASON_WEB_INACTIVE),
-    ],
-    ids=["service-up-socket-down", "both-down"],
-)
-def test_check_correction_web_service_warns_without_the_socket(
-    monkeypatch, service_state, reason
-):
-    _stub_unit_active_states(
-        monkeypatch, {"jasper-correction-web.service": service_state},
-    )
-    r = correction.check_correction_web_service()
-    assert r.status == "warn"
-    assert r.reason == reason
-
-
-def test_check_correction_web_service_skips_without_systemctl(monkeypatch):
-    """Neither unit answered at all — nothing about the socket/service pair
-    was observed, so this must not read as the socket genuinely being down."""
-    monkeypatch.setattr(
-        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
-    )
-    r = correction.check_correction_web_service()
-    assert r.status == "skipped"
-    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
-
-
 # ---------- #1860: long-outstanding idle-exit holds
 
 
@@ -100,52 +61,6 @@ def _journal(stdout="", *, returncode=0, stderr=""):
     )
 
 
-@pytest.mark.parametrize(
-    "active, journal, status, reason",
-    [
-        (
-            "inactive", _journal(), "skipped",
-            correction.REASON_IDLE_HOLDS_SERVICE_INACTIVE,
-        ),
-        # Nothing was observed, so these are `skipped`, never a green tick. A
-        # broken invocation also stays distinguishable from a clean run: the
-        # exception and the non-zero exit are separate reasons.
-        (
-            "active", FileNotFoundError("journalctl not found"), "skipped",
-            correction.REASON_IDLE_HOLDS_JOURNAL_UNAVAILABLE,
-        ),
-        (
-            "active", _journal(returncode=1, stderr="invalid option -- since"),
-            "skipped", correction.REASON_IDLE_HOLDS_JOURNAL_UNREADABLE,
-        ),
-        ("active", _journal(), "ok", correction.REASON_IDLE_HOLDS_NONE),
-        (
-            "active", _journal(_LEAKED_HOLD_LINE + "\n"), "warn",
-            correction.REASON_IDLE_HOLD_LEAKED,
-        ),
-    ],
-    ids=["service-inactive", "journalctl-raises", "journalctl-rc", "clean", "leaked"],
-)
-def test_check_correction_idle_exit_holds_verdicts(
-    monkeypatch, active, journal, status, reason
-):
-    _idle_exit_journal(monkeypatch, journal=journal, active=active)
-    r = correction.check_correction_idle_exit_holds()
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_correction_idle_exit_holds_skips_without_systemctl(monkeypatch):
-    """systemctl answered nothing at all — a probe failure, not the unit
-    genuinely being inactive (that is REASON_IDLE_HOLDS_SERVICE_INACTIVE)."""
-    monkeypatch.setattr(
-        _evidence, "read_unit_states", _make_unit_states_fake(unavailable=True),
-    )
-    r = correction.check_correction_idle_exit_holds()
-    assert r.status == "skipped"
-    assert r.reason == _shared.REASON_SYSTEMCTL_UNAVAILABLE
-
-
 def test_latest_deferred_hold_keeps_the_newest_line():
     """journalctl returns oldest-first; an older (possibly since-resolved)
     line must not shadow the most recent evidence."""
@@ -171,60 +86,6 @@ def _web_root_with_app_css(tmp_path: Path) -> Path:
     (tmp_path / "assets").mkdir()
     (tmp_path / "assets" / "app.css").write_text("/* x */", encoding="utf-8")
     return tmp_path
-
-
-@pytest.mark.parametrize(
-    "probe, status, reason",
-    [
-        (lambda *a, **k: (200, ""), "ok", ""),
-        # The bug signature: an HTTPS asset downgraded to http:// → browsers
-        # mixed-content-block it.
-        (
-            lambda *a, **k: (308, "http://jts.local/assets/app.css"),
-            "warn", correction.REASON_HTTPS_ASSETS_HTTP_REDIRECT,
-        ),
-        (
-            lambda *a, **k: (404, ""),
-            "warn", correction.REASON_HTTPS_ASSETS_UNEXPECTED_STATUS,
-        ),
-    ],
-    ids=["served", "http-downgrade", "unexpected-status"],
-)
-def test_check_correction_https_assets_verdicts(
-    monkeypatch, tmp_path, probe, status, reason
-):
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
-    monkeypatch.setattr(correction, "_probe_https_status", probe)
-    r = correction.check_correction_https_assets()
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_correction_https_assets_skips_without_web_root(monkeypatch, tmp_path):
-    # Dev checkout: no /usr/share/jasper-web/assets/app.css → skip, never probes.
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-
-    def _boom(*a, **k):
-        raise AssertionError("must not probe when the web root is absent")
-
-    monkeypatch.setattr(correction, "_probe_https_status", _boom)
-    r = correction.check_correction_https_assets()
-    assert r.status == "skipped"
-    assert r.reason == correction.REASON_HTTPS_ASSETS_NOT_INSTALLED
-
-
-def test_check_correction_https_assets_skips_when_443_unreachable(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
-
-    def _refused(*a, **k):
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(correction, "_probe_https_status", _refused)
-    r = correction.check_correction_https_assets()
-    assert r.status == "skipped"
-    assert r.reason == correction.REASON_HTTPS_ASSETS_UNREACHABLE
 
 
 # ---------- state dirs
@@ -260,36 +121,6 @@ def test_not_writable_by_group_verdicts(tmp_path, mode, group, expect_flagged):
     )
 
     assert (str(d) in flagged) is expect_flagged
-
-
-def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
-    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
-    r = correction.check_correction_state_dirs()
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_STATE_DIRS_MISSING
-
-
-def test_check_correction_state_dirs_warns_when_locked_out_by_mode(
-    monkeypatch, tmp_path
-):
-    """_pretend_group_is_jasper pins the group match so MODE ALONE (0700 — the
-    fresh-install shape) is what fails this, not an incidental group mismatch
-    with the dev/CI box's own group. The group-mismatch and setgid-loss arms are
-    covered by test_not_writable_by_group_verdicts above."""
-    _pretend_group_is_jasper(monkeypatch)
-    root = tmp_path / "correction"
-    root.mkdir()
-    os.chmod(root, 0o700)
-    for name in ("calibration_mics", "tones"):
-        d = root / name
-        d.mkdir()
-        os.chmod(d, 0o700)
-    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
-
-    r = correction.check_correction_state_dirs()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_STATE_DIRS_NOT_WRITABLE
 
 
 def test_check_correction_state_dirs_flags_uploaded_calibrations_needing_review(
@@ -410,89 +241,6 @@ def _hand_written_config_on_the_jts_ring():
         f"    device: {DEFAULT_PLAYBACK_DEVICE}\n"
         "  volume_limit: 0.0\n"
     )
-
-
-@pytest.mark.parametrize(
-    "relative_path, text, status, reason",
-    [
-        (
-            "does-not-exist.yml", None, "fail",
-            correction.REASON_CAMILLA_CONFIG_MISSING,
-        ),
-        (
-            "v1.yml", "# base\n", "warn",
-            correction.REASON_CURRENT_CONFIG_UNCLASSIFIED,
-        ),
-        (
-            "configs/sound_current.yml", _sound_config_text(), "ok",
-            correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/active_speaker_staged_startup.yml", _ACTIVE_STAGED_CONFIG,
-            "ok", correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/correction_abc_1700000000.yml",
-            _sound_config_text([_room_peq()]),
-            "ok", correction.REASON_CURRENT_CONFIG_ROOM_CORRECTION,
-        ),
-        (
-            "configs/active_speaker_startup.yml", _round_tripped_active_config(),
-            "ok", correction.REASON_CURRENT_CONFIG_MANAGED,
-        ),
-        (
-            "configs/operator.yml", _hand_written_config_on_the_jts_ring(),
-            "warn", correction.REASON_CURRENT_CONFIG_UNCLASSIFIED,
-        ),
-    ],
-    ids=[
-        "missing-config", "unclassified", "jts-sound",
-        "active-speaker-staged", "generated-correction",
-        "round-tripped-active-graph", "hand-written-on-the-jts-ring",
-    ],
-)
-def test_check_correction_current_config_verdicts(
-    monkeypatch, tmp_path, relative_path, text, status, reason
-):
-    config = tmp_path / relative_path
-    if text is not None:
-        config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(text)
-    statefile = tmp_path / "statefile.yml"
-    statefile.write_text(f"config_path: {config}\n")
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
-
-    r = correction.check_correction_current_config()
-
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_correction_current_config_warns_when_the_config_cannot_be_read(
-    monkeypatch, tmp_path
-):
-    """Provenance unseen is never `ok`: a config JTS could not read gets the
-    same warn as one it could not classify."""
-    # A directory at the config path: exists(), but read_text() raises.
-    config = tmp_path / "configs" / "sound_current.yml"
-    config.mkdir(parents=True)
-    statefile = tmp_path / "statefile.yml"
-    statefile.write_text(f"config_path: {config}\n")
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
-
-    r = correction.check_correction_current_config()
-
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_CAMILLA_CONFIG_UNREADABLE
-
-
-def test_check_correction_current_config_warns_on_an_unreadable_statefile(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
-    r = correction.check_correction_current_config()
-    assert r.status == "warn"
-    assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
 
 
 # ---------- crossover v2 cloud pipeline (+ folded-in applied-grade finding)
@@ -1149,3 +897,160 @@ def test_cert_check_warns_when_openssl_exits_nonzero(monkeypatch, tmp_path):
 
     assert r.status == "warn"
     assert r.reason == correction.REASON_CERT_SAN_UNREADABLE
+
+
+# ===========================================================================
+# check_correction_web_service / check_correction_idle_exit_holds /
+# check_correction_https_assets / check_correction_state_dirs /
+# check_correction_current_config — one seed/patch setup per behavior, one
+# status+reason assertion tail (AGENTS.md: one altitude per behavior, prefer
+# one parametrized test over an example cluster). Test ids equal the old
+# per-behavior function names so `pytest -k` and CI history keep working.
+# ===========================================================================
+
+
+def _corr_case_web_service_ok(monkeypatch, tmp_path):
+    _stub_unit_active_states(monkeypatch, {"jasper-correction-web.socket": "active"})
+    return correction.check_correction_web_service()
+
+
+def _corr_case_web_service_warns(service_state):
+    def _case(monkeypatch, tmp_path):
+        _stub_unit_active_states(monkeypatch, {"jasper-correction-web.service": service_state})
+        return correction.check_correction_web_service()
+
+    return _case
+
+
+def _corr_case_web_service_skips_no_systemctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(_evidence, "read_unit_states", _make_unit_states_fake(unavailable=True))
+    return correction.check_correction_web_service()
+
+
+def _corr_case_idle_exit_holds(active, journal):
+    def _case(monkeypatch, tmp_path):
+        _idle_exit_journal(monkeypatch, journal=journal, active=active)
+        return correction.check_correction_idle_exit_holds()
+
+    return _case
+
+
+def _corr_case_idle_exit_holds_skips_no_systemctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(_evidence, "read_unit_states", _make_unit_states_fake(unavailable=True))
+    return correction.check_correction_idle_exit_holds()
+
+
+def _corr_case_https_assets(probe):
+    def _case(monkeypatch, tmp_path):
+        monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+        monkeypatch.setattr(correction, "_probe_https_status", probe)
+        return correction.check_correction_https_assets()
+
+    return _case
+
+
+def _corr_case_https_assets_skips_no_web_root(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise AssertionError("must not probe when the web root is absent")
+
+    monkeypatch.setattr(correction, "_probe_https_status", _boom)
+    return correction.check_correction_https_assets()
+
+
+def _corr_case_https_assets_skips_443_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(_web_root_with_app_css(tmp_path)))
+
+    def _refused(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(correction, "_probe_https_status", _refused)
+    return correction.check_correction_https_assets()
+
+
+def _corr_case_state_dirs_warns_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
+    return correction.check_correction_state_dirs()
+
+
+def _corr_case_state_dirs_warns_locked_out(monkeypatch, tmp_path):
+    _pretend_group_is_jasper(monkeypatch)
+    root = tmp_path / "correction"
+    root.mkdir()
+    os.chmod(root, 0o700)
+    for name in ("calibration_mics", "tones"):
+        d = root / name
+        d.mkdir()
+        os.chmod(d, 0o700)
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
+    return correction.check_correction_state_dirs()
+
+
+def _corr_case_current_config(relative_path, text):
+    def _case(monkeypatch, tmp_path):
+        config = tmp_path / relative_path
+        if text is not None:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(text)
+        statefile = tmp_path / "statefile.yml"
+        statefile.write_text(f"config_path: {config}\n")
+        monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+        return correction.check_correction_current_config()
+
+    return _case
+
+
+def _corr_case_current_config_unreadable_config(monkeypatch, tmp_path):
+    config = tmp_path / "configs" / "sound_current.yml"
+    config.mkdir(parents=True)
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    return correction.check_correction_current_config()
+
+
+def _corr_case_current_config_unreadable_statefile(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
+    return correction.check_correction_current_config()
+
+
+_C = correction
+
+
+@pytest.mark.parametrize(
+    "setup, expected_status, expected_reason",
+    [
+        pytest.param(_corr_case_web_service_ok, "ok", "", id="test_check_correction_web_service_ok_when_socket_active"),
+        pytest.param(_corr_case_web_service_warns("active"), "warn", _C.REASON_WEB_SOCKET_INACTIVE, id="test_check_correction_web_service_warns_without_the_socket[service-up-socket-down]"),
+        pytest.param(_corr_case_web_service_warns("inactive"), "warn", _C.REASON_WEB_INACTIVE, id="test_check_correction_web_service_warns_without_the_socket[both-down]"),
+        pytest.param(_corr_case_web_service_skips_no_systemctl, "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, id="test_check_correction_web_service_skips_without_systemctl"),
+        pytest.param(_corr_case_idle_exit_holds("inactive", _journal()), "skipped", _C.REASON_IDLE_HOLDS_SERVICE_INACTIVE, id="test_check_correction_idle_exit_holds_verdicts[service-inactive]"),
+        pytest.param(_corr_case_idle_exit_holds("active", FileNotFoundError("journalctl not found")), "skipped", _C.REASON_IDLE_HOLDS_JOURNAL_UNAVAILABLE, id="test_check_correction_idle_exit_holds_verdicts[journalctl-raises]"),
+        pytest.param(_corr_case_idle_exit_holds("active", _journal(returncode=1, stderr="invalid option -- since")), "skipped", _C.REASON_IDLE_HOLDS_JOURNAL_UNREADABLE, id="test_check_correction_idle_exit_holds_verdicts[journalctl-rc]"),
+        pytest.param(_corr_case_idle_exit_holds("active", _journal()), "ok", _C.REASON_IDLE_HOLDS_NONE, id="test_check_correction_idle_exit_holds_verdicts[clean]"),
+        pytest.param(_corr_case_idle_exit_holds("active", _journal(_LEAKED_HOLD_LINE + "\n")), "warn", _C.REASON_IDLE_HOLD_LEAKED, id="test_check_correction_idle_exit_holds_verdicts[leaked]"),
+        pytest.param(_corr_case_idle_exit_holds_skips_no_systemctl, "skipped", _shared.REASON_SYSTEMCTL_UNAVAILABLE, id="test_check_correction_idle_exit_holds_skips_without_systemctl"),
+        pytest.param(_corr_case_https_assets(lambda *a, **k: (200, "")), "ok", "", id="test_check_correction_https_assets_verdicts[served]"),
+        pytest.param(_corr_case_https_assets(lambda *a, **k: (308, "http://jts.local/assets/app.css")), "warn", _C.REASON_HTTPS_ASSETS_HTTP_REDIRECT, id="test_check_correction_https_assets_verdicts[http-downgrade]"),
+        pytest.param(_corr_case_https_assets(lambda *a, **k: (404, "")), "warn", _C.REASON_HTTPS_ASSETS_UNEXPECTED_STATUS, id="test_check_correction_https_assets_verdicts[unexpected-status]"),
+        pytest.param(_corr_case_https_assets_skips_no_web_root, "skipped", _C.REASON_HTTPS_ASSETS_NOT_INSTALLED, id="test_check_correction_https_assets_skips_without_web_root"),
+        pytest.param(_corr_case_https_assets_skips_443_unreachable, "skipped", _C.REASON_HTTPS_ASSETS_UNREACHABLE, id="test_check_correction_https_assets_skips_when_443_unreachable"),
+        pytest.param(_corr_case_state_dirs_warns_missing, "warn", _C.REASON_STATE_DIRS_MISSING, id="test_check_correction_state_dirs_warns_on_missing"),
+        pytest.param(_corr_case_state_dirs_warns_locked_out, "warn", _C.REASON_STATE_DIRS_NOT_WRITABLE, id="test_check_correction_state_dirs_warns_when_locked_out_by_mode"),
+        pytest.param(_corr_case_current_config("does-not-exist.yml", None), "fail", _C.REASON_CAMILLA_CONFIG_MISSING, id="test_check_correction_current_config_verdicts[missing-config]"),
+        pytest.param(_corr_case_current_config("v1.yml", "# base\n"), "warn", _C.REASON_CURRENT_CONFIG_UNCLASSIFIED, id="test_check_correction_current_config_verdicts[unclassified]"),
+        pytest.param(_corr_case_current_config("configs/sound_current.yml", _sound_config_text()), "ok", _C.REASON_CURRENT_CONFIG_MANAGED, id="test_check_correction_current_config_verdicts[jts-sound]"),
+        pytest.param(_corr_case_current_config("configs/active_speaker_staged_startup.yml", _ACTIVE_STAGED_CONFIG), "ok", _C.REASON_CURRENT_CONFIG_MANAGED, id="test_check_correction_current_config_verdicts[active-speaker-staged]"),
+        pytest.param(_corr_case_current_config("configs/correction_abc_1700000000.yml", _sound_config_text([_room_peq()])), "ok", _C.REASON_CURRENT_CONFIG_ROOM_CORRECTION, id="test_check_correction_current_config_verdicts[generated-correction]"),
+        pytest.param(_corr_case_current_config("configs/active_speaker_startup.yml", _round_tripped_active_config()), "ok", _C.REASON_CURRENT_CONFIG_MANAGED, id="test_check_correction_current_config_verdicts[round-tripped-active-graph]"),
+        pytest.param(_corr_case_current_config("configs/operator.yml", _hand_written_config_on_the_jts_ring()), "warn", _C.REASON_CURRENT_CONFIG_UNCLASSIFIED, id="test_check_correction_current_config_verdicts[hand-written-on-the-jts-ring]"),
+        pytest.param(_corr_case_current_config_unreadable_config, "warn", _C.REASON_CAMILLA_CONFIG_UNREADABLE, id="test_check_correction_current_config_warns_when_the_config_cannot_be_read"),
+        pytest.param(_corr_case_current_config_unreadable_statefile, "warn", _C.REASON_CAMILLA_STATEFILE_UNREADABLE, id="test_check_correction_current_config_warns_on_an_unreadable_statefile"),
+    ],
+)
+def test_check_correction_status(monkeypatch, tmp_path, setup, expected_status, expected_reason):
+    r = setup(monkeypatch, tmp_path)
+
+    assert r.status == expected_status
+    assert r.reason == expected_reason

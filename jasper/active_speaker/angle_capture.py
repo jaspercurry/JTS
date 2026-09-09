@@ -29,6 +29,7 @@ from types import MappingProxyType
 from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import ExcitationProgram
+from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.capture_plan import V2PlanShape, stage1_base_entries
 from .crossover_v2.contracts import (
@@ -69,6 +70,7 @@ from .crossover_v2_flow import (
 __all__ = [
     "REGIME_PER_DRIVER",
     "REGIME_SUMMED",
+    "REGIME_BRANCHES",
     "REGIMES",
     "MOVER_ARM",
     "MOVER_HUMAN",
@@ -115,7 +117,8 @@ REGIME_PER_DRIVER = "per_driver"
 #: One sweep through the selected summed graph: the system response at that angle.
 REGIME_SUMMED = "summed"
 
-REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED)
+REGIME_BRANCHES = "branches"
+REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES)
 
 #: An external driver turns the microphone and reports the angle reached; the one mover
 #: that auto-advances
@@ -168,6 +171,7 @@ MOVER_MAX_ELEVATION_DEG: Mapping[str, int] = MappingProxyType({
 _REGIME_PROGRAM_PHASE = {
     REGIME_PER_DRIVER: PHASE_MEASURE,
     REGIME_SUMMED: PHASE_CLOUD_VERIFY,
+    REGIME_BRANCHES: PHASE_CLOUD_VERIFY,
 }
 
 
@@ -465,10 +469,13 @@ def request_for_program(
     ``()`` measures the speaker as it stands. Reach is not re-checked:
     :class:`AngleCaptureRequest` already refuses a pose beyond the mover's envelope.
     """
+    if program.program_id == "branches" and (len(candidates) != 1 or not candidates[0]):
+        raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
                 pose.azimuth_deg,
+                REGIME_BRANCHES if program.program_id == "branches" else
                 REGIME_SUMMED if candidates or off_the_mark(pose.kind) else REGIME_PER_DRIVER,
                 pose.elevation_deg,
                 candidate,
@@ -599,6 +606,9 @@ def program_for_stop(
     Requesting a per-driver stop before the CHECK gain solve raises
     ``NoProgramForPhaseError``, uncaught here.
     """
+    if stop.regime == REGIME_BRANCHES:
+        roles = {seg.role: seg.channel for seg in check.stimulus_segments() if seg.role and seg.channel is not None}
+        return build_branch_program(cloud, roles)
     return program_for_phase(
         stop.program_phase,
         check=check,
@@ -715,7 +725,9 @@ def session_lateral_walk(
     })
     if off_regime and not (
         supported_summed_candidates
-        and all(stop.regime == REGIME_SUMMED for stop in request.stops)
+        and (all(stop.regime == REGIME_SUMMED for stop in request.stops)
+             or (len(request.stops) == 1 and request.stops[0].regime == REGIME_BRANCHES
+                 and bool(request.stops[0].candidate_id)))
     ):
         raise LateralWalkRefused(
             WALK_REGIME_UNSUPPORTED,

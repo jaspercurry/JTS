@@ -1389,8 +1389,8 @@ def test_web_pages_inline_style_counts_match_the_shrink_only_allowlist():
             counts[path.name] = n
     assert counts == _INLINE_STYLE_ALLOWLIST, (
         "inline style= counts drifted from the shrink-only allowlist "
-        "(docs/UX-AUDIT-2026-09-03.md §5.5) — lower an entry as its page is "
-        f"cleaned up, never raise one without a ledger row: {counts}"
+        "(inline-style guard; see ADR-0253 and #4635) — lower an entry as "
+        f"its page is cleaned up, never raise one without a ledger row: {counts}"
     )
 
 
@@ -1426,9 +1426,9 @@ _PAGE_MODULE = {
     "/wake-corpus/": "wake_corpus_setup",
 }
 
-# Shrink-only: every row whose page disagrees with its label today, against the
-# ledger row (docs/UX-AUDIT-2026-09-03.md §7) that retires the entry. Drop an
-# entry when its page is fixed; never add one without a ledger row. A `back`
+# Shrink-only: every row whose page disagrees with its label today, against
+# the ledger row (issue #4635) that retires the entry. Drop an entry when its
+# page is fixed; never add one without a ledger row. A `back`
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
 # Shrink-only ratchet: a new page never adds an entry (ADR-0253 section 4).
