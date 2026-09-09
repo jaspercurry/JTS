@@ -23,7 +23,7 @@ from jasper.active_speaker.measured_crossover_candidate import compile_candidate
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, PHASE_GATE_LEAD_MS, REFERENCE_RUNG_MS, gated_segment
-from .graph_prediction import GraphPredictionError, relative_branch_response
+from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
 from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
 
 ROLES = ("woofer", "tweeter", "summed")
@@ -179,7 +179,7 @@ def _recorded_graph(basis: DiagnosticBasis) -> Mapping[str, Any]:
     return config
 
 
-def _relative(source, target, basis, channels, source_inputs, target_inputs):
+def _relative(source, target, basis, channels, source_inputs, target_inputs) -> RelativeGraphResponse:
     try:
         return relative_branch_response(
             source, target, basis.freqs_hz,
@@ -218,7 +218,7 @@ def capture_prediction(
     reconstruction = compare_transfer(basis, reconstruction_tf, basis)
     candidate = None
     changes = None
-    channels = None
+    channels: dict[str, int] = {}
     if candidate_path is not None:
         candidate = _candidate(candidate_path)
         try:
@@ -241,9 +241,9 @@ def capture_prediction(
         if len(outputs) != 2 or set(channels) != set(ROLES[:2]):
             raise ForwardModelError("the diagnostic predicts one woofer and one tweeter")
         _recorded_graph(basis)
-        graphs = [parse_running_graph(compile_candidate_config(c, playback_device="prediction")) for c in (source_candidate, candidate)]
+        source_graph, target_graph = [parse_running_graph(compile_candidate_config(c, playback_device="prediction")) for c in (source_candidate, candidate)]
         stereo = {role: {0: 1.0, 1: 1.0} for role in channels}
-        changes = _relative(*graphs, basis, channels, stereo, stereo)
+        changes = _relative(source_graph, target_graph, basis, channels, stereo, stereo)
         valid = np.logical_and.reduce(list(changes.usable_by_role.values()))
         if not np.any(valid):
             raise ForwardModelError("source graph has no usable branch overlap for replacement prediction")
@@ -270,7 +270,7 @@ def capture_prediction(
                 "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
                 "changed_fields": [key for key in pose_fields if basis.document.get(key) != measured.document.get(key)],
             })
-        if candidate is not None:
+        if changes is not None:
             def input_weights(read):
                 records = {r["role"]: r for r in read.document["branch_diagnostic"]["responses"]}
                 return {role: {int(records[role]["input_channel"]): 1.0} for role in channels}

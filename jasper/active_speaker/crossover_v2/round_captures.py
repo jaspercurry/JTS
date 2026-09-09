@@ -233,8 +233,8 @@ def capture_documents(round_dir: Path) -> tuple[Mapping[str, Any], ...]:
     return tuple(doc for _, _, doc in _capture_documents(Path(round_dir))[1])
 
 
-def document_capture_id(doc: Mapping[str, Any], wav_stem: str | None = None) -> str | None:
-    value = doc.get("take_id") or doc.get("position_id") or wav_stem
+def document_capture_id(doc: Mapping[str, Any]) -> str | None:
+    value = doc.get("take_id") or doc.get("position_id")
     return str(value) if value else None
 
 
@@ -324,7 +324,7 @@ def _discover_captures(
             pose_kind, seat_offset_m = _doc_pose_category(doc)
             captures.append(
                 PoseCapture(
-                    capture_id=document_capture_id(doc, sidecar.stem),
+                    capture_id=document_capture_id(doc) or sidecar.stem,
                     phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
                     wav=wav,
                     program=program,

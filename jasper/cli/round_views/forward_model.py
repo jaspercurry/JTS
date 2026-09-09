@@ -55,7 +55,7 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
         if args.residual_delay_us is not None or args.polarity_sign is not None:
             raise RoundViewsError("complete-tune captures derive alignment from configurations; omit legacy overrides")
         try:
-            result = stage(
+            exact_result = stage(
                 EXIT_UNREADABLE, (OSError,), capture_prediction,
                 Path(args.round_dir), capture_id=args.capture_id, window_ms=args.window_ms,
                 candidate_path=Path(args.candidate_json) if args.candidate_json else None,
@@ -69,11 +69,11 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
             return failed(EXIT_REFUSED, exc.refusal_reason, {"message": str(exc), **exc.detail})
         except RoundCapturesRefused as exc:
             return failed(EXIT_REFUSED, exc.reason, exc.detail)
-        written = _write(result, args.out, resolved_out(
+        written = _write(exact_result, args.out, resolved_out(
             Path(args.round_dir), ARTIFACT_BY_VIEW[args.command].artifact,
         ))
         return answer(
-            args.command, out=written, **result["summary"],
+            args.command, out=written, **exact_result["summary"],
             line="forward-model: exact-take reconstruction and candidate prediction; plays nothing",
         )
     if any((args.measured_capture_id, args.basis_candidate_json, args.candidate_root, args.window_ms is not None, args.expected_prediction_fingerprint)):
