@@ -15,9 +15,9 @@ from typing import Any
 from ...local_sources import status as source_status
 from ...log_event import log_event
 from ...music_sources import MUSIC_SOURCE_SPECS
+from ...volume_curve import db_to_percent
 from .. import measurement_hold
 from .. import server as _server
-from .. import volume_ops
 from ._base import ControlHandlerMixin, logger
 
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
@@ -175,7 +175,7 @@ class VolumeRoutes(ControlHandlerMixin):
                 return
         elif "db" in body:
             try:
-                target_pct = volume_ops._db_to_percent(float(body["db"]))
+                target_pct = db_to_percent(float(body["db"]))
             except (TypeError, ValueError):
                 self._send_json(
                     {"error": "db must be a number"},

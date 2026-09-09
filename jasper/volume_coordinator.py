@@ -81,9 +81,8 @@ _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 # AirPlay's volume range is -30..0 dB, with -144 reserved as "muted". The
 # hook owns the dB→percent map, maps the mute sentinel onto 0% (this
-# module's content mute), and reaches the coordinator in percent. These
-# bounds are what `VolumeObserver._read_airplay_db` clamps its diagnostic
-# reading to, and what tests pin the hook's endpoints against.
+# module's content mute), and reaches the coordinator in percent. Tests pin
+# the hook's endpoints against these bounds.
 AIRPLAY_DB_MIN = -30.0
 AIRPLAY_DB_MAX = 0.0
 
