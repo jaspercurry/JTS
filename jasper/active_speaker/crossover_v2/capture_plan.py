@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -36,7 +37,10 @@ from jasper.audio_measurement.program import (
 from jasper.env_load import bounded_env_float
 from jasper.log_event import log_event
 
-from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT, pose_place
+from ..measurement_programs import (
+    POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT, PURPOSE_ROOM,
+    pose_place, resolved_measurement_purpose,
+)
 from . import contracts as _contracts
 from . import spatial as _spatial
 from .contracts import CrossoverV2FlowError
@@ -1490,6 +1494,14 @@ def _cloud_entry_screen(
     }
 
 
+def room_sweep_band_hz(
+    roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
+) -> tuple[float, float] | None:
+    if any(resolved_measurement_purpose(p.purpose, p.kind) == PURPOSE_ROOM for p in prompts):
+        return ROOM_FLOOR_HZ, measurement_band_hz(roles)[1]
+    return None
+
+
 def build_v2_capture_plan(
     roles_bands: Sequence[RoleBand],
     fc_hz: float | None,
@@ -1546,9 +1558,11 @@ def build_v2_capture_plan(
     # is the verify program's even though stage 1 runs no VERIFY phase, and it
     # is the announced one because its program object is stage 2's anchor.
     band_hz = measurement_band_hz(roles)
+    summed_band = room_sweep_band_hz(roles, lateral_prompts or ())
     verify = build_verify_program(
         fc_hz,
         measurement_band_hz=band_hz,
+        sweep_band_hz=summed_band,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
@@ -1558,6 +1572,7 @@ def build_v2_capture_plan(
     cloud = build_verify_program(
         fc_hz,
         measurement_band_hz=band_hz,
+        sweep_band_hz=summed_band,
         leading_pilot_gains_db=(
             BASE_STIMULUS_PEAK_DBFS - PILOT_LEVEL_DELTA_DB, BASE_STIMULUS_PEAK_DBFS
         ),
