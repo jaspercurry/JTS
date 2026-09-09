@@ -674,10 +674,35 @@ def test_streambox_parking_disables_brain_units():
     # never stages or enables them itself.
     assert "jasper-enhanced-aec-install.service" in parking
     assert "jasper-enhanced-aec-reconcile.path" in parking
+    # #4139: the USB host-microphone relay is PartOf=/WantedBy= the AEC bridge
+    # parked above and gates its own ExecCondition on that bridge being active,
+    # so it cannot survive the conversion either.
+    assert "jasper-usbmic.service" in parking
 
 
 def _installer_function_body(name: str) -> str:
     return installer_text().split(f"{name}() {{", 1)[1].split("\n}", 1)[0]
+
+
+def test_usbmic_relay_is_enabled_on_the_full_profile_only():
+    """The relay's enable is a full-profile step, not part of the shared gadget.
+
+    Its [Install] wants links and its ExecCondition all name
+    jasper-aec-bridge.service, which the streambox profile parks — enabling it
+    there plants a .wants link on a parked unit for a relay that can never pass
+    its own condition (#4139). enable_usbgadget is shared by both profiles, so
+    the enable cannot live inside it.
+    """
+    assert "jasper-usbmic" not in _installer_function_body("enable_usbgadget")
+    assert "enable_usbmic_relay" in _installer_function_body("install_systemd_units")
+    for streambox_entry in (
+        "install_streambox_systemd_units",
+        "start_streambox_runtime_units",
+        "_stage_streambox_unit_files",
+    ):
+        assert "enable_usbmic_relay" not in _installer_function_body(
+            streambox_entry
+        ), streambox_entry
 
 
 def test_streambox_keeps_hid_accessory_bridge():

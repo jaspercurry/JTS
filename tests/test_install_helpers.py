@@ -3745,6 +3745,7 @@ def test_retired_leftovers_table_file_targets_are_scoped():
     rows = re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
     kinds = {kind for kind, _ in rows}
     assert kinds == {"unit", "file"}
+    file_targets: set[str] = set()
     for kind, body in rows:
         if kind != "file":
             continue
@@ -3754,3 +3755,7 @@ def test_retired_leftovers_table_file_targets_are_scoped():
             assert target.startswith(
                 ("${STATE_DIR}/", "${SYSTEMD_DIR}/", "${CAMILLA_CONF}/", "/etc/")
             ), target
+        file_targets.update(targets)
+    # #4336: the Bluetooth role store holds the MAC of every device the box
+    # ever paired and lost its last writer, reader and mode-healer in #4333.
+    assert "${STATE_DIR}/bt_roles.json" in file_targets

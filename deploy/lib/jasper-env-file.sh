@@ -372,12 +372,15 @@ _jasper_env_file_upsert() {
                     print ENVIRON["JASPER_ENV_FILE_LINE"]
                 }
             }
-        ' "$file" > "$tmp"
+        ' "$file" > "$tmp" || rc=1
     else
-        printf '%s=%s\n' "$key" "$quoted" > "$tmp"
+        printf '%s=%s\n' "$key" "$quoted" > "$tmp" || rc=1
     fi
 
-    if ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+    # A render that failed (ENOSPC, an unwritable dir, a dead awk) leaves $tmp
+    # TRUNCATED, so it must never reach the publish below: that rename would
+    # install the truncation over a good file, atomically and irreversibly.
+    if (( rc )) || ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
         rm -f "$tmp"
         rc=1
     fi
@@ -423,8 +426,9 @@ jasper_env_file_unset() {
     awk -v key="$key" '
         $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
         { print }
-    ' "$file" > "$tmp"
-    if ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
+    ' "$file" > "$tmp" || rc=1
+    # Same truncation hazard as the upsert above.
+    if (( rc )) || ! _jasper_env_file_publish "$tmp" "$file" "$file_mode"; then
         rm -f "$tmp"
         rc=1
     fi

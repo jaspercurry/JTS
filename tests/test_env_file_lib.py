@@ -219,6 +219,42 @@ def test_env_file_seed_absent_reports_a_failed_write_apart_from_a_refusal(
     assert env_file.read_text(encoding="utf-8") == "KEEP=1\n"
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        'jasper_env_file_set "{path}" KEEP two 0644 0755',
+        'jasper_env_file_unset "{path}" KEEP 0644',
+    ],
+)
+def test_env_file_writers_never_publish_a_truncated_render(
+    tmp_path: Path, call: str
+) -> None:
+    """A render that failed mid-write must not be renamed over the good file.
+
+    Both single-key writers build the new content with `awk ... > $tmp`. A
+    redirect that runs out of space leaves $tmp short but complete-looking, and
+    an unguarded publish then installs that truncation atomically over a file
+    every reader trusts. Removal condition: the bash env-file writers are
+    replaced by the Python owner.
+    """
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake_awk = bindir / "awk"
+    fake_awk.write_text("#!/bin/sh\nprintf 'KEE'\nexit 1\n", encoding="utf-8")
+    fake_awk.chmod(0o755)
+    env_file = tmp_path / "outputd.env"
+    env_file.write_text("KEEP=one\n", encoding="utf-8")
+
+    result = _bash(
+        call.format(path=env_file),
+        env={"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert env_file.read_text(encoding="utf-8") == "KEEP=one\n"
+    assert list(tmp_path.glob(".KEEP.*")) == []
+
+
 def test_env_lock_path_matches_atomic_io(tmp_path: Path) -> None:
     """Bash and jasper.atomic_io must name the same lock file for FILE."""
     from jasper.atomic_io import env_lock_path

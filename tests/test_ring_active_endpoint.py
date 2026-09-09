@@ -2931,7 +2931,7 @@ def test_the_first_arm_of_a_box_already_on_the_stereo_ring_clears_the_validator(
     BEFORE the path's writer has run; the candidate is the live ``outputd.env``
     copied forward plus the newly-armed marker, so it carried Ring B's path. The
     validator refused, the reconciler exited 78, and ``jasper-camilla``'s
-    ``Requires=`` on that unit took the DSP graph down — which also disabled the
+    then-``Requires=`` on that unit took the DSP graph down — which also disabled the
     box's own rollback, because rollback needs the websocket of the daemon the
     refusal had just killed.
 
