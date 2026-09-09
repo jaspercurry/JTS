@@ -10,8 +10,7 @@
 # set -euo pipefail from the sourcing shell.
 
 # Single canonical core-graph park list (JASPER_CORE_GRAPH_PARK_UNITS),
-# shared with the runtime recovery handler deploy/bin/jasper-camilla-recover.
-# Sourced REPO_DIR-relative from the rsync checkout (REPO_DIR is an assumed
+# sourced REPO_DIR-relative from the rsync checkout (REPO_DIR is an assumed
 # install.sh global). park_audio_clients_for_core_graph_restart() iterates it.
 # shellcheck source=deploy/lib/jasper-core-graph-park-units.sh
 source "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh"
@@ -37,11 +36,6 @@ install_jasper_support_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/lib/jasper-env-file.sh" \
         /usr/local/lib/jasper/jasper-env-file.sh
-    # Single canonical core-graph park list, sourced at runtime by
-    # /usr/local/sbin/jasper-camilla-recover (../lib has no sibling there).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/lib/jasper-core-graph-park-units.sh" \
-        /usr/local/lib/jasper/jasper-core-graph-park-units.sh
     # deploy/bin/jasper-contained-build is the only reader of this directory,
     # and it sources build-sandbox.sh alone.
     install -d -m 0755 /usr/local/lib/jasper/install
@@ -1426,10 +1420,9 @@ _stage_full_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.socket" \
         "${SYSTEMD_DIR}/jasper-web.socket"
-    # /sound/room/ wizard. Phase 0 = mic-permission verify only;
-    # future phases pull in heavy deps (numpy / scipy / pyfar) so
-    # this lives in its own process rather than colocating with
-    # jasper-web (Spotify + voice settings).
+    # The /sound/ measurement pages. They pull in heavy deps
+    # (numpy / scipy / pyfar), so this lives in its own process
+    # rather than colocating with jasper-web (Spotify + voice settings).
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-correction-web.service" \
         "${SYSTEMD_DIR}/jasper-correction-web.service"

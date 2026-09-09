@@ -829,10 +829,7 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
     support = _destinations(
         tmp_path / "support", "install_jasper_support_files"
     )
-    assert {
-        "/usr/local/lib/jasper/jasper-asound-render.sh",
-        "/usr/local/lib/jasper/jasper-core-graph-park-units.sh",
-    } <= support
+    assert {"/usr/local/lib/jasper/jasper-asound-render.sh"} <= support
     order = (tmp_path / "support" / "destinations.log").read_text().splitlines()
     assert order.index("/usr/local/sbin/jasper-wifi-guardian") < order.index(
         "/usr/local/lib/jasper/jasper-env-file.sh"

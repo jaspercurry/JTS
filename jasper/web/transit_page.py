@@ -13,14 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import google_routes, location_state, transit
 from ..bus import parse_bus_stops
 from ..secret_redaction import redact_secrets
-from ._common import (
-    canonical_banner,
-    canonical_header,
-    canonical_page,
-    csrf_field_html,
-    mask_secret,
-    value_for_env as _value_for,
-)
+from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
+from .chrome import canonical_banner, canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 

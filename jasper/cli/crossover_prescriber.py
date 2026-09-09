@@ -121,7 +121,7 @@ from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import ORIENTATION_COMMAND
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
-    SOUND_SETUP_PAGE_PATH,
+    SPEAKER_SETUP_PAGE_PATH,
     read_identity,
     speaker_url,
 )
@@ -1386,7 +1386,7 @@ def status_document(
         "speaker": {
             "hostname": read_identity().hostname,
             "crossover_url": speaker_url(CROSSOVER_PAGE_PATH),
-            "declaration_url": speaker_url(SOUND_SETUP_PAGE_PATH),
+            "declaration_url": speaker_url(SPEAKER_SETUP_PAGE_PATH),
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "packet_error": packet_error or None,

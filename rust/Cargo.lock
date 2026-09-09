@@ -224,7 +224,6 @@ version = "0.1.0"
 dependencies = [
  "alsa",
  "anyhow",
- "jasper-clock",
  "jasper-daemon",
  "jasper-env",
  "jasper-resampler",

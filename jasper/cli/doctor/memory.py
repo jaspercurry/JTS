@@ -5,15 +5,15 @@
 """jasper-doctor checks — memory domain.
 
 The disk-pressure checks (``check_disk_space``,
-``check_correction_storage``, ``check_wake_events_storage``) live
-here rather than in a new module because they share this domain's
-shape exactly: a full root filesystem is the same class of
-slow-burn resource exhaustion as a full zram device, and a full SD
-card on an unclean power-cut is the corruption hazard the whole
-resilience ladder (Tier 5 watchdog, persistent journal, OOM ladder)
-exists to survive — yet nothing warned before the write failed. They
-follow the percentage-with-floor / skip-on-not-applicable conventions
-the RAM and zram checks already established."""
+``check_wake_events_storage``) live here rather than in a new module
+because they share this domain's shape exactly: a full root filesystem
+is the same class of slow-burn resource exhaustion as a full zram
+device, and a full SD card on an unclean power-cut is the corruption
+hazard the whole resilience ladder (Tier 5 watchdog, persistent
+journal, OOM ladder) exists to survive — yet nothing warned before the
+write failed. They follow the percentage-with-floor /
+skip-on-not-applicable conventions the RAM and zram checks already
+established."""
 from __future__ import annotations
 
 import os
@@ -485,8 +485,8 @@ def _bounded_dir_size(root: Path) -> tuple[int, bool]:
     Returns ``(total_bytes, truncated)``. ``truncated`` is True when
     either the entry cap or :data:`_STORAGE_WALK_MAX_DEPTH` stopped the
     walk early, so the caller can render the figure as a floor.
-    Deliberately self-contained (does not reuse jasper.correction.bundles'
-    unbounded ``rglob`` helper)
+    Deliberately self-contained (it walks with ``scandir`` rather than an
+    unbounded ``rglob``)
     because a doctor probe must stay total and cheap regardless of how
     pathological the directory has become. Symlinks are not followed
     (``scandir`` is_dir/is_file default) so a stray symlink loop can't
@@ -564,7 +564,6 @@ def _storage_check(
     return CheckResult(label, "ok", detail)
 
 
-_DEFAULT_CORRECTION_STORAGE_WARN_BYTES = 512 * 1024 * 1024  # 512 MiB
 # Headroom above the *configured* audio cap for the SQLite DB (grows
 # forever, ~9 MB/year) plus any transient overshoot before a sweep catches
 # up. A fixed allowance, not a fixed threshold, so it stays meaningful
@@ -583,40 +582,6 @@ def _storage_warn_bytes(knob: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
-
-
-@doctor_check()
-def check_correction_storage() -> CheckResult:
-    """Read-only size warning for the correction-session directory.
-
-    Each room-correction run keeps sweeps, captures, and (optionally)
-    private raw audio under /var/lib/jasper/correction/sessions/. On a
-    1 GB-RAM / modest-SD Pi a few un-pruned sessions can quietly eat real
-    SD headroom. This only *reports* growth — pruning stays owned by the
-    correction subsystem; the doctor must not delete a household's
-    measurement evidence. Threshold via
-    JASPER_CORRECTION_STORAGE_WARN_BYTES (default 512 MiB)."""
-    root = Path(
-        os.environ.get("JASPER_CORRECTION_ROOT", "/var/lib/jasper/correction")
-    )
-    sessions = Path(
-        os.environ.get(
-            "JASPER_CORRECTION_SESSIONS_DIR", str(root / "sessions"),
-        )
-    )
-    return _storage_check(
-        label="correction storage",
-        path=sessions,
-        warn_bytes=_storage_warn_bytes(
-            "JASPER_CORRECTION_STORAGE_WARN_BYTES",
-            _DEFAULT_CORRECTION_STORAGE_WARN_BYTES,
-        ),
-        knob="JASPER_CORRECTION_STORAGE_WARN_BYTES",
-        note=(
-            "Review old sessions at http://jts.local/sound/room/ and re-run "
-            "only if needed; the newest bundle is what's applied."
-        ),
-    )
 
 
 @doctor_check()

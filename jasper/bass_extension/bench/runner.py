@@ -13,9 +13,8 @@ identity — each stays owned where it already lives.
 
 Boundaries:
 
-* It never calls the pure evidence producer, ``apply_bass_extension``,
-  ``bypass_bass_extension``, ``recover_pending_bass_extension_apply``, or any
-  profile writer. It writes one on-disk bundle and nothing else.
+* It never calls the pure evidence producer or any profile writer. It writes
+  one on-disk bundle and nothing else.
 * The measurement collaborators (``measurement_window``, the CamillaDSP
   controller, the floor control, and the per-role play/capture/analyze
   executor) are injected via :class:`BenchDeps`; the hardware-free tests supply

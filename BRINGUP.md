@@ -774,15 +774,14 @@ is `bash scripts/xvf-interrogate.sh --host
 
 ## Phase 9 — Trust the speaker's HTTPS cert on each iPhone (one-time, 1 min per device)
 
-This step is **only required** if you want to use the room-correction
-wizard at `https://jts.local/sound/room/`. The Spotify and voice
+This step is **only required** if you want to use the speaker-timing
+wizard at `https://jts.local/sound/pair/sync/`. The Spotify and voice
 settings pages don't need it (they're plain HTTP). If you don't plan
-to run room correction yet, skip this section — you can come back any
-time.
+to measure yet, skip this section — you can come back any time.
 
 `getUserMedia` (microphone access in the browser) requires a secure
-context, so the correction page is the one route on this speaker that
-has to be HTTPS. `install.sh` provisions a private CA on the Pi the
+context, so the measurement pages are the routes on this speaker that
+have to be HTTPS. `install.sh` provisions a private CA on the Pi the
 first time it runs and signs a server cert for `${JASPER_HOSTNAME}`
 from it; the user-visible step is installing that CA on each iPhone
 (or iPad, or Mac) once.
@@ -805,10 +804,10 @@ On each iPhone:
    and is fine for a personal smart speaker on your home network.
    Tap **Continue**.
 
-Verify by visiting `https://jts.local/sound/room/` in Safari. The
+Verify by visiting `https://jts.local/sound/pair/sync/` in Safari. The
 page should load without a "Connection is not private" warning, and
-tapping **Start mic capture** should bring up the standard iOS
-microphone permission prompt.
+starting a measurement should bring up the standard iOS microphone
+permission prompt.
 
 If the cert was reissued after a hostname change, only the leaf cert
 changes — the CA on the iPhone keeps working, no re-trust needed. For
