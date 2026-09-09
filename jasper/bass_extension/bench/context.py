@@ -64,3 +64,24 @@ def limiter_domain_fingerprint() -> str:
         },
         field_name="limiter clip domain",
     )
+
+
+def transparency_policy_fingerprint() -> str:
+    """The bundle's ``transparency_policy_fingerprint``, over the ONE policy.
+
+    Same shape as the limiter domain above: a trusted context output bound to
+    the code that applies it (:data:`~jasper.bass_extension.bench.analysis
+    .WIRED_MEASUREMENT_POLICY`), never a manifest value.
+    """
+
+    # lazy: the analysis kernels pull numpy; a preflight that only prints the
+    # campaign's context must not.
+    from .analysis import WIRED_MEASUREMENT_POLICY
+
+    return json_fingerprint(
+        {
+            "min_snr_db": WIRED_MEASUREMENT_POLICY.min_snr_db,
+            "max_tracking_rms_db": WIRED_MEASUREMENT_POLICY.max_tracking_rms_db,
+        },
+        field_name="transparency policy",
+    )

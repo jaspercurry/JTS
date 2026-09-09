@@ -68,7 +68,7 @@ from jasper.active_speaker.camilla_yaml import (
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.bass_extension.targets import MarginPolicy
 
-from . import cross_check, derivation, live_proof, render, stimulus
+from . import activation, cross_check, derivation, live_proof, render, stimulus
 from .analysis import digital_clamp_passed, sample_peak_dbfs, transfer_match
 from .bundle import build_sustain_record, build_transfer_record
 from .manifest import CampaignManifest, StimulusRequest
@@ -292,12 +292,12 @@ def _generate_stimulus_wav(
 
 
 def _live_sample_rate_hz(live_active_config_raw: str) -> int:
-    import yaml
+    """The activation seam's reader, under this module's own error type."""
 
-    live = yaml.safe_load(live_active_config_raw)
-    if not isinstance(live, dict) or type(live.get("devices", {}).get("samplerate")) is not int:
-        raise ExecutorError("live config has no devices.samplerate")
-    return int(live["devices"]["samplerate"])
+    try:
+        return activation.live_sample_rate_hz(live_active_config_raw)
+    except activation.ActivationError as exc:
+        raise ExecutorError(str(exc)) from exc
 
 
 def _read_receipt(sink: BundleSink, readback: ArtifactIdentity) -> dict[str, Any]:

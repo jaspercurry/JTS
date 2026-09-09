@@ -84,7 +84,14 @@ class ActivationReadback:
     configured_clip_limit_dbfs: float
 
 
-def _parse_running_config(raw: object) -> dict[str, Any]:
+def parse_running_config(raw: object) -> dict[str, Any]:
+    """One graph's YAML text as a mapping, or a typed refusal.
+
+    Every reader of a graph the bench holds — this seam's read-back, the
+    campaign's per-rung plans, the executor's live-config facts — parses it
+    here, so an unreadable graph is one sentence rather than three.
+    """
+
     if type(raw) is not str or not raw.strip():
         raise ActivationError("active config read-back was empty")
     try:
@@ -94,6 +101,16 @@ def _parse_running_config(raw: object) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ActivationError("active config is not a mapping")
     return parsed
+
+
+def live_sample_rate_hz(raw: object) -> int:
+    """The rate a graph runs at, off its own ``devices`` block."""
+
+    devices = parse_running_config(raw).get("devices")
+    rate = devices.get("samplerate") if isinstance(devices, Mapping) else None
+    if type(rate) is not int or rate <= 0:
+        raise ActivationError("active config has no devices.samplerate")
+    return rate
 
 
 def _graph_fingerprint(config: Mapping[str, Any]) -> str:
@@ -179,7 +196,7 @@ async def snapshot_predecessor(controller: Any) -> PredecessorSnapshot:
     """
 
     raw = await controller.get_active_config_raw()
-    parsed = _parse_running_config(raw)
+    parsed = parse_running_config(raw)
     path = await controller.get_config_file_path()
     if type(path) is not str or not path.strip():
         raise ActivationError("could not read the CamillaDSP config file path")
@@ -187,7 +204,7 @@ async def snapshot_predecessor(controller: Any) -> PredecessorSnapshot:
         file_text = _read_text(path)
     except OSError as exc:
         raise ActivationError(f"could not read the config file {path!r}: {exc}") from exc
-    file_parsed = _parse_running_config(file_text)
+    file_parsed = parse_running_config(file_text)
     running_fp = _graph_fingerprint(parsed)
     # KNOWN DEFECT (issue #2202) — do not "fix" this line in isolation.
     # `parsed` is CamillaDSP's default-filled `GetConfig` readback; `file_parsed`
@@ -228,7 +245,7 @@ async def _restore_predecessor(
     await to_floor()
     await controller.reload()
     raw = await controller.get_active_config_raw()
-    parsed = _parse_running_config(raw)
+    parsed = parse_running_config(raw)
     if _graph_fingerprint(parsed) != predecessor.graph_fingerprint:
         raise ActivationError(
             "restore via reload() did not reproduce the exact predecessor graph"
@@ -281,7 +298,7 @@ async def temporary_bass_activation(
                 }
             )
         raw = await controller.get_active_config_raw()
-        config = _parse_running_config(raw)
+        config = parse_running_config(raw)
         configured = _prove_active_graph(config, proof)
         readback = ActivationReadback(
             active_config_raw=raw,

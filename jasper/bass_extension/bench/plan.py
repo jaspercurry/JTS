@@ -21,10 +21,9 @@ emits a graph itself.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 from jasper.active_speaker.camilla_yaml import bass_owner_limiter_name
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -40,12 +39,18 @@ from jasper.sound.graph_carrier import (
     recompose_active_baseline_for_bass_extension,
 )
 
-from .activation import ActivationError, read_configured_clip_limit
+from .activation import (
+    ActivationError,
+    live_sample_rate_hz,
+    parse_running_config,
+    read_configured_clip_limit,
+)
 from .context import (
     DETECTOR_REFERENCE,
     LIMITER_DOMAIN_MAX_DBFS,
     LIMITER_DOMAIN_MIN_DBFS,
     limiter_domain_fingerprint,
+    transparency_policy_fingerprint,
 )
 from .manifest import CampaignManifest
 from .runner import BenchRefused, TargetPlan
@@ -62,6 +67,21 @@ REFUSE_GRAPH_UNAVAILABLE = "bench_rung_graph_unavailable"
 REFUSE_OWNER_TARGET_UNMAPPED = "bench_owner_target_unmapped"
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignPlan:
+    """What the campaign measures, and the two facts it was composed from.
+
+    The family is validated ONCE, here, and travels with the plans it produced:
+    the measured context reads it back rather than re-reading a snapshot that
+    could have moved. ``selected_config_path`` is the graph every rung was
+    composed onto, which the live run proves is still the one it restores to.
+    """
+
+    family: Mapping[str, Any]
+    plans: tuple[TargetPlan, ...]
+    selected_config_path: Path
+
+
 def target_plans(
     topology: Any,
     applied_profile: Mapping[str, Any] | None,
@@ -69,7 +89,7 @@ def target_plans(
     target_ids: Sequence[str],
     current_config_path: str | Path,
     margin_policy_name: str,
-) -> tuple[TargetPlan, ...]:
+) -> CampaignPlan:
     """One plan per named rung of the applied family, deepest through natural.
 
     ``current_config_path`` is the selected live graph file: the composer
@@ -116,7 +136,11 @@ def target_plans(
                 boost_headroom_db=float(rung["target"]["boost_headroom_db"]),
             )
         )
-    return tuple(plans)
+    return CampaignPlan(
+        family=family,
+        plans=tuple(plans),
+        selected_config_path=Path(current_config_path),
+    )
 
 
 def bench_role_targets(
@@ -156,13 +180,11 @@ def bench_role_targets(
 
 
 def campaign_measured_context(
-    applied_profile: Mapping[str, Any] | None,
-    plans: Sequence[TargetPlan],
+    campaign: CampaignPlan,
     *,
     manifest: CampaignManifest,
     camilladsp_build_id: str,
     tap_implementation_id: str,
-    transparency_policy_fingerprint: str,
     natural_graph_fingerprint: str,
 ) -> dict[str, Any]:
     """The bundle's ``measured_context``, every field from its own owner.
@@ -172,6 +194,7 @@ def campaign_measured_context(
     plans' — read off the graph that will be activated, not asserted here.
     """
 
+    plans = campaign.plans
     if not plans:
         raise BenchRefused(
             REFUSE_TARGET_NOT_IN_FAMILY, "the campaign names no target"
@@ -179,8 +202,7 @@ def campaign_measured_context(
     first = plans[0]
     return {
         "target_family_fingerprint": json_fingerprint(
-            _applied_family(applied_profile),
-            field_name="bass extension family",
+            campaign.family, field_name="bass extension family"
         ),
         "target_order": [
             {
@@ -191,7 +213,7 @@ def campaign_measured_context(
         ],
         "driver_safety_fingerprint": manifest.driver_safety_fingerprint,
         "margin_policy_fingerprint": manifest.margin_policy_fingerprint,
-        "transparency_policy_fingerprint": transparency_policy_fingerprint,
+        "transparency_policy_fingerprint": transparency_policy_fingerprint(),
         "natural_graph_fingerprint": natural_graph_fingerprint,
         "baseline_limiter_clip_limit_dbfs": first.baseline_clip_limit_dbfs,
         "limiter_domain_min_dbfs": LIMITER_DOMAIN_MIN_DBFS,
@@ -199,7 +221,7 @@ def campaign_measured_context(
         "limiter_domain_fingerprint": limiter_domain_fingerprint(),
         "camilladsp_build_id": camilladsp_build_id,
         "owner_channels": list(first.owner_channels),
-        "sample_rate_hz": _graph_sample_rate_hz(first.graph_raw_text),
+        "sample_rate_hz": _sample_rate_hz(first),
         "limiter_name": first.limiter_name,
         "limiter_type": "Limiter",
         "soft_clip": True,
@@ -228,17 +250,15 @@ def _applied_family(applied_profile: Mapping[str, Any] | None) -> dict[str, Any]
         raise BenchRefused(REFUSE_NO_APPLIED_FAMILY, str(exc)) from exc
 
 
-def _graph_sample_rate_hz(graph_raw_text: str) -> int:
-    """The rate the composed graph runs at, off its own ``devices`` block."""
+def _sample_rate_hz(plan: TargetPlan) -> int:
+    """The rate the composed graph runs at, through the seam's own reader."""
 
-    devices = _parsed(graph_raw_text, "campaign").get("devices")
-    rate = devices.get("samplerate") if isinstance(devices, Mapping) else None
-    if type(rate) is not int or rate <= 0:
+    try:
+        return live_sample_rate_hz(plan.graph_raw_text)
+    except ActivationError as exc:
         raise BenchRefused(
-            REFUSE_GRAPH_UNAVAILABLE,
-            "the composed graph declares no devices.samplerate",
-        )
-    return rate
+            REFUSE_GRAPH_UNAVAILABLE, f"{plan.target_id}: {exc}"
+        ) from exc
 
 
 def _rung(family: Mapping[str, Any], target_id: str) -> Mapping[str, Any]:
@@ -278,24 +298,9 @@ def _baseline_clip_limit(
 ) -> float:
     try:
         return read_configured_clip_limit(
-            _parsed(graph_raw_text, target_id), limiter_name
+            parse_running_config(graph_raw_text), limiter_name
         )
     except ActivationError as exc:
         raise BenchRefused(
             REFUSE_GRAPH_UNAVAILABLE, f"{target_id}: {exc}"
         ) from exc
-
-
-def _parsed(graph_raw_text: str, target_id: str) -> Mapping[str, Any]:
-    try:
-        parsed = yaml.safe_load(graph_raw_text)
-    except yaml.YAMLError as exc:
-        raise BenchRefused(
-            REFUSE_GRAPH_UNAVAILABLE, f"{target_id}: {exc}"
-        ) from exc
-    if not isinstance(parsed, Mapping):
-        raise BenchRefused(
-            REFUSE_GRAPH_UNAVAILABLE,
-            f"{target_id}: the composed graph is not a mapping",
-        )
-    return parsed

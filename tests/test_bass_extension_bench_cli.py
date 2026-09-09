@@ -19,7 +19,10 @@ from typing import Any
 import pytest
 
 from jasper.bass_extension.bench import plan as plan_module
-from jasper.bass_extension.bench.manifest import STIMULUS_ROLES
+from jasper.bass_extension.bench.manifest import (
+    STIMULUS_ROLES,
+    author_campaign_manifest,
+)
 from jasper.bass_extension.bench.runner import BenchRefused
 from jasper.cli import bass_extension_bench
 from tests.test_bass_extension_bench_plan import (
@@ -57,7 +60,6 @@ def _inputs(*target_ids: str) -> dict[str, Any]:
         "driver_safety_fingerprint": _sha("ds"),
         "margin_policy_name": "conservative",
         "margin_policy_fingerprint": _sha("mp"),
-        "measurement_policy": {"min_snr_db": 25.0, "max_tracking_rms_db": 1.0},
         "requests": {tid: {role: _request() for role in STIMULUS_ROLES} for tid in target_ids},
     }
 
@@ -164,96 +166,39 @@ def test_live_run_refuses_when_the_render_binary_cannot_be_resolved(
     assert bass_extension_bench.main([str(path), "--live"]) == 2
 
 
-def test_live_run_refuses_unauthorized_measurement_bounds_before_any_device(
-    tmp_path: Path,
-    box: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+async def test_a_box_that_moved_off_the_composed_graph_refuses_before_activation(
+    tmp_path: Path, box: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The SNR floor and the transparency bound are operator-authorized inputs
-    the analysis refuses to invent, and the bundle binds them by fingerprint."""
+    """The rungs are composed onto ONE installed graph; a box now running a
+    different file would be measured against overlays it no longer carries, so
+    the campaign refuses before the first activation."""
 
-    from jasper.bass_extension.bench.render import BinaryIdentity
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(
-        bass_extension_bench,
-        "resolve_render_binary",
-        lambda: BinaryIdentity(
-            path="/opt/camilladsp/camilladsp",
-            version_output="CamillaDSP 4.1.3",
-            sha256="0" * 64,
-            camilladsp_build_id="camilladsp-v4.1.3-000000000000",
-        ),
-    )
-    inputs = _inputs("natural")
-    del inputs["measurement_policy"]["min_snr_db"]
-    path = _write(tmp_path, inputs)
+    from jasper import camilla
+    from jasper.bass_extension.bench import activation
+    from jasper.bass_extension.bench.runner import Stop
 
-    rc = bass_extension_bench.main([str(path), "--live"])
-
-    assert rc == 2
-    assert "bench_measurement_policy_missing" in capsys.readouterr().err
-
-
-def test_a_campaign_commanding_two_levels_is_refused(tmp_path: Path) -> None:
-    """One campaign opens one session volume: the play seam proves every
-    request against it, so two commanded levels can never both be played."""
-
-    from jasper.bass_extension.bench.manifest import author_campaign_manifest
-
-    inputs = _inputs("natural")
-    inputs["requests"]["natural"]["sustain_stress"][
-        "requested_commanded_main_volume_db"
-    ] = -20.0
-    manifest = author_campaign_manifest(inputs, target_ids=("natural",))
-
-    with pytest.raises(BenchRefused) as raised:
-        bass_extension_bench._commanded_level_db(manifest)
-
-    assert raised.value.reason == "bench_commanded_volume_mismatch"
-
-
-async def test_a_live_pass_failure_ends_that_target_as_the_benchs_refusal() -> None:
-    """A proof / derivation / render failure is the runner's ``refused`` arm —
-    the campaign keeps the target's partials and runs the next one — never a
-    traceback out of the whole campaign."""
-
-    from jasper.bass_extension.bench.derivation import DerivationError
-    from jasper.bass_extension.bench.runner import TargetPlan
-
-    class _Executor:
-        def __init__(self, raises: Exception | None) -> None:
-            self.raises = raises
-            self.seen: list[str] = []
-
-        async def run_discovery(self, *, target: TargetPlan, **kwargs: Any) -> str:
-            self.seen.append(target.target_id)
-            if self.raises is not None:
-                raise self.raises
-            return "ran"
-
-    def _plan(target_id: str) -> TargetPlan:
-        return TargetPlan(
-            target_id=target_id,
-            target_fingerprint="f" * 64,
-            graph_raw_text="",
-            limiter_name="l",
-            owner_channels=(0,),
-            profile_summary={},
-            baseline_clip_limit_dbfs=-12.0,
-            boost_headroom_db=0.0,
+    async def _snapshot(controller: Any) -> activation.PredecessorSnapshot:
+        return activation.PredecessorSnapshot(
+            active_config_raw="devices: {}\n",
+            config_file_path="/var/lib/camilladsp/configs/somewhere-else.yml",
+            graph_fingerprint="f" * 64,
         )
 
-    good, bad = _Executor(None), _Executor(DerivationError("no owner step"))
-    dispatch = bass_extension_bench._CampaignExecutor(
-        {"natural": good, BOOSTED_ID: bad}
-    )
-
-    assert await dispatch.run_discovery(target=_plan("natural"), sink=None) == "ran"
-    assert good.seen == ["natural"] and bad.seen == []
+    monkeypatch.setattr(camilla, "primary_controller", lambda: object())
+    monkeypatch.setattr(activation, "snapshot_predecessor", _snapshot)
+    path = _write(tmp_path, _inputs("natural"))
+    manifest = author_campaign_manifest(_inputs("natural"), target_ids=("natural",))
+    campaign = bass_extension_bench._compose(manifest, ("natural",))
 
     with pytest.raises(BenchRefused) as raised:
-        await dispatch.run_discovery(target=_plan(BOOSTED_ID), sink=None)
+        await bass_extension_bench._campaign(
+            SimpleNamespace(bundle_dir=tmp_path / "bundle", manifest=path),
+            manifest,
+            campaign,
+            binary=None,
+            stop=Stop(),
+        )
 
-    assert raised.value.reason == "bench_live_pass_failed"
-    assert "DerivationError" in raised.value.detail
+    assert raised.value.reason == "bench_selected_graph_mismatch"

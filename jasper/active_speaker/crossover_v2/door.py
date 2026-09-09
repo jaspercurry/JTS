@@ -42,6 +42,8 @@ __all__ = [
     "MeasurementDoorRefused",
     "OpenMeasurementDoor",
     "measurement_door",
+    "measurement_claim",
+    "volume_door",
     "bind_measurement_graph",
     "give_back",
 ]
@@ -142,8 +144,8 @@ async def measurement_door(
     if busy is not None:
         raise MeasurementDoorRefused(REFUSE_SESSION_LIVE, busy)
 
-    owner, claim = _measurement_claim()
-    volume_door = _volume_door(owner, camilla_factory, claim=claim)
+    owner, claim = measurement_claim()
+    session_door = volume_door(owner, camilla_factory, claim=claim)
     plan = SessionVolumePlan(state_path=state_path)
     if wall_clock_ceiling_s is not None:
         plan.set_wall_clock_ceiling_s(wall_clock_ceiling_s)
@@ -164,12 +166,12 @@ async def measurement_door(
         # run, not a live one: `live_measurement_session` deliberately lets it
         # through, and `plan.open` then refuses over it. A no-op when nothing
         # is stale.
-        await plan.enforce_ceiling(volume_door)
+        await plan.enforce_ceiling(session_door)
         body_error: BaseException | None = None
         volume_open = False
         try:
             try:
-                opened = await plan.open(measurement_volume_db, volume_door)
+                opened = await plan.open(measurement_volume_db, session_door)
             except SessionVolumePlanError as exc:
                 raise MeasurementDoorRefused(
                     REFUSE_VOLUME_NOT_OPEN, str(exc)
@@ -223,7 +225,7 @@ async def measurement_door(
                     (
                         graph.restore,
                         claim.release,
-                        lambda: plan.close(volume_door, reason=reason),
+                        lambda: plan.close(session_door, reason=reason),
                     ),
                     body_error=body_error,
                 )
@@ -265,11 +267,14 @@ async def give_back(
         body_error.__context__ = first
 
 
-def _measurement_claim() -> tuple[Any, Any]:
+def measurement_claim() -> tuple[Any, Any]:
     """The process's owner and this session's ONE claim at ``SESSION_MEASUREMENT``.
 
     Minted once and injected into both things that hold it — the plan's door and
-    the engine's volume seam — because they are one claim, not two.
+    the engine's volume seam — because they are one claim, not two. A door that
+    holds the speaker without installing a measurement graph (the bass-extension
+    limiter bench, which owns its own per-rung activation) takes the claim
+    through this same function rather than minting a second authority.
     """
     from jasper.volume_owner import volume_owner
 
@@ -285,7 +290,7 @@ def _measurement_claim() -> tuple[Any, Any]:
     return owner, MeasurementVolumeClaim(owner)
 
 
-def _volume_door(
+def volume_door(
     owner: Any, camilla_factory: Callable[[], Any], *, claim: Any,
 ) -> Any:
     """The plan's door onto the same owner the claim is taken through.

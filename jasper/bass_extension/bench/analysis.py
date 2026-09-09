@@ -89,6 +89,17 @@ class MeasurementPolicy:
     max_tracking_rms_db: float
 
 
+#: The campaign's measurement-quality bounds. Not an operator input: the SNR
+#: floor is what the wired near-field capture clears on a quiet bench, and the
+#: transparency bound is the paired-reference tracking limit the frozen
+#: protocol's ``sweep_transparency`` role is graded on
+#: (``docs/bass-extension-waves/limiter-evidence-protocol.md``). One value, so
+#: every campaign's ``transparency_policy_fingerprint`` names the same policy.
+WIRED_MEASUREMENT_POLICY = MeasurementPolicy(
+    min_snr_db=25.0, max_tracking_rms_db=1.0
+)
+
+
 def sample_peak_dbfs(samples: np.ndarray) -> float:
     """Instantaneous float sample-peak dBFS re unity full scale.
 

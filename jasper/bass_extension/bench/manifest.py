@@ -51,6 +51,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from jasper.active_speaker.volume_latch import fader_matches
+
 # The three exact stimulus roles the frozen protocol names.
 STIMULUS_ROLES: tuple[str, ...] = (
     "digital_transfer_probe",
@@ -137,6 +139,24 @@ class CampaignManifest:
     margin_policy_name: str
     margin_policy_fingerprint: str
     requests: Mapping[str, Mapping[str, StimulusRequest]]
+
+    def commanded_level_db(self) -> float | None:
+        """The ONE fader level this campaign commands, or ``None`` for two.
+
+        Every request opens the same session volume — the play seam proves each
+        one against it — so a manifest naming two levels describes no campaign
+        that can be run. Reading it here keeps that a fact about the manifest;
+        the refusal belongs to the caller that was about to open a speaker.
+        """
+
+        levels = [
+            float(request.requested_commanded_main_volume_db)
+            for by_role in self.requests.values()
+            for request in by_role.values()
+        ]
+        if not levels or not all(fader_matches(level, levels[0]) for level in levels):
+            return None
+        return levels[0]
 
     def to_dict(self) -> dict[str, object]:
         return {

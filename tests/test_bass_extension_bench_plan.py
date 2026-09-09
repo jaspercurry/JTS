@@ -30,6 +30,7 @@ from jasper.bass_extension.bench.plan import (
     campaign_measured_context,
     target_plans,
 )
+from jasper.bass_extension.bench.context import transparency_policy_fingerprint
 from jasper.bass_extension.bench.runner import BenchRefused
 from jasper.bass_extension.candidate_field import graph_summary
 from tests.test_bass_extension_candidate_field import bass_extension_field
@@ -87,7 +88,7 @@ def composer(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
-def _plans(*target_ids: str, **overrides: Any):
+def _campaign(*target_ids: str, **overrides: Any):
     return target_plans(
         object(),
         overrides.pop("applied", applied_profile()),
@@ -100,8 +101,12 @@ def _plans(*target_ids: str, **overrides: Any):
 def test_every_named_rung_is_planned_from_the_family_it_was_sized_in(
     composer: list[dict[str, Any]],
 ) -> None:
-    plans = _plans(BOOSTED_ID, "natural")
+    campaign = _campaign(BOOSTED_ID, "natural")
+    plans = campaign.plans
 
+    assert campaign.selected_config_path == Path(
+        "/var/lib/camilladsp/configs/selected.yml"
+    )
     assert [plan.target_id for plan in plans] == [BOOSTED_ID, "natural"]
     assert [call["bass_target_id"] for call in composer] == [BOOSTED_ID, "natural"]
     for plan in plans:
@@ -120,7 +125,7 @@ def test_a_boosted_rung_is_proved_against_its_own_transform(
     """The summary a plan carries is the rung's, so the read-back proof accepts
     the transform the graph actually holds instead of the natural identity."""
 
-    boosted, natural = _plans(BOOSTED_ID, "natural")
+    boosted, natural = _campaign(BOOSTED_ID, "natural").plans
 
     assert boosted.profile_summary["natural"]["target_id"] == BOOSTED_ID
     assert boosted.profile_summary["natural"]["lt"]["freq_target"] == pytest.approx(
@@ -145,7 +150,7 @@ def test_a_speaker_with_no_readable_family_has_nothing_to_bench(
     composer: list[dict[str, Any]], applied: Any, reason: str
 ) -> None:
     with pytest.raises(BenchRefused) as raised:
-        _plans("natural", applied=applied)
+        _campaign("natural", applied=applied)
 
     assert raised.value.reason == reason
     assert composer == []
@@ -155,7 +160,7 @@ def test_a_rung_the_family_does_not_carry_is_refused(
     composer: list[dict[str, Any]],
 ) -> None:
     with pytest.raises(BenchRefused) as raised:
-        _plans("t20.00")
+        _campaign("t20.00")
 
     assert raised.value.reason == REFUSE_TARGET_NOT_IN_FAMILY
 
@@ -167,7 +172,7 @@ def test_a_campaign_under_another_margin_policy_is_refused(
     two of them is two different speakers' evidence in one bundle."""
 
     with pytest.raises(BenchRefused) as raised:
-        _plans("natural", margin_policy_name="aggressive")
+        _campaign("natural", margin_policy_name="aggressive")
 
     assert raised.value.reason == REFUSE_MARGIN_MISMATCH
     assert composer == []
@@ -186,7 +191,7 @@ def test_a_composer_refusal_lands_as_the_benchs_own(
     )
 
     with pytest.raises(BenchRefused) as raised:
-        _plans("natural")
+        _campaign("natural")
 
     assert raised.value.reason == REFUSE_GRAPH_UNAVAILABLE
 
@@ -201,7 +206,7 @@ def test_a_graph_without_the_owners_limiter_is_refused(
     )
 
     with pytest.raises(BenchRefused) as raised:
-        _plans("natural")
+        _campaign("natural")
 
     assert raised.value.reason == REFUSE_GRAPH_UNAVAILABLE
 
@@ -271,23 +276,25 @@ def test_measured_context_carries_exactly_the_frozen_fields(
         },
         target_ids=(BOOSTED_ID, "natural"),
     )
-    plans = _plans(BOOSTED_ID, "natural")
+    campaign = _campaign(BOOSTED_ID, "natural")
 
     context = campaign_measured_context(
-        applied_profile(),
-        plans,
+        campaign,
         manifest=manifest,
         camilladsp_build_id="camilladsp-v4.1.3-abc",
         tap_implementation_id="t" * 64,
-        transparency_policy_fingerprint="p" * 64,
         natural_graph_fingerprint="n" * 64,
     )
 
     assert set(context) == set(_CONTEXT_FIELDS)
     assert context["target_order"] == [
         {"target_id": plan.target_id, "target_fingerprint": plan.target_fingerprint}
-        for plan in plans
+        for plan in campaign.plans
     ]
+    # The policy the analysis applies is the one the bundle binds by fingerprint.
+    assert context["transparency_policy_fingerprint"] == (
+        transparency_policy_fingerprint()
+    )
     assert context["owner_channels"] == [0, 1]
     assert context["sample_rate_hz"] == SAMPLE_RATE_HZ
     assert context["limiter_name"] == LIMITER
@@ -332,7 +339,7 @@ def test_the_planned_graph_is_one_the_benchs_own_read_back_proof_accepts(
         target_ids=(target_id,),
         current_config_path=Path("/var/lib/camilladsp/configs/selected.yml"),
         margin_policy_name="conservative",
-    )
+    ).plans
 
     configured = _prove_active_graph(
         yaml.safe_load(plan.graph_raw_text),

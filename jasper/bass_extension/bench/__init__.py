@@ -28,6 +28,10 @@ Module map:
   sag/corner-shift, and isolated digital-transfer analyses.
 * :mod:`~jasper.bass_extension.bench.bundle` — shapes the exact frozen bundle
   schema via ``bundles.py`` / ``evidence_identity.py``.
+* :mod:`~jasper.bass_extension.bench.plan` — the campaign's per-rung
+  ``TargetPlan``s and ``measured_context``, composed from the applied family.
+* :mod:`~jasper.bass_extension.bench.compose` — the dependency wiring: a held
+  speaker plus those plans into the runner's ``BenchDeps``.
 * :mod:`~jasper.bass_extension.bench.runner` — the orchestrator that runs the
   discovery + candidate passes and emits the bundle.
 * :mod:`~jasper.bass_extension.bench.wired_play` — the one hardware seam: admit,
