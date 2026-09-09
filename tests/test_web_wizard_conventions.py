@@ -40,6 +40,7 @@ from jasper.web import (
     system_setup,
     tools_setup,
     wake_corpus_setup,
+    wake_setup,
     wifi_setup,
 )
 from jasper.web._common import CSRF_COOKIE_NAME
@@ -467,6 +468,12 @@ _TABLED_WIZARD_FACTORIES = {
     }),
     "wake_corpus_setup": lambda: wake_corpus_setup._make_handler_class(
         object(), _WAKE_CORPUS_TOKEN,
+    ),
+    "wake_setup": lambda: wake_setup._make_handler(
+        {
+            "state_path": "/tmp/jts-test-wake.env",
+            "control_base": "http://127.0.0.1:8780",
+        },
     ),
     "wifi_setup": wifi_setup._make_handler,
 }

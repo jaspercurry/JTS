@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from jasper import env_file, wake_models
-from jasper.web import wake_setup
+from jasper.web import _common, wake_setup
 
 
 def _stage_bundled_asset(
@@ -820,7 +820,7 @@ def _invalid_layer_request(
     handler.send_header = lambda *a, **k: None
     handler.end_headers = lambda: None
     handler.address_string = lambda: "127.0.0.1"
-    monkeypatch.setattr(wake_setup, "guard_mutating_request", lambda *_a, **_k: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda *_a, **_k: True)
     monkeypatch.setattr(
         wake_setup,
         "_apply_layer",

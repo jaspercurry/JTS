@@ -1293,6 +1293,22 @@ def form_guarded(
     return route
 
 
+def header_guarded(
+    fn: Callable[[BaseHTTPRequestHandler], None],
+) -> Callable[[BaseHTTPRequestHandler], None]:
+    """`form_guarded`'s sibling for a route whose CSRF token rides in the
+    X-CSRF-Token header: the guard runs before any body read, so a rejected
+    POST leaves the request body unconsumed. Wizards whose POST guard varies
+    per route declare it here rather than in their dispatcher."""
+    @functools.wraps(fn)
+    def route(handler: BaseHTTPRequestHandler) -> None:
+        if not guard_mutating_request(handler):
+            reject_csrf(handler)
+            return
+        fn(handler)
+    return route
+
+
 def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None]:
     """Wrap a JSON route body as the bare `handler_fn(handler)` a wizard
     route table holds. The wizard's own `_read_json()` returns the parsed
