@@ -12,6 +12,7 @@ import json
 from ...cues.manager import REASON_BUSY, REASON_UNKNOWN_SLUG
 from ...log_event import log_event
 from .. import server as _server
+from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
 
 
@@ -22,9 +23,9 @@ class VoiceRoutes(ControlHandlerMixin):
         # voice, and a daemon restart temporarily lacks its UDS socket;
         # report both as first-class states instead of making every
         # client reinterpret a missing UDS as failure.
-        leader = _server._pair_follower_leader_addr()
+        leader = _peering._pair_follower_leader_addr()
         if leader:
-            self._send_json(_server._bonded_follower_mic_payload(leader))
+            self._send_json(_peering._bonded_follower_mic_payload(leader))
             return
         try:
             st = asyncio.run(
@@ -35,12 +36,12 @@ class VoiceRoutes(ControlHandlerMixin):
                 ),
             )
         except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-            starting = _server._voice_starting_mic_payload()
+            starting = _peering._voice_starting_mic_payload()
             if starting is not None:
                 self._send_json(starting)
                 return
             self._send_json(
-                _server._voice_offline_mic_payload(f"voice_daemon unreachable: {e}"),
+                _peering._voice_offline_mic_payload(f"voice_daemon unreachable: {e}"),
                 status=503,
             )
             return
@@ -159,9 +160,9 @@ class VoiceRoutes(ControlHandlerMixin):
         # daemon's control socket, which drops mic frames at
         # the wake-loop gate (mute) or resumes (unmute) and
         # plays a short click on either edge for feedback.
-        leader = _server._pair_follower_leader_addr()
+        leader = _peering._pair_follower_leader_addr()
         if leader:
-            payload = _server._bonded_follower_mic_payload(leader)
+            payload = _peering._bonded_follower_mic_payload(leader)
             self._send_json({**payload, "error": payload["message"]}, status=409)
             return
         body = self._read_json()
