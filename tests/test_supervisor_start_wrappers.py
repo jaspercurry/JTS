@@ -14,6 +14,7 @@ import pytest
 
 from jasper.control import (
     grouping_supervisor,
+    heal_supervisor,
     shairport_supervisor,
     system_supervisor,
 )
@@ -99,6 +100,17 @@ _RUN_CASES: list[
             "rate_limit": "601s",
             "cold_start": "61s",
         },
+    ),
+    (
+        heal_supervisor,
+        lambda _path: heal_supervisor.HealSupervisor(
+            interval_sec=31.0,
+            jitter_sec=4.0,
+            cold_start_sec=61.0,
+        ),
+        "heal.start",
+        "heal.tick_crash",
+        {"interval": "31s"},
     ),
 ]
 

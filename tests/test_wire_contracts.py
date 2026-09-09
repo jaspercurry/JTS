@@ -706,10 +706,10 @@ _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
     },
     ("fanin",): set(_FAKE_FANIN_STATUS),
     ("outputd",): set(_FAKE_OUTPUTD_STATUS),
-    # The three supervisors that live only in this process's memory. Every
+    # The four supervisors that live only in this process's memory. Every
     # other resilience fact is read from its own module (ADR-0270).
     ("resilience",): {
-        "shairport", "grouping_supervisor", "system_supervisor",
+        "shairport", "grouping_supervisor", "system_supervisor", "heal",
     },
 }
 
@@ -753,7 +753,7 @@ async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
 
 async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
     payload = await _state_payload(monkeypatch, tmp_path)
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
 
 
 async def test_state_opens_no_secret_compartment(monkeypatch, tmp_path):
