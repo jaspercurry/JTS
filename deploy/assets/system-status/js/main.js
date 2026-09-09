@@ -52,8 +52,10 @@ const handlers = {
   setLatencyMode: (mode) => setLatencyMode(activeEntry.refs, mode, () => {
     latestSnapshot = {
       ...(latestSnapshot || {}),
-      usb_latency: { ...((latestSnapshot || {}).usb_latency || {}), selected_mode: mode },
+      usb_latency: { ...((latestSnapshot || {}).usb_latency || {}),
+        selected_mode: mode, effective_mode: null, state: "applying" },
     };
+    updateEntry(entries.audio, latestSnapshot);
   }),
   runDiagnostics: (btn, out) => runDiagnostics(btn, out),
 };

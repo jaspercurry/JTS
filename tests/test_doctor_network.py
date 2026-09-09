@@ -119,82 +119,6 @@ def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
     monkeypatch.setattr(doctor_network, "_run", fake_run)
 
 
-def test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled(
-    monkeypatch,
-):
-    _patch_doctor_iw_reg_get(
-        monkeypatch,
-        """global
-country US: DFS-FCC
-\t(2400 - 2472 @ 40), (N/A, 30), (N/A)
-
-phy#0
-country 99: DFS-UNSET
-\t(2402 - 2482 @ 40), (6, 20), (N/A)
-""",
-    )
-    r = doctor_network.check_wifi_regdom()
-    assert r.status == "ok"
-    assert r.reason == ""
-    # `_format_phy_regdom_detail` has no unit test of its own — this is its
-    # only exercise, so the pure-formatting-helper `.detail` exception
-    # applies here.
-    assert "global country=US" in r.detail
-    assert "phy0 country=99" in r.detail
-    assert "not actionable by itself" in r.detail
-
-
-def test_check_wifi_regdom_warns_when_global_country_unset(monkeypatch):
-    _patch_doctor_iw_reg_get(
-        monkeypatch,
-        """global
-country 00: DFS-UNSET
-
-phy#0
-country 99: DFS-UNSET
-""",
-    )
-    r = doctor_network.check_wifi_regdom()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_REGDOM_UNSET
-
-
-@pytest.mark.parametrize(
-    "stdout, returncode, reason",
-    [
-        ("", 1, "REASON_REGDOM_PROBE_FAILED"),
-        ("global\n", 0, "REASON_REGDOM_UNPARSEABLE"),
-    ],
-    ids=["probe-failed", "no-global-country"],
-)
-def test_check_wifi_regdom_skips_when_no_country_was_observed(
-    monkeypatch, stdout, returncode, reason
-):
-    """A failed or countryless `iw reg get` observed no WLAN country at all
-    (an Ethernet-only Pi is one), so the row is dim rather than a finding a
-    healer could act on."""
-    _patch_doctor_iw_reg_get(monkeypatch, stdout, returncode=returncode)
-
-    r = doctor_network.check_wifi_regdom()
-
-    assert r.status == "skipped"
-    assert r.reason == getattr(doctor_network, reason)
-
-
-def test_check_wifi_regdom_ok_with_valid_global_and_no_phy(monkeypatch):
-    _patch_doctor_iw_reg_get(
-        monkeypatch,
-        """global
-country DE: DFS-ETSI
-""",
-    )
-    r = doctor_network.check_wifi_regdom()
-    assert r.status == "ok"
-    assert r.reason == ""
-    assert "global country=DE" in r.detail
-    assert "no per-phy regdom reported" in r.detail
-
-
 # ---------------------------------------------------- check_wifi_guardian
 #
 # The check has four happy/warn paths to cover (matches the design
@@ -245,210 +169,11 @@ def _patch_doctor_nmcli(monkeypatch, response_stack):
     monkeypatch.setattr(doctor_network, "_run", fake_run)
 
 
-def test_check_wifi_guardian_ok_when_stash_matches_active(
-    monkeypatch,
-    tmp_path,
-):
-    stash = tmp_path / "wifi_guardian.env"
-    stash.write_text(
-        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
-    )
-    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            # connection show --active (TYPE,DEVICE,NAME)
-            "802-11-wireless:wlan0:Home\n",
-            # connection show Home (ssid lookup)
-            "802-11-wireless.ssid:Home\n",
-        ],
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
-    """No stash and no active WiFi → ethernet-only or never-configured
-    Pi. Don't warn — there's nothing to recover and nothing to drift."""
-    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            # connection show --active → no wifi line (TYPE,DEVICE,NAME)
-            "802-3-ethernet:eth0:Wired connection 1\n",
-        ],
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "skipped"
-    assert r.reason == doctor_network.REASON_GUARDIAN_NOT_APPLICABLE
-
-
-def test_check_wifi_guardian_warns_when_stash_missing_but_active(
-    monkeypatch,
-    tmp_path,
-):
-    """WiFi works but the stash hasn't been seeded — operator brought
-    up wifi via raspi-config or installed before our migration shipped.
-    Warn so the dashboard / system check surfaces the recovery gap."""
-    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "802-11-wireless:wlan0:Home\n",
-            "802-11-wireless.ssid:Home\n",
-        ],
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_GUARDIAN_STASH_MISSING
-
-
-def test_check_wifi_guardian_warns_on_ssid_drift(monkeypatch, tmp_path):
-    """Stash says Home, NM is on Cafe — operator switched via SSH and
-    didn't re-save in the wizard. Warn so the next dirty shutdown
-    doesn't recreate the wrong network."""
-    stash = tmp_path / "wifi_guardian.env"
-    stash.write_text(
-        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
-    )
-    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "802-11-wireless:wlan0:Cafe\n",
-            "802-11-wireless.ssid:Cafe\n",
-        ],
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_GUARDIAN_SSID_DRIFT
-
-
-def test_check_wifi_guardian_matches_colon_ssid(monkeypatch, tmp_path):
-    """A profile NAME with a literal colon (e.g. "Home:5G") must be
-    matched, not silently treated as "no active WiFi".
-
-    Regression for the same colon-parse bug as C10-1: the guardian check
-    used to run its own NAME-first nmcli probe, which mis-split an escaped
-    "\\:" and reported a bogus "no recovery stash"/"no WiFi" state for a
-    valid profile. It now reuses the colon-safe _active_wifi_connection.
-    The SSID value lookup is forced to fail so the check falls back to the
-    (unescaped) profile name, pinning the helper's output end-to-end."""
-    stash = tmp_path / "wifi_guardian.env"
-    stash.write_text(
-        "JASPER_WIFI_SSID=Home:5G\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
-    )
-    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            # active connection: NAME "Home:5G" arrives colon-escaped from nmcli -t
-            "802-11-wireless:wlan0:Home\\:5G\n",
-            # ssid value lookup fails → fall back to the unescaped profile name
-            _mock_nmcli_proc(returncode=1),
-        ],
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "ok"
-    assert r.reason == ""
-    # Pins the colon-unescape end-to-end (the exact regression this test
-    # guards); the reason vocabulary has no code for "which SSID".
-    assert "Home:5G" in r.detail
-
-
-def test_check_wifi_guardian_warns_when_active_wifi_missing(
-    monkeypatch,
-    tmp_path,
-):
-    """Stash is configured but no WiFi is currently up. Either the
-    guardian's last run failed, or NM was unable to bring up the
-    network. Either way the operator should investigate."""
-    stash = tmp_path / "wifi_guardian.env"
-    stash.write_text(
-        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
-    )
-    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "",  # no active wifi
-        ],
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_GUARDIAN_NO_ACTIVE_WIFI
-
-
-def test_check_wifi_guardian_skipped_without_nmcli(monkeypatch):
-    """Pis without NetworkManager (or running this check in CI) →
-    skip cleanly. The guardian itself is no-op on those machines."""
-    monkeypatch.setattr(
-        shutil,
-        "which",
-        lambda name: None if name == "nmcli" else f"/usr/bin/{name}",
-    )
-    r = doctor_network.check_wifi_guardian()
-    assert r.status == "skipped"
-    assert r.reason == doctor_network.REASON_GUARDIAN_SKIPPED_NO_NMCLI
-
-
 def test_check_wifi_guardian_registered_in_sync_checks():
     """Make sure the check is actually registered to run (not just
     defined). Mirrors the spirit of the `check_wifi_regdom` registration
     this check sits next to."""
     assert "check_wifi_guardian" in _registered_check_names()
-
-
-def test_check_wifi_link_local_ipv6_ok(monkeypatch):
-    # nmcli -t -f TYPE,DEVICE,NAME connection show --active
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "802-11-wireless:wlan0:Home\n",
-            "link-local\n",
-            "2: wlan0    inet6 fe80::1/64 scope link\n",
-        ],
-    )
-    r = doctor_network.check_wifi_link_local_ipv6()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6(monkeypatch):
-    """Profile NAME carries a literal colon (e.g. "Home:5G"); it arrives
-    escaped as "\\:" in nmcli -t output and must be unescaped into the
-    remediation command's shlex.quote-preserved form — a genuine string-
-    construction bug class the reason code can't capture, so this keeps the
-    pure-formatting-helper `.detail` exception."""
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "802-11-wireless:wlan0:Home\\:5G\n",
-            "ignore\n",
-        ],
-    )
-    r = doctor_network.check_wifi_link_local_ipv6()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_IPV6_METHOD_DISABLED
-    # Profile resolved with its colon intact (shlex.quote leaves a colon
-    # name unquoted — colons need no shell escaping).
-    assert "active WiFi profile 'Home:5G'" in r.detail
-    assert "nmcli connection modify Home:5G ipv6.method link-local" in r.detail
-
-
-def test_check_wifi_link_local_ipv6_warns_when_link_local_missing(monkeypatch):
-    _patch_doctor_nmcli(
-        monkeypatch,
-        [
-            "802-11-wireless:wlan0:Home\n",
-            "auto\n",
-            "",
-        ],
-    )
-    r = doctor_network.check_wifi_link_local_ipv6()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_IPV6_LINK_LOCAL_MISSING
 
 
 def test_check_wifi_link_local_ipv6_registered_in_sync_checks():
@@ -578,46 +303,6 @@ def test_check_hostname_avahi_consistency_verdicts(
 
 
 # ----- check_wifi_recover_timer (Wi-Fi flap recovery timer health) -----
-
-
-def test_check_wifi_recover_timer_enabled_ok(monkeypatch):
-    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
-    _seed_unit_states(**{
-        "jasper-wifi-recover.timer": {
-            "load_state": "loaded", "unit_file_state": "enabled",
-        },
-    })
-    r = doctor_network.check_wifi_recover_timer()
-    assert r.status == "ok"
-    assert r.reason == ""
-
-
-def test_check_wifi_recover_timer_disabled_warns(monkeypatch):
-    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
-    _seed_unit_states(**{
-        "jasper-wifi-recover.timer": {
-            "load_state": "loaded", "unit_file_state": "disabled",
-        },
-    })
-    r = doctor_network.check_wifi_recover_timer()
-    assert r.status == "warn"
-    assert r.reason == doctor_network.REASON_RECOVER_TIMER_DISABLED
-
-
-def test_check_wifi_recover_timer_not_installed_skips(monkeypatch):
-    """A dev box with systemctl but no JTS units: skip, don't warn."""
-    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
-    _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "not-found"}})
-    r = doctor_network.check_wifi_recover_timer()
-    assert r.status == "skipped"
-    assert r.reason == doctor_network.REASON_RECOVER_TIMER_NOT_INSTALLED
-
-
-def test_check_wifi_recover_timer_no_systemctl_skips(monkeypatch):
-    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: None)
-    r = doctor_network.check_wifi_recover_timer()
-    assert r.status == "skipped"
-    assert r.reason == doctor_network.REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL
 
 
 # ------------------------------------------------- check_identity_coherence
@@ -1384,3 +1069,204 @@ def test_usbnet_probe_existing_interface_without_ipv4_fails(monkeypatch, tmp_pat
 
     assert result.status == "fail"
     assert result.reason == doctor_network.REASON_USBNET_PROBE_NO_ADDRESS
+
+
+# ===========================================================================
+# check_wifi_regdom / check_wifi_guardian / check_wifi_link_local_ipv6 /
+# check_wifi_recover_timer — one seed/patch setup per behavior, returning the
+# CheckResult, with one status+reason (/ detail substring) assertion tail
+# (AGENTS.md: one altitude per behavior, prefer one parametrized test over an
+# example cluster). Test ids equal the old per-behavior function names so
+# `pytest -k` and CI history keep working.
+# ===========================================================================
+
+
+def _wifi_case_regdom_ok_unlabeled_phy(monkeypatch, tmp_path):
+    _patch_doctor_iw_reg_get(
+        monkeypatch,
+        """global
+country US: DFS-FCC
+\t(2400 - 2472 @ 40), (N/A, 30), (N/A)
+
+phy#0
+country 99: DFS-UNSET
+\t(2402 - 2482 @ 40), (6, 20), (N/A)
+""",
+    )
+    return doctor_network.check_wifi_regdom()
+
+
+def _wifi_case_regdom_warns_country_unset(monkeypatch, tmp_path):
+    _patch_doctor_iw_reg_get(
+        monkeypatch,
+        """global
+country 00: DFS-UNSET
+
+phy#0
+country 99: DFS-UNSET
+""",
+    )
+    return doctor_network.check_wifi_regdom()
+
+
+def _wifi_case_regdom_skips(stdout, returncode):
+    def _case(monkeypatch, tmp_path):
+        _patch_doctor_iw_reg_get(monkeypatch, stdout, returncode=returncode)
+        return doctor_network.check_wifi_regdom()
+
+    return _case
+
+
+def _wifi_case_regdom_ok_no_phy(monkeypatch, tmp_path):
+    _patch_doctor_iw_reg_get(
+        monkeypatch,
+        """global
+country DE: DFS-ETSI
+""",
+    )
+    return doctor_network.check_wifi_regdom()
+
+
+def _wifi_case_guardian_ok_stash_matches_active(monkeypatch, tmp_path):
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(
+        monkeypatch,
+        ["802-11-wireless:wlan0:Home\n", "802-11-wireless.ssid:Home\n"],
+    )
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_guardian_ok_ethernet_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
+    _patch_doctor_nmcli(monkeypatch, ["802-3-ethernet:eth0:Wired connection 1\n"])
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_guardian_warns_stash_missing_but_active(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
+    _patch_doctor_nmcli(monkeypatch, ["802-11-wireless:wlan0:Home\n", "802-11-wireless.ssid:Home\n"])
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_guardian_warns_ssid_drift(monkeypatch, tmp_path):
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, ["802-11-wireless:wlan0:Cafe\n", "802-11-wireless.ssid:Cafe\n"])
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_guardian_matches_colon_ssid(monkeypatch, tmp_path):
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home:5G\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(
+        monkeypatch,
+        [
+            # active connection NAME "Home:5G" arrives colon-escaped from nmcli -t
+            "802-11-wireless:wlan0:Home\\:5G\n",
+            # ssid value lookup fails -> fall back to the unescaped profile name
+            _mock_nmcli_proc(returncode=1),
+        ],
+    )
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_guardian_warns_active_wifi_missing(monkeypatch, tmp_path):
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, [""])
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_guardian_skipped_without_nmcli(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "nmcli" else f"/usr/bin/{name}")
+    return doctor_network.check_wifi_guardian()
+
+
+def _wifi_case_link_local_ipv6_ok(monkeypatch, tmp_path):
+    _patch_doctor_nmcli(
+        monkeypatch,
+        ["802-11-wireless:wlan0:Home\n", "link-local\n", "2: wlan0    inet6 fe80::1/64 scope link\n"],
+    )
+    return doctor_network.check_wifi_link_local_ipv6()
+
+
+def _wifi_case_link_local_ipv6_warns_ignores_ipv6(monkeypatch, tmp_path):
+    _patch_doctor_nmcli(monkeypatch, ["802-11-wireless:wlan0:Home\\:5G\n", "ignore\n"])
+    return doctor_network.check_wifi_link_local_ipv6()
+
+
+def _wifi_case_link_local_ipv6_warns_link_local_missing(monkeypatch, tmp_path):
+    _patch_doctor_nmcli(monkeypatch, ["802-11-wireless:wlan0:Home\n", "auto\n", ""])
+    return doctor_network.check_wifi_link_local_ipv6()
+
+
+def _wifi_case_recover_timer_enabled_ok(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "loaded", "unit_file_state": "enabled"}})
+    return doctor_network.check_wifi_recover_timer()
+
+
+def _wifi_case_recover_timer_disabled_warns(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "loaded", "unit_file_state": "disabled"}})
+    return doctor_network.check_wifi_recover_timer()
+
+
+def _wifi_case_recover_timer_not_installed_skips(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: "/usr/bin/systemctl")
+    _seed_unit_states(**{"jasper-wifi-recover.timer": {"load_state": "not-found"}})
+    return doctor_network.check_wifi_recover_timer()
+
+
+def _wifi_case_recover_timer_no_systemctl_skips(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor_network.shutil, "which", lambda _x: None)
+    return doctor_network.check_wifi_recover_timer()
+
+
+_N = doctor_network
+
+
+@pytest.mark.parametrize(
+    "setup, expected_status, expected_reason, extra",
+    [
+        pytest.param(_wifi_case_regdom_ok_unlabeled_phy, "ok", "", {"detail_contains": ("global country=US", "phy0 country=99", "not actionable by itself")}, id="test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled"),
+        pytest.param(_wifi_case_regdom_warns_country_unset, "warn", _N.REASON_REGDOM_UNSET, None, id="test_check_wifi_regdom_warns_when_global_country_unset"),
+        pytest.param(_wifi_case_regdom_skips("", 1), "skipped", _N.REASON_REGDOM_PROBE_FAILED, None, id="test_check_wifi_regdom_skips_when_no_country_was_observed[probe-failed]"),
+        pytest.param(_wifi_case_regdom_skips("global\n", 0), "skipped", _N.REASON_REGDOM_UNPARSEABLE, None, id="test_check_wifi_regdom_skips_when_no_country_was_observed[no-global-country]"),
+        pytest.param(_wifi_case_regdom_ok_no_phy, "ok", "", {"detail_contains": ("global country=DE", "no per-phy regdom reported")}, id="test_check_wifi_regdom_ok_with_valid_global_and_no_phy"),
+        pytest.param(_wifi_case_guardian_ok_stash_matches_active, "ok", "", None, id="test_check_wifi_guardian_ok_when_stash_matches_active"),
+        pytest.param(_wifi_case_guardian_ok_ethernet_only, "skipped", _N.REASON_GUARDIAN_NOT_APPLICABLE, None, id="test_check_wifi_guardian_ok_ethernet_only"),
+        pytest.param(_wifi_case_guardian_warns_stash_missing_but_active, "warn", _N.REASON_GUARDIAN_STASH_MISSING, None, id="test_check_wifi_guardian_warns_when_stash_missing_but_active"),
+        pytest.param(_wifi_case_guardian_warns_ssid_drift, "warn", _N.REASON_GUARDIAN_SSID_DRIFT, None, id="test_check_wifi_guardian_warns_on_ssid_drift"),
+        pytest.param(_wifi_case_guardian_matches_colon_ssid, "ok", "", {"detail_contains": ("Home:5G",)}, id="test_check_wifi_guardian_matches_colon_ssid"),
+        pytest.param(_wifi_case_guardian_warns_active_wifi_missing, "warn", _N.REASON_GUARDIAN_NO_ACTIVE_WIFI, None, id="test_check_wifi_guardian_warns_when_active_wifi_missing"),
+        pytest.param(_wifi_case_guardian_skipped_without_nmcli, "skipped", _N.REASON_GUARDIAN_SKIPPED_NO_NMCLI, None, id="test_check_wifi_guardian_skipped_without_nmcli"),
+        pytest.param(_wifi_case_link_local_ipv6_ok, "ok", "", None, id="test_check_wifi_link_local_ipv6_ok"),
+        pytest.param(_wifi_case_link_local_ipv6_warns_ignores_ipv6, "warn", _N.REASON_IPV6_METHOD_DISABLED, {"detail_contains": ("active WiFi profile 'Home:5G'", "nmcli connection modify Home:5G ipv6.method link-local")}, id="test_check_wifi_link_local_ipv6_warns_when_profile_ignores_ipv6"),
+        pytest.param(_wifi_case_link_local_ipv6_warns_link_local_missing, "warn", _N.REASON_IPV6_LINK_LOCAL_MISSING, None, id="test_check_wifi_link_local_ipv6_warns_when_link_local_missing"),
+        pytest.param(_wifi_case_recover_timer_enabled_ok, "ok", "", None, id="test_check_wifi_recover_timer_enabled_ok"),
+        pytest.param(_wifi_case_recover_timer_disabled_warns, "warn", _N.REASON_RECOVER_TIMER_DISABLED, None, id="test_check_wifi_recover_timer_disabled_warns"),
+        pytest.param(_wifi_case_recover_timer_not_installed_skips, "skipped", _N.REASON_RECOVER_TIMER_NOT_INSTALLED, None, id="test_check_wifi_recover_timer_not_installed_skips"),
+        pytest.param(_wifi_case_recover_timer_no_systemctl_skips, "skipped", _N.REASON_RECOVER_TIMER_SKIPPED_NO_SYSTEMCTL, None, id="test_check_wifi_recover_timer_no_systemctl_skips"),
+    ],
+)
+def test_check_wifi_status(monkeypatch, tmp_path, setup, expected_status, expected_reason, extra):
+    r = setup(monkeypatch, tmp_path)
+
+    assert r.status == expected_status
+    assert r.reason == expected_reason
+    for substr in (extra or {}).get("detail_contains", ()):
+        assert substr in r.detail

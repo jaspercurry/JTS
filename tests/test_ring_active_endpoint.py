@@ -33,6 +33,7 @@ from .transport_camilla_fixtures import (
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
 from jasper.camilla_config_contract import (
+    ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CAPTURE_DEVICE,
     parse_camilla_devices_config,
@@ -41,7 +42,6 @@ from jasper.active_speaker.playback import FORBIDDEN_TEST_PCM_TOKENS
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
-    OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
     OUTPUTD_LEGAL_ENDPOINT_DEVICES,
     _outputd_endpoint_width,
@@ -597,44 +597,36 @@ def _endpoint_graph(device: str, channels: int = 2) -> GraphSafety:
 
 
 def test_the_active_ring_is_the_only_accepted_endpoint():
-    """#2285 P2: one member, and the RETIRED lane is refused by name.
-
-    This used to be parametrized over both transports of the active lane. The
-    snd-aloop lane's PCM definitions were deleted (#2534) and its MEMBERSHIP
-    with it, so the second case is now a REJECTION rather than a second accept —
-    and that rejection is why ``OUTPUTD_ACTIVE_PLAYBACK_DEVICE`` still has a
-    name at all. Every box commissioned before the retirement has a graph on
-    disk spelling it, so this is the shape the width probe actually meets.
-    """
+    """#2285 P2: one member, and it is the ACTIVE ring."""
     width, problem, accepted = _outputd_endpoint_width(
         _endpoint_graph(RING_ACTIVE_PLAYBACK_DEVICE), 8
     )
     assert (width, problem, accepted) == (2, None, RING_ACTIVE_PLAYBACK_DEVICE)
+    assert OUTPUTD_LEGAL_ENDPOINT_DEVICES == frozenset((RING_ACTIVE_PLAYBACK_DEVICE,))
 
-    retired = _outputd_endpoint_width(
-        _endpoint_graph(OUTPUTD_ACTIVE_PLAYBACK_DEVICE), 8
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        # The DANGEROUS NEAR-MISS, not an arbitrary string: an accept-set that
+        # WRONGLY included the stereo ring would still reject "nonsense", so
+        # only this case pins the boundary that matters. jts_ring_playback is
+        # the one wrong device a real box could plausibly be pointed at, and it
+        # carries a full-range stereo program — accepting it as an active
+        # endpoint would mean outputd opening a per-driver DAC lane against
+        # full-range audio.
+        pytest.param(RING_PLAYBACK_DEVICE, id="stereo-ring"),
+        # The graph every box commissioned before ADR-0100 still has on disk.
+        pytest.param(ACTIVE_OUTPUTD_PLAYBACK_DEVICE, id="retired-aloop-lane"),
+    ],
+)
+def test_a_non_member_device_is_rejected_as_an_outputd_endpoint(device):
+    assert _outputd_endpoint_width(_endpoint_graph(device), 8) == (
+        None,
+        "active_outputd_lane_missing",
+        None,
     )
-    assert retired == (None, "active_outputd_lane_missing", None)
-    assert OUTPUTD_ACTIVE_PLAYBACK_DEVICE not in OUTPUTD_LEGAL_ENDPOINT_DEVICES
-
-
-def test_the_stereo_ring_is_rejected_as_an_outputd_endpoint():
-    """The rejection uses the DANGEROUS NEAR-MISS, not an arbitrary string.
-
-    An arbitrary device (``"nonsense"``) would be rejected by an accept-set that
-    WRONGLY included the stereo ring, so it proves nothing about the boundary
-    that matters. ``jts_ring_playback`` is the one wrong device a real box could
-    plausibly be pointed at, and it carries a full-range stereo program — so
-    accepting it as an active endpoint would mean outputd opening a per-driver
-    DAC lane against full-range audio.
-    """
-    width, problem, accepted = _outputd_endpoint_width(
-        _endpoint_graph(RING_PLAYBACK_DEVICE), 8
-    )
-    assert width is None
-    assert problem == "active_outputd_lane_missing"
-    assert accepted is None
-    assert RING_PLAYBACK_DEVICE not in OUTPUTD_LEGAL_ENDPOINT_DEVICES
+    assert device not in OUTPUTD_LEGAL_ENDPOINT_DEVICES
 
 
 def test_the_accepted_device_rides_the_decision_so_the_marker_derives_from_it():
@@ -662,7 +654,7 @@ def test_the_accepted_device_rides_the_decision_so_the_marker_derives_from_it():
         pytest.param("single", True, None, "", "", id="single-passive"),
         pytest.param("single", False, None, "", "", id="parked"),
         pytest.param("composite", True, RING_ACTIVE_PLAYBACK_DEVICE, "1", "1", id="composite-active"),
-        pytest.param("composite", True, OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "", "", id="composite-aloop"),
+        pytest.param("composite", True, ACTIVE_OUTPUTD_PLAYBACK_DEVICE, "", "", id="composite-aloop"),
         pytest.param("composite", True, "unknown", "", "", id="composite-unknown"),
         pytest.param("single", True, "unknown", "1", "", id="single-unknown"),
         pytest.param("single", True, "", "1", "", id="single-empty"),
@@ -1107,7 +1099,6 @@ def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
     armed. Endpoint and wire are what an arm CHANGES, so an identity question
     that included them would refuse every box this arm exists to admit.
     """
-    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.fanin import coupling_reconcile
     from tests.test_composite_ring_arm_enabling import _composite_active_2way
     from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
@@ -1121,7 +1112,7 @@ def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
         monkeypatch,
         graph_yaml=_graph_yaml(
             capture_device="hw:Loopback,1,7",
-            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
             fmt="S32_LE",
         ),
     )
@@ -1137,7 +1128,6 @@ def test_arm_two_admits_the_all_muted_anchor_before_it_reaches_the_ring(
 
 def test_arm_two_refuses_an_anchor_that_is_not_terminally_muted(monkeypatch, tmp_path):
     """The anchor's whole safety claim is the mute. One live output withdraws it."""
-    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.fanin import coupling_reconcile
     from tests.test_composite_ring_arm_enabling import _composite_active_2way
     from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
@@ -1151,7 +1141,7 @@ def test_arm_two_refuses_an_anchor_that_is_not_terminally_muted(monkeypatch, tmp
         monkeypatch,
         graph_yaml=_graph_yaml(
             capture_device="hw:Loopback,1,7",
-            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
             fmt="S32_LE",
             mute_gains_db={1: -20.0},
         ),
@@ -1216,7 +1206,6 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
     makes the guard cover the branch it claims to.
     """
     import jasper.active_speaker.baseline_profile as bp
-    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.fanin import coupling_reconcile
     from tests.test_composite_ring_arm_enabling import _composite_active_2way
     from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
@@ -1248,7 +1237,7 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
         monkeypatch,
         graph_yaml=_graph_yaml(
             capture_device="hw:Loopback,1,7",
-            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
             fmt="S32_LE",
         ),
     )
@@ -1604,7 +1593,6 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     still WARNs and still hands over a ladder an operator can actually run —
     the branch has no other test.
     """
-    from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.cli.doctor import audio_runtime_fanin
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import COUPLING_SHM_RING, OUTPUTD_CONTENT_BRIDGE_SHM_RING
@@ -1625,7 +1613,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     evidence.seed("camilla_devices:/tmp/loaded.yml", {
         "capture_type": "Alsa",
         "capture_device": RING_CAPTURE_DEVICE,
-        "playback_device": OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        "playback_device": ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     })
     result = audio_runtime_fanin.check_fanin_coupling()
     assert result.status == "warn"
@@ -1697,11 +1685,11 @@ def test_the_emitters_default_to_todays_literals_byte_for_byte():
     for emit in emitters:
         kwargs = _emitter_required_kwargs(emit)
         default = emit(
-            preset, playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE, **kwargs
+            preset, playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE, **kwargs
         )
         explicit = emit(
             preset,
-            playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+            playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
             queuelimit=4,
             enable_rate_adjust=True,
             **kwargs,
@@ -1775,7 +1763,7 @@ def test_an_active_ring_emit_refuses_a_width_the_ring_cannot_carry(monkeypatch):
     # In range: silent.
     active_camilla_yaml._assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 8)
     # A NON-ring device is never judged — this is a no-op on every box today.
-    active_camilla_yaml._assert_ring_playback_width(OUTPUTD_ACTIVE_PLAYBACK_DEVICE, 99)
+    active_camilla_yaml._assert_ring_playback_width(ACTIVE_OUTPUTD_PLAYBACK_DEVICE, 99)
 
 
 def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
@@ -1813,7 +1801,7 @@ def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
     # refusal above is the ring rule firing, not a generic width complaint.
     active_camilla_yaml.emit_active_speaker_startup_config(
         preset,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     # ...and with the real bound restored, the ring emit succeeds — so the
     # refusal is the bound, not the device.
@@ -2256,16 +2244,16 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     # this site made before it derived anything, so a caller naming a non-ring
     # sink cannot notice the derivation at all.
     aloop_graph = _crossover_v2_program_graph(
-        topology, playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        topology, playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     aloop = parse_camilla_devices_config(aloop_graph)
-    assert aloop["playback_device"] == OUTPUTD_ACTIVE_PLAYBACK_DEVICE
+    assert aloop["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
     assert aloop["capture_device"] == DEFAULT_CAPTURE_DEVICE
     assert aloop["capture_format"] == DEFAULT_CAPTURE_FORMAT
     assert aloop_graph == active_camilla_yaml.emit_active_speaker_program_config(
         _mono_two_way_preset(),
         role_channels={"woofer": 0, "tweeter": 1},
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
 
 
@@ -2317,7 +2305,7 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
     _ring_candidate_site(
         topology,
         tmp_path / "alsa",
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )()
 
 

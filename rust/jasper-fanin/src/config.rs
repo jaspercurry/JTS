@@ -292,15 +292,7 @@ pub struct Config {
     /// `JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES`.
     pub input_resampler_ring_frames: u32,
 
-    /// DEFAULT-OFF post-lock cushion DECAY. When `true`, once the armed
-    /// resampler lane is locked AND its outer host-clock DLL is `l0_locked` AND
-    /// stable, the held target decays from the acquisition ceiling
-    /// (`target + warmup cushion`) toward `input_resampler_cushion_decay_floor_frames`
-    /// — reclaiming the standing resampler fill (~10 ms) that only the cold-start
-    /// burst needs. Snaps back to the ceiling on any unlock / DLL demotion /
-    /// stream stop. Fail-safe: only the exact literal `enabled` (case-insensitive)
-    /// arms it. Env: `JASPER_FANIN_RESAMPLER_CUSHION_DECAY`. Meaningful only with
-    /// the host-clock DLL armed (decay requires `l0_locked`).
+    /// Adaptive USB input buffer. Requires the host-clock DLL.
     pub input_resampler_cushion_decay_enabled: bool,
     /// The total held-target floor (frames) the decay descends to. Must be at
     /// least `max(target, minimum_safe_fill_frames)` plus
@@ -310,23 +302,6 @@ pub struct Config {
     /// [`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`] clamped into that range. Env:
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
-    /// Frames dropped from the held target per decay step. Fail-loud range
-    /// `1..=64`; default 6. The EXECUTED demand is the periods-space arithmetic
-    /// (`DecayParams::step_demand_ppm`; ms-space `step × 20833 / interval_ms`
-    /// approximates it): default 6 / 1000 ms at 48 kHz / 256 ⇒ ~125.3 ppm,
-    /// ~4x under the inner resampler's ±500 ppm authority
-    /// (`input_resampler_max_adjust_ppm`) — the ONLY budget the demand
-    /// consumes, because the host-clock observable subtracts the published
-    /// demand (#3466 — rationale at `host_clock::build_obs`). An ARMED pair
-    /// must pass the demand-vs-authority margin check in `from_env`
-    /// (demand × 2 ≤ authority). Env:
-    /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES`.
-    pub input_resampler_cushion_decay_step_frames: u32,
-    /// Wall interval between decay steps, in ms (converted to render periods by
-    /// the lane). Fail-loud range `250..=10000`; default 1000. Env:
-    /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS`.
-    pub input_resampler_cushion_decay_interval_ms: u32,
-
     /// DEFAULT-OFF one-shot AUTO-TRIM. When `true`, the mixer schedules ONE
     /// `TRIM` per armed resampler lane a couple of seconds after that lane goes
     /// active, dropping the accumulated standing head-start (the cursor-relative
@@ -760,7 +735,7 @@ impl Config {
         // physical threshold.
         let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
             period_frames,
-            input_resampler_max_adjust_ppm as f64,
+            input_resampler_max_adjust_ppm as f64 + crate::lane_resampler::BUFFER_ADJUST_PPM,
         ) as u32;
         let cushion_decay_floor_min = (input_resampler_target_frames
             + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
@@ -805,64 +780,6 @@ impl Config {
                 CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
                 cushion_decay_ceiling,
             );
-        }
-        // Default 6: an executed demand of ≈ 125.3 ppm, ~4x under the inner
-        // resampler's ±500 ppm authority. A step of 18 (≈ 375 ppm, 3/4 of that
-        // authority) rails the ratio against a real ~190 ppm host offset,
-        // live-verified on jts3, and the ±400 ppm cascade guard does not budget
-        // for decay demand so it does not catch that (#3466). At 6 the descent
-        // from ceiling to floor takes ~331 s; settled latency is unaffected. The
-        // 1..=64 range bounds a gentle step; an ARMED pair must also pass the
-        // demand-vs-authority margin check below.
-        let input_resampler_cushion_decay_step_frames =
-            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES", 6)?;
-        if !(1..=64).contains(&input_resampler_cushion_decay_step_frames) {
-            anyhow::bail!(
-                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES={} out of range 1..=64 \
-                 (a gentle per-step frame drop; default 6 ≈ 125 ppm demand — see issue #3466; \
-                 an armed decay must also pass the demand-vs-authority margin check)",
-                input_resampler_cushion_decay_step_frames,
-            );
-        }
-        let input_resampler_cushion_decay_interval_ms =
-            env_u32("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS", 1000)?;
-        if !(250..=10_000).contains(&input_resampler_cushion_decay_interval_ms) {
-            anyhow::bail!(
-                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS={} out of range 250..=10000 \
-                 (wall interval between decay steps; 1000 ms is the default)",
-                input_resampler_cushion_decay_interval_ms,
-            );
-        }
-        // Decontamination precondition (#3466), armed-only like the floor
-        // check: the EXECUTED demand (`DecayParams::step_demand_ppm`) is
-        // subtracted from the host-clock observable, so it must leave real
-        // margin inside the inner ±max_adjust_ppm authority — demand a railed
-        // ratio cannot deliver would be subtracted anyway, fabricating
-        // inverted-sign clock error for the L0 servo. Require at least half
-        // the authority left for genuine host offset.
-        if input_resampler_cushion_decay_enabled {
-            let executed_demand_ppm = crate::lane_resampler::DecayParams::step_demand_ppm(
-                input_resampler_cushion_decay_step_frames as u64,
-                input_resampler_cushion_decay_interval_ms as u64,
-                period_frames,
-                sample_rate,
-            );
-            if executed_demand_ppm * 2.0 > input_resampler_max_adjust_ppm as f64 {
-                anyhow::bail!(
-                    "cushion-decay demand {:.1} ppm (STEP_FRAMES={} / INTERVAL_MS={} at \
-                     {} frames / {} Hz) exceeds half the inner ±{} ppm authority \
-                     (JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM): the demand is subtracted \
-                     from the host-clock observable (#3466), so it must leave at least as much \
-                     authority for genuine host offset as it consumes — lower the step or \
-                     lengthen the interval",
-                    executed_demand_ppm,
-                    input_resampler_cushion_decay_step_frames,
-                    input_resampler_cushion_decay_interval_ms,
-                    period_frames,
-                    sample_rate,
-                    input_resampler_max_adjust_ppm,
-                );
-            }
         }
         let auto_trim_enabled = env_enabled("JASPER_FANIN_AUTO_TRIM");
 
@@ -972,10 +889,7 @@ impl Config {
         // 256 + 256 = 512 held) can trip it.
         let resampler_armed_on_a_lane = input_resampler_enabled || usb_direct_enabled;
         if resampler_armed_on_a_lane {
-            let min_safe = jasper_resampler::minimum_safe_fill_frames(
-                period_frames,
-                input_resampler_max_adjust_ppm as f64,
-            ) as u32;
+            let min_safe = cushion_decay_min_safe_fill;
             let held_target = input_resampler_target_frames + input_resampler_warmup_cushion_frames;
             let required_held = min_safe + period_frames + STATIC_CUSHION_JITTER_MARGIN_FRAMES;
             if held_target < required_held {
@@ -1175,8 +1089,6 @@ impl Config {
             input_resampler_ring_frames,
             input_resampler_cushion_decay_enabled,
             input_resampler_cushion_decay_floor_frames,
-            input_resampler_cushion_decay_step_frames,
-            input_resampler_cushion_decay_interval_ms,
             auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
@@ -1401,29 +1313,6 @@ mod tests {
                 assert_eq!(
                     cfg.input_resampler_cushion_decay_floor_frames,
                     DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
-                );
-                assert_eq!(cfg.input_resampler_cushion_decay_step_frames, 6);
-                assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 1000);
-                // Demand-ppm pin in the EXECUTED periods-space the machine
-                // publishes and the observable subtracts (#3466), via the ONE
-                // shared derivation rather than a re-derived ms-space
-                // approximation: 6 / 1000 ms at 48 kHz / 256 truncates to 187
-                // periods ⇒ 125.33 ppm, not 125.0.
-                let step_demand_ppm = crate::lane_resampler::DecayParams::step_demand_ppm(
-                    cfg.input_resampler_cushion_decay_step_frames as u64,
-                    cfg.input_resampler_cushion_decay_interval_ms as u64,
-                    cfg.period_frames,
-                    cfg.sample_rate,
-                );
-                assert!(
-                    (step_demand_ppm - 125.334).abs() < 0.01,
-                    "default executed step demand is ~125.33 ppm, got {step_demand_ppm}"
-                );
-                assert!(
-                    step_demand_ppm * 2.0 <= cfg.input_resampler_max_adjust_ppm as f64,
-                    "default decay step demand {step_demand_ppm} ppm must clear the armed \
-                     demand-vs-authority bound (±{} ppm)",
-                    cfg.input_resampler_max_adjust_ppm
                 );
                 assert!(!cfg.auto_trim_enabled, "auto-trim must default OFF");
                 assert!(!cfg.usb_direct_enabled, "usb-direct must default OFF");
@@ -2219,32 +2108,24 @@ mod tests {
 
     #[test]
     fn cushion_decay_floor_default_respects_minimum_safe_fill() {
-        // The DEFAULT floor must never be churn-by-construction: it sits at or
-        // above `minimum_safe_fill + margin`. At target 200 / period 256 /
-        // max_ppm 500 → min_safe 274 → derived floor 306, and the validated 576
-        // clears it (576 > 306, 576 < ceiling 2248).
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                let min_safe = jasper_resampler::minimum_safe_fill_frames(256, 500.0) as u32;
-                assert!(
-                    cfg.input_resampler_cushion_decay_floor_frames
-                        >= min_safe + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
-                    "default floor for a small target must respect the physical floor"
-                );
-                assert_eq!(
-                    cfg.input_resampler_cushion_decay_floor_frames,
-                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
-                );
-            },
-        );
+        for (period, expected_floor) in [("256", 576), ("1024", 1076)] {
+            with_env(
+                &[
+                    ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
+                    ("JASPER_FANIN_PERIOD_FRAMES", Some(period)),
+                    ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
+                    ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
+                    ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+                ],
+                || {
+                    let cfg = Config::from_env().expect("defaults must parse");
+                    assert_eq!(
+                        cfg.input_resampler_cushion_decay_floor_frames,
+                        expected_floor
+                    );
+                },
+            );
+        }
     }
 
     #[test]
@@ -2294,50 +2175,6 @@ mod tests {
     }
 
     #[test]
-    fn cushion_decay_demand_beyond_authority_margin_fails_loud_when_armed() {
-        // Beyond half the inner ±max_adjust_ppm authority the subtraction from
-        // the host-clock observable (#3466) fabricates clock error a railed ratio
-        // can never deliver. Step 6 at the legal 250 ms interval floor is already
-        // over the line: ≈509.5 ppm executed against the ±500 authority.
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-                (
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS",
-                    Some("250"),
-                ),
-            ],
-            || {
-                let err = Config::from_env().expect_err("over-authority demand must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM"),
-                    "expected the demand-vs-authority error, got: {msg}"
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn cushion_decay_demand_bound_ignored_when_disabled() {
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", None),
-                (
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS",
-                    Some("250"),
-                ),
-            ],
-            || {
-                let cfg =
-                    Config::from_env().expect("disabled decay must ignore an aggressive demand");
-                assert!(!cfg.input_resampler_cushion_decay_enabled);
-                assert_eq!(cfg.input_resampler_cushion_decay_interval_ms, 250);
-            },
-        );
-    }
-
-    #[test]
     fn inverted_decay_default_range_never_panics() {
         // A cushion smaller than the 32-frame working margin makes
         // derived_min > acquisition ceiling — an inverted range `u32::clamp`
@@ -2376,48 +2213,6 @@ mod tests {
             },
         );
     }
-
-    #[test]
-    fn cushion_decay_step_fails_loud_out_of_range() {
-        for bad in ["0", "65", "1000"] {
-            with_env(
-                &[(
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES",
-                    Some(bad),
-                )],
-                || {
-                    let err = Config::from_env().expect_err("out-of-range step must error");
-                    let msg = format!("{:#}", err);
-                    assert!(
-                        msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_STEP_FRAMES"),
-                        "expected decay-step range error, got: {msg}"
-                    );
-                },
-            );
-        }
-    }
-
-    #[test]
-    fn cushion_decay_interval_fails_loud_out_of_range() {
-        for bad in ["249", "10001", "0"] {
-            with_env(
-                &[(
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS",
-                    Some(bad),
-                )],
-                || {
-                    let err = Config::from_env().expect_err("out-of-range interval must error");
-                    let msg = format!("{:#}", err);
-                    assert!(
-                        msg.contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS"),
-                        "expected decay-interval range error, got: {msg}"
-                    );
-                },
-            );
-        }
-    }
-
-    // ---- static held-target churn guard -----------------------------------
 
     #[test]
     fn static_cushion_fails_loud_on_churny_lab_geometry_when_resampler_armed() {

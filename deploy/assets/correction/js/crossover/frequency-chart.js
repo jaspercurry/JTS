@@ -13,36 +13,36 @@ export function cssColor(canvas, name, fallback) {
 
 function curvePoints(series, loHz, hiHz) {
   const curve = series && series.curve;
-  const reference = series && series.referenceDb;
-  if (!curve || !Array.isArray(curve.freqs_hz) || !Array.isArray(curve.magnitude_db)) return [];
-  if (typeof reference !== 'number' || !Number.isFinite(reference)) return [];
+  const deviations = curve && curve.display && curve.display.deviation_db;
+  if (!curve || !Array.isArray(curve.freqs_hz) || !Array.isArray(deviations)) return [];
   const points = [];
-  const length = Math.min(curve.freqs_hz.length, curve.magnitude_db.length);
+  const length = Math.min(curve.freqs_hz.length, deviations.length);
   for (let index = 0; index < length; index += 1) {
     const frequency = Number(curve.freqs_hz[index]);
-    const magnitude = Number(curve.magnitude_db[index]);
-    if (!Number.isFinite(frequency) || !Number.isFinite(magnitude)) continue;
+    if (!Number.isFinite(frequency)) continue;
     if (frequency < loHz || frequency > hiHz) continue;
-    points.push({ frequency, deviation: magnitude - reference });
+    points.push({ frequency, deviation: deviations[index] });
   }
   return points;
 }
 
-function dbDomain(pointSets, domainRangeHz, corridorBands, padDb, minSpanDb) {
+function dbDomain(pointSets, series, domainRangeHz, corridorBands, padDb, minSpanDb) {
   const [domainLo, domainHi] = domainRangeHz || [null, null];
-  let bound = minSpanDb / 2;
+  let bound = 0;
   for (const band of corridorBands) {
     const tolerance = Number(band && band.tolerance_db);
     if (Number.isFinite(tolerance)) bound = Math.max(bound, Math.abs(tolerance));
   }
-  for (const points of pointSets) {
+  for (const [index, points] of pointSets.entries()) {
+    const exclusions = series[index].curve?.display?.untrusted_intervals_hz || [];
     for (const point of points) {
       if (domainLo !== null && point.frequency < domainLo) continue;
       if (domainHi !== null && point.frequency > domainHi) continue;
+      if (exclusions.some(([lo, hi]) => point.frequency >= lo && point.frequency <= hi)) continue;
       bound = Math.max(bound, Math.abs(point.deviation));
     }
   }
-  bound += padDb;
+  bound = Math.ceil(Math.max(minSpanDb / 2, bound + padDb));
   return [-bound, bound];
 }
 
@@ -51,7 +51,7 @@ export function drawFrequencyChart(canvas, payload) {
   const frequencyRangeHz = (payload && payload.frequencyRangeHz) || [20, 20000];
   const loHz = Number(frequencyRangeHz[0]);
   const hiHz = Number(frequencyRangeHz[1]);
-  const pointSets = series.map((item) => curvePoints(item, loHz, hiHz));
+  const pointSets = series.map((item) => item.draw === false ? [] : curvePoints(item, loHz, hiHz));
 
   const rect = canvas.getBoundingClientRect();
   if (rect.width < 10 || rect.height < 10) return false;
@@ -62,7 +62,7 @@ export function drawFrequencyChart(canvas, payload) {
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.scale(dpr, dpr);
   context.clearRect(0, 0, rect.width, rect.height);
-  if (!pointSets.some((points) => points.length)) return false;
+  if (!pointSets.some((points) => points.some((point) => point.deviation != null))) return false;
 
   const margins = { left: 44, right: 10, top: 10, bottom: 22 };
   const width = rect.width - margins.left - margins.right;
@@ -70,6 +70,7 @@ export function drawFrequencyChart(canvas, payload) {
   const corridorBands = (payload && payload.corridorBands) || [];
   const [dbMin, dbMax] = dbDomain(
     pointSets,
+    series,
     payload && payload.domainRangeHz,
     corridorBands,
     Number(payload && payload.padDb) || 3,
@@ -87,6 +88,7 @@ export function drawFrequencyChart(canvas, payload) {
   context.fillStyle = theme.text || '#888';
   context.font = '11px sans-serif';
   context.lineWidth = 1;
+  let labelRight = -Infinity;
   for (const frequency of GRID_FREQS_HZ) {
     if (frequency < loHz || frequency > hiHz) continue;
     const gridX = x(frequency);
@@ -95,9 +97,14 @@ export function drawFrequencyChart(canvas, payload) {
     context.lineTo(gridX, margins.top + height);
     context.stroke();
     const label = frequency >= 1000 ? `${frequency / 1000}k` : `${frequency}`;
-    context.fillText(label, gridX - 8, margins.top + height + 14);
+    const labelWidth = context.measureText(label).width;
+    const labelX = Math.min(rect.width - labelWidth, gridX - labelWidth / 2);
+    if (labelX >= labelRight + 6) {
+      context.fillText(label, labelX, margins.top + height + 14);
+      labelRight = labelX + labelWidth;
+    }
   }
-  const step = Math.max(1, Math.round((dbMax - dbMin) / 4));
+  const step = dbMax <= 5 ? 1 : Math.ceil(dbMax / 5);
   for (let db = Math.ceil(dbMin / step) * step; db <= dbMax; db += step) {
     const gridY = y(db);
     context.beginPath();
@@ -120,17 +127,17 @@ export function drawFrequencyChart(canvas, payload) {
   context.save();
   context.globalAlpha = 0.16;
   context.fillStyle = theme.excluded || '#888';
-  for (const interval of (payload && payload.excludedIntervals) || []) {
-    const lo = Number(interval && interval.f_lo_hz);
-    const hi = Number(interval && interval.f_hi_hz);
-    if (
-      !Number.isFinite(lo) || !Number.isFinite(hi) ||
-      hi < lo || hi < loHz || lo > hiHz
-    ) continue;
-    const x0 = clampX(lo);
-    const x1 = clampX(hi);
-    if (x1 >= x0) context.fillRect(x0, margins.top, Math.max(1, x1 - x0), height);
+  context.beginPath();
+  for (const { curve, draw } of series) {
+    if (draw === false) continue;
+    for (const [lo, hi] of (curve && curve.display && curve.display.untrusted_intervals_hz) || []) {
+      if (hi < loHz || lo > hiHz) continue;
+      const x0 = clampX(lo);
+      const x1 = clampX(hi);
+      context.rect(x0, margins.top, Math.max(1, x1 - x0), height);
+    }
   }
+  context.fill();
   context.restore();
 
   context.save();
@@ -148,17 +155,19 @@ export function drawFrequencyChart(canvas, payload) {
   context.restore();
 
   pointSets.forEach((points, index) => {
-    if (!points.length) return;
+    if (!points.some((point) => point.deviation != null)) return;
     const style = series[index];
-    if (style.draw === false) return;
     context.strokeStyle = style.color;
     context.lineWidth = style.lineWidth || 2;
     context.globalAlpha = style.alpha == null ? 1 : style.alpha;
     context.setLineDash(style.dash || []);
     context.beginPath();
-    points.forEach((point, pointIndex) => {
-      const method = pointIndex === 0 ? 'moveTo' : 'lineTo';
+    let start = true;
+    points.forEach((point) => {
+      if (point.deviation == null) { start = true; return; }
+      const method = start ? 'moveTo' : 'lineTo';
       context[method](x(point.frequency), y(point.deviation));
+      start = false;
     });
     context.stroke();
   });

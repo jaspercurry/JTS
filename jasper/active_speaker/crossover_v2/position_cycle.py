@@ -314,6 +314,7 @@ def read_pose_curve_pair(
     position_deg: int,
     vertical_deg: int = 0,
     roles: tuple[str, str],
+    take_path: str | None = None,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
     """The latest banked take carrying BOTH roles, and the take it came from.
 
@@ -351,6 +352,8 @@ def read_pose_curve_pair(
             vertical_deg=vertical_deg,
         )
     ):
+        if take_path is not None and row.path != take_path:
+            continue
         curves = read_take_curves(
             take_artifact_path(bundle_dir, row.path), phase=phase,
         )

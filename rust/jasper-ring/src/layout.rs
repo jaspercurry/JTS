@@ -3,16 +3,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! JTS Ring SHM header layout — the single source of truth for header offsets,
-//! constants, and geometry math, shared by the Rust reader ([`crate`]) and
-//! pinned against the C writer's `_Static_assert`ed header
-//! (`c/jts-ring-ioplug/jts_ring_shm.h`) by the golden-layout test below.
+//! constants, and geometry math for every language that touches a JTS ring.
 //!
-//! Every offset here is a compile-time `const` and is asserted in
-//! [`tests::golden_layout_matches_the_shm_contract`]. If the C header and this
-//! module ever disagree, the on-disk bytes the writer produces and the reader
-//! expects diverge silently — the golden test is the drift guard that keeps
-//! them byte-for-byte identical. **When you change an offset here, change the C
-//! header AND its `_Static_assert` in the same commit.**
+//! This module OWNS the numbers. [`layout_json`] renders them as one JSON
+//! object, committed at `rust/jasper-ring/layout.json`, and the other two
+//! spellings — the C writer's `_Static_assert`ed header
+//! (`c/jts-ring-ioplug/jts_ring_shm.h`, checked by its `test_ring_core`) and
+//! the Python reader (`jasper.ring_assets`, checked by `tests/test_ring_assets`)
+//! — are compared against that file rather than against this source text.
+//! Change a constant here and regenerate the file (the command is in
+//! [`tests::layout_json_is_committed`]); the two consumers then fail until they
+//! are brought along.
 
 use std::io;
 
@@ -61,12 +62,32 @@ pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 /// derivable from a DAC's declared floor is issue #2147.
 pub const RING_SLOT_FRAMES: u32 = 128;
 
+/// The one sample rate a JTS ring runs at, and the only place it is spelled for
+/// the ring: [`Geometry::validate_self`] accepts no other, the writer's
+/// full-ring tick paces from it, and outputd's `ShmRingSource` declares it.
+pub const RATE_HZ: u32 = 48_000;
+
+/// Depth of the CENTRAL content rings — Ring A (fan-in -> CamillaDSP) and
+/// Ring B (CamillaDSP -> outputd) — at the 2-slot ping-pong floor.
+///
+/// A compile-time constant with no env override, the same shape as
+/// [`RING_SLOT_FRAMES`]: outputd reads it for its Ring B reader and
+/// `jasper.ring_assets` renders it into the outputd-read `conf.d` blocks
+/// (`jts_ring_playback`, `jts_ring_active_playback`), so the ioplug and
+/// outputd cannot declare different depths there today. Ring A
+/// (`jts_ring_capture`) still takes its depth from jasper-fanin's own
+/// `JASPER_FANIN_RING_SLOTS` env (`rust/jasper-fanin/src/config.rs`) — the
+/// same guarantee extends to it once fan-in reads this constant instead. The
+/// dac-content RETURN ring is deliberately deeper and keeps its own
+/// `DAC_CONTENT_RING_SLOTS`.
+pub const RING_SLOTS: u32 = 2;
+
 /// Prototype floor / ceiling on `n_slots`: 2 (ping-pong) through 16. 3 is the
 /// documented degraded widening; the ceiling is 16 so the ALSA playback
 /// buffer (`n_slots * period_frames`) can clear
 /// CamillaDSP's negotiated buffer size and its `target_level` (see
-/// `c/jts-ring-ioplug/jts_ring_shm.h` `JTS_RING_MAX_SLOTS` — kept in lockstep,
-/// and `MAX_SHM_RING_SLOTS` in the outputd config).
+/// `c/jts-ring-ioplug/jts_ring_shm.h` `JTS_RING_MAX_SLOTS`, kept in lockstep
+/// through the generated `layout.json`).
 pub const MIN_N_SLOTS: u32 = 2;
 pub const MAX_N_SLOTS: u32 = 16;
 
@@ -185,7 +206,7 @@ impl Geometry {
     /// Validate the geometry the caller wants BEFORE touching the filesystem.
     ///
     /// The accept-set is S16LE or S32LE, 2..=[`MAX_RING_CHANNELS`] channels,
-    /// 48 kHz, a non-zero `period_frames`, an `n_slots` in
+    /// [`RATE_HZ`], a non-zero `period_frames`, an `n_slots` in
     /// [`MIN_N_SLOTS`]..=[`MAX_N_SLOTS`], and a slot no larger than
     /// [`MAX_SLOT_BYTES`]. Anything outside it returns an
     /// [`io::ErrorKind::InvalidInput`] error — a config-class fault, distinct
@@ -209,9 +230,9 @@ impl Geometry {
                 self.channels
             )));
         }
-        if self.rate != 48_000 {
+        if self.rate != RATE_HZ {
             return Err(cfg_err(format!(
-                "ring rate {} unsupported (only 48000)",
+                "ring rate {} unsupported (only {RATE_HZ})",
                 self.rate
             )));
         }
@@ -239,6 +260,81 @@ impl Geometry {
     }
 }
 
+/// The ring ABI as one JSON object — the generator behind the committed
+/// `rust/jasper-ring/layout.json`, which the C ioplug's `test_ring_core` and
+/// `jasper.ring_assets`' contract test read instead of regexing Rust source.
+///
+/// Deliberately hand-rolled (this crate has no serde) and deliberately flat:
+/// every value is an unsigned integer or a short string, so the C consumer
+/// needs a key scan plus `strtoull` or one quoted-span copy rather than a JSON
+/// library. Keys are the Rust constant names, lowercased.
+pub fn layout_json() -> String {
+    let numbers: &[(&str, u64)] = &[
+        ("magic", MAGIC as u64),
+        ("version", VERSION as u64),
+        ("header_bytes", HEADER_BYTES as u64),
+        // Header field offsets.
+        ("off_magic", OFF_MAGIC as u64),
+        ("off_magic_qword", OFF_MAGIC_QWORD as u64),
+        ("off_version", OFF_VERSION as u64),
+        ("off_rate", OFF_RATE as u64),
+        ("off_channels", OFF_CHANNELS as u64),
+        ("off_sample_format", OFF_SAMPLE_FORMAT as u64),
+        ("off_period_frames", OFF_PERIOD_FRAMES as u64),
+        ("off_n_slots", OFF_N_SLOTS as u64),
+        ("off_pad", OFF_PAD as u64),
+        ("off_writer_epoch", OFF_WRITER_EPOCH as u64),
+        ("off_write_seq", OFF_WRITE_SEQ as u64),
+        ("off_read_seq", OFF_READ_SEQ as u64),
+        ("off_writer_pid", OFF_WRITER_PID as u64),
+        ("off_writer_heartbeat_ns", OFF_WRITER_HEARTBEAT_NS as u64),
+        ("off_reader_pid", OFF_READER_PID as u64),
+        ("off_reader_heartbeat_ns", OFF_READER_HEARTBEAT_NS as u64),
+        ("off_futex_word", OFF_FUTEX_WORD as u64),
+        ("off_reserved", OFF_RESERVED as u64),
+        // The geometry accept-set, and the shipped geometry inside it.
+        ("sample_format_s16le", SAMPLE_FORMAT_S16LE as u64),
+        ("sample_format_s32le", SAMPLE_FORMAT_S32LE as u64),
+        ("min_n_slots", MIN_N_SLOTS as u64),
+        ("max_n_slots", MAX_N_SLOTS as u64),
+        ("max_ring_channels", MAX_RING_CHANNELS as u64),
+        ("max_slot_bytes", MAX_SLOT_BYTES as u64),
+        ("rate_hz", RATE_HZ as u64),
+        ("ring_slot_frames", RING_SLOT_FRAMES as u64),
+        ("ring_slots", RING_SLOTS as u64),
+        // The create/attach and liveness protocol both languages implement.
+        // `open_lock_mode` is the octal file mode as a decimal integer.
+        (
+            "writer_liveness_timeout_ns",
+            crate::WRITER_LIVENESS_TIMEOUT_NS,
+        ),
+        ("magic_wait_timeout_ms", crate::MAGIC_WAIT_TIMEOUT_MS),
+        ("magic_wait_step_us", crate::MAGIC_WAIT_STEP_US),
+        ("open_lock_mode", crate::OPEN_LOCK_MODE as u64),
+        (
+            "open_lock_wait_timeout_ms",
+            crate::OPEN_LOCK_WAIT_TIMEOUT_MS,
+        ),
+        ("open_lock_wait_step_us", crate::OPEN_LOCK_WAIT_STEP_US),
+        ("open_max_attempts", crate::OPEN_MAX_ATTEMPTS as u64),
+    ];
+    let strings: &[(&str, &str)] = &[
+        ("open_lock_suffix", crate::OPEN_LOCK_SUFFIX),
+        ("writer_lock_suffix", crate::WRITER_LOCK_SUFFIX),
+    ];
+
+    let lines: Vec<String> = numbers
+        .iter()
+        .map(|(key, value)| format!("  \"{key}\": {value}"))
+        .chain(
+            strings
+                .iter()
+                .map(|(key, value)| format!("  \"{key}\": \"{value}\"")),
+        )
+        .collect();
+    format!("{{\n{}\n}}\n", lines.join(",\n"))
+}
+
 fn cfg_err(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
@@ -247,70 +343,38 @@ fn cfg_err(msg: String) -> io::Error {
 mod tests {
     use super::*;
 
-    /// The cross-language drift guard. These constants are duplicated in the C
-    /// header (`jts_ring_shm.h`) as `_Static_assert(offsetof(...) == N)`; if
-    /// either side changes an offset without the other, this test (Rust) and
-    /// the C compile (via `_Static_assert`) both fail. Do not "fix" one side to
-    /// pass — reconcile both.
+    /// The committed `layout.json` is what the C and Python spellings of this
+    /// header are compared against, so a constant changed here without
+    /// regenerating it would leave both consumers pinned to the OLD bytes while
+    /// the Rust reader moved — a silent cross-language shear.
     #[test]
-    fn golden_layout_matches_the_shm_contract() {
-        assert_eq!(MAGIC, 0x4A52_494E, "magic 'JRIN' LE");
-        assert_eq!(VERSION, 1);
-        assert_eq!(HEADER_BYTES, 128);
-
-        assert_eq!(OFF_MAGIC, 0);
-        assert_eq!(OFF_VERSION, 4);
-        assert_eq!(OFF_MAGIC_QWORD, 0);
-        assert_eq!(OFF_RATE, 8);
-        assert_eq!(OFF_CHANNELS, 12);
-        assert_eq!(OFF_SAMPLE_FORMAT, 16);
-        assert_eq!(OFF_PERIOD_FRAMES, 20);
-        assert_eq!(OFF_N_SLOTS, 24);
-        assert_eq!(OFF_PAD, 28);
-        assert_eq!(OFF_WRITER_EPOCH, 32);
-        assert_eq!(OFF_WRITE_SEQ, 40);
-        assert_eq!(OFF_READ_SEQ, 48);
-        assert_eq!(OFF_WRITER_PID, 56);
-        assert_eq!(OFF_WRITER_HEARTBEAT_NS, 64);
-        assert_eq!(OFF_READER_PID, 72);
-        assert_eq!(OFF_READER_HEARTBEAT_NS, 80);
-        assert_eq!(OFF_FUTEX_WORD, 88);
-        assert_eq!(OFF_RESERVED, 92);
-
-        assert_eq!(SAMPLE_FORMAT_S16LE, 1);
-        assert_eq!(SAMPLE_FORMAT_S32LE, 2);
-
-        // The accept-set envelope. These bound no offset, so no `offsetof`
-        // assertion can catch a drift in them; pinning the literals here is
-        // what makes widening either bound a deliberate, reviewed edit.
-        assert_eq!(MAX_RING_CHANNELS, 8);
-        assert_eq!(MAX_SLOT_BYTES, 65_536);
-
-        // Every atomic u64 field is 8-byte aligned.
-        for off in [
-            OFF_WRITER_EPOCH,
-            OFF_WRITE_SEQ,
-            OFF_READ_SEQ,
-            OFF_WRITER_PID,
-            OFF_WRITER_HEARTBEAT_NS,
-            OFF_READER_PID,
-            OFF_READER_HEARTBEAT_NS,
-        ] {
-            assert_eq!(off % 8, 0, "atomic field at {off} must be 8-byte aligned");
-        }
+    fn layout_json_is_committed() {
+        assert_eq!(
+            include_str!("../layout.json"),
+            layout_json(),
+            "rust/jasper-ring/layout.json is stale. Regenerate it:\n  \
+             cd rust && cargo run -q -p jasper-ring --example layout_dump \
+             > jasper-ring/layout.json"
+        );
     }
 
-    // The reserved tail plus futex_word fit within the 128-byte header. These
-    // are compile-time invariants (const expressions), so pin them as `const`
-    // assertions rather than runtime `assert!` (which clippy flags as
-    // optimized-out on constants).
+    // Compile-time header invariants: every atomic u64 field is 8-byte aligned
+    // (unaligned cross-process atomics are unsound), and the reserved tail plus
+    // futex_word fit inside the 128-byte header.
+    const _: () = assert!(OFF_WRITER_EPOCH % 8 == 0);
+    const _: () = assert!(OFF_WRITE_SEQ % 8 == 0);
+    const _: () = assert!(OFF_READ_SEQ % 8 == 0);
+    const _: () = assert!(OFF_WRITER_PID % 8 == 0);
+    const _: () = assert!(OFF_WRITER_HEARTBEAT_NS % 8 == 0);
+    const _: () = assert!(OFF_READER_PID % 8 == 0);
+    const _: () = assert!(OFF_READER_HEARTBEAT_NS % 8 == 0);
     const _: () = assert!(OFF_RESERVED < HEADER_BYTES);
     const _: () = assert!(OFF_FUTEX_WORD + 4 <= HEADER_BYTES);
 
     #[test]
     fn geometry_sizes_the_prototype_instance() {
         let g = Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames: 128,
@@ -352,7 +416,7 @@ mod tests {
         for ((sample_format, channels, period_frames, n_slots), (bps, samples, slot, file)) in rows
         {
             let g = Geometry {
-                rate: 48_000,
+                rate: RATE_HZ,
                 channels,
                 sample_format,
                 period_frames,
@@ -412,7 +476,7 @@ mod tests {
             ),
         ] {
             let g = Geometry {
-                rate: 48_000,
+                rate: RATE_HZ,
                 channels,
                 sample_format,
                 period_frames,
@@ -436,7 +500,7 @@ mod tests {
     #[test]
     fn unknown_sample_format_is_a_controlled_error() {
         let g = Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels: 2,
             sample_format: u32::MAX,
             period_frames: 128,
@@ -456,7 +520,7 @@ mod tests {
     #[test]
     fn geometry_accept_set_boundary() {
         let base = Geometry {
-            rate: 48_000,
+            rate: RATE_HZ,
             channels: 2,
             sample_format: SAMPLE_FORMAT_S16LE,
             period_frames: 128,

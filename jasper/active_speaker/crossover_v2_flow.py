@@ -73,6 +73,7 @@ from jasper.active_speaker.crossover_v2 import (
 from jasper.active_speaker.crossover_v2 import durable_state as _durable_state
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
+from jasper.audio_measurement.branch_program import build_branch_program, is_branch_program
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2 import verification as _verification
@@ -998,6 +999,11 @@ class CrossoverV2Session:
         self._verify_program = self._excitation.verify_program()
         # The position groups' twin: same sweep, same clamp, no courtesy prelude.
         self._cloud_program = self._excitation.cloud_program()
+        self._branch_program = (
+            build_branch_program(self._cloud_program, {r.role: r.channel for r in self._roles})
+            if any(s.graph_scope == "candidate_branches" for s in self._measure_specs_by_index.values())
+            else None
+        )
 
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot (owner ruling #2086).
@@ -1964,6 +1970,8 @@ class CrossoverV2Session:
 
     def program_for_phase(self, phase: str) -> ExcitationProgram:
         """The composed program this session plays for ``phase``."""
+        if phase == PHASE_LATERAL and self._branch_program is not None:
+            return self._branch_program
         if phase == PHASE_LATERAL and any(
             index in self._journey.plan.group_offsets(phase)
             and spec.graph_scope != GRAPH_SCOPE_DRIVERS
@@ -2703,6 +2711,9 @@ class CrossoverV2Session:
             if response is None:
                 return PhaseVerdict(False, _screen_refusal_code(_spatial.SCREEN_LOCATE_FAILED))
             curves = [lateral_pose_curve(response, summed_band)]
+            if is_branch_program(program):
+                bands = _primary_sweep_bands(program)
+                curves = [lateral_pose_curve(r, bands[r.role]) for r in analysis.driver_responses] + curves
             kind = None
         else:
             bands = _primary_sweep_bands(program)
@@ -2758,7 +2769,7 @@ class CrossoverV2Session:
         summed = analysis.summed_response
         self._seams.bank_take(
             result,
-            _spatial.lateral_pose_record(
+            {**_spatial.lateral_pose_record(
                 pose,
                 geometry=position_geometry(prompt),
                 lateral_consumer=self._lateral_consumer,
@@ -2770,7 +2781,7 @@ class CrossoverV2Session:
                     bool((summed.gating or {}).get("applied")) if summed is not None else None
                 ),
                 **self._capture_stamp(result),
-            ),
+            ), **({"branch_diagnostic": analysis.branch_diagnostic, "regime": "branches"} if analysis.branch_diagnostic else {})},
         )
 
     def _lateral_claim(self, index: int) -> "_spatial.TakeClaim":

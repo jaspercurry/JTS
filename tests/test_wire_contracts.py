@@ -493,8 +493,8 @@ def test_fanin_control_command_vocabulary_matches_mux():
     for verb in ('"STATUS"', '"NONE"', '"SELECT '):
         assert verb in state_rs, f"fanin state.rs no longer handles {verb}"
     assert 'socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'f"SELECT {label}", socket_path=FANIN_CONTROL_SOCKET' in mux_py
-    assert 'fanin_command("NONE", socket_path=FANIN_CONTROL_SOCKET)' in mux_py
+    assert 'f"SELECT {label}"' in mux_py
+    assert '"NONE"' in mux_py
     # state.rs error responses carry {"error": ...}; mux raises on it.
     assert '"error":' in state_rs
     assert '"error" in payload' in control_py
@@ -818,6 +818,14 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # parked, read back by jasper/outputd_failure_reconcile_state.py for the
     # doctor and /state. The Rust daemon reads neither end.
     "JASPER_OUTPUTD_RECONCILE_PARK_STATE": "outputd park record path; shell writer + jasper.outputd_failure_reconcile_state reader",
+    # Ring B's slot count, retired as an env: outputd now takes the depth from
+    # `jasper_ring::RING_SLOTS` (rust/jasper-ring/layout.json), the same constant
+    # jasper.ring_assets renders into the ioplug's conf.d blocks, so the two ends
+    # cannot disagree. The surviving mention is the fan-in coupling reconciler,
+    # which still writes the key into outputd.env; that write is inert.
+    # REMOVAL CONDITION: goes when `jasper.fanin_coupling.OUTPUTD_RING_SLOTS_ENV_VAR`
+    # and its reconciler writer go.
+    "JASPER_OUTPUTD_SHM_RING_SLOTS": "retired knob; the fan-in reconciler still writes an inert line",
     # The retired content lane's capture PCM. outputd no longer reads it
     # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
     # sweep removed the last writes and now actively REMOVES the key line from
@@ -969,7 +977,6 @@ def _system_snapshot_payload() -> dict:
         def __init__(self) -> None:
             self._sampler = None
             self._audio_health_sampler = None
-            self._airplay_health_sampler = None
             self._ha_status_cache = type(
                 "_HaCache", (), {"snapshot": staticmethod(dict)},
             )

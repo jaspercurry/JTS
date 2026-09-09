@@ -1230,7 +1230,6 @@ def _make_handler(
     camilla_port: int,
     voice_socket_path: str,
     sampler: Any = None,
-    airplay_health_sampler: Any = None,
     audio_health_sampler: Any = None,
     ha_status_cache: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
@@ -1355,7 +1354,6 @@ def _make_handler(
         MeasurementRoutes,
         SystemRoutes,
     ):
-        _airplay_health_sampler = airplay_health_sampler
         _adjust_op = staticmethod(handler_adjust_op)
         _audio_health_sampler = audio_health_sampler
         _camilla_host = camilla_host
@@ -1928,7 +1926,6 @@ def build_server(
     camilla_port: int,
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
-    airplay_health_sampler: Any = None,
     audio_health_sampler: Any = None,
 ) -> ControlHTTPServer:
     return ControlHTTPServer(
@@ -1938,7 +1935,6 @@ def build_server(
             camilla_port,
             voice_socket_path,
             sampler,
-            airplay_health_sampler,
             audio_health_sampler,
         ),
     )
@@ -2097,13 +2093,6 @@ def main(argv: list[str] | None = None) -> int:
     # the auto-quiet timer if a debug session is still active across this
     # restart. See jasper/control/debug_control.py.
     debug_control.reconcile_on_startup()
-    logger.info(
-        "jasper-control listening on http://%s:%d "
-        "(camilla=%s:%d, voice=%s)",
-        args.host, args.port,
-        args.camilla_host, args.camilla_port,
-        args.voice_socket,
-    )
     # systemd watchdog (Type=notify + WatchdogSec in the unit). READY=1 goes
     # out here; serve_forever()'s poll loop bumps the progress sentinel via
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
@@ -2113,6 +2102,15 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()
+    log_event(
+        logger,
+        "control.ready",
+        host=args.host,
+        port=args.port,
+        camilla_host=args.camilla_host,
+        camilla_port=args.camilla_port,
+        voice_socket=args.voice_socket,
+    )
     restore_sigterm = _install_sigterm_shutdown(server)
     try:
         server.serve_forever()

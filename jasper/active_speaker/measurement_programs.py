@@ -253,6 +253,7 @@ _PROGRAMS: Mapping[tuple[str, str], MeasurementProgram] = {
         MeasurementProgram("baseline", "express", _BASELINE_EXPRESS_POSES),
         MeasurementProgram("tournament", "full", _TOURNAMENT_FULL_POSES),
         MeasurementProgram("tournament", "express", _TOURNAMENT_EXPRESS_POSES),
+        MeasurementProgram("branches", "express", _TOURNAMENT_EXPRESS_POSES),
         MeasurementProgram("seat", "cube", _SEAT_CUBE_POSES),
         MeasurementProgram("seat", "express", _SEAT_EXPRESS_POSES),
         MeasurementProgram("close", "spot", _CLOSE_SPOT_POSES),

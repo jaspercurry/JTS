@@ -11,6 +11,7 @@ Stdlib only: the doctor imports this on every run.
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import Any, Mapping, Sequence
 
 # Dashboard group per JTS unit. A jasper-*.service not listed here still
@@ -83,7 +84,7 @@ DOCTOR_UNIT_ROSTER: tuple[str, ...] = (
 SHOW_PROPERTIES = (
     "Id", "LoadState", "ActiveState", "SubState", "UnitFileState", "Result",
     "NRestarts", "MainPID", "TasksCurrent", "MemoryCurrent", "CPUUsageNSec",
-    "ControlGroup",
+    "ControlGroup", "ActiveEnterTimestampMonotonic",
 )
 
 # Bound on ONE `systemctl` invocation a reconciler makes to CHANGE unit state
@@ -164,6 +165,40 @@ def unit_activating(record: Mapping[str, Any] | None) -> bool:
     return str(record.get("active_state") or "") == "activating"
 
 
+def unit_not_running(record: Mapping[str, Any] | None) -> str | None:
+    """Small stable code for a ``read_unit_states`` record that is not doing
+    its job, or ``None`` when ``active_state == "active"``.
+
+    Codes, checked in this order:
+
+    * ``"missing"`` — no record, or ``load_state == "not-found"``.
+    * ``"not_enabled"`` — ``unit_file_state`` known and neither ``enabled``
+      nor ``enabled-runtime``.
+    * ``None`` — active.
+    * ``"starting"`` — ``active_state`` ``activating``/``reloading``.
+    * ``"inactive"`` — anything else (a clean stop, ``failed``, a
+      jasper-camilla-recover park).
+
+    Shared by :mod:`jasper.control.audio_health` and jasper-doctor's
+    ``_service_state_failure``/``check_camilla_service`` (#2163, ADR-0175).
+    """
+    if record is None:
+        return "missing"
+    if not record:
+        return None
+    if str(record.get("load_state") or "") == "not-found":
+        return "missing"
+    unit_file_state = str(record.get("unit_file_state") or "")
+    if unit_file_state not in {"", "enabled", "enabled-runtime"}:
+        return "not_enabled"
+    active_state = str(record.get("active_state") or "")
+    if active_state == "active":
+        return None
+    if active_state in {"activating", "reloading"}:
+        return "starting"
+    return "inactive"
+
+
 def systemd_int(value: str | None) -> int | None:
     """An integer property, or None for unset: an empty value, a bracketed
     placeholder such as ``[not set]``, or UINT64_MAX (systemd's unset
@@ -237,6 +272,9 @@ def parse_systemctl_show_units(text: str) -> dict[str, dict[str, Any]]:
             "memory_current_bytes": systemd_int(record.get("MemoryCurrent")),
             "cpu_usage_nsec": systemd_int(record.get("CPUUsageNSec")),
             "control_group": record.get("ControlGroup") or "",
+            "active_enter_timestamp_monotonic": systemd_int(
+                record.get("ActiveEnterTimestampMonotonic")
+            ),
         }
     return out
 
@@ -256,6 +294,24 @@ def run_systemctl(
         check=False,
         timeout=timeout,
     )
+
+
+def unit_uptime_sec(record: Mapping[str, Any] | None) -> float | None:
+    """Seconds since a ``read_unit_states`` record's unit last (re)started,
+    from its ``active_enter_timestamp_monotonic``. None when the record or
+    the timestamp is unavailable.
+
+    ``ActiveEnterTimestampMonotonic`` and ``CLOCK_MONOTONIC`` are the same
+    kernel clock, so there is no NTP-skew case to guard against.
+    """
+    started_us = record.get("active_enter_timestamp_monotonic") if record else None
+    if not isinstance(started_us, int) or started_us <= 0:
+        return None
+    try:
+        now_us = time.clock_gettime(time.CLOCK_MONOTONIC) * 1e6
+    except OSError:
+        return None
+    return (now_us - started_us) / 1e6
 
 
 def _show(args: list[str], timeout: float) -> str | None:
