@@ -28,13 +28,12 @@ makes this file slower, never red (#2658).
 from __future__ import annotations
 
 import logging
-import sys
 import threading
-import types
 from collections import Counter
 
 import pytest
 
+import jasper.watchdog as watchdog_module
 from jasper.watchdog import Heartbeat
 
 from ._log_events import event_field_maps
@@ -94,13 +93,16 @@ class FakeClock:
 
 @pytest.fixture
 def transitions(monkeypatch):
-    """Inject a fake sdnotify module + NOTIFY_SOCKET into the environment
-    so `_make_notifier` returns a notifier that records what it was sent."""
+    """Set `NOTIFY_SOCKET` and record what the heartbeat sends through
+    `jasper.platform.systemd`'s notify_* calls, without a real socket."""
     monkeypatch.setenv("NOTIFY_SOCKET", "/run/systemd/notify")
     seen = Transitions()
-    module = types.ModuleType("sdnotify")
-    module.SystemdNotifier = lambda: types.SimpleNamespace(notify=seen.record)
-    monkeypatch.setitem(sys.modules, "sdnotify", module)
+    monkeypatch.setattr(watchdog_module, "notify_ready",
+                         lambda: seen.record("READY=1"))
+    monkeypatch.setattr(watchdog_module, "notify_stopping",
+                         lambda: seen.record("STOPPING=1"))
+    monkeypatch.setattr(watchdog_module, "notify_watchdog",
+                         lambda: seen.record("WATCHDOG=1"))
     return seen
 
 
@@ -222,16 +224,3 @@ def test_stop_is_idempotent(transitions):
     hb.start()
     hb.stop()
     hb.stop()  # second call must not crash
-
-
-def test_disabled_when_sdnotify_not_installed(monkeypatch):
-    """If `sdnotify` is missing AND NOTIFY_SOCKET is set, the helper
-    must log a warning and degrade gracefully — not crash the daemon."""
-    monkeypatch.setenv("NOTIFY_SOCKET", "/run/systemd/notify")
-    # A None entry is the documented way to make `import sdnotify` raise.
-    monkeypatch.setitem(sys.modules, "sdnotify", None)
-    hb = Heartbeat()
-    assert not hb.enabled
-    hb.start()
-    hb.bump()
-    hb.stop()

@@ -36,6 +36,7 @@ from collections.abc import Callable
 from typing import Optional
 
 from .log_event import log_event
+from .platform.systemd import notify_ready, notify_stopping, notify_watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +57,15 @@ class Heartbeat:
         self._last_progress = monotonic()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._notifier = _make_notifier()
+        # `NOTIFY_SOCKET` unset means we're not running under `Type=notify`
+        # systemd (tests, a REPL, a manual `python -m` invocation) — the
+        # notify_* calls below already no-op on that themselves, so this
+        # only decides whether the heartbeat thread is worth starting.
+        self._enabled = bool(os.environ.get("NOTIFY_SOCKET"))
 
     @property
     def enabled(self) -> bool:
-        return self._notifier is not None
+        return self._enabled
 
     def bump(self) -> None:
         """Mark forward progress. Cheap; safe to call every frame."""
@@ -69,11 +74,10 @@ class Heartbeat:
     def start(self) -> None:
         """Send `READY=1` and start the heartbeat thread.
 
-        No-op if sdnotify isn't available (e.g. running outside
-        systemd or the package isn't installed)."""
-        if self._notifier is None:
+        No-op outside systemd (`NOTIFY_SOCKET` unset)."""
+        if not self._enabled:
             return
-        self._notifier.notify("READY=1")
+        notify_ready()
         self._thread = threading.Thread(
             target=self._run, name="watchdog-heartbeat", daemon=True,
         )
@@ -84,13 +88,10 @@ class Heartbeat:
 
         Idempotent. Daemon shutdown paths should call this in a
         `finally:` block so systemd sees the clean exit signal."""
-        if self._notifier is None:
+        if not self._enabled:
             return
         self._stop.set()
-        try:
-            self._notifier.notify("STOPPING=1")
-        except Exception:  # noqa: BLE001
-            pass
+        notify_stopping()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
 
@@ -106,37 +107,10 @@ class Heartbeat:
                     log_event(logger, "watchdog.heartbeat_resumed",
                               suppressed_ticks=suppressed_ticks)
                     suppressed_ticks = 0
-                try:
-                    self._notifier.notify("WATCHDOG=1")
-                except Exception:  # noqa: BLE001
-                    # Don't crash the heartbeat thread on a transient
-                    # socket error — try again next tick.
-                    logger.exception("sdnotify WATCHDOG=1 failed")
+                notify_watchdog()
             else:
                 if not suppressed_ticks:
                     log_event(logger, "watchdog.heartbeat_suppressed",
                               level=logging.WARNING,
                               stalled_for_s=f"{since:.1f}")
                 suppressed_ticks += 1
-
-
-def _make_notifier():
-    """Return a pure-Python sdnotify notifier, or None if unavailable.
-
-    Returns None when:
-      - the `sdnotify` package isn't installed
-      - `NOTIFY_SOCKET` isn't set in the environment (we're not
-        running under `Type=notify` systemd, e.g. in tests, a
-        REPL, or a manual `python -m` invocation)
-    """
-    if not os.environ.get("NOTIFY_SOCKET"):
-        return None
-    try:
-        import sdnotify  # type: ignore[import-not-found]
-    except ImportError:
-        logger.warning(
-            "sdnotify package not installed; watchdog heartbeat disabled. "
-            "Install with: pip install sdnotify"
-        )
-        return None
-    return sdnotify.SystemdNotifier()

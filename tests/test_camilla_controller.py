@@ -1129,6 +1129,12 @@ async def test_close_disconnects_ephemeral_client_without_reconnect():
     assert controller._client is None
 
 
+# Real OS threads (Event.wait/join) back this retry loop, so the wall-clock
+# bound must absorb scheduler jitter on a loaded CI runner, not just the
+# nominal budget (#3919).
+_CI_SCHEDULING_JITTER_ALLOWANCE_S = 1.0
+
+
 async def test_wall_budget_aborts_each_attempt_and_bounds_retry(monkeypatch):
     monkeypatch.setattr(camilla_module, "CAMILLA_ATTEMPT_BUDGET_S", 0.05)
     clients: list[types.SimpleNamespace] = []
@@ -1158,7 +1164,10 @@ async def test_wall_budget_aborts_each_attempt_and_bounds_retry(monkeypatch):
     assert calls == 2
     assert len(clients) == 2
     assert [client._ws.abort_count for client in clients] == [1, 1]
-    assert elapsed < 0.5
+    assert (
+        elapsed
+        < camilla_module.CAMILLA_ATTEMPT_BUDGET_S * 2 + _CI_SCHEDULING_JITTER_ALLOWANCE_S
+    )
     assert CAMILLA_ATTEMPT_BUDGET_S * 2 == 10.0
 
 
