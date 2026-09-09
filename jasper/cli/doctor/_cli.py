@@ -61,26 +61,16 @@ from ._shared import (
 )
 
 
+# Verdict order for the table: worst first. Module grouping (roster order)
+# is kept within a band via Python's stable sort.
+_STATUS_BAND = {"fail": 0, "warn": 1, "skipped": 2, "ok": 3}
+
+
 def render(
     results: list[CheckResult], *, core: bool = False, failing: bool = False,
 ) -> int:
     print()
     print(f"{BOLD}jasper-doctor{RESET}\n")
-    rows = (
-        [r for r in results if r.status in ("fail", "warn")]
-        if failing else results
-    )
-    for r in rows:
-        if r.status == "ok":
-            color, mark = GREEN, "✓"
-        elif r.status == "skipped":
-            color, mark = DIM, "-"
-        elif r.status == "warn":
-            color, mark = YELLOW, "!"
-        else:
-            color, mark = RED, "✗"
-        print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
-    print()
     counts = summarize(results)
     fails, warns, silent = (
         counts["fails"], counts["warns"], counts["speaker_silent"],
@@ -100,14 +90,30 @@ def render(
     # something is broken), so a parked box stays deployable (#2145).
     lead = "the speaker is silent — " if silent else ""
     if fails:
-        print(f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}")
-        return 1
-    if warns:
+        exit_code, summary = 1, f"{RED}{lead}{fails} failed, {warns} warning(s).{RESET}"
+    elif warns:
         tail = "" if silent else " — non-critical"
-        print(f"{YELLOW}{lead}{warns} warning(s){tail}.{RESET}")
-        return 0
-    print(f"{GREEN}all checks passed.{RESET}")
-    return 0
+        exit_code, summary = 0, f"{YELLOW}{lead}{warns} warning(s){tail}.{RESET}"
+    else:
+        exit_code, summary = 0, f"{GREEN}all checks passed.{RESET}"
+    print(summary)
+    print()
+    rows = (
+        [r for r in results if r.status in ("fail", "warn")]
+        if failing else results
+    )
+    for r in sorted(rows, key=lambda r: _STATUS_BAND.get(r.status, 4)):
+        if r.status == "ok":
+            color, mark = GREEN, "✓"
+        elif r.status == "skipped":
+            color, mark = DIM, "-"
+        elif r.status == "warn":
+            color, mark = YELLOW, "!"
+        else:
+            color, mark = RED, "✗"
+        print(f"  {color}{mark}{RESET} {r.name:24s} {r.detail}")
+    print()
+    return exit_code
 
 def _json_payload(
     results: list[CheckResult],
