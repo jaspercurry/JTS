@@ -49,7 +49,6 @@ MODULE_ROSTER: tuple[str, ...] = (
     "boot_config",
     "wake",
     "renderers",
-    "integrations",
     "privsep",
     "secret_compartments",
     "web",
@@ -85,11 +84,13 @@ CORE_MODULES: frozenset[str] = frozenset({
 })
 
 STREAMBOX_OMITTED_DOCTOR_MODULES = frozenset({
-    # "voice" is NOT here — 4 of its 6 checks self-gate on ADR-0217; the
-    # other 2 are named below in STREAMBOX_OMITTED_DOCTOR_CHECKS.
+    # "voice" is NOT here — 4 of its voice-provider checks self-gate on
+    # ADR-0217, and the cloud-integration checks it also owns (Google, Home
+    # Assistant, Citi Bike) are just as inapplicable on a mic-less streambox
+    # as wake/cues below; both groups are named individually in
+    # STREAMBOX_OMITTED_DOCTOR_CHECKS instead.
     "cues",
     "wake",
-    "integrations",
     "aec",
 })
 
@@ -98,10 +99,10 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     "check_mic_capture",
     "check_tts_open",
     # A streambox has no crossover at all; the ``correction`` module still
-    # owns a cert-SAN check that does apply, so only these two are omitted
-    # rather than the whole module.
+    # owns a cert-SAN check that does apply, so only this one is omitted
+    # rather than the whole module. Its row also folds in the applied-grade
+    # finding, which is equally inapplicable here.
     "check_crossover_v2_cloud_pipeline",
-    "check_crossover_v2_applied_is_graded",
     # Unlike their voice module neighbours, these two need Config fields
     # (voice_provider, API keys, daily_spend_cap_*) the streambox doctor cfg
     # (_cli._local_audio_config_from_env) does not carry, so reading them
@@ -110,6 +111,12 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     # presence like check_provider_importable instead.
     "check_provider_key",
     "check_spend_cap",
+    # Cloud-integration rows (Google, Home Assistant, Citi Bike): a
+    # streambox has no assistant, so these tools are never registered.
+    "check_google_tokens",
+    "check_google_routes",
+    "check_home_assistant",
+    "check_citibike",
 })
 
 

@@ -225,6 +225,72 @@ def test_check_grouping_household_credential_verdicts(
     assert r.reason == reason
 
 
+# --------------- leader pipe (+ folded-in AirPlay-latency fit finding) ---------
+
+
+def _wired_leader_config_text() -> str:
+    """A real File->SNAPFIFO leader bake, satisfying ``playback_is_pipe`` the
+    same way ``jasper.active_speaker``'s emitter does (see
+    test_active_speaker_program_bake.py)."""
+    from jasper.active_speaker import emit_active_speaker_program_bake_config
+    from jasper.sound.profile import SoundProfile
+
+    return emit_active_speaker_program_bake_config(SoundProfile(enabled=False))
+
+
+def _wire_leader_pipe(monkeypatch, tmp_path, *, config_text: str | None = None):
+    config_path = tmp_path / "camilla.yml"
+    config_path.write_text(
+        config_text if config_text is not None else _wired_leader_config_text()
+    )
+    _evidence.evidence.seed("camilla_config", (tmp_path / "statefile.yml", str(config_path)))
+
+
+def test_check_grouping_leader_pipe_skips_when_not_an_active_leader(monkeypatch):
+    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False))
+
+    r = grouping.check_grouping_leader_pipe()
+
+    assert r.status == "skipped"
+    assert r.reason == grouping.REASON_NOT_APPLICABLE
+
+
+def test_check_grouping_leader_pipe_warns_when_not_wired(monkeypatch, tmp_path):
+    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER))
+    _wire_leader_pipe(monkeypatch, tmp_path, config_text="devices:\n  playback:\n    type: Alsa\n")
+
+    r = grouping.check_grouping_leader_pipe()
+
+    assert r.status == "warn"
+    assert r.reason == grouping.REASON_LEADER_PIPE_NOT_WIRED
+
+
+@pytest.mark.parametrize(
+    "frames, reason",
+    [
+        # Absence => the default ~2.0 s budget (the free regime).
+        (None, ""),
+        # A short sender-notified budget makes the fold-in's own reason win
+        # the row — the pipe being wired is not itself a finding.
+        (5000, grouping.REASON_AIRPLAY_LATENCY_TIGHT),
+    ],
+    ids=["fits", "tight"],
+)
+def test_check_grouping_leader_pipe_folds_in_airplay_latency_fit(
+    monkeypatch, tmp_path, frames, reason
+):
+    import jasper.multiroom.airplay_latency as al
+
+    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER, buffer_ms=400))
+    _wire_leader_pipe(monkeypatch, tmp_path)
+    monkeypatch.setattr(al, "read_notified_frames", lambda *a, **k: frames)
+
+    r = grouping.check_grouping_leader_pipe()
+
+    assert r.status == "ok"
+    assert r.reason == reason
+
+
 # --- camilla#2 endpoint-crossover unit (Stage B B1, INERT) ----------------
 
 
