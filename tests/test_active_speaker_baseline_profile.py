@@ -1823,7 +1823,7 @@ async def test_apply_baseline_profile_reloads_when_target_config_differs(
     transaction never skips a load based on the candidate's path (#2292
     scope 2 tried a same-path double-load guard; an adversarial review
     demonstrated the candidate filename is a SOURCE fingerprint that does
-    not cover every input to the compiled graph -- e.g. bass_extension_profile
+    not cover every input to the compiled graph -- e.g. the bass family
     -- so two different graphs can share one filename, and get_config_file_path
     also does not see set_active_config_raw loads (camilla.py), together
     making path equality an unsafe proxy for graph equality. The guard was
@@ -5220,7 +5220,7 @@ async def test_apply_baseline_profile_applies_v2_measured_candidate(
     applied = load_applied_baseline_profile_state(tmp_path / "baseline_profile.json")
     assert applied["recomposition_snapshot"]["driver_protection"]["profile_fingerprint"] == safety["profile_fingerprint"]
     emitted, issues = recompose_applied_baseline_yaml(
-        topology, applied_profile=applied, bass_extension_profile=None,
+        topology, applied_profile=applied, bass_extension=None,
     )
     assert issues == []
     assert emitted is not None
