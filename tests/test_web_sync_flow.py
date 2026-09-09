@@ -80,7 +80,7 @@ def loop_thread():
         # close() in the fixture teardown is skipped whenever teardown raises
         # before reaching it, which is exactly what a loaded box produces.
         # This is the shape every production site uses; see
-        # jasper/control/supervisor_runtime.py's build_asyncio_thread.
+        # jasper/control/supervisor_runtime.py's _host_thread.
         try:
             loop.run_forever()
         finally:
