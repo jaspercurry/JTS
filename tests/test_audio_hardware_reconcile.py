@@ -2314,7 +2314,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
     assert result.returncode == 0, result.stderr
     outputd_env = _outputd_env(tmp_path)
     # Armed as a composite — and still holding NEITHER half of the pair.
-    assert "JASPER_OUTPUTD_SINK=dual_apple" in outputd_env
+    assert "JASPER_OUTPUTD_SINK=composite" in outputd_env
     _assert_states(
         outputd_env,
         "JASPER_OUTPUTD_ACTIVE_LANE=\n",
