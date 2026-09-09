@@ -3,7 +3,7 @@
 **Status:** active. Wave 0 landed (PR #4488, ADR-0255…0258); Wave 0b landed
 (PR #4517, ADR-0259/0260). Lane B landed rows 1.4/1.5/1.7 (PRs #4522, #4524,
 #4525); lane C landed row 2.3 (#4520), 2.1 in progress; lane D in progress;
-lane A not yet spawned. **Owner:** jaspercurry. **Orchestrating
+lane A spawned 00:40Z. **Owner:** jaspercurry. **Orchestrating
 session:** https://claude.ai/code/session_01CR6fGdpH8YDFPv9ZbyXmGJ. **Tracking
 issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this lives:** branch
 `claude/loudspeaker-tuning-architecture-iephfa`, never merged — fetch it.
@@ -311,6 +311,8 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 00:40Z: Owner spawned lane A (retire) from the RETIRE kickoff
+  snippet; brief updated first for `room_limits.py` landing via #4544.
 - 2026-09-09 00:35Z: Lane C opened row 2.1 (PR #4544, the room candidate kind,
   +3028/−153, CI green) and row 2.2 (PR #4546, `room-grade`, stacked on 2.1).
   Lane D pushed `claude/seat-w3-3-2-bass-fit` (row 3.2; no PR yet; no 3.1
