@@ -73,20 +73,6 @@ def test_end_turn_is_idempotent_serial():
 
 
 def test_end_turn_reentry_while_teardown_in_flight_short_circuits():
-    """A re-entrant call while a teardown is in flight must short-circuit.
-
-    The first teardown is modelled as in-flight by `self._ending = True`
-    (the wrapper sets it before the first await and clears it in a
-    finally). A concurrent mic-mute / main-loop frame re-enters here.
-    Without the guard the body would run again, reach
-    `if self._turn is not None:` (turn still set), and trip
-    `assert self._session_id is not None` once the first teardown had
-    cleared _session_id — the main-loop caller does not swallow that,
-    crashing the daemon. With the flag the re-entrant call returns
-    immediately and close_session is never re-invoked. State is left
-    SESSION (the in-flight teardown owns the WAKE flip) to prove the
-    guard does not depend on an early state change.
-    """
     wl = _make_wakeloop()
     wl._ending = True  # first teardown is in flight
     wl._state = State.SESSION  # still SESSION — teardown flips it at the end
@@ -104,13 +90,6 @@ def test_end_turn_reentry_while_teardown_in_flight_short_circuits():
 
 
 def test_end_turn_concurrent_callers_teardown_once():
-    """Two _end_turn coroutines racing on one loop tear down exactly once.
-
-    gather() schedules both; the first sets `self._ending = True`
-    synchronously before its first await, so the second short-circuits at
-    the top guard. Exactly one teardown runs and no AssertionError
-    escapes.
-    """
     wl = _make_wakeloop()
     turn = wl._turn  # _end_turn clears self._turn on completion
 
@@ -192,11 +171,17 @@ def _start_playback(wl):
 @pytest.mark.parametrize("end_path", ["callback", "frame"])
 @pytest.mark.parametrize("mode", [
     "refused", "error", "paused_error", "partial_error", "accepted", "empty", "measurement", "interrupt",
+    "lost_reply", "lost_after_complete",
 ])
 async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_path, caplog):
     wl, turn = await _response_loop(b"" if mode == "empty" else bytes(8))
     failed = mode in {"refused", "error", "paused_error", "partial_error"}
-    accepted = mode in {"partial_error", "accepted"}
+    accepted = mode in {"partial_error", "accepted", "lost_reply", "lost_after_complete"}
+    lost_reply = mode == "lost_reply"
+    turn.turn_lost = lambda: mode.startswith("lost_")
+    turn.server_turn_complete = lambda: mode == "lost_after_complete"
+    wl._wake_telemetry.stage = AsyncMock()
+    wl._last_turn_ms = previous = {"event_id": "previous"}
     if mode == "paused_error":
         wl._connection.is_paused = lambda: True
     if mode == "measurement":
@@ -230,19 +215,25 @@ async def test_shared_playback_result_wins_over_same_tick_watchdog(mode, end_pat
         finally:
             await wl._cancel_fire_and_forget_tasks()
 
-    outcome = "session_failed" if failed else "completed"
+    outcome = "session_failed" if failed or lost_reply else "completed"
     reason = "playback_failed" if failed else wl._playback_report.stop_reason or "ended"
     wl._wake_telemetry.outcome.assert_awaited_once_with(outcome, reason)
     assert wl._assistant_output.listening_chirp.await_count == (0 if failed else 1)
-    assert wl._play_cue.await_count == (1 if failed or mode == "empty" else 0)
+    assert wl._play_cue.await_count == (1 if failed or lost_reply or mode == "empty" else 0)
     if wl._play_cue.await_count:
         wl._play_cue.assert_awaited_once_with("internal_error")
     assert wl._tts.flush.await_count == (1 if failed or mode == "interrupt" else 0)
     assert wl.session_status()["silent_responses_session"] == int(
-        (failed and not accepted) or mode == "empty",
+        (failed and not accepted) or lost_reply or mode == "empty",
     )
     timeline = event_fields(caplog, "turn.timeline")
-    assert timeline["outcome"] == ("failed" if failed else "complete")
+    assert timeline["outcome"] == ("failed" if failed or lost_reply else "complete")
+    if failed or lost_reply:
+        wl._wake_telemetry.stage.assert_not_awaited()
+        assert wl.session_status()["last_turn_ms"] == previous
+    else:
+        wl._wake_telemetry.stage.assert_awaited_once_with("turn_complete")
+        assert wl.session_status()["last_turn_ms"]["outcome"] == "complete"
     assert ("first_write_ms" in timeline) == accepted
     assert turn.release_calls == turn.end_input_calls == wl._usage_store.close_calls == 1
     assert wl._turn is None and wl._state is State.WAKE

@@ -68,7 +68,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
-from jasper.camilla_config_contract import PeqFilter
+from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE, PeqFilter
 from jasper.active_speaker.runtime_contract import NO_BASS_EXTENSION_PROFILE_SUMMARY
 from jasper.dsp_apply import CamillaConfigValidationResult
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
@@ -2904,14 +2904,10 @@ def test_ring_reemit_declares_whatever_the_resolver_answers(
     # CONTROL: the same evidence emitted at the ALSA active lane is untouched by
     # the resolver — a helper that answered the ring's wire for every sink would
     # pass the assertion above and mis-declare every unarmed box.
-    from jasper.active_speaker.runtime_contract import (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     assert alsa_issues == []
     assert alsa_yaml is not None
@@ -2962,14 +2958,10 @@ def test_ring_reemit_refuses_a_typod_wire_instead_of_raising(
     # CONTROL: the same box emitting at the ALSA lane is unaffected — the wire is
     # only resolved for a ring sink, so a typo cannot block an unarmed box's
     # ordinary re-emit.
-    from jasper.active_speaker.runtime_contract import (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     assert alsa_issues == []
     assert alsa_yaml is not None
@@ -3031,14 +3023,10 @@ def test_ring_reemit_carries_the_certified_ring_chunk_and_target(
     # CONTROL: the ALSA active lane still takes the box's floor, resolved by the
     # emitter at emit time. A helper that forced ring geometry everywhere would
     # pass every assertion above and silently retune every unarmed box.
-    from jasper.active_speaker.runtime_contract import (
-        OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-
     alsa_yaml, alsa_issues = recompose_applied_baseline_yaml(
         topology,
         applied_profile=applied,
-        playback_device=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     )
     assert alsa_issues == []
     assert alsa_yaml is not None
