@@ -683,7 +683,7 @@ def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
 # A manual upload is stored with `serial=None` (store_calibration(provider=
 # "manual_upload", ...)), so `find_stored_calibration` above — keyed by
 # serial_hash + model + orientation — can never reach it again. This is the
-# additive counterpart jasper.correction.household_mic relies on to make an
+# additive counterpart jasper.audio_measurement.household_mic relies on to make an
 # uploaded calibration findable purely from its content hash.
 def test_find_stored_calibration_by_content_hash_resolves_upload_with_no_serial(
     tmp_path: Path,

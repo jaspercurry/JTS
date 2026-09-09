@@ -85,7 +85,7 @@ What is NOT owned here
   design-floor concern, not a layer seam: 50 Hz exists because the iPhone
   built-in mic's own high-pass filter dominates below it. Those stay where they
   are used.
-* **The SNR band tables** (:data:`jasper.correction.acoustic_quality.SNR_BANDS_HZ`
+* **The SNR band tables** (:data:`jasper.audio_measurement.snr_policy.SNR_BANDS_HZ`
   and :data:`jasper.audio_measurement.snr_policy.CROSSOVER_SNR_BANDS_HZ`).
   Their 350 Hz edge looks like this boundary and is deliberately NOT routed
   here — see the trap note on those tables. They are capture-quality

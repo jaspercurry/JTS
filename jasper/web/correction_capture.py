@@ -21,7 +21,6 @@ import concurrent.futures
 import hashlib
 import logging
 import math
-import os
 import re
 import threading
 from collections.abc import Awaitable, Callable, Mapping
@@ -36,6 +35,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+from ..audio_measurement import household_mic
 from ..log_event import log_event
 from ..transition_log import TransitionLog
 
@@ -841,27 +841,9 @@ def _camilla() -> "Any":
     return primary_controller()
 
 
-def _calibration_root() -> Path:
-    return Path(
-        os.environ.get(
-            "JASPER_CORRECTION_CALIBRATION_DIR",
-            "/var/lib/jasper/correction/calibration_mics",
-        )
-    )
-
-
-def _household_mic_path() -> Path:
-    return Path(
-        os.environ.get(
-            "JASPER_CORRECTION_HOUSEHOLD_MIC_PATH",
-            "/var/lib/jasper/correction/household_mic.json",
-        )
-    )
-
-
 def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
     """Persist a just-established calibration as the household's default
-    measurement mic (``jasper.correction.household_mic``).
+    measurement mic (``jasper.audio_measurement.household_mic``).
 
     Called from the two points a calibration is NEWLY established —
     ``_handle_calibration_fetch`` and ``_handle_calibration_upload`` below.
@@ -877,17 +859,11 @@ def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
     cross-session staleness guard, item 6): logged as
     ``correction.household_mic_replaced`` rather than blocked.
     """
-    from jasper.correction.household_mic import (
-        household_mic_from_calibration,
-        read_household_mic,
-        write_household_mic,
-    )
-
-    path = _household_mic_path()
+    path = household_mic.household_mic_path()
     try:
-        new_record = household_mic_from_calibration(record, serial=serial)
-        previous = read_household_mic(path=path)
-        write_household_mic(new_record, path=path)
+        new_record = household_mic.household_mic_from_calibration(record, serial=serial)
+        previous = household_mic.read_household_mic(path=path)
+        household_mic.write_household_mic(new_record, path=path)
     except (OSError, ValueError, TypeError) as exc:
         logger.warning(
             "failed to persist household mic record: %r", exc, exc_info=True,
@@ -920,29 +896,6 @@ def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
         )
 
 
-def _resolved_household_mic() -> tuple[Any, Any] | None:
-    """Read + resolve the household mic record in one fail-soft step.
-
-    Returns ``(HouseholdMicRecord, CalibrationRecord)`` when a household
-    default exists AND its calibration is still resolvable on disk, else
-    ``None``. Shared by the spec prefill hint and the room wizard's
-    server-rendered banner so both degrade identically when the record is
-    absent or its calibration has been removed from under it.
-    """
-    from jasper.correction.household_mic import (
-        read_household_mic,
-        resolve_household_mic_calibration,
-    )
-
-    household = read_household_mic(path=_household_mic_path())
-    if household is None:
-        return None
-    resolved = resolve_household_mic_calibration(household, root=_calibration_root())
-    if resolved is None:
-        return None
-    return household, resolved
-
-
 def _default_setup_calibration_for_spec() -> Any | None:
     """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
     from the household's remembered mic.
@@ -963,15 +916,19 @@ def _default_setup_calibration_for_spec() -> Any | None:
     from jasper.active_speaker.crossover_v2.sweep_spec import (
         DefaultSetupCalibration,
     )
-    from jasper.correction.household_mic import resolve_household_mic_calibration
+    from jasper.audio_measurement.calibration import (  # lazy: numpy
+        configured_calibration_root,
+    )
 
-    found = _resolved_household_mic()
+    found = household_mic.resolved_household_mic()
     if found is None:
         return None
     household, resolved = found
     mode = "upload" if household.provider == "manual_upload" else "serial"
     resolvable = (
-        resolve_household_mic_calibration(household, root=_calibration_root())
+        household_mic.resolve_household_mic_calibration(
+            household, root=configured_calibration_root()
+        )
         is not None
     )
     return DefaultSetupCalibration(
@@ -996,7 +953,7 @@ def _household_mic_prefill_payload() -> dict[str, Any] | None:
     The crossover flow has no equivalent local UI — it reads the spec
     `default_setup` hint above instead.
     """
-    found = _resolved_household_mic()
+    found = household_mic.resolved_household_mic()
     if found is None:
         return None
     household, resolved = found

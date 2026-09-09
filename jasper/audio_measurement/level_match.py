@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Correction-side adapter for the level-match ramp (P2).
+"""Level-match adapter over the ramp kernel (P2).
 
 The pure staircase / settle / lock math lives in the shared kernel
-(:mod:`jasper.audio_measurement.ramp`). This module is the correction-layer glue
+(:mod:`jasper.audio_measurement.ramp`). This module is the host-facing glue
 that the kernel deliberately does not know about:
 
   * :class:`LevelStatusFeed` — the ``next_samples`` source the kernel awaits

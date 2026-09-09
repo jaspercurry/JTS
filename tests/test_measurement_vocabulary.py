@@ -83,7 +83,7 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "jasper/active_speaker/baseline_profile.py",
     # Cluster 2 — failure / refusal copy.
     "jasper/correction/failures.py",
-    "jasper/correction/level_match.py",
+    "jasper/audio_measurement/level_match.py",
     "jasper/web/correction_setup.py",
     "jasper/web/correction_handlers.py",
     "jasper/web/correction_capture.py",

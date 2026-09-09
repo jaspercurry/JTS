@@ -28,6 +28,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.audio_measurement import room_boundary
+from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.camilla import CamillaUnavailable
 from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
 from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
@@ -172,7 +173,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             from jasper.audio_measurement.calibration import load_calibration_record
             mic_calibration = load_calibration_record(
                 calibration_id,
-                root=correction_capture._calibration_root(),
+                root=configured_calibration_root(),
             )
 
         mismatch = correction_capture._calibration_device_mismatch(mic_calibration, input_device)
@@ -900,7 +901,7 @@ def _handle_calibration_fetch(
         model_key=model,
         serial=serial,
         orientation=orientation,
-        root=correction_capture._calibration_root(),
+        root=configured_calibration_root(),
     )
     correction_capture._save_household_mic(record, serial=serial)
     return correction_capture._calibration_payload(record)
@@ -939,7 +940,7 @@ def _handle_calibration_upload(
         source=f"uploaded:{filename}",
         orientation=orientation,
         sign_convention=sign_convention,
-        root=correction_capture._calibration_root(),
+        root=configured_calibration_root(),
     )
     correction_capture._save_household_mic(record)
     return correction_capture._calibration_payload(record)
@@ -1173,7 +1174,7 @@ def _handle_local_capture_setup(
 
     calibration_id = str(body.get("calibration_id") or "").strip()
     mic_calibration = (
-        load_calibration_record(calibration_id, root=correction_capture._calibration_root())
+        load_calibration_record(calibration_id, root=configured_calibration_root())
         if calibration_id
         else None
     )
