@@ -76,7 +76,7 @@ devices:
   capture:
     type: Alsa
     channels: 2
-    device: "plug:jasper_capture"
+    device: "jts_ring_capture"
   playback:
     type: Alsa
     channels: 4
@@ -98,11 +98,11 @@ devices:
   capture:
     type: Alsa
     channels: 2
-    device: "plug:jasper_capture"
+    device: "jts_ring_capture"
   playback:
     type: Alsa
     channels: 2
-    device: "outputd_content_playback"
+    device: "jts_ring_playback"
 """
 
 

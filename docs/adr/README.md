@@ -59,8 +59,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0220](0220-the-dac-content-marker-is-served-and-its-contradiction-parks.md) | The dac-content marker is served, and its contradiction parks | amended by 0262 |
 | [0236](0236-independent-subwoofers-are-deleted-a-dac-channel-sub-stays.md) | Independent subwoofers are deleted; a subwoofer on a DAC channel stays the active-speaker crossover's concern | accepted |
 | [0261](0261-the-grouping-and-dac-content-rings-are-128-frame-16-slot-s16-and-governed.md) | The grouping and dac-content rings are 128-frame, 16-slot, S16, and governed | accepted |
-| [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | accepted |
+| [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | amended by 0269 |
 | [0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md) | The Camilla recovery is evidence and one bounded restart | accepted |
+| [0269](0269-a-graph-naming-the-retired-snd-aloop-lane-is-refused-not-preserved.md) | A graph naming the retired snd-aloop lane is refused, not preserved | accepted |
 
 ## Volume & hearing
 
@@ -185,7 +186,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0120](0120-one-management-frontend-gated-by-capability.md) | One management frontend for every install profile, gated by capability | accepted |
 | [0171](0171-rarely-viewed-dashboard-probes-run-in-short-lived-child-processes.md) | Rarely-viewed dashboard probes run in short-lived child processes | accepted |
 | [0187](0187-park-presentation-is-the-system-screen-only.md) | Park presentation is the system screen, not a banner | accepted |
-| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | §7 amended by 0268 |
+| [0253](0253-web-ia-manifest-and-url-policy.md) | Web IA — manifest ownership, hub scope, and URL-move policy | §7 amended by 0269 |
 | [0268](0268-the-conf-parity-exception-set-lives-in-the-test.md) | The conf-parity exception set lives in the test | accepted |
 
 ## Tuning & measurement
