@@ -844,8 +844,7 @@ def household_usage_reader(
 
     This is the single place the member list lives. Every cap and display
     surface builds its reader here, so "household spend" has exactly one
-    definition and consolidating later (if correction-web ever de-roots into
-    the jasper group and can share one DB) is a one-function edit.
+    definition and changing the member set is a one-function edit.
 
     ``main_store`` lets the voice daemon pass its OWN open writer instance so
     the reader sees spend it just recorded (its live connection) rather than a

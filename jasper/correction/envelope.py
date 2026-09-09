@@ -71,6 +71,8 @@ logger = logging.getLogger(__name__)
 # v9 completes the server-owned copy boundary with progress labels, the
 # run-defaults summary template, and the automatic-repeat disclosure. v8 was
 # already shipped, so these new required fields use a distinct wire version.
+# v10 drops the `tuning_llm` block and the `tuning` section from the envelope
+# and its section vocabulary.
 ENVELOPE_SCHEMA_VERSION = 10
 
 # 1/N-octave smoothing applied to the empirical display curves. 6 =

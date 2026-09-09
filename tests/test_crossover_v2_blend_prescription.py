@@ -1901,6 +1901,10 @@ def test_a_prescription_may_not_reach_past_numbers_into_a_fixed_shape(packet, pa
     It must outrank the unknown-field check, or a prescriber reaching for
     ``volume_db`` is told it made a typo.
     """
+    assert {
+        "camilladsp_config", "execute", "fir_coefficients",
+        "set_volume", "shell", "volume_db",
+    } <= bp.PROHIBITED_PRESCRIPTION_KEYS
     document = _document([_cut()], packet)
     document.update(payload)
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
