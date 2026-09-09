@@ -407,7 +407,7 @@ def check_fanin_service() -> CheckResult:
             f"Fan-in is mandatory; without STATUS doctor cannot verify "
             f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
-            reason=REASON_FANIN_STATUS_UNREACHABLE, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_UNREACHABLE,
         )
     data = status.payload
     if data is None:
@@ -424,7 +424,7 @@ def check_fanin_service() -> CheckResult:
             "jasper-fanin service",
             "fail",
             "active but STATUS response missing output{}",
-            reason=REASON_FANIN_STATUS_MISSING_OUTPUT, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_MISSING_OUTPUT,
         )
     # The ring is the only transport a running fan-in can be on (ADR-0100), so
     # the expectation is a constant, NOT a mapping from the persisted file:
@@ -440,6 +440,8 @@ def check_fanin_service() -> CheckResult:
             "expected 'shm_ring' — the SHM ring is fan-in's only transport "
             "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
             "transport it actually opened.",
+            # The one silence no jasper-control signal-path code names:
+            # a fan-in on another transport still reports healthy to it.
             reason=REASON_FANIN_TRANSPORT_NOT_RING, speaker_silent=True,
         )
     ring = output.get("ring")
@@ -450,7 +452,7 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS is missing output.ring metrics — "
             "fan-in is not actually writing Ring A. Check "
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
-            reason=REASON_FANIN_STATUS_MISSING_RING, speaker_silent=True,
+            reason=REASON_FANIN_STATUS_MISSING_RING,
         )
 
     inputs = data.get("inputs")

@@ -23,9 +23,12 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_VOICE_UNIT_NOT_FULL_PROFILE,
     CheckResult,
+    control_signal_path,
     _nested_dict,
     _ONESHOT_RUNTIME_STATE_UNITS,
     _RUNTIME_STATE_UNITS,
+    silence_unobserved,
+    speaker_silence_code,
     _systemctl_unavailable_result,
 )
 
@@ -47,6 +50,8 @@ REASON_VOICE_UNIT_PARKED_NO_INPUT = "voice_unit_parked_no_voice_input"
 REASON_VOICE_UNIT_INACTIVE = "voice_unit_inactive"
 REASON_VOICE_UNIT_INACTIVE_PAIRED_REMOTE = "voice_unit_inactive_paired_remote"
 REASON_VOICE_UNIT_NO_PROVIDER = "voice_unit_no_provider_configured"
+
+REASON_SIGNAL_PATH_UNOBSERVED = "signal_path_unobserved"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
@@ -240,9 +245,8 @@ def check_voice_unit_running() -> CheckResult:
     stuck-mid-transition units, so an ``inactive`` jasper-voice — including
     one parked by ``RestartPreventExitStatus=66 78`` — produced no row.
 
-    ``speaker_silent`` is deliberately NOT set. That flag means the speaker
-    emits nothing; music still plays with the voice daemon down. What is
-    silent here is the ASSISTANT.
+    What goes silent here is the ASSISTANT; music still plays with the voice
+    daemon down, so this row never claims ``speaker_silent``.
 
     Severity follows the tier. A full box runs an always-on wake loop, so
     ``inactive`` fails. A streambox runs the assistant only while a
@@ -574,6 +578,52 @@ def _parked_ago(parked_at: int | None, *, now: float | None = None) -> str:
 
 
 @doctor_check(core=True)
+def check_speaker_silence() -> CheckResult:
+    """The doctor's silence lead, projected from jasper-control's verdict.
+
+    ONE classifier answers "is the speaker silent, and why":
+    ``audio_health._signal_path`` plus the overrides ``compose_audio_health``
+    layers on it, published as ``audio_health.signal_path``. The /system
+    dashboard headline renders that same block, so the two surfaces cannot
+    disagree. ``reason`` IS the published ``code`` — its vocabulary is
+    :data:`jasper.control.audio_health.SIGNAL_PATH_CODES`, whose split into
+    silence and not-silence is pinned in tests/test_doctor_resilience.py.
+
+    ``warn``, never ``fail``: this row re-states a verdict the daemon-level
+    checks already fail on, and ``speaker_silent`` leads the summary without
+    touching severity or exit code (jasper/doctor_contract.py).
+
+    With jasper-control unreachable — or reporting one of its own "cannot
+    tell" codes — this row skips and the doctor's direct not-running rows
+    carry the lead instead.
+    """
+    label = "speaker silence"
+    signal_path = control_signal_path()
+    code = speaker_silence_code()
+    if code:
+        headline = str(signal_path.get("headline") or "").strip()
+        return CheckResult(
+            label, "warn",
+            "jasper-control reports the speaker emitting nothing: "
+            f"{headline or code}. The rows below name the daemon.",
+            speaker_silent=True, reason=code,
+        )
+    if silence_unobserved():
+        return CheckResult(
+            label, "skipped",
+            "jasper-control published no signal-path verdict; silence is "
+            "judged from this run's own unit-state rows",
+            reason=REASON_SIGNAL_PATH_UNOBSERVED,
+        )
+    playing = str(signal_path.get("code") or "")
+    return CheckResult(
+        label, "ok",
+        f"jasper-control reports audio reaching the speaker ({playing})",
+        reason=playing,
+    )
+
+
+@doctor_check(core=True)
 def check_outputd_failure_reconcile_park() -> CheckResult:
     """outputd is running, and carries no park record from its stop helper.
 
@@ -582,9 +632,10 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
     runtime state (it is deliberately not in ``_RUNTIME_STATE_UNITS``), so one
     failed outputd is one fail row — including a stuck ``activating``/
     ``deactivating`` unit, which warns rather than fails: not yet silent, but
-    not settled either. ``speaker_silent`` on both fail branches: outputd owns
-    the DAC write loop (docs/audio-paths.md), so with it down nothing writes
-    the card and the speaker emits NOTHING.
+    not settled either. Both fail branches claim ``speaker_silent`` only while
+    jasper-control published no verdict: outputd owns the DAC write loop
+    (docs/audio-paths.md), so with it down nothing writes the card, and this
+    row is then the doctor's own evidence of that.
     """
     label = "outputd failure-reconcile"
     reader = outputd_failure_reconcile_state
@@ -610,7 +661,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
             f"reason={state.get('park_reason') or '?'}) and nothing retries "
             f"it. Fix the output env, `systemctl restart jasper-outputd`, "
             f"then delete {path} if it survives.",
-            speaker_silent=True,
+            speaker_silent=silence_unobserved(),
             reason=REASON_OUTPUTD_PARKED,
         )
     if reason == reader.REASON_UNIT_FAILED:
@@ -619,7 +670,7 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
             f"{reader.UNIT} is failed with no park record — its stop helper "
             "did not judge this terminal, so systemd's Restart=on-failure "
             "should be retrying. Check `journalctl -u jasper-outputd`.",
-            speaker_silent=True,
+            speaker_silent=silence_unobserved(),
             reason=REASON_OUTPUTD_UNIT_FAILED,
         )
     if reason == reader.REASON_UNIT_UNSTABLE:

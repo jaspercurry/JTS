@@ -299,18 +299,23 @@ def _service_state_failure(
     (including ``static``, ``disabled``, ``indirect``, ``masked``) means the
     unit will not come up on its own. `journalctl -u <unit>` is the next step
     for every caller, so the detail says so rather than repeating a per-unit
-    sentence."""
+    sentence.
+
+    ``speaker_silent`` only when jasper-control published no verdict of its
+    own: with it up, :func:`speaker_silence_code` is the doctor's single
+    silence answer and these rows must not raise a second one."""
     from ._evidence import evidence
 
     state = evidence.unit_state(unit)
     if state is None:
         return _systemctl_unavailable_result(label)
+    silent = silence_unobserved()
     code = unit_not_running(state)
     if code == "missing":
         return CheckResult(
             label, "fail",
             f"{unit} is not installed. Re-run install.sh.",
-            reason=missing, speaker_silent=True,
+            reason=missing, speaker_silent=silent,
         )
     if code == "not_enabled":
         enabled = state.get("unit_file_state")
@@ -318,7 +323,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is {enabled or 'unknown'}; it is mandatory. Run: "
             f"sudo systemctl enable --now {unit}",
-            reason=not_enabled, speaker_silent=True,
+            reason=not_enabled, speaker_silent=silent,
         )
     if code is not None:
         active = state.get("active_state")
@@ -326,7 +331,7 @@ def _service_state_failure(
             label, "fail",
             f"{unit} is enabled but state={active or 'unknown'}. "
             f"Check: journalctl -u {unit}",
-            reason=inactive, speaker_silent=True,
+            reason=inactive, speaker_silent=silent,
         )
     return None
 
@@ -419,3 +424,57 @@ def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     for key in keys:
         payload = payload.get(key) if isinstance(payload, dict) else None
     return payload if isinstance(payload, dict) else None
+
+
+# jasper-control's signal-path shape codes
+# (:data:`jasper.control.audio_health.SIGNAL_PATH_CODES`) that do NOT mean
+# "the speaker emits nothing": four verdicts about audio that IS moving
+# (`clean`, plus `path_pressured` and `tts_queue_full`, which qualify playing
+# audio, plus the `starting` warmup), and two that are jasper-control saying
+# it cannot tell. Every other code in that vocabulary is a silence the doctor
+# leads with; tests/test_doctor_resilience.py pins the partition, so a code
+# cannot join the vocabulary unclassified.
+_SIGNAL_PATH_PLAYING_CODES = frozenset({
+    "clean",
+    "path_pressured",
+    "starting",
+    "tts_queue_full",
+})
+_SIGNAL_PATH_UNKNOWN_CODES = frozenset({"activity_unknown", "path_unreported"})
+
+
+def control_signal_path() -> dict[str, Any]:
+    """jasper-control's published signal path this run, ``{}`` when it has
+    none (control unreachable, or the sampler's own stale override, which
+    replaces the block with a codeless "unavailable" shape)."""
+    from ._evidence import evidence
+
+    return _nested_dict(
+        evidence.control_system_snapshot().payload, "audio_health", "signal_path",
+    ) or {}
+
+
+def _signal_path_code() -> str:
+    code = control_signal_path().get("code")
+    return code if isinstance(code, str) else ""
+
+
+def speaker_silence_code() -> str:
+    """The signal-path code proving the speaker emits nothing, or ``""``.
+
+    The doctor's ONE answer to "is the speaker silent, and why" whenever
+    jasper-control has one — the same verdict the /system dashboard headline
+    renders, so the two surfaces cannot disagree.
+    """
+    code = _signal_path_code()
+    if code in _SIGNAL_PATH_PLAYING_CODES or code in _SIGNAL_PATH_UNKNOWN_CODES:
+        return ""
+    return code
+
+
+def silence_unobserved() -> bool:
+    """True when jasper-control published no usable silence verdict, so a
+    doctor row that directly observed a down audio-path daemon is the only
+    evidence of silence there is."""
+    code = _signal_path_code()
+    return not code or code in _SIGNAL_PATH_UNKNOWN_CODES

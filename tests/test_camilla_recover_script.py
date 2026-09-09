@@ -242,9 +242,6 @@ def test_park_reason_and_action_reach_the_doctor(tmp_path: Path, monkeypatch):
     result = audio_runtime_camilla.check_camilla_recover_park()
     assert result.status == "fail"
     assert result.reason == audio_runtime_camilla.REASON_CAMILLA_GRAPH_PARKED
-    # The core DSP graph is down: this is exactly the row the dashboard's
-    # summary must lead with (AGENTS.md/ADR-0233 rule 3).
-    assert result.speaker_silent is True
 
 
 def test_a_hung_capture_cannot_spend_the_restart_budget(tmp_path: Path):

@@ -727,6 +727,21 @@ def test_resilience_checks_are_registered(check_name):
 # --------------------------------------- check_outputd_failure_reconcile_park
 
 
+def _seed_signal_path(code: str | None) -> None:
+    """Seed jasper-control's /system/snapshot with one signal-path code, or
+    with the transport error that means the daemon is unreachable."""
+    payload = (
+        None if code is None
+        else {"audio_health": {"signal_path": {
+            "code": code, "headline": "headline", "status": "issue",
+        }}}
+    )
+    _evidence.evidence.seed(
+        "control_system_snapshot",
+        _evidence.StatusRead(payload, None if payload else OSError("refused")),
+    )
+
+
 def _park_check(monkeypatch, tmp_path, *, record: str | None, unit: dict):
     target = tmp_path / "failure-reconcile.park"
     if record is not None:
@@ -760,7 +775,9 @@ _ACTIVATING = {"active_state": "activating", "sub_state": "start", "result": "su
 def test_outputd_failure_reconcile_park_verdicts(
     tmp_path, monkeypatch, record, unit, status, reason, silent,
 ):
-    """outputd owns the DAC write loop, so both fail branches prove silence."""
+    """outputd owns the DAC write loop, so both fail branches prove silence —
+    here with jasper-control unreachable, which is when these rows carry it."""
+    _seed_signal_path(None)
     result = _park_check(monkeypatch, tmp_path, record=record, unit=unit)
     assert (result.status, result.reason) == (status, reason)
     assert result.speaker_silent is silent
@@ -802,5 +819,106 @@ def test_a_pre_2020_park_stamp_is_named_not_counted(parked_at, shown):
     assert shown in resilience._parked_ago(parked_at, now=1_800_000_100.0)
 
 
-def test_outputd_failure_reconcile_park_is_registered():
-    assert "check_outputd_failure_reconcile_park" in _registered_check_names()
+@pytest.mark.parametrize(
+    "name", ["check_outputd_failure_reconcile_park", "check_speaker_silence"],
+)
+def test_the_silence_owning_checks_are_registered(name):
+    assert name in _registered_check_names()
+
+
+# ------------------------------------------------------------ speaker silence
+
+# The half of `jasper.control.audio_health.SIGNAL_PATH_CODES` that means the
+# household hears nothing. Enumerated rather than derived: this IS the pin, so
+# a code added to that vocabulary lands here or in one of the doctor's two
+# not-silence sets before it can reach a household surface.
+_SILENT_SIGNAL_PATH_CODES = frozenset({
+    "camilla_not_installed",
+    "camilla_stopped",
+    "input_absent",
+    "input_broken",
+    "input_stalled",
+    "output_absent",
+    "output_backend_inactive",
+    "output_deaf",
+    "output_ring_stalled",
+    "output_stalled",
+    "path_stalled",
+    "transport_parked",
+    "transport_unservable",
+    "undeclared_hardware",
+})
+
+
+def test_every_signal_path_code_is_classified_silent_or_not():
+    """`SIGNAL_PATH_CODES` is a closed vocabulary and the doctor's silence lead
+    projects it, so every member is on exactly one side of that split."""
+    from jasper.control.audio_health import SIGNAL_PATH_CODES
+
+    not_silence = (
+        _shared._SIGNAL_PATH_PLAYING_CODES | _shared._SIGNAL_PATH_UNKNOWN_CODES
+    )
+    assert not_silence <= SIGNAL_PATH_CODES
+    assert SIGNAL_PATH_CODES - not_silence == _SILENT_SIGNAL_PATH_CODES
+
+
+@pytest.mark.parametrize(
+    "code, status, reason, silent",
+    [
+        ("output_absent", "warn", "output_absent", True),
+        ("camilla_stopped", "warn", "camilla_stopped", True),
+        ("transport_unservable", "warn", "transport_unservable", True),
+        ("clean", "ok", "clean", False),
+        ("path_pressured", "ok", "path_pressured", False),
+        ("starting", "ok", "starting", False),
+        ("path_unreported", "skipped", resilience.REASON_SIGNAL_PATH_UNOBSERVED, False),
+        (
+            "activity_unknown", "skipped",
+            resilience.REASON_SIGNAL_PATH_UNOBSERVED, False,
+        ),
+        (None, "skipped", resilience.REASON_SIGNAL_PATH_UNOBSERVED, False),
+    ],
+    ids=lambda value: str(value),
+)
+def test_speaker_silence_projects_the_control_signal_path(
+    code, status, reason, silent,
+):
+    """The doctor's silence lead IS jasper-control's signal-path verdict, so
+    the /system dashboard headline and the doctor cannot disagree. A code
+    jasper-control cannot classify — and an unreachable daemon — leave the row
+    skipped, with no claim either way."""
+    _seed_signal_path(code)
+
+    result = resilience.check_speaker_silence()
+
+    assert (result.status, result.reason, result.speaker_silent) == (
+        status, reason, silent,
+    )
+
+
+@pytest.mark.parametrize(
+    "code, silent",
+    [(None, True), ("path_unreported", True), ("clean", False), ("output_deaf", False)],
+    ids=["unreachable", "cannot-tell", "playing", "already-led"],
+)
+def test_a_down_audio_unit_leads_with_silence_only_without_a_control_verdict(
+    monkeypatch, code, silent,
+):
+    """The fallback: with jasper-control down, the doctor's own unit-state rows
+    are the only evidence of silence there is. With a verdict published, they
+    defer to it rather than raising a second one."""
+    _seed_signal_path(code)
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({"jasper-outputd.service": {
+            "active_state": "inactive", "result": "success",
+        }}),
+    )
+
+    result = _shared._service_state_failure(
+        "jasper-outputd", "jasper-outputd.service",
+        missing="m", not_enabled="n", inactive="i",
+    )
+
+    assert result is not None
+    assert (result.reason, result.speaker_silent) == ("i", silent)

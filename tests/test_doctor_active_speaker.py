@@ -187,59 +187,49 @@ def _stage_staged_active_startup(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "stage, status, reason, silent",
+    "stage, status, reason",
     [
-        (_stage_corrupt_topology, "fail", active_speaker.REASON_TOPOLOGY_UNREADABLE, False),
+        (_stage_corrupt_topology, "fail", active_speaker.REASON_TOPOLOGY_UNREADABLE),
         (
             _stage_complete_passive_layout, "ok",
-            active_speaker.REASON_GRAPH_PASSIVE_LAYOUT, False,
+            active_speaker.REASON_GRAPH_PASSIVE_LAYOUT,
         ),
         (
             _stage_unreadable_statefile, "fail",
-            active_speaker.REASON_CAMILLA_STATEFILE_UNREADABLE, False,
+            active_speaker.REASON_CAMILLA_STATEFILE_UNREADABLE,
         ),
-        (_stage_missing_config, "fail", active_speaker.REASON_CAMILLA_CONFIG_MISSING, False),
-        (
-            _stage_unconfigured_parked, "warn",
-            active_speaker.REASON_GRAPH_PARKED_SILENT, True,
-        ),
-        (_stage_roleful_parked, "warn", active_speaker.REASON_GRAPH_PARKED_SILENT, True),
+        (_stage_missing_config, "fail", active_speaker.REASON_CAMILLA_CONFIG_MISSING),
+        (_stage_unconfigured_parked, "warn", active_speaker.REASON_GRAPH_PARKED_SILENT),
+        (_stage_roleful_parked, "warn", active_speaker.REASON_GRAPH_PARKED_SILENT),
         (
             _stage_blocker_bearing_parked, "warn",
-            active_speaker.REASON_GRAPH_PARKED_SILENT, True,
+            active_speaker.REASON_GRAPH_PARKED_SILENT,
         ),
-        # Parked over an unfixable layout: a `fail` that is also provably
-        # silent, which the summary line supports (#2471).
         (
             _stage_incomplete_passive_parked, "fail",
-            active_speaker.REASON_GRAPH_LAYOUT_INCOMPLETE, True,
+            active_speaker.REASON_GRAPH_LAYOUT_INCOMPLETE,
         ),
         (
             _stage_flat_graph_without_a_layout, "fail",
-            active_speaker.REASON_GRAPH_UNSAFE, False,
+            active_speaker.REASON_GRAPH_UNSAFE,
         ),
         (
             _stage_flat_graph_on_a_tweeter_layout, "fail",
-            active_speaker.REASON_GRAPH_UNSAFE, False,
+            active_speaker.REASON_GRAPH_UNSAFE,
         ),
-        (_stage_staged_active_startup, "ok", "", False),
+        (_stage_staged_active_startup, "ok", ""),
     ],
     ids=lambda value: getattr(value, "__name__", None),
 )
 def test_active_speaker_runtime_graph_branches(
-    monkeypatch, tmp_path, stage, status, reason, silent
+    monkeypatch, tmp_path, stage, status, reason
 ):
-    """One row per outcome of the merged check.
-
-    ``speaker_silent`` rides along because only the parked branch may claim it
-    (#2471): an unreadable topology is proof of not knowing, and a legal graph
-    is not silence.
-    """
+    """One row per outcome of the merged check."""
     stage(monkeypatch, tmp_path)
 
     r = active_speaker.check_active_speaker_runtime_graph()
 
-    assert (r.status, r.reason, r.speaker_silent) == (status, reason, silent)
+    assert (r.status, r.reason) == (status, reason)
 
 
 def test_active_speaker_runtime_graph_names_the_blockers_it_is_parked_over(
@@ -633,20 +623,20 @@ def test_active_speaker_startup_hold_ok_when_no_hold_is_in_flight():
 
 
 @pytest.mark.parametrize(
-    "load_status, live_is_anchor, status, reason, silent",
+    "load_status, live_is_anchor, status, reason",
     [
-        ("loaded", True, "ok", active_speaker.REASON_STARTUP_HOLD_IN_FLIGHT, False),
+        ("loaded", True, "ok", active_speaker.REASON_STARTUP_HOLD_IN_FLIGHT),
         # A hold with no load behind it keeps a box that is STILL on the anchor
         # silent across every reconcile.
-        ("rolled_back", True, "fail", active_speaker.REASON_STARTUP_HOLD_STALE, True),
+        ("rolled_back", True, "fail", active_speaker.REASON_STARTUP_HOLD_STALE),
         # Off the anchor the box plays: the selector rung the marker feeds also
         # requires the anchor graph, and /run empties before the next boot.
-        ("rolled_back", False, "warn", active_speaker.REASON_STARTUP_HOLD_STALE, False),
+        ("rolled_back", False, "warn", active_speaker.REASON_STARTUP_HOLD_STALE),
     ],
     ids=["in-flight", "stale-on-anchor", "stale-but-playing"],
 )
 def test_active_speaker_startup_hold_verdicts(
-    monkeypatch, tmp_path, load_status, live_is_anchor, status, reason, silent
+    monkeypatch, tmp_path, load_status, live_is_anchor, status, reason
 ):
     from jasper.active_speaker.startup_hold import hold_staged_startup
 
@@ -667,7 +657,6 @@ def test_active_speaker_startup_hold_verdicts(
 
     assert r.status == status
     assert r.reason == reason
-    assert r.speaker_silent is silent
 
 
 # ---------------------------------------------------- room correction authority
