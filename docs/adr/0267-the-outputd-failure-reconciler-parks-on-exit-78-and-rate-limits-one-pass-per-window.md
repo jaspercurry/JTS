@@ -1,4 +1,4 @@
-# ADR-0263: The outputd failure reconciler parks on exit 78 and rate-limits one pass per window
+# ADR-0267: The outputd failure reconciler parks on exit 78 and rate-limits one pass per window
 
 - **Date:** 2026-09-09
 - **Status:** Accepted. Supersedes
