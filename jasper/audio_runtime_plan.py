@@ -63,7 +63,7 @@ from jasper.fanin_coupling import (
     dac_content_lane_marker_armed,
     outputd_content_is_central_ring,
 )
-from jasper.multiroom.config import load_config as load_grouping_config
+from jasper.multiroom import config as grouping_config
 from jasper.output_hardware import load_state as load_output_hardware_state
 from jasper.json_fields import json_fingerprint, sha256_file
 from jasper.transport_coherence import (
@@ -1233,7 +1233,7 @@ def build_audio_runtime_plan_from_system(
     if hardware_state is not None:
         profile_id = hardware_state.profile_id
     route_mode: RouteMode = route_mode_from_grouping_config(
-        load_grouping_config(grouping_env_path)
+        grouping_config.load_config(grouping_env_path)
     )
     # The statefile's own reader, not a second one: this plan and the doctor's
     # `current correction` check must never disagree about which config is

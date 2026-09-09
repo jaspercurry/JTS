@@ -45,7 +45,6 @@ from jasper.atomic_io import (
     locked_upsert_env_file,
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
-from jasper.control import restart_broker
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import read_value, remove, upsert
 from jasper.fanin.coupling_auto import (
@@ -75,8 +74,6 @@ from jasper.fanin_coupling import (
 )
 from jasper.log_event import log_event
 from jasper import env_load, fanin_coupling, ring_assets
-from jasper.sound import runtime as sound_runtime
-from jasper.volume_coordinator import install_env_canonical_target_provider
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
@@ -177,6 +174,10 @@ def _restart_unit(
     A start-consuming verb on a crash-budget daemon goes through
     :func:`restart_broker.reset_then_manage` (see the block comment above).
     """
+    try:
+        from jasper.control import restart_broker  # lazy: a broken control package must degrade to a reported failure, not kill the reconcile
+    except ImportError as e:  # pragma: no cover - control pkg always present in prod
+        return False, f"restart_broker unavailable: {e}"
     drive = (
         restart_broker.reset_then_manage
         if verb in _START_BUDGET_VERBS and unit in _CRASH_BUDGET_UNITS
@@ -465,6 +466,8 @@ def _reconcile_camilla(
     "re-emit AND LOAD" — with CamillaDSP down nothing was loaded. One guard ahead
     of all three branches.
     """
+    from jasper.sound import runtime as sound_runtime  # lazy: import cost, the doctor imports this module for two cheap reads (ADR-0226)
+
     try:
         payload = asyncio.run(sound_runtime.reconcile_current_dsp(force=force))
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
@@ -1668,6 +1671,10 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # `reconcile_current_dsp` swaps the live graph from this process, so its
     # swap duck needs a canonical target to release to.
+    from jasper.volume_coordinator import (  # lazy: import cost, CLI-only (ADR-0226)
+        install_env_canonical_target_provider,
+    )
+
     install_env_canonical_target_provider()
 
     parser = argparse.ArgumentParser(

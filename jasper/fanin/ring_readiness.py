@@ -26,8 +26,6 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from jasper import fanin_coupling, ring_assets
 from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.env_file import read_value
@@ -202,14 +200,14 @@ def load_topology_for_wire():
     stereo geometry, and refusing to arm on an unreadable topology is
     :func:`ring_topology_ready`'s decision, not this helper's.
     """
-    from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
-
     try:
+        from jasper.output_topology import (  # lazy: import cost — jasper.audio_runtime_plan defers this module for the same reason (ADR-0226)
+            OutputTopologyError,
+            load_output_topology_strict,
+        )
+
         return load_output_topology_strict()
-    except (OutputTopologyError, OSError, ValueError):
+    except (OutputTopologyError, OSError, ValueError, ImportError):
         return None
 
 
@@ -760,6 +758,7 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
         output_terminally_muted,
         view_from_yaml_dict,
     )
+    import yaml  # lazy: import cost, keeps PyYAML out of this module's importers (ADR-0226)
 
     try:
         payload = yaml.safe_load(graph.text)
