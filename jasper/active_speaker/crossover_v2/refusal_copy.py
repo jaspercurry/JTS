@@ -70,6 +70,7 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # `capture_dispatch.SCREEN_ANCHOR_AMBIGUOUS`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_CLIPPED = "clipped"
+REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_DRIFT_BASELINES_DISAGREE = "drift_baselines_disagree"
 REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
@@ -555,6 +556,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "JTS couldn't line that recording up with the test tones it played.",
             "Try that measurement again.",
         ),
+    ),
+    REASON_MEASURE_GAIN_ADJUSTED: _retriable_reason(
+        REASON_MEASURE_GAIN_ADJUSTED, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy(
+            "The driver needs a clearer timing measurement.",
+            "JTS will keep this take and measure once more at a higher test level.",
+        ),
+        auto_retry=True,
     ),
     REASON_CLIPPED: _retriable_reason(
         REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
