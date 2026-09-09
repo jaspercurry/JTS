@@ -47,7 +47,6 @@ import json
 import logging
 import math
 import os
-import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -89,13 +88,12 @@ from ..env_file import delete_env_file, read_env_file, write_env_file
 from ._common import (
     api_key_token_is_valid,
     begin_request,
-    read_form,
-    reject_csrf,
+    form_guarded,
     restart_voice_daemon,
+    route_path,
     send_html_response,
     send_see_other,
     guard_read_request,
-    guard_mutating_request,
     write_json_file,
     SECRET_ENV_MODE,
     value_for_env as _value_for,
@@ -463,385 +461,387 @@ def _sparsify_overrides(models: dict[str, dict]) -> dict[str, dict]:
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     """Returns a request handler class closed over the config dict.
     `cfg` carries the persisted-state file path so tests can swap a
-    tempdir."""
+    tempdir. The route tables live in this closure so the bodies can
+    read `cfg`."""
+
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        state = _load_merged(cfg)
+        discovery = load_cache(cfg["discovery_cache_path"])
+        overrides = load_pricing_overrides(cfg["pricing_path"])
+        default_as_of = default_pricing_as_of()
+        ctx = begin_request(handler)
+        send_html_response(handler, _index_html(
+            state,
+            ctx["csrf_token"],
+            status_msg=ctx["flash"],
+            discovery=discovery,
+            overrides=overrides,
+            default_as_of=default_as_of,
+        ))
+
+    def _save_provider_state(
+        form: dict[str, str],
+    ) -> tuple[dict[str, str] | None, str | None]:
+        current = _load_merged(cfg)
+        new, err = _apply_save(form, current)
+        if err is not None:
+            return None, err
+        try:
+            # _apply_save always sets JASPER_VOICE_PROVIDER + the active
+            # provider's API key (the has_key guard), so both slices of the
+            # split are non-empty: provider/model → state_path, keys →
+            # keys_path (group-jasper-secrets). Never deletes on this path.
+            _write_split(cfg, new)
+        except OSError as e:
+            logger.exception("could not write voice provider env file")
+            return None, f"Could not save: {e}"
+        return new, None
+
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        new, err = _save_provider_state(form)
+        if err is not None or new is None:
+            send_see_other(handler, "./", flash=err or "Could not save.")
+            return
+        restart_voice_daemon()
+        active = new.get("JASPER_VOICE_PROVIDER", "")
+        # The active provider (gemini/openai/grok) is the headline config
+        # change — not a secret. The API keys in `new` are never logged.
+        log_event(
+            logger,
+            "voice.save",
+            provider=active,
+            client=handler.address_string(),
+        )
+        send_see_other(
+            handler, "./",
+            flash=f"Saved. Voice daemon restarting on {_provider_label(active)}.",
+        )
+
+    @form_guarded
+    def _post_save_test(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        new, err = _save_provider_state(form)
+        if err is not None or new is None:
+            send_see_other(handler, "./", flash=err or "Could not save.")
+            return
+        active = new.get("JASPER_VOICE_PROVIDER", "")
+        label = _provider_label(active)
+        profile = None
+        seed_error = ""
+        try:
+            profile = cfg["loudness_seed_fn"](
+                _seed_config_from_state(new),
+                path=cfg["assistant_loudness_profile_path"],
+                force=True,
+                max_attempts=1,
+                retry_backoff_sec=0.0,
+            )
+        except Exception as e:  # noqa: BLE001
+            seed_error = _redact_provider_error(e, new)
+            log_event(
+                logger,
+                "voice.loudness_seed",
+                provider=active,
+                result="error",
+                error=e.__class__.__name__,
+                level=logging.WARNING,
+            )
+        else:
+            if profile is not None:
+                log_event(
+                    logger,
+                    "voice.loudness_seed",
+                    provider=active,
+                    result="ok",
+                    source_lufs=f"{profile.source_lufs:.1f}",
+                    confidence=f"{profile.confidence:.2f}",
+                )
+            else:
+                seed_error = "provider key, model, or voice is incomplete."
+                log_event(
+                    logger,
+                    "voice.loudness_seed",
+                    provider=active,
+                    result="skipped",
+                    level=logging.WARNING,
+                )
+        restart_voice_daemon()
+        # Same save audit as _handle_save — the "Save & Test" button is the
+        # other save path, so "voice provider saved" is logged either way.
+        log_event(
+            logger,
+            "voice.save",
+            provider=active,
+            client=handler.address_string(),
+        )
+        if seed_error:
+            send_see_other(
+                handler,
+                "./",
+                flash=(
+                    f"Saved, but {label} voice test failed: "
+                    f"{seed_error} Voice daemon restarting."
+                ),
+            )
+            return
+        assert profile is not None
+        send_see_other(
+            handler,
+            "./",
+            flash=(
+                f"Saved and tested {label}. "
+                f"Measured voice at {profile.source_lufs:.1f} LUFS; "
+                "voice daemon restarting."
+            ),
+        )
+
+    @form_guarded
+    def _post_clear_credentials(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_merged(cfg)
+        new, err = _apply_clear(form, current)
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        try:
+            # _write_split deletes whichever file's slice is now empty —
+            # clearing the last provider removes both state_path AND the
+            # keys_path, so no stale key file lingers.
+            _write_split(cfg, new)
+        except OSError as e:
+            logger.exception("could not write voice provider env file")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        restart_voice_daemon()
+        pid = (form.get("provider") or "").strip()
+        log_event(
+            logger,
+            "voice.clear",
+            provider=pid,
+            client=handler.address_string(),
+        )
+        label = next(
+            (p.label for p in PROVIDERS if p.id == pid),
+            pid,
+        )
+        send_see_other(handler, "./", flash=f"Cleared {label} credentials.")
+
+    @form_guarded
+    def _post_refresh_models(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_merged(cfg)
+        pid = (form.get("provider") or "").strip()
+        provider = provider_by_id(pid)
+        if provider is None:
+            send_see_other(handler, "./", flash=f"Unknown provider {pid!r}.")
+            return
+        api_key = _provider_key_for_discovery(provider, current)
+        if not api_key:
+            send_see_other(
+                handler,
+                "./",
+                flash=(
+                    f"{provider.label} has no API key configured yet. "
+                    f"Paste a {provider.key_env} value before refreshing "
+                    "available models."
+                ),
+            )
+            return
+        try:
+            snapshot = refresh_provider_cache(
+                provider.id,
+                api_key,
+                path=cfg["discovery_cache_path"],
+                http=cfg.get("discovery_http_client"),
+            )
+        except (ModelDiscoveryError, OSError) as e:
+            log_event(
+                logger,
+                "voice.model_discovery",
+                provider=provider.id,
+                result="error",
+                error=repr(str(e)),
+                level=logging.WARNING,
+            )
+            send_see_other(
+                handler,
+                "./",
+                flash=f"Could not refresh {provider.label} models: {e}",
+            )
+            return
+        log_event(
+            logger,
+            "voice.model_discovery",
+            provider=provider.id,
+            result="ok",
+            count=len(snapshot.models),
+        )
+        send_see_other(
+            handler,
+            "./",
+            flash=(
+                f"Refreshed {provider.label} models. "
+                "Newly discovered models are experimental until tested."
+            ),
+        )
+
+    @form_guarded
+    def _post_spend_cap(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_merged(cfg)
+        new, err = _apply_spend_cap(form, current)
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        try:
+            # current came from _load_merged, so `new` still carries the API
+            # keys; _write_split keeps them in keys_path rather than writing
+            # them back into the broad state_path.
+            _write_split(cfg, new)
+        except OSError as e:
+            logger.exception("could not write spend-cap env settings")
+            send_see_other(handler, "./", flash=f"Could not save spend cap: {e}")
+            return
+        restart_voice_daemon()
+        log_event(logger, "voice.spend_cap", client=handler.address_string())
+        send_see_other(
+            handler,
+            "./",
+            flash="Saved spend cap. Voice daemon restarting.",
+        )
+
+    @form_guarded
+    def _post_pricing(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        pid = (form.get("provider") or "").strip()
+        provider = provider_by_id(pid)
+        if provider is None:
+            send_see_other(handler, "./", flash=f"Unknown provider {pid!r}.")
+            return
+        discovery = load_cache(cfg["discovery_cache_path"])
+        model_ids = _provider_model_ids(provider, discovery.get(provider.id))
+        existing = load_pricing_overrides(cfg["pricing_path"])
+        new_models = _apply_pricing_save(form, provider, model_ids, existing)
+        try:
+            if new_models:
+                write_json_file(cfg["pricing_path"], {
+                    "as_of": _today_iso(),
+                    "source": "edited via /voice",
+                    "models": new_models,
+                })
+            else:
+                # No overrides anywhere now → remove the file so the
+                # daemon falls back entirely to the bundled defaults.
+                try:
+                    os.remove(cfg["pricing_path"])
+                except FileNotFoundError:
+                    pass
+        except OSError as e:
+            logger.exception("could not write pricing override")
+            send_see_other(
+                handler, "./", flash=f"Could not save pricing: {e}",
+            )
+            return
+        log_event(
+            logger,
+            "pricing.edit",
+            provider=provider.id,
+            models=len(new_models),
+        )
+        restart_voice_daemon()
+        send_see_other(
+            handler, "./",
+            flash=(
+                f"Saved {provider.label} pricing. "
+                "Voice daemon restarting."
+            ),
+        )
+
+    @form_guarded
+    def _post_pricing_import(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        models, as_of, err = _apply_pricing_paste(form.get("payload") or "")
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        # MERGE into existing overrides (like the per-provider editor):
+        # pasted models overlay, models the paste omitted are preserved.
+        # Sparsify so the file stays minimal. A full-replace here would
+        # silently drop a hand-priced model the chatbot didn't return.
+        existing = load_pricing_overrides(cfg["pricing_path"])
+        merged = _sparsify_overrides({**existing, **models})
+        try:
+            if merged:
+                write_json_file(cfg["pricing_path"], {
+                    "as_of": as_of or _today_iso(),
+                    "source": "imported via /voice",
+                    "models": merged,
+                })
+            else:
+                try:
+                    os.remove(cfg["pricing_path"])
+                except FileNotFoundError:
+                    pass
+        except OSError as e:
+            logger.exception("could not write imported pricing")
+            send_see_other(
+                handler, "./", flash=f"Could not save pricing: {e}",
+            )
+            return
+        log_event(
+            logger,
+            "pricing.import",
+            imported=len(models),
+            total=len(merged),
+        )
+        restart_voice_daemon()
+        send_see_other(
+            handler, "./",
+            flash=(
+                f"Imported rates for {len(models)} model(s). "
+                "Voice daemon restarting."
+            ),
+        )
+
+    _GET_ROUTES = {"/": _get_index}
+    _POST_ROUTES = {
+        "/save": _post_save,
+        "/save-test": _post_save_test,
+        "/clear-credentials": _post_clear_credentials,
+        "/refresh-models": _post_refresh_models,
+        "/spend-cap": _post_spend_cap,
+        "/pricing": _post_pricing,
+        "/pricing-import": _post_pricing_import,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        # --- routes ---
-
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                state = _load_merged(cfg)
-                discovery = load_cache(cfg["discovery_cache_path"])
-                overrides = load_pricing_overrides(cfg["pricing_path"])
-                default_as_of = default_pricing_as_of()
-                ctx = begin_request(self)
-                send_html_response(self, _index_html(
-                    state,
-                    ctx["csrf_token"],
-                    status_msg=ctx["flash"],
-                    discovery=discovery,
-                    overrides=overrides,
-                    default_as_of=default_as_of,
-                ))
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path not in (
-                "/save", "/save-test", "/clear-credentials",
-                "/refresh-models", "/spend-cap", "/pricing", "/pricing-import",
-            ):
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
+            if not guard_read_request(self):
                 return
-            if path == "/save":
-                self._handle_save(form)
-                return
-            if path == "/save-test":
-                self._handle_save_test(form)
-                return
-            if path == "/clear-credentials":
-                self._handle_clear(form)
-                return
-            if path == "/refresh-models":
-                self._handle_refresh_models(form)
-                return
-            if path == "/spend-cap":
-                self._handle_spend_cap(form)
-                return
-            if path == "/pricing":
-                self._handle_pricing(form)
-                return
-            if path == "/pricing-import":
-                self._handle_pricing_import(form)
-                return
+            handler_fn(self)
 
-        # --- route bodies ---
-
-        def _save_provider_state(
-            self,
-            form: dict[str, str],
-        ) -> tuple[dict[str, str] | None, str | None]:
-            current = _load_merged(cfg)
-            new, err = _apply_save(form, current)
-            if err is not None:
-                return None, err
-            try:
-                # _apply_save always sets JASPER_VOICE_PROVIDER + the active
-                # provider's API key (the has_key guard), so both slices of the
-                # split are non-empty: provider/model → state_path, keys →
-                # keys_path (group-jasper-secrets). Never deletes on this path.
-                _write_split(cfg, new)
-            except OSError as e:
-                logger.exception("could not write voice provider env file")
-                return None, f"Could not save: {e}"
-            return new, None
-
-        def _handle_save(self, form: dict[str, str]) -> None:
-            new, err = self._save_provider_state(form)
-            if err is not None or new is None:
-                send_see_other(self, "./", flash=err or "Could not save.")
+        def do_POST(self) -> None:  # noqa: N802
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            restart_voice_daemon()
-            active = new.get("JASPER_VOICE_PROVIDER", "")
-            # The active provider (gemini/openai/grok) is the headline config
-            # change — not a secret. The API keys in `new` are never logged.
-            log_event(
-                logger,
-                "voice.save",
-                provider=active,
-                client=self.address_string(),
-            )
-            send_see_other(
-                self, "./",
-                flash=f"Saved. Voice daemon restarting on {_provider_label(active)}.",
-            )
-
-        def _handle_save_test(self, form: dict[str, str]) -> None:
-            new, err = self._save_provider_state(form)
-            if err is not None or new is None:
-                send_see_other(self, "./", flash=err or "Could not save.")
-                return
-            active = new.get("JASPER_VOICE_PROVIDER", "")
-            label = _provider_label(active)
-            profile = None
-            seed_error = ""
-            try:
-                profile = cfg["loudness_seed_fn"](
-                    _seed_config_from_state(new),
-                    path=cfg["assistant_loudness_profile_path"],
-                    force=True,
-                    max_attempts=1,
-                    retry_backoff_sec=0.0,
-                )
-            except Exception as e:  # noqa: BLE001
-                seed_error = _redact_provider_error(e, new)
-                log_event(
-                    logger,
-                    "voice.loudness_seed",
-                    provider=active,
-                    result="error",
-                    error=e.__class__.__name__,
-                    level=logging.WARNING,
-                )
-            else:
-                if profile is not None:
-                    log_event(
-                        logger,
-                        "voice.loudness_seed",
-                        provider=active,
-                        result="ok",
-                        source_lufs=f"{profile.source_lufs:.1f}",
-                        confidence=f"{profile.confidence:.2f}",
-                    )
-                else:
-                    seed_error = "provider key, model, or voice is incomplete."
-                    log_event(
-                        logger,
-                        "voice.loudness_seed",
-                        provider=active,
-                        result="skipped",
-                        level=logging.WARNING,
-                    )
-            restart_voice_daemon()
-            # Same save audit as _handle_save — the "Save & Test" button is the
-            # other save path, so "voice provider saved" is logged either way.
-            log_event(
-                logger,
-                "voice.save",
-                provider=active,
-                client=self.address_string(),
-            )
-            if seed_error:
-                send_see_other(
-                    self,
-                    "./",
-                    flash=(
-                        f"Saved, but {label} voice test failed: "
-                        f"{seed_error} Voice daemon restarting."
-                    ),
-                )
-                return
-            assert profile is not None
-            send_see_other(
-                self,
-                "./",
-                flash=(
-                    f"Saved and tested {label}. "
-                    f"Measured voice at {profile.source_lufs:.1f} LUFS; "
-                    "voice daemon restarting."
-                ),
-            )
-
-        def _handle_clear(self, form: dict[str, str]) -> None:
-            current = _load_merged(cfg)
-            new, err = _apply_clear(form, current)
-            if err is not None:
-                send_see_other(self, "./", flash=err)
-                return
-            try:
-                # _write_split deletes whichever file's slice is now empty —
-                # clearing the last provider removes both state_path AND the
-                # keys_path, so no stale key file lingers.
-                _write_split(cfg, new)
-            except OSError as e:
-                logger.exception("could not write voice provider env file")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            restart_voice_daemon()
-            pid = (form.get("provider") or "").strip()
-            log_event(
-                logger,
-                "voice.clear",
-                provider=pid,
-                client=self.address_string(),
-            )
-            label = next(
-                (p.label for p in PROVIDERS if p.id == pid),
-                pid,
-            )
-            send_see_other(self, "./", flash=f"Cleared {label} credentials.")
-
-        def _handle_refresh_models(self, form: dict[str, str]) -> None:
-            current = _load_merged(cfg)
-            pid = (form.get("provider") or "").strip()
-            provider = provider_by_id(pid)
-            if provider is None:
-                send_see_other(self, "./", flash=f"Unknown provider {pid!r}.")
-                return
-            api_key = _provider_key_for_discovery(provider, current)
-            if not api_key:
-                send_see_other(
-                    self,
-                    "./",
-                    flash=(
-                        f"{provider.label} has no API key configured yet. "
-                        f"Paste a {provider.key_env} value before refreshing "
-                        "available models."
-                    ),
-                )
-                return
-            try:
-                snapshot = refresh_provider_cache(
-                    provider.id,
-                    api_key,
-                    path=cfg["discovery_cache_path"],
-                    http=cfg.get("discovery_http_client"),
-                )
-            except (ModelDiscoveryError, OSError) as e:
-                log_event(
-                    logger,
-                    "voice.model_discovery",
-                    provider=provider.id,
-                    result="error",
-                    error=repr(str(e)),
-                    level=logging.WARNING,
-                )
-                send_see_other(
-                    self,
-                    "./",
-                    flash=f"Could not refresh {provider.label} models: {e}",
-                )
-                return
-            log_event(
-                logger,
-                "voice.model_discovery",
-                provider=provider.id,
-                result="ok",
-                count=len(snapshot.models),
-            )
-            send_see_other(
-                self,
-                "./",
-                flash=(
-                    f"Refreshed {provider.label} models. "
-                    "Newly discovered models are experimental until tested."
-                ),
-            )
-
-        def _handle_spend_cap(self, form: dict[str, str]) -> None:
-            current = _load_merged(cfg)
-            new, err = _apply_spend_cap(form, current)
-            if err is not None:
-                send_see_other(self, "./", flash=err)
-                return
-            try:
-                # current came from _load_merged, so `new` still carries the API
-                # keys; _write_split keeps them in keys_path rather than writing
-                # them back into the broad state_path.
-                _write_split(cfg, new)
-            except OSError as e:
-                logger.exception("could not write spend-cap env settings")
-                send_see_other(self, "./", flash=f"Could not save spend cap: {e}")
-                return
-            restart_voice_daemon()
-            log_event(logger, "voice.spend_cap", client=self.address_string())
-            send_see_other(
-                self,
-                "./",
-                flash="Saved spend cap. Voice daemon restarting.",
-            )
-
-        def _handle_pricing(self, form: dict[str, str]) -> None:
-            pid = (form.get("provider") or "").strip()
-            provider = provider_by_id(pid)
-            if provider is None:
-                send_see_other(self, "./", flash=f"Unknown provider {pid!r}.")
-                return
-            discovery = load_cache(cfg["discovery_cache_path"])
-            model_ids = _provider_model_ids(provider, discovery.get(provider.id))
-            existing = load_pricing_overrides(cfg["pricing_path"])
-            new_models = _apply_pricing_save(form, provider, model_ids, existing)
-            try:
-                if new_models:
-                    write_json_file(cfg["pricing_path"], {
-                        "as_of": _today_iso(),
-                        "source": "edited via /voice",
-                        "models": new_models,
-                    })
-                else:
-                    # No overrides anywhere now → remove the file so the
-                    # daemon falls back entirely to the bundled defaults.
-                    try:
-                        os.remove(cfg["pricing_path"])
-                    except FileNotFoundError:
-                        pass
-            except OSError as e:
-                logger.exception("could not write pricing override")
-                send_see_other(
-                    self, "./", flash=f"Could not save pricing: {e}",
-                )
-                return
-            log_event(
-                logger,
-                "pricing.edit",
-                provider=provider.id,
-                models=len(new_models),
-            )
-            restart_voice_daemon()
-            send_see_other(
-                self, "./",
-                flash=(
-                    f"Saved {provider.label} pricing. "
-                    "Voice daemon restarting."
-                ),
-            )
-
-        def _handle_pricing_import(self, form: dict[str, str]) -> None:
-            models, as_of, err = _apply_pricing_paste(form.get("payload") or "")
-            if err is not None:
-                send_see_other(self, "./", flash=err)
-                return
-            # MERGE into existing overrides (like the per-provider editor):
-            # pasted models overlay, models the paste omitted are preserved.
-            # Sparsify so the file stays minimal. A full-replace here would
-            # silently drop a hand-priced model the chatbot didn't return.
-            existing = load_pricing_overrides(cfg["pricing_path"])
-            merged = _sparsify_overrides({**existing, **models})
-            try:
-                if merged:
-                    write_json_file(cfg["pricing_path"], {
-                        "as_of": as_of or _today_iso(),
-                        "source": "imported via /voice",
-                        "models": merged,
-                    })
-                else:
-                    try:
-                        os.remove(cfg["pricing_path"])
-                    except FileNotFoundError:
-                        pass
-            except OSError as e:
-                logger.exception("could not write imported pricing")
-                send_see_other(
-                    self, "./", flash=f"Could not save pricing: {e}",
-                )
-                return
-            log_event(
-                logger,
-                "pricing.import",
-                imported=len(models),
-                total=len(merged),
-            )
-            restart_voice_daemon()
-            send_see_other(
-                self, "./",
-                flash=(
-                    f"Imported rates for {len(models)} model(s). "
-                    "Voice daemon restarting."
-                ),
-            )
+            handler_fn(self)
 
     return Handler
 

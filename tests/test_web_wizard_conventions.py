@@ -39,6 +39,7 @@ from jasper.web import (
     spotify_setup,
     system_setup,
     tools_setup,
+    voice_setup,
     wake_corpus_setup,
     wake_setup,
     weather_setup,
@@ -460,6 +461,15 @@ _TABLED_WIZARD_FACTORIES = {
         },
     ),
     "wifi_setup": wifi_setup._make_handler,
+    "voice_setup": lambda: voice_setup._make_handler({
+        "state_path": "/tmp/jts-test-voice-provider.env",
+        "keys_path": "/tmp/jts-test-voice-keys.env",
+        "discovery_cache_path": "/tmp/jts-test-voice-models.json",
+        "discovery_http_client": None,
+        "pricing_path": "/tmp/jts-test-voice-pricing.json",
+        "assistant_loudness_profile_path": "/tmp/jts-test-voice-loudness.json",
+        "loudness_seed_fn": lambda *a, **k: None,
+    }),
     "weather_setup": lambda: weather_setup._make_handler({
         "state_path": "/tmp/jts-test-weather.env",
         "transit_path": "/tmp/jts-test-weather-transit.env",
