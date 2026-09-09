@@ -360,7 +360,7 @@ def _transport_state(
         coupling=coupling,
         outputd_env=dict(outputd_env),
         camilla_devices=camilla_devices,
-        post_dsp_only=True,
+        allow_grouping_capture=True,
     )
     gap = active_lane_capability_gap(topology)
     return {

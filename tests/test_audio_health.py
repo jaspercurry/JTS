@@ -453,9 +453,11 @@ def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **e
     return audio_health._read_transport_state(_plan_for("shm_ring", outputd_env))
 
 
-@pytest.mark.parametrize("capture_device", ["jts_ring_capture", "jts_ring_grouping"])
-def test_armed_active_ring_is_not_reported_as_parked(
-    monkeypatch, tmp_path, capture_device,
+@pytest.mark.parametrize("capture_device, parked", [
+    ("jts_ring_capture", False), ("jts_ring_grouping", False), ("plug:jasper_capture", True),
+])
+def test_armed_active_ring_reports_only_broken_capture_routes(
+    monkeypatch, tmp_path, capture_device, parked,
 ) -> None:
     from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
     from jasper.fanin_coupling import VALID_COUPLINGS
@@ -468,9 +470,9 @@ def test_armed_active_ring_is_not_reported_as_parked(
 
     state = _armed_active_transport_read(monkeypatch, tmp_path, capture_device=capture_device)
 
-    assert state["coherence_errors"] == []
+    assert bool(state["coherence_errors"]) is parked
     health = _compose(transport=state)
-    assert health["signal_path"]["code"] != "transport_parked"
+    assert (health["signal_path"]["code"] == "transport_parked") is parked
 
 
 def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(

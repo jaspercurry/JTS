@@ -39,6 +39,7 @@ from jasper.fanin_coupling import (
     resolve_ring_path,
     ring_active_endpoint_armed,
 )
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 
 
 def transport_topology_for_coupling(
@@ -223,7 +224,7 @@ def transport_coherence_report(
     outputd_env: Mapping[str, str] | None = None,
     camilla_devices: Mapping[str, Any] | None = None,
     read_saved_topology: Callable[[], Any] | None = None,
-    post_dsp_only: bool = False,
+    allow_grouping_capture: bool = False,
 ) -> TransportCoherenceReport:
     """Return contradictions across the complete Camilla/outputd transport.
 
@@ -232,8 +233,8 @@ def transport_coherence_report(
     doctor checks. Missing Camilla evidence is not itself an error; a concrete
     contradiction is.
 
-    ``post_dsp_only`` scopes endpoint evidence to the output hop: a paired
-    active speaker's crossover captures Snapcast, not the fan-in program ring.
+    ``allow_grouping_capture`` admits the paired crossover's Snapcast input.
+    Other capture devices must still match the fan-in program ring.
 
     Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
@@ -347,7 +348,7 @@ def transport_coherence_report(
                 f"Camilla playback={playback_device!r}"
             )
     elif normalized in RING_TRANSPORT_SHAPES or normalized == TRANSPORT_DAC_CONTENT_RING:
-        if not post_dsp_only:
+        if not (allow_grouping_capture and capture_device == GROUPING_RING_PCM):
             expected_capture = str(
                 topology.fanin_to_camilla.get("camilla_capture_device") or ""
             )
