@@ -451,7 +451,7 @@ async def test_snapshot_keys_and_values():
     assert set(snap.keys()) == {
         "enabled", "parked_by_role", "unit_disabled", "last_probe_at",
         "last_probe_ok", "consecutive_failures", "restart_count",
-        "last_restart_at", "suppressed_count",
+        "last_restart_at", "suppressed_count", "last_restart_error",
     }
     assert snap["unit_disabled"] is False
     assert snap["enabled"] is True
@@ -593,16 +593,13 @@ async def test_default_restart_uses_broker_reset_then_manage(monkeypatch):
     assert calls == [
         (
             ("shairport-sync.service", "nqptp.service"),
-            {"reason": "shairport_supervisor"},
+            {"verb": "restart", "reason": "shairport_supervisor"},
         ),
     ]
 
 
 async def test_broker_refusal_does_not_count_as_restart(caplog, monkeypatch):
-    """A polkit denial or a nonzero systemctl exit from the broker must not
-    be credited as a restart: the count stays put and the failure is logged
-    with the broker's own result fields, so the next tick can retry as if
-    this attempt never happened."""
+    """A broker refusal is attempt-rate-limited but not counted as a restart."""
     def fake_reset_then_manage(*units, **kwargs):  # noqa: ARG001
         return {"ok": False, "rc": 1, "stderr": "denied"}
 
@@ -631,7 +628,9 @@ async def test_broker_refusal_does_not_count_as_restart(caplog, monkeypatch):
         await sup._tick()
 
     assert sup.restart_count == 0
-    fields = event_fields(caplog, "shairport_supervisor.restart_failed")
+    assert sup._last_restart_monotonic is not None
+    assert sup.last_restart_error == "denied"
+    fields = event_fields(caplog, "shairport.restart_failed")
     assert fields["rc"] == "1"
 
 
