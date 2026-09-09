@@ -21,6 +21,7 @@ import json
 import logging
 import shlex
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,9 @@ from jasper.active_speaker.candidate_bank import (
     banked_candidates,
     find_banked_candidate,
     publish_authored_candidate,
+)
+from jasper.active_speaker.baseline_profile import (
+    load_applied_baseline_profile_state,
 )
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
@@ -82,6 +86,18 @@ from jasper.active_speaker.crossover_v2.prescription_spool import (
     stage_prescription,
     staged_prescription_pending,
 )
+from jasper.active_speaker.crossover_v2.room_prescription import (
+    LAYOUT_UNAVAILABLE,
+    ROOM_MEDIAN_UNAVAILABLE,
+    ROOM_PRESCRIPTION_KIND,
+    RoomMedian,
+    RoomPrescription,
+    RoomPrescriptionRefused,
+    read_room_median,
+    read_room_prescription,
+    room_prescription_response_format,
+    room_prescription_to_candidate_fields,
+)
 from jasper.active_speaker.crossover_v2.round_inputs import (
     APPLIED_PROFILE_DEFAULT_PATH,
     DECLARED_GEOMETRY_DEFAULT_PATH,
@@ -91,9 +107,15 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     recent_round_sessions,
     round_inputs,
 )
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError,
+    ActiveSpeakerPreset,
+    SIDES_BY_LAYOUT,
+)
 from jasper.active_speaker.seat_level_reference import (
     seat_level_reference_volume_db,
 )
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 # One owner for how this tool is spelled under sudo: an SSH session gets no
 # EnvironmentFile and /opt/jasper/.venv is not on the default PATH.
 from jasper.active_speaker.tuning_handoff import ORIENTATION_COMMAND
@@ -119,6 +141,9 @@ SPOOL_UNREADABLE_REASON = "permission_denied"
 REASON_EVIDENCE_SOURCE = "evidence_source"
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
+#: Why a room prescription cannot be staged: the spool carries what the next
+#: ROUND applies, and a room set is not that -- it becomes a candidate.
+ROOM_NOT_STAGEABLE = "room_prescription_not_stageable"
 
 
 def _read_packet_file(path: Path) -> dict[str, Any]:
@@ -138,8 +163,22 @@ def _read_packet_file(path: Path) -> dict[str, Any]:
 
 
 def _cmd_compose(args: argparse.Namespace) -> int:
+    if bool(args.room_prescription) != bool(args.room_median):
+        return failed(
+            EXIT_UNREADABLE,
+            REASON_EVIDENCE_SOURCE,
+            "--room-prescription and --room-median go together: the document "
+            "is judged against the median it echoes, and neither half alone "
+            "is evidence",
+        )
     root = Path(args.root) if args.root else None
     try:
+        base = find_banked_candidate(args.base, root=root)
+        # The base's own preset is the layout: a composed child carries it,
+        # so its room set must be keyed by the sides that preset declares.
+        room_fields, room_sha256 = _composed_room(
+            args, SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
+        )
         sources = {}
         for value in args.role:
             role, separator, fingerprint = value.partition("=")
@@ -147,13 +186,19 @@ def _cmd_compose(args: argparse.Namespace) -> int:
                 raise CandidateBankRefusal("composition_role_invalid", "use one ROLE=FINGERPRINT per role")
             sources[role] = find_banked_candidate(fingerprint, root=root)
         candidate = compose_candidate(
-            find_banked_candidate(args.base, root=root), sources,
+            base, sources,
             alignment=find_banked_candidate(args.alignment, root=root) if args.alignment else None,
             blend=find_banked_candidate(args.blend, root=root) if args.blend else None,
             expected_effect=args.expected_effect,
             observation_refs=args.observation_ref,
             rationale=args.rationale,
+            room_correction=room_fields.get("room_correction"),
+            room_prescription_sha256=room_sha256,
         )
+    except RoomPrescriptionRefused as exc:
+        return _gate_refusal(exc)
+    except (CrossoverEvidencePacketError, OSError) as exc:
+        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         return failed(EXIT_REFUSED, exc.code, exc.detail)
     except (ValueError, TypeError, KeyError) as exc:
@@ -172,6 +217,133 @@ def _cmd_compose(args: argparse.Namespace) -> int:
     })
 
 
+def _room_median(path: Path) -> tuple[RoomMedian, str]:
+    """The median at ``path`` and the digest a prescription must echo.
+
+    The digest is over the BYTES read, not a re-serialization, so it names the
+    document this round was actually judged against. Every way the file can
+    fail to be evidence -- absent, unreadable, not JSON, not a median -- is
+    the door's own one reason.
+    """
+    try:
+        payload = read_source_bytes(str(path))
+        document = json.loads(payload)
+    except (OSError, ValueError, RecursionError) as exc:
+        raise RoomPrescriptionRefused(
+            ROOM_MEDIAN_UNAVAILABLE, f"{path}: {exc}"
+        ) from exc
+    return read_room_median(document), prescription_sha256(payload)
+
+
+def _room_median_path(args: argparse.Namespace, resolved: Path | None = None) -> Path:
+    """``--room-median``, or the round's own copy beside the evidence.
+
+    ``resolved`` is this invocation's own answer, threaded back from the gate
+    that already read it, so a later caller does not walk the round tree again.
+    """
+    if resolved is not None:
+        return resolved
+    if args.room_median:
+        return Path(args.room_median)
+    if args.session_dir:
+        round_dir = Path(args.session_dir)
+        return default_out(round_inputs(round_dir), round_dir, ROOM_MEDIAN_ARTIFACT)
+    raise RoomPrescriptionRefused(
+        ROOM_MEDIAN_UNAVAILABLE,
+        "a room prescription is judged against the round's spatial median: "
+        f"name it with --room-median <path>, or pass the round directory "
+        f"holding {ROOM_MEDIAN_ARTIFACT}",
+    )
+
+
+def _applied_profile_path(args: argparse.Namespace) -> Path | None:
+    """Where this invocation's applied-profile SSOT is.
+
+    :func:`_load_packet`'s own resolution -- the flag, else the round's own
+    copy -- with the on-box default standing in when ``--room-median`` alone
+    named the evidence and there is no round to ask.
+    """
+    if args.applied_profile:
+        return Path(args.applied_profile)
+    if args.session_dir:
+        return round_inputs(Path(args.session_dir)).applied_profile_path
+    return baseline_profile_state_path()
+
+
+def _layout_sides(args: argparse.Namespace) -> tuple[str, ...]:
+    """The side names this speaker's applied preset declares.
+
+    Read through ``load_applied_baseline_profile_state``, the same owner of
+    "what is this speaker playing" the packet builder reads. A propose that
+    cannot name the sides is not a dry run of the compose that will, so an
+    unreadable profile refuses here rather than assuming a layout.
+    """
+    path = _applied_profile_path(args)
+    profile = load_applied_baseline_profile_state(path) if path else None
+    snapshot = (profile or {}).get("recomposition_snapshot")
+    raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
+    if isinstance(raw, Mapping):
+        try:
+            return SIDES_BY_LAYOUT[
+                ActiveSpeakerPreset.from_mapping(dict(raw)).channel_map.layout
+            ]
+        except (ActiveSpeakerConfigError, KeyError, TypeError, ValueError):
+            pass
+    raise RoomPrescriptionRefused(
+        LAYOUT_UNAVAILABLE,
+        "a room prescription is keyed by the sides this speaker declares, and "
+        f"{path or 'no applied profile this round names'} does not declare them",
+    )
+
+
+def _room_gate(
+    document: Mapping[str, Any],
+    args: argparse.Namespace,
+    path: Path,
+    sides: Sequence[str],
+) -> RoomPrescription:
+    """The room door, against the median this invocation named.
+
+    The round id is the directory the evidence came from -- the round tree
+    when one was given, else the median's own parent -- because the candidate
+    field's basis names the round, and only the caller knows which one it is.
+    """
+    median, sha256 = _room_median(path)
+    round_id = (
+        Path(args.session_dir).name
+        if args.session_dir
+        else path.resolve().parent.name
+    )
+    prescription = read_room_prescription(
+        document,
+        room_median=median,
+        room_median_sha256=sha256,
+        round_id=round_id,
+        sides=sides,
+    )
+    if prescription is None:  # pragma: no cover - `document` is never None
+        raise RoomPrescriptionRefused(
+            BLEND_PRESCRIPTION_MALFORMED, "the prescription document was empty"
+        )
+    return prescription
+
+
+def _composed_room(
+    args: argparse.Namespace, sides: Sequence[str]
+) -> tuple[dict[str, Any], str]:
+    """The candidate fields ``compose`` contributes from a room prescription."""
+    if not args.room_prescription:
+        return {}, ""
+    payload = read_source_bytes(args.room_prescription)
+    prescription = _room_gate(
+        read_prescription_bytes(payload), args, _room_median_path(args), sides
+    )
+    return (
+        room_prescription_to_candidate_fields(prescription),
+        prescription_sha256(payload),
+    )
+
+
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     """The packet, as a value, separate from every verb's printing.
 
@@ -183,6 +355,14 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
     """
     if args.packet:
         return _read_packet_file(Path(args.packet))
+    if args.session_dir is None:
+        # Reachable only from the room class's own evidence flags: every other
+        # path resolved this in `_evidence_source_error`, which cannot know
+        # the document's kind because it runs before the document is read.
+        raise CrossoverEvidencePacketError(
+            "this prescription is judged against an evidence packet, so name "
+            "the round it answers: a session_dir, or --packet <packet JSON>"
+        )
     inputs = round_inputs(Path(args.session_dir))
     return build_crossover_evidence_packet(
         inputs.session_dir,
@@ -222,10 +402,12 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
     """ONE evidence source per invocation, or the sentence that says why not.
 
     ``--state`` is the exception, and only on ``stage``: that verb reads it for
-    the round ordinal and hard-refuses without it.
+    the round ordinal and hard-refuses without it. ``--room-median`` is an
+    evidence source in its own right -- a room prescription is judged against
+    the round's spatial median and needs no packet at all.
     """
     if not args.packet:
-        if args.session_dir is None:
+        if args.session_dir is None and not args.room_median:
             return (
                 "name the evidence: a session_dir to build the packet from, or "
                 "--packet <packet JSON> to judge against one already emitted"
@@ -246,6 +428,8 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
 
 
 PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
+#: The seat cube's median, written by ``jasper-round-views room-median``.
+ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
 
 
 def _cmd_packet(args: argparse.Namespace) -> int:
@@ -320,20 +504,38 @@ def _gate(
     args: argparse.Namespace,
 ) -> tuple[
     bytes,
-    BlendPrescription | DriverPrescription,
+    BlendPrescription | DriverPrescription | RoomPrescription,
     dict[str, Any],
     tuple[FeatureVerdict, ...] | None,
+    Path | None,
 ]:
-    """The document, the validated prescription, what it becomes, what judged it.
+    """The document, the prescription, what it becomes, what judged it, where.
 
     Shared WHOLE by ``propose`` and ``stage``, which is what makes the first a
-    true dry run of the second. The document's own ``kind`` picks the gate.
-    Raises ``BlendPrescriptionRefused`` (``EXIT_REFUSED``) or
-    ``CrossoverEvidencePacketError``/``OSError`` (``EXIT_UNREADABLE``).
+    true dry run of the second. The document's own ``kind`` picks the gate --
+    and, for the room class, the EVIDENCE too, which is why the document is
+    read before anything is built: a room prescription is measured against the
+    round's spatial median and a packet it never answered must not be built,
+    let alone required. Raises ``BlendPrescriptionRefused`` (``EXIT_REFUSED``)
+    or ``CrossoverEvidencePacketError``/``OSError`` (``EXIT_UNREADABLE``).
+
+    The last member is the room median this invocation resolved, handed back so
+    the receipt's home and the printed next command do not resolve it a second
+    time; ``None`` for every other class, which is judged against a packet.
     """
-    packet = _load_packet(args)
     payload = read_source_bytes(args.prescription)
     document = read_prescription_bytes(payload)
+    if document.get("kind") == ROOM_PRESCRIPTION_KIND:
+        median_path = _room_median_path(args)
+        room = _room_gate(document, args, median_path, _layout_sides(args))
+        return (
+            payload,
+            room,
+            room_prescription_to_candidate_fields(room),
+            None,
+            median_path,
+        )
+    packet = _load_packet(args)
     prescription: BlendPrescription | DriverPrescription | None
     classifications: tuple[FeatureVerdict, ...] | None = None
     if document.get("kind") == DRIVER_PRESCRIPTION_KIND:
@@ -368,7 +570,7 @@ def _gate(
         )
     # Candidate fields are computed INSIDE the gate above, because each seam
     # re-asks its own route and can refuse with the contract's exit code.
-    return payload, prescription, candidate_fields, classifications
+    return payload, prescription, candidate_fields, classifications, None
 
 
 #: What ``propose`` writes when no ``--out`` names somewhere else: the accepted
@@ -394,7 +596,7 @@ def _gate_refusal(exc: BlendPrescriptionRefused) -> int:
 
 
 def _admitted(
-    prescription: BlendPrescription | DriverPrescription,
+    prescription: BlendPrescription | DriverPrescription | RoomPrescription,
     candidate_fields: dict[str, Any],
     payload: bytes,
     out: Path,
@@ -437,6 +639,21 @@ def _evidence_words(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _compose_command(args: argparse.Namespace, median_path: Path | None) -> str:
+    """The ``compose`` invocation a room prescription becomes.
+
+    A room set is not an instruction for the next round: it is a candidate
+    field, so what follows ``propose`` is a composition against a banked base
+    rather than a staging. The base is the operator's choice and is left as a
+    placeholder.
+    """
+    return shlex.join([
+        PROG, "compose", "--base", "<base candidate fingerprint>",
+        "--room-prescription", args.prescription,
+        "--room-median", str(_room_median_path(args, median_path)),
+    ])
+
+
 def _stage_command(args: argparse.Namespace) -> str:
     """The ``stage`` invocation for this evidence, with the paths in hand.
 
@@ -457,7 +674,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     if source_error is not None:
         return failed(EXIT_UNREADABLE, REASON_EVIDENCE_SOURCE, source_error)
     try:
-        payload, prescription, candidate_fields, _ = _gate(args)
+        payload, prescription, candidate_fields, _, median_path = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     except BlendPrescriptionRefused as exc:
@@ -473,7 +690,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
         indent=2,
         sort_keys=True,
     ) + "\n"
-    out = Path(args.out) if args.out else _proposal_out(args)
+    out = Path(args.out) if args.out else _proposal_out(args, median_path)
     try:
         out.write_text(blob)
         size_bytes = out.stat().st_size
@@ -484,11 +701,15 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     _print_prescription(prescription, "accepted")
     return answered({
         **_admitted(prescription, candidate_fields, payload, out, size_bytes),
-        "next": _stage_command(args),
+        "next": (
+            _compose_command(args, median_path)
+            if isinstance(prescription, RoomPrescription)
+            else _stage_command(args)
+        ),
     })
 
 
-def _proposal_out(args: argparse.Namespace) -> Path:
+def _proposal_out(args: argparse.Namespace, median_path: Path | None) -> Path:
     """Beside the packet this document was judged against.
 
     A ``--packet`` file is already somewhere the operator can write; a rebuild
@@ -497,6 +718,11 @@ def _proposal_out(args: argparse.Namespace) -> Path:
     """
     if args.packet:
         return Path(args.packet).parent / PROPOSAL_RECEIPT_ARTIFACT
+    if args.session_dir is None:
+        # The room class's evidence is a file rather than a round, so the
+        # receipt lands beside the median it was judged against. Reached only
+        # after that gate accepted, which is what resolved ``median_path``.
+        return _room_median_path(args, median_path).parent / PROPOSAL_RECEIPT_ARTIFACT
     round_dir = Path(args.session_dir)
     return default_out(round_inputs(round_dir), round_dir, PROPOSAL_RECEIPT_ARTIFACT)
 
@@ -514,7 +740,9 @@ def _passband_phrase(role: str, lo: float, hi: float) -> str:
     return f"{role} {lo:.0f}-{hi:.0f} Hz"
 
 
-def _scope(prescription: BlendPrescription | DriverPrescription) -> str:
+def _scope(
+    prescription: BlendPrescription | DriverPrescription | RoomPrescription,
+) -> str:
     """What this prescription's filters were bounded BY, in one phrase."""
     if isinstance(prescription, DriverPrescription):
         return ", ".join(
@@ -586,7 +814,7 @@ def _vouch_phrase(prescription: DriverPrescription) -> str:
 
 
 def _print_prescription(
-    prescription: BlendPrescription | DriverPrescription,
+    prescription: BlendPrescription | DriverPrescription | RoomPrescription,
     verb: str,
     *,
     qualifier: str = "",
@@ -605,7 +833,10 @@ def _print_prescription(
         file=sys.stderr,
     )
     for entry in prescription.filters:
-        role = f"{entry['role']} " if "role" in entry else ""
+        # The per-driver class names a role and the room class a side; the
+        # summed blend class names neither, because it IS the sum.
+        named = entry.get("role") or entry.get("side") or ""
+        role = f"{named} " if named else ""
         # The entry's OWN type, and its Q only when the type has one: a
         # Lowshelf printed as a Peaking at a Q the emitter drops would be an
         # operator report disagreeing with the graph it describes.
@@ -663,7 +894,18 @@ def _cmd_stage(args: argparse.Namespace) -> int:
             "command cannot see",
         )
     try:
-        payload, prescription, candidate_fields, classifications = _gate(args)
+        payload, prescription, candidate_fields, classifications, median_path = (
+            _gate(args)
+        )
+        if isinstance(prescription, RoomPrescription):
+            # BEFORE the ordinal: what refuses is the CLASS, not the round it
+            # would have been staged for.
+            raise RoomPrescriptionRefused(
+                ROOM_NOT_STAGEABLE,
+                "the spool carries what the next ROUND applies, and a room "
+                "correction is not that: it becomes a candidate through "
+                f"`{_compose_command(args, median_path)}`",
+            )
         ordinal = _next_round_ordinal(args.state)
     except BlendPrescriptionRefused as exc:
         # FIRST. Every exception this handler names is a ``ValueError``
@@ -1270,6 +1512,19 @@ _PACKET_HELP = (
 )
 
 
+#: What ``--room-median`` is, and why the room class takes it instead of a
+#: packet: the summed packet answers questions about the crossover region,
+#: and a room prescription is bounded by the spatial median's own per-bin
+#: spread and ceiling.
+_ROOM_MEDIAN_HELP = (
+    "the round's room median JSON -- the per-bin median, spread and seat "
+    "deviations a room prescription is judged against. Required for a "
+    f"{ROOM_PRESCRIPTION_KIND} document; defaults to {ROOM_MEDIAN_ARTIFACT} "
+    "beside the round when a round directory was named. The document echoes "
+    "this file's sha256, so one answering a different median is refused"
+)
+
+
 def _prescription_fields() -> str:
     """The document's top-level fields, read off the contracts that gate it.
 
@@ -1284,6 +1539,7 @@ def _prescription_fields() -> str:
     for label, contract in (
         ("blend     ", prescription_response_format()),
         ("per-driver", driver_prescription_response_format()),
+        ("room      ", room_prescription_response_format()),
     ):
         required = ", ".join(sorted(contract["required_top_level"]))
         optional = ", ".join(sorted(contract["optional_top_level"]))
@@ -1293,7 +1549,8 @@ def _prescription_fields() -> str:
     lines.append(
         "  bounds, and what each field means: this round's packet, in its\n"
         "  response_format (blend) and driver_response_format (per-driver)\n"
-        "  blocks -- one owner, and it is the gate's own"
+        "  blocks, and the room contract served with the room median --\n"
+        "  one owner each, and it is the gate's own"
     )
     return "\n".join(lines)
 
@@ -1342,9 +1599,11 @@ def _add_evidence_args(
     )
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
+        parser.add_argument("--room-median", default=None, help=_ROOM_MEDIAN_HELP)
     else:
-        # So every verb's namespace answers the question `_load_packet` asks.
-        parser.set_defaults(packet=None)
+        # So every verb's namespace answers the questions `_load_packet` and
+        # the room door ask.
+        parser.set_defaults(packet=None, room_median=None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1408,8 +1667,20 @@ def build_parser() -> argparse.ArgumentParser:
     compose.add_argument("--expected-effect", default="", help="expected change; no measurement claim")
     compose.add_argument("--observation-ref", action="append", default=[], help="path or take reference to existing observations")
     compose.add_argument("--rationale", default="")
+    compose.add_argument(
+        "--room-prescription",
+        default=None,
+        help=(
+            f"a {ROOM_PRESCRIPTION_KIND} JSON document, or - for stdin. It is "
+            "re-judged here by the same gate `propose` ran and lands on the "
+            "composed candidate's room_correction field"
+        ),
+    )
+    compose.add_argument("--room-median", default=None, help=_ROOM_MEDIAN_HELP)
     compose.add_argument("--root", help="candidate source and output bank; defaults to the speaker's bank")
-    compose.set_defaults(func=_cmd_compose)
+    # `session_dir` so the room helpers can ask this namespace the same
+    # question they ask propose's and stage's.
+    compose.set_defaults(func=_cmd_compose, session_dir=None)
 
     status = sub.add_parser(
         "status",

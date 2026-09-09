@@ -263,6 +263,70 @@ def test_max_cut_db_array_shape_mismatch_raises():
         )
 
 
+# ---------- max_boost_db per-bin array ------------------------------------
+#
+# The room layer's boost ceiling tapers to zero below the correction ceiling
+# (jasper.audio_measurement.room_limits.boost_cap_db), so the boost bound is
+# per-bin for the same reason max_cut_db is.
+
+
+def test_max_boost_db_array_of_uniform_scalar_is_byte_identical_to_scalar():
+    """A uniform per-bin boost ceiling must produce EXACTLY the scalar
+    result, so the array machinery cannot perturb the scalar path."""
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = -(
+        _bell(freqs, fc=45.0, q=4.0, gain_db=10.0)
+        + _bell(freqs, fc=120.0, q=3.0, gain_db=9.0)
+    )
+    scalar_result = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, cuts_only=False,
+        f_high=400.0, max_boost_db=6.0,
+    )
+    array_result = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, cuts_only=False,
+        f_high=400.0, max_boost_db=np.full_like(freqs, 6.0),
+    )
+    assert len(scalar_result) == len(array_result)
+    assert len(scalar_result) >= 1
+    for a, b in zip(scalar_result, array_result):
+        assert a.freq == b.freq
+        assert a.q == b.q
+        assert a.gain == b.gain
+
+
+def test_max_boost_db_array_applies_a_local_cap_not_a_shared_one():
+    """Two equal dips, but the per-bin ceiling is tight only around the
+    second: the first fills to its natural depth, the second clamps."""
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = -(
+        _bell(freqs, fc=60.0, q=4.0, gain_db=5.0)
+        + _bell(freqs, fc=250.0, q=4.0, gain_db=5.0)
+    )
+    cap = np.full_like(freqs, 6.0)
+    cap[np.abs(np.log2(freqs / 250.0)) < 0.3] = 2.0
+    peqs = peq.design_peq(
+        measured, target_db, freqs, max_filters=5, cuts_only=False,
+        f_high=400.0, max_boost_db=cap,
+    )
+    near_60 = [p for p in peqs if abs(np.log2(p.freq / 60.0)) < 0.2]
+    near_250 = [p for p in peqs if abs(np.log2(p.freq / 250.0)) < 0.2]
+    assert near_60 and near_250
+    assert near_60[0].gain > 3.0  # not locally capped — free to fill the dip
+    assert all(p.gain <= 2.0 + 1e-6 for p in near_250)
+
+
+def test_max_boost_db_array_shape_mismatch_raises():
+    freqs = _log_freqs()
+    target_db = target.flat_target(freqs)
+    measured = _bell(freqs, fc=100.0, q=4.0, gain_db=6.0)
+    with pytest.raises(ValueError, match="max_boost_db"):
+        peq.design_peq(
+            measured, target_db, freqs, max_boost_db=np.array([3.0, 3.0]),
+        )
+
+
 def test_predicted_response_zero_for_empty_peqs():
     freqs = _log_freqs()
     pred = peq.predicted_response([], freqs)

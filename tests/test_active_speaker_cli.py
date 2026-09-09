@@ -858,7 +858,8 @@ def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
         return decision
 
     monkeypatch.setattr(
-        "jasper.cli.active_speaker.compose_selected_flat_graph", compose
+        "jasper.active_speaker.runtime_convergence.compose_selected_flat_graph",
+        compose,
     )
 
     code = main(

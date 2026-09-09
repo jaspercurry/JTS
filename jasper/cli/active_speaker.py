@@ -10,7 +10,7 @@ import argparse
 import asyncio
 import json
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, assert_never
 
@@ -20,7 +20,11 @@ from jasper.active_speaker.profile import (
 )
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_startup_config
-from jasper.active_speaker.environment import read_camilla_statefile_config_path
+from jasper.active_speaker.environment import (
+    DEFAULT_CAMILLA_STATEFILE,
+    probe_active_speaker_environment,
+    read_camilla_statefile_config_path,
+)
 from jasper.active_speaker.path_safety import (
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
@@ -28,17 +32,17 @@ from jasper.active_speaker.path_safety import (
     write_path_safety_evidence,
 )
 from jasper.active_speaker.calibration_level import load_calibration_level_state
-from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     PARKED_MUTED_STATUS,
-    apply_safe_graph_decision_to_statefile,
     parked_muted_exits,
     safe_graph_for_current_topology,
 )
-from jasper.active_speaker.runtime_convergence import compose_selected_flat_graph
+from jasper.active_speaker.runtime_convergence import (
+    converge_boot_statefile,
+)
 from jasper.active_speaker.staging import load_staged_startup_config
 from jasper.active_speaker.startup_load import (
     ReemitAnchorReport,
@@ -93,6 +97,16 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
+def _print_issues(
+    issues: Iterable[Mapping[str, Any]], *, key: str = "code", indent: str = "  "
+) -> None:
+    for issue in issues:
+        print(
+            f"{indent}[{issue.get('severity')}] {issue.get(key)}: "
+            f"{issue.get('message') or issue.get('detail')}"
+        )
+
+
 def _print_template_summary(payload: dict[str, Any]) -> None:
     print(f"Preset: {payload['preset_id']} ({payload['name']})")
     print(f"Topology: {payload['way_count']}-way {payload['layout']}")
@@ -130,8 +144,7 @@ def _print_path_audit_summary(payload: dict[str, Any]) -> None:
         print(f"- {path['id']}: {path['status']}")
     if payload["issues"]:
         print("Issues:")
-        for issue in payload["issues"]:
-            print(f"  [{issue['severity']}] {issue['path_id']}: {issue['message']}")
+        _print_issues(payload["issues"], key="path_id")
 
 
 def _print_environment_summary(payload: dict[str, Any]) -> None:
@@ -167,8 +180,7 @@ def _print_environment_summary(payload: dict[str, Any]) -> None:
     )
     if payload["issues"]:
         print("Issues:")
-        for issue in payload["issues"]:
-            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+        _print_issues(payload["issues"])
 
 
 def _cmd_startup_template(args: argparse.Namespace) -> int:
@@ -331,8 +343,7 @@ def _print_runtime_safe_graph_summary(
         # the third of the three surfaces that name the same exits agreeing on
         # one owner rather than two of them agreeing and one drifting.
         print(f"  next: {parked_muted_exits(topology)}")
-    for issue in payload.get("issues") or []:
-        print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+    _print_issues(payload.get("issues") or [])
 
 
 def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
@@ -341,88 +352,41 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
     # --coupling lets install.sh pass the live value explicitly; when omitted we
     # read the persisted intent from fanin.env (fail-safe to loopback), so a bare
     # operator run still seeds the right graph.
-    coupling = args.coupling
-    if coupling is None:
-        from jasper.fanin.ring_health import read_persisted_coupling
-
-        coupling = read_persisted_coupling()
-    topology = load_output_topology_strict(args.topology)
-    decision = safe_graph_for_current_topology(
-        topology,
+    result = converge_boot_statefile(
+        topology_path=args.topology,
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         flat_config_path=args.flat_config,
-        coupling=coupling,
-        applied_baseline_path=baseline_profile_state_path(
-            args.applied_baseline_state
-        ),
+        coupling=args.coupling,
+        applied_baseline_path=args.applied_baseline_state,
         staged_metadata_path=args.staged_metadata,
         consider_applied_baseline=not args.no_applied_baseline,
+        write_statefile=args.write_statefile,
     )
-    wrote = False
-    if args.write_statefile and decision.ok:
-        try:
-            decision = compose_selected_flat_graph(
-                decision,
-                topology=topology,
-                coupling=coupling,
-            )
-            wrote = apply_safe_graph_decision_to_statefile(
-                decision,
-                statefile_path=args.statefile,
-                # Same topology object the decision was made from, so the
-                # write-time all-muted re-proof cannot be answered by a
-                # second, differently-read topology.
-                topology=topology,
-            )
-        except (
-            ActiveSpeakerConfigError,
-            OSError,
-            RuntimeError,
-            ValueError,
-            TypeError,
-        ) as exc:
-            # Only the parked branch generates bytes, and it refuses to write
-            # anything it cannot re-prove all-muted. Fail the run: a statefile
-            # pointing at a config we would not write is worse than a red deploy.
-            print(f"Runtime graph decision: {decision.status}")
-            print(f"  ERROR: {exc}")
-            return 1
-    payload = decision.to_dict()
-    payload["statefile_written"] = wrote
+    if result.error is not None:
+        print(f"Runtime graph decision: {result.decision.status}")
+        print(f"  ERROR: {result.error}")
+        return 1
+    payload = result.decision.to_dict()
+    payload["statefile_written"] = result.statefile_written
     payload["statefile_path"] = args.statefile
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         _print_runtime_safe_graph_summary(
             payload,
-            wrote_statefile=wrote,
+            wrote_statefile=result.statefile_written,
             # The same topology the decision was made from, so the exits named
             # here cannot come from a second, differently-read topology.
-            topology=topology,
+            topology=result.topology,
         )
-    return 0 if decision.ok else 1
+    return 0 if result.decision.ok else 1
 
 
 def _baseline_reemit_endpoint(
     topology: Any, endpoint: str | None
 ) -> tuple[str | None, str]:
-    """Which playback endpoint this re-emit targets, and where that came from.
-
-    ``--endpoint ring`` is the explicit RE-EMIT-NOW verb: it moves the GRAPH
-    onto the ACTIVE ring, after which the marker derives from the graph and the
-    coupling follows. It is no longer a choice BETWEEN transports — the ring is
-    the only legal endpoint (``OUTPUTD_LEGAL_ENDPOINT_DEVICES``) — so there is
-    no ``aloop`` rollback arm to name. That direction was retired with the
-    snd-aloop ACTIVE lane's PCM definitions (#2534): naming it moved the anchor
-    onto a transport that does not exist, so the only thing it could still
-    produce was a park. Recovery is forward, by re-arming the ring.
-
-    Omitting it keeps the auto answer (``resolve_output_layout``, the single
-    chooser). Since that chooser now returns the ring unconditionally, omitting
-    and passing ``ring`` agree on the device and differ only in provenance —
-    which is why this still reports WHERE the answer came from.
-    """
+    """Return the playback device and whether it was explicitly requested."""
     from jasper.active_speaker.playback_route import resolve_active_playback_device
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
@@ -517,79 +481,12 @@ def _print_startup_anchor_reemit(
         )
     else:
         assert_never(report.reason)
-    for issue in report.issues:
-        print(
-            f"  [{issue.get('severity')}] {issue.get('code')}: "
-            f"{issue.get('message') or issue.get('detail')}"
-        )
+    _print_issues(report.issues)
     return 1
 
 
 def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
-    """Re-emit the APPLIED active baseline against a chosen playback endpoint.
-
-    WHY THIS EXISTS. The applied baseline is a roleful box's BOOT graph — the
-    statefile points at it, and ``safe_graph_for_current_topology`` preserves or
-    re-selects it on every deploy and every CamillaDSP restart. Its on-disk
-    artifact names whichever playback endpoint was resolved when it was emitted.
-    So after the active endpoint MOVES — the ring-v2 arm being the case that
-    creates this — the artifact still names the old lane, and the next Camilla
-    restart quietly de-arms the box: CamillaDSP writes snd-aloop while outputd
-    reads the ring, and the speaker goes silent with every daemon reporting
-    healthy.
-
-    AND IT IS THE BOOTSTRAP. The endpoint marker derives from the loaded graph;
-    the graph's device derives from the marker. That was a fixed point: at
-    marker-absent the pair could only reproduce itself, so a box could neither
-    arm nor release. ``resolve_output_layout`` no longer reads the marker, which
-    removes the circle; ``--endpoint ring`` remains the explicit re-emit-now verb
-    that moves the GRAPH first, which is why the arm ladder is
-    ``baseline-reemit --endpoint ring`` -> ``jasper-audio-hardware-reconcile``
-    (the marker derives 1) -> ``jasper-fanin-coupling-reconcile shm_ring``. It
-    has no mirror: the release direction was retired with the aloop endpoint.
-
-    ON THE APPLIED PATH it is a pure re-emit from the IMMUTABLE applied snapshot
-    — the same seam ``/sound`` and the commissioning host use — so Layer A is
-    rebuilt from the evidence that was applied, not from any current draft, and
-    the only thing that moves is the endpoint the graph is emitted against. The
-    ANCHOR path below has no immutable snapshot to rebuild from: it re-stages
-    from the box's CURRENT design draft and crossover preview, so a draft edited
-    since the anchor was last staged does land in the re-staged graph. That is
-    the same derivation the ``/sound`` wizard's own staging runs, through the
-    same bind/protection/all-muted gates, and the result is all-muted either way
-    — but it is a real difference between the two paths, not a shared "only the
-    endpoint moves" guarantee.
-
-    TWO GRAPH CLASSES ARE ACCEPTED, because a roleful box has two legal boot
-    graphs and both have to be able to take step 1:
-
-    * ``approved_active_runtime`` — a commissioned box's APPLIED baseline. The
-      path above.
-    * ``all_muted_active_startup`` — the all-muted startup ANCHOR a
-      mid-commission box boots from, which is the fleet-typical composite state
-      (no applied baseline yet). Re-staged from the box's own persisted design
-      draft and crossover preview by
-      :func:`jasper.active_speaker.startup_load.reemit_staged_startup_anchor`.
-
-    Precedence is applied-baseline-first: when a baseline exists it is re-emitted
-    and the anchor is left alone, so a commissioned box behaves exactly as it did
-    before the anchor path existed. Anything else — a parked graph, an
-    unrecognised class, a topology with no roleful outputs — is refused by name
-    rather than guessed at.
-
-    WHAT IT WRITES. By default, the artifact the statefile and the classifier
-    actually read: the applied profile's own ``config.path``. The bytes are
-    published atomically at the target's existing mode, the canonical
-    ``active_speaker_baseline.yml`` copy is refreshed, and the statefile is
-    pointed at the artifact (a no-op when it already is). Nothing is written
-    until the recomposed graph RE-PROVES as ``GRAPH_APPROVED_ACTIVE_RUNTIME``;
-    a refusal writes nothing at all and exits non-zero.
-
-    ``--out`` is a PREVIEW: it writes the emitted YAML to that path and touches
-    nothing else — no live artifact, no canonical copy, no statefile. The
-    re-proof still gates it, so a preview file is never a graph the contract
-    rejected.
-    """
+    """Re-emit the applied baseline, or re-stage the saved startup anchor."""
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,
         promote_applied_baseline_candidate,
@@ -666,11 +563,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     )
     if yaml is None or issues:
         print("ERROR: could not re-emit the applied baseline:")
-        for issue in issues or []:
-            print(
-                f"  [{issue.get('severity')}] {issue.get('code')}: "
-                f"{issue.get('message') or issue.get('detail')}"
-            )
+        _print_issues(issues or [])
         return 1
 
     # RE-PROOF before any byte lands. This graph is about to become the box's
@@ -690,11 +583,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
             f"{GRAPH_APPROVED_ACTIVE_RUNTIME} (got {graph.classification}); "
             "NOTHING was written"
         )
-        for issue in graph.issues:
-            print(
-                f"  [{issue.get('severity')}] {issue.get('code')}: "
-                f"{issue.get('message')}"
-            )
+        _print_issues(graph.issues)
         return 1
 
     preview_path = Path(args.out) if args.out else None
@@ -845,8 +734,7 @@ def _print_commission_load_summary(payload: dict[str, Any], *, dry_run: bool) ->
     issues = load.get("issues") or preflight.get("issues") or []
     if issues:
         print("  issues:")
-        for issue in issues:
-            print(f"    [{issue['severity']}] {issue['code']}: {issue['message']}")
+        _print_issues(issues, indent="    ")
     if not dry_run and load.get("status") == "loaded":
         print(
             "Armed at the protected floor (gain -120 dB, mute off) — SILENT. "
@@ -960,8 +848,7 @@ def _cmd_commission_rollback(args: argparse.Namespace) -> int:
     else:
         print(f"Commission rollback: {rollback.get('status')}")
         print(f"  reloaded staged boot config: {rollback.get('active_config_path')}")
-        for issue in rollback.get("issues") or []:
-            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+        _print_issues(rollback.get("issues") or [])
     return 0 if rollback.get("status") in {"rolled_back", "blocked"} else 1
 
 
@@ -992,8 +879,7 @@ def _print_ramp_step_summary(payload: dict[str, Any]) -> None:
             "`commission-ramp ack --outcome heard_correct_driver` (or too_loud / "
             "silent / heard_wrong_driver). `commission-ramp abort` re-mutes."
         )
-    for issue in payload.get("issues") or []:
-        print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+    _print_issues(payload.get("issues") or [])
 
 
 def _cmd_commission_ramp_step(args: argparse.Namespace) -> int:
@@ -1052,8 +938,7 @@ def _cmd_commission_ramp_ack(args: argparse.Namespace) -> int:
         rollback = payload.get("rollback")
         if rollback:
             print(f"  re-muted via rollback: {rollback.get('status')}")
-        for issue in payload.get("issues") or []:
-            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+        _print_issues(payload.get("issues") or [])
     return 0 if payload.get("status") in {"confirmed", "retry", "aborted"} else 1
 
 
@@ -1251,7 +1136,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runtime.add_argument(
         "--statefile",
-        default="/var/lib/camilladsp/outputd-statefile.yml",
+        default=str(DEFAULT_CAMILLA_STATEFILE),
         help="outputd CamillaDSP statefile to inspect/write",
     )
     runtime.add_argument(
@@ -1299,37 +1184,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     reemit = sub.add_parser(
         "baseline-reemit",
-        help=(
-            "re-emit this box's roleful boot graph against a playback endpoint, "
-            "publishing it over the live artifact and repointing the statefile. "
-            "This is the FIRST step of the active-ring arm (--endpoint ring), "
-            "which has no rollback: the reconciler derives its endpoint marker "
-            "from the loaded graph, so the graph must move first. "
-            "Accepts either roleful boot graph — an APPLIED baseline "
-            "(approved_active_runtime) on a commissioned box, or the all-muted "
-            "startup anchor (all_muted_active_startup) on a mid-commission one, "
-            "which is re-staged from the box's own saved design draft and "
-            "crossover preview. A baseline wins when both are present; any other "
-            "graph class is refused by name"
-        ),
-        # `help=` shows in the PARENT listing; `description=` is what an operator
-        # running `baseline-reemit --help` actually reads. The accepted graph
-        # classes are spelled from the runtime contract's own constants so this
-        # text cannot drift away from what the command really accepts.
+        help="re-emit the active baseline or all-muted startup anchor (--endpoint ring)",
         description=(
-            "Re-emit this box's roleful boot graph against a playback endpoint. "
-            "Two graph classes are accepted: "
-            f"'{GRAPH_APPROVED_ACTIVE_RUNTIME}' (a commissioned box's APPLIED "
-            "baseline, re-emitted from its immutable snapshot) and "
-            f"'{GRAPH_ALL_MUTED_ACTIVE_STARTUP}' (a mid-commission box's "
-            "all-muted startup anchor, re-staged from its own saved design draft "
-            "and crossover preview). An applied baseline takes precedence when "
-            "both are present. Any other graph class — a parked graph, an "
-            "unrecognised one, or a topology with no roleful outputs — is refused "
-            "by name rather than guessed at. This is the FIRST step of the "
-            "active-ring arm (--endpoint ring), which has no rollback: the "
-            "reconciler derives its endpoint marker from the loaded graph, so "
-            "the graph must move first."
+            f"Re-emit '{GRAPH_APPROVED_ACTIVE_RUNTIME}' from its applied snapshot, "
+            f"or re-stage '{GRAPH_ALL_MUTED_ACTIVE_STARTUP}' from the saved design "
+            "draft and crossover preview. An applied baseline takes precedence; "
+            "other graph classes are refused. Use --endpoint ring before hardware "
+            "and fan-in coupling reconciliation: the endpoint marker follows the "
+            "loaded graph. No rollback endpoint is supported."
         ),
     )
     reemit.add_argument(
@@ -1347,15 +1209,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint",
         choices=("ring",),
         help=(
-            "playback endpoint to emit against. 'ring' (the ACTIVE ring, "
-            "jts_ring_active_playback) is the only legal endpoint and so the "
-            "only choice: pass it to re-emit the graph onto the ring now. Omit "
-            "to keep the endpoint the box already resolves"
+            "emit against the ACTIVE ring; omit to use the resolved playback endpoint"
         ),
     )
     reemit.add_argument(
         "--statefile",
-        default="/var/lib/camilladsp/outputd-statefile.yml",
+        default=str(DEFAULT_CAMILLA_STATEFILE),
         help="CamillaDSP statefile to point at the re-emitted artifact",
     )
     reemit.add_argument(

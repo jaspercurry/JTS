@@ -1034,12 +1034,8 @@ def test_modules_do_not_redefine_the_shared_csrf_helpers():
 # update the allowlist in the same PR, never pass by accident. Delete an
 # entry outright once its module reaches 0.
 _INLINE_STYLE_ALLOWLIST = {
-    # Services cluster (C.A5): the four /assistant/ service pages each get an
-    # app.css-token pass as part of that row.
+    # Services cluster (C.A5): google is secrets-tier, handled separately.
     "google_setup.py": 7,
-    "home_assistant_setup.py": 1,
-    "transit_setup.py": 3,
-    "weather_setup.py": 2,
 }
 
 _INLINE_STYLE_RE = re.compile(r"""style=["']""")
@@ -1096,10 +1092,7 @@ _PAGE_MODULE = {
 # entry is B.2 re-parenting: the row now hangs under a hub while its page still
 # links Home, and the Phase C row that moves the page fixes the link.
 _TITLE_ALLOWLIST = {
-    ("/assistant/weather/", "Weather"): {"back"},                   # C.A5
-    ("/assistant/transit/", "Transit"): {"back"},                   # C.A5
     ("/assistant/google/", "Google"): {"back", "title", "header"},  # C.A5
-    ("/assistant/ha/", "Home Assistant"): {"back"},                 # C.A5
 }
 
 _SHELL_KIND = {"canonical_page": "title", "canonical_header": "header"}

@@ -950,3 +950,33 @@ def carrier_for_loaded_config(current_path, *, config_dir):
     if is_jts_generated_config(current_path, config_dir=config_dir):
         return _SoundOrCorrectionCarrier(current_path)
     return _UnknownCarrier(current_path)
+
+
+def eq_block_for_loaded_config(
+    profile,
+    *,
+    current_path,
+    config_dir,
+    output_trim_db: float = 0.0,
+) -> CarrierCannotHostEq | None:
+    """The refusal preference EQ would hit on the loaded graph, or ``None``.
+
+    ``can_host_eq`` alone is NOT the predicate: :class:`_ProgramBakeCarrier`
+    reports ``True`` and still refuses at ``reemit`` when grouping state
+    resolves no pipe sink, and an active baseline refuses inside its recompose.
+    So the probe is a dry-run re-emit — nothing is written without ``out_path``
+    — and this is the one owner of the question: the durable apply path's
+    pre-check and the /sound/eq/ page state both read it here, so they cannot
+    disagree about whether the loaded graph can host EQ.
+    """
+    carrier = carrier_for_loaded_config(current_path, config_dir=config_dir)
+    if carrier.can_host_eq and carrier.kind not in {
+        "active",
+        "active_leader_program_bake",
+    }:
+        return None
+    try:
+        carrier.reemit(profile, output_trim_db=output_trim_db)
+    except CarrierCannotHostEq as refusal:
+        return refusal
+    return None

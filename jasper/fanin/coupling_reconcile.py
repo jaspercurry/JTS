@@ -46,10 +46,13 @@ from pathlib import Path
 from typing import IO
 
 from jasper.atomic_io import (
+    CONFIG_FILE_MODE,
+    ENV_FILE_LOCK_TIMEOUT_SECONDS,
     advisory_file_lock,
     atomic_write_text,
+    env_key_action,
     env_lock_path,
-    read_regular_bytes_nofollow,
+    locked_upsert_env_file,
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
@@ -136,13 +139,6 @@ _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 ENTRY_LOCK_PATH = "/run/jasper-fanin-coupling.lock"
 ENTRY_LOCK_TIMEOUT_SECONDS = 10.0
 ENTRY_LOCK_POLL_SECONDS = 0.2
-
-# Bound on the PER-FILE advisory lock :func:`_write_env_actions` takes on
-# fanin.env/outputd.env (``atomic_io.env_lock_path``) — matches the bash
-# env-file writer's own `flock -w 10` (deploy/lib/jasper-env-file.sh) so a
-# hot-path Python reconcile cannot block forever on
-# ``advisory_file_lock``'s default (``LOCK_EX``, no ``LOCK_NB``).
-ENV_FILE_LOCK_TIMEOUT_SECONDS = 10.0
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]
@@ -1763,7 +1759,12 @@ def _restore_snapshot(snapshot: _EnvSnapshot) -> None:
             timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS,
         ):
             if snapshot.existed:
-                atomic_write_text(snapshot.path, snapshot.text)
+                atomic_write_text(
+                    snapshot.path,
+                    snapshot.text,
+                    mode=CONFIG_FILE_MODE,
+                    preserve_target_owner=True,
+                )
             elif snapshot.path.exists():
                 snapshot.path.unlink(missing_ok=True)
     except OSError:
@@ -1776,40 +1777,18 @@ def _write_env_actions(
 ) -> tuple[str, bool]:
     """Fold ``build_actions`` onto ``path`` under its per-file advisory lock.
 
-    That lock is the SAME one the bash env-file writers take
-    (``atomic_io.env_lock_path`` == ``jasper_env_lock_path`` in
-    ``deploy/lib/jasper-env-file.sh``) — NOT :data:`ENTRY_LOCK_PATH`, which
-    only serializes this process's own reconcile passes against each other.
-    ``build_actions`` runs against the FRESH text read while the lock is
-    held, not a stale pre-lock snapshot, so a concurrent bash write to the
-    same file is folded in rather than lost (ADR-0235 G8).
-
-    Operates on TEXT via :func:`_apply_actions`, not a parsed dict — unlike
-    ``atomic_io.locked_transform_env_file``, which round-trips through a
-    ``dict[str, str]`` and would silently drop a co-reader's comments and
-    blank lines. This module's callers must keep those (see
-    ``jasper.env_file``'s docstring); a plain ``advisory_file_lock`` plus the
-    SAME read/apply/write shape :func:`_write_env_text` used unlocked gets
-    the cross-process exclusion without that loss.
-
-    An empty result deletes the file, mirroring the old ``_write_env_text``.
-    Raises ``OSError`` on a write failure or a lock-acquire timeout
-    (``TimeoutError`` is one) — callers already handle ``OSError`` from the
-    old unlocked write.
+    The shared text-preserving writer, in this module's ``RuntimeEnvAction``
+    vocabulary. An empty result deletes the file, mirroring the old
+    ``_write_env_text``. Raises ``OSError`` on a write failure or a
+    lock-acquire timeout (``TimeoutError`` is one) — callers already handle
+    ``OSError`` from the old unlocked write.
     """
-    with advisory_file_lock(
-        env_lock_path(os.fspath(path)), timeout_sec=ENV_FILE_LOCK_TIMEOUT_SECONDS
-    ):
-        try:
-            text = read_regular_bytes_nofollow(path).decode("utf-8")
-        except FileNotFoundError:
-            text = ""
-        new_text, changed = _apply_actions(text, build_actions(text))
-        if new_text:
-            atomic_write_text(path, new_text)
-        elif path.exists():
-            path.unlink(missing_ok=True)
-    return new_text, changed
+    return locked_upsert_env_file(
+        path,
+        lambda text: [env_key_action(action) for action in build_actions(text)],
+        mode=CONFIG_FILE_MODE,
+        delete_when_empty=True,
+    )
 
 
 def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
