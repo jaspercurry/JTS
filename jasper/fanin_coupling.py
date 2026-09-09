@@ -318,12 +318,10 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # checking, so a Camilla graph pointed at the wrong ring would define itself
 # correct.
 TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
-# One END of the box is off the one transport (ADR-0100) — the LEGACY FIFO
-# spelling of the round-trip ``dac_content`` lane, which outputd requires
-# ``CONTENT_BRIDGE=direct`` for, or a coupling/bridge a daemon parks on. Not a
-# second route: jasper.control.transport_park is what names such a box. The
-# ring MARKER's shape is NOT this one — see TRANSPORT_DAC_CONTENT_RING below,
-# which is served.
+# One END of the box is off the one transport (ADR-0100): a coupling or bridge
+# declaration a daemon parks on. Not a second route: jasper.control.transport_park
+# is what names such a box. The ring MARKER's shape is NOT this one — see
+# TRANSPORT_DAC_CONTENT_RING below, which is served.
 TRANSPORT_OFF_RING = "off_ring"
 # A DUMB bonded member: outputd's content comes off the dac-content RETURN ring
 # and no CENTRAL post-DSP ring is attached at all. Its own shape rather than

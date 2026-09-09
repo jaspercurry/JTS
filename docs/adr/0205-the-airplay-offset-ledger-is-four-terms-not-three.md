@@ -1,7 +1,11 @@
 # ADR-0205: The AirPlay offset ledger is four terms, not three
 
 - **Date:** 2026-08-31
-- **Status:** Accepted
+- **Status:** Accepted. `ring_a_frames`' first-choice term (fan-in's
+  `output.snd_pcm_delay_frames`) is superseded by
+  [ADR-0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md),
+  which deletes the field; the ring-occupancy tier below it is now the
+  first. The four-term ledger and every other term stand.
 
 ## Context
 

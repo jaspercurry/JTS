@@ -1640,10 +1640,10 @@ def test_stopped_camilla_outranks_the_deafness_it_causes() -> None:
 def test_a_park_outranks_the_deafness_it_causes() -> None:
     """A parked lane IS a lane with no producer, so it reads deaf by design.
 
-    `grouped_dac_content_lane` parks a box whose armed round-trip lane "has no
-    producer" — outputd zero-fills it forever. Letting `output_deaf` stand
-    would replace a structural verdict carrying its own rebuild issue with
-    "Try Restart audio", which cannot clear it.
+    `dac_content_marker_beside_bridge` parks a box outputd refuses to start,
+    so it zero-fills forever. Letting `output_deaf` stand would replace a
+    structural verdict carrying its own rebuild issue with "Try Restart
+    audio", which cannot clear it.
     """
     for park in _live_parks():
         health = compose_audio_health(
@@ -4392,7 +4392,6 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
     # sentence — which is exactly where a unit name is allowed to live.
     assert {row["key"] for row in rows} == {
         "monitor.mux_status_unavailable",
-        "path.transport_park.grouped_dac_content_lane",
         "path.transport_park.mono_full_range",
         "path.transport_park.passive_stereo_composite",
         "path.transport_park.roleful_active_endpoint_unconverged",

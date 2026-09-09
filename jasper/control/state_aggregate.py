@@ -200,16 +200,10 @@ def _build_usbsink_renderer_state(
     if not input_state or input_state.get("source") != FANIN_INPUT_SOURCE_DIRECT:
         return None
     return {
-        "combo": True,
         "playing": usbsink_direct_audible(fanin_status),
-        # Compatibility fields retained for lightweight dashboard consumers.
-        # Fan-in's `muted` is the actual arbitration state; there is no second
-        # bridge process with an independent preemption state or timestamp.
-        "preempted": False,
         "muted": usbsink_direct_muted(fanin_status),
         "host_connected": bool(host_connected),
         "rms_dbfs": usbsink_direct_rms_dbfs(fanin_status),
-        "updated_at": None,
     }
 
 

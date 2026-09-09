@@ -906,12 +906,12 @@ def test_cli_analyze_prints_route_health_deltas_and_the_window_verdict(tmp_path,
         json.dumps(
             {
                 "before": {
-                    "fanin": {"output": {"xrun_count": 0}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 0}},
                 },
                 "after": {
-                    "fanin": {"output": {"xrun_count": 2}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 2}},
                 },
             }
         ),
@@ -929,7 +929,7 @@ def test_cli_analyze_prints_route_health_deltas_and_the_window_verdict(tmp_path,
     assert rc == 0
     out = capsys.readouterr().out
     assert "NOT clean" in out
-    assert "fanin.output.xrun_count: +2" in out
+    assert "outputd.dac.xrun_count: +2" in out
 
 
 def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
@@ -950,13 +950,13 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
             {
                 "before": {
                     "captured_at_monotonic_ns": 1_000,
-                    "fanin": {"output": {"xrun_count": 0}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 0}},
                 },
                 "after": {
                     "captured_at_monotonic_ns": 999_999_999,
-                    "fanin": {"output": {"xrun_count": 1}},
-                    "outputd": {},
+                    "fanin": {},
+                    "outputd": {"dac": {"xrun_count": 1}},
                 },
             }
         ),
@@ -974,7 +974,7 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The real counter delta is printed...
-    assert "fanin.output.xrun_count: +1" in out
+    assert "outputd.dac.xrun_count: +1" in out
     # ...but the timestamp leaves are not.
     assert "captured_at_monotonic_ns" not in out
 

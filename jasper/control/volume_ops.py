@@ -21,8 +21,6 @@ from ..spotify_oauth import (
 from ..volume_curve import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
-    db_to_percent,
-    percent_to_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,18 +46,6 @@ class _SpotifyEmptyRouterCache:
 
 _spotify_empty_router_cache: _SpotifyEmptyRouterCache | None = None
 _spotify_empty_router_cache_lock = threading.Lock()
-
-
-def _clamp_db(db: float) -> float:
-    return max(VOLUME_MIN_DB, min(VOLUME_MAX_DB, float(db)))
-
-
-def _db_to_percent(db: float) -> int:
-    return db_to_percent(db)
-
-
-def _percent_to_db(percent: int) -> float:
-    return percent_to_db(percent)
 
 
 def read_volume_state() -> "VolumeState":

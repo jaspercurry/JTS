@@ -798,11 +798,7 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # (The former JASPER_OUTPUTD_SNAPFIFO_PATH exception was dropped
     # 2026-06-11: the outputd-as-producer machinery was REMOVED — the
     # canonical design feeds the snapserver pipe from the leader's
-    # CamillaDSP, so the env is no longer written anywhere. The former
-    # JASPER_OUTPUTD_DAC_CONTENT_FIFO exception was dropped the same day
-    # in the opposite direction: Increment 3 landed the outputd reader,
-    # so the name is now LIVE Rust-read config, exactly as this guard's
-    # bidirectional contract demands.)
+    # CamillaDSP, so the env is no longer written anywhere.)
     # Python-consumer-side override of where mux CONNECTS; fanin's own
     # bind path is a hardcoded Rust constant (see
     # test_control_socket_paths_agree_across_processes). Setting this
@@ -829,12 +825,7 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # ABSENT is the steady state. The ONE surviving mention is
     # jasper/audio_runtime_plan.py's retired-route describer, which reads the
     # key with an absent-key default — the state every reconciled box is in.
-    # REMOVAL CONDITION: goes when that describer goes. Retiring the describer
-    # ALSO means retiring the reconciler's endpoint-contract gate, which
-    # resolves the retired pairing map on every pass and exits 66 when it
-    # misses: dropping that map entry while the gate stands parks every box on
-    # every reconcile (see jasper/camilla_config_contract.py). Delete this entry
-    # then, and this guard fails until someone does.
+    # REMOVAL CONDITION: goes when that describer goes.
     "JASPER_OUTPUTD_CONTENT_PCM": "retired lane; read with a default by the park describer, written by nothing",
     # The removed transport_pipe coupling's outputd key. The Rust
     # local_content_pipe path was deleted with the coupling, so it is not

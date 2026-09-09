@@ -55,7 +55,6 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
-    RETIRED_ALOOP_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
@@ -68,10 +67,11 @@ from jasper.fanin_coupling import (
     TRANSPORT_RING,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
-from tests.transport_camilla_fixtures import FakeCamilla
+from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE, FakeCamilla
 
 ROUTE_LOGGER = "jasper.active_speaker.playback_route"
 STAGING_LOGGER = "jasper.active_speaker.staging"
+
 
 
 # --------------------------------------------------------------------------
