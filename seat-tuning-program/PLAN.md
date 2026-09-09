@@ -13,6 +13,12 @@ issue:** [#4502](https://github.com/jaspercurry/JTS/issues/4502). **Where this l
 Decisions live in `docs/adr/` on `main`; this file holds the vision, the plan,
 the wave rows, the coordination rules and the status log.
 
+**Owner update, 2026-09-09:** §§1–3 and Wave 2b define the next delivery.
+Earlier briefs and status entries describe earlier scope; refresh them before
+dispatch. The 11-position cloud and earlier stereo room support are agreed.
+Correction above the current room ceiling is a research question (§1c), not
+an approved filter policy or a permanent exclusion from Room.
+
 ## How to resume from a fresh session
 
 1. `git fetch origin main claude/loudspeaker-tuning-architecture-iephfa`; read this
@@ -22,58 +28,127 @@ the wave rows, the coordination rules and the status log.
 4. Every wave is one fresh session per lane, working from a brief the
    orchestrating session writes; that session reviews the merged diff before
    the next brief. Verify every `file:line` at your HEAD — the tree wins.
+   Do not reuse a rebase command from a handoff without checking current refs.
 
 ## 1. Vision
 
-One methodology, one toolbox, three programs. A person plugs a UMIK-2 into the
-Pi, opens jts.local, and brings an LLM. The LLM uses the toolbox to measure the
-speaker on and off axis, gated, and gets the drivers and crossover right (the
-speaker stage). The speaker goes to its listening position. The LLM measures a
-cube around the listener's head, ungated, and corrects the low band the room
-owns — cuts for modes, admitted boosts for persistent dips, and a
-volume-scheduled bass extension that uses the room's own gain — while the
-speaker's direct sound above the ceiling stays exactly as the speaker stage left
-it (the room and bass stages). Each stage is the same loop: measure at
-positions, analyze, propose, apply, re-measure. Only the poses, the window, the
-views and the candidate vocabulary change. The code computes and protects; the
-LLM judges; the human moves the microphone and listens.
+One methodology, one toolbox, three user programs. The code computes and
+protects; an external LLM chooses experiments and judges the evidence; the
+human places the microphone, starts each pose batch, and listens.
 
-It is an open-source version of Dutch & Dutch Room Matching built on Balázs
-Bank's method (AES 134, 2013), on hardware the software does not choose: a
-passive 1-way, a 2-way, a 3-way, a 3-way with a cardioid bass channel, one
-cabinet or a stereo pair on one DAC.
+| Program | Question and output |
+|---|---|
+| Speaker tuning | Tune drivers, crossover, timing and direct-sound response from suitable on/off-axis measurements. Save the accepted speaker tune. Defer fine low-frequency EQ where gating cannot support it; keep driver protection throughout. |
+| Room correction | Put the speakers in their final locations and measure around the listener's head through the saved speaker tune. Correct each cabinet's room response within its established capability. Low-frequency correction is the first delivery; evidence-based upper-band correction remains open (§1c). Save separate room filters per side. |
+| Bass extension, optional | Use available level margin to extend bass at low and medium listening levels, with less extension as volume rises. Save a per-cabinet family and its tested level limits. Amplifier margin alone does not establish driver travel or thermal limits. |
 
-| | Bank 2013 | Dutch & Dutch Room Matching | JTS (this plan) |
-|---|---|---|---|
-| Speaker's direct sound | gated in-room IR, corrected at high resolution | factory anechoic reference per unit; factory FIR linearizes crossover phase | gated per unit in the speaker stage; FIR only if a structure-first campaign proves excess phase |
-| Where the room is measured | listening area, several positions; remote points bound the gain | a cube around the head: centre plus six face centres ~30 cm out; averaged | the seat cube as a measurement program; median as trend, spread as confidence |
-| What is corrected in-room | below a transition set by the gate achieved; minimum-phase IIR | low frequencies only; built-in parametric EQ | below the applied tune's trusted floor (ADR-0256); minimum-phase biquads |
-| Target | 4th-order high-pass at 30 Hz | flat, optional +1 dB/oct room curve below 100 Hz | flat below the ceiling with a taper; extension corners as bass rungs; tilt is Layer 4 |
-| Nulls | limit gain | don't boost, move | boost only into spatially persistent, modally plausible dips; N ≥ 3 |
-| Bass and the wall | not addressed | rear woofers < 100 Hz coupled to the front wall at 10–50 cm; app takes wall distance and area first | LF boost policy of the in-room correction + volume schedule; a boundary prior from declared geometry |
-| Who judges | the engineer | REW auto-EQ | the LLM, with code-owned hard stops |
+All three use the same measure → analyze → propose → trial → re-measure loop
+and the same explicit candidate adoption. Room does not depend on completing
+bass extension. Extension can reuse compatible room evidence for fitting,
+but needs its own level and sustain evidence. After adding extension, verify
+the complete low-frequency chain and revise the room filters if needed.
+
+Bank's [AES 134 paper](https://dsp.mit.bme.hu/userfiles/publikaciok/bank_aes134.pdf)
+supports correcting direct sound and then the combined low-frequency response
+through the first correction. Its 30 Hz target is an example, not a driver
+limit. Multiple-position design is proposed in §4.3; spatial robustness and
+formal listening tests remain future work in the paper. JTS adds its own
+spatial program and protection work; it is not a proven copy of Bank or Dirac.
+
+### 1a. The default room cloud
+
+Use 11 positions around the head: a 3 × 3 grid at ear height, plus centre-above
+and centre-below. Offsets are `(right, forward, up)` in metres. Start at 0.30 m:
+all combinations of right/forward in `{-0.30, 0, +0.30}` with up `0`, then
+`(0, 0, +0.30)` and `(0, 0, -0.30)`. Walk each front/middle/back row across
+left/centre/right, then the two vertical positions. Keep speakers fixed.
+
+This is the owner's chosen default, not a universal optimum. Dutch & Dutch's
+[written guide](https://support.dutchdutch.com/how-to-take-your-musical-enjoyment-from-great-to-incredible-rew-roommatching-guide/)
+uses seven positions for one listener and allows more; the recalled 11-point
+video has not been identified. The current program remains seven-point until
+row 2.7 lands; existing rounds retain their original coordinates. One registry
+owns the new pose list and default spacing; the UI, CLI and LLM menu consume
+it. Bank actual coordinates and program identity. Poses remain flexible.
+
+At each position, measure left alone, then right alone under one Start grant.
+Thus stereo has 11 placements and 22 baseline sweeps; mono has 11 sweeps.
+Each cabinet plays its complete accepted speaker tune. Keep side, candidate,
+played graph, scope, level and calibration distinct; repeats are not new
+positions. Publish median, spread and individual curves per side and tune.
+Use the actual unique-position count for persistence fractions, not a fixed
+five-of-seven rule. Check the pair together when its combined response is the
+remaining question; never substitute that capture for separate-side evidence.
+
+### 1b. Entry and resume
+
+The Room correction tab is a small entry page: **Copy instructions**, the
+accepted speaker tune and room-session status, and **Continue measurement**.
+The instructions identify the device/side, tune, saved round and toolbox entry
+point, and link the one maintained method. They do not duplicate the runbook
+or assume that a pasted prompt grants an LLM access to local tools. Use the
+existing placement/Start screen, recording store, plots and apply/restore path.
+No second wizard, LLM client, session runner or database. Bass extension is a
+separate optional entry into those same tools; subjective voicing stays separate.
+
+### 1c. Research: room correction above the current ceiling
+
+The owner wants Room to consider useful mid/treble correction, informed by the
+saved gated and off-axis speaker measurements as well as the seat cloud.
+Dirac is a research reference, not a promised implementation match.
+This resumes the question in `docs/room-correction-regime-plan.md` D2; its old
+1 kHz proposal and numeric bounds are not newly accepted policy.
+
+Compare compatible records of the exact applied tune over a shared trusted
+band, with a disclosed scalar level reference. A seat magnitude minus a gated
+magnitude is not a uniquely isolated room transfer function: distance, angle,
+directivity and reflected energy differ. Do not use frequency-shaped alignment
+to erase the deviation being tested, or infer phase cancellation from a spatial
+magnitude median. Missing compatibility removes the attribution claim, not the
+ability to take another useful measurement.
+
+Research broad, spatially stable trends and bounded filters first, using the
+speaker's direct-sound and off-axis evidence to interpret them. A flat gated
+target is not automatically the right in-room target. Narrow moving dips do
+not establish a correctable defect. Compare prediction, room measurements,
+direct-sound effects and listening at matched levels; report each separately.
+Uncertain benefit is a disclosure, not a safety stop. Exact filter bounds,
+upper frequency, target and any phase correction remain to be decided from
+the research and experiments; this plan changes no runtime ceiling or clamp.
+
+Source basis: [Toole, JAES 2015](https://aes.org/publications/elibrary-page/?id=17839)
+explains why an in-room curve alone cannot identify loudspeaker quality or a
+unique correction. [Dirac's technical white paper](https://www.dirac.com/wp-content/uploads/2025/07/Dirac-Live-Whitepaper.pdf)
+describes gain-limited, multi-position mixed-phase correction, including excess
+phase common across positions. That is a manufacturer's method claim, not
+independent proof of benefit for JTS; ordinary PEQ cannot claim the same phase
+control. Research can begin now; any experiment needing a new filter/scope
+first needs that bounded capability, not a blanket full-band enablement.
 
 ## 2. Principles (each has an ADR or a doctrine line)
 
 - **One loop, one toolbox.** Speaker, room and bass are programs, views and
   candidate kinds of the one engine, not separate products. (ADR-0259, Wave 0b.)
-- **The seam is the ceiling.** Above it the speaker stage has authority and the
-  room layer does nothing. Below it, speaker, room and bass are corrected
-  together on the seat cube, through the applied tune. The ceiling is the
-  applied candidate's trusted floor, clamped and disclosed (ADR-0256).
+- **Separate current policy from future scope.** ADR-0256 owns today's
+  low-band ceiling. Disclose clamping, any gap below the speaker's trusted
+  floor, and filter tails; do not promise exactly zero change above it.
+  §1c explores an upper room tier without changing the accepted speaker tune
+  or silently widening current emission. Amend the relevant ADR before that
+  policy is implemented; the research does not hold up the low-band release.
 - **Layers by graph composition.** A capture for layer N plays through N and
   below and nothing above (`docs/measurement-loop-doctrine.md` §1a). Layers:
   1 speaker · 2 bass · 3 room · 4 preference (never measured).
 - **Flexible poses, categorized.** A take carries its kind, distance, bearing
   or seat offset, and window. Gated bearings at ~1 m answer speaker questions
   above the trusted floor; a close take at ~0.3 m is the room-suppressed
-  reference (`round-views close-reference`, kept); the ungated seat cube answers
+  reference (`round-views close-reference`, kept); the ungated seat cloud answers
   speaker-plus-room questions. The LLM reads the category and weighs the take.
   No pose is forbidden; none is required. (ADR-0260.)
-- **No nearfield rung.** Bass extension is fitted on the seat-cube median to an
-  extended-corner target (Bank's own target shape). Protection comes from
-  declared plant facts, the in-room distortion-versus-level ladder and the
-  limiter evidence. (ADR-0260.)
+- **Fit is not protection proof.** The seat-cloud fit includes room gain.
+  It does not measure driver displacement or heat. Keep the digital boost
+  budget, declared physical limits, distortion/level ladder and limiter
+  evidence distinct; no invented excursion margin. Close-mic remains optional
+  (ADR-0260); a protection revision belongs in its own ADR and reviewed row.
 - **Two keys, always.** Output side × driver role (ADR-0258). Cardioid is a
   variant of the bass role with per-region band, delay, polarity and level.
 - **Wired only** (ADR-0255). The Pi plays and records; the browser is a
@@ -87,84 +162,57 @@ cabinet or a stereo pair on one DAC.
   row + a methodology pointer. This program adds programs, views, candidate
   kinds and emitter stages; it does not restructure the engine's session or flow.
 
-## 3. Three programs, one seam
+## 3. Engineering ownership (distinct from the user programs)
 
 | Program | Owns |
 |---|---|
 | Right-size (cleanup agent) | size and shape of `jasper/active_speaker/`; helper convergence; write-only records; the web-twin dissolution; decision D13 |
 | Tuning flow (its agent) | the speaker stage as a product: the walk, the structure-first campaign (ADR-0203), operator views, the side-solo capture graph |
-| **Seat-matched tuning (this)** | everything below the ceiling and per cabinet: the seat-cube program and pose vocabulary, room views and candidate kind, bass views, scheduled candidate kind, protection ladder, runtime scheduler, one headroom budget, per-side emission, the boundary prior — and the retirement of the room product and the bass wizard plan |
+| **Seat-matched tuning (this)** | the room cloud, per-cabinet room evidence/candidates/emission, bass fit and protection, optional extension schedule, shared headroom integration, entry page and upper-room research |
 
 Rule of engagement: rows here add to `measurement_programs.py`,
 `ARTIFACT_BY_VIEW`, the candidate bank, and the emitter. An engine change is a
-request to the tuning-flow agent, not a change made here. The active emitter is
-wanted by all three; rows 5.1 and 6.1 wait for it to be quiet.
+request to the tuning-flow owner with concrete inputs, outputs and behavior
+tests. Agree one writer before either lane edits shared files; an active branch
+is not permission to overlap it. The engine owns protected capture, provenance,
+candidate identity, trial, adoption and restore. Programs own poses, views,
+targets and candidate vocabulary. Bass owns its protection evidence and level
+policy, not another apply path. One emitter owns the complete graph and boost
+budget. Saved speaker tunes are inputs to Room, not files Room retunes.
 
-## 4. Engine facts this plan leans on (main `a809d71c6`, 2026-09-08)
+## 4. Current integration facts (main `f575fe364`, 2026-09-09)
 
-- Clouds and combination exist in the speaker engine:
-  `jasper/active_speaker/crossover_v2/spatial.py` (`cloud_position_*`,
-  `cloud_validity_floor_hz`), `jasper/audio_measurement/spatial_combine.py:1442`.
-- Programs are a registry with a pose vocabulary
-  (`jasper/active_speaker/measurement_programs.py`: `ProgramPose`,
-  `MeasurementProgram`, `_PROGRAMS`, `spot_program`). Poses are bearings;
-  distance is a pinned constant (`mark_distance_m = 1.0`, see
-  `jasper/cli/round_views/close_reference.py:24`).
-- The layering rule is enforced in `crossover_v2/session_graph.py`.
-- The applied candidate carries the trusted floor (`exclusion_evidence`) and is
-  persisted whole (`baseline_profile.py:3562`). No cross-package reader needed.
-- Emitters: active has one room PEQ stage pre-split on both channels
-  (`active_speaker/camilla_yaml.py:1790-1809`, `:1927-1931`); flat has
-  `room_peqs_right` (`sound/camilla_yaml.py:344-375`). One headroom gain absorbs
-  room and linearization boosts; bass boost is emitted per driver
-  (`camilla_yaml.py:497-610`).
-- Wired kernel: the recorder, zero-run scan and integrity report live in the
-  leaf (`jasper/audio_measurement/wired_capture.py`). Since PR #4138 was cut,
-  main moved `WiredCaptureAnswer`, `mint_wired_answer`, `make_wired_recorder`
-  and `WiredStimulusCapture` into the engine
-  (`jasper/active_speaker/crossover_v2/wired_stimulus.py`); #4138 puts the first
-  three in the leaf and adds `require_wired_mic` plus a null-door intactness
-  gate. The leaf home is the one this program needs: the bass bench cannot
-  import `active_speaker` (the emitter already imports `bass_extension`), and
-  the CLIs should not. #4138 is gated on an owner `jasper-null` hardware run.
-- Household mic record: `read_household_mic` / `resolve_household_mic_calibration`
-  in `jasper/correction/household_mic.py`; `_calibration_root`,
-  `_household_mic_path`, `_default_setup_calibration_for_spec` in
-  `jasper/web/correction_capture.py`; `default_setup_calibration_for_v2` in
-  `jasper/web/correction_crossover_v2.py`. All move to `audio_measurement`
-  beside `mic_identity.py` and `calibration.py` before `jasper/correction/`
-  goes (ADR-0255 §3). This also clears #4138's held-back item.
-- Bass, by module at main (lines): keep `alignment` 160, `targets` 177,
-  `adapters/` 938, `limiter_evidence` 1,213 (pure math and the frozen protocol);
-  keep `bench/` 5,682 for the limiter campaign, shrink after it has run once;
-  `profile` 632 is absorbed by the scheduled candidate (3.3); delete `ladder`
-  611 and the apply/bypass/recover transaction in `__init__` 665 with their
-  tests. The bench imports only its own submodules, so the deletions do not
-  touch it. The emitter's bass stage (`camilla_yaml.py:497-610`) and
-  `classify_bass_extension_graph` generalize to N biquads per rung.
-- Distortion-versus-level: `jasper/audio_measurement/distortion.py`,
-  `round-views distortion`. Declared geometry: `jasper-declare-geometry`.
-- **The room product is entangled with the shared measurement daemon.**
-  `jasper/web/correction_setup.py` is the HTTPS daemon for room, crossover and
-  bass pages; `correction_handlers.py` hosts both the room handlers
-  (`_handle_start/_status/_upload_*/_next_position/_verify/_apply/_propose*/
-  _interpret/_envelope/_autolevel_*`, `_maybe_auto_revert`, …) and the speaker
-  walk's (`_handle_crossover_v2_*`, `_handle_calibration_*`);
-  `correction_capture.py` holds the shared capture slot (`_run_capture`) beside
-  room-only readiness and household-mic helpers. `jasper/correction/level_match.py`
-  is live through the crossover backend (misfiled, not dead). The household mic
-  record (ADR-0255 §3) and the calibration upload routes stay.
-- `jasper/calibration_agent/` (23 files, 4,477 lines) is the in-product LLM
-  client for the room wizard, imported by `correction/envelope.py`,
-  `web/correction_handlers.py`, `web/correction_tuning.py`, `web/sound_setup.py`.
-  Superseded by the operator-is-the-LLM model.
-- Bass: `alignment.py`, `targets.py`, `adapters/*` (pure; `fit_plant` fits a
-  2nd-order HP to a magnitude curve — re-pointed at the seat median it yields
-  the effective in-situ corner), `limiter_evidence.py`, `bench/` (executor,
-  runner, render, derivation — needed for the limiter campaign). `ladder.py` is
-  the wizard state machine; `__init__.py`'s apply/bypass/recover transaction is
-  the parked Layer-2 apply pathway (zero callers). Unbound: `PlayAndCapture`
-  (`bench/executor.py:148`) and per-target `TargetPlan` binding (#1738).
+Recheck at the implementation head; §9 retains the earlier history.
+
+- Programs and pose coordinates live in `measurement_programs.py`; shared
+  scopes and temporary graph ownership live in `measure_spec.py` and
+  `crossover_v2/session_graph.py`. Raw takes retain candidate, played graph,
+  microphone position, level and calibration. Extend these owners.
+- Room candidate/apply is wired for mono. `measured_crossover_candidate.py`
+  `_validated_room_correction` refuses stereo at lines 195–201 because the
+  active emitter takes one room set. The flat emitter's `room_peqs_right` is
+  not proof of stereo support here. Row 2.9 converges the two representations.
+- `crossover_v2/room_views.py:155–192` deduplicates by `pose_id` and drops
+  candidate/graph identity. An offline probe of `seat/cube` with two candidates
+  yields 14 stop IDs at seven places and one pooled “14-position” median.
+  Row 2.6 must fix this before room comparisons or bass fitting consume it.
+- `room_ceiling.json` discloses the trusted floor and clamp. A 625 Hz trusted
+  floor clamps to 500 Hz; no data earns the missing band by that clamp.
+  `room_prescription.py` allows 0.5 dB at the taper; bell tails are not zero
+  above it. Make these limits visible, not a claim of exact preservation.
+- Shared capture/calibration is in `audio_measurement`; the former room
+  orchestrator, embedded LLM client and bass wizard are retired. Room survives
+  the current audition/recompose paths; that earlier follow-up is closed.
+- `bass-fit` reads the same room-median artifact. `seat_fit.py:81–88` labels
+  its level as digital only; no displacement margin is computed. Offline
+  adapter probes under the 6 dB policy yielded 6.43 dB sealed and 9.20 dB
+  ported boost. Row 3.2b covers the actual response cap, not just target labels.
+- Bass candidate/emission is open as #4660, not landed. #4643 is the open
+  bench seam; its graph protection and role-completeness findings remain.
+  Its sustain body cannot use the 6–12 s sweep limit for a 30–90 s hold.
+- No production bass scheduler is proved. Main has the room/speaker dB
+  headroom machinery; row 5.1 adds the extension charge before runtime use.
+  A family fit and passing software tests are not a hardware campaign.
 
 ## 5. Waves and rows
 
@@ -201,7 +249,7 @@ disjoint files.
 | 1.0 | B | **LANDED 2026-09-08 — PR #4510 merged (`72bc34764`), #4138 closed.** The wired kernel in the leaf. Reconcile with main: `WiredCaptureAnswer`, `mint_wired_answer`, `make_wired_recorder` move from `crossover_v2/wired_stimulus.py` to the leaf `audio_measurement/wired_capture.py`; `WiredStimulusCapture` stays in the engine; keep its `require_wired_mic` and the null-door intactness gate. Its own gate holds: one owner `jasper-null` run confirming a clean take reports zero zero-runs and zero block gaps. Coordinate with the right-size orchestrator, who owns the PR. | R | the PR's four hardware checks; AST identity of moved bodies | owner null run, then code-review |
 | 1.4 | B | **LANDED 2026-09-08 — PR #4522 merged (`4d0a0a94f`).** **Pose vocabulary.** `ProgramPose` gains kind (bearing / seat / close) and distance; `mark_distance_m` becomes per-take; the seat kind carries an offset from the head. Programs: `seat/cube` (head + six face centres at 30 cm; prompts in plain words) and `close/spot` (~0.3 m on the design axis). Human mover via the existing position-ready walk. | P | `jasper-angle-capture plan` lists both; a fixture round banks seven seat takes with the kind recorded | code-review |
 | 1.5 | B | **LANDED 2026-09-08 — PR #4524 merged (`9f3ae539b`).** **Room views.** Ungated analysis as an option over banked takes; `room-median` (median, spread, per-position deviation below the ceiling), `room-persistence` (features holding across ≥ N positions), `room-ceiling` (the applied candidate's trusted floor clamped per ADR-0256, fallback disclosed). | V | three `ARTIFACT_BY_VIEW` rows; inventory lists them; ADR-0237 stdout | code-review |
-| 1.6 | — | First wired seat-cube session on jts3 through the applied tune. | H | banked round, integrity clean | owner |
+| 1.6 | — | First wired seat-cloud session on jts3 through the applied tune, after 2.6/2.7. | H | banked 11-position mono round, integrity and identities correct | owner |
 | 1.7 | B | **LANDED 2026-09-08 — PR #4525 merged (`0cbed8a57`).** Runbook "Room" section; menu regenerated. | A | menu `--check` | sanity |
 
 ### Wave 2 — the room candidate kind (lane C; starts after 0b on fixtures)
@@ -211,16 +259,33 @@ disjoint files.
 | 2.1 | **LANDED 2026-09-09 — PR #4544 merged (`b083c06c8`).** Layer-3 candidate kind: cuts-only bells on the program bus below the ceiling, one set per side (mono = one side). Code-computed limits: per-bin cut depth from spread, a taper to flat over ~1/3 octave below the ceiling (in `design_peq`'s per-bin arrays), boost admission per the regime plan's D5 (persistent in ≥ 5 of 7, modally plausible, N ≥ 3, capped, level cost disclosed). The LLM authors inside the limits; the `propose`/`stage` doors validate. | C | door refuses out-of-limit filters with codes; fixture candidate round-trips through the emitter reader | code-review high |
 | 2.2 | **LANDED 2026-09-09 — PR #4546 merged (`7db6bca73`).** `room-grade` view: re-measured cube against the target below the ceiling, incumbent beside it; regression is a disclosure; restore is the doctrine path. | V | fixture grades; no auto-revert machinery | code-review |
 | 2.3 | **LANDED 2026-09-09 — PR #4520 merged (`d7d5fdc1e`).** Boundary prior view: from declared geometry predict the 2π/4π gain step and the quarter-wave null (c/4d) per wall. Advisory. | V | 85 cm → ≈100 Hz null on a fixture | code-review |
-| 2.4 | Two seat-cube sessions on jts3: apply a Layer-3 candidate, re-measure, grade. | H | two banked rounds | owner |
+| 2.4 | Mono room loop after 1.6: trial a small cut through the accepted speaker tune, re-measure the same cloud, grade, adopt or restore. Room works without bass extension. | H | identified before/after rounds; saved graph and normal playback readback; disclosed coverage | owner |
+
+### Wave 2b — complete the room program (next, with lane D in parallel)
+
+These are new rows, not claims that the earlier mono work supports stereo.
+Speaker tuning keeps its current owner. Coordinate shared changes under §3.
+
+| Row | Concern | Tag | Proof / dependency |
+|---|---|---|---|
+| 2.5 | Record the agreed program split and 11-position default in append-only ADRs as needed (amend 0260; reconcile 0256/0258 only where decisions change). Resolve cabinet/side identity and the existing per-role vs per-cabinet trim ambiguity with the speaker owner. Upper-band policy stays open under 2.11. | A | Current decision and implementation scope agree; no retroactive rewrite of ADR history. |
+| 2.6 | One room summary per side, exact candidate, played graph and scope. Reuse the canonical capture selector; key positions by physical pose, treat repeats separately, report missing/invalid takes and common valid frequency coverage. Carry this basis into prescription, grade and bass fit. | V | One behavior pin: two candidates at seven poses yield separate seven-position summaries, never one 14-position summary; retakes do not add positions. |
+| 2.7 | Register the 11-position default (§1a) once, keep old saved pose identities readable, and derive UI prompts/counts from the program. Counts use unique poses per side and tune; thresholds use the existing fraction policy and actual count. | P | Preview and banked records agree: 11 mono sweeps; stereo capture count after 2.8 is 22. No duplicated pose list. |
+| 2.8 | Side-solo capture through each cabinet's accepted speaker tune, left then right at a held pose. Extend shared scope/routing with the speaker owner; account for side-specific level/trim and protection. | P | **NN**: actual graph mutes the other side and preserves all driver protection; receipt identifies the side; one Start per pose batch. |
+| 2.9 | **Moved from 6.1.** Per-side room emission and extraction, converged with `room_peqs_right`. Keep every side's evidence and filters separate; use a common target only over supported coverage. Extend the existing budget, apply and restore owners. | E | **NN**: distinct left/right filters survive candidate fingerprint, emission, readback, trial, apply and restore; mono behavior preserved. Remove the stereo refusal only once this path exists. |
+| 2.10 | Small Room entry/resume page (§1b), generated tool entry and optional method pointers. Use existing session, plots and human placement screen. | P | Fresh and resumed sessions identify the same saved tune/round; copied instructions refer to current tool contracts; no second state owner. |
+| 2.11 | Research upper-room correction (§1c): speaker/seat compatibility, directivity, target, useful bandwidth and broad bounded candidates. Compare low-band-only with a proposed upper-tier trial; room score, direct/off-axis effects and listening stay distinct. | V/A | Cited research and one bounded experiment design with open limits; amend the ceiling/filter contract only if implementation is chosen. Research does not block 2.4/2.12. |
+| 2.12 | Stereo room acceptance after 2.4 and 2.8–2.10: measure 11 positions per side, trial separate corrections, compare and verify the saved pair. Add a both-playing check where it answers a remaining question. | H | Separate side evidence, useful before/after result and normal-playback readback; no claim of stereo completion from the mono trial alone. |
 
 ### Wave 3 — the bass candidate kind and protection (lane D)
 
 | Row | Concern | Tag | Proof | Gate |
 |---|---|---|---|---|
 | 3.1 | Bind the bench: `PlayAndCapture` and `TargetPlan` against the engine's play path and the wired recorder; `jasper-bass-extension-bench --live` stops failing closed. | R | fixture run; live path reaches the recorder | **NN** |
-| 3.2b | **Added 2026-09-09, gates 3.3.** The adapters do not honour their own margin policy: `sealed.generate_family` ignores `subsonic_corner_ratio`/`subsonic_order` (ships 15 Hz 2nd-order where `conservative` declares 21.8 Hz 4th-order — at 10 Hz that is −1.8 dB against the policy's −21 dB, on a rung carrying +6 dB of infrasonic boost with no excursion model), and `generate_ported_family` ignores `boost_cap_db`. `_assert_bass_extension_safe` proves only the `LT → subsonic → limiter` ORDER, never the subsonic's values, so these numbers reach the DAC unchecked the moment 3.3's emission lands. Own PR, before 3.3. | C | **NN** |
-| 3.2 | **LANDED 2026-09-09 — PR #4641 squash-merged at `4157a6030`.** `bass-fit` view: fit the seat-cube median below the ceiling to an extended-corner target family (one corner per rung); the declared plant (adapters as parameter models; `fit_plant` on the median for the effective corner) supplies excursion-versus-boost. Publishes per rung: filters, boost, headroom cost, excursion margin. | V | fixture median → family JSON | code-review |
-| 3.3 | Layer-2 scheduled candidate kind: the family keyed by listening level for the bass owner, emitted as named biquads per rung; a rung is admissible only with its protection evidence (3.4). Absorbs `profile.py`. | C | door refuses an unverified rung; emitter round-trip | code-review high |
+| 3.2b | **Gates 3.3.** Enforce the margin policy on each adapter's actual generated response: sealed subsonic ratio/order must follow the policy; sealed and ported/PR boost must obey its cap. Keep the physical-protection and digital-budget claims distinct. Rebuild affected families after correction. | C | Parameterized policy/response behavior, including low-Q sealed and ported/PR cases; actual protective-filter values survive emission. | **NN** |
+| 3.2 | **LANDED — PR #4641, `4157a6030`.** `bass-fit` fits an effective in-room response and publishes a family, filter boost and digital level bound. It does not publish measured driver displacement, heat limits or excursion margin. Compatible room evidence supplies the fit, not protection proof. | V | fixture median → family JSON | code-review |
+| 3.3 | **OPEN — PR #4660.** Layer-2 candidate family for the bass owner, with evidence-bound rungs and named filters. Review current refs afresh; the old rebase recipe is stale. Preserve natural-at-rest until the runtime work is complete. First emission support is sealed; ported/PR analysis does not imply runtime support. | C/E | door refuses an unverified boosted rung; emitter round-trip; one candidate authority replaces legacy profile/apply intent | **NN** |
+| 3.1c | Distinct sustain-hold limit in the driver-safety schema and fingerprint; sweep limits stay separate. Fix the known activation/readback issue #2202 before the supervised campaign. This is required before a 30–90 s hold, not permission to raise sweep caps. | P | Hold and sweep admission use their own declared/code-side limits; graph proof matches live readback. | **NN** |
 | 3.4 | Protection ladder as a code-owned program: stepped-level sweeps at the seat, distortion-versus-level per rung, the sustain test, evidence banked per rung. A failing rung is inadmissible at that level. | P | fixture ladder; refusal codes | **NN** |
 | 3.5 | Runbook "Bass" section; menu rows. | A | menu `--check` | sanity |
 
@@ -230,57 +295,57 @@ disjoint files.
 |---|---|---|---|
 | 4.1 | Supervised limiter bench campaign on jts3 per `limiter-evidence-protocol.md`; one accepted, replayable bundle. | H | owner present, **NN** |
 | 4.1b | **The contract revision (added 2026-09-09).** The limiter-evidence protocol blocks all wave-4 production wiring until an ADR names the accepted bundle's exact `evidence_fingerprint`, records an independent review at zero blockers, and authorizes a named trusted caller; the tap-realization amendment separately forbids "a scheduler" by name. 4.2 and 4.3 cannot start before this merges. | A | owner sign-off |
-| 4.2 | Runtime scheduler: pure target selection, instant retreat, gated re-extend, patching the named rung filters; no new daemon; no added latency. | R | **NN**, adversarial review |
+| 4.2 | Runtime scheduler after 4.1b and 5.1: pure target selection, instant retreat, gated re-extend, patching named rung filters from tested level limits. Use the canonical fader's dB; no new daemon or added latency. | R | **NN**, adversarial review |
 | 4.3 | First production caller lands (the engine's apply of a scheduled candidate). | C | code-review |
 
 ### Wave 5 — one budget, one sequence (join)
 
 | Row | Concern | Tag | Gate |
 |---|---|---|---|
-| 5.1 | One headroom budget in the emitter: room + linearization + bass boost through one disclosed gain with its cost in maximum level. | E | **NN** |
-| 5.2 | Runbook sequence: speaker tune → bass family → room candidate → bass re-check at the seat; `close-reference` named as the on-demand room-gain split. | A | sanity |
+| 5.1 | **Before 4.2/4.3.** One dB level/headroom contract and emitter budget for speaker + room + bass boost. Declare the conversion from the fit's 0–100 level to runtime dB once; charge the complete active rung's response. Physical limits remain separate from digital capacity. | E | **NN** |
+| 5.2 | Runbook: accepted speaker tune → room correction → optional bass extension → complete-chain room/bass recheck. Reuse compatible evidence; changed lower layers require a new identified validation, not a fresh speaker campaign. `close-reference` stays optional. | A | sanity |
 
-### Wave 6 — the pair and the 3-way
+### Wave 6 — remaining bass variants (room stereo moved earlier)
 
 | Row | Concern | Tag | Gate |
 |---|---|---|---|
-| 6.1 | Per-side room stage in the active emitter and its reader, converged with `room_peqs_right`. Needs the side-solo capture graph (tuning-flow agent). | E | **NN** adjacency |
-| 6.2 | One bass family per bass system with a per-unit fit check. | C | code-review |
-| 6.3 | Cardioid variant: an emitter output of the bass role with per-region band, delay, polarity and level (in phase below the LF corner for wall reinforcement; delayed and inverted in the mid band). Design conversation first; only when the 3-way exists. | E | design, then **NN** |
+| 6.2 | Per-cabinet bass fit/family and protection evidence for stereo extension. Shared driver models do not prove equal safe level limits. Required before calling stereo bass extension complete; independent of the earlier stereo room release. | C/E | **NN** where emission/protection changes |
+| 6.3 | Future rear bass output with its own band, delay, polarity, level and protection. Keep side, driver role and physical output distinct; resolve the current one-output-per-side/role validator when this design starts. Do not assume a directivity pattern or implement cardioid control now. | E | design, then **NN** |
 
 ## 6. Lanes, gates, hardware
 
-- **After Wave 0b, four lanes start at once:** A retire (1.1–1.3) · B program
-  and views (1.4, 1.5, 1.7) · C room candidate on fixtures (2.1–2.3) · D bass
-  (3.1–3.5). 1.4 and 3.1 wait for row 1.0 (PR #4138 landed).
-- **Joins:** 2.4 needs 1.6; 4.x needs 3.x; 5.1 needs 2.1 and 4.3; 6.1 needs the
-  emitter free.
-- **Hardware on jts3, in order:** an adopted speaker tune from the
-  structure-first campaign → 1.6 → 2.4 → 3.4 rungs → 4.1. The owner's time at
-  the box is the critical path.
+Wave numbers retain history; this is the current order. Do not restart the
+landed retirement or speaker work. Two bounded work lanes can proceed:
+Room completion (2b) and bass protection (3); upper-room research is read-only
+until its experiment scope is settled. Shared files have one assigned writer.
 
-### 6a. Run order (the sequence, not just the lanes)
+1. Refresh the affected briefs against this plan and current refs. Keep the
+   existing speaker owner in charge of its engine; agree the side-solo and
+   evidence contracts before editing shared capture/emitter files.
+2. Room: 2.5 → 2.6 → 2.7 → 1.6 → 2.4 for the first mono proof. Build 2.8/2.9
+   with the shared owner and 2.10 at the UI boundary, then 2.12 for stereo.
+   Neither room proof waits for bass extension, cardioid or upper-band EQ.
+3. Bass: close #4643's graph-backed per-driver protection and completeness
+   findings; land its part-1 seam after reconciliation with main. Fix 3.2b
+   before 3.3 emission. Then 3.3 → 3.4a rung graph → 3.4b ladder evidence →
+   3.1 part 2 live binding → 3.5. Add 3.1c before any sustain campaign.
+4. Hardware extension: accepted speaker tune and identified seat evidence →
+   protected rung measurements (3.4) → supervised limiter campaign (4.1,
+   including #2202 fixed) → contract revision (4.1b). Do not infer a safe
+   listening level from the seat fit's digital bound.
+5. Join the dB budget in 5.1 after the candidate shape is settled and before
+   runtime scheduler/caller 4.2/4.3. Then validate extension through the full
+   room chain and publish the optional program sequence (5.2).
+6. Per-cabinet stereo extension (6.2) and the rear-driver project (6.3) follow
+   when their hardware is available. They do not defer stereo room correction.
 
-1. **Wave 0b brief → fresh session → one docs PR → orchestrator review → merge.**
-   Nothing else starts before this merges; every lane cites its two ADRs.
-2. **Row 1.0 (PR #4138 rebased) and your `jasper-null` hardware run.** The one
-   hardware item that can happen early; it gates 1.4's capture and 3.1.
-3. **Four fresh sessions at once**, each from its own brief:
-   - Lane A, retire: three PRs in order — room product, calibration agent, bass
-     wizard. Census first, shared pieces moved first, verdicts per module.
-   - Lane B, program: 1.4 poses and programs, 1.5 room views, 1.7 docs.
-   - Lane C, room candidate: 2.1, 2.2, 2.3 on fixtures.
-   - Lane D, bass: 3.1 (after row 1.0), 3.2, 3.3, 3.4, 3.5.
-4. **Hardware, in this order and only when the tuning-flow campaign has adopted
-   a speaker tune:** 1.6 first seat-cube session → 2.4 two sessions → 3.4 rungs
-   → 4.1 limiter campaign. 1.6 can run against whatever tune is applied; 2.4
-   waits for an adopted tune or its grades are against a tune about to change.
-5. **Wave 4** after 3.x and 4.1: runtime scheduler, first production caller.
-6. **Wave 5** after 2.1 and 4.3: one headroom budget, runbook sequence.
-7. **Wave 6** when the emitter is quiet and the second cabinet is real.
-
-After every merge the orchestrating session reviews the diff against the row,
-appends to §9, and comments once on #4502 with the PR links.
+Inspect current open PRs before assigning a writer: #4625 overlaps the bench;
+#4565, #4569 and #4588 overlap emitter/baseline work. These are collision
+pointers to recheck, not permanent dependencies or an instruction to stop
+other agents. #4660 now has a PR; review its current diff, not the handoff's
+old 13-commit rebase command. Record what actually lands in §9. Refresh issue
+#4502 when authorized to publish a status update; its old body is not current
+implementation evidence.
 
 ## 7. Session protocol
 
@@ -309,14 +374,31 @@ appends to §9, and comments once on #4502 with the PR links.
   and wait for the owner's hardware pass; line delta and verdicts in the PR body;
   no model identifiers in commits or PRs.
 
-## 8. Not in this program
+## 8. Deferred implementation
 
-FIR (waits for the structure-first campaign and an excess-group-delay
-measurement) · the residual tier above the ceiling · a crossover finder · the
-cardioid channel's design · a database or memory service · new `JASPER_*`
-knobs · any browser or relay capture · an operator-less wizard.
+Upper-room correction is in research scope (§1c, 2.11), with no new bandwidth,
+phase, filter or target policy yet. Room FIR remains deferred. Cardioid design
+waits for the rear-driver project. No crossover finder, new database/memory
+service, `JASPER_*` knob, browser/relay capture, embedded LLM client or
+operator-less wizard is introduced by this plan.
 
 ## 9. Status log
+
+- 2026-09-09 17:00Z: **Owner-approved program update (plan only).** Speaker
+  tuning, room correction and optional level-dependent bass extension share
+  one toolbox. Room's default becomes the 11-position cloud in §1a; stereo
+  measures each side at each place (22 baseline sweeps). Wave 2b brings
+  side-solo capture and per-side emission into the first complete room release
+  (former 6.1 is now 2.9), adds the small LLM entry/resume page, and puts the
+  candidate-mixing fix before room evidence is reused. Room works before
+  bass extension; 5.1's common dB budget now precedes the runtime scheduler.
+  Corrected 3.2's false excursion-margin claim and added the distinct sustain
+  row 3.1c. Higher-frequency room correction is explicitly open for research
+  using compatible gated/off-axis and seat evidence (§1c, 2.11); no upper band,
+  gain limit or phase algorithm is approved by this update. Cardioid stays
+  deferred. Main rechecked at `f575fe364`; no product code, deployed tune,
+  clamp, ADR history or hardware state changed. Existing briefs need a scope
+  refresh before new dispatch; older entries below remain historical.
 
 - 2026-09-09 16:45Z: **Row 3.3 opened as PR #4660** (`+3198/−1846`, 48 files,
   11 commits, base `main`). The agent did not go quiet as an earlier entry
