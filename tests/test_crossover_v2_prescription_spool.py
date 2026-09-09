@@ -44,6 +44,12 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_blend_prescription,
     read_prescription_bytes,
 )
+from jasper.active_speaker.crossover_v2.bass_prescription import (
+    BASS_PRESCRIPTION_KIND,
+    OWNER_MISMATCH,
+    PROTECTION_MISSING,
+    TARGET_NOT_IN_FAMILY,
+)
 from jasper.active_speaker.crossover_v2.candidates import CloudFitEvidence
 from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_PRESCRIPTION_KIND,
@@ -67,6 +73,7 @@ from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.cli import crossover_prescriber as cli
 from jasper.web import correction_crossover_v2 as v2host
 
+import tests.test_crossover_v2_bass_prescription as _bass
 from tests.crossover_v2_fixtures import (
     FakeSeams,
     _conductor,
@@ -1167,7 +1174,7 @@ def test_the_stage_verb_stamps_the_round_the_receipt_says_is_next(
     document.write_bytes(_document())
     state = _write_state(tmp_path, ordinal=8)
     monkeypatch.setattr(
-        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}, None, None),
+        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}, None, None, None),
     )
 
     code = cli.main([
@@ -1322,7 +1329,7 @@ def test_a_stage_that_cannot_write_is_its_own_exit_code(tmp_path, monkeypatch):
     document.write_bytes(_document())
     state = _write_state(tmp_path, ordinal=8)
     monkeypatch.setattr(
-        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}, None, None),
+        cli, "_gate", lambda _args: (_document(), _accept(_document()), {}, None, None, None),
     )
 
     def _cannot_write(*_args, **_kwargs):
@@ -1352,7 +1359,7 @@ def test_propose_and_stage_run_the_same_gate(tmp_path, monkeypatch):
 
     def _counting_gate(_args):
         reached.append(_args.command)
-        return _document(), _accept(_document()), {}, None, None
+        return _document(), _accept(_document()), {}, None, None, None
 
     monkeypatch.setattr(cli, "_gate", _counting_gate)
 
@@ -1405,7 +1412,7 @@ _STAGE_IN_A_REAL_PROCESS = textwrap.dedent(
         band_hz=(float(lo), float(hi)),
         positional_evidence=None,
     )
-    cli._gate = lambda _args: (document, prescription, {}, None, None)
+    cli._gate = lambda _args: (document, prescription, {}, None, None, None)
     raise SystemExit(
         cli.main([
             "stage", str(Path(doc_path).parent),
@@ -2641,3 +2648,81 @@ def test_frozen_packet_content_is_checked_before_proposal_and_staging(tmp_path, 
     if taken:
         assert taken.record()["packet_fingerprint"] == packet["packet_fingerprint"]
         assert taken.record()["filters"] == prescription["filters"]
+
+
+# --------------------------------------------------------------------------- #
+# the bass class — one slot, a third set of anchors
+# --------------------------------------------------------------------------- #
+
+
+def _stage_bass(*, targets: list[str] | None = None, **evidence: Any) -> None:
+    """Stage a REAL-gated bass document, exactly as the CLI's stage verb does.
+
+    ``evidence`` overrides what the envelope BANKS, which is how a take can be
+    handed inputs the propose never saw.
+    """
+    payload = json.dumps(
+        _bass.document(**({"targets": targets} if targets else {})), sort_keys=True
+    ).encode("utf-8")
+    prescription = _bass.read(
+        read_prescription_bytes(payload),
+        ladder={_bass.DEEPEST: _bass.ladder_evidence(-6.0)},
+        limiter=_bass.limiter_evidence(),
+    )
+    spool.stage_prescription(
+        payload,
+        prescription,
+        for_round_ordinal=4,
+        classifications=None,
+        bass_evidence={
+            "bass_fit": _bass.bass_fit_document(),
+            "ladder_evidence": {_bass.DEEPEST: _bass.ladder_evidence(-6.0)},
+            "expected_owner_role": "woofer",
+            **evidence,
+        },
+    )
+
+
+def _natural_only_fit() -> dict[str, Any]:
+    """The same fit with the deepest rung removed from the family."""
+    document = _bass.bass_fit_document()
+    document["bass_fit"]["rungs"] = [
+        rung for rung in document["bass_fit"]["rungs"]
+        if rung["target"]["target_id"] == "natural"
+    ]
+    return document
+
+
+def test_a_bass_document_re_gates_at_the_take_from_its_banked_family():
+    _stage_bass()
+
+    taken = spool.take_staged_prescription(
+        round_ordinal=4, accepts=spool.STAGEABLE_KINDS
+    )
+
+    assert taken.prescription_kind == BASS_PRESCRIPTION_KIND
+    assert taken.prescription.target_ids == ("natural",)
+    # The fit file is not on disk anywhere here: the family the take re-gates
+    # against is the one banked in the envelope.
+    assert taken.prescription.bass_fit_sha256 == _bass.SHA
+    assert taken.record()["prescription_sha256"] == taken.prescription_sha256
+
+
+@pytest.mark.parametrize("evidence,reason", (
+    ({"expected_owner_role": "tweeter"}, OWNER_MISMATCH),
+    ({"bass_fit": _natural_only_fit()}, TARGET_NOT_IN_FAMILY),
+    # The take invents no limiter evidence, so a boost it once cleared refuses.
+    ({}, PROTECTION_MISSING),
+))
+def test_the_take_re_gates_a_bass_document_against_its_banked_inputs(
+    evidence, reason
+):
+    _stage_bass(targets=[_bass.DEEPEST], **evidence)
+
+    with pytest.raises(BlendPrescriptionRefused) as refusal:
+        spool.take_staged_prescription(
+            round_ordinal=4, accepts=spool.STAGEABLE_KINDS
+        )
+
+    assert refusal.value.reason == reason
+

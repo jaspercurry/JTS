@@ -16,6 +16,11 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.bass_extension import BASS_EXTENSION_APPLY_INTENT_PATH
+from jasper.bass_extension.candidate_field import (
+    BASS_EXTENSION_CANDIDATE_FIELD,
+    bass_extension_summary,
+)
 from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
@@ -723,6 +728,44 @@ def _blocked_setup_status(
     }
 
 
+def bass_extension_state(setup: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """``/state.bass_extension``: the applied bass family, and its apply marker.
+
+    Projected from :func:`read_active_speaker_setup_status`'s own snapshot, so
+    the applied profile has ONE reader per request. ``None`` when this speaker
+    carries no family and no interrupted apply — the bass tab hides the card
+    rather than showing an empty one.
+    """
+    applied = setup.get("protected_profile") if isinstance(setup, Mapping) else None
+    family = bass_extension_summary(
+        applied.get(BASS_EXTENSION_CANDIDATE_FIELD)
+        if isinstance(applied, Mapping)
+        else None
+    )
+    recovery = BASS_EXTENSION_APPLY_INTENT_PATH.exists()
+    if family is None and not recovery:
+        return None
+    targets = family["targets"] if family else ()
+    return {
+        "commissioned": family is not None,
+        "status": "accepted" if family else "absent",
+        # The summary above IS the contract check, so a family that reached
+        # this block matches the applied setup: "accepted" in the page's
+        # accepted/bypassed/stale vocabulary (deploy/assets/correction/js/bass).
+        "contract_status": "accepted",
+        "contract_refusals": [],
+        "deepest_hz": targets[0]["fp_hz"] if targets else None,
+        "natural_hz": targets[-1]["fp_hz"] if targets else None,
+        "margin": family["margin_policy_name"] if family else None,
+        # The candidate field admits only adapters this runtime renders, so a
+        # family that validated is one this speaker can emit.
+        "runtime_eligible": family is not None,
+        "runtime_deferred_reason": None,
+        "apply_recovery_required": recovery,
+        "family": family,
+    }
+
+
 def read_active_speaker_setup_status(
     *,
     active_config_path: str | None = None,
@@ -1020,6 +1063,14 @@ def read_active_speaker_setup_status(
                 else False
             ),
             "recomposition_snapshot_available": protected_snapshot is not None,
+            # Layer 2's applied family, carried whole so `/state` and the bass
+            # tab read the applied profile through this one gather rather than
+            # opening it again per surface.
+            BASS_EXTENSION_CANDIDATE_FIELD: (
+                protected_snapshot.get(BASS_EXTENSION_CANDIDATE_FIELD)
+                if protected_snapshot is not None
+                else None
+            ),
             # WHY Layer-1a driver linearization did or didn't run for the
             # CURRENTLY APPLIED candidate; "" when never evaluated. Read off the
             # applied artifact rather than the freshly-recomputed `profile`,

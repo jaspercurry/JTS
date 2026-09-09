@@ -22,6 +22,7 @@ import logging
 import shlex
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,15 @@ from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.audio_measurement.bundles import BundleError
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
+from jasper.active_speaker.crossover_v2.bass_prescription import (
+    BASS_PRESCRIPTION_KIND,
+    FIT_UNAVAILABLE,
+    OWNER_UNRESOLVED,
+    BassPrescription,
+    bass_prescription_response_format,
+    bass_prescription_to_candidate_fields,
+    read_bass_prescription,
+)
 from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_PRESCRIPTION_MALFORMED,
     BlendPrescription,
@@ -90,7 +100,6 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     LAYOUT_UNAVAILABLE,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_PRESCRIPTION_KIND,
-    RoomMedian,
     RoomPrescription,
     RoomPrescriptionRefused,
     read_room_median,
@@ -112,6 +121,7 @@ from jasper.active_speaker.profile import (
     ActiveSpeakerPreset,
     SIDES_BY_LAYOUT,
 )
+from jasper.active_speaker.camilla_yaml import bass_owner_channels
 from jasper.active_speaker.seat_level_reference import (
     seat_level_reference_volume_db,
 )
@@ -217,43 +227,62 @@ def _cmd_compose(args: argparse.Namespace) -> int:
     })
 
 
-def _room_median(path: Path) -> tuple[RoomMedian, str]:
-    """The median at ``path`` and the digest a prescription must echo.
+def _evidence_path(
+    args: argparse.Namespace,
+    *,
+    artifact: str,
+    reason: str,
+    resolved: Path | None = None,
+) -> Path:
+    """Where this invocation's copy of ``artifact`` is.
+
+    The flag that overrides a round artifact is spelled after the artifact
+    itself (``room_median.json`` / ``--room-median``), which is what lets one
+    resolver serve every door. ``resolved`` is this invocation's own answer,
+    threaded back from the gate that already read it, so a later caller does
+    not walk the round tree again.
+    """
+    if resolved is not None:
+        return resolved
+    named = getattr(args, Path(artifact).stem)
+    if named:
+        return Path(named)
+    if args.session_dir:
+        round_dir = Path(args.session_dir)
+        return default_out(round_inputs(round_dir), round_dir, artifact)
+    if args.packet:
+        return Path(args.packet).parent / artifact
+    raise BlendPrescriptionRefused(
+        reason,
+        f"this prescription is judged against {artifact}: name it with "
+        f"--{Path(artifact).stem.replace('_', '-')} <path>, or pass the round "
+        "directory holding it",
+    )
+
+
+def _round_evidence(
+    args: argparse.Namespace,
+    *,
+    artifact: str,
+    reason: str,
+    resolved: Path | None = None,
+) -> tuple[Mapping[str, Any], str, Path]:
+    """One round evidence document, the digest it is named by, and its path.
 
     The digest is over the BYTES read, not a re-serialization, so it names the
     document this round was actually judged against. Every way the file can
-    fail to be evidence -- absent, unreadable, not JSON, not a median -- is
+    fail to be evidence -- absent, unreadable, not JSON, not an object -- is
     the door's own one reason.
     """
+    path = _evidence_path(args, artifact=artifact, reason=reason, resolved=resolved)
     try:
         payload = read_source_bytes(str(path))
         document = json.loads(payload)
     except (OSError, ValueError, RecursionError) as exc:
-        raise RoomPrescriptionRefused(
-            ROOM_MEDIAN_UNAVAILABLE, f"{path}: {exc}"
-        ) from exc
-    return read_room_median(document), prescription_sha256(payload)
-
-
-def _room_median_path(args: argparse.Namespace, resolved: Path | None = None) -> Path:
-    """``--room-median``, or the round's own copy beside the evidence.
-
-    ``resolved`` is this invocation's own answer, threaded back from the gate
-    that already read it, so a later caller does not walk the round tree again.
-    """
-    if resolved is not None:
-        return resolved
-    if args.room_median:
-        return Path(args.room_median)
-    if args.session_dir:
-        round_dir = Path(args.session_dir)
-        return default_out(round_inputs(round_dir), round_dir, ROOM_MEDIAN_ARTIFACT)
-    raise RoomPrescriptionRefused(
-        ROOM_MEDIAN_UNAVAILABLE,
-        "a room prescription is judged against the round's spatial median: "
-        f"name it with --room-median <path>, or pass the round directory "
-        f"holding {ROOM_MEDIAN_ARTIFACT}",
-    )
+        raise BlendPrescriptionRefused(reason, f"{path}: {exc}") from exc
+    if not isinstance(document, Mapping):
+        raise BlendPrescriptionRefused(reason, f"{path}: expected a JSON object")
+    return document, prescription_sha256(payload), path
 
 
 def _applied_profile_path(args: argparse.Namespace) -> Path | None:
@@ -270,29 +299,40 @@ def _applied_profile_path(args: argparse.Namespace) -> Path | None:
     return baseline_profile_state_path()
 
 
-def _layout_sides(args: argparse.Namespace) -> tuple[str, ...]:
-    """The side names this speaker's applied preset declares.
+def _applied_preset(args: argparse.Namespace) -> ActiveSpeakerPreset | None:
+    """The preset this speaker is PLAYING, or ``None`` when none is readable.
 
     Read through ``load_applied_baseline_profile_state``, the same owner of
-    "what is this speaker playing" the packet builder reads. A propose that
-    cannot name the sides is not a dry run of the compose that will, so an
-    unreadable profile refuses here rather than assuming a layout.
+    "what is this speaker playing" the packet builder reads: the applied
+    profile's immutable snapshot, never a design draft.
     """
     path = _applied_profile_path(args)
     profile = load_applied_baseline_profile_state(path) if path else None
     snapshot = (profile or {}).get("recomposition_snapshot")
     raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
-    if isinstance(raw, Mapping):
-        try:
-            return SIDES_BY_LAYOUT[
-                ActiveSpeakerPreset.from_mapping(dict(raw)).channel_map.layout
-            ]
-        except (ActiveSpeakerConfigError, KeyError, TypeError, ValueError):
-            pass
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        return ActiveSpeakerPreset.from_mapping(dict(raw))
+    except (ActiveSpeakerConfigError, TypeError, ValueError):
+        return None
+
+
+def _layout_sides(args: argparse.Namespace) -> tuple[str, ...]:
+    """The side names this speaker's applied preset declares.
+
+    A propose that cannot name the sides is not a dry run of the compose that
+    will, so an unreadable profile refuses here rather than assuming a layout.
+    """
+    preset = _applied_preset(args)
+    if preset is not None:
+        with suppress(KeyError):
+            return SIDES_BY_LAYOUT[preset.channel_map.layout]
     raise RoomPrescriptionRefused(
         LAYOUT_UNAVAILABLE,
         "a room prescription is keyed by the sides this speaker declares, and "
-        f"{path or 'no applied profile this round names'} does not declare them",
+        f"{_applied_profile_path(args) or 'no applied profile this round names'} "
+        "does not declare them",
     )
 
 
@@ -308,7 +348,11 @@ def _room_gate(
     when one was given, else the median's own parent -- because the candidate
     field's basis names the round, and only the caller knows which one it is.
     """
-    median, sha256 = _room_median(path)
+    raw, sha256, _ = _round_evidence(
+        args, artifact=ROOM_MEDIAN_ARTIFACT, reason=ROOM_MEDIAN_UNAVAILABLE,
+        resolved=path,
+    )
+    median = read_room_median(raw)
     round_id = (
         Path(args.session_dir).name
         if args.session_dir
@@ -335,13 +379,114 @@ def _composed_room(
     if not args.room_prescription:
         return {}, ""
     payload = read_source_bytes(args.room_prescription)
+    median_path = _evidence_path(
+        args, artifact=ROOM_MEDIAN_ARTIFACT, reason=ROOM_MEDIAN_UNAVAILABLE,
+    )
     prescription = _room_gate(
-        read_prescription_bytes(payload), args, _room_median_path(args), sides
+        read_prescription_bytes(payload), args, median_path, sides
     )
     return (
         room_prescription_to_candidate_fields(prescription),
         prescription_sha256(payload),
     )
+
+
+#: Row 3.4's per-target protection artifacts, banked beside the fit they
+#: protect. Only the READER's contract is defined here: an object naming the
+#: ``target_id`` it measured, its ``verdict`` and the ``max_level_db`` that
+#: verdict bounds it to.
+BASS_LADDER_DIRNAME = "bass_ladder"
+
+
+def _bass_ladder_evidence(
+    fit_dir: Path, target_ids: Sequence[str]
+) -> dict[str, Mapping[str, Any]]:
+    """The banked ladder evidence for the targets this document adopts.
+
+    Only those: reading the whole directory would let a document that adopts
+    one rung pay for every file beside it. The digest is computed HERE, over
+    the bytes read, for the room median's reason -- the evidence a rung shows
+    must name the file that was read. A file that is unreadable, is not an
+    object, or measured another target is DROPPED, so one bad file cannot
+    admit or refuse another target.
+    """
+    evidence: dict[str, Mapping[str, Any]] = {}
+    for target_id in dict.fromkeys(target_ids):
+        # The ids are the operator's document's, so a rung may not name a
+        # path: one plain segment, never a traversal.
+        if target_id in {"", ".", ".."} or Path(target_id).name != target_id:
+            continue
+        path = fit_dir / BASS_LADDER_DIRNAME / f"{target_id}.json"
+        try:
+            payload = path.read_bytes()
+            document = json.loads(payload)
+        except (OSError, ValueError, RecursionError):
+            continue
+        if not isinstance(document, Mapping) or document.get("target_id") != target_id:
+            continue
+        evidence[target_id] = {**document, "sha256": prescription_sha256(payload)}
+    return evidence
+
+
+def _bass_owner_channels(
+    args: argparse.Namespace, owner_role: str
+) -> tuple[int, ...]:
+    """The outputs the bass owner plays through, on the graph now playing."""
+    preset = _applied_preset(args)
+    if preset is None:
+        raise BlendPrescriptionRefused(
+            OWNER_UNRESOLVED,
+            "a bass family is emitted onto the owner's own channels, and "
+            f"{_applied_profile_path(args) or 'no applied profile this round names'} "
+            "declares no preset to resolve them against",
+        )
+    try:
+        return bass_owner_channels(preset, owner_role)
+    except ActiveSpeakerConfigError as exc:
+        raise BlendPrescriptionRefused(OWNER_UNRESOLVED, str(exc)) from exc
+
+
+def _bass_gate(
+    document: Mapping[str, Any], args: argparse.Namespace, packet: Mapping[str, Any]
+) -> tuple[BassPrescription, dict[str, Any]]:
+    """The bass door, and the inputs the spool must bank to re-run it.
+
+    The owner role is the PACKET's: one declaration answers "whose bass is
+    this" for the propose, the stage, and the take a round later.
+    """
+    fit, sha256, path = _round_evidence(
+        args, artifact=BASS_FIT_ARTIFACT, reason=FIT_UNAVAILABLE
+    )
+    drivers = packet.get("drivers")
+    owner_role = (
+        drivers.get("bass_owner_role") if isinstance(drivers, Mapping) else None
+    )
+    requested = document.get("targets")
+    ladder_evidence = _bass_ladder_evidence(
+        path.parent,
+        [entry for entry in requested if isinstance(entry, str)]
+        if isinstance(requested, list)
+        else (),
+    )
+    prescription = read_bass_prescription(
+        document,
+        packet_fingerprint=packet.get("packet_fingerprint"),
+        bass_fit=fit,
+        bass_fit_sha256=sha256,
+        round_id=_packet_round_id(packet),
+        ladder=ladder_evidence,
+        # Row 4.3's bundle does not exist, so today every boosted target
+        # refuses on `bass_prescription_protection_missing` -- the intended
+        # state, not a gap: only the natural target is admissible until the
+        # limiter evidence a boost rides on can be shown.
+        limiter=None,
+        expected_owner_role=owner_role,
+    )
+    return prescription, {
+        "bass_fit": fit,
+        "ladder_evidence": ladder_evidence,
+        "expected_owner_role": owner_role,
+    }
 
 
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
@@ -430,6 +575,13 @@ def _evidence_source_error(args: argparse.Namespace) -> str | None:
 PACKET_ARTIFACT = ARTIFACT_BY_VIEW["packet"].artifact
 #: The seat cube's median, written by ``jasper-round-views room-median``.
 ROOM_MEDIAN_ARTIFACT = ARTIFACT_BY_VIEW["room-median"].artifact
+#: The fitted bass family, written by ``jasper-round-views bass-fit``.
+BASS_FIT_ARTIFACT = ARTIFACT_BY_VIEW["bass-fit"].artifact
+
+
+def _packet_round_id(packet: Mapping[str, Any]) -> str:
+    """WHICH round this packet is, as the packet itself spells it."""
+    return str((packet.get("session") or {}).get("round_id") or "")
 
 
 def _cmd_packet(args: argparse.Namespace) -> int:
@@ -487,7 +639,7 @@ def _packet_summary(
         "out": str(artifact),
         "bytes": size_bytes,
         "packet_fingerprint": packet.get("packet_fingerprint"),
-        "round_id": (packet.get("session") or {}).get("round_id"),
+        "round_id": _packet_round_id(packet),
         "blocks": {
             name: bool(block.get("available"))
             for name, block in sorted(packet.items())
@@ -504,10 +656,11 @@ def _gate(
     args: argparse.Namespace,
 ) -> tuple[
     bytes,
-    BlendPrescription | DriverPrescription | RoomPrescription,
+    BlendPrescription | DriverPrescription | RoomPrescription | BassPrescription,
     dict[str, Any],
     tuple[FeatureVerdict, ...] | None,
     Path | None,
+    dict[str, Any] | None,
 ]:
     """The document, the prescription, what it becomes, what judged it, where.
 
@@ -519,14 +672,17 @@ def _gate(
     let alone required. Raises ``BlendPrescriptionRefused`` (``EXIT_REFUSED``)
     or ``CrossoverEvidencePacketError``/``OSError`` (``EXIT_UNREADABLE``).
 
-    The last member is the room median this invocation resolved, handed back so
-    the receipt's home and the printed next command do not resolve it a second
-    time; ``None`` for every other class, which is judged against a packet.
+    The last two members are per-class and ``None`` everywhere else: the room
+    median this invocation resolved, handed back so the receipt's home and the
+    printed next command do not resolve it a second time, and the bass class's
+    own evidence, which the spool banks because the take cannot re-read it.
     """
     payload = read_source_bytes(args.prescription)
     document = read_prescription_bytes(payload)
     if document.get("kind") == ROOM_PRESCRIPTION_KIND:
-        median_path = _room_median_path(args)
+        median_path = _evidence_path(
+            args, artifact=ROOM_MEDIAN_ARTIFACT, reason=ROOM_MEDIAN_UNAVAILABLE,
+        )
         room = _room_gate(document, args, median_path, _layout_sides(args))
         return (
             payload,
@@ -534,10 +690,12 @@ def _gate(
             room_prescription_to_candidate_fields(room),
             None,
             median_path,
+            None,
         )
     packet = _load_packet(args)
-    prescription: BlendPrescription | DriverPrescription | None
+    prescription: BlendPrescription | DriverPrescription | BassPrescription | None
     classifications: tuple[FeatureVerdict, ...] | None = None
+    bass_evidence: dict[str, Any] | None = None
     if document.get("kind") == DRIVER_PRESCRIPTION_KIND:
         # The class's own size bound, applied the moment the class is known.
         check_driver_document_size(payload)
@@ -553,6 +711,12 @@ def _gate(
         # exists yet. The merge happens when a round builds its candidate.
         candidate_fields = driver_prescription_to_candidate_fields(
             prescription, fitted=None
+        )
+    elif document.get("kind") == BASS_PRESCRIPTION_KIND:
+        prescription, bass_evidence = _bass_gate(document, args, packet)
+        candidate_fields = bass_prescription_to_candidate_fields(
+            prescription,
+            owner_channels=_bass_owner_channels(args, prescription.owner_role),
         )
     else:
         prescription = read_blend_prescription(
@@ -570,7 +734,7 @@ def _gate(
         )
     # Candidate fields are computed INSIDE the gate above, because each seam
     # re-asks its own route and can refuse with the contract's exit code.
-    return payload, prescription, candidate_fields, classifications, None
+    return payload, prescription, candidate_fields, classifications, None, bass_evidence
 
 
 #: What ``propose`` writes when no ``--out`` names somewhere else: the accepted
@@ -596,7 +760,9 @@ def _gate_refusal(exc: BlendPrescriptionRefused) -> int:
 
 
 def _admitted(
-    prescription: BlendPrescription | DriverPrescription | RoomPrescription,
+    prescription: (
+        BlendPrescription | DriverPrescription | RoomPrescription | BassPrescription
+    ),
     candidate_fields: dict[str, Any],
     payload: bytes,
     out: Path,
@@ -650,7 +816,10 @@ def _compose_command(args: argparse.Namespace, median_path: Path | None) -> str:
     return shlex.join([
         PROG, "compose", "--base", "<base candidate fingerprint>",
         "--room-prescription", args.prescription,
-        "--room-median", str(_room_median_path(args, median_path)),
+        "--room-median", str(_evidence_path(
+            args, artifact=ROOM_MEDIAN_ARTIFACT,
+            reason=ROOM_MEDIAN_UNAVAILABLE, resolved=median_path,
+        )),
     ])
 
 
@@ -674,7 +843,7 @@ def _cmd_propose(args: argparse.Namespace) -> int:
     if source_error is not None:
         return failed(EXIT_UNREADABLE, REASON_EVIDENCE_SOURCE, source_error)
     try:
-        payload, prescription, candidate_fields, _, median_path = _gate(args)
+        payload, prescription, candidate_fields, _, median_path, _bass = _gate(args)
     except (CrossoverEvidencePacketError, OSError) as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     except BlendPrescriptionRefused as exc:
@@ -722,7 +891,10 @@ def _proposal_out(args: argparse.Namespace, median_path: Path | None) -> Path:
         # The room class's evidence is a file rather than a round, so the
         # receipt lands beside the median it was judged against. Reached only
         # after that gate accepted, which is what resolved ``median_path``.
-        return _room_median_path(args, median_path).parent / PROPOSAL_RECEIPT_ARTIFACT
+        return _evidence_path(
+            args, artifact=ROOM_MEDIAN_ARTIFACT,
+            reason=ROOM_MEDIAN_UNAVAILABLE, resolved=median_path,
+        ).parent / PROPOSAL_RECEIPT_ARTIFACT
     round_dir = Path(args.session_dir)
     return default_out(round_inputs(round_dir), round_dir, PROPOSAL_RECEIPT_ARTIFACT)
 
@@ -741,9 +913,24 @@ def _passband_phrase(role: str, lo: float, hi: float) -> str:
 
 
 def _scope(
-    prescription: BlendPrescription | DriverPrescription | RoomPrescription,
+    prescription: (
+        BlendPrescription | DriverPrescription | RoomPrescription | BassPrescription
+    ),
 ) -> str:
-    """What this prescription's filters were bounded BY, in one phrase."""
+    """What this prescription was bounded BY, in one phrase.
+
+    The bass class is bounded by a FAMILY rather than a band: the policy that
+    generated it, the members adopted, and how deep the deepest of them reaches.
+    """
+    if isinstance(prescription, BassPrescription):
+        deepest = min(
+            (float(rung["target"]["fp_hz"]) for rung in prescription.rungs),
+            default=0.0,
+        )
+        return (
+            f"{prescription.margin_policy_name} margin, "
+            f"{', '.join(prescription.target_ids)} down to {deepest:.1f} Hz"
+        )
     if isinstance(prescription, DriverPrescription):
         return ", ".join(
             _passband_phrase(role, lo, hi)
@@ -814,7 +1001,9 @@ def _vouch_phrase(prescription: DriverPrescription) -> str:
 
 
 def _print_prescription(
-    prescription: BlendPrescription | DriverPrescription | RoomPrescription,
+    prescription: (
+        BlendPrescription | DriverPrescription | RoomPrescription | BassPrescription
+    ),
     verb: str,
     *,
     qualifier: str = "",
@@ -894,9 +1083,10 @@ def _cmd_stage(args: argparse.Namespace) -> int:
             "command cannot see",
         )
     try:
-        payload, prescription, candidate_fields, classifications, median_path = (
-            _gate(args)
-        )
+        (
+            payload, prescription, candidate_fields, classifications, median_path,
+            bass_evidence,
+        ) = _gate(args)
         if isinstance(prescription, RoomPrescription):
             # BEFORE the ordinal: what refuses is the CLASS, not the round it
             # would have been staged for.
@@ -927,6 +1117,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
             prescription,
             for_round_ordinal=ordinal,
             classifications=classifications,
+            bass_evidence=bass_evidence,
         )
         size_bytes = path.stat().st_size
     except OSError as exc:
@@ -1525,6 +1716,18 @@ _ROOM_MEDIAN_HELP = (
 )
 
 
+#: The bass class IS packet-bound -- the family it adopts from is a second
+#: document beside that packet, not a replacement for it.
+_BASS_FIT_HELP = (
+    "the round's fitted bass family JSON -- the plant, the margin policy and "
+    "the target family a bass prescription adopts from. Used for a "
+    f"{BASS_PRESCRIPTION_KIND} document; defaults to {BASS_FIT_ARTIFACT} "
+    "beside the packet, else beside the round. The candidate's basis names "
+    f"this file's sha256, and {BASS_LADDER_DIRNAME}/*.json beside it is the "
+    "protection evidence a boosted target needs"
+)
+
+
 def _prescription_fields() -> str:
     """The document's top-level fields, read off the contracts that gate it.
 
@@ -1540,6 +1743,7 @@ def _prescription_fields() -> str:
         ("blend     ", prescription_response_format()),
         ("per-driver", driver_prescription_response_format()),
         ("room      ", room_prescription_response_format()),
+        ("bass      ", bass_prescription_response_format()),
     ):
         required = ", ".join(sorted(contract["required_top_level"]))
         optional = ", ".join(sorted(contract["optional_top_level"]))
@@ -1600,10 +1804,11 @@ def _add_evidence_args(
     if packet_source:
         parser.add_argument("--packet", default=None, help=_PACKET_HELP)
         parser.add_argument("--room-median", default=None, help=_ROOM_MEDIAN_HELP)
+        parser.add_argument("--bass-fit", default=None, help=_BASS_FIT_HELP)
     else:
         # So every verb's namespace answers the questions `_load_packet` and
-        # the room door ask.
-        parser.set_defaults(packet=None, room_median=None)
+        # the room and bass doors ask.
+        parser.set_defaults(packet=None, room_median=None, bass_fit=None)
 
 
 def build_parser() -> argparse.ArgumentParser:

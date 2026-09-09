@@ -29,8 +29,11 @@ summed, cloud, on-axis, and off-axis.
   Previous linearization, blend, room correction, and preference EQ are absent.
   A candidate adds only the corrective filters, trims, and alignment changes
   being tested.
-- **Room correction:** hold the accepted speaker tune below it. Preference EQ
-  remains absent.
+- **Bass extension:** hold the accepted speaker tune below it. The extension
+  family is fitted and its rungs measured through that tune; room correction
+  and preference EQ are absent ([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md) §1).
+- **Room correction:** hold the accepted speaker tune and any adopted bass
+  extension below it. Preference EQ remains absent.
 - **Preference EQ:** subjective bass, warmth, and other voicing belongs to
   normal listening. It never participates in linearization measurements.
 

@@ -58,9 +58,10 @@ from .blend_prescription import (
     FILTER_OUTSIDE_REGION,
     FILTER_Q_OUT_OF_RANGE,
     PRESCRIPTION_PROHIBITED_FIELD,
+    EXECUTION_BOUNDARY,
     PRESCRIPTION_SCHEMA_UNSUPPORTED,
     PROHIBITED_PRESCRIPTION_KEYS,
-    RATIONALE_MAX_CHARS,
+    RATIONALE_HELP,
     BlendPrescriptionRefused,
     composed_grid,
     find_prohibited_keys,
@@ -425,14 +426,7 @@ def room_prescription_response_format() -> dict[str, Any]:
                 "{freq: <Hz>, q: <number>, gain: <dB>}"
             ),
         },
-        "optional_top_level": {
-            "rationale": (
-                f"free text; the first {RATIONALE_MAX_CHARS} characters are "
-                "banked and the excess is dropped with its count disclosed. "
-                "It is NEVER parsed for behaviour: no argument made here can "
-                "widen a bound below"
-            ),
-        },
+        "optional_top_level": {"rationale": RATIONALE_HELP},
         "filters_are_a_total": (
             "prescribe the WHOLE room set the next round should apply, not a "
             "delta against the incumbent"
@@ -463,12 +457,7 @@ def room_prescription_response_format() -> dict[str, Any]:
         ),
         "refusal_reasons": sorted(ROOM_PRESCRIPTION_REFUSAL_REASONS),
         "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
-        "execution_boundary": {
-            "model_may_propose": True,
-            "model_may_execute": False,
-            "model_may_grade_itself": False,
-            "jts_validates_and_measures": True,
-        },
+        "execution_boundary": EXECUTION_BOUNDARY,
     }
 
 

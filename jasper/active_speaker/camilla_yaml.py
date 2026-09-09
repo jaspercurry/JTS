@@ -497,6 +497,30 @@ def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
     )
 
 
+def bass_owner_channels(preset: ActiveSpeakerPreset, role: str) -> tuple[int, ...]:
+    """The physical outputs the bass owner plays through, or a refusal.
+
+    ``"subwoofer"`` is the local sub's pinned output rather than a driver role
+    on the channel map, which is why this cannot be ``_channels_for_role``
+    alone. A role that reaches no output is a refusal, never ``()``: an empty
+    owner would emit a bass stage onto nothing.
+    """
+
+    if role == "subwoofer":
+        sub = preset.local_subwoofer
+        if sub is None:
+            raise ActiveSpeakerConfigError(
+                "the bass owner is the local subwoofer and this preset declares none"
+            )
+        return (sub.physical_output_index,)
+    channels = tuple(_channels_for_role(preset, role))
+    if not channels:
+        raise ActiveSpeakerConfigError(
+            f"bass owner role {role!r} reaches no output on this preset"
+        )
+    return channels
+
+
 def _bass_extension_emission(
     preset: ActiveSpeakerPreset,
     profile: BassExtensionProfile | None,
@@ -519,14 +543,20 @@ def _bass_extension_emission(
     roles = tuple(str(role) for role in owner["roles"])
     channels = tuple(int(channel) for channel in owner["channels"])
     kind = str(owner["kind"])
-    if kind == "woofer_way" and len(roles) == 1:
-        expected = tuple(_channels_for_role(preset, roles[0]))
-    elif kind == "local_sub" and roles == ("subwoofer",):
-        sub = preset.local_subwoofer
-        expected = () if sub is None else (sub.physical_output_index,)
-    else:
-        expected = ()
-    if not expected or channels != expected:
+    # The declared KIND and the declared ROLE must agree on where the bass
+    # plays before either is trusted to resolve a channel: `local_sub` is the
+    # `subwoofer` role and nothing else, `woofer_way` is any other, and no
+    # third kind is emitted.
+    if len(roles) != 1 or kind not in ("local_sub", "woofer_way"):
+        raise ActiveSpeakerConfigError(
+            "bass-extension owner must name one role and a known owner kind"
+        )
+    if (kind == "local_sub") != (roles[0] == "subwoofer"):
+        raise ActiveSpeakerConfigError(
+            f"bass-extension owner kind {kind!r} and role {roles[0]!r} disagree "
+            "about which driver carries the bass"
+        )
+    if channels != bass_owner_channels(preset, roles[0]):
         raise ActiveSpeakerConfigError(
             "bass-extension owner does not match the emitted active-speaker graph"
         )

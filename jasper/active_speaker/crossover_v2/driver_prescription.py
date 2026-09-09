@@ -56,8 +56,10 @@ from jasper.sound.profile import (
 )
 
 from .blend_prescription import (
+    EXECUTION_BOUNDARY,
     PACKET_FINGERPRINT_FIELD,
     PROHIBITED_PRESCRIPTION_KEYS,
+    RATIONALE_HELP,
     BlendPrescriptionRefused,
     find_prohibited_keys,
 )
@@ -1656,14 +1658,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 f"{DECLARED_TILT_BOUND_DB_PER_OCTAVE:g}. Declare one whenever "
                 "you apply one — undeclared it reads as a defect next round"
             ),
-            "rationale": (
-                f"free text. The first {RATIONALE_MAX_CHARS} characters are "
-                "banked and anything past them is dropped — a long rationale is "
-                "truncated and disclosed as prescription."
-                "rationale_dropped_chars, never refused. It is stored for a "
-                "human reader and is NEVER parsed for behaviour: no argument "
-                "made here can widen a bound below."
-            ),
+            "rationale": RATIONALE_HELP,
         },
         "filters_are_a_total": (
             "for every role you name, prescribe the WHOLE per-driver "
@@ -1826,10 +1821,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
         "refusal_reasons": sorted(DRIVER_PRESCRIPTION_REFUSAL_REASONS),
         "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
         "execution_boundary": {
-            "model_may_propose": True,
-            "model_may_execute": False,
-            "model_may_grade_itself": False,
-            "jts_validates_and_measures": True,
+            **EXECUTION_BOUNDARY,
             "note": (
                 "An admitted prescription is an unmeasured candidate until "
                 "captured. Driver protection, headroom and capture integrity "

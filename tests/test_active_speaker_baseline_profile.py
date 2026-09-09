@@ -79,6 +79,7 @@ from tests.active_speaker_fixtures import (
     valid_camilla_config as _valid_config,
 )
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_bass_extension_candidate_field import bass_extension_field
 
 
 # What a REAL MEASURE analysis records and PR-L4 item 5 counts as evidence: the
@@ -4878,6 +4879,37 @@ def test_build_baseline_profile_candidate_accepts_v2_measured_candidate(
     config_text = Path(payload["config"]["path"]).read_text()
     assert "delay: 0.2500" in config_text
     assert payload["candidate_fingerprint"] is not None
+
+
+def test_the_applied_snapshot_carries_the_candidates_bass_family(
+    tmp_path: Path,
+) -> None:
+    """Layer 2's family is an INPUT a later recompose re-emits, so it belongs
+    in the immutable snapshot beside linearization and the blend correction --
+    not at the top level, where the candidate fingerprint would not cover it."""
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    preview = build_crossover_preview(draft, created_at="2026-07-18T12:10:00Z")
+    preset, issues, _gates = compile_preset_from_crossover_preview(topology, preview)
+    assert preset is not None, issues
+    field = bass_extension_field()
+
+    payload = build_baseline_profile_candidate(
+        topology,
+        design_draft=draft,
+        crossover_preview=preview,
+        measurements={},
+        write=True,
+        state_path=tmp_path / "baseline_profile.json",
+        config_path=tmp_path / "active_speaker_baseline.yml",
+        validate=_valid_config,
+        tuning_owner="automatic",
+        measured_candidate=_v2_candidate(preset, bass_extension=field),
+        created_at="2026-07-18T12:20:00Z",
+    )
+
+    assert payload["recomposition_snapshot"]["bass_extension"] == field
+    assert "bass_extension" not in payload
 
 
 _ROOM_CORRECTION: dict[str, Any] = {

@@ -1801,8 +1801,8 @@ declared_transfer_prior_from_state = _durable.declared_transfer_prior_from_state
 
 
 
-def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
-    """This round's staged prescription as ``(blend, driver)`` (A9).
+def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any, Any]:
+    """This round's staged prescription as ``(blend, driver, bass)`` (A9).
 
     The ONE place a staged prescription enters the flow, and the one place its
     refusal is turned into a round that carries on without it. Named and
@@ -1812,22 +1812,23 @@ def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
 
     **Both classes, one door (PR-B).** ``accepts`` is
     :data:`~jasper.active_speaker.crossover_v2.prescription_spool.STAGEABLE_KINDS`
-    because this round now routes both: a blend document becomes the candidate's
+    because this round now routes each: a blend document becomes the candidate's
     ``blend_correction``, a per-driver one is merged by role onto the fit in its
-    ``linearization``. This function and its two journal slugs dropped ``blend``
+    ``linearization``, a bass one becomes its ``bass_extension`` family. This
+    function and its two journal slugs dropped ``blend``
     from their names in the same edit — a name that is wrong for half the
     documents it describes is worse than a churned one, and the class-neutral
     spelling is the spool's own (``take_staged_prescription``,
     ``StagedPrescription``), so the door has one vocabulary rather than two.
 
-    **The pair is returned already split, and the split is made HERE**, on the
+    **The tuple is returned already split, and the split is made HERE**, on the
     envelope's own class field rather than by ``isinstance`` —
     :class:`~jasper.active_speaker.crossover_v2.prescription_spool.StagedPrescription`
     states that rule for a caller that accepted both classes. Here rather than at
     the call site so the class vocabulary has ONE reader: a caller comparing
-    kinds itself would be a second place to keep in step the day a third class
-    exists. At most one arm is ever non-``None``; ``(None, None)`` is every
-    ordinary round and every refused one.
+    kinds itself would be a second place to keep in step the day another class
+    exists. At most one arm is ever non-``None``; ``(None, None, None)`` is
+    every ordinary round and every refused one.
 
     **Fail-open on the transport, fail-closed on the content.** A document that
     is stale, corrupt, oversized, tampered, or aimed where its class may not
@@ -1846,6 +1847,9 @@ def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
     :func:`~jasper.active_speaker.crossover_v2.prescription_spool.take_staged_prescription`
     — so a refusal here cannot repeat itself on the next round.
     """
+    from jasper.active_speaker.crossover_v2.bass_prescription import (
+        BASS_PRESCRIPTION_KIND,
+    )
     from jasper.active_speaker.crossover_v2.blend_prescription import (
         BlendPrescriptionRefused,
     )
@@ -1868,10 +1872,11 @@ def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
             level=logging.WARNING, reason=exc.reason,
             round_ordinal=round_ordinal, detail=exc.detail,
         )
-        return None, None
+        return None, None, None
     if staged is None:
-        return None, None
+        return None, None, None
     is_driver = staged.prescription_kind == DRIVER_PRESCRIPTION_KIND
+    is_bass = staged.prescription_kind == BASS_PRESCRIPTION_KIND
     log_event(
         logger, "correction.crossover_v2_prescription_taken",
         round_ordinal=round_ordinal,
@@ -1894,7 +1899,9 @@ def _take_staged_prescription(round_ordinal: int) -> tuple[Any, Any]:
         ),
         prescription_sha256=staged.prescription_sha256,
     )
-    return (None, staged) if is_driver else (staged, None)
+    if is_bass:
+        return None, None, staged
+    return (None, staged, None) if is_driver else (staged, None, None)
 
 
 def _take_staged_angle_walk(
@@ -5148,7 +5155,7 @@ def prepare_v2_session(
             series_position = series_position_from_state(prior_raw)
             # ONE take, already split by class — see the take's own contract for why
             # the split is made there and not here.
-            staged_blend, staged_driver = _take_staged_prescription(
+            staged_blend, staged_driver, staged_bass = _take_staged_prescription(
                 series_position.ordinal
             )
             conductor = CrossoverV2Session.hydrate(
@@ -5214,6 +5221,12 @@ def prepare_v2_session(
                 # the Layer-1a fit inside the candidate build, which is MEASURE's.
                 driver_prescription=(
                     None if staged_driver is None else staged_driver.prescription
+                ),
+                # On this stage for the line above's reason: the adopted family
+                # lands on the candidate's ``bass_extension`` field inside the
+                # candidate build.
+                bass_prescription=(
+                    None if staged_bass is None else staged_bass.prescription
                 ),
             )
         # Stage 2 keeps the durable candidate/applied facts and rebinds the

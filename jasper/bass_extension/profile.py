@@ -7,12 +7,9 @@
 from __future__ import annotations
 
 import json
-import logging
 import math
 import os
-from contextlib import suppress
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
@@ -28,8 +25,11 @@ from jasper.bass_extension.adapters import (
     PortedPlantFit,
     SealedPlantFit,
 )
-
-logger = logging.getLogger(__name__)
+# Re-exported: this module was the vocabulary's home, and every importer
+# still asks it here.
+from jasper.bass_extension.refusals import (
+    BassExtensionRefusal as BassExtensionRefusal,
+)
 
 if TYPE_CHECKING:
     from jasper.bass_extension.adapters.base import TargetSpec
@@ -40,24 +40,6 @@ BASS_EXTENSION_SCHEMA_VERSION = 1
 BASS_EXTENSION_ALGORITHM_VERSION = "bass_extension_v1"
 DEFAULT_PROFILE_PATH = Path("/var/lib/jasper/bass_extension_profile.json")
 PROFILE_PATH_ENV = "JASPER_BASS_EXTENSION_PROFILE_STATE"
-
-
-class BassExtensionRefusal(StrEnum):
-    BASELINE_NOT_APPLIED = "bass_extension_baseline_not_applied"
-    TOPOLOGY_MISMATCH = "bass_extension_topology_mismatch"
-    BASS_OWNER_AMBIGUOUS = "bass_extension_bass_owner_ambiguous"
-    BONDED_BASS_OWNER_REMOTE = "bass_extension_bonded_bass_owner_remote"
-    ENCLOSURE_UNKNOWN = "bass_extension_enclosure_unknown"
-    ENCLOSURE_UNSUPPORTED = "bass_extension_enclosure_unsupported"
-    PLANT_UNRESOLVED = "bass_extension_plant_unresolved"
-    TUNING_NOT_LOCATED = "bass_extension_tuning_not_located"
-    PR_NOTCH_NOT_LOCATED = "bass_extension_pr_notch_not_located"
-    FIT_QUALITY_INSUFFICIENT = "bass_extension_fit_quality_insufficient"
-    CAPTURE_QUALITY_REFUSED = "bass_extension_capture_quality_refused"
-    CAPTURE_SNR_INSUFFICIENT = "bass_extension_capture_snr_insufficient"
-    MIC_MOVED_BETWEEN_RUNGS = "bass_extension_mic_moved_between_rungs"
-    BOOST_LIMIT_EXCEEDED = "bass_extension_boost_limit_exceeded"
-    PROFILE_STALE = "bass_extension_profile_stale"
 
 
 _PROFILE_FIELDS = {
@@ -520,113 +502,3 @@ def evaluate_loaded_bass_extension_profile(
     if profile.status == "bypassed":
         return BassExtensionEvaluation("bypassed", (), profile, "profile is bypassed")
     return BassExtensionEvaluation("accepted", (), profile, "profile is accepted")
-
-
-def bass_extension_state_summary(
-    path: str | Path | None = None,
-    *,
-    intent_path: str | Path | None = None,
-) -> dict[str, Any] | None:
-    from jasper.bass_extension import (
-        BASS_EXTENSION_APPLY_INTENT_PATH,
-        BASS_EXTENSION_RUNTIME_ADAPTER_IDS,
-    )
-
-    recovery_required = Path(
-        intent_path or BASS_EXTENSION_APPLY_INTENT_PATH
-    ).exists()
-    with suppress(Exception):
-        profile = load_bass_extension_profile(path)
-        if profile is None:
-            if not recovery_required:
-                return None
-            return {
-                "commissioned": False,
-                "status": None,
-                "profile_id": None,
-                "adapter_id": None,
-                "runtime_eligible": False,
-                "runtime_deferred_reason": None,
-                "apply_recovery_required": True,
-                "contract_status": None,
-                "contract_refusals": [],
-                "contract_detail": None,
-            }
-        adapter_id = str(profile.enclosure["adapter_id"])
-        runtime_eligible = adapter_id in BASS_EXTENSION_RUNTIME_ADAPTER_IDS
-
-        # The file's own `status` field is a raw, unverified claim: it stays
-        # "accepted" even when the CONTRACT that
-        # evaluate_loaded_bass_extension_profile enforces — baseline
-        # fingerprint, topology, adapter version, algorithm version — would
-        # now refuse the profile. Re-run that same evaluation here against
-        # the profile object already parsed above — the "already-parsed
-        # immutable profile without disk I/O" variant, so this costs no
-        # second read of the file — loading current topology/baseline state
-        # the same way the doctor's check_bass_extension_profile does, so a
-        # caller of this summary (state_aggregate, the bass tab) can tell
-        # "the file says accepted" from "the contract still honors it."
-        # Because this only ever evaluates an already-successfully-parsed
-        # profile, it can only report "stale", "bypassed", or "accepted" —
-        # never "missing"/"malformed" (those are disk-read outcomes the two
-        # branches above this one already handle). The evaluation runs under
-        # its own suppress(Exception) with a narrow, logged except nested
-        # inside for the expected failure classes — so ANY failure here,
-        # expected-and-logged or genuinely unexpected-and-silent, degrades
-        # these three keys to null/[]/null without affecting the rest of the
-        # summary (an unexpected type must not escape to the outer wrapper,
-        # where it would cost the whole summary); the tuple-unpack
-        # assignment computes all three from one evaluation object so a
-        # failure partway through can never leave them partially updated.
-        contract_status: str | None = None
-        contract_refusals: list[str] = []
-        contract_detail: str | None = None
-        with suppress(Exception):
-            try:
-                from jasper.active_speaker.baseline_profile import (
-                    load_applied_baseline_profile_state,
-                )
-                from jasper.output_topology import load_output_topology
-
-                evaluation = evaluate_loaded_bass_extension_profile(
-                    profile,
-                    topology=load_output_topology(),
-                    applied_baseline_state=load_applied_baseline_profile_state(),
-                )
-                contract_status, contract_refusals, contract_detail = (
-                    evaluation.status,
-                    [refusal.value for refusal in evaluation.refusals],
-                    evaluation.detail,
-                )
-            except (
-                ImportError,
-                OSError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-                KeyError,
-                AttributeError,
-            ):
-                logger.debug(
-                    "bass extension contract re-evaluation failed", exc_info=True
-                )
-
-        return {
-            "commissioned": True,
-            "status": profile.status,
-            "profile_id": profile.profile_id,
-            "adapter_id": adapter_id,
-            "runtime_eligible": runtime_eligible,
-            "runtime_deferred_reason": (
-                None if runtime_eligible else "fixed_graph_not_defined"
-            ),
-            "apply_recovery_required": recovery_required,
-            "deepest_hz": profile.targets[0].fp_hz,
-            "natural_hz": profile.targets[-1].fp_hz,
-            "margin": profile.margin,
-            "anchors": [_anchor_to_dict(anchor) for anchor in profile.anchors],
-            "contract_status": contract_status,
-            "contract_refusals": contract_refusals,
-            "contract_detail": contract_detail,
-        }
-    return None
