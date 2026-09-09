@@ -34,10 +34,19 @@ with disclosed level alignment and capture compatibility;
 subsonic policy on generated filters. These extend the existing owners; no new
 session runner, state store or correction framework was added.
 
-**Next:** rows 1.6/2.4, one real mono baseline and room-candidate seat cloud,
-then save/reload and listen. The full local merge lane passed 27,297 tests;
-the final DSP rounding refinement passed 639 adapter tests and independent
-review. This is software proof. Stereo rows 2.8–2.10, upper-band research and
+**Shared measurement plans:** [PR #4683](https://github.com/jaspercurry/JTS/pull/4683)
+landed with green CI at `f6a8a6d0f`. One bundled `measurement_plans.json` owns layouts
+and defaults. Capture purpose is independent of microphone position; the
+existing runner, position-ready contract and bank remain shared. Optional
+pose text reaches the existing screen. Each distinct physical position needs
+a fresh start; candidate trials at that held position share it.
+
+**Next:** run the owner's three-position `room/quick` arm smoke test: fixed
+speaker, microphone at 0°, −20° and +20°, baseline through the accepted
+speaker tune, then the same positions through a room candidate. Grade the
+supported band, including ordinary bass correction; no extra bass extension.
+This precedes the full listening-area proof in rows 1.6/2.4 and is not a
+substitute for it. Stereo rows 2.8–2.10, upper-band research and
 volume-dependent bass protection remain open.
 
 ## How to resume from a fresh session
@@ -206,12 +215,13 @@ it removes the associated attribution claim rather than inventing provenance.
 | Tuning flow (its agent) | the speaker stage as a product: the walk, the structure-first campaign (ADR-0203), operator views, the side-solo capture graph |
 | **Seat-matched tuning (this)** | the room cloud, per-cabinet room evidence/candidates/emission, bass fit and protection, optional extension schedule, shared headroom integration, entry page and upper-room research |
 
-Rule of engagement: rows here add to `measurement_programs.py`,
+Rule of engagement: rows here extend `measurement_plans.json` and its
+`measurement_programs.py` contract,
 `ARTIFACT_BY_VIEW`, the candidate bank, and the emitter. An engine change is a
 request to the tuning-flow owner with concrete inputs, outputs and behavior
 tests. Agree one writer before either lane edits shared files; an active branch
 is not permission to overlap it. The engine owns protected capture, provenance,
-candidate identity, trial, adoption and restore. Programs own poses, views,
+candidate identity, trial, adoption and restore. Programs own capture purpose, poses, views,
 targets and candidate vocabulary. Bass owns its protection evidence and level
 policy, not another apply path. One emitter owns the complete graph and boost
 budget. Saved speaker tunes are inputs to Room, not files Room retunes.
@@ -220,7 +230,10 @@ budget. Saved speaker tunes are inputs to Room, not files Room retunes.
 
 Recheck at the implementation head; §9 retains the earlier history.
 
-- Programs and pose coordinates live in `measurement_programs.py`; shared
+- Layouts/defaults live in `measurement_plans.json`; `measurement_programs.py`
+  validates them. Position count follows the ordered list, with `room/cloud`
+  as the 11-position default and `room/quick` as the three-bearing smoke plan.
+  Existing named speaker and seat layouts retain their coordinates. Shared
   scopes and temporary graph ownership live in `measure_spec.py` and
   `crossover_v2/session_graph.py`. Raw takes retain candidate, played graph,
   microphone position, level and calibration. Extend these owners.
@@ -308,6 +321,7 @@ Speaker tuning keeps its current owner. Coordinate shared changes under §3.
 | 2.5 | **PARTIAL — ADR-0277 landed in PR #4663; it records the 11-position default and preserves saved cubes.** Record other program decisions in append-only ADRs where needed. Resolve cabinet/side identity and the per-role vs per-cabinet trim ambiguity with the speaker owner. Upper-band policy stays open under 2.11. | A | Current decision and implementation scope agree; no retroactive rewrite of ADR history. |
 | 2.6 | **LANDED — #4662 and #4678.** One room summary per side and compatible measured set. Uses the canonical record reader, unique physical poses and common valid frequency coverage. New captures retain the resolved calibration curve identity and the accepted speaker source from the profile used to compile playback. Room composition preserves that basis and discloses match, difference or unknown; legacy missing facts stay unknown. | V | Separate candidates do not mix; retakes do not add positions. Narrow coverage still checks filter tails against the full room policy band. |
 | 2.7 | **LANDED — PR #4663, `b4e4ddda4`.** Registers the 11-position default (§1a) once; old `seat/cube` and `seat/express` identities retain their coordinates. Prompts/counts come from the registry; the runbook and generated menu agree. Counts use unique poses per side and tune; thresholds use the existing fraction policy and actual count. | P | Fixture preview and staged records agree on 11 mono sweeps. No hardware walk yet; stereo reaches 22 only after 2.8. No duplicated product pose list. |
+| 2.7a | **LANDED — PR #4683; ADR-0278.** Configurable layouts and defaults, explicit capture purpose/regime, and optional pose text use the existing flow. Full pose identity controls position batches. Room views accept tagged arm measurements with their true geometry. | P | Config edits work with five positions; 11/default and 3/quick preview, staging, analysis and evidence pins; packaged config loads from the wheel. |
 | 2.8 | Side-solo capture through each cabinet's accepted speaker tune, left then right at a held pose. Extend shared scope/routing with the speaker owner; account for side-specific level/trim and protection. | P | **NN**: actual graph mutes the other side and preserves all driver protection; receipt identifies the side; one Start per pose batch. |
 | 2.9 | **Moved from 6.1.** Per-side room emission and extraction, converged with `room_peqs_right`. Keep every side's evidence and filters separate; use a common target only over supported coverage. Extend the existing budget, apply and restore owners. | E | **NN**: distinct left/right filters survive candidate fingerprint, emission, readback, trial, apply and restore; mono behavior preserved. Remove the stereo refusal only once this path exists. |
 | 2.10 | Small Room entry/resume page (§1b), generated tool entry and optional method pointers. Use existing session, plots and human placement screen. | P | Fresh and resumed sessions identify the same saved tune/round; copied instructions refer to current tool contracts; no second state owner. |
@@ -359,7 +373,8 @@ until its experiment scope is settled. Shared files have one assigned writer.
 1. Refresh the affected briefs against this plan and current refs. Keep the
    existing speaker owner in charge of its engine; agree the side-solo and
    evidence contracts before editing shared capture/emitter files.
-2. Room: 2.6/2.7 are landed; 1.6 → 2.4 is the first mono proof. Finish the
+2. Room: 2.7a is landed; run the three-position arm smoke test. Rows 1.6 → 2.4
+   remain the full listening-area mono proof. Finish the
    side/trim decision in 2.5 and build 2.8/2.9 with the shared owner, plus
    2.10 at the UI boundary, then 2.12 for stereo.
    Neither room proof waits for bass extension, cardioid or upper-band EQ.
