@@ -34,7 +34,7 @@ from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..platform.status_socket import (
     FANIN_STALE_MS, OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET, read_status_socket,
 )
-from ..service_units import camilla_not_running, unit_failed
+from ..service_units import unit_failed, unit_not_running
 from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..fanin_coupling import RING_SLOT_FRAMES
 from ..source_intent import read_source_intents
@@ -1483,42 +1483,31 @@ def _state_issues(
     return issues
 
 
-# systemd ActiveState values that mean the unit is up or on its way up.
-# Everything else — `inactive`, `deactivating`, `failed`, `maintenance` — means
-# no process is doing the unit's job right now.
-_UNIT_RUNNING_ACTIVE_STATES = frozenset({"active", "activating", "reloading"})
-
-
 def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
     """``(code, household detail)`` for a CamillaDSP unit that is not running.
 
-    ``None`` when it is running. The code is what surfaces and tests
-    discriminate on; the detail is household copy, so the unit name, its
-    systemd state and the `journalctl` line stay in doctor's
+    ``None`` when it is running or on the way up. The code is what surfaces
+    and tests discriminate on; the detail is household copy, so the unit
+    name, its systemd state and the `journalctl` line stay in doctor's
     `check_camilla_service`, which fails on the same fact.
 
-    The missing-vs-stopped split reads
-    :func:`jasper.service_units.camilla_not_running` — see there for why a
-    clean stop and a jasper-camilla-recover park (#2163, ADR-0175) both count.
-    `activating`/`reloading` are also running here, wider than that
-    predicate's own exactly-`active` requirement: on-the-way-up is not a
-    verdict yet.
-
-    Silent when systemd truth is unavailable (no `systemctl`, or before the
-    first service-state probe): unknown is not stopped.
+    Reads :func:`jasper.service_units.unit_not_running`, wider than a bare
+    `failed` check on purpose: a clean stop and a jasper-camilla-recover park
+    (#2163, ADR-0175) both count, because CamillaDSP — unlike jasper-outputd's
+    missing-DAC `ExecCondition` or jasper-voice's `voice-input-absent` marker —
+    has no `Condition*`/`ExecCondition` of its own and runs `Restart=always`.
 
     A NEVER-INSTALLED unit keeps its own code and its own remedy: reinstalling
     is the fix, and no restart can clear it.
     """
-    state = _mapping(raw_state)
-    active_state = str(state.get("active_state") or "")
-    if camilla_not_running(state) == "missing":
+    code = unit_not_running(_mapping(raw_state))
+    if code == "missing":
         return (
             "camilla_not_installed",
             "This speaker's sound processing is not installed, and all sound "
             "runs through it, so nothing can play. Re-run the installer.",
         )
-    if not active_state or active_state in _UNIT_RUNNING_ACTIVE_STATES:
+    if code is None or code == "starting":
         return None
     return (
         "camilla_stopped",

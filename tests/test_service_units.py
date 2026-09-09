@@ -43,7 +43,7 @@ def test_unit_predicates_match_read_unit_states_record_shape(
 @pytest.mark.parametrize(
     ("record", "code"),
     [
-        (None, None),
+        (None, "missing"),
         ({}, None),
         ({"load_state": "not-found", "active_state": "inactive"}, "missing"),
         (
@@ -59,29 +59,40 @@ def test_unit_predicates_match_read_unit_states_record_shape(
         (
             {"load_state": "loaded", "unit_file_state": "enabled",
              "active_state": "activating"},
-            "inactive",
+            "starting",
+        ),
+        (
+            {"load_state": "loaded", "unit_file_state": "enabled",
+             "active_state": "reloading"},
+            "starting",
         ),
         (
             {"load_state": "loaded", "unit_file_state": "enabled",
              "active_state": "failed"},
-            "failed",
+            "inactive",
         ),
         (
             {"load_state": "loaded", "unit_file_state": "enabled",
              "active_state": "active"},
             None,
         ),
+        (
+            {"load_state": "error", "unit_file_state": "enabled",
+             "active_state": "inactive"},
+            "inactive",
+        ),
     ],
     ids=[
-        "absent", "empty", "missing", "not-enabled", "loaded-inactive",
-        "activating", "failed", "active",
+        "absent", "empty", "not-found", "not-enabled", "loaded-inactive",
+        "activating", "reloading", "failed", "active", "load-state-error",
     ],
 )
-def test_camilla_not_running_reads_the_unit_record(record, code):
+def test_unit_not_running_reads_the_unit_record(record, code):
     """The one classification :mod:`jasper.control.audio_health` and
-    jasper-doctor's ``check_camilla_service`` share for "CamillaDSP is not
-    running"."""
-    assert service_units.camilla_not_running(record) == code
+    jasper-doctor's ``_service_state_failure`` share for "this unit is not
+    doing its job". ``load_state == "error"`` is NOT ``"missing"`` (#2163):
+    origin/main's ladder only treats ``"not-found"`` that way."""
+    assert service_units.unit_not_running(record) == code
 
 
 # The two cases jasper.web._unit_snapshot's now-retired parser pinned that
