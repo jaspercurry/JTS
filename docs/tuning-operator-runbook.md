@@ -259,14 +259,15 @@ span still cannot answer, retain that limitation and use measured full sums.
 The room is measured on the seat cloud, through the applied tune, ungated
 (methodology §11). In order:
 
-1. `jasper-angle-capture plan --program seat`: eleven summed stops around
-   the listener's head. `--size cube` keeps the seven-position walk;
-   `--size express` selects three. `stage` it; a human
-   moves the microphone, and an arm cannot reach the seat.
+1. `jasper-angle-capture plan --program room`: the default listening-area
+   cloud. `--size quick --mover arm` selects the three-position arm smoke test;
+   the speaker stays fixed and the arm moves the microphone. `stage` the plan.
+   The arm test samples its local area, not the final listening-area cloud.
+   Existing `seat/cloud`, `seat/cube` and `seat/express` remain available.
 2. `jasper-round open --tier express`, then the phone's position-ready walk
    states each place from the head centre at ear height.
-3. `jasper-round bank <session-dir>`: the banked seat takes carry `pose_kind`,
-   `seat_offset_m` and `gating_applied: false`.
+3. `jasper-round bank <session-dir>`: records carry the measurement purpose,
+   actual pose and gating result. Room analysis retains reflections.
 4. `jasper-round-views room-ceiling <round-dir>`: the applied candidate's
    trusted floor, clamped; with no readable profile the default is used and
    disclosed.
@@ -284,7 +285,7 @@ The room is measured on the seat cloud, through the applied tune, ungated
    judges a room prescription (`kind: jts_room_prescription`) against
    `room_median.json`; `compose --base <applied fingerprint>
    --room-prescription <doc> --room-median <path>` banks the room candidate;
-   stage the same `jasper-angle-capture plan --program seat
+   stage the same `jasper-angle-capture plan --program room
    --candidates <fingerprint>` walk, then open and bank a new round. Each seat
    capture plays the room candidate through the accepted speaker tune.
 8. `jasper-round-views room-grade <round-dir> [--baseline <round-dir>]`: the
@@ -292,6 +293,12 @@ The room is measured on the seat cloud, through the applied tune, ungated
    round's numbers beside it. Comparisons use shared frequency coverage and
    disclose their level alignment and capture compatibility. A regressed band
    is a disclosure; restore follows the same adoption path.
+
+Plan defaults and ordered positions live in
+[`measurement_plans.json`](../jasper/active_speaker/measurement_plans.json).
+Edit a layout to change the number of positions; counts follow that list.
+Optional pose `headline` and `detail` replace the derived screen text.
+Capture purpose controls playback and analysis; the mover only controls placement.
 
 These views do not authorize correction above the current ceiling.
 If the speaker's trusted floor exceeds that ceiling, the gap remains ungraded;

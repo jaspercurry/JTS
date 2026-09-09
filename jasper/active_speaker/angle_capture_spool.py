@@ -215,6 +215,9 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
                 "regime": stop.regime,
                 "elevation_deg": stop.elevation_deg,
                 "candidate_id": stop.candidate_id,
+                "purpose": stop.purpose,
+                **({"headline": stop.headline} if stop.headline else {}),
+                **({"detail": stop.detail} if stop.detail else {}),
                 # Only off the mark: a bearing's document stays as it always was.
                 **({"kind": stop.kind} if stop.kind != POSE_KIND_BEARING else {}),
                 **({"distance_m": stop.distance_m} if stop.distance_m is not None else {}),
@@ -430,6 +433,9 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
                 entry.get("elevation_deg", 0),  # type: ignore[arg-type]
                 str(entry.get("candidate_id") or ""),
                 kind=str(entry.get("kind") or POSE_KIND_BEARING),
+                purpose=entry.get("purpose"),
+                headline=str(entry.get("headline") or ""),
+                detail=str(entry.get("detail") or ""),
                 distance_m=entry.get("distance_m"),
                 seat_offset_m=tuple(offset) if isinstance(offset, list) else None,  # type: ignore[arg-type]
             )

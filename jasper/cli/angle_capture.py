@@ -53,6 +53,7 @@ from ._logging import CLI_LOG_FORMAT
 from jasper.active_speaker import arm_walk, measurement_programs
 from jasper.active_speaker.angle_capture import (
     MOVER_HUMAN,
+    MOVER_ARM,
     MOVERS,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -79,7 +80,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITIES,
     POLARITY_NORMAL,
 )
-from jasper.active_speaker.crossover_v2_flow import TIER_EXPRESS, TIERS, CrossoverV2FlowError
+from jasper.active_speaker.crossover_v2_flow import TIER_EXPRESS, TIER_REMOTE, TIERS, CrossoverV2FlowError
 from jasper.active_speaker.measurement_programs import (
     POSE_KIND_BEARING,
     MeasurementProgram,
@@ -226,7 +227,7 @@ def _graph_flags(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _resolved_candidates(args: argparse.Namespace) -> tuple[str, ...]:
-    """Resolve banked artifacts; an empty candidate id selects the base graph."""
+    """Resolve banked artifacts; an empty id selects the plan’s baseline layer."""
     fingerprints = tuple(
         "" if field.strip() == "base" else field.strip()
         for field in (args.candidates or "").split(",")
@@ -256,10 +257,7 @@ def _chosen_program(args: argparse.Namespace) -> MeasurementProgram:
         return measurement_programs.spot_program(args.azimuth, args.elevation or 0)
     if args.azimuth is not None or args.elevation is not None:
         parser.error("--azimuth/--elevation belong to --program spot; a named program owns its poses")
-    size = args.size if args.size is not None else (
-        "cloud" if args.program == "seat" else "express"
-    )
-    return measurement_programs.program(args.program, size)
+    return measurement_programs.program(args.program, args.size)
 
 
 def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
@@ -364,6 +362,8 @@ def _walk_payload(
                 "screen": dict(stop.screen),
                 "candidate_id": stop.candidate_id,
                 "kind": stop.prompt.kind,
+                "purpose": stop.prompt.purpose,
+                "baseline_scope": measurement_programs.baseline_scope(stop.prompt.purpose),
             }
             for stop in stops
         ],
@@ -524,6 +524,9 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
                 "azimuth_deg": stop["angle_deg"],
                 "vertical_deg": stop["elevation_deg"],
                 "regime": stop["regime"],
+                "purpose": stop["purpose"],
+                "baseline_scope": stop["baseline_scope"],
+                "prompt": stop["prompt"],
                 # ``None`` rather than ``""``: a walk that measures the speaker
                 # as it stands names no variant.
                 "candidate_id": stop["candidate_id"] or None,
@@ -539,12 +542,13 @@ def _receipt(payload: dict[str, Any], **extra: Any) -> dict[str, Any]:
     }
 
 
-def _open_round(size: str) -> str:
+def _open_round(size: str, mover: str) -> str:
     """The verb that RUNS a staged walk, at the tier its program was sized for.
 
     A size that is not a session tier rides the smallest.
     """
-    return f"jasper-round open --tier {size if size in TIERS else TIER_EXPRESS}"
+    tier = TIER_REMOTE if mover == MOVER_ARM else size if size in TIERS else TIER_EXPRESS
+    return f"jasper-round open --tier {tier}"
 
 
 def _cmd_plan(args: argparse.Namespace) -> int:
@@ -599,7 +603,7 @@ def _cmd_stage(args: argparse.Namespace) -> int:
     _print_walk(payload)
     print(f"staged at {path}", file=sys.stderr)
     receipt = _receipt(payload, out=str(path), bytes=path.stat().st_size)
-    return answered({**receipt, "next": _open_round(receipt["size"])})
+    return answered({**receipt, "next": _open_round(receipt["size"], receipt["mover"])})
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
@@ -613,7 +617,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     payload = _walk_payload(request, _resolved_level())
     _print_walk(payload)
     receipt = _receipt(payload, staged=True, out=str(angle_request_spool_path()))
-    return answered({**receipt, "next": _open_round(receipt["size"])})
+    return answered({**receipt, "next": _open_round(receipt["size"], receipt["mover"])})
 
 
 def _cmd_withdraw(args: argparse.Namespace) -> int:
@@ -707,13 +711,9 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         "--program",
         choices=PROGRAM_IDS,
         help=(
-            "the named measurement program to walk, sized by --size: baseline "
-            "(the standard pose table), tournament (the candidate cycle's few "
-            "poses, multiplied by --candidates), seat (the cloud around the "
-            "listener's head, summed through the applied tune), close (one "
-            "summed take near the baffle), or spot (one pose, at --azimuth and "
-            f"--elevation). The rows and their costs: {_program_phrase()}. The "
-            "program owns the geometry"
+            "a configured measurement plan, or spot for one --azimuth/--elevation. "
+            f"Plans and costs: {_program_phrase()}. The plan owns positions, "
+            "capture purpose and default stimulus regime."
         ),
     )
     source.add_argument(
