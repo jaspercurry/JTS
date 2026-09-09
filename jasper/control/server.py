@@ -1317,7 +1317,7 @@ def _make_handler(
             duck_active_probe=duck_active_probe,
         )
 
-    async def _get_op() -> VolumeState:
+    def _get_op() -> VolumeState:
         return _read_volume_state()
 
     async def _mute_set_op(want_muted: bool) -> VolumeState:
@@ -2022,6 +2022,7 @@ def main(argv: list[str] | None = None) -> int:
         camilla_host=args.camilla_host,
         camilla_port=args.camilla_port,
         service_probe=sampler.service_states_snapshot,
+        system_probe=sampler.pressure_snapshot,
         incident_store=IncidentStore(),
     )
     audio_health_sampler.start()
