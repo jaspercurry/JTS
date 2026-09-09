@@ -147,6 +147,15 @@ Gate: two-pass `/code-review` (relocations).
 
 ### 1.2 — Delete the room product (branch `claude/seat-w1-1-2-retire-room-product`)
 
+**Already gone with 1.3 (PR #4567), do not re-plan:** `web/correction_tuning.py`,
+the `/interpret`, `/propose`, `/propose/apply` routes and their handlers, the
+envelope's `tuning_llm` block and `tuning` section (schema 10), the tuning
+panel and its JS/CSS, the `TUNING_*` failure codes. 1.3 ran first because
+of the `envelope.py`/`calibration_agent` import cycle. **Also landed by
+then:** open PR #4580 (p11 program) re-homes `BadRequest`/`RequestConflict`
+into `web/correction_runtime.py`; if it merges before 1.2, delete the room
+product on top of it, keeping that module for the surviving routes.
+
 Delete whole: `jasper/correction/` (everything not moved in 1.1 — including
 `runtime_safety.py`; its allowlisted edge goes with it and the boundary test's
 allowlist row is removed), `web/correction_room_flow.py`,

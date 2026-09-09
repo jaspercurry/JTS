@@ -311,6 +311,18 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 04:45Z: Opus reviews of lane A's deletion PRs, both APPROVE WITH
+  FIXES, fix agents dispatched: #4563 (1.4) must keep the `"sealed_v1"`
+  tripwire (three surviving literals vs `BASS_EXTENSION_RUNTIME_ADAPTER_IDS`),
+  pin the reentrant pending-intent refusal in `dsp_apply`, drop the orphaned
+  `LADDER_INCOMPLETE`; #4567 (1.3) must drop the daemon's tuning-surface read
+  privileges from doctor's privsep spec, plus prose fixes and a content pin
+  for `PROHIBITED_PRESCRIPTION_KEYS`. Verified: NN3 clean (no surviving
+  `correction_*` reads a secret); no envelope persisted, so the schema bump is
+  safe; the three deleted routes are gone from the route table, not just
+  untested; #4580's rebase after #4567 is mechanical except dropping
+  `TuningSetupUnavailable` from its new `correction_runtime.py`. Brief row 1.2
+  updated so it does not re-plan the tuning surface 1.3 removed.
 - 2026-09-09 04:25Z: Row 1.1 LANDED (PR #4557 squash-merged at `82e82a03b`). Lane A
   ran 1.3 and 1.4 before 1.2 (an import cycle: `correction/envelope.py` and the
   room's LLM routes import `calibration_agent`, which imports
