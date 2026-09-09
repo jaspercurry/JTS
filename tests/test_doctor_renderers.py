@@ -311,9 +311,10 @@ def test_shairport_legacy_remediations_name_this_box_s_device(
     expected_status = "ok" if stale_device == "plughw:Loopback,0,0" else "fail"
     assert r.status == expected_status
     assert r.reason == expected_reason
-    # The reason code is the same regardless of `armed` — the fact under
-    # test here is that the remediation's NAMED DEVICE still consults the
-    # lane map, which only `.detail` can pin.
+    # The reason code is the same regardless of `armed`; what changes is the
+    # DEVICE the remediation names. A device identifier is data, not prose, and
+    # nothing else in the result carries it — this is the one place the
+    # lane-map wiring of the three legacy branches is observable.
     assert expected_device in r.detail
     assert forbidden_device not in r.detail
 
@@ -436,13 +437,18 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
     assert r.reason == ""
-    # This check's entire contract is disclosing WHICH renderer resolved to
-    # WHICH device as WHICH user — a per-renderer summary the reason
-    # vocabulary (one code for the whole check) cannot carry, so `.detail`
-    # stays the pure-formatting-helper exception throughout this section.
-    assert "shairport-sync(shairport-sync)→shairport_substream" in r.detail
-    assert "librespot(pi)→librespot_substream" in r.detail
-    assert "bluealsa-aplay(root)→bluealsa_substream" in r.detail
+    # The per-renderer summary the one-code reason vocabulary cannot carry,
+    # read off the structured probes the check formats.
+    assert [
+        (p.name, p.user, p.device, p.outcome)
+        for p in renderers.renderer_probes()
+    ] == [
+        ("shairport-sync", "shairport-sync", "shairport_substream",
+         renderers.PROBE_RESOLVED),
+        ("librespot", "pi", "librespot_substream", renderers.PROBE_RESOLVED),
+        ("bluealsa-aplay", "root", "bluealsa_substream",
+         renderers.PROBE_RESOLVED),
+    ]
 
 
 # Captured on jts3 (#3515) from the non-negotiable-#5 probe run against
@@ -849,16 +855,16 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "fail"
     assert r.reason == renderers.REASON_RENDERER_DEVICE_UNRESOLVABLE
-    assert "shairport-sync" in r.detail
-    assert "Unknown PCM" in r.detail
-    # The actionable hint should mention the fix path.
-    assert "/etc/asound.conf" in r.detail
+    assert {p.name: p.outcome for p in renderers.renderer_probes()} == {
+        "shairport-sync": renderers.PROBE_UNRESOLVABLE,
+        "librespot": renderers.PROBE_RESOLVED,
+        "bluealsa-aplay": renderers.PROBE_RESOLVED,
+    }
 
 
-def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
-    """Failure details must name the failing user — that's the key
-    diagnostic for any "device works as root, fails as non-root" bug
-    of which the PR #214 regression is the canonical example."""
+def test_renderer_resolvable_failure_names_the_probing_user(monkeypatch):
+    """A failure must carry the user it probed as — the key diagnostic for any
+    "device works as root, fails as non-root" bug."""
     monkeypatch.setattr(
         renderers, "_renderer_device_shairport", lambda: "weird-device"
     )
@@ -877,7 +883,14 @@ def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "fail"
     assert r.reason == renderers.REASON_RENDERER_DEVICE_UNRESOLVABLE
-    assert "(shairport-sync)" in r.detail
+    failed = [
+        p
+        for p in renderers.renderer_probes()
+        if p.outcome == renderers.PROBE_UNRESOLVABLE
+    ]
+    assert [(p.name, p.user) for p in failed] == [
+        ("shairport-sync", "shairport-sync")
+    ]
 
 
 def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
@@ -901,9 +914,11 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     r = renderers.check_renderer_device_resolvable()
     assert r.status == "ok"
     assert r.reason == ""
-    assert "shairport-sync" in r.detail
-    # Skipped renderers should be mentioned (informational).
-    assert "skipped" in r.detail.lower()
+    assert {p.name: p.outcome for p in renderers.renderer_probes()} == {
+        "shairport-sync": renderers.PROBE_RESOLVED,
+        "librespot": renderers.PROBE_NOT_CONFIGURED,
+        "bluealsa-aplay": renderers.PROBE_NOT_CONFIGURED,
+    }
 
 
 def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
@@ -984,13 +999,16 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     assert "bluealsa_substream" in received
     assert "${JASPER_LIBRESPOT_DEVICE}" not in received
     assert "${JASPER_BLUEALSA_DEVICE}" not in received
-    # Detail should show both literal and resolved when they differ,
-    # so the operator can see env-var resolution at a glance.
-    assert "from ${JASPER_LIBRESPOT_DEVICE}" in r.detail
-    assert "from ${JASPER_BLUEALSA_DEVICE}" in r.detail
-    # And the shairport literal (no `${`) is shown unchanged.
-    assert "(shairport-sync)→shairport_substream" in r.detail
-    assert "(from " not in r.detail.split("shairport-sync(")[1].split(";")[0]
+    # Both the declared and the resolved device are carried, so the operator
+    # can see env-var resolution; the shairport literal declares itself.
+    assert {
+        p.name: (p.declared_device, p.device)
+        for p in renderers.renderer_probes()
+    } == {
+        "shairport-sync": ("shairport_substream", "shairport_substream"),
+        "librespot": ("${JASPER_LIBRESPOT_DEVICE}", "librespot_substream"),
+        "bluealsa-aplay": ("${JASPER_BLUEALSA_DEVICE}", "bluealsa_substream"),
+    }
 
 
 def test_resolve_systemd_env_vars_no_op_when_no_placeholder():
@@ -1444,11 +1462,12 @@ def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_pat
 
     monkeypatch.setattr(renderers, "Path", fake_path)
 
-    owned, detail = renderers._fanin_lane_busy_owner_matches(
+    owner = renderers._fanin_lane_busy_owner_matches(
         "librespot_ring_lane", "librespot.service"
     )
-    assert owned, detail
-    assert "4242" in detail and "ring writer" in detail
+    assert owner.ok, owner.detail
+    assert owner.code == renderers.LANE_OWNER_MATCHED
+    assert owner.pid == 4242
 
     # A DIFFERENT unit holding the ring is NOT accepted — that is a stray
     # writer in the music path, which is the whole reason the guard exists.
@@ -1461,11 +1480,12 @@ def test_ring_lane_ebusy_owner_is_read_from_the_ring_header(monkeypatch, tmp_pat
         return real_path(p)
 
     monkeypatch.setattr(renderers, "Path", fake_path_other)
-    owned, detail = renderers._fanin_lane_busy_owner_matches(
+    owner = renderers._fanin_lane_busy_owner_matches(
         "librespot_ring_lane", "librespot.service"
     )
-    assert not owned
-    assert "4242" in detail
+    assert not owner.ok
+    assert owner.code == renderers.LANE_OWNER_FOREIGN
+    assert owner.pid == 4242
 
 
 def test_unit_runtime_environ_parses_real_nul_delimited_bytes(monkeypatch, tmp_path):
