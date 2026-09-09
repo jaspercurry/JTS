@@ -38,7 +38,6 @@ from tests.control_server_fixtures import (
     _isolate_household_secret,
     _post,
     _record_broker,
-    _recording_popen,
     server_with_coordinator,
 )
 
@@ -779,26 +778,21 @@ def test_usb_forensics_rejects_malformed_toggle(
     assert body["error"] == "enabled must be a boolean"
 
 
-def test_system_action_reboot_audits_and_invokes_systemctl(
+def test_system_action_reboot_audits_and_asks_the_broker(
     monkeypatch,
     server_with_coordinator,
     caplog,
 ):
     """A destructive /system/ action emits an `event=system.action` audit line
     (so a dashboard-triggered reboot is distinguishable from a watchdog/crash
-    reset when debugging "the speaker restarted on its own") and shells out to
-    the right systemctl command. The broker has no reboot verb and the box goes
-    down before any verdict, so the answer is 202 accepted — never a claim that
-    the reboot happened. subprocess.Popen is mocked so no test machine
-    reboots."""
+    reset when debugging "the speaker restarted on its own") and reaches
+    systemd only through the restart broker — never its own subprocess. The
+    box goes down before any verdict, so the answer is 202 accepted, never a
+    claim that the reboot happened."""
     import logging
 
-    import jasper.control.server as srv_mod
-
     base, _ = server_with_coordinator
-    popens: list[list[str]] = []
-
-    monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
+    broker_calls = _record_broker(monkeypatch)
 
     with caplog.at_level(logging.INFO, logger="jasper.control"):
         status, body = _post(f"{base}/system/reboot", {})
@@ -806,7 +800,7 @@ def test_system_action_reboot_audits_and_invokes_systemctl(
     assert status == 202
     assert body["action"] == "reboot"
     assert body["status"] == "accepted"
-    assert popens == [["systemctl", "reboot"]]
+    assert broker_calls == [("reboot", [])]
     assert any(
         "event=system.action action=reboot" in rec.getMessage()
         for rec in caplog.records

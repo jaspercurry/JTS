@@ -7,8 +7,8 @@
 The JTS service daemons (jasper-web's wizards, jasper-mux's librespot
 recovery, the wiim-remote adapter, and the rest) run as dedicated non-root
 service users, so they cannot ``systemctl`` anything themselves. jasper-control
-hosts this local UNIX-socket broker and performs a tightly-scoped unit action
-on their behalf.
+hosts this local UNIX-socket broker and performs a tightly-scoped unit or
+power action on their behalf.
 
 Why this is safe to centralise:
 
@@ -220,8 +220,14 @@ _VERB_ARGV: dict[str, tuple[list[str], bool]] = {
     "enable-now": (["enable", "--now"], True),
     "disable-now": (["disable", "--now"], True),
     "reset-failed": (["reset-failed"], False),
+    "reboot": (["reboot"], False),
+    "poweroff": (["poweroff"], False),
 }
 ALLOWED_VERBS = frozenset(_VERB_ARGV)
+
+# The unit-less verbs: logind actions, not unit actions (polkit grants them as
+# org.freedesktop.login1.*). Every other verb must name an allowlisted unit.
+POWER_VERBS = frozenset({"reboot", "poweroff"})
 
 # Per-request systemctl exec timeout: the client passes how long it's willing
 # to wait, the broker runs systemctl with that bound (clamped), and the client
@@ -315,6 +321,19 @@ def _build_argv(verb: str, units: list[str], *, no_block: bool) -> list[str]:
     return argv
 
 
+def _spawn_detached(argv: list[str]) -> None:
+    """Fire a systemctl call the broker must not wait on — the transition it
+    starts can kill the broker before it has answered."""
+    subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
 def _run_systemctl_request(
     verb: str,
     units: list[str],
@@ -322,15 +341,20 @@ def _run_systemctl_request(
     no_block: bool,
     exec_timeout: float,
 ) -> tuple[int | None, str, bool]:
-    """Execute a validated request and return ``(rc, stderr, self_deferred)``.
-    ``rc=None`` means the control self-restart was queued but cannot be
-    confirmed without risking the broker dying before it replies.
+    """Execute a validated request and return ``(rc, stderr, deferred)``.
+    ``rc=None`` means the action was queued detached — a control self-restart,
+    or a power verb — and cannot be confirmed without risking the broker dying
+    before it replies.
 
     Restarting jasper-control from inside jasper-control is special: a single
     ``systemctl restart voice control mux`` can kill the broker before systemd
     has queued the later units. Queue non-self units first, then fire the
     control restart as a detached no-block command so the broker can answer.
     """
+    if verb in POWER_VERBS:
+        _spawn_detached(_build_argv(verb, units, no_block=False))
+        return None, "", True
+
     if verb == "restart" and _SELF_UNIT in units:
         non_self_units = [u for u in units if u != _SELF_UNIT]
         if non_self_units:
@@ -345,14 +369,7 @@ def _run_systemctl_request(
             if first.returncode != 0:
                 return first.returncode, (first.stderr or "").strip(), False
 
-        subprocess.Popen(
-            _build_argv(verb, [_SELF_UNIT], no_block=True),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
+        _spawn_detached(_build_argv(verb, [_SELF_UNIT], no_block=True))
         return None, "", True
 
     proc = subprocess.run(
@@ -446,7 +463,12 @@ class _BrokerHandler(StreamRequestHandler):
             return
 
         raw_units = req.get("units")
-        if (
+        if verb in POWER_VERBS:
+            if raw_units:
+                self._reply({"ok": False, "error": f"{verb} takes no units"})
+                return
+            raw_units = []
+        elif (
             not isinstance(raw_units, list)
             or not raw_units
             or not all(isinstance(u, str) for u in raw_units)
@@ -495,8 +517,9 @@ class _BrokerHandler(StreamRequestHandler):
             return
         if self_deferred:
             log_event(
-                logger, "restart_broker.self_restart_deferred",
-                verb=verb, units=_SELF_UNIT, result="queued_unconfirmed",
+                logger, "restart_broker.deferred",
+                verb=verb, units=",".join(units) or "-",
+                result="queued_unconfirmed",
             )
         queued_unconfirmed = self_deferred and rc is None
         if rc is not None and rc != 0:
@@ -673,6 +696,9 @@ def _direct_systemctl(
         return {"ok": False, "error": f"unknown verb {verb!r}"}
     argv = _build_argv(verb, [_normalize_unit(u) for u in units], no_block=no_block)
     try:
+        if verb in POWER_VERBS:
+            _spawn_detached(argv)
+            return {"ok": True, "action": verb, "units": [], "rc": None, "stderr": ""}
         proc = subprocess.run(
             argv, check=False, timeout=timeout,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
@@ -702,7 +728,7 @@ def manage_units(
     ``systemctl`` (logged loudly). Once the caller is a non-root service user
     the fallback cannot fire, so the broker is the only path.
     """
-    if not units:
+    if not units and verb not in POWER_VERBS:
         return {"ok": True, "action": verb, "units": []}
     label = ",".join(units)
     try:

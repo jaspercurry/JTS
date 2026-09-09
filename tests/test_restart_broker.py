@@ -65,7 +65,9 @@ def test_verb_vocabulary_is_closed_and_complete():
     assert restart_broker.ALLOWED_VERBS == frozenset({
         "restart", "try-restart", "start", "stop",
         "enable", "enable-now", "disable-now", "reset-failed",
+        "reboot", "poweroff",
     })
+    assert restart_broker.POWER_VERBS == frozenset({"reboot", "poweroff"})
 
 
 @pytest.mark.parametrize("verb,no_block,expected", [
@@ -511,6 +513,41 @@ def test_self_restart_is_queued_after_other_units(broker, monkeypatch):
         "--no-block",
         "jasper-control.service",
     ]]
+
+
+@pytest.mark.parametrize("verb,spawned", [
+    ("reboot", [["systemctl", "reboot"]]),
+    ("poweroff", [["systemctl", "poweroff"]]),
+    # The neighbour verbs a caller might reach for. Only the pair above may
+    # run unit-less; anything else is refused before a process exists.
+    ("halt", []),
+    ("reboot-force", []),
+])
+def test_only_the_power_pair_runs_unit_less_and_it_runs_detached(
+    broker, monkeypatch, verb, spawned,
+):
+    """reboot/poweroff take the box down, so the broker spawns them detached
+    and answers `queued_unconfirmed` — it cannot outlive its own systemctl to
+    report a verdict."""
+    sock_path, calls, _ = broker
+    popen_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess, "Popen",
+        lambda argv, **kw: popen_calls.append(list(argv)),
+    )
+
+    resp = _request_restart_retrying_transient_failures(
+        verb=verb, reason="dashboard", socket_path=sock_path,
+    )
+
+    assert popen_calls == spawned
+    assert calls == []  # never the blocking, waited-on path
+    if spawned:
+        assert resp["ok"] is True
+        assert resp["status"] == "queued_unconfirmed"
+        assert resp["units"] == []
+    else:
+        assert resp["ok"] is False
 
 
 def test_enable_now_maps_through_broker(broker):
