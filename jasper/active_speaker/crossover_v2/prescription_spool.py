@@ -277,8 +277,10 @@ def _anchors(
             },
             "bass_fit_sha256": prescription.bass_fit_sha256,
             "round_id": prescription.round_id,
-            "ladder_evidence": dict(evidence.get("ladder_evidence") or {}),
-            "limiter_evidence": evidence.get("limiter_evidence"),
+            # Named as the door takes them, and as the candidate field's
+            # `protection` block carries them.
+            "ladder": dict(evidence.get("ladder") or {}),
+            "limiter": evidence.get("limiter"),
             "expected_owner_role": evidence.get("expected_owner_role"),
         }
     if isinstance(prescription, DriverPrescription):
@@ -561,8 +563,8 @@ def _validate(
     # The gate itself, re-run — same function, same bounds, one per class.
     prescription: BlendPrescription | DriverPrescription | BassPrescription | None
     if staged_kind == BASS_PRESCRIPTION_KIND:
-        banked_ladder = envelope.get("ladder_evidence")
-        banked_limiter = envelope.get("limiter_evidence")
+        banked_ladder = envelope.get("ladder")
+        banked_limiter = envelope.get("limiter")
         prescription = read_bass_prescription(
             read_prescription_bytes(payload),
             packet_fingerprint=envelope.get("packet_fingerprint"),
