@@ -1075,7 +1075,7 @@ _PAGE_MODULE = {
     "/assistant/chat/": "chat_setup",
     "/assistant/tools/": "tools_setup",
     "/assistant/weather/": "weather_setup",
-    "/assistant/transit/": "transit_setup",
+    "/assistant/transit/": "transit_page",
     "/assistant/google/": "google_setup",
     "/assistant/ha/": "home_assistant_setup",
     "/wifi/": "wifi_setup",

@@ -32,7 +32,7 @@ import pytest
 
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
-from jasper.web import transit_setup
+from jasper.web import transit_page, transit_setup
 
 
 # ---------- Pure helpers ---------------------------------------------------
@@ -51,13 +51,13 @@ def test_owned_env_keys_includes_coords_and_provider_keys():
 
 
 def test_coords_returns_none_when_missing():
-    assert transit_setup._coords({}) is None
-    assert transit_setup._coords({"JASPER_TRANSIT_LAT": "not-a-number"}) is None
+    assert transit_page._coords({}) is None
+    assert transit_page._coords({"JASPER_TRANSIT_LAT": "not-a-number"}) is None
 
 
 def test_coords_returns_tuple_when_set():
     state = {"JASPER_TRANSIT_LAT": "40.646", "JASPER_TRANSIT_LON": "-73.994"}
-    assert transit_setup._coords(state) == (40.646, -73.994)
+    assert transit_page._coords(state) == (40.646, -73.994)
 
 
 def test_has_bus_key_only_checks_persisted_state(monkeypatch):
