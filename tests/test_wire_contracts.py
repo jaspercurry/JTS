@@ -615,9 +615,6 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
         voice_socket_command=no_status,
         mux_socket_command=no_status,
         local_status_json=record_status,
-        aec_full_status=lambda: {},
-        read_transit_state_func=lambda: {"packs": []},
-        ha_status_snapshot=lambda: {"configured": False, "connected": False},
     )
 
     assert "/run/jasper-fanin/control.sock" in probed
@@ -626,14 +623,14 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
 
 
 # ---------------------------------------------------------------------------
-# `/state`'s own key set (ADR-0233 rule 2).
+# `/state`'s own key set (ADR-0268).
 #
-# jasper-doctor and the dashboard both parse this payload by key, and every
-# reader of it is fail-soft: a key that moved a level down serves null on
-# every real speaker and throws nowhere (outputd's `aec_clock`, read one
-# nesting level too high, did exactly that). So the sets are written out
-# here rather than derived from the producer. `schema_version` is what a
-# consumer pins against — bump it in `state_aggregate` when a set changes.
+# jasper-doctor parses this payload by key, and every reader of it is
+# fail-soft: a key that moved a level down serves null on every real speaker
+# and throws nowhere (outputd's `aec_clock`, read one nesting level too high,
+# did exactly that). So the sets are written out here rather than derived from
+# the producer. `schema_version` is what a consumer pins against — bump it in
+# `state_aggregate` when a set changes.
 #
 # Scope: the whole wire set — the aggregate builds every key `/state` serves.
 # `tests/test_control_server_system.py` pins an HTTP response against this same
@@ -645,42 +642,19 @@ async def test_state_aggregate_probes_both_daemon_control_sockets(
 #: this pins.
 _FAKE_FANIN_STATUS = {"inputs": {}, "pings_skipped": 0}
 _FAKE_OUTPUTD_STATUS = {"dac": {"aec_clock": {"offset_ppm": 0.0}}, "xruns": 0}
-_FAKE_AEC_STATUS = {"requested": {}, "runtime": {}}
-
-#: Stamped on every dict section by the aggregate, so the sets below stay each
-#: section's OWN keys; its presence is pinned separately below. Drop it here
-#: and from _stamp_observed_at together.
-_SECTION_STAMP = {"observed_at"}
 
 _STATE_KEY_SETS: dict[tuple[str, ...], set[str]] = {
     (): {
-        "schema_version", "ts", "voice", "microphone", "audio",
-        "active_speaker_setup", "audition", "bass_extension", "renderers",
-        "speaker_name", "active_source", "fanin", "outputd", "aec",
-        "source_selection", "resilience", "home_assistant", "grouping",
-        "transit", "debug", "tools", "chat", "research", "cues", "measurement",
-        "usb_network", "audio_health", "usb_gadget_forensics",
-    },
-    # jasper.identity.speaker_name.SpeakerNameState. `room` rides with the name so
-    # /state and /system/snapshot publish one shape of the same record.
-    ("speaker_name",): {"name", "room", "source"},
-    # jasper.mic_presence.MicPresence.as_dict. `reason` is the closed
-    # MIC_ABSENT_REASONS code a client may switch on; `detail` is the prose
-    # beside it, which is displayed and never matched.
-    ("microphone",): {
-        "present", "parked", "reason", "detail", "accessory_sources",
-        "accessory_present", "is_xvf", "alsa_card", "variant", "display_name",
-        "capture_channels", "recommended_profile", "chip_aec_supported",
-        "summary",
+        "schema_version", "ts", "voice", "cues", "fanin", "outputd",
+        "source_selection", "audio", "audio_health", "active_source",
+        "resilience", "measurement", "debug",
     },
     ("fanin",): set(_FAKE_FANIN_STATUS),
     ("outputd",): set(_FAKE_OUTPUTD_STATUS),
-    ("aec",): set(_FAKE_AEC_STATUS),
+    # The three supervisors that live only in this process's memory. Every
+    # other resilience fact is read from its own module (ADR-0268).
     ("resilience",): {
         "shairport", "grouping_supervisor", "system_supervisor",
-        "bootloop_guard", "camilla_recover",
-        "outputd_failure_reconcile", "transport_park", "multiroom_cascade",
-        "identity", "disk", "active_speaker_parked", "accessory_bridges",
     },
 }
 
@@ -706,9 +680,6 @@ async def _state_payload(monkeypatch, tmp_path, **overrides):
         "voice_socket_command": no_status,
         "mux_socket_command": no_status,
         "local_status_json": daemon_status,
-        "aec_full_status": lambda: dict(_FAKE_AEC_STATUS),
-        "read_transit_state_func": lambda: {"packs": []},
-        "ha_status_snapshot": lambda: {"configured": False, "connected": False},
         **overrides,
     })
 
@@ -722,60 +693,51 @@ async def test_state_payload_key_set_is_pinned(path, monkeypatch, tmp_path):
     block = payload
     for key in path:
         block = block[key]
-    assert set(block) - _SECTION_STAMP == _STATE_KEY_SETS[path]
+    assert set(block) == _STATE_KEY_SETS[path]
 
 
 async def test_state_carries_its_schema_version(monkeypatch, tmp_path):
     payload = await _state_payload(monkeypatch, tmp_path)
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
 
 
-async def test_every_state_section_says_when_it_was_observed(monkeypatch, tmp_path):
-    """Every dict-valued /state section carries a float observed_at (#4197).
-    Retire with `observed_at` itself."""
-    payload = await _state_payload(monkeypatch, tmp_path)
+async def test_state_opens_no_secret_compartment(monkeypatch, tmp_path):
+    """No /state section reads a secrets compartment (ADR-0268).
 
-    stamps = {
-        key: section.get("observed_at")
-        for key, section in payload.items()
-        if isinstance(section, dict)
-    }
-
-    assert stamps
-    assert [key for key, at in stamps.items() if not isinstance(at, float)] == []
-
-
-async def test_a_sampler_fed_section_keeps_its_sample_time(monkeypatch, tmp_path):
-    """A sampler-fed section is stamped with the SAMPLE time, not the read
-    time — a fresh stamp over an old observation is the lie this pins. Retire
-    when no /state section is sampler-fed.
+    The tool catalog, the chat store, the HA probe and `voice.model` each
+    merged the full env-file set — three compartment files opened on every
+    uncached build for fields nothing read. The configured provider is the
+    case that bites: the merge runs only on that branch.
     """
-    from jasper.control.audio_health import AudioHealthSampler
+    import builtins
+    from pathlib import Path
 
-    class _StubAirPlay:
-        def sample_once(self) -> None:
-            pass
+    from jasper.voice import provider_state
 
-        def snapshot(self) -> dict:
-            return {}
-
-    sampler = AudioHealthSampler(
-        airplay_sampler=_StubAirPlay(),
-        outputd_probe=lambda: None,
-        mux_probe=lambda: None,
-        route_probe=lambda: {},
-        service_probe=lambda: {},
-        output_hardware_probe=lambda: None,
-        output_topology_probe=lambda: None,
-        time_fn=lambda: 1_700_000_000.0,
-    )
-    sampler._tick()
-
-    payload = await _state_payload(
-        monkeypatch, tmp_path, audio_health_snapshot=sampler.snapshot,
+    monkeypatch.setattr(
+        provider_state, "read_active_provider_state",
+        lambda *a, **k: provider_state.ActiveProviderState(
+            provider="openai", model="gpt-4o", status="configured",
+            path="/var/lib/jasper/voice_provider.env",
+        ),
     )
 
-    assert payload["audio_health"]["observed_at"] == 1_700_000_000.0
+    opened: list[str] = []
+    real_open, real_read_text = builtins.open, Path.read_text
+    monkeypatch.setattr(
+        builtins, "open",
+        lambda f, *a, **k: (opened.append(str(f)), real_open(f, *a, **k))[1],
+    )
+    monkeypatch.setattr(
+        Path, "read_text",
+        lambda self, *a, **k: (
+            opened.append(str(self)), real_read_text(self, *a, **k)
+        )[1],
+    )
+
+    await _state_payload(monkeypatch, tmp_path)
+
+    assert [p for p in opened if "secrets" in p] == []
 
 
 # ---------------------------------------------------------------------------

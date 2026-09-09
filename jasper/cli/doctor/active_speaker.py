@@ -105,11 +105,11 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     """Report the graph selected for saved speaker intent, fail closed if unsafe.
 
     "Is the speaker parked" is answered by ``active_graph_is_parked`` and the
-    way out by ``parked_muted_exits`` — the readers ``/state`` and
+    way out by ``parked_muted_exits`` — the readers this check and
     ``jasper.control.audio_health`` consume (ADR-0233 rule 1). Asked of the
     file the safety proof classified, not of a second statefile resolution, so
-    one row never mixes two views of the disk. Deliberately narrower than those
-    two reporting surfaces in one direction: bytes carrying the parked
+    one row never mixes two views of the disk. Deliberately narrower than the
+    audio-health surface in one direction: bytes carrying the parked
     provenance marker that FAIL the structural all-muted proof are reported
     here as unsafe, never as a healthy park.
 

@@ -129,27 +129,3 @@ async def _state_snapshot(monkeypatch, tmp_path):
     )
 
 
-async def test_state_bass_extension_section_is_populated(monkeypatch, tmp_path):
-    summary = {
-        "commissioned": True,
-        "status": "accepted",
-        "profile_id": "bex-123456789abc",
-    }
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", lambda: summary)
-
-    state = await _state_snapshot(monkeypatch, tmp_path)
-
-    section = dict(state["bass_extension"])
-    section.pop("observed_at")  # every /state section is stamped (issue #4197)
-    assert section == summary
-
-
-async def test_state_bass_extension_section_is_fail_soft(monkeypatch, tmp_path):
-    def boom():
-        raise RuntimeError("profile read failed")
-
-    monkeypatch.setattr(profile_mod, "bass_extension_state_summary", boom)
-
-    state = await _state_snapshot(monkeypatch, tmp_path)
-
-    assert state["bass_extension"] is None

@@ -65,7 +65,6 @@ from ..multiroom.config import GroupingConfig
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..service_units import read_unit_states
 from ..local_sources import local_source_audio_refresh_units
-from ..transit.state import read_state as read_transit_state
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..doctor_contract import (
     REASON_REFRESH_FAILED,
@@ -616,19 +615,10 @@ async def _get_state(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
-    ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
     airplay_playing_snapshot: Callable[[], bool | None] | None = None,
     audio_health_snapshot: Callable[[], dict[str, Any] | None] | None = None,
-    transport_park_snapshot: Callable[[], dict[str, Any]] | None = None,
-    service_states_snapshot: (
-        Callable[[], dict[str, dict[str, Any]]] | None
-    ) = None,
 ) -> dict[str, Any]:
-    extra: dict[str, Any] = {}
-    if transport_park_snapshot is not None:
-        extra["transport_park_snapshot"] = transport_park_snapshot
     return await _state_aggregate._get_state(
-        service_states_snapshot=service_states_snapshot,
         airplay_playing_snapshot=airplay_playing_snapshot,
         audio_health_snapshot=audio_health_snapshot,
         camilla_host=camilla_host,
@@ -637,10 +627,6 @@ async def _get_state(
         voice_socket_command=_voice_socket_command,
         mux_socket_command=_mux_socket_command,
         local_status_json=_local_status_json,
-        aec_full_status=_aec_endpoints._aec_full_status,
-        read_transit_state_func=read_transit_state,
-        ha_status_snapshot=ha_status_snapshot,
-        **extra,
     )
 
 

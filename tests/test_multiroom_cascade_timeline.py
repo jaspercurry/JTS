@@ -143,16 +143,6 @@ def test_read_journal_lines_uses_journal_timestamp(monkeypatch):
     assert str(ct.JOURNAL_SCAN_LINE_CAP) in calls[0]
 
 
-def test_state_aggregate_cascade_snapshot_fails_soft(monkeypatch):
-    from jasper.control import state_aggregate
-
-    def boom():
-        raise RuntimeError("sampler wedged")
-
-    monkeypatch.setattr(state_aggregate.cascade_timeline, "snapshot", boom)
-    assert state_aggregate._multiroom_cascade_snapshot() is None
-
-
 def test_module_snapshot_default_disabled(monkeypatch):
     monkeypatch.setattr(ct, "_sampler", None)
     assert ct.snapshot() == {"enabled": False, "events": []}

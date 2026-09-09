@@ -704,40 +704,6 @@ def test_check_journald_persistence_is_registered_once_in_the_memory_module():
 # the read is unusable.
 
 
-def test_disk_snapshot_shape():
-    from jasper.control import state_aggregate
-
-    fake = _fake_statvfs(total_bytes=64 * 1024**3, free_bytes=16 * 1024**3)
-
-    with patch.object(memory_policy.os, "statvfs", fake):
-        assert state_aggregate._disk_snapshot("/") == {
-            "path": "/",
-            "percent_used": 75,
-            "free_gib": 16.0,
-            "total_gib": 64.0,
-        }
-
-
-@pytest.mark.parametrize(
-    "statvfs", ["oserror", "absent", "zero-total"],
-    ids=["oserror", "unavailable", "zero-total"],
-)
-def test_disk_snapshot_is_none_when_the_read_is_unusable(statvfs):
-    from jasper.control import state_aggregate
-
-    def boom(path):
-        raise OSError("denied")
-
-    replacement = {
-        "oserror": boom,
-        "absent": None,
-        "zero-total": _fake_statvfs(total_bytes=0, free_bytes=0),
-    }[statvfs]
-
-    with patch.object(memory_policy.os, "statvfs", replacement, create=True):
-        assert state_aggregate._disk_snapshot("/") is None
-
-
 # ------------------------------------------------------ check_memory_pressure
 
 
