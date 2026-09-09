@@ -33,7 +33,7 @@ format. Release tags are cut manually by a maintainer.
 - `jasper/audio_io.py` is replaced outright by `jasper/mic_capture.py` and
   `jasper/tts_playout.py`, one concern each and no compatibility shim.
 - Documentation: `docs/audio-paths.md` rewritten to the shipped topology, with
-  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0270 and
+  the fan-in pre-mix rationale and the ingress outcome recorded as ADR-0276 and
   ADR-0271.
 
 ### Removed
@@ -55,8 +55,7 @@ format. Release tags are cut manually by a maintainer.
   `JASPER_MUX_SPOTIFY_PREEMPT_RESTART` and `JASPER_AIRPLAY_METADATA_GATE`.
 - `docs/audit-pending-followups.md` (its open items are now #4532, #4533 and
   #4534) and the USB-sink implementation appendix, whose volume rationale moved
-  into ADR-0107.
-
+  into ADR-0271.
 - Retired the unsupported bespoke ESP32 OLED/AMOLED dial and satellite-mic
   stack: embedded firmware, onboarding commands and UI, dial heartbeat/status
   surfaces, satellite diagnostics/capture tooling, firmware-build dependencies,

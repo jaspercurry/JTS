@@ -76,7 +76,7 @@ Phone (AirPlay / Spotify Connect / BT)      Computer (USB audio)
         │                                          │
         │ private snd-aloop lanes                  │ fan-in direct capture,
         │ hw:Loopback,0,N → hw:Loopback,1,N        │ where the reconciler armed
-        ▼                                          ▼ it (no aloop hop)
+        ▼                     ▼────────────────────┘ it (no aloop hop)
   hw:Loopback,1,N  ──►  jasper-fanin ◄── /run/jasper-fanin/tts.sock
                               │ sums the selected renderer lane,
                               │ the correction/test lane and TTS

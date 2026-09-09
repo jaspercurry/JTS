@@ -9,7 +9,7 @@ assistant loudness behave differently on the two shapes, so it is the first
 thing to establish when testing either.
 
 Why the pre-mix sits in fan-in at all — CamillaDSP takes one ALSA capture
-device per process — is [ADR-0270](adr/0270-the-pre-mix-lives-in-fan-in.md).
+device per process — is [ADR-0276](adr/0276-the-pre-mix-lives-in-fan-in.md).
 
 ## The physical path
 
@@ -42,14 +42,17 @@ opening a capture device itself
 ([ADR-0271](adr/0271-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md)).
 Only the `usbsink` lane takes the second, and only where it is armed.
 
-**The USB leg specifically.** `usbsink` is an ordinary lane with an ordinary
-`input_pcms` entry (`hw:Loopback,1,3`); `JASPER_FANIN_USB_DIRECT` decides what
-the lane actually reads. Armed (the literal `enabled`), the lane never opens
-that substream — fan-in opens `hw:UAC2Gadget` as an S32_LE capture and feeds
-the same lane resampler, which is the whole USB data plane (ADR-0107).
-Unarmed, the lane opens `hw:Loopback,1,3`, which nothing writes now that the
-bridge process is gone, so USB audio is *unavailable* rather than degraded —
-there is no aloop fallback for USB. Arming is not an operator toggle: the
+**The USB leg specifically.** `usbsink` is the one lane with no aloop
+substream: the default `input_pcms` list is one entry shorter than the renderer
+list (`hw:Loopback,1,3` is absent and the surviving pairs do not renumber), and
+`JASPER_FANIN_USB_DIRECT` decides whether the lane has a transport at all.
+Armed (the literal `enabled`), fan-in opens `hw:UAC2Gadget` as an S32_LE
+capture and feeds the lane resampler, which is the whole USB data plane
+(ADR-0107). Unarmed, the lane is `LaneSource::Disabled`: it opens nothing and
+renders silence, keeps its roster label so mux can still address it, and
+publishes `source: "disabled"` in `STATUS`. USB audio is then *unavailable*
+rather than degraded — there is no aloop fallback for USB. Arming is not an
+operator toggle: the
 reconciler is the single writer of that key and arms it on any box that has
 the resolved USB gadget capability, USB Audio Input on in the household, a role
 that permits local sources, and the coordinator-derived
@@ -78,9 +81,12 @@ that speaker's own assistant audio into its local post-round-trip content lane,
 so replies do not ride the shared sync buffer.
 
 The SHM slot ring is the only transport between fan-in, CamillaDSP and outputd.
-`S32_LE` is the shipped wire on every box: `JASPER_FANIN_RING_WIRE_FORMAT`
-defaults to it, nothing writes the key, and the narrow `S16_LE` arm is still
-compiled in on both sides for a box an operator has deliberately pinned. There
+The program wire is `S32_LE` and nothing else: fan-in publishes it
+unconditionally, and a `JASPER_FANIN_RING_WIRE_FORMAT` naming any other format
+— `S16_LE` above all — is refused as a config-class fault (exit 78, the unit
+parks) rather than served, because the Python side still renders the ioplug
+conf.d from that key and a narrower declaration would shear against the ring
+header. There
 is no coupling to declare either — the Python selector vocabulary is gone, and
 fan-in still refuses any `JASPER_FANIN_CAMILLA_COUPLING` token but
 unset/empty/`shm_ring` as a config-class fault (exit 78, the unit parks) until
@@ -171,9 +177,9 @@ Ownership is deliberately split:
   mux keeps answering its **last committed** name instead. That is what lets a
   reader treat a plain `idle` as *true* idle: the volume coordinator maps it to
   `Source.IDLE` and takes the attenuating Camilla-master carrier rather than
-  resolving a carrier against a lane mux is about to leave. Only the fan-in test
-  lane's label (a measurement holding the lease) is a name `/state` may not
-  report, and it falls through to the raw probes. Every reader is fail-soft: an
+  resolving a carrier against a lane mux is about to leave. Two names `/state`
+  will not report are `idle` itself and the fan-in test lane's label (a
+  measurement holding the lease); both fall through to the raw probes. Every reader is fail-soft: an
   unreachable mux, an unparseable reply or a missing field is `None`, never an
   error. `active_renderers()` stays the raw per-renderer view.
 - One source can be silenced through mux from outside: `PREEMPT airplay`.
@@ -197,9 +203,8 @@ Ownership is deliberately split:
   phase-by-phase log spam.
 - `jasper-fanin` owns the cheap audio gate and nothing above it. Its control
   socket takes `STATUS`, `SELECT <label>` (pass one renderer lane), `NONE`
-  (pass none), `MUTE`/`UNMUTE <label>` (mux's USB preemption),
-  `TRIM`/`DECAY_SNAP` (lane fill housekeeping) and `TAP_ARM`/`TAP_DISARM` (the
-  diagnostic impulse tap). None of them carry policy — fan-in never chooses a
+  (pass none), `MUTE`/`UNMUTE <label>` (mux's USB preemption) and
+  `TAP_ARM`/`TAP_DISARM` (the diagnostic impulse tap). None of them carry policy — fan-in never chooses a
   source. The correction/test lane is always mixed so diagnostics and room
   correction still work. Fan-in starts in `NONE`, and mux keeps it there
   whenever no source has a guarded winner.
@@ -210,8 +215,11 @@ Ownership is deliberately split:
 Those three sockets share one client and one vocabulary. Every sender goes
 through `jasper.platform.uds.daemon_command`, whose single timeout covers
 connect, send, response and close; every command line is built by a helper in
-`jasper.platform.wire`, which owns the fan-in, mux and TTS verbs above. Neither
-a caller nor a test spells a verb as a literal, so a rename is one edit.
+`jasper.platform.wire`. For the verbs `wire.py` owns — the fan-in select and
+mute verbs, the mux verbs and the TTS verbs — neither a caller nor a test
+spells one as a literal, so a rename is one edit. The diagnostic tap is the
+exception: `jasper/route_latency/tap_client.py` builds `TAP_ARM`/`TAP_DISARM`
+as literals over its own `AF_UNIX` socket and uses neither helper.
 
 ## Adding a new music source
 
@@ -375,15 +383,15 @@ contract; the reference/held-content algorithm itself lives in
 - Its TTS lane keeps a bounded pending queue (2 s, `DEFAULT_MAX_PENDING_FRAMES`
   in `rust/jasper-fanin/src/tts.rs`) and drops audio commands arriving while it
   is full (`event=fanin.tts_command_dropped`) rather than blocking the socket
-  reader, which would stall barge-in `FLUSH` behind queued audio.
+  reader, which would stall a barge-in `FLUSH_SYNC` behind queued audio.
   `tests/test_tts_ipc_pacing.py` pins the writer watermark to that budget.
 - Hearing safety is peak-aware here: requested gain is capped so the profiled
   source peak stays under the assistant peak ceiling (default `-3 dBFS`), then
   floored. There is deliberately no fixed source-gain ceiling — the positive
   side is the dynamic peak cap — and a new segment's lower cap applies to every
   rendered frame immediately, even mid-ramp from a prior segment.
-- Any muted rendered frame disqualifies a whole segment and `FLUSH` clears the
-  candidate: interrupted tails, cues and chirps never train the record.
+- Any muted rendered frame disqualifies a whole segment and `FLUSH_SYNC` clears
+  the candidate: interrupted tails, cues and chirps never train the record.
 
 **What Python owns alone** — provider source profiles, persisted in
 `/var/lib/jasper/assistant_loudness_profiles.json`

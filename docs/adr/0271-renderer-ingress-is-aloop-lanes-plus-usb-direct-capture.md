@@ -32,8 +32,10 @@ itself. Only the `usbsink` lane takes the second shape, opening `hw:UAC2Gadget`
 under ADR-0107, and only where `JASPER_FANIN_USB_DIRECT` is armed — which is
 the reconciler's automatic decision on an eligible box, not an operator toggle
 (`jasper/fanin/coupling_auto.py` decides, `coupling_reconcile.py` writes). The
-lane keeps its ordinary `input_pcms` entry as the unarmed read; nothing writes
-that substream any more, so unarmed USB is *unavailable* rather than degraded.
+lane takes no aloop substream at all — the default `input_pcms` list is one
+entry shorter than the renderer list — so unarmed it is `LaneSource::Disabled`:
+no transport, silence rendered, roster label kept so mux can still address it,
+`source: "disabled"` in `STATUS`. Unarmed USB is *unavailable*, not degraded.
 
 **The per-renderer ring program is deleted**: `jasper/renderer_lanes.py` and
 its `/var/lib/jasper/renderer_lanes.env`, the `jasper-audio-config
@@ -55,9 +57,11 @@ so a stale `loopback` in someone's env file parks the box rather than being
 ignored. Removing that refusal is a later step, once no field box can carry the
 key.
 
-**The wire is `S32_LE` on every shipped box.** `JASPER_FANIN_RING_WIRE_FORMAT`
-defaults to it and nothing writes the key. The narrow `S16_LE` arm stays
-compiled in on both sides for a box an operator deliberately pins.
+**The wire is `S32_LE` and nothing else.** Fan-in publishes the program wire
+`S32_LE` unconditionally; a `JASPER_FANIN_RING_WIRE_FORMAT` naming any other
+format is refused as a config-class fault rather than served, because the
+Python side renders the ioplug conf.d from that key and a narrower declaration
+would shear against the ring header.
 
 ## Consequences
 
@@ -74,9 +78,8 @@ compiled in on both sides for a box an operator deliberately pins.
   touching code. That was a per-box exception the fleet never took, and a
   measured win on one lane is a reason to change that source's ingress shape,
   not to keep a switch.
-- Given up for now: nothing about the narrow wire. `S16_LE` remains reachable,
-  so the undithered-requantization hazard is still one deliberate pin away —
-  closing it is a separate decision on the Rust arm.
+- The undithered-requantization hazard the narrow wire carried is closed by
+  construction: there is no `S16_LE` arm left to pin.
 - Given up for now, second: a complete sweep of the retired coupling key. The
   reconciler unsets it in the `fanin.env` it owns, but `jasper-fanin.service`
   also loads `/etc/jasper/jasper.env`, which nothing here writes — so a
@@ -89,3 +92,33 @@ compiled in on both sides for a box an operator deliberately pins.
 - Doctor, `/state` and the fan-in `STATUS` block lose the lane-arm fields they
   published. They are the surfaces to re-read after this lands; a reader of a
   removed field must be fail-soft to an absent key.
+
+## The USB volume model, and why nothing writes back
+
+Recorded here rather than appended to
+[ADR-0107](0107-usb-gadget-audio-has-one-capture-pipeline.md), which this
+amends: 0107 settled the USB *data* plane, and the direct-capture lane above is
+what carries the control-plane consequence.
+
+USB behaves like AirPlay. CamillaDSP's `main_volume` is the user-perceived
+speaker volume, and the host's slider is an upstream *observation*, not the
+master: `Source.USBSINK` is declared `VolumeMode.CAMILLA_MASTER` alongside
+`AIRPLAY` and `IDLE`. `jasper/usbsink/volume_bridge.py` translates the gadget
+mixer's step index into a percent and calls
+`VolumeCoordinator.observe_source_volume(...)`; the translation and its ALSA
+unit constraints live in that module and nowhere else. Outbound — remote twist,
+voice "louder" — goes through the ordinary `_set_camilla` path.
+
+**There is deliberately no write back to the gadget mixer**, and no
+`link_volume_control` binding of the host's slider to CamillaDSP volume, for
+two reasons:
+
+1. `main_volume` is also where ducking happens. Wiring the host's slider
+   straight to it would make every voice turn visibly drag the Mac's slider
+   down and back up.
+2. The remote/voice/"louder" path must stay authoritative. Bidirectional sync
+   needs either echo prevention on both ends or an always-wins rule on one —
+   complexity or confusion, pick one.
+
+The accepted UX consequence: the host slider is a remote control. Touching it
+overrides whatever JTS was set to, exactly as an AirPlay sender's slider does.
