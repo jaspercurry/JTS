@@ -973,19 +973,22 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
 # ----------------------------------------------------------------------
 
 
-def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
-    # Combo tests exercise the real fan-in liveness method rather than the
-    # per-test fixture's simple USB boolean stub.
+def _make_combo_box(mux: Mux, monkeypatch, streaming_seq):
+    """Drive the real fan-in liveness method with one per-tick STATUS.
+
+    Each element is fan-in's ``direct.streaming`` edge for that tick; ``None``
+    is a STATUS miss (no snapshot at all). The last element repeats.
+    """
     monkeypatch.setattr(
         mux,
         "_usbsink_playing",
         Mux._usbsink_playing.__get__(mux, Mux),
     )
-    frames = list(frames_seq)
+    streaming = list(streaming_seq)
     idx = {"i": 0}
 
     async def _fanin():
-        value = frames[min(idx["i"], len(frames) - 1)]
+        value = streaming[min(idx["i"], len(streaming) - 1)]
         idx["i"] += 1
         if value is None:
             return None
@@ -995,10 +998,7 @@ def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
                 {
                     "label": "usbsink",
                     "source": "direct",
-                    # The captured broken shape: direct lane-level frames_read
-                    # can stay frozen while resampler.input_frames advances.
-                    "frames_read": 0,
-                    "resampler": {"input_frames": value},
+                    "direct": {"streaming": value},
                 },
             ],
         }
@@ -1013,7 +1013,7 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000])
+    _make_combo_box(mux, monkeypatch, [False, True, True])
 
     await mux._tick()
     assert mux._winner is None
@@ -1025,46 +1025,16 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     assert payload["active_source"] == "usbsink"
     assert payload["winner"] == "usbsink"
     assert payload["sources"]["usbsink"]["playing"] is True
-    assert payload["usbsink"]["combo"] is True
 
     await mux._tick()
     assert mux._winner is Source.USBSINK
-
-
-async def test_fanin_streaming_edge_promotes_usb_without_two_patrol_baseline(
-    mux, patched_probes, monkeypatch,
-):
-    _stub_pauses(mux)
-    _stub_usbsink_preempt(mux)
-    _stub_probes(patched_probes, usbsink=False)
-    monkeypatch.setattr(
-        mux,
-        "_usbsink_playing",
-        Mux._usbsink_playing.__get__(mux, Mux),
-    )
-
-    async def fanin_status():
-        return {
-            "inputs": [{
-                "label": "usbsink",
-                "source": "direct",
-                "resampler": {"input_frames": 48_000},
-                "direct": {"streaming": True},
-            }],
-        }
-
-    mux._fanin_status_best_effort = fanin_status
-    await mux._tick()
-
-    assert mux._winner is Source.USBSINK
-    assert mux._state.playing[Source.USBSINK] is True
 
 
 async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 0, 0, 0])
+    _make_combo_box(mux, monkeypatch, [False])
 
     for _ in range(4):
         await mux._tick()
@@ -1078,7 +1048,7 @@ async def test_combo_usb_preempted_by_newly_started_source(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False, airplay=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     await mux._tick()
@@ -1096,7 +1066,7 @@ async def test_combo_usb_survives_single_fanin_status_miss(
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
     _stub_probes(patched_probes, usbsink=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, None, 96_000])
+    _make_combo_box(mux, monkeypatch, [False, True, None, True])
 
     await mux._tick()
     await mux._tick()
@@ -1121,7 +1091,7 @@ async def test_usb_streaming_preempts_active_airplay(
     _stub_usbsink_preempt(mux)
     # AirPlay is established; a later USB frame-flow edge must take the speaker.
     _stub_probes(patched_probes, usbsink=False, airplay=True)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     assert mux._winner is Source.AIRPLAY
@@ -1272,87 +1242,6 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
 
 
 # ----------------------------------------------------------------------
-# Escape-hatch env var. JASPER_USBSINK_PREEMPT=disabled short-circuits
-# the fan-in lane MUTE so mux still tracks state but never asks fan-in
-# to silence — degrades to Bluetooth-style "brief mixing on preempt"
-# behaviour without requiring a redeploy.
-# ----------------------------------------------------------------------
-
-
-async def test_usbsink_set_preempt_skips_mute_when_env_disabled(
-    monkeypatch, tmp_path,
-):
-    """With the escape hatch set, _usbsink_set_preempt updates the
-    tracked flag but does NOT MUTE the fan-in lane. Exercises the
-    method directly — bypasses _pause which the other tests stub."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-    await m._usbsink_set_preempt(True, reason="test_escape_hatch")
-
-    # State updated optimistically — mux's view of the world matches
-    # what it would have been if the mute had succeeded.
-    assert m._usbsink_preempted is True
-    # But no fan-in mute happened.
-    fanin_mute.assert_not_awaited()
-
-
-async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
-    monkeypatch, tmp_path,
-):
-    """The escape hatch covers both directions — silence AND unsilence
-    skip the mute. Otherwise an operator enabling the escape hatch
-    mid-flight (with USB already silenced) would never get unsilenced."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-    m._usbsink_preempted = True  # Pretend we were preempted before
-
-    await m._usbsink_set_preempt(False, reason="test_release")
-
-    assert m._usbsink_preempted is False
-    fanin_mute.assert_not_awaited()
-
-
-async def test_usbsink_set_preempt_disabled_value_must_be_literal(
-    monkeypatch, tmp_path,
-):
-    """The escape hatch is a string-match on the literal "disabled".
-    Other truthy strings (1, true, off, yes) do NOT activate it,
-    matching the sibling escape hatches' contract — avoids accidental
-    activation when an operator sets the var to a generic truthy value
-    expecting an enable. Mirrors the explicit `"disabled"` contract
-    in jasper.source_state._airplay_metadata_gate_disabled."""
-    for val in ("1", "true", "off", "yes", "enabled", ""):
-        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-        await m._usbsink_set_preempt(True, reason=f"val_{val}")
-
-        assert fanin_mute.await_count == 1, (
-            f"JASPER_USBSINK_PREEMPT={val!r} should NOT trigger the "
-            "escape hatch; only the literal 'disabled' (case-insensitive)."
-        )
-
-
-async def test_usbsink_set_preempt_disabled_case_insensitive(
-    monkeypatch, tmp_path,
-):
-    """Operators may set the value as "Disabled" or "DISABLED" by
-    convention; the gate is case-insensitive per the sibling
-    escape hatches."""
-    for val in ("disabled", "DISABLED", "Disabled", "  disabled  "):
-        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
-        m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-
-        await m._usbsink_set_preempt(True, reason=f"val_{val!r}")
-
-        assert fanin_mute.await_count == 0, (
-            f"JASPER_USBSINK_PREEMPT={val!r} should trigger the "
-            "escape hatch (case-insensitive, whitespace-stripped)."
-        )
-
-
-# ----------------------------------------------------------------------
 # Fan-in lane-mute preempt transport (the sole USB-silencing primitive).
 # ----------------------------------------------------------------------
 
@@ -1375,16 +1264,6 @@ async def test_release_unmutes_fanin_lane(tmp_path):
     assert m._usbsink_preempted is False
 
 
-async def test_escape_hatch_never_mutes(monkeypatch, tmp_path):
-    """JASPER_USBSINK_PREEMPT=disabled degrades to graceful mix: mux tracks
-    state but issues no mute."""
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
-    await m._usbsink_set_preempt(True, reason="preempted_by_winner")
-    assert m._usbsink_preempted is True  # tracked optimistically
-    fanin_mute.assert_not_awaited()
-
-
 async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     """A failed fan-in mute degrades gracefully: WARN, graceful mixing, tracked
     flag NOT advanced so the next tick re-attempts (1 Hz, no retry storm, no
@@ -1394,7 +1273,7 @@ async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
         await m._usbsink_set_preempt(True, reason="preempted_by_winner")
     assert m._usbsink_preempted is False  # not advanced → will retry
-    assert "fanin lane mute failed" in caplog.text
+    assert "event=usbsink.preempt_failed" in caplog.records[-1].message
     # State guard did NOT latch, so a subsequent tick tries again and succeeds.
     fanin_mute.side_effect = None
     await m._usbsink_set_preempt(True, reason="preempted_by_winner")
@@ -1410,23 +1289,11 @@ async def test_reassert_mute_reissues_while_preempted(tmp_path):
     fanin_mute.assert_awaited_once_with("usbsink", True)
 
 
-async def test_reassert_mute_noops_when_not_preempted_or_escaped(
-    monkeypatch, tmp_path,
-):
-    """Reassertion is a no-op when USB isn't preempted and under the escape
-    hatch."""
-    # Not preempted.
+async def test_reassert_mute_noops_when_not_preempted(tmp_path):
     m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
     m._usbsink_preempted = False
     await m._reassert_usbsink_preempt_mute()
     fanin_mute.assert_not_awaited()
-
-    # Escape hatch active.
-    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
-    m2, fanin_mute2 = _make_mux_mute_stubbed(tmp_path)
-    m2._usbsink_preempted = True
-    await m2._reassert_usbsink_preempt_mute()
-    fanin_mute2.assert_not_awaited()
 
 
 async def test_tick_preempt_reaches_fanin_mute(
@@ -1438,7 +1305,7 @@ async def test_tick_preempt_reaches_fanin_mute(
     fanin_mute = AsyncMock(return_value={})
     mux._fanin_lane_mute = fanin_mute
     _stub_probes(patched_probes, usbsink=False, airplay=False)
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()  # baseline frames
     await mux._tick()  # USB advances → wins
@@ -1461,7 +1328,7 @@ async def test_tick_muted_host_stays_playing_for_liveness(
     mux._fanin_lane_mute = AsyncMock(return_value={})
     _stub_probes(patched_probes, usbsink=False, airplay=False)
     # Frames keep advancing across every tick — a streaming (even if muted) host.
-    _make_combo_box(mux, monkeypatch, [0, 48_000, 96_000, 144_000, 192_000])
+    _make_combo_box(mux, monkeypatch, [False, True])
 
     await mux._tick()
     await mux._tick()
@@ -1547,48 +1414,36 @@ async def test_test_fanin_release_restores_manual_source(mux):
     assert status["active_source"] == "airplay"
 
 
-async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(mux):
-    mux._fanin_select_label = AsyncMock(return_value={})
-
-    first = await mux.select_test_fanin_label(
-        "correction", "correction-measurement",
-    )
-    retry = await mux.select_test_fanin_label(
-        "correction", "correction-measurement",
-    )
-    busy = await mux.select_test_fanin_label(
-        "correction", "active-speaker-commissioning",
-    )
-    wrong_release = await mux.release_test_fanin_label(
-        "active-speaker-commissioning",
-    )
-
-    assert first["test_owner"] == "correction-measurement"
-    assert retry["test_owner"] == "correction-measurement"
-    assert "owned by" in busy["error"]
-    assert "owned by" in wrong_release["error"]
-    assert mux._test_fanin_owner == "correction-measurement"
-    assert mux._fanin_select_label.await_count == 2
-
-
 def test_aec_doctor_has_a_distinct_declared_test_gate_owner():
     assert "doctor-aec-probe" in mux_module.FANIN_TEST_OWNERS
     assert "doctor-aec-probe" != "correction-measurement"
 
 
-async def test_aec_doctor_gate_refuses_foreign_owner_and_release(mux):
+@pytest.mark.parametrize(
+    ("holder", "other"),
+    [
+        ("correction-measurement", "active-speaker-commissioning"),
+        ("doctor-aec-probe", "correction-measurement"),
+    ],
+)
+async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(
+    mux, holder, other,
+):
+    """The lease is per-owner: the holder may renew, anyone else is refused
+    both the gate and the release, and no foreign call reaches fan-in."""
     mux._fanin_select_label = AsyncMock(return_value={})
 
-    held = await mux.select_test_fanin_label("correction", "doctor-aec-probe")
-    busy = await mux.select_test_fanin_label(
-        "correction", "correction-measurement"
-    )
-    wrong_release = await mux.release_test_fanin_label("correction-measurement")
+    first = await mux.select_test_fanin_label("correction", holder)
+    retry = await mux.select_test_fanin_label("correction", holder)
+    busy = await mux.select_test_fanin_label("correction", other)
+    wrong_release = await mux.release_test_fanin_label(other)
 
-    assert held["test_owner"] == "doctor-aec-probe"
-    assert "doctor-aec-probe" in busy["error"]
-    assert "doctor-aec-probe" in wrong_release["error"]
-    assert mux._test_fanin_owner == "doctor-aec-probe"
+    assert first["test_owner"] == holder
+    assert retry["test_owner"] == holder
+    assert holder in busy["error"]
+    assert holder in wrong_release["error"]
+    assert mux._test_fanin_owner == holder
+    assert mux._fanin_select_label.await_count == 2
 
 
 async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
@@ -1615,33 +1470,23 @@ async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
     mux._fanin_select.assert_not_awaited()
 
 
-async def test_manual_select_is_rejected_without_mutation_during_test_gate(
-    mux, patched_probes,
+@pytest.mark.parametrize("action", ["manual", "auto"])
+async def test_source_selection_is_rejected_before_probe_during_test_gate(
+    mux, patched_probes, action,
 ):
+    """A held test lease refuses both selection paths before any mutation:
+    no fan-in call, no coordinator event, no source probe."""
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
     mux._test_fanin_expires_at = 100.0
 
-    result = await mux.select_source(Source.AIRPLAY)
+    if action == "manual":
+        result = await mux.select_source(Source.AIRPLAY)
+    else:
+        result = await mux.auto_select()
 
     assert "correction-measurement" in result["error"]
     mux._fanin_select.assert_not_awaited()
-    assert mux._volume_coordinator.events == []
-    for probe in vars(patched_probes).values():
-        probe.assert_not_awaited()
-    assert mux._test_fanin_owner == "correction-measurement"
-
-
-async def test_auto_select_is_rejected_before_probe_during_test_gate(
-    mux, patched_probes,
-):
-    mux._test_fanin_label = "correction"
-    mux._test_fanin_owner = "correction-measurement"
-    mux._test_fanin_expires_at = 100.0
-
-    result = await mux.auto_select()
-
-    assert "correction-measurement" in result["error"]
     mux._fanin_none.assert_not_awaited()
     assert mux._volume_coordinator.events == []
     for probe in vars(patched_probes).values():

@@ -46,7 +46,6 @@ from .airplay_health import (
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .transport_park import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
-    PARK_GROUPED_DAC_CONTENT_LANE,
     PARK_MONO_FULL_RANGE,
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
@@ -105,10 +104,6 @@ _PARK_MESSAGES: dict[str, str] = {
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED: (
         "This speaker's per-driver outputs are ready, but sound is not pointed "
         "at them yet."
-    ),
-    PARK_GROUPED_DAC_CONTENT_LANE: (
-        "This speaker is grouped with another one, and a grouped speaker cannot "
-        "use the new audio setup. Ungrouping it brings sound back."
     ),
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE: (
         "This speaker is grouped, but its audio settings disagree with each "

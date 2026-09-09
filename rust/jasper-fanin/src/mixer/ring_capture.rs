@@ -591,6 +591,7 @@ fn ring_lane_input(
             period_samples,
         ),
         xrun_count: Arc::new(AtomicU64::new(0)),
+        last_xrun_ms: Arc::new(AtomicU64::new(jasper_daemon::json::NEVER_MS)),
         frames_read: Arc::new(AtomicU64::new(0)),
         rms_dbfs_x100: Arc::new(AtomicI32::new((RMS_DBFS_FLOOR * 100.0) as i32)),
         catchup_resync_frames: Arc::new(AtomicU64::new(0)),

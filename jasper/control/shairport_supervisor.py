@@ -36,8 +36,8 @@ import time
 from typing import Any
 
 from jasper.log_event import log_event
+from jasper.source_state import airplay_playbackstatus_observed
 
-from . import mpris
 from .supervisor_runtime import (
     build_asyncio_thread,
     resolve_env_mode,
@@ -280,17 +280,28 @@ class ShairportSupervisor:
     async def is_session_active(self) -> bool:
         """True when MPRIS reports Playing.
 
-        If the MPRIS probe is unknown, fail safe to "active" only
+        Deliberately the uncorroborated predicate: this gate fails safe
+        toward "a listener is there", and a genuine sender that publishes no
+        track title must not be restarted out from under.
+
+        If the probe is unknown, fail safe to "active" only
         while systemd still reports shairport-sync live or unknown. A
         dead/inactive unit cannot be protecting a listener, so it
         bypasses the gate and lets the restart path recover it.
+
+        An absent MPRIS bus name is not unknown: the probe classifies it as a
+        definite not-Playing, so a wedged shairport-sync with no bus name is
+        restarted without a systemd cross-check and without a
+        `shairport.gate_bypass` event (that event covers only the
+        unknown-probe path). The shipped build is `--with-mpris-interface`, so
+        a missing bus name means no session for mux either.
 
         A *deliberately disabled* unit is diverted before this gate:
         each failing tick checks `is_shairport_unit_disabled()` before
         the counter can arm, so the unit_inactive bypass is reached
         only after the tick confirms the unit is not deliberately off.
         """
-        playing = await mpris.shairport_playing(timeout=2.0)
+        playing = await airplay_playbackstatus_observed()
         if playing is None:
             unit_active = await self.is_shairport_unit_active()
             if unit_active is False:

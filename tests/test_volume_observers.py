@@ -74,50 +74,6 @@ class _FakeCoordinator:
         self.reconcile_sources.append(source)
 
 
-# ---------- AirPlay reader -------------------------------------------------
-
-
-async def test_read_airplay_db_parses_variant(monkeypatch):
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
-
-    async def fake_busctl(*args, **kwargs):
-        return 'v d -10.500000'
-
-    monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
-    )
-    val = await obs._read_airplay_db()
-    assert val == pytest.approx(-10.5)
-
-
-async def test_read_airplay_db_clamps_to_range(monkeypatch):
-    """shairport reports -144 when iPhone slider is at 0 — observer
-    clamps to AIRPLAY_DB_MIN (the coordinator then maps that to 0%)."""
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
-
-    async def fake_busctl(*args, **kwargs):
-        return 'v d -144.000000'
-
-    monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
-    )
-    val = await obs._read_airplay_db()
-    from jasper.volume_coordinator import AIRPLAY_DB_MIN
-    assert val == AIRPLAY_DB_MIN
-
-
-async def test_read_airplay_returns_none_on_busctl_failure(monkeypatch):
-    obs = VolumeObserver(_FakeCoordinator(), librespot_state_path="/nonexistent.env")
-
-    async def fake_busctl(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
-    )
-    assert await obs._read_airplay_db() is None
-
-
 # ---------- Spotify reader -------------------------------------------------
 
 
@@ -247,34 +203,24 @@ async def test_bluealsa_transport_path_suppresses_after_cli_failure(monkeypatch)
 # ---------- _maybe_observe filtering --------------------------------------
 
 
-async def test_maybe_observe_first_value_propagates():
-    """First observation per source propagates — the source's reality
-    on first contact is what listening_level should reflect (each source
-    owns its own remembered volume; we mirror that)."""
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        # First observation per source propagates — the source's reality on
+        # first contact is what listening_level should reflect.
+        ((40.0,), [40.0]),
+        ((40.0, 40.2), [40.0]),          # < 0.5 unit drift is polling churn
+        ((40.0, 45.0), [40.0, 45.0]),
+    ],
+)
+async def test_maybe_observe_propagates_only_real_change(values, expected):
     coord = _FakeCoordinator()
     obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
-    await obs._maybe_observe(Source.AIRPLAY, -10.0)
-    assert coord.observed == [(Source.AIRPLAY, -10.0)]
 
+    for value in values:
+        await obs._maybe_observe(Source.SPOTIFY, value)
 
-async def test_maybe_observe_skips_micro_drift():
-    coord = _FakeCoordinator()
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
-    await obs._maybe_observe(Source.AIRPLAY, -10.0)
-    await obs._maybe_observe(Source.AIRPLAY, -10.2)  # < 0.5 delta
-    # only first call propagated
-    assert len(coord.observed) == 1
-
-
-async def test_maybe_observe_fires_on_real_change():
-    coord = _FakeCoordinator()
-    obs = VolumeObserver(coord, librespot_state_path="/nonexistent.env")
-    await obs._maybe_observe(Source.AIRPLAY, -10.0)
-    await obs._maybe_observe(Source.AIRPLAY, -15.0)
-    assert coord.observed == [
-        (Source.AIRPLAY, -10.0),
-        (Source.AIRPLAY, -15.0),
-    ]
+    assert coord.observed == [(Source.SPOTIFY, v) for v in expected]
 
 
 async def test_maybe_observe_same_zero_again_for_new_mute_revision():
@@ -314,20 +260,16 @@ async def test_maybe_observe_retries_declined_unchanged_value():
 
 class _ProbeSpy:
     """Counts probes at the boundary each reader delegates to: busctl
-    get-property for the AirPlay and BT volumes, bluealsa-cli's transport
-    lookup for BT, the state-file read for Spotify. Every one but Spotify's
-    forks a child, which is what an idle tick must not spend."""
+    get-property for the BT volume, bluealsa-cli's transport lookup for BT,
+    the state-file read for Spotify. Every one but Spotify's forks a child,
+    which is what an idle tick must not spend."""
 
     def __init__(self) -> None:
-        self.airplay = 0
         self.spotify = 0
         self.bluetooth = 0
 
     def install(self, monkeypatch) -> None:
         async def fake_busctl(bus_name, object_path, interface, prop, **kwargs):
-            if prop == "AirplayVolume":
-                self.airplay += 1
-                return "v d -5.0"
             if prop == "Volume":
                 return "v q 64"
             return None
@@ -356,23 +298,22 @@ class _ProbeSpy:
 
 
 @pytest.mark.parametrize(
-    ("active", "probes", "expected_observed", "expected_airplay_seen"),
+    ("active", "probes", "expected_observed"),
     [
-        (Source.IDLE, (0, 0, 0), [], None),
-        (Source.USBSINK, (0, 0, 0), [], None),
-        (Source.AIRPLAY, (1, 0, 0), [], -5.0),
-        (Source.SPOTIFY, (0, 1, 0), [(Source.SPOTIFY, 100.0)], None),
-        (Source.BLUETOOTH, (0, 0, 1), [(Source.BLUETOOTH, 64.0)], None),
+        (Source.IDLE, (0, 0), []),
+        (Source.USBSINK, (0, 0), []),
+        (Source.AIRPLAY, (0, 0), []),
+        (Source.SPOTIFY, (1, 0), [(Source.SPOTIFY, 100.0)]),
+        (Source.BLUETOOTH, (0, 1), [(Source.BLUETOOTH, 64.0)]),
     ],
 )
 async def test_tick_probes_only_the_active_source(
-    active, probes, expected_observed, expected_airplay_seen,
-    monkeypatch, tmp_path,
+    active, probes, expected_observed, monkeypatch, tmp_path,
 ):
-    """A tick asks exactly one reader — the active source's — and none at
-    all on an idle box or on a source this observer does not poll. Only the
-    active source's value reaches the coordinator; AirPlay's stays a
-    diagnostic reading (ADR-0206) and is never dispatched."""
+    """A tick asks at most one reader — the active source's — and none at
+    all on an idle box or on a source this observer does not poll. AirPlay
+    volume arrives event-driven through shairport's hook (ADR-0206), so an
+    AirPlay tick forks nothing."""
     coord = _FakeCoordinator(active=active)
     state = write_librespot_state(
         tmp_path / "librespot.state.env", volume=65535,  # 100%
@@ -383,9 +324,8 @@ async def test_tick_probes_only_the_active_source(
 
     await obs._tick()
 
-    assert (spy.airplay, spy.spotify, spy.bluetooth) == probes
+    assert (spy.spotify, spy.bluetooth) == probes
     assert coord.observed == expected_observed
-    assert obs._last_seen[Source.AIRPLAY] == expected_airplay_seen
 
 
 async def test_tick_forwards_same_value_on_source_activation(

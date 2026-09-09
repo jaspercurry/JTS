@@ -38,7 +38,13 @@ Choose the order from the evidence and the next question.
    inherited corrections. For a comparison, name the candidate fingerprints
    and required poses. `jasper-angle-capture plan` previews the program and
    human effort without staging it.
-3. **Stage and measure.** Stage the chosen program, then use
+3. **Stage and measure.** Register the wired measurement mic once. Its record
+   and its calibration files live under a root-owned, group-`jasper` state
+   directory the login account is outside, so on the speaker every verb runs as
+   `sudo /opt/jasper/.venv/bin/jasper-mic-calibration <verb>`:
+   `fetch --model <key> --serial <serial>`, or `upload <file>`. `show` prints
+   the household record every take's calibration context resolves from, and a
+   box without one measures uncalibrated. Stage the chosen program, then use
    `jasper-round open --tier express` (or the chosen tier) and `jasper-round wait`.
    Give the human the returned `handoff_url` and the next placement/start action.
    `scripts/run-crossover-round.py` is the laptop adapter for one round.
@@ -206,6 +212,7 @@ Capture emits sound; apply persists a tune.
 | Tool | Does | Authority | Where |
 |---|---|---|---|
 | `jasper-basic-profile review\|apply` | Review and apply the basic profile -- the chosen crossover plus per-driver trim, delay and polarity, with no linearization and no blend correction, replacing the live tune and deleting no evidence. | mutating-with-gates | `jasper/cli/basic_profile.py` |
+| `jasper-mic-calibration models\|fetch\|upload\|show` | Register the household's measurement microphone: fetch its vendor calibration by serial or store a file you already have, and remember that mic so every measurement resolves its calibration from one record. A box with no record measures uncalibrated. | advisory (`fetch`/`upload` write; `models`/`show` do not) | `jasper/cli/mic_calibration.py` |
 | `jasper-seat-level` | Ramp the measurement volume until a calibrated mic at the seat reads the target dB SPL and bank it as the crossover session's measurement reference — PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture plan\|stage\|show\|withdraw\|serve` | State one angle walk, see what it resolves to, leave it for the next measurement session, and serve it with the lab arm. | mutating (`stage`/`withdraw` write; `serve` moves the arm; `plan`/`show` are reads) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |

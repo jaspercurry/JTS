@@ -85,6 +85,7 @@ from . import household_credential
 from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
+from ..volume_curve import percent_to_db
 from .single_flight import SingleFlightTTLCache
 from ..platform.uds import (
     local_status_json as _local_status_json,
@@ -1550,7 +1551,7 @@ def _make_handler(
             """
             percent = int(state.effective_percent)
             return {
-                "db": round(_volume_ops._percent_to_db(percent), 3),
+                "db": round(percent_to_db(percent), 3),
                 "percent": percent,
                 "muted": bool(state.muted),
                 "restore_percent": state.restore_percent,

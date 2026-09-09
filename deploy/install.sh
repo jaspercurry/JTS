@@ -48,6 +48,7 @@ source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
+source "${REPO_DIR}/deploy/lib/install/retirements.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
 source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
@@ -685,14 +686,6 @@ install_camilladsp() {
     # ensure_outputd_camilla_statefile asks jasper.active_speaker's runtime
     # contract which graph is legal and fails closed if no protected graph
     # exists.
-
-    # v1.yml (the pre-outputd rollback config, issue #2240) is no longer
-    # installed by this function. Remove any copy left behind by a prior
-    # install: an upgraded box that keeps it on disk indefinitely is still
-    # selectable in camillagui's config picker (config_dir scans
-    # /etc/camilladsp/*.yml) and can leave a flat-allowed statefile pointer
-    # aimed at a file that writes to the now-removed pcm.jasper_out dmix.
-    rm -f "${CAMILLA_CONF}/v1.yml"
 }
 
 run_captured_command() {
@@ -1740,9 +1733,9 @@ INSTALL_STEPS=(
     # After every step that creates state, before the unit install restarts the
     # daemons that read /var/lib/jasper as group `jasper`.
     "state_modes|both|heal_shared_state_modes|heal the group modes on shared state files an upgrade left behind"
+    "retired|both|retire_leftovers|retire the units and files earlier releases left behind"
     "systemd_units|full|install_systemd_units|install, enable and start the full-tier systemd units"
     "systemd_units|streambox|install_streambox_systemd_units|install, enable and start the streambox systemd units"
-    "retired_topology_state|both|remove_retired_audio_topology_state|remove the retired dmix/fanin topology switch state"
     "wifi_guardian|both|migrate_wifi_guardian|seed the WiFi guardian recovery stash"
     "memory_resilience|both|migrate_memory_resilience|apply the sysctl, MGLRU and zram memory resilience"
     "cgroup_memory|both|migrate_cgroup_memory_enabled|add the memory cgroup/PSI kernel args"

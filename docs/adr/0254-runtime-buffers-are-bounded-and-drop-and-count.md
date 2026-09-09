@@ -1,7 +1,12 @@
 # ADR-0254: Runtime buffers are bounded and drop-and-count
 
 - **Date:** 2026-09-07
-- **Status:** Accepted
+- **Status:** Accepted. Decision item 2 — the fan-in xrun channel, its
+  `XrunSink` and the `xrun_events_dropped` gauge — is superseded by
+  [ADR-0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md),
+  which deletes the mechanism; items 1 and 3 stand, as does the
+  `EVENT_CHANNEL_CAPACITY` / `send_drop_counted` shape the impulse tap's
+  channel still uses.
 - Refs: the local runtime-cleanup lane (secrets, bounded resources,
   operating evidence); the audit that opened it is #4427.
 

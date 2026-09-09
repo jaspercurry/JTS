@@ -5,9 +5,8 @@
 """HTTPS measurement daemon behind the /sound/ measurement pages.
 
 It serves the active-crossover commissioning walk, the stereo-pair
-timing wizard, the read-only measurements browser, the bass display
-page, microphone calibration fetch/upload, the level-check test tone
-and a health probe.
+timing wizard, the read-only measurements browser and the bass display
+page.
 
 Architecture:
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
@@ -680,52 +679,6 @@ def _get_sync_status(handler: _Handler) -> None:
         handler._send_json({"error": str(e)}, status=500)
 
 
-def _get_healthz(handler: _Handler) -> None:
-    body = b"ok\n"
-    handler.send_response(HTTPStatus.OK)
-    handler.send_header("Content-Type", "text/plain; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
-
-
-def _get_calibration_models(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_calibration_models(handler))
-    except Exception as e:  # noqa: BLE001
-        logger.exception("/calibration/models failed")
-        handler._send_json({"error": str(e)}, status=500)
-
-
-def _post_test_tone(handler: _Handler) -> None:
-    handler._send_json(correction_handlers._handle_test_tone(handler))
-
-
-def _post_calibration_fetch(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_calibration_fetch(handler))
-    except ValueError as e:
-        handler._send_client_error(str(e))
-    except Exception as e:  # noqa: BLE001
-        from jasper.audio_measurement.calibration import (
-            CalibrationNotFoundError,
-            CalibrationUpstreamError,
-        )
-        if isinstance(e, CalibrationNotFoundError):
-            handler._send_client_error(str(e), status=404)
-        elif isinstance(e, CalibrationUpstreamError):
-            handler._send_client_error(str(e), status=502)
-        else:
-            raise
-
-
-def _post_calibration_upload(handler: _Handler) -> None:
-    try:
-        handler._send_json(correction_handlers._handle_calibration_upload(handler))
-    except ValueError as e:
-        handler._send_client_error(str(e))
-
-
 def _follower_delegated(fn: RouteFn) -> RouteFn:
     """A page a bonded follower does not own: it renders the "controlled on
     the leader" page instead of its own. Pair timing is the one left — it is
@@ -790,16 +743,11 @@ _GET_ROUTES = {
     "/bass/status": _get_bass_status,
     "/sync": _follower_delegated(_get_sync),
     "/sync/status": _get_sync_status,
-    "/healthz": _get_healthz,
-    "/calibration/models": _get_calibration_models,
 }
 
 # Mutating routes this handler accepts. Membership gates the 404 above;
 # deleting a line would otherwise 404 a route silently.
 _POST_ROUTES = {
-    "/test-tone": _post_test_tone,
-    "/calibration/fetch": _post_calibration_fetch,
-    "/calibration/upload": _post_calibration_upload,
     "/crossover/capture-cancel": _dispatch_crossover,
     "/crossover/reset": _dispatch_crossover,
     "/crossover/recover-volume": _dispatch_crossover,
