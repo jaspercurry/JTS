@@ -6,6 +6,11 @@
    Select one with `status <round-dir>`, then read its `inventory`. Bare status
    leaves evidence unselected. Follow returned paths and the latest rationale
    note; `/sound/measurements/` also shows retained history.
+   For a fresh linearization, inspect the basic structure/trim profile and
+   measure the temporary base graph. To resume, keep the current tune, select
+   its relevant round, and start from the unresolved question. Incomplete older
+   evidence keeps its recorded scope; it does not require a reset or universal
+   base recapture.
 2. Code owns calculations, graph composition, protected capture, and evidence.
    The LLM chooses experiments and interprets results. The human places the mic,
    starts each pose batch, reports physical changes, and judges listening.
@@ -134,6 +139,109 @@ its parents' measurement claims. The basic
 profile has its own explicit `jasper-basic-profile review|apply` door; replacing
 a saved tune is not necessary just to make a temporary baseline measurement.
 
+## Optional visual and window diagnostics
+
+Use this step when a curve shape could change the next experiment. The LLM
+must render **and open/view the image** before interpreting it. Writing a plot
+or reading its numbers alone does not complete visual inspection.
+
+```
+jasper-round-views frequency <before-take.json> <after-take.json> --image /tmp/before-after.png
+jasper-round-views windows <round-dir> --capture-id <exact-take-id> --rungs-ms 2 4 7 12 --image /tmp/windows.png
+```
+
+Image rendering runs on the laptop with the optional `plots` install extra.
+Both commands also save the shared frequency-view JSON. `--series a:<id>
+b:<id>` selects exact curves from that JSON. Keep candidate, played graph,
+take, pose, reference, window, smoothing, and valid coverage visible. An absent
+field is unknown. The zero line is the stated flat display reference; it is
+not an absolute SPL target. Shared references retain branch level differences.
+
+After viewing, describe the peaks, dips, broad tilt, crossover shape, and pose
+differences that are visible. Then state possible causes as hypotheses, with
+the evidence that could separate them. End with one useful next experiment,
+or explain why the measured result is enough. Do not prescribe EQ from a dip
+alone or treat a score as proof of the cause.
+
+`windows` reads one exact WAV/program binding and shows its impulse beside
+alternative windows. The existing gate-sweep calculation owns its grid,
+smoothing, taper, and common reference. It does not replace the saved verdict.
+Raw impulse diagnostics have no microphone correction; preprocessing states
+clock correction and timing coordinates. Longer windows admit more room.
+Window resolution alone does not prove a reflection-free result.
+
+For pose statistics, use `gate-sweep --candidate <fp> --graph <played-fp>`.
+Mixed candidate/graph records are refused, even at the same pose. Use exact
+take window overlays when only one recording should answer the question.
+
+## Optional complete-tune branch check
+
+Use one saved candidate when the crossover sum needs a closer look:
+
+```
+jasper-angle-capture plan --program branches --size express --candidates <fp>
+jasper-angle-capture stage --program branches --size express --candidates <fp>
+```
+
+The branch program starts after a full candidate is banked. It cannot select
+the bare base graph; keep using the normal baseline path until a candidate
+exists.
+
+Open the usual browser session and give the human its placement/start action.
+At the selected pose, one recording contains woofer, tweeter, two clock-check
+repeats, then both. All five sweeps use the same stimulus level and volume.
+Each branch retains the candidate's crossover, correction, trim, delay,
+polarity, and protection. This is a diagnostic; it does not fit or adopt a tune.
+The existing `--regime both` remains the neutral per-driver/summed pair.
+
+The retained take carries all three complex curves, raw impulses, exact
+candidate/graph/WAV/program identities, and clock/gate facts. View it with
+`frequency <take.json> --image /tmp/branches.png`. Use `windows` on that exact
+take with `--role woofer`, `tweeter`, or `summed` to inspect window sensitivity.
+Do not align each impulse to its own peak before comparing driver phase.
+
+Run `jasper-round-views forward-model <round-dir> --capture-id <id>` without a candidate to check
+whether woofer plus tweeter reconstructs the same take's measured sum under one
+common window; `--window-ms` selects a disclosed alternative. This closure is a
+model check, not proof that a changed candidate forecast is right. Before the
+first useful changed-candidate trial, save the forecast separately:
+
+```
+jasper-round-views forward-model <round-dir> --capture-id <id> \
+  --candidate-json <full-candidate> --out forecast.json
+```
+
+The code resolves source/target metadata and timing, optionally through
+`--basis-candidate-json` or `--candidate-root`. After a safe candidate trial,
+capture that target once with the same `branches` program at the same pose.
+Compare its exact sum without overwriting the forecast:
+
+```
+jasper-round-views forward-model <round-dir> --capture-id <id> \
+  --candidate-json <full-candidate> --measured-round <trial-round> \
+  --measured-capture-id <trial-id> \
+  --expected-prediction-fingerprint <forecast.summary.prediction_fingerprint> \
+  --out comparison.json
+```
+
+Do this only when it can change the decision, not for every pose or as a
+required round. Stdout stays compact; the full curves remain in the saved
+artifacts.
+
+`delay-landscape <bundle-dir> --phase lateral --take-path <indexed-take-path>
+--fc-hz <corner>` reuses the existing complex-sum/null calculation. With these
+curves, its signed delay is a **residual addition to the measured tune**;
+the tune's physical and DSP delay is already present. A positive residual
+delays the tweeter relative to the woofer. Add it to the saved signed alignment
+when authoring a full candidate variant. Confirm variants with `tournament`.
+`jasper-null` plays neutral branches and cannot confirm those full-tune changes.
+
+A null needs valid coverage on both sides of the crossover. A short gate can
+remove a required shoulder and yield no depth. Inspect the saved gate/floor
+and impulse, try an explicit alternative window as a disclosed room-inclusive
+diagnostic, or move the mic to delay the first reflection. If the available
+span still cannot answer, retain that limitation and use measured full sums.
+
 ## Room
 
 The room is measured on the seat cube, through the applied tune, ungated
@@ -203,6 +311,27 @@ retry state and actual gains survive a resume. If no headroom remains, or the
 retake is still weak, the flow continues with the measured SNR disclosed; it
 does not keep raising the level or discard the earlier evidence.
 
+## Find the analysis that answers the question
+
+| Question | View or record |
+|---|---|
+| What exists; which details are missing? | `inventory`, prescriber `status` |
+| Did the measured tune improve; where did it regress? | `frozen`, `per-seat`, `candidates`; read coverage and measurement scope |
+| Level offset or response shape? | `frozen` band `level_deviation_db` and `max_ripple_db` |
+| Does it hold off axis? | `directivity`, `agreement`, `co-metrics` over summed poses |
+| Does delay/polarity explain the crossover feature? | `delay-landscape`, `jasper-null`, `delay-confirm`; inspect branch levels |
+| Does a feature survive gate/pose changes? | `classify-features`, `gate-sweep`, `close-reference` |
+| Is a low-end feature what the walls alone predict? | `boundary-prior`; advisory, from declared wall distances |
+| Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |
+| How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |
+| Which part of a prescription did cloud evidence constrain? | `cloud-binding` |
+| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade [--baseline]` |
+| Can the same-take branches reconstruct its sum, or what does a full candidate predict? | `forward-model`; select exact captures and treat prediction as unmeasured |
+| Show a curve or compare two takes? | `frequency <A> [<B>]` |
+
+The catalog at `/sound/measurements/` includes banked rounds and retained live
+sessions. `frequency` can read a banked round, bundle, or take file directly.
+
 ## The tool menu
 
 This block is generated from CLI help. Offline tools can write files.
@@ -226,27 +355,6 @@ Capture emits sound; apply persists a tune.
 
 Regenerate with `PYTHONPATH=. .venv/bin/python scripts/generate-tuning-tool-menu.py`;
 `--check` verifies the committed menu. Tool code owns help, schema, and menu copy.
-
-## Find the analysis that answers the question
-
-| Question | View or record |
-|---|---|
-| What exists; which details are missing? | `inventory`, prescriber `status` |
-| Did the measured tune improve; where did it regress? | `frozen`, `per-seat`, `candidates`; read coverage and measurement scope |
-| Level offset or response shape? | `frozen` band `level_deviation_db` and `max_ripple_db` |
-| Does it hold off axis? | `directivity`, `agreement`, `co-metrics` over summed poses |
-| Does delay/polarity explain the crossover feature? | `delay-landscape`, `jasper-null`, `delay-confirm`; inspect branch levels |
-| Does a feature survive gate/pose changes? | `classify-features`, `gate-sweep`, `close-reference` |
-| Is a low-end feature what the walls alone predict? | `boundary-prior`; advisory, from declared wall distances |
-| Is the distortion window valid? | `distortion`; inspect per-order window and overlap status |
-| How stable is the measurement? | `repeat`, `repeat-floor`; distinguish random and systematic error |
-| Which part of a prescription did cloud evidence constrain? | `cloud-binding` |
-| How flat is the seat cube below the ceiling; did a room candidate move a band the wrong way? | `room-grade [--baseline]` |
-| What is predicted from banked complex solos? | `forward-model`; simulation is not a new capture |
-| Show a curve or compare two takes? | `frequency <A> [<B>]` |
-
-The catalog at `/sound/measurements/` includes banked rounds and retained live
-sessions. `frequency` can read a banked round, bundle, or take file directly.
 
 ## URLs and access
 
