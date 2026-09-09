@@ -410,10 +410,20 @@ def test_propose_takes_the_sides_from_the_applied_profile(
         assert answer["detail"]["evidence"]["expected_sides"] == ["mono"]
 
 
-def test_compose_carries_the_room_set_onto_the_candidate(evidence, bank, capsys):
+@pytest.mark.parametrize("measured_base", [None, "same", "different"])
+def test_compose_carries_the_room_set_onto_the_candidate(evidence, bank, capsys, measured_base):
     document, median = evidence
     base = _candidate()
     _publish(bank, base)
+    basis = {} if measured_base is None else {
+        "candidate_id": base.fingerprint if measured_base == "same" else "another-speaker-tune",
+        "graph_fingerprint": "played-graph",
+    }
+    if basis:
+        raw = json.loads(Path(median).read_text())
+        raw["evidence"] = {"basis": basis, "take_ids": [p["id"] for p in raw["positions"]]}
+        Path(median).write_text(json.dumps(raw))
+        Path(document).write_text(json.dumps(_document(sha256=prescription_sha256(Path(median).read_bytes()))))
     assert cli.main([
         "compose", "--root", str(bank), "--base", base.fingerprint,
         "--room-prescription", document, "--room-median", median,
@@ -426,8 +436,14 @@ def test_compose_carries_the_room_set_onto_the_candidate(evidence, bank, capsys)
     )
     assert child.room_correction["basis"]["round_id"] == "round-7"
     assert set(child.analysis["room_source"]) == {
-        "prescription_sha256", "room_median_sha256",
+        "prescription_sha256", "room_median_sha256", "measured_basis", "base_match",
     }
+    assert child.analysis["room_source"]["measured_basis"] == basis
+    assert child.analysis["room_source"]["base_match"] == {
+        None: "unknown", "same": "match", "different": "different",
+    }[measured_base]
+    assert answer["room_source"] == child.analysis["room_source"]
+    assert child.analysis["measurement_status"] == "unmeasured"
     # It reopens with the field: the room set is inside the fingerprint.
     assert MeasuredCrossoverCandidate.from_mapping(
         child.to_dict()

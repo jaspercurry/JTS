@@ -284,14 +284,18 @@ The room is measured on the seat cloud, through the applied tune, ungated
    judges a room prescription (`kind: jts_room_prescription`) against
    `room_median.json`; `compose --base <applied fingerprint>
    --room-prescription <doc> --room-median <path>` banks the room candidate;
-   `jasper-measure --graph-scope room_candidate --candidate-id <fingerprint>`
-   plays it for its trial through the accepted tune.
+   stage the same `jasper-angle-capture plan --program seat
+   --candidates <fingerprint>` walk, then open and bank a new round. Each seat
+   capture plays the room candidate through the accepted speaker tune.
 8. `jasper-round-views room-grade <round-dir> [--baseline <round-dir>]`: the
    re-measured cloud's median against flat, band by band, with the incumbent
-   round's numbers beside it; a regressed band is a disclosure, and restore
-   is the doctrine's own path.
+   round's numbers beside it. Comparisons use shared frequency coverage and
+   disclose their level alignment and capture compatibility. A regressed band
+   is a disclosure; restore follows the same adoption path.
 
 These views do not authorize correction above the current ceiling.
+If the speaker's trusted floor exceeds that ceiling, the gap remains ungraded;
+use a longer valid gate or another suitable measurement to assess it.
 
 ## Evidence and recovery
 

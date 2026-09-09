@@ -45,17 +45,19 @@ def _basis(row: Measurement, record: Mapping[str, Any]) -> dict[str, Any]:
     provenance = record.get("provenance") or {}
     setup = record.get("capture_setup") or {}
     device = record.get("capture_device") or {}
+    calibration = record.get("capture_calibration") or {}
     stimulus = provenance.get("stimulus") or {}
     return {
         "candidate_id": row.candidate_id or None,
+        "speaker_candidate_id": (provenance.get("graph") or {}).get("speaker_candidate_id"),
         "submitted_graph_fingerprint": row.graph_fingerprint or None,
         "graph_fingerprint": played_graph_fingerprint(record) or None,
         "played_graph_recorded": bool((provenance.get("graph") or {}).get("fingerprint")),
         "graph_scope": row.graph_scope or None,
-        # Resolved calibration status is not retained per take, only its reference.
         "side": record.get("side"),
         "calibration_reference": setup.get("calibration"),
-        "calibration_applied": None,
+        "calibration_applied": calibration.get("applied"),
+        "capture_calibration": calibration or None,
         "capture_device": {k: device.get(k) for k in ("card", "usb_id", "model_key", "pcm", "channel_selected")} if device else None,
         "level_db": provenance.get("session_volume_db") if provenance.get("session_volume_db") is not None else record.get("level_db"),
         "stimulus_dbfs": record.get("stimulus_dbfs"),
@@ -140,6 +142,7 @@ def select_seat_takes(bundle_dir: Path, *, capture_id: str | None = None) -> Sea
         "basis": bases[key],
         "unknown_fields": [name for name, value in bases[key].items() if value is None],
         "take_ids": [take.take_id for take in takes],
+        "pose_keys": sorted(take.pose_key for take in takes),
         "omitted_takes": omitted,
         "superseded_take_ids": repeats,
         "observed_levels_db": [
