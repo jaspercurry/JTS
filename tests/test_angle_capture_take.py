@@ -536,7 +536,7 @@ def _engine_leg(monkeypatch, phase_map, specs=None, prompts=None):
             _prompt_shown_for=lambda phase, index: (prompts or {}).get(index, ac.pose_at_angle(0)),
         ),
         retention=SimpleNamespace(pending={}, enrich=lambda *args: {}, after_bank=lambda *args: None),
-        index_phase_map=phase_map, run_async=asyncio.run, specs_by_index=specs,
+        index_phase_map=phase_map, run_async=lambda coro, **kwargs: asyncio.run(coro), specs_by_index=specs,
     ), played
 
 

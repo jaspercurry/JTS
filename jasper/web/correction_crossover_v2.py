@@ -4182,15 +4182,6 @@ def _hand_released_plan_shape(plan_shape: Any) -> Any:
 
 
 def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
-    """Mint one session on the measurement mic (#2662 W2b).
-
-    **No Pi-minted per-capture result wait.** The wait #2706 put on the spec was
-    the Fc sweep's compute ceiling plus its measured overhead; with no sweep to
-    bound, the Pi publishes nothing and ``resultWaitMs`` falls back to the
-    page's own 90 s floor — the wall every banked round was measured against,
-    and 8.7 s clear of the slowest observed round (81.28 s), which did strictly
-    more work than any round runs now.
-    """
     from jasper.web import correction_crossover_v2_wired as wired
 
     return wired.open_wired_capture(spec, device=wired_device)
@@ -4313,7 +4304,8 @@ def _bind_engine_measure_leg(
 
         records.enrich, records.after_bank = _enrich, _banked
         try:
-            outcome = run_async(_measured())
+            # The capture owns playback bounds and cleanup; analysis can exceed the HTTP deadline.
+            outcome = run_async(_measured(), timeout=None)
         finally:
             records.enrich = records.after_bank = None
             _persist_execution_result(
