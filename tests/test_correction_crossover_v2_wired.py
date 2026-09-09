@@ -1751,7 +1751,7 @@ class _FakeAbortTarget:
         self.cleared += 1
 
 
-def _leg(tuning=None, half=None, phase_map=None):
+def _leg(tuning=None, half=None, phase_map=None, run_async=None):
     tuning = tuning or _LegSession()
     half = half or _LegCaptureHalf()
     class Records:
@@ -1771,7 +1771,7 @@ def _leg(tuning=None, half=None, phase_map=None):
         tuning=tuning, stimulus_capture=half, records=records,
         conductor=conductor, retention=retention,
         index_phase_map=phase_map or {1: "check", 2: "measure", 3: "cloud_measure"},
-        run_async=asyncio.run,
+        run_async=run_async or (lambda coro, **kwargs: asyncio.run(coro)),
     )
 
 
@@ -1786,6 +1786,22 @@ def test_every_phase_selects_its_program_and_graph(_held_window, phase, scope, k
     leg = _leg(tuning=tuning, phase_map={1: phase})
     assert leg(1, 1, entry=None)["answer"] == "the-engine-take"
     assert [(spec.program_phase, spec.graph_scope, spec.kind) for spec in tuning.specs] == [(phase, scope, kind)]
+
+
+def test_measurement_finishes_when_request_deadline_is_expired(_held_window):
+    caller = threading.current_thread()
+
+    def bridge(coro, *, timeout=0):
+        if threading.current_thread() is caller:
+            async def bounded():
+                return await asyncio.wait_for(coro, timeout=timeout)
+            return asyncio.run(bounded())
+        return asyncio.run(coro)
+
+    tuning = _LegSession()
+    leg = _leg(tuning=tuning, phase_map={1: "measure"}, run_async=bridge)
+    assert leg(1, 1, entry=None) == {"accepted": True, "answer": "the-engine-take"}
+    assert tuning.restores == 1
 
 
 
@@ -2142,7 +2158,7 @@ def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path, a
         stimulus_capture=half,
         index_phase_map={1: "cloud_verify"},
         specs_by_index={1: MeasureSpec(kind="candidate", graph_scope="candidate", candidate_id="candidate-fp")},
-        run_async=asyncio.run,
+        run_async=lambda coro, **kwargs: asyncio.run(coro),
         records=records, conductor=Consumer(), retention=retention,
     )
     if restore_fails:

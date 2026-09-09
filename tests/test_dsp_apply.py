@@ -30,7 +30,6 @@ from jasper.dsp_apply import (
     apply_dsp_config,
     config_file_sha256,
     same_config_file,
-    camilla_graph_mutation,
     _DSP_LOCK_OWNERSHIP,
     _dsp_apply_lock,
     _default_apply_lock_path,
@@ -43,7 +42,7 @@ from jasper.dsp_apply import (
     validate_camilla_config,
 )
 
-from ._async_wait import wait_signalled, wait_writer_lock_waiting
+from ._async_wait import wait_signalled
 
 
 def _fake_camilladsp(tmp_path: Path, *, exit_code: int = 0) -> Path:
@@ -300,6 +299,23 @@ async def test_private_admission_refuses_pending_bass_intent_for_any_source(
             pytest.fail("a source label granted recovery permission")
 
 
+async def test_reentrant_admission_refuses_pending_bass_intent(
+    tmp_path: Path,
+) -> None:
+    intent = tmp_path / "bass-intent.json"
+    lock_path = dsp_apply_lock_path(tmp_path)
+
+    async with _dsp_apply_lock(
+        lock_path, source="outer", bass_extension_intent_path=intent
+    ):
+        intent.write_text("{}\n", encoding="utf-8")
+        with pytest.raises(BassExtensionApplyPending):
+            async with _dsp_apply_lock(
+                lock_path, source="nested", bass_extension_intent_path=intent
+            ):
+                pytest.fail("lock reentry ignored the pending intent")
+
+
 async def test_apply_dsp_config_refuses_pending_bass_intent_before_load(
     tmp_path: Path,
     monkeypatch,
@@ -331,85 +347,6 @@ async def test_apply_dsp_config_refuses_pending_bass_intent_before_load(
         )
 
     assert loaded == []
-
-
-async def test_task_local_reentry_inherits_only_outer_recovery_permission(
-    tmp_path: Path,
-) -> None:
-    intent = tmp_path / "bass-intent.json"
-    intent.write_text("{}\n", encoding="utf-8")
-    lock_path = dsp_apply_lock_path(tmp_path)
-
-    async with dsp_writer_lock(
-        tmp_path,
-        source="bass_extension.recovery",
-        allow_pending_bass_extension_recovery=True,
-        bass_extension_intent_path=intent,
-    ):
-        async with camilla_graph_mutation(
-            source="camilla.reload",
-            lock_path=lock_path,
-            bass_extension_intent_path=intent,
-        ):
-            pass
-
-
-async def test_pending_intent_race_orders_ordinary_writer_before_recovery(
-    tmp_path: Path,
-    caplog,
-) -> None:
-    caplog.set_level("INFO")
-    intent = tmp_path / "bass-intent.json"
-    ordinary_entered = asyncio.Event()
-    release_ordinary = asyncio.Event()
-
-    async def ordinary() -> None:
-        async with _dsp_apply_lock(
-            dsp_apply_lock_path(tmp_path),
-            source="ordinary",
-            bass_extension_intent_path=intent,
-        ):
-            ordinary_entered.set()
-            await release_ordinary.wait()
-
-    async def publish_intent() -> None:
-        async with dsp_writer_lock(
-            tmp_path,
-            source="bass_extension.apply",
-            allow_pending_bass_extension_recovery=True,
-            bass_extension_intent_path=intent,
-        ):
-            intent.write_text("{}\n", encoding="utf-8")
-
-    first = asyncio.create_task(ordinary())
-    await wait_signalled(ordinary_entered, "ordinary writer entered", producer=first)
-    publisher = asyncio.create_task(publish_intent())
-    await wait_writer_lock_waiting(caplog, "bass_extension.apply")
-    assert not intent.exists()
-    release_ordinary.set()
-    await first
-    await publisher
-
-    with pytest.raises(BassExtensionApplyPending):
-        async with _dsp_apply_lock(
-            dsp_apply_lock_path(tmp_path),
-            source="later-ordinary",
-            bass_extension_intent_path=intent,
-        ):
-            pytest.fail("writer entered after intent publication")
-
-
-def test_recovery_permission_literal_is_owned_only_by_bass_transaction() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    owners = {
-        path.relative_to(repo).as_posix()
-        for path in (repo / "jasper").rglob("*.py")
-        if "allow_pending_bass_extension_recovery=True" in path.read_text(
-            encoding="utf-8"
-        )
-    }
-
-    assert owners == {"jasper/bass_extension/__init__.py"}
 
 
 def test_apply_lock_is_fixed_in_production_with_explicit_pytest_temp_injection(

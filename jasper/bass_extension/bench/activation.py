@@ -18,10 +18,9 @@ implements the mechanism fixed by
   ``reload()`` on **every** exit and re-prove the predecessor.
 
 The helper owns exactly ``activate -> prove -> (yield for measurement) ->
-restore``. It performs no analysis, no bundle I/O, and no persistence, and it is
-**not** ``apply_bass_extension`` — it calls no profile writer. It raises a typed
-:class:`ActivationError` on any proof or restore failure and never proceeds
-silently.
+restore``. It performs no analysis, no bundle I/O, and no persistence, and it
+calls no profile writer. It raises a typed :class:`ActivationError` on any
+proof or restore failure and never proceeds silently.
 """
 
 from __future__ import annotations

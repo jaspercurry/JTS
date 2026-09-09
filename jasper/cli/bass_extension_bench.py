@@ -17,7 +17,7 @@ operator runs before the supervised session, and the DEFAULT posture: live
 execution additionally requires the explicit ``--live`` flag.
 
 This CLI never wires the pure evidence producer into a runtime path, never
-persists a profile, and calls no ``apply_bass_extension`` writer.
+persists a profile, and calls no profile writer.
 """
 
 from __future__ import annotations

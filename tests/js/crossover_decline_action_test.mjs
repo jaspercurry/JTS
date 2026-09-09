@@ -2,19 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// #2641, the client half. The server minted "Keep current sound" as a
-// decision, and renderActions() branched on `href` FIRST — so the decision
-// rendered as an anchor, the click reloaded the page, and the household
-// landed back on the same decision screen. Measured live: five clicks, no
-// state-changing request in the network log.
-//
-// The invariant this pins is the one that makes "every minted action is
-// machine-actionable" true for the BROWSER as well as for a driver reading
-// the envelope: when an action carries an endpoint, that endpoint is what the
-// control performs; `href` is only a presentation hint. An action with an
-// href and no endpoint is still a navigation, which is what keeps
-// "Continue to Room correction" a link.
-
 import assert from "node:assert/strict";
 import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
 import { CROSSOVER_IDS, installFixedDocument } from "./_dom.mjs";
@@ -25,13 +12,14 @@ globalThis.clearTimeout = () => {};
 
 const posted = [];
 let nextEnvelope = {
-  verdict_text: "", steps: [], nudges: [], capture: null,
-  next_action: null, alternate_actions: [],
+  verdict_text: "", steps: [], nudges: [], capture: { status: "complete" },
+  next_action: { label: "Start", endpoint: "/sound/speaker/crossover/v2/session" },
+  alternate_actions: [{ label: "Start full", endpoint: "/sound/speaker/crossover/v2/session" }],
 };
 globalThis.__getJSON = async () => nextEnvelope;
 globalThis.__postJSON = async (url, body) => {
   posted.push({ url, body });
-  return { status: "ok" };
+  return nextEnvelope;
 };
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
@@ -64,19 +52,20 @@ const DECLINE = {
   body: { expected_candidate_fingerprint: "fp-1" },
   href: "/sound/speaker/crossover/",
 };
-const ROOM = {
-  id: "room",
-  label: "Continue to Room correction",
-  href: "/sound/room/",
+// An href-only navigation out of this flow — no endpoint could perform it.
+const HUB = {
+  id: "sound_hub",
+  label: "Back to Sound",
+  href: "/sound/",
 };
 
 render({
   verdict_text: "Review", steps: [], nudges: [], capture: null,
   next_action: null,
-  alternate_actions: [DECLINE, ROOM],
+  alternate_actions: [DECLINE, HUB],
 });
 
-const [decline, room] = rowChildren();
+const [decline, hub] = rowChildren();
 
 // --- (a) endpoint wins: the decision is a button, not a link --------------
 check(decline.tag === "button", "(a) an action with an endpoint renders a button");
@@ -98,14 +87,19 @@ check(
   posted[0].body.expected_candidate_fingerprint === "fp-1",
   "(b) the candidate guard rides the body",
 );
+check(rowChildren().length === 2, "both start options return after declining");
+check(
+  rowChildren().every((button) => button.disabled === false),
+  "the completed capture does not leave start disabled after declining",
+);
 
 // --- (c) href-only stays a navigation -------------------------------------
 // The other half of the rule. A cross-subsystem link has no endpoint that
 // could perform it, and turning it into a dead button would be the mirror of
 // the bug above.
-check(room.tag === "a", "(c) an href-only action still renders an anchor");
+check(hub.tag === "a", "(c) an href-only action still renders an anchor");
 check(
-  room.href === "/sound/room/",
+  hub.href === "/sound/",
   "(c) and keeps pointing where the envelope said",
 );
 

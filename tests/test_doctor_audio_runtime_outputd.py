@@ -428,7 +428,7 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     remedy = audio_runtime_outputd._transport_route_remedy()
 
     assert PASSIVE_ONLY_DAC_LABEL in remedy
-    assert "/sound/setup/" in remedy
+    assert "/sound/speaker/" in remedy
     assert "audio-hardware-reconcile" not in remedy
     # Passive is not a free remedy: it sends full-range into every assigned
     # output, which on an actively-wired cabinet reaches a bare tweeter. An
@@ -581,6 +581,14 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
     r = audio_runtime_outputd.check_outputd_service()
     assert r.status == "ok", r.detail
     assert r.reason == ""
+    for name in (
+        "dac_a_xruns",
+        "dac_b_xruns",
+        "group_recoveries",
+        "delay_baseline_relatches",
+        "reprime_alignment_failures",
+    ):
+        assert f"dual_{name}=0" in r.detail
 
 
 def test_outputd_service_fails_on_fake_backend(monkeypatch):

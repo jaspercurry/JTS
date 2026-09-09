@@ -47,7 +47,7 @@ CAPTURE_PROTOCOL_VERSION = 3
 
 
 # The format the measurement analysis demands of every capture
-# (`jasper/web/correction_setup.py`: REQUIRED_SAMPLE_RATE, MAX_WAV_BODY_BYTES).
+# (`jasper/web/correction_runtime.py`: MAX_WAV_BODY_BYTES caps the upload).
 REQUIRED_SAMPLE_RATE_HZ = 48000
 REQUIRED_CHANNELS = 1
 

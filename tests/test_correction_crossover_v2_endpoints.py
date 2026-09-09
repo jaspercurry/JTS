@@ -101,7 +101,7 @@ def _isolated_state(tmp_path, monkeypatch):
 
 
 def _bg_run_async(coro, *, timeout=None):
-    """Mimic correction_capture._run_async for the host recovery helpers: run the
+    """Mimic correction_runtime.run_async for the host recovery helpers: run the
     coroutine to completion and return its result (each on a fresh loop — the
     session-volume drains are self-contained, no cross-loop context manager)."""
     return asyncio.run(coro)
@@ -4315,18 +4315,15 @@ def test_end_to_end_the_done_screen_offers_the_way_back_only_with_a_prior_candid
 
     first_ever = _envelope_for(None)
     assert first_ever["screen"] == "done"
-    assert first_ever["next_action"]["id"] == "room"
-    assert not any(
-        a["id"] == "republish_previous" for a in first_ever["alternate_actions"]
-    )
+    assert first_ever["next_action"] is None
+    assert first_ever["alternate_actions"] == []
 
+    # With a prior candidate the way back is the only offer, so it is the
+    # promoted primary rather than an alternate.
     with_prior = _envelope_for("f" * 64)
     assert with_prior["screen"] == "done"
-    assert with_prior["next_action"]["id"] == "room"
-    way_back = next(
-        a for a in with_prior["alternate_actions"]
-        if a["id"] == "republish_previous"
-    )
+    way_back = with_prior["next_action"]
+    assert way_back["id"] == "republish_previous"
     assert way_back["endpoint"] == "/sound/speaker/crossover/v2/republish"
     assert way_back["body"] == {"fingerprint": "f" * 64}
 
@@ -4742,7 +4739,7 @@ def _seed_household_mic(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_CORRECTION_HOUSEHOLD_MIC_PATH", str(household_path))
 
     from jasper.audio_measurement.calibration import store_calibration
-    from jasper.correction.household_mic import (
+    from jasper.audio_measurement.household_mic import (
         household_mic_from_calibration,
         write_household_mic,
     )
@@ -4933,10 +4930,12 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     assert "calibration_device_identity_mismatch" in caplog.text
 
     # The household record was never re-persisted against the wrong device.
-    from jasper.correction.household_mic import read_household_mic
-    from jasper.web.correction_capture import _household_mic_path
+    from jasper.audio_measurement.household_mic import (
+        household_mic_path,
+        read_household_mic,
+    )
 
-    saved = read_household_mic(path=_household_mic_path())
+    saved = read_household_mic(path=household_mic_path())
     assert saved is not None
     assert saved.model_key == "minidsp_umik2"
 
@@ -5097,7 +5096,7 @@ _VERDICTS_WITHOUT_NUMBERS = {
         ),
         # Audit item 4i: the household remedy for an undeclared class needs the
         # ACTUAL declared class beside the reason, to tell "unknown" (an action
-        # exists at /sound/setup/) from a real class's own prior (there is none).
+        # exists at /sound/speaker/) from a real class's own prior (there is none).
         pytest.param(
             {
                 "woofer": {
@@ -5669,7 +5668,7 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 # --- W6 hardware run 3, finding F: bind_production_play's config_dir SSOT -------
 
 
-def test_web_binding_shares_graph_profile_and_writer_directory(monkeypatch, tmp_path):
+def test_web_binding_uses_saved_profile_when_playback_is_composed(monkeypatch, tmp_path):
     from jasper.active_speaker.crossover_v2 import composition, door
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
@@ -5683,7 +5682,8 @@ def test_web_binding_shares_graph_profile_and_writer_directory(monkeypatch, tmp_
         return "composer"
     monkeypatch.setattr(door, "bind_measurement_graph", bind_graph)
     monkeypatch.setattr(composition, "bind_program_composer", bind_compose)
-    monkeypatch.setattr(v2host, "_applied_profile_now", lambda: {"profile": "applied"})
+    monkeypatch.setattr(v2host, "_applied_profile_now", lambda: None)
+    monkeypatch.setattr(v2host, "load_applied_baseline_profile_state", lambda: {"profile": "applied"})
     protection = {"woofer": (), "tweeter": ()}
     play = v2host.bind_production_play(
         program_for_phase=lambda phase: phase, camilla_factory=lambda: None,

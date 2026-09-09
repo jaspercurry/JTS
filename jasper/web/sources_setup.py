@@ -45,8 +45,6 @@ URL surface (after nginx strips /sources/):
 from __future__ import annotations
 
 import logging
-import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -57,17 +55,13 @@ from ..source_intent import request_source_intent, source_intent_enabled
 from ._common import (
     JsonBodyError,
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
     read_json_object,
     send_html_response,
     send_json_response,
-    toggle_html,
-    guard_read_request,
-    guard_mutating_request,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page, toggle_html
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +147,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
         "</div>"
     )
     state_error = (
-        '<div class="info-card info-card--danger" id="sources-state-error" '
+        '<div class="banner banner--danger" id="sources-state-error" '
         'hidden role="alert">Source settings could not be read. '
         "Controls are paused to avoid showing a false state. Run jasper-doctor "
         "or re-run install.sh, then retry.</div>"
@@ -228,7 +222,24 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     )
 
 
-def _get_index(handler: BaseHTTPRequestHandler) -> None:
+class _Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
+        logger.info("%s - %s", self.address_string(), fmt % args)
+
+    def _read_json(self) -> dict[str, Any]:
+        try:
+            return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
+        except JsonBodyError:
+            return {}
+
+    def do_GET(self) -> None:  # noqa: N802
+        dispatch_get(self, _GET_ROUTES)
+
+    def do_POST(self) -> None:  # noqa: N802
+        dispatch_post(self, _POST_ROUTES, guard="header")
+
+
+def _get_index(handler: _Handler) -> None:
     ctx = begin_request(handler)
     send_html_response(
         handler,
@@ -236,7 +247,7 @@ def _get_index(handler: BaseHTTPRequestHandler) -> None:
     )
 
 
-def _get_state(handler: BaseHTTPRequestHandler) -> None:
+def _get_state(handler: _Handler) -> None:
     try:
         send_json_response(handler, source_status.read_source_status())
     except Exception as e:  # noqa: BLE001
@@ -244,7 +255,8 @@ def _get_state(handler: BaseHTTPRequestHandler) -> None:
         send_json_response(handler, {"error": str(e)}, status=502)
 
 
-def _post_set(handler: BaseHTTPRequestHandler, body: dict[str, Any]) -> None:
+def _post_set(handler: _Handler) -> None:
+    body = handler._read_json()
     source = str(body.get("source") or "")
     if source not in VALID_SOURCES:
         send_json_response(handler, {"error": f"unknown source {source!r}"}, status=400)
@@ -328,39 +340,7 @@ _POST_ROUTES = {"/set": _post_set}
 
 
 def _make_handler() -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-            logger.info("%s - %s", self.address_string(), fmt % args)
-
-        def _read_json(self) -> dict[str, Any]:
-            try:
-                return read_json_object(self, max_bytes=_JSON_BODY_LIMIT)
-            except JsonBodyError:
-                return {}
-
-        def do_GET(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
-
-        def do_POST(self) -> None:  # noqa: N802
-            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_mutating_request(self):
-                reject_csrf(self)
-                return
-            body = self._read_json()
-            handler_fn(self, body)
-
-    return Handler
+    return _Handler
 
 
 def make_server(target) -> ThreadingHTTPServer:

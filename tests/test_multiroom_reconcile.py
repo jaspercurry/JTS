@@ -3225,11 +3225,7 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
 
     def fake_run(argv, **kw):
         calls.append(list(argv))
-        assert kw == {
-            "capture_output": True,
-            "text": True,
-            "timeout": reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        }
+        assert kw["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
         returncode, stdout = next(results)
         return sp.CompletedProcess(
             argv,

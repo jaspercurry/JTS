@@ -36,8 +36,6 @@ URL surface (after nginx strips /airplay/):
 from __future__ import annotations
 
 import logging
-import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -48,17 +46,14 @@ from ..env_file import read_env_file, write_env_file
 from ..log_event import log_event
 from ._common import (
     begin_request,
-    canonical_banner,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
-    read_form,
-    reject_csrf,
+    dispatch_get,
+    dispatch_post,
+    form_guarded,
     send_html_response,
     send_see_other,
-    guard_read_request,
-    guard_mutating_request,
 )
+from .chrome import canonical_banner, canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
 
@@ -186,10 +181,6 @@ def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
-    # do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-    # (exact path -> handler callable). The tables stay local to this
-    # closure (rather than module-level) so the handlers can close over
-    # `cfg`.
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
         ctx = begin_request(handler)
         send_html_response(handler, _index_html(
@@ -198,7 +189,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             status_msg=ctx["flash"],
         ))
 
-    def _post_save(handler: BaseHTTPRequestHandler, form: dict[str, str]) -> None:
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
         mode, err = _apply_save(form)
         if err is not None:
             send_see_other(handler, "./", flash=err)
@@ -228,28 +222,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _GET_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            if not guard_read_request(self):
-                return
-            handler_fn(self)
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            handler_fn = _POST_ROUTES.get(path)
-            if handler_fn is None:
-                self.send_error(HTTPStatus.NOT_FOUND)
-                return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
-                return
-            handler_fn(self, form)
+            dispatch_post(self, _POST_ROUTES, guard="per-body")
 
     return Handler
 

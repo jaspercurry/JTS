@@ -1012,19 +1012,19 @@ def test_flags_and_batch_defaults_select_the_same_graph_scope(tmp_path, scope):
     assert specs_from_args(batch_args)[0].graph_scope == scope
 
 
-@pytest.mark.parametrize("state", ["available", "missing_record", "missing_calibration"])
-def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, state):
+@pytest.mark.parametrize("available", [True, False])
+def test_cli_carries_only_a_resolved_stored_microphone_reference(monkeypatch, available):
     from types import SimpleNamespace
-    from jasper.correction import household_mic
+    from jasper.audio_measurement import household_mic
 
     household = SimpleNamespace(model_key="umik-2", provider="manual_upload")
-    monkeypatch.setattr(household_mic, "read_household_mic", lambda: None if state == "missing_record" else household)
-    monkeypatch.setattr(
-        household_mic, "resolve_household_mic_calibration",
-        lambda record: None if state == "missing_calibration" else SimpleNamespace(calibration_id="stored-calibration"),
+    resolved = (
+        (household, SimpleNamespace(calibration_id="stored-calibration"))
+        if available else None
     )
+    monkeypatch.setattr(household_mic, "resolved_household_mic", lambda: resolved)
     setup = measure._wired_setup_reference()
-    if state == "available":
+    if available:
         assert setup == {"calibration": {
             "mode": "stored", "calibration_id": "stored-calibration", "model": "umik-2",
         }}

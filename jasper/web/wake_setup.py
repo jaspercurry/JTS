@@ -81,8 +81,6 @@ import importlib.util
 import json
 import logging
 import os
-import urllib.parse
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -95,24 +93,26 @@ from ..env_file import read_env_file
 from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,
+    RouteFn,
     begin_request,
-    canonical_header,
-    canonical_page,
     csrf_field_html,
+    dispatch_get,
+    dispatch_post,
+    form_guarded,
     forward_control_token_headers,
+    header_guarded,
+    json_body,
     proxy_get,
     proxy_post,
     read_json_body,
-    read_form,
-    reject_csrf,
+    resolve_samples,
     restart_voice_daemon,
+    route_path,
     send_html_response,
     send_proxy_json,
     send_see_other,
-    toggle_html,
-    guard_read_request,
-    guard_mutating_request,
 )
+from .chrome import canonical_header, canonical_page, toggle_html
 
 logger = logging.getLogger(__name__)
 
@@ -743,311 +743,266 @@ _VALID_PROFILES = valid_profile_ids()
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    # The POST guard varies per route, so each body declares its own.
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        state = _load_state(cfg["state_path"])
+        ctx = begin_request(handler)
+        send_html_response(handler, _index_html(
+            state, ctx["csrf_token"], status_msg=ctx["flash"],
+        ))
+
+    def _get_detection(handler: BaseHTTPRequestHandler) -> None:
+        status, body = proxy_get(
+            "/aec", control_base=cfg["control_base"], timeout=5.0,
+        )
+        send_proxy_json(handler, body, status=status)
+
+    _GET_ROUTES = {"/": _get_index, "/detection.json": _get_detection}
+
+    @header_guarded
+    @json_body
+    def _post_layer(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        # The prefix route reaches this body through the same bare
+        # handler_fn(handler) shape the table holds, so the leg name is
+        # re-derived here; do_POST has already rejected an unknown one.
+        layer = route_path(handler.path)[len("/layer/"):]
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            send_proxy_json(
+                handler,
+                b'{"error":"enabled must be a boolean"}',
+                status=400,
+            )
+            return
+        log_event(
+            logger,
+            "wake.layer",
+            layer=layer,
+            enabled=enabled,
+            client=handler.address_string(),
+        )
+        status, resp = _apply_layer(
+            layer, enabled, control_base=cfg["control_base"],
+        )
+        send_proxy_json(handler, resp, status=status)
+
+    @header_guarded
+    @json_body
+    def _post_profile(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        profile = body.get("profile")
+        if not isinstance(profile, str) or profile not in _VALID_PROFILES:
+            send_proxy_json(
+                handler,
+                b'{"error":"profile is not supported"}',
+                status=400,
+            )
+            return
+        log_event(
+            logger,
+            "wake.profile",
+            profile=profile,
+            client=handler.address_string(),
+        )
+        status, resp = _apply_profile(
+            profile, control_base=cfg["control_base"],
+        )
+        send_proxy_json(handler, resp, status=status)
+
+    @header_guarded
+    @json_body
+    def _post_sensitivity(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        value = body.get("value")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            send_proxy_json(
+                handler,
+                b'{"error":"value must be a number"}',
+                status=400,
+            )
+            return
+        if not 0.0 <= value <= 1.0:
+            send_proxy_json(
+                handler,
+                b'{"error":"value must be between 0 and 1"}',
+                status=400,
+            )
+            return
+        log_event(
+            logger,
+            "wake.sensitivity",
+            value=f"{value:.2f}",
+            client=handler.address_string(),
+        )
+        status, resp = _apply_sensitivity(
+            value, control_base=cfg["control_base"],
+        )
+        send_proxy_json(handler, resp, status=status)
+
+    @header_guarded
+    @json_body
+    def _post_usb_mic(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            send_proxy_json(
+                handler,
+                b'{"error":"enabled must be a boolean"}',
+                status=400,
+            )
+            return
+        log_event(
+            logger,
+            "wake.usb_mic",
+            enabled=enabled,
+            client=handler.address_string(),
+        )
+        status, resp = _apply_usb_mic(
+            enabled,
+            control_base=cfg["control_base"],
+            headers=forward_control_token_headers(handler),
+        )
+        send_proxy_json(handler, resp, status=status)
+
+    @header_guarded
+    @json_body
+    def _post_usb_mic_leg(
+        handler: BaseHTTPRequestHandler, body: dict[str, Any],
+    ) -> None:
+        leg = body.get("leg")
+        if not isinstance(leg, str) or not leg.strip():
+            send_proxy_json(
+                handler,
+                b'{"error":"leg must be a non-empty string"}',
+                status=400,
+            )
+            return
+        leg = leg.strip()
+        log_event(
+            logger,
+            "wake.usb_mic_leg",
+            leg=leg,
+            client=handler.address_string(),
+        )
+        status, resp = _apply_usb_mic_leg(
+            leg,
+            control_base=cfg["control_base"],
+            headers=forward_control_token_headers(handler),
+        )
+        send_proxy_json(handler, resp, status=status)
+
+    @header_guarded
+    def _post_firmware_update(handler: BaseHTTPRequestHandler) -> None:
+        status, body = _start_firmware_update(
+            control_base=cfg["control_base"],
+            headers=forward_control_token_headers(handler),
+        )
+        send_proxy_json(handler, body, status=status)
+
+    @header_guarded
+    def _post_commission(handler: BaseHTTPRequestHandler) -> None:
+        log_event(logger, "wake.commission", client=handler.address_string())
+        status, body = _start_commission(
+            control_base=cfg["control_base"],
+            headers=forward_control_token_headers(handler),
+        )
+        send_proxy_json(handler, body, status=status)
+
+    @form_guarded
+    def _post_save(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        current = _load_state(cfg["state_path"])
+        new, err = _apply_save(form, current)
+        if err is not None:
+            send_see_other(handler, "./", flash=err)
+            return
+        try:
+            # _apply_save always stamps JASPER_WAKE_MODEL on the success
+            # path (errors are guarded above via `err`), so `new` is never
+            # empty. Only update that key under the shared lock: the
+            # sensitivity slider writes JASPER_WAKE_THRESHOLD to this same
+            # file from jasper-control, and stale form state must not erase
+            # a concurrent threshold save.
+            new = locked_update_env_file(
+                cfg["state_path"],
+                {"JASPER_WAKE_MODEL": new["JASPER_WAKE_MODEL"]},
+                mode=0o644,
+            )
+        except OSError as e:
+            logger.exception("could not write wake-model env file")
+            send_see_other(handler, "./", flash=f"Could not save: {e}")
+            return
+        restart_voice_daemon()
+        picked = new.get("JASPER_WAKE_MODEL", "")
+        # Parity with the wake.layer/profile/sensitivity sub-actions above —
+        # the primary model change was the one mutation this page didn't log.
+        # The model name is not a secret.
+        log_event(
+            logger,
+            "wake.model",
+            model=picked,
+            client=handler.address_string(),
+        )
+        entry = wake_models.by_model(picked)
+        label = entry.label if entry else picked
+        threshold_str = new.get("JASPER_WAKE_THRESHOLD", "")
+        extra = (
+            f" (sensitivity {threshold_str})"
+            if threshold_str else ""
+        )
+        send_see_other(
+            handler, "./",
+            flash=f"Saved. Voice daemon restarting on {label}{extra}.",
+        )
+
+    _POST_ROUTES = {
+        "/profile": _post_profile,
+        "/sensitivity": _post_sensitivity,
+        "/usb-mic": _post_usb_mic,
+        "/usb-mic-leg": _post_usb_mic_leg,
+        "/firmware/update": _post_firmware_update,
+        "/commission": _post_commission,
+        "/save": _post_save,
+    }
+
+    @resolve_samples({"/layer/raw": _post_layer})
+    def _resolve_layer(path: str) -> RouteFn | None:
+        """`/layer/<name>` is prefix-matched, so it rides the seam's
+        resolve hook rather than an exact table key."""
+        if path.startswith("/layer/") and path[len("/layer/"):] in _VALID_LAYERS:
+            return _post_layer
+        return None
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                state = _load_state(cfg["state_path"])
-                ctx = begin_request(self)
-                send_html_response(self, _index_html(
-                    state, ctx["csrf_token"], status_msg=ctx["flash"],
-                ))
-                return
-            if path == "/detection.json":
-                if not guard_read_request(self):
-                    return
-                status, body = proxy_get(
-                    "/aec",
-                    control_base=cfg["control_base"], timeout=5.0,
+        def _read_json(self) -> dict[str, Any] | None:
+            """The adapter `@json_body` calls: the parsed body, or None
+            after answering the client the same 400 the route bodies used
+            to send by hand."""
+            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
+            if err is not None:
+                send_proxy_json(
+                    self, json.dumps({"error": err}).encode(), status=400,
                 )
-                send_proxy_json(self, body, status=status)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
+                return None
+            return body
+
+        def do_GET(self) -> None:  # noqa: N802
+            dispatch_get(self, _GET_ROUTES)
 
         def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            # Form-bodied save uses the form-token CSRF check; JSON-
-            # bodied state-set requests use the X-CSRF-Token header.
-            if path == "/save":
-                form = read_form(self)
-                if not guard_mutating_request(self, form):
-                    reject_csrf(self)
-                    return
-                self._handle_save(form)
-                return
-            if path.startswith("/layer/"):
-                layer = path[len("/layer/"):]
-                if layer not in _VALID_LAYERS:
-                    self.send_error(HTTPStatus.NOT_FOUND)
-                    return
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                self._handle_layer(layer)
-                return
-            if path == "/profile":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                self._handle_profile()
-                return
-            if path == "/usb-mic":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                self._handle_usb_mic()
-                return
-            if path == "/usb-mic-leg":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                self._handle_usb_mic_leg()
-                return
-            if path == "/sensitivity":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                self._handle_sensitivity()
-                return
-            if path == "/firmware/update":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                status, body = _start_firmware_update(
-                    control_base=cfg["control_base"],
-                    headers=forward_control_token_headers(self),
-                )
-                send_proxy_json(self, body, status=status)
-                return
-            if path == "/commission":
-                if not guard_mutating_request(self):
-                    reject_csrf(self)
-                    return
-                log_event(
-                    logger,
-                    "wake.commission",
-                    client=self.address_string(),
-                )
-                status, body = _start_commission(
-                    control_base=cfg["control_base"],
-                    headers=forward_control_token_headers(self),
-                )
-                send_proxy_json(self, body, status=status)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def _handle_layer(self, layer: str) -> None:
-            if layer not in _VALID_LAYERS:
-                send_proxy_json(
-                    self,
-                    json.dumps({"error": f"unknown layer {layer!r}"}).encode(),
-                    status=400,
-                )
-                return
-            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
-            if err is not None:
-                send_proxy_json(
-                    self,
-                    json.dumps({"error": err}).encode(),
-                    status=400,
-                )
-                return
-            enabled = body.get("enabled") if body is not None else None
-            if not isinstance(enabled, bool):
-                send_proxy_json(
-                    self,
-                    b'{"error":"enabled must be a boolean"}',
-                    status=400,
-                )
-                return
-            log_event(
-                logger,
-                "wake.layer",
-                layer=layer,
-                enabled=enabled,
-                client=self.address_string(),
-            )
-            status, resp = _apply_layer(
-                layer, enabled, control_base=cfg["control_base"],
-            )
-            send_proxy_json(self, resp, status=status)
-
-        def _handle_profile(self) -> None:
-            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
-            if err is not None:
-                send_proxy_json(
-                    self,
-                    json.dumps({"error": err}).encode(),
-                    status=400,
-                )
-                return
-            profile = body.get("profile") if body is not None else None
-            if not isinstance(profile, str) or profile not in _VALID_PROFILES:
-                send_proxy_json(
-                    self,
-                    b'{"error":"profile is not supported"}',
-                    status=400,
-                )
-                return
-            log_event(
-                logger,
-                "wake.profile",
-                profile=profile,
-                client=self.address_string(),
-            )
-            status, resp = _apply_profile(
-                profile, control_base=cfg["control_base"],
-            )
-            send_proxy_json(self, resp, status=status)
-
-        def _handle_sensitivity(self) -> None:
-            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
-            if err is not None:
-                send_proxy_json(
-                    self,
-                    json.dumps({"error": err}).encode(),
-                    status=400,
-                )
-                return
-            value = body.get("value") if body is not None else None
-            try:
-                value = float(value)
-            except (TypeError, ValueError):
-                send_proxy_json(
-                    self,
-                    b'{"error":"value must be a number"}',
-                    status=400,
-                )
-                return
-            if not 0.0 <= value <= 1.0:
-                send_proxy_json(
-                    self,
-                    b'{"error":"value must be between 0 and 1"}',
-                    status=400,
-                )
-                return
-            log_event(
-                logger,
-                "wake.sensitivity",
-                value=f"{value:.2f}",
-                client=self.address_string(),
-            )
-            status, resp = _apply_sensitivity(
-                value, control_base=cfg["control_base"],
-            )
-            send_proxy_json(self, resp, status=status)
-
-        def _handle_usb_mic(self) -> None:
-            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
-            if err is not None:
-                send_proxy_json(
-                    self,
-                    json.dumps({"error": err}).encode(),
-                    status=400,
-                )
-                return
-            enabled = body.get("enabled") if body is not None else None
-            if not isinstance(enabled, bool):
-                send_proxy_json(
-                    self,
-                    b'{"error":"enabled must be a boolean"}',
-                    status=400,
-                )
-                return
-            log_event(
-                logger,
-                "wake.usb_mic",
-                enabled=enabled,
-                client=self.address_string(),
-            )
-            status, resp = _apply_usb_mic(
-                enabled,
-                control_base=cfg["control_base"],
-                headers=forward_control_token_headers(self),
-            )
-            send_proxy_json(self, resp, status=status)
-
-        def _handle_usb_mic_leg(self) -> None:
-            body, err = read_json_body(self, max_bytes=_LAYER_BODY_LIMIT)
-            if err is not None:
-                send_proxy_json(
-                    self,
-                    json.dumps({"error": err}).encode(),
-                    status=400,
-                )
-                return
-            leg = body.get("leg") if body is not None else None
-            if not isinstance(leg, str) or not leg.strip():
-                send_proxy_json(
-                    self,
-                    b'{"error":"leg must be a non-empty string"}',
-                    status=400,
-                )
-                return
-            leg = leg.strip()
-            log_event(
-                logger,
-                "wake.usb_mic_leg",
-                leg=leg,
-                client=self.address_string(),
-            )
-            status, resp = _apply_usb_mic_leg(
-                leg,
-                control_base=cfg["control_base"],
-                headers=forward_control_token_headers(self),
-            )
-            send_proxy_json(self, resp, status=status)
-
-        def _handle_save(self, form: dict[str, str]) -> None:
-            current = _load_state(cfg["state_path"])
-            new, err = _apply_save(form, current)
-            if err is not None:
-                send_see_other(self, "./", flash=err)
-                return
-            try:
-                # _apply_save always stamps JASPER_WAKE_MODEL on the success
-                # path (errors are guarded above via `err`), so `new` is never
-                # empty. Only update that key under the shared lock: the
-                # sensitivity slider writes JASPER_WAKE_THRESHOLD to this same
-                # file from jasper-control, and stale form state must not erase
-                # a concurrent threshold save.
-                new = locked_update_env_file(
-                    cfg["state_path"],
-                    {"JASPER_WAKE_MODEL": new["JASPER_WAKE_MODEL"]},
-                    mode=0o644,
-                )
-            except OSError as e:
-                logger.exception("could not write wake-model env file")
-                send_see_other(self, "./", flash=f"Could not save: {e}")
-                return
-            restart_voice_daemon()
-            picked = new.get("JASPER_WAKE_MODEL", "")
-            # Parity with the wake.layer/profile/sensitivity sub-actions above —
-            # the primary model change was the one mutation this page didn't log.
-            # The model name is not a secret.
-            log_event(
-                logger,
-                "wake.model",
-                model=picked,
-                client=self.address_string(),
-            )
-            entry = wake_models.by_model(picked)
-            label = entry.label if entry else picked
-            threshold_str = new.get("JASPER_WAKE_THRESHOLD", "")
-            extra = (
-                f" (sensitivity {threshold_str})"
-                if threshold_str else ""
-            )
-            send_see_other(
-                self, "./",
-                flash=f"Saved. Voice daemon restarting on {label}{extra}.",
+            dispatch_post(
+                self, _POST_ROUTES, guard="per-body", resolve=_resolve_layer,
             )
 
     return Handler

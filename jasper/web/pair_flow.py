@@ -22,11 +22,8 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     roster-first through the same rooms helper used by bond/swap/trim so a
     foreign bond claimant cannot poison pair measurement.
     """
-    from .rooms_setup import (
-        discover_speakers_cached,
-        resolve_bond_peer,
-        self_addresses,
-    )
+    from .rooms_peers import discover_speakers_cached, self_addresses
+    from .rooms_setup import resolve_bond_peer
     from ..multiroom.state import read_grouping_state
 
     own = read_grouping_state()

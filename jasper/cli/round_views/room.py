@@ -29,9 +29,9 @@ from typing import Any
 import numpy as np
 
 from jasper.active_speaker.crossover_v2.room_views import (
-    ROOM_FLOOR_HZ,
     Ceiling,
     SeatTake,
+    band_masks,
     room_ceiling,
     room_median,
     room_persistence,
@@ -52,11 +52,6 @@ from ._common import (
 )
 
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
-
-#: The answer's spread summary bands; the last runs to the ceiling.
-SPREAD_BANDS_HZ: tuple[tuple[float, float | None], ...] = (
-    (ROOM_FLOOR_HZ, 60.0), (60.0, 120.0), (120.0, None),
-)
 
 #: A feature this fraction of positions shares is what the answer counts.
 PERSISTENT_FRACTION = 0.7
@@ -111,14 +106,11 @@ def _seat_view(
 
 
 def _band_means(payload: dict[str, Any]) -> dict[str, float | None]:
-    freqs = np.asarray(payload["freqs_hz"])
     spread = np.asarray(payload["spread_db"])
-    out: dict[str, float | None] = {}
-    for lo, hi in SPREAD_BANDS_HZ:
-        top = payload["ceiling_hz"] if hi is None else min(hi, payload["ceiling_hz"])
-        mask = (freqs >= lo) & (freqs <= top)
-        out[f"{lo:g}-{top:g}"] = float(np.mean(spread[mask])) if np.any(mask) else None
-    return out
+    return {
+        f"{lo:g}-{hi:g}": float(np.mean(spread[mask])) if np.any(mask) else None
+        for lo, hi, mask in band_masks(payload["freqs_hz"], payload["ceiling_hz"])
+    }
 
 
 def _median_answer(args: argparse.Namespace, payload: dict[str, Any], written: Path | None) -> int:

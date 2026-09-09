@@ -27,7 +27,6 @@ mod config;
 mod host_clock;
 mod impulse_tap;
 mod lane_resampler;
-mod loudness;
 mod mixer;
 mod playout;
 mod source_notify;

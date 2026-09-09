@@ -59,6 +59,7 @@ from . import (
     inventory,
     repeat,
     room,
+    room_grade,
     seats,
     sweeps,
 )
@@ -99,7 +100,7 @@ __all__ = [
 _FAMILIES = (
     grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
     frequency, distortion, classify_features, findings, close_reference,
-    boundary_prior, delay, room, inventory,
+    boundary_prior, delay, room, room_grade, inventory,
 )
 
 

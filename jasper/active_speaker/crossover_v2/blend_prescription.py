@@ -77,6 +77,7 @@ __all__ = [
     "PositionalSupport",
     "blend_prescription_from_mapping",
     "blend_prescription_to_candidate_fields",
+    "composed_grid",
     "find_prohibited_keys",
     "max_q_for_gain",
     "positional_support",
@@ -261,11 +262,7 @@ _PRESCRIPTION_FIELDS = frozenset({
 _FILTER_FIELDS = frozenset({"biquad_type", "freq", "q", "gain"})
 
 #: Keys no proposal may contain at any depth: a model reaching past "numbers
-#: into a fixed shape" toward config, coefficients, or execution. Adopted from
-#: ``calibration_agent.response._PROHIBITED_KEYS`` and copied rather than
-#: imported, because importing it would pull an OpenAI client into this leaf;
-#: ``tests/test_crossover_v2_blend_prescription.py`` pins the room set as a
-#: subset so the two cannot drift. Public because
+#: into a fixed shape" toward config, coefficients, or execution. Public because
 #: :mod:`.driver_prescription` gates the same class of attempt and a second
 #: hand-written blocklist is how one falls behind the other.
 PROHIBITED_PRESCRIPTION_KEYS = frozenset({
@@ -829,6 +826,30 @@ def _check_bounds(
     return "boost" if boosts else "cut"
 
 
+#: Points in a composed check's own log sweep, when it is the denser axis.
+_COMPOSED_GRID_POINTS = 512
+
+
+def composed_grid(
+    band_hz: tuple[float, float], freqs_hz: Sequence[float] | np.ndarray | None
+) -> np.ndarray:
+    """The axis a composed cascade is read on, for every prescription door.
+
+    The DENSER of the evidence's own grid inside the band and a log sweep over
+    it, never whichever happens to be supplied — a coarse axis steps over a
+    narrow filter's peak (measured: up to 0.43 dB under-read at the eight-bin
+    floor), which would make a composed bound a property of the evidence
+    document rather than of the filters.
+    """
+    lo, hi = band_hz
+    sweep = np.geomspace(lo, hi, _COMPOSED_GRID_POINTS)
+    if freqs_hz is None or len(freqs_hz) == 0:
+        return sweep
+    supplied = np.asarray(freqs_hz, dtype=np.float64)
+    inside = supplied[(supplied >= lo) & (supplied <= hi)]
+    return inside if inside.size > sweep.size else sweep
+
+
 def _check_composed(
     filters: tuple[dict[str, Any], ...],
     band_hz: tuple[float, float],
@@ -840,23 +861,10 @@ def _check_composed(
     ``chain_response``, the ONE biquad evaluator here, so this gate and the
     emitter's headroom charge cannot disagree about what CamillaDSP realizes.
     There is no composed CUT arm (ADR-0207): a cut spends no headroom.
-
-    Evaluated on the DENSER of the packet's own grid and a dense log sweep over
-    the region, never on whichever happens to be supplied — a coarse axis steps
-    over a narrow filter's peak (measured: up to 0.43 dB under-read at the
-    eight-bin floor), which would make the bound a property of the evidence
-    document rather than of the filters.
     """
     if not filters:
         return
-    lo, hi = band_hz
-    fallback = np.geomspace(lo, hi, 512)
-    grid = fallback
-    if freqs_hz:
-        candidate = np.asarray(list(freqs_hz), dtype=np.float64)
-        inside = candidate[(candidate >= lo) & (candidate <= hi)]
-        if inside.size > fallback.size:
-            grid = inside
+    grid = composed_grid(band_hz, freqs_hz)
     composed = 20.0 * np.log10(
         np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
     )

@@ -1901,6 +1901,10 @@ def test_a_prescription_may_not_reach_past_numbers_into_a_fixed_shape(packet, pa
     It must outrank the unknown-field check, or a prescriber reaching for
     ``volume_db`` is told it made a typo.
     """
+    assert {
+        "camilladsp_config", "execute", "fir_coefficients",
+        "set_volume", "shell", "volume_db",
+    } <= bp.PROHIBITED_PRESCRIPTION_KEYS
     document = _document([_cut()], packet)
     document.update(payload)
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
@@ -2412,14 +2416,6 @@ def test_the_gate_cannot_accept_what_the_shipped_reader_refuses(packet):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=0.1)], packet))
     assert excinfo.value.reason == "boost_route_unavailable"
-
-
-def test_the_prohibited_set_stays_a_superset_of_the_room_advisors(packet):
-    """Copied rather than imported, so drift is pinned rather than prevented."""
-    from jasper.calibration_agent import response as room_response
-
-    ours = set(prescription_response_format()["prohibited_keys"])
-    assert room_response._PROHIBITED_KEYS <= ours
 
 
 # --------------------------------------------------------------------------- #

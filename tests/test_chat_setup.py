@@ -14,8 +14,6 @@ import subprocess
 import threading
 import urllib.error
 import urllib.request
-from email.message import Message
-from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -31,6 +29,7 @@ from jasper.conversation_history import (
 )
 from jasper.web import chat_setup
 from tests._wake_loop import wake_loop_for_tests
+from tests._web_test_helpers import make_real_handler
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CHAT_VIEWS_TEST = _ROOT / "tests" / "js" / "chat_views_test.mjs"
@@ -131,45 +130,60 @@ def _csrf_headers(base: str) -> dict[str, str]:
     }
 
 
+_VALID_CSRF_TOKEN = "c" * 43
+
+
+def _capture_post(body: bytes | None, content_length: str | None = None):
+    """A CSRF-valid POST /capture driven on the real handler, no socket."""
+    return make_real_handler(
+        chat_setup._make_handler(),
+        "/capture",
+        body=body,
+        content_length=content_length,
+        content_type="application/json",
+        headers={
+            "Host": "jts.local",
+            "Cookie": f"jts_csrf={_VALID_CSRF_TOKEN}",
+            "X-CSRF-Token": _VALID_CSRF_TOKEN,
+        },
+    )
+
+
 @pytest.mark.parametrize(
-    ("body", "content_length", "expected"),
+    ("body", "content_length", "expected_error"),
     (
-        (b"", None, ({}, None)),
-        (b"{}", "not-a-number", (None, "invalid content length")),
-        (b"", "-1", (None, "request too large")),
-        (b"", str(chat_setup.MAX_JSON_BYTES + 1), (None, "request too large")),
-        (b"{", "1", (None, "invalid JSON body")),
-        (b"{}", "3", (None, "invalid JSON body")),
-        (b"[]", "2", (None, "JSON body must be an object")),
+        (None, None, "enabled must be true or false"),
+        (b"{}", "not-a-number", "invalid content length"),
+        (b"", "-1", "request too large"),
+        (b"", str(chat_setup.MAX_JSON_BYTES + 1), "request too large"),
+        (b"{", "1", "invalid JSON body"),
+        (b"{}", "3", "invalid JSON body"),
+        (b"[]", "2", "JSON body must be an object"),
     ),
 )
-def test_chat_json_adapter_preserves_public_error_messages(
+def test_chat_capture_preserves_public_body_error_messages(
     body,
     content_length,
-    expected,
+    expected_error,
 ):
-    handler_cls = chat_setup._make_handler()
-    handler = handler_cls.__new__(handler_cls)
-    handler.headers = Message()
-    if content_length is not None:
-        handler.headers["Content-Length"] = content_length
-    handler.rfile = BytesIO(body)
+    handler, captured = _capture_post(body, content_length)
 
-    assert handler._read_json() == expected
+    handler.do_POST()
+
+    assert captured["status"] == 400
+    assert json.loads(handler.wfile.getvalue()) == {"error": expected_error}
 
 
-def test_chat_json_adapter_leaves_stream_oserror_distinct():
+def test_chat_capture_leaves_stream_oserror_distinct():
     class BrokenReader:
         def read(self, _length):
             raise OSError("socket reset")
 
-    handler_cls = chat_setup._make_handler()
-    handler = handler_cls.__new__(handler_cls)
-    handler.headers = {"Content-Length": "1"}
+    handler, _ = _capture_post(b"x", "1")
     handler.rfile = BrokenReader()
 
     with pytest.raises(OSError, match="socket reset"):
-        handler._read_json()
+        handler.do_POST()
 
 
 @pytest.fixture

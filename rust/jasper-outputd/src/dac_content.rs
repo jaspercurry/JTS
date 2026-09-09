@@ -26,8 +26,8 @@
 //!
 //! ## Starvation is SILENCE (owner ruling D4)
 //!
-//! A period the lane cannot fill is emitted as silence and counted
-//! (`DacContentMetrics::starved_periods`); there is no last-good replay and
+//! A period the lane cannot fill is emitted as silence (one journal line
+//! per process); there is no last-good replay and
 //! no fallback source. The lane IS the content source on an armed box, so
 //! there is nothing to fall back TO — the direct content PCM this lane once
 //! fell back to went away with the snd-aloop route (ADR-0100), which left
@@ -165,7 +165,6 @@ impl ChannelPick {
 struct PeriodAssembler {
     staging: Vec<u8>,
     period_bytes: usize,
-    overflow_dropped_periods: u64,
 }
 
 impl PeriodAssembler {
@@ -173,7 +172,6 @@ impl PeriodAssembler {
         Self {
             staging: Vec::with_capacity(period_bytes * MAX_STAGED_PERIODS),
             period_bytes,
-            overflow_dropped_periods: 0,
         }
     }
 
@@ -188,7 +186,6 @@ impl PeriodAssembler {
             let drop_periods = excess.div_ceil(self.period_bytes);
             let drop_bytes = (drop_periods * self.period_bytes).min(self.staging.len());
             self.staging.drain(..drop_bytes);
-            self.overflow_dropped_periods += drop_periods as u64;
         }
     }
 
@@ -239,23 +236,12 @@ pub struct DacContentMetrics {
     ///
     /// It is now a per-period fact rather than a damped mode: under D4 there
     /// is no mode to be in, so a poll landing on a starved period honestly
-    /// reports false. `starved_periods` carries the cumulative truth.
+    /// reports false.
     pub serving_fifo: bool,
     /// Periods the lane filled with real audio.
     pub fifo_periods: u64,
-    /// Periods the lane could not fill and emitted as SILENCE (D4). The
-    /// counter is the whole visibility budget for an outage: there is no
-    /// fallback source and no replay, so this is what climbing means.
-    pub starved_periods: u64,
-    /// Periods currently staged (gauge; healthy steady state ≈ 1–2).
-    /// FIFO arm only — 0 on the ring, whose queue is the mapping itself.
-    pub staged_periods: u64,
-    /// Oldest-period drops from staging overflow (producer outpacing
-    /// the DAC — should stay 0 with a sane producer). FIFO arm only.
-    pub overflow_dropped_periods: u64,
     /// FIFO arm only: the ring attaches once at startup or refuses loudly.
     pub open_failures: u64,
-    pub read_failures: u64,
 }
 
 /// The lane's raw-PCM FIFO transport — snapclient `--player file:<FIFO>`.
@@ -268,7 +254,6 @@ struct FifoReader {
     assembler: PeriodAssembler,
     read_buf: Vec<u8>,
     open_failures: u64,
-    read_failures: u64,
 }
 
 impl FifoReader {
@@ -281,7 +266,6 @@ impl FifoReader {
             assembler: PeriodAssembler::new(period_bytes),
             read_buf: vec![0u8; period_bytes],
             open_failures: 0,
-            read_failures: 0,
         }
     }
 
@@ -362,7 +346,6 @@ impl FifoReader {
                         "event=outputd.dac_content.read_failed fifo={} detail={err}",
                         self.path,
                     );
-                    self.read_failures += 1;
                     unsafe { libc::close(fd) };
                     self.fd = None; // reopen next period
                     return;
@@ -397,7 +380,6 @@ pub struct DacContentSource {
     reader: Reader,
     channel: ChannelPick,
     served_periods: u64,
-    starved_periods: u64,
     last_period_served: bool,
     logged_first_starvation: bool,
 }
@@ -435,7 +417,6 @@ impl DacContentSource {
             reader,
             channel,
             served_periods: 0,
-            starved_periods: 0,
             last_period_served: false,
             logged_first_starvation: false,
         }
@@ -463,19 +444,15 @@ impl DacContentSource {
         self.last_period_served = served;
         if served {
             self.served_periods += 1;
-        } else {
-            self.starved_periods += 1;
-            if !self.logged_first_starvation {
-                // Once per process: the counter carries the rest, so a
-                // chronically dry producer cannot spam the journal.
-                eprintln!(
-                    "event=outputd.dac_content.starved transport={} action=emit_silence \
-                     detail=D4: the return lane has no fallback source; see \
-                     starved_periods in /state",
-                    self.transport(),
-                );
-                self.logged_first_starvation = true;
-            }
+        } else if !self.logged_first_starvation {
+            // Once per process, so a chronically dry producer cannot spam
+            // the journal.
+            eprintln!(
+                "event=outputd.dac_content.starved transport={} action=emit_silence \
+                 detail=D4: the return lane has no fallback source",
+                self.transport(),
+            );
+            self.logged_first_starvation = true;
         }
         self.channel.apply(out);
         Ok(())
@@ -489,24 +466,14 @@ impl DacContentSource {
     }
 
     pub fn metrics(&self) -> DacContentMetrics {
-        let (staged_periods, overflow_dropped_periods, open_failures, read_failures) =
-            match &self.reader {
-                Reader::Fifo(fifo) => (
-                    fifo.assembler.staged_periods() as u64,
-                    fifo.assembler.overflow_dropped_periods,
-                    fifo.open_failures,
-                    fifo.read_failures,
-                ),
-                Reader::Ring(_) => (0, 0, 0, 0),
-            };
+        let open_failures = match &self.reader {
+            Reader::Fifo(fifo) => fifo.open_failures,
+            Reader::Ring(_) => 0,
+        };
         DacContentMetrics {
             serving_fifo: self.last_period_served,
             fifo_periods: self.served_periods,
-            starved_periods: self.starved_periods,
-            staged_periods,
-            overflow_dropped_periods,
             open_failures,
-            read_failures,
         }
     }
 }
@@ -580,7 +547,6 @@ mod tests {
             a.push_bytes(&le_bytes(&[v, v, v, v]));
         }
         assert_eq!(a.staged_periods(), MAX_STAGED_PERIODS);
-        assert_eq!(a.overflow_dropped_periods, 2);
         let mut out = [0 as ProgramSample; 4];
         assert!(a.pop_period(&mut out));
         assert_eq!(out.to_vec(), wv(&[2, 2, 2, 2])); // periods 0 and 1 dropped
@@ -658,7 +624,6 @@ mod tests {
         assert_eq!(out, vec![0 as ProgramSample; 8]);
         let m = src.metrics();
         assert!(!m.serving_fifo);
-        assert_eq!(m.starved_periods, 1);
         assert_eq!(m.fifo_periods, 0);
     }
 
@@ -734,7 +699,6 @@ mod tests {
         }
         let m = src.metrics();
         assert!(!m.serving_fifo);
-        assert_eq!(m.starved_periods, 3);
         assert_eq!(m.fifo_periods, 0);
 
         // Producer connects: the lane serves the very next period — there is
@@ -780,7 +744,7 @@ mod tests {
             vec![0 as ProgramSample; 8],
             "starvation must be silence"
         );
-        assert!(src.metrics().starved_periods >= 1);
+        assert!(!src.metrics().serving_fifo);
     }
 
     #[test]
@@ -800,7 +764,6 @@ mod tests {
             "non-blocking contract violated: {:?}",
             start.elapsed()
         );
-        assert_eq!(src.metrics().read_failures, 0);
     }
 
     #[test]
@@ -817,7 +780,6 @@ mod tests {
         }
         let m = src.metrics();
         assert_eq!(m.open_failures, 3); // one retry per period, cheap
-        assert_eq!(m.starved_periods, 3);
         assert!(!m.serving_fifo);
     }
 
@@ -902,11 +864,8 @@ mod tests {
 
         let m = src.metrics();
         assert_eq!(m.fifo_periods, 2);
-        assert_eq!(m.starved_periods, 0);
         assert!(m.serving_fifo);
-        // FIFO-only gauges read zero on the ring — its queue is the mapping.
-        assert_eq!(m.staged_periods, 0);
-        assert_eq!(m.overflow_dropped_periods, 0);
+        // FIFO-only counter reads zero on the ring.
         assert_eq!(m.open_failures, 0);
     }
 
@@ -935,7 +894,6 @@ mod tests {
             );
             let m = src.metrics();
             assert!(!m.serving_fifo);
-            assert_eq!(m.starved_periods, i);
             assert_eq!(m.fifo_periods, 1);
         }
     }
