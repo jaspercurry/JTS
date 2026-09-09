@@ -620,7 +620,7 @@ class _StormTrajectory:
 
 
 class AirPlayHealthSampler:
-    """Background sampler for recent AirPlay health.
+    """Collector for recent AirPlay health.
 
     Tests inject probe functions and call _tick() directly. Production
     drives it via sample_once(), composed into AudioHealthSampler's loop.
@@ -728,9 +728,7 @@ class AirPlayHealthSampler:
         self._maintenance_suppressed_until: float | None = None
 
     def sample_once(self) -> None:
-        """Take one sample without starting this collector's own thread.
-
-        The speaker-wide audio-health sampler composes this AirPlay-specific
+        """The speaker-wide audio-health sampler composes this AirPlay-specific
         collector and calls it from the one existing monitoring loop.
         """
         self._tick()

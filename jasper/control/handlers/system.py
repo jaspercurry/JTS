@@ -194,12 +194,7 @@ class SystemRoutes(ControlHandlerMixin):
                 return asyncio.run(state_aggregate._outputd_status())
             return state_aggregate._outputd_section(cached())
 
-        # Not published itself (no browser reader); feeds
-        # active_speaker_output_safety and usb_latency below.
-        airplay_health = _safe(
-            "airplay health", _read_airplay_health,
-            {"status": "unknown", "reason": "AirPlay health sampler failed"},
-        )
+        airplay_health = _safe("airplay health", _read_airplay_health)
         outputd_status = _safe("outputd status", _read_outputd_status)
         audio_health = _safe(
             "audio health",
