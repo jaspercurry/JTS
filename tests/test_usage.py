@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1175,7 +1176,7 @@ async def test_buffered_household_refresh_is_read_only_and_keeps_last_good_spend
         await store.aclose()
 
 
-async def test_buffered_start_recovers_history_without_rebilling_crash_interval(tmp_path):
+async def test_buffered_start_recovers_history_without_rebilling_crash_interval(tmp_path, monkeypatch):
     db = str(tmp_path / "usage.db")
     _record_cost(db, 0.25)
     disk = UsageStore(db)
@@ -1184,16 +1185,33 @@ async def test_buffered_start_recovers_history_without_rebilling_crash_interval(
     lock = sqlite3.connect(db, isolation_level=None)
     lock.execute("BEGIN IMMEDIATE")
     store = await VoiceUsageStore.start(db)
+    refreshing, release = threading.Event(), threading.Event()
+    snapshot = UsageStore._snapshot
+
+    def delayed_snapshot(writer, excluded):
+        closed_at = writer._conn.execute(
+            "SELECT closed_at FROM connection_intervals"
+        ).fetchone()[0]
+        if closed_at is not None:
+            refreshing.set()
+            assert release.wait(2)
+        return snapshot(writer, excluded)
+
+    monkeypatch.setattr(UsageStore, "_snapshot", delayed_snapshot)
     try:
         BillableActivityMeter(store, "grok", 3600)
         assert store.write_degraded
         sid = store.open_session("openai")
         cost = store.close_session(sid, 1000, 1000)
         lock.close()
+        await _wait_usage(refreshing.is_set)
+        assert store.write_degraded
+        release.set()
         await _wait_usage(lambda: not store.write_degraded)
         assert store.spend_last_24h_usd() == pytest.approx(0.25 + cost)
         assert store.session_count_today_utc() == 2
     finally:
+        release.set()
         lock.close()
         await store.aclose()
 
