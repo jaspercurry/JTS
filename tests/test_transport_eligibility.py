@@ -699,6 +699,56 @@ def test_a_converged_or_unreadable_graph_claims_no_refusal(monkeypatch, kwargs):
     assert state["converge_refused"] is None
 
 
+@pytest.mark.parametrize("leader", [False, True])
+@pytest.mark.parametrize(
+    "fault", [None, "missing", "capture_device", "capture_format", "capture_channels",
+              "playback_device", "playback_format", "playback_channels", "pipe"],
+)
+def test_grouped_active_endpoint_checks_the_complete_route(tmp_path, monkeypatch, leader, fault):
+    import yaml
+
+    from jasper.fanin import ring_health
+    from jasper.fanin_coupling import resolve_ring_wire
+    from jasper.multiroom.reconcile import SNAPFIFO
+
+    topology = _active_topology("stereo", "active_2_way")
+    monkeypatch.setattr(ring_health, "load_topology_for_wire", lambda: topology)
+    wire = resolve_ring_wire(topology)
+    endpoint = {
+        "capture": {"type": "Alsa", "device": "jts_ring_grouping", "format": "S16_LE", "channels": 2},
+        "playback": {"type": "Alsa", "device": "jts_ring_active_playback",
+                     "format": wire.sample_format, "channels": wire.ring_active_channels},
+    }
+    if fault not in (None, "missing", "pipe"):
+        lane, field = fault.split("_")
+        endpoint[lane][field] = 99 if field == "channels" else "wrong"
+    crossover = tmp_path / "crossover.yml"
+    crossover.write_text(yaml.safe_dump({"devices": endpoint}))
+    crossover_state = tmp_path / "crossover-state.yml"
+    crossover_state.write_text(yaml.safe_dump({"config_path": str(crossover)}))
+    monkeypatch.setenv("JASPER_CAMILLA2_STATEFILE", str(crossover_state))
+    primary = crossover
+    if leader:
+        primary = tmp_path / "primary.yml"
+        primary.write_text(yaml.safe_dump({"devices": {
+            "capture": {"type": "Alsa", "device": "jts_ring_capture",
+                        "format": wire.sample_format, "channels": wire.ring_a_channels},
+            "playback": {"type": "File", "filename": "/dev/null" if fault == "pipe" else SNAPFIFO,
+                         "format": "S16_LE", "channels": 2},
+        }}))
+    if fault == "missing":
+        crossover.unlink()
+    statefile = tmp_path / "primary-state.yml"
+    statefile.write_text(yaml.safe_dump({"config_path": str(primary)}))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    state = transport_eligibility.snapshot(topology, _ARMED)
+    # Missing primary evidence is unknown; a leader with no second stage is broken.
+    refused = fault is not None and not (not leader and fault in ("missing", "pipe"))
+    assert bool(state["converge_refused"]) is refused
+    assert state["parked"] is False
+
+
 @pytest.mark.parametrize(
     "topology,env",
     [
