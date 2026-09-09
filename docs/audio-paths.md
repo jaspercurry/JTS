@@ -27,7 +27,7 @@ single Apple, dual Apple, and DAC8x profiles the same TTS semantics.
 ```
 MUSIC chain (gets CamillaDSP processing)
     renderers / correction sweeps → private fan-in lanes
-              → hw:Loopback,0,0..4 → snd-aloop → hw:Loopback,1,0..4
+              → hw:Loopback,0,0..2 / 0,4 → snd-aloop → hw:Loopback,1,0..2 / 1,4
               → jasper-fanin → Ring A (/dev/shm/jts-ring/program.ring)
               → jasper-camilla (jts_ring_capture; main_volume + filters)
               → Ring B (/dev/shm/jts-ring/content.ring), or the ACTIVE ring
