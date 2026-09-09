@@ -940,8 +940,8 @@ pub enum LaneSource {
     /// No transport at all: the lane opens nothing and renders silence. The USB
     /// lane with `JASPER_FANIN_USB_DIRECT` off — it keeps its roster label (mux
     /// still addresses it by SELECT/MUTE) but has no device to read. Distinct
-    /// from the `direct{}` block's `state:"absent"`, which is an ARMED direct
-    /// lane whose gadget is currently unplugged.
+    /// from an armed direct lane whose gadget is unplugged
+    /// (`direct.present=false`).
     Disabled,
 }
 

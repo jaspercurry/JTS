@@ -11,7 +11,7 @@ event=` show what changed, when, and from which device. This test enforces that
 convention so a NEW wizard (a future DAC / mic / LLM-provider setup page) can't
 silently ship a restart-without-audit handler — the gap that #561/#572/#574
 closed by hand across the existing wizards, and that this guard itself caught in
-`voice_setup` (`_handle_save`/`_handle_clear`/`_handle_spend_cap` restarted
+`voice_setup` (`_post_save`/`_post_clear_credentials`/`_post_spend_cap` restarted
 jasper-voice with no audit line).
 
 Detection is AST-based and deliberately COARSE: a `_handle_*` / `_post_*` method

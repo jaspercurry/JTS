@@ -182,11 +182,9 @@ class SystemRoutes(ControlHandlerMixin):
         ha_status = state_aggregate._ha_status(self._ha_status_cache.snapshot)
 
         def _read_airplay_health() -> Any:
-            if self._audio_health_sampler is not None:
-                return self._audio_health_sampler.airplay_snapshot()
-            if self._airplay_health_sampler is None:
+            if self._audio_health_sampler is None:
                 return None
-            return self._airplay_health_sampler.snapshot()
+            return self._audio_health_sampler.airplay_snapshot()
 
         def _read_outputd_status() -> Any:
             # The sampler's cached observation when there is one, so this
@@ -196,10 +194,7 @@ class SystemRoutes(ControlHandlerMixin):
                 return asyncio.run(state_aggregate._outputd_status())
             return state_aggregate._outputd_section(cached())
 
-        airplay_health = _safe(
-            "airplay health", _read_airplay_health,
-            {"status": "unknown", "reason": "AirPlay health sampler failed"},
-        )
+        airplay_health = _safe("airplay health", _read_airplay_health)
         outputd_status = _safe("outputd status", _read_outputd_status)
         audio_health = _safe(
             "audio health",
@@ -217,7 +212,6 @@ class SystemRoutes(ControlHandlerMixin):
             "metrics": (
                 self._sampler.snapshot() if self._sampler is not None else None
             ),
-            "airplay_health": airplay_health,
             "audio_health": audio_health,
             "active_speaker_output_safety": (
                 state_aggregate.active_speaker_output_safety_snapshot(
@@ -474,7 +468,8 @@ class SystemRoutes(ControlHandlerMixin):
     def _post_system_action(self) -> None:
         # Broker refusal answers 502 with a `code`; broker ok answers 202 —
         # the job is enqueued, and /state observes what actually came back.
-        # reboot/poweroff answer 202 too, without a broker verb.
+        # reboot/poweroff answer 202 too: the broker spawns them detached, so
+        # there is never a verdict to wait for.
         #
         # Risk model: LAN-local + browser-origin guard
         # (consistent with the wizards). Anyone already on the
@@ -537,12 +532,15 @@ class SystemRoutes(ControlHandlerMixin):
             client=self.address_string(),
         )
         if action in ("reboot", "poweroff"):
-            try:
-                subprocess.Popen(["systemctl", action])
-            except (OSError, subprocess.SubprocessError) as e:
-                self._send_json(
-                    {"error": f"systemctl invocation failed: {e}"},
-                    status=502,
+            result = _server.restart_broker.manage_units(
+                verb=action, reason=action,
+            )
+            if not result.get("ok"):
+                self._send_refused(
+                    error=f"The {action} could not be scheduled.",
+                    code="system_restart_failed",
+                    action=action,
+                    failed_verb=action,
                 )
                 return
         # Start-after-stop semantics for core services, as one batch: every

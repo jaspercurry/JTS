@@ -39,12 +39,6 @@ _JASPER = _REPO / "jasper"
 # endorsement — migrate entries to atomic_write_text when touching them
 # (preserving each writer's published mode), EXCEPT where noted.
 _ALLOWLIST = {
-    # Deliberately different — KEEP. Fail-soft: a real parent-dir fsync
-    # fault logs a WARNING and the write still succeeds (pinned by
-    # test_wifi_guardian_persistence's fsync-failure test), because
-    # degraded rename-durability beats failing the wizard's connect.
-    # atomic_write_text(durable=True) raises on those faults instead.
-    "jasper/net/wifi_guardian_persistence.py",
     # Plain burn-down candidate (Path.replace hand-rolls).
     "jasper/audio_measurement/playback.py",
     # Deliberately different — KEEP. Neither site RENDERS the bytes it

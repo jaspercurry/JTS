@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
+from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...service_units import unit_unstable
+from ...service_units import unit_unstable, unit_uptime_sec
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
 from ... import outputd_failure_reconcile_state
@@ -44,8 +45,15 @@ REASON_VOICE_UNIT_NO_PROVIDER = "voice_unit_no_provider_configured"
 
 REASON_SUPERVISOR_ISSUES = "supervisor_issues"
 REASON_CONTROL_UNAVAILABLE = "supervisor_snapshots_control_unavailable"
+REASON_SUPERVISOR_COUNTERS_RESET = "supervisor_counters_reset"
+
+# A jasper-control restart wipes every supervisor counter with no marker
+# of its own; within this window afterward, a quiet row says so instead
+# of reading as settled history. A nonzero counter gets no such grace.
+_RESET_WINDOW_SEC = 300.0
 
 REASON_SNAPSHOT_UNAVAILABLE = "supply_voltage_snapshot_unavailable"
+REASON_SUPPLY_VOLTAGE_SAMPLER_STALE = "supply_voltage_sampler_stale"
 REASON_THROTTLED_BITS_UNREPORTED = "supply_voltage_throttled_bits_unreported"
 REASON_UNDERVOLTAGE_NOW = "supply_voltage_undervoltage_now"
 REASON_UNDERVOLTAGE_HISTORY = "supply_voltage_undervoltage_history"
@@ -270,7 +278,9 @@ def _int_field(snapshot: dict[str, Any], key: str) -> int:
         return 0
 
 
-def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
+def _classify_supervisor_snapshots(
+    resilience: dict[str, Any], *, control_uptime_sec: float | None = None,
+) -> CheckResult:
     """Classify ``/state.resilience`` supervisor snapshots, so a
     non-converging repair loop is visible during one-shot diagnostics too.
     """
@@ -334,6 +344,13 @@ def _classify_supervisor_snapshots(resilience: dict[str, Any]) -> CheckResult:
             "; ".join(issues),
             reason=REASON_SUPERVISOR_ISSUES,
         )
+    if control_uptime_sec is not None and control_uptime_sec < _RESET_WINDOW_SEC:
+        return CheckResult(
+            "supervisor runtime snapshots", "ok",
+            f"counters started {control_uptime_sec:.0f}s ago at the jasper-control "
+            "restart — history before it is not visible",
+            reason=REASON_SUPERVISOR_COUNTERS_RESET,
+        )
     return CheckResult(
         "supervisor runtime snapshots",
         "ok",
@@ -356,7 +373,11 @@ def check_supervisor_runtime_snapshots() -> CheckResult:
             "jasper-control /state unavailable",
             reason=REASON_CONTROL_UNAVAILABLE,
         )
-    return _classify_supervisor_snapshots(resilience)
+    # jasper-control's own uptime, already in the doctor's unit-state batch.
+    control_uptime_sec = unit_uptime_sec(evidence.unit_state(_CONTROL_UNIT))
+    return _classify_supervisor_snapshots(
+        resilience, control_uptime_sec=control_uptime_sec,
+    )
 
 
 # vcgencmd get_throttled bit layout (Pi firmware): raw bit 0 = under-voltage
@@ -370,9 +391,7 @@ _UNDER_VOLTAGE_HISTORY_BIT = 0x1
 
 
 def _read_system_metrics_current() -> dict[str, Any] | None:
-    return _nested_dict(
-        evidence.control_system_snapshot().payload, "metrics", "current",
-    )
+    return evidence.system_metrics_current()
 
 
 @doctor_check()
@@ -384,6 +403,17 @@ def check_supply_voltage() -> CheckResult:
     name = "Supply voltage"
     current = _read_system_metrics_current()
     if current is None:
+        metrics = _nested_dict(evidence.control_system_snapshot().payload, "metrics")
+        sampled_at = metrics.get("last_sample_at") if metrics else None
+        if metrics is not None:
+            age = (
+                "warming up" if sampled_at is None
+                else f"{time.time() - sampled_at:.0f}s old"
+            )
+            return CheckResult(
+                name, "warn", f"jasper-control sampler stale ({age})",
+                reason=REASON_SUPPLY_VOLTAGE_SAMPLER_STALE,
+            )
         return CheckResult(
             name, "skipped", "jasper-control /system/snapshot unavailable",
             reason=REASON_SNAPSHOT_UNAVAILABLE,

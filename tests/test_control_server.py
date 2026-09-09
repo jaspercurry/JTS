@@ -758,6 +758,9 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
         def service_states_snapshot(self):
             return {}
 
+        def pressure_snapshot(self):
+            return {}
+
     monkeypatch.setattr(flight_recorder, "install", lambda *a, **k: False)
     monkeypatch.setattr(system_metrics, "SystemSampler", _NoopSampler)
     monkeypatch.setattr(audio_health, "AudioHealthSampler", _NoopSampler)

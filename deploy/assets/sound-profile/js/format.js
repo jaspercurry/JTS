@@ -6,13 +6,11 @@
 //
 // Leaf helpers: no page records, no DOM.
 
+import { fmtFreq } from '/assets/shared/js/frequency-scale.js';
+
 function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
 function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
 function fmtDb(v) { v = Number(v) || 0; return (v > 0 ? '+' : '') + v.toFixed(1); }
-function fmtFreq(v) {
-  v = Number(v) || 0;
-  return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + ' kHz' : Math.round(v) + ' Hz';
-}
 function fmtFreqShort(v) {
   v = Number(v) || 0;
   return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k' : String(Math.round(v));

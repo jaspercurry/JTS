@@ -89,11 +89,13 @@ def test_durable_write_fsyncs_file_and_parent(tmp_path, monkeypatch):
     assert calls == ["chmod", "fsync", "replace", "fsync"]
 
 
-def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
+def test_post_publish_directory_fsync_failure_is_soft(
     tmp_path,
     monkeypatch,
     caplog,
 ):
+    """Content fsync (pre-rename) still raises on failure; the directory
+    fsync after publish is fail-soft — the file is already published."""
     path = tmp_path / "boot-config.txt"
     fsync_calls = 0
 
@@ -105,11 +107,12 @@ def test_post_publish_directory_fsync_failure_does_not_claim_cleanup_failed(
 
     monkeypatch.setattr(os, "fsync", fail_directory_fsync)
 
-    with pytest.raises(OSError):
+    with caplog.at_level("WARNING"):
         atomic_write_text(path, "published\n", durable=True)
 
     assert path.read_text(encoding="utf-8") == "published\n"
     assert list(tmp_path.iterdir()) == [path]
+    assert "event=atomic_io.post_publish_dir_fsync_failed" in caplog.text
     assert "event=atomic_io.temp_cleanup_failed" not in caplog.text
 
 

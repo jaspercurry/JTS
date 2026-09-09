@@ -23,9 +23,9 @@
 //! `audio_io.py` speaks it unchanged — the reconciler only flips the
 //! socket path per grouping role. The wire layer (command vocabulary +
 //! `read_command` parser) and the server half (accept loop, client
-//! ceiling, socket counters, the queue hand-off rule) live ONCE in the
-//! shared `jasper-tts-protocol` crate — the twins structurally cannot
-//! drift when the protocol grows. Outputd interprets
+//! ceiling, socket counters, the per-client read loop, the queue hand-off
+//! rule) live ONCE in the shared `jasper-tts-protocol` crate — the twins
+//! structurally cannot drift when the protocol grows. Outputd interprets
 //! `VOLUME_CONTEXT` with a post-DSP mix stage: it honors mute and live
 //! canonical-volume changes while structurally zeroing Camilla's downstream
 //! compensation. `PREPARE_ASSISTANT` carries the turn-start context atomically;
@@ -67,8 +67,8 @@ use crate::types::{SegmentKind, SAMPLE_RATE};
 use jasper_daemon::json::json_string;
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{
-    is_frame_timeout, read_command_deadlined, try_enqueue_command, QueuedTtsCommand, TtsCommand,
-    TtsServerCounters, TTS_FRAME_DEADLINE,
+    serve_client, QueuedTtsCommand, TtsCommand, TtsCommandSink, TtsServerCounters,
+    TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -225,21 +225,18 @@ pub fn spawn_tts_server(
     metrics: TtsMetrics,
 ) -> Result<()> {
     let slots = metrics.counters.slots().clone();
+    let sink = TtsCommandSink {
+        daemon: "outputd",
+        tx,
+        epoch,
+        counters: metrics.counters.clone(),
+    };
     jasper_tts_protocol::serve(
         "outputd",
         &path,
         slots,
         |line| eprintln!("{line}"),
-        move |stream| {
-            handle_tts_client(
-                stream,
-                tx.clone(),
-                flush_tx.clone(),
-                Arc::clone(&epoch),
-                metrics.clone(),
-                TTS_FRAME_DEADLINE,
-            )
-        },
+        move |stream| handle_tts_client(stream, &sink, &flush_tx, &metrics, TTS_FRAME_DEADLINE),
     )?;
     eprintln!("event=outputd.tts_socket.listening path={}", path.display());
     Ok(())
@@ -247,51 +244,21 @@ pub fn spawn_tts_server(
 
 fn handle_tts_client(
     stream: UnixStream,
-    tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<QueuedFlush>,
-    epoch: Arc<AtomicU64>,
-    metrics: TtsMetrics,
+    sink: &TtsCommandSink,
+    flush_tx: &SyncSender<QueuedFlush>,
+    metrics: &TtsMetrics,
     frame_deadline: Duration,
 ) {
-    let mut reader = BufReader::new(stream);
-    loop {
-        match read_command_deadlined(&mut reader, frame_deadline) {
-            Ok(Some(TtsCommand::Close)) | Ok(None) => return,
-            Ok(Some(TtsCommand::FlushSync)) => {
-                if !queue_flush(&mut reader, &flush_tx, &epoch, &metrics) {
-                    return;
-                }
-            }
-            Ok(Some(command)) => {
-                metrics.requests.fetch_add(1, Ordering::Relaxed);
-                let current_epoch = epoch.load(Ordering::SeqCst);
-                if !try_enqueue_command(
-                    "outputd",
-                    &tx,
-                    QueuedTtsCommand {
-                        epoch: current_epoch,
-                        command,
-                    },
-                    &metrics.counters,
-                    |line| eprintln!("{line}"),
-                ) {
-                    return;
-                }
-            }
-            Err(e) if is_frame_timeout(&e) => {
-                metrics.counters.mark_frame_timeout();
-                eprintln!(
-                    "event=outputd.tts_socket.frame_timeout deadline_s={}",
-                    frame_deadline.as_secs()
-                );
-                return;
-            }
-            Err(e) => {
-                eprintln!("event=outputd.tts_socket.protocol_error detail={e}");
-                return;
-            }
-        }
-    }
+    serve_client(
+        sink,
+        stream,
+        frame_deadline,
+        |line| eprintln!("{line}"),
+        || {
+            metrics.requests.fetch_add(1, Ordering::Relaxed);
+        },
+        |reader| queue_flush(reader, flush_tx, &sink.epoch, metrics),
+    );
 }
 
 fn queue_flush(
@@ -566,8 +533,6 @@ impl TtsBridge {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
-
     use crate::types::ProgramSample;
 
     /// One S16 sample at the program spine's scale. The TTS WIRE stays S16
@@ -1016,34 +981,5 @@ mod tests {
             sub_lsb, wide,
             "a quarter-LSB offset must reach outputd's mix, not round away",
         );
-    }
-
-    /// A client that announces a payload and then stops writing is dropped
-    /// and counted, so its reader thread cannot be parked forever.
-    #[test]
-    fn tts_client_stalled_mid_frame_is_disconnected_and_counted() {
-        let (tx, _rx, flush_tx, _flush_rx, metrics, epoch) =
-            tts_channels(DEFAULT_MAX_PENDING_FRAMES);
-        let (mut client, server) = UnixStream::pair().unwrap();
-        let handle = {
-            let metrics = metrics.clone();
-            thread::spawn(move || {
-                handle_tts_client(
-                    server,
-                    tx,
-                    flush_tx,
-                    epoch,
-                    metrics,
-                    Duration::from_millis(20),
-                );
-            })
-        };
-
-        client.write_all(b"AUDIO 1000\n").unwrap();
-        client.flush().unwrap();
-        handle.join().unwrap();
-
-        assert_eq!(metrics.counters.frame_timeouts(), 1);
-        drop(client);
     }
 }

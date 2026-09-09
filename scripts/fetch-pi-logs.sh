@@ -284,6 +284,48 @@ journalctl -b 0 -k -p warning..alert --no-pager --output=short-iso 2>/dev/null
 true
 REMOTE
 
+# Live daemon truth: the control daemon's /state plus each audio daemon's raw
+# STATUS reply. The raw sockets are captured beside /state because they survive
+# a dead jasper-control and because /state drops outputd's
+# chip_ref_writer.recent_writes.
+fetch_remote_bash "audio-runtime" "txt" <<'REMOTE'
+set +e
+JASPER_PYTHON=/opt/jasper/.venv/bin/python
+echo "== jasper-control /state =="
+curl -fsS --max-time 10 http://127.0.0.1:8780/state 2>&1
+echo
+for sock in /run/jasper-fanin/control.sock /run/jasper-outputd/control.sock; do
+    echo "== STATUS ${sock} =="
+    sudo -n "$JASPER_PYTHON" - "$sock" 2>&1 <<'PY'
+import json, sys
+from jasper.platform.status_socket import read_status_socket_or_none
+print(json.dumps(read_status_socket_or_none(sys.argv[1]), indent=2, sort_keys=True))
+PY
+    echo
+done
+# The rate-storm forensic artifact (jasper/control/airplay_health.py writes it
+# and nothing else reads it) — newest capture only, tail-bounded.
+newest_storm="$(ls -1t /var/lib/jasper/rate-storms/storm-*.csv 2>/dev/null | head -1)"
+if [ -n "$newest_storm" ]; then
+    echo "== ${newest_storm} (tail) =="
+    sudo -n tail -200 "$newest_storm" 2>&1
+fi
+true
+REMOTE
+
+# The CACHED doctor report only (deploy/systemd/jasper-doctor-json.service
+# writes it; jasper/doctor_contract.py owns the path). Never a live run from
+# here: the doctor opens PCMs on the ring lanes and budgets 600 s / 256 MB,
+# which is the last thing an incident box under investigation can spare
+# (ADR-0242). Its age is on stderr so the operator can see how stale it is.
+fetch_remote_bash "doctor" "json" <<'REMOTE'
+set +e
+doctor_cache=/run/jasper-control/doctor-result.json
+stat -c "doctor cache mtime: %y" "$doctor_cache" >&2
+timeout 10 sudo -n cat "$doctor_cache"
+true
+REMOTE
+
 # Configs and runtime state — secrets redacted before write. The file
 # list is the shared JASPER_SECRET_ENV_FILES array (_diagnostic_redaction.sh).
 remote "sudo sh -c 'for f in ${JASPER_SECRET_ENV_FILES[*]}; do \

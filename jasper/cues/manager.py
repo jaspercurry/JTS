@@ -35,7 +35,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
-from ..audio_io import wait_tts_drained_owned
 from ..json_fields import age_seconds
 from ..log_event import log_event
 from .generator import (
@@ -45,6 +44,7 @@ from .generator import (
     dynamic_text_path,
     prune_retired,
     prune_stale,
+    render_template,
     write_cue,
     write_dynamic_text,
 )
@@ -101,6 +101,45 @@ def _preview(text: str, limit: int = 40) -> str:
 # sample-counted drain deadline, which is the source of truth for both
 # the old sounddevice path and the outputd path.
 _PLAY_DRAIN_BUFFER_SEC = 0.2
+
+
+async def wait_tts_drained_owned(tts: Any, *, fallback_sec: float = 0.0) -> None:
+    """Wait through the physical tail and defer repeated cancellation.
+
+    Cue and feedback callers use this once PCM may have been accepted. A
+    cancelled coroutine cannot revoke worker-thread socket writes, so the
+    caller retains duck/output ownership until the real drain waiter finishes,
+    then receives cancellation. ``fallback_sec`` supports legacy test/out-of-
+    tree playout objects that predate ``wait_drained``.
+    """
+
+    async def _wait() -> None:
+        wait_drained = getattr(tts, "wait_drained", None)
+        if callable(wait_drained):
+            await wait_drained()
+        elif fallback_sec > 0.0:
+            await asyncio.sleep(fallback_sec)
+
+    drain = asyncio.create_task(_wait(), name="tts-physical-drain")
+    deferred_cancel = False
+    current = asyncio.current_task()
+    while not drain.done():
+        try:
+            await asyncio.wait({drain})
+        except asyncio.CancelledError:
+            if current is None or current.cancelling() == 0:
+                break
+            deferred_cancel = True
+            current.uncancel()
+    if drain.cancelled():
+        raise asyncio.CancelledError
+    error = drain.exception()
+    if error is not None:
+        if deferred_cancel:
+            raise asyncio.CancelledError from None
+        raise error
+    if deferred_cancel:
+        raise asyncio.CancelledError
 
 
 def _profile_token(value: str, fallback: str) -> str:
@@ -234,7 +273,6 @@ class AudioCueManager:
         description}."""
         out = []
         for cue in CUES:
-            from .generator import render_template
             out.append({
                 "slug": cue.slug,
                 "rendered_text": render_template(cue, self._hostname),

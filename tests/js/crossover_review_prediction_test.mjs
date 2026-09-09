@@ -193,13 +193,14 @@ check(
 function recordingContext() {
   const strokes = [];
   const fills = [];
+  const labels = [];
   let dash = [];
   let style = "";
   let fillStyle = "";
   let alpha = 1;
   let path = [];
   return {
-    strokes, fills,
+    strokes, fills, labels,
     setTransform() {}, scale() {}, clearRect() {}, save() {}, restore() {},
     beginPath() { path = []; },
     moveTo(x, y) { path.push({ op: "move", x, y }); },
@@ -208,7 +209,8 @@ function recordingContext() {
     fillRect(x, y, width, height) {
       fills.push({ style: fillStyle, alpha, x, y, width, height });
     },
-    fillText() {},
+    fillText(text, x, y) { labels.push({ text, x, y }); },
+    measureText(text) { return { width: text.length * 6 }; },
     setLineDash(value) { dash = value.slice(); },
     stroke() { strokes.push({ style, dash: dash.slice(), path: path.slice() }); },
     set strokeStyle(value) { style = value; },
@@ -260,10 +262,10 @@ function drawWith(payload) {
   return { drew, ctx };
 }
 
-function drawGeneric(payload) {
+function drawGeneric(payload, width = 640) {
   const ctx = recordingContext();
   const canvas = {
-    getBoundingClientRect: () => ({ width: 640, height: 240 }),
+    getBoundingClientRect: () => ({ width, height: 240 }),
     getContext: () => ctx,
     width: 0,
     height: 0,
@@ -273,6 +275,15 @@ function drawGeneric(payload) {
 }
 
 const curve = (db) => ({ freqs_hz: [300, 700, 1000], magnitude_db: [db, db, db] });
+
+for (const width of [240, 320, 640]) {
+  const { ctx } = drawGeneric({ series: [{ curve: curve(0), referenceDb: 0 }] }, width);
+  const labels = ctx.labels.filter((label) => label.y === 232);
+  check(labels.length >= 2 && labels.every((label, index) =>
+    label.x >= 0 && label.x + ctx.measureText(label.text).width <= width &&
+    (index === 0 || label.x >= labels[index - 1].x + ctx.measureText(labels[index - 1].text).width + 6)),
+  'frequency labels stay inside the canvas without overlapping on narrow screens');
+}
 
 {
   const { drew, ctx } = drawWith({
@@ -409,9 +420,36 @@ const curve = (db) => ({ freqs_hz: [300, 700, 1000], magnitude_db: [db, db, db] 
   const beforePath = before.ctx.strokes.find((stroke) => stroke.style === "VISIBLE").path;
   const afterPath = after.ctx.strokes.find((stroke) => stroke.style === "VISIBLE").path;
   check(
-    JSON.stringify(beforePath) === JSON.stringify(afterPath),
-    "chart: revealing a hidden series does not rescale curves already on screen",
+    beforePath[1].y < afterPath[1].y,
+    "chart: hidden curves do not expand the visible response scale",
   );
+}
+
+{
+  const series = {
+    curve: { freqs_hz: [20, 100, 1000, 19000, 20000], magnitude_db: [-45, -2, 2, 0, -45] },
+    referenceDb: 0, color: 'VISIBLE',
+  };
+  for (const [range, extras, bound] of [
+    [[20, 20000], {}, 46],
+    [[100, 19000], {}, 5],
+    [[20, 19000], { excludedIntervals: [{ f_lo_hz: 20, f_hi_hz: 50 }] }, 5],
+  ]) {
+    const { ctx } = drawGeneric({
+      series: [{ ...series, ...extras }], frequencyRangeHz: range, minSpanDb: 10, padDb: 1,
+    });
+    const path = ctx.strokes.find((stroke) => stroke.style === 'VISIBLE').path;
+    const peak = path.find((point) => point.y < 114);
+    check(Math.abs(peak.y - (114 - 208 / bound)) < 1e-9, 'visible trusted data sets the symmetric dB scale');
+    if (bound === 5) {
+      check(ctx.labels.some((label) => label.text === '-5 dB') &&
+        ctx.labels.some((label) => label.text === '5 dB'), 'tight responses show the ±5 dB limits');
+    }
+  }
+  for (const payload of [
+    { series: [{ ...series, draw: false }] },
+    { series: [series], frequencyRangeHz: [200, 300] },
+  ]) check(!drawGeneric(payload).drew, 'empty frequency windows and hidden traces clear the plot');
 }
 
 {

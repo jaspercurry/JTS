@@ -490,73 +490,59 @@ pub fn run_host_clock_thread(
     }
     publish_fragment(&fragment, hc.status_fragment());
 
-    // The steering loop runs inside `catch_unwind` (N5). A panic mid-tick on
-    // THIS helper thread would otherwise unwind past the exit-neutralize below
-    // while the daemon keeps running — leaving the host slaved to the last
-    // command until the unit stops (only then does the ExecStopPost belt fire).
-    // Catching the unwind lets the same exit-neutralize run on the panic path.
-    // `AssertUnwindSafe`: the only state touched after a caught panic is the
-    // final neutral ctl write + fragment publish, both idempotent and safe on a
-    // partially-updated `hc`/`actuator`.
-    let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut last_tick = Instant::now();
-        while !shutdown.load(Ordering::Relaxed) {
-            if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
-                let obs = build_obs(&signals);
-                let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
-                let tick_ms = now_ms(&start);
-                actuator.ensure_ready(capture_generation, tick_ms);
-                let control = actuator.status(capture_generation);
+    let mut last_tick = Instant::now();
+    while !shutdown.load(Ordering::Relaxed) {
+        if last_tick.elapsed() >= Duration::from_millis(TICK_INTERVAL_MS) {
+            let obs = build_obs(&signals);
+            let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
+            let tick_ms = now_ms(&start);
+            actuator.ensure_ready(capture_generation, tick_ms);
+            let control = actuator.status(capture_generation);
 
-                let mut write_failed = false;
-                for action in hc.tick_with_control(obs, tick_ms, control) {
-                    if control.ready() && !actuator.apply(action, tick_ms) {
-                        write_failed = true;
-                    }
+            let mut write_failed = false;
+            for action in hc.tick_with_control(obs, tick_ms, control) {
+                if control.ready() && !actuator.apply(action, tick_ms) {
+                    write_failed = true;
                 }
-                let post_write_status = actuator.status(capture_generation);
-                if write_failed {
-                    hc.invalidate_control(post_write_status);
-                } else {
-                    hc.set_control_status(post_write_status);
-                }
-                // Publish the REVERSE signals the mixer's per-period decay tick
-                // reads: whether the ladder is `l0_locked` (decay's steady-state
-                // gate) and the last commanded bias in milli-ppm (its cascade
-                // guard). Written every servo tick (~1 Hz); the decay tick reads
-                // the latest snapshot each render period.
-                signals
-                    .ladder_l0
-                    .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
-                signals.commanded_milli_ppm.store(
-                    (hc.commanded_ppm() * 1000.0).round() as i64,
-                    Ordering::Relaxed,
-                );
-                publish_fragment(&fragment, hc.status_fragment());
-                last_tick = Instant::now();
             }
-            std::thread::sleep(Duration::from_millis(100));
+            let post_write_status = actuator.status(capture_generation);
+            if write_failed {
+                hc.invalidate_control(post_write_status);
+            } else {
+                hc.set_control_status(post_write_status);
+            }
+            // Publish the REVERSE signals the mixer's per-period decay tick
+            // reads: whether the ladder is `l0_locked` (decay's steady-state
+            // gate) and the last commanded bias in milli-ppm (its cascade
+            // guard). Written every servo tick (~1 Hz); the decay tick reads
+            // the latest snapshot each render period.
+            signals
+                .ladder_l0
+                .store(hc.ladder() == Ladder::L0Locked, Ordering::Relaxed);
+            signals.commanded_milli_ppm.store(
+                (hc.commanded_ppm() * 1000.0).round() as i64,
+                Ordering::Relaxed,
+            );
+            publish_fragment(&fragment, hc.status_fragment());
+            last_tick = Instant::now();
         }
-    }));
-    if loop_result.is_err() {
-        // A caught panic: log it, fall through to the exit-neutralize so the
-        // host is still un-slaved. (The thread then ends; the daemon keeps
-        // running with the ladder inert until a restart re-spawns it.)
-        log::error!("event=fanin.host_clock.thread_panic detail=caught_unwind_neutralizing");
+        std::thread::sleep(Duration::from_millis(100));
     }
 
-    // Exit: force the host back to a free-running clock — on BOTH the graceful
-    // shutdown path and a caught panic. A stopped thread must NEVER leave the
-    // host slaved. SIGKILL / watchdog is covered by the unit's combo-gated
-    // ExecStopPost belt-and-braces (C6).
+    // Exit: force the host back to a free-running clock on the graceful
+    // shutdown path. A stopped thread must NEVER leave the host slaved.
+    // A panic here aborts the whole process (workspace `panic = "abort"`,
+    // shared across the binary's dependency graph) instead of unwinding to
+    // this point: the process exits via SIGABRT, and the unit's combo-gated
+    // ExecStopPost neutralizes the pitch immediately (C6).
     actuator.apply(hc.neutralize_for_exit("shutdown"), now_ms(&start));
     hc.set_control_status(actuator.status(signals.capture_generation.load(Ordering::Relaxed)));
     log::info!("event=fanin.host_clock_pitch_reset reason=shutdown");
     publish_fragment(&fragment, hc.status_fragment());
 
-    // Clear the REVERSE signals too, so a stopped servo thread (graceful OR
-    // caught-panic) does not leave the mixer's decay tick reading a frozen
-    // `ladder_l0=true`. Neutralizing only the actuator un-slaves the host but
+    // Clear the REVERSE signals too, so a stopped servo thread does not
+    // leave the mixer's decay tick reading a frozen `ladder_l0=true`.
+    // Neutralizing only the actuator un-slaves the host but
     // leaves the outer-loop signal stale: the decay engine would keep stepping
     // the held target toward the floor with no live DLL pinning the fill,
     // driving the thin-cushion free-run churn loop (underfill unlock → snap-back
