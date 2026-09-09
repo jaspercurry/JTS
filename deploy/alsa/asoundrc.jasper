@@ -46,14 +46,13 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   shairport-sync     → pcm.shairport_substream   → hw:Loopback,0,1
 #   bluealsa-aplay     → pcm.bluealsa_substream    → hw:Loopback,0,2
 #   USB (UAC2 gadget)  → jasper-fanin DIRECT-captures hw:UAC2Gadget (no aloop
-#                        write alias — the old jasper-usbsink → pcm.usbsink_substream
-#                        → hw:Loopback,0,3 solo path was removed 2026-07-10;
-#                        fan-in still opens hw:Loopback,1,3 as the usbsink lane's
-#                        idle fallback when USB Audio Input is off)
+#                        alias at all: pair 3 has no writer and fan-in does not
+#                        open it — with USB Audio Input off the lane is absent
+#                        and renders silence)
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
 #                                                       │
 #                                                       ▼ (loop)
-#   jasper-fanin reads        hw:Loopback,1,0..4
+#   jasper-fanin reads        hw:Loopback,1,0..2 and 1,4
 #       sums sample-wise
 #       writes the sum      → SHM ring → jasper-camilla → SHM ring
 #                                                               │

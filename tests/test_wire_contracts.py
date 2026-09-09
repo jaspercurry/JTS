@@ -804,6 +804,12 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # test_control_socket_paths_agree_across_processes). Setting this
     # alone cannot move fan-in's socket.
     "JASPER_FANIN_CONTROL_SOCKET": "mux connect-path knob, not a fanin knob",
+    # The route plan's fan-in resampler arm. fan-in no longer reads it: the lane
+    # resampler is implied by JASPER_FANIN_USB_DIRECT, the only mode that gives
+    # that lane a device to read. jasper/audio_runtime_plan.py still sets/unsets
+    # the key for the usb_low_latency_48k route.
+    # REMOVAL CONDITION: goes when that route stops writing the key.
+    "JASPER_FANIN_INPUT_RESAMPLER": "route-plan key; fan-in arms the lane resampler from JASPER_FANIN_USB_DIRECT",
     # AirPlay receiver-side timing/offset helper knobs. These change where the
     # shell helper PROBES STATUS; they do not move either daemon's bind socket.
     "JASPER_FANIN_STATUS_SOCKET": "AirPlay helper probe path, not a fanin knob",

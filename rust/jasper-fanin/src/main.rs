@@ -126,7 +126,7 @@ fn run() -> Result<()> {
     let config = Config::from_env()?;
     info!(
         "event=fanin.config_loaded inputs={} sample_rate={} period_frames={} input_buffer_frames={}",
-        config.input_pcms.len(),
+        config.input_renderers.len(),
         config.sample_rate,
         config.period_frames,
         config.input_buffer_frames,
@@ -213,7 +213,7 @@ fn run() -> Result<()> {
     info!(
         "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
         mixer.input_count(),
-        config.input_pcms.len(),
+        config.input_renderers.len(),
     );
     let source_notify_signals = mixer.source_notify_signals();
 

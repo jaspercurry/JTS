@@ -354,8 +354,8 @@ impl DirectOpener {
 ///
 /// Never returns `Err`: a device loss (ENODEV on unplug, or a rejected reopen)
 /// transitions the lane to `Absent` and renders silence with a bounded reopen
-/// retry, so the daemon keeps running. Xruns recover exactly like the
-/// aloop resampler lane (`recover_resampler_input_xrun`, but device-open aware).
+/// retry, so the daemon keeps running. Xruns recover through
+/// `recover_direct_xrun`.
 pub(super) fn read_direct_and_render(
     input: &mut Input,
     period_frames: usize,
@@ -705,9 +705,9 @@ fn record_drain_entry(input: &Input, avail: i64) {
 
 /// Recover a direct-capture xrun (EPIPE/ESTRPIPE): count it, `try_recover` the
 /// PCM, restart it if not Running, and reset the resampler (a discontinuity).
-/// Mirrors `recover_resampler_input_xrun` for the direct lane. Best-effort — a
-/// failed recover just leaves the PCM for the next period's `avail_update` to
-/// re-observe (which will classify a hard failure as a device loss).
+/// Best-effort — a failed recover just leaves the PCM for the next period's
+/// `avail_update` to re-observe (which will classify a hard failure as a device
+/// loss).
 fn recover_direct_xrun(pcm: &PCM, input: &mut Input, error: alsa::Error, operation: &str) {
     let count = input.note_xrun();
     warn!(

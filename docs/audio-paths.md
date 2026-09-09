@@ -170,17 +170,20 @@ mixer, a second output device, or a new volume model.
    `plug`. Current allocation (the pair allocation lives canonically in
    `deploy/modprobe.d/snd-aloop.conf`; `asoundrc.jasper`'s header
    cross-references it, and this list mirrors both): `0` Spotify, `1` AirPlay, `2`
-   Bluetooth, `3` USB sink, `4` correction/test, `5`–`7` UNALLOCATED (the
-   central hops those pairs used to carry are rings). If you need another
+   Bluetooth, `4` correction/test; `3` UNUSED (USB is fan-in's direct
+   `hw:UAC2Gadget` capture — no writer, no reader) and `5`–`7` UNALLOCATED
+   (the central hops those pairs used to carry are rings). If you need another
    production source lane, stop and redesign the topology rather than
    overloading snd-aloop.
 2. **Teach `jasper-fanin` about the lane.** The canonical lane list is
    the compiled-in default arrays in
    `rust/jasper-fanin/src/config.rs` `Config::from_env` (~line 80):
-   `input_pcms` and `input_renderers`, kept positionally aligned. Extend
-   both there. The `JASPER_FANIN_INPUT_PCMS` / `JASPER_FANIN_INPUT_RENDERERS`
-   env vars are an *optional override* that replaces the compiled defaults
-   when set — they are **not** wired into
+   `input_pcms` and `input_renderers`, aligned positionally across the aloop
+   lanes: the USB lane (`JASPER_FANIN_INPUT_RESAMPLER_LANE`, default
+   `usbsink`) has NO `input_pcms` entry, because it reads the gadget capture
+   or nothing at all. Extend both there. The `JASPER_FANIN_INPUT_PCMS` /
+   `JASPER_FANIN_INPUT_RENDERERS` env vars are an *optional override* that
+   replaces the compiled defaults when set — they are **not** wired into
    `deploy/systemd/jasper-fanin.service` by default, so editing the unit
    file alone does nothing unless you also set them. The lists are
    pipe-delimited because ALSA `hw:` names contain commas. A configured

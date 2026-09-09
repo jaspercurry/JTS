@@ -159,18 +159,12 @@ pub struct Config {
     /// backstop. Env: `JASPER_FANIN_RING_SLOTS`.
     pub ring_slots: u32,
 
-    /// DEFAULT-OFF: arm the per-input adaptive resampler on the clock-crossing
-    /// (USB) lane (`src/lane_resampler.rs`). When off, the per-lane read path is
-    /// the strict one-period read + catch-up drain. When on, the lane named by
-    /// `input_resampler_lane_label` is DLL-steered to the DAC clock — drop-free
-    /// reconciliation in place of the catch-up sawtooth on that lane. Env:
-    /// `JASPER_FANIN_INPUT_RESAMPLER` (only the literal `enabled` arms it).
-    pub input_resampler_enabled: bool,
-
-    /// The lane LABEL (matched against `input_renderers`) the input resampler
-    /// arms on when enabled. Only ONE lane crosses a foreign clock (USB), so
-    /// this is a single label, not a set. A label with no matching input is a
-    /// no-op (logged once). Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
+    /// The lane LABEL (matched against `input_renderers`) that crosses the
+    /// foreign USB clock: the one lane that reads no aloop substream, gets a
+    /// `LaneResampler` (`src/lane_resampler.rs`), and is either the
+    /// `hw:UAC2Gadget` direct capture (`usb_direct_enabled`) or absent —
+    /// rendered as silence. Only ONE lane crosses a foreign clock, so this is a
+    /// single label, not a set. Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
     /// (default `usbsink`).
     pub input_resampler_lane_label: String,
 
@@ -254,10 +248,10 @@ pub struct Config {
     /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
     /// `LaneResampler` the gadget's `i32` untouched. This deletes the usbsink
     /// bridge hop and the aloop cable — ~25 ms measured — from the USB path.
-    /// Direct mode IMPLIES a resampler on
-    /// that lane regardless of `input_resampler_enabled` (see
-    /// [`Config::lane_wants_resampler`]). Env: `JASPER_FANIN_USB_DIRECT` (only
-    /// the literal `enabled` arms it).
+    /// Direct mode IMPLIES a resampler on that lane (see
+    /// [`Config::lane_wants_resampler`]); with direct off the lane opens
+    /// nothing at all. Env: `JASPER_FANIN_USB_DIRECT` (only the literal
+    /// `enabled` arms it).
     pub usb_direct_enabled: bool,
 
     /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
@@ -300,15 +294,12 @@ pub struct Config {
 
 impl Config {
     /// Whether the lane labelled `label` should be constructed with a
-    /// `LaneResampler`. True when EITHER the DEFAULT-OFF input resampler is
-    /// enabled OR USB direct capture is enabled — both steer the same lane
-    /// (`input_resampler_lane_label`) to the DAC clock, and direct capture has
-    /// no aloop catch-up fallback to reconcile the host↔DAC rate gap, so it
-    /// MUST own a resampler. A label that doesn't match the resampler lane never
-    /// gets one.
+    /// `LaneResampler`. Only the USB DIRECT lane: it has no aloop catch-up
+    /// fallback to reconcile the host↔DAC rate gap, so it MUST own a
+    /// resampler. Off with direct disabled — that lane then opens nothing and
+    /// renders silence.
     pub fn lane_wants_resampler(&self, label: &str) -> bool {
-        (self.input_resampler_enabled || self.usb_direct_enabled)
-            && label == self.input_resampler_lane_label
+        self.usb_direct_enabled && label == self.input_resampler_lane_label
     }
 
     /// Whether the `fanin-host-clock` servo thread is CONFIGURED to run — the
@@ -328,13 +319,16 @@ impl Config {
     /// Returns `Err` only on structural misconfiguration (e.g., input
     /// PCM list length != renderer label list length).
     pub fn from_env() -> Result<Self> {
+        // snd-aloop pair 3 is deliberately absent: the USB lane
+        // (`input_resampler_lane_label`) reads the gadget capture directly or
+        // nothing at all, so it takes no aloop substream and the surviving
+        // pairs do not renumber.
         let input_pcms = env_list(
             "JASPER_FANIN_INPUT_PCMS",
             &[
                 "hw:Loopback,1,0",
                 "hw:Loopback,1,1",
                 "hw:Loopback,1,2",
-                "hw:Loopback,1,3",
                 "hw:Loopback,1,4",
             ],
         );
@@ -344,12 +338,22 @@ impl Config {
             "JASPER_FANIN_INPUT_RENDERERS",
             &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
         );
-        if input_pcms.len() != input_renderers.len() {
+        let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
+        // The USB lane is the one label with no aloop PCM; the rest pair
+        // positionally in order.
+        let aloop_lanes = input_renderers
+            .iter()
+            .filter(|label| *label != &input_resampler_lane_label)
+            .count();
+        if input_pcms.len() != aloop_lanes {
             anyhow::bail!(
                 "JASPER_FANIN_INPUT_PCMS has {} entries but JASPER_FANIN_INPUT_RENDERERS has {} \
-                 — must match positionally",
+                 aloop lanes ({} labels, minus the USB lane '{}', which reads no aloop \
+                 substream) — must match positionally",
                 input_pcms.len(),
+                aloop_lanes,
                 input_renderers.len(),
+                input_resampler_lane_label,
             );
         }
         if input_pcms.is_empty() {
@@ -465,8 +469,6 @@ impl Config {
             .context(crate::ConfigClassError));
         }
 
-        let input_resampler_enabled = env_enabled("JASPER_FANIN_INPUT_RESAMPLER");
-        let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
         let input_resampler_target_frames =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
         let input_resampler_max_adjust_ppm =
@@ -621,10 +623,9 @@ impl Config {
 
         // STATIC held-target churn guard — the symmetric sibling of the
         // decay-floor validation above, entered through the static cushion knobs.
-        // An armed lane (JASPER_FANIN_INPUT_RESAMPLER=enabled, or implied by
-        // JASPER_FANIN_USB_DIRECT=enabled — the direct lane has no aloop catch-up
-        // fallback, so it always builds a resampler) holds the ring at
-        // `target + cushion` and renders ONE `period_frames` each step, so the
+        // The armed lane (JASPER_FANIN_USB_DIRECT=enabled — the direct lane has
+        // no aloop catch-up fallback, so it always builds a resampler) holds the
+        // ring at `target + cushion` and renders ONE `period_frames` each step, so the
         // steady-state post-render cursor-relative fill sits at `held - period`.
         // The lane underfill-unlocks the instant that fill drops below
         // `minimum_safe_fill_frames` (= ceil(period × max_ratio) + radius + 1), so
@@ -636,8 +637,7 @@ impl Config {
         // The production defaults (512 + 2048 = 2560 held) clear this by ~2030
         // frames; only a hand-tuned lab geometry (the observed churn came from
         // 256 + 256 = 512 held) can trip it.
-        let resampler_armed_on_a_lane = input_resampler_enabled || usb_direct_enabled;
-        if resampler_armed_on_a_lane {
+        if usb_direct_enabled {
             let min_safe = jasper_resampler::minimum_safe_fill_frames(
                 period_frames,
                 input_resampler_max_adjust_ppm as f64,
@@ -652,7 +652,7 @@ impl Config {
                 let post_render_headroom =
                     held_target as i64 - period_frames as i64 - min_safe as i64;
                 anyhow::bail!(
-                    "JASPER_FANIN_INPUT_RESAMPLER held target (target {} + warm-up cushion {} \
+                    "resampler held target (target {} + warm-up cushion {} \
                      = {}) is too shallow for the armed clock-crossing lane: it must be >= \
                      minimum_safe_fill {} + one render period {} + {}-frame jitter margin = {}. \
                      The steady post-render cursor fill would sit only {} frames above the \
@@ -832,7 +832,6 @@ impl Config {
             ),
             ring_path,
             ring_slots,
-            input_resampler_enabled,
             input_resampler_lane_label,
             input_resampler_target_frames,
             input_resampler_max_adjust_ppm,
@@ -1008,9 +1007,15 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
-                assert_eq!(cfg.input_pcms.len(), 5);
+                // FOUR aloop PCMs for FIVE labels: the usbsink lane reads the
+                // gadget capture or nothing, never an aloop substream, and the
+                // surviving pairs do not renumber around the gap.
+                assert_eq!(cfg.input_pcms.len(), 4);
+                assert!(!cfg.input_pcms.iter().any(|p| p == "hw:Loopback,1,3"));
+                assert_eq!(cfg.input_pcms[3], "hw:Loopback,1,4");
                 assert_eq!(cfg.input_renderers.len(), 5);
                 assert_eq!(cfg.input_renderers[0], "spotify");
+                assert_eq!(cfg.input_renderers[3], "usbsink");
                 assert_eq!(cfg.input_renderers[4], MEASUREMENT_LANE);
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
@@ -1033,10 +1038,6 @@ mod tests {
                 assert_eq!(
                     cfg.assistant_reference_path,
                     "/var/lib/jasper/assistant_volume_reference.json"
-                );
-                assert!(
-                    !cfg.input_resampler_enabled,
-                    "input resampler must default OFF"
                 );
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink");
                 assert_eq!(cfg.input_resampler_target_frames, 512);
@@ -1188,28 +1189,6 @@ mod tests {
     }
 
     #[test]
-    fn input_resampler_only_armed_by_exact_enabled_literal() {
-        for raw in ["enabled", "ENABLED", " Enabled "] {
-            with_env(&[("JASPER_FANIN_INPUT_RESAMPLER", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    cfg.input_resampler_enabled,
-                    "{raw:?} should arm the resampler"
-                );
-            });
-        }
-        for raw in ["", "1", "true", "on", "yes", "disabled", "garbage"] {
-            with_env(&[("JASPER_FANIN_INPUT_RESAMPLER", Some(raw))], || {
-                let cfg = Config::from_env().expect("parses");
-                assert!(
-                    !cfg.input_resampler_enabled,
-                    "{raw:?} must NOT arm the resampler (only `enabled` does)"
-                );
-            });
-        }
-    }
-
-    #[test]
     fn usb_direct_only_armed_by_exact_enabled_literal() {
         for raw in ["enabled", "ENABLED", " Enabled "] {
             with_env(&[("JASPER_FANIN_USB_DIRECT", Some(raw))], || {
@@ -1249,67 +1228,66 @@ mod tests {
 
     #[test]
     fn usb_direct_default_off_is_inert() {
-        with_env(
-            &[
-                ("JASPER_FANIN_USB_DIRECT", None),
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert!(!cfg.usb_direct_enabled);
-                assert!(!cfg.input_resampler_enabled);
-                assert!(
-                    !cfg.lane_wants_resampler("usbsink"),
-                    "no resampler on any lane when both flags are off"
-                );
-            },
-        );
+        with_env(&[("JASPER_FANIN_USB_DIRECT", None)], || {
+            let cfg = Config::from_env().unwrap();
+            assert!(!cfg.usb_direct_enabled);
+            assert!(
+                !cfg.lane_wants_resampler("usbsink"),
+                "no resampler on any lane with direct off"
+            );
+        });
     }
 
     #[test]
     fn usb_direct_implies_resampler_on_the_usbsink_lane() {
-        // Direct capture has no aloop catch-up fallback, so its lane still wants
-        // a resampler with the plain flag off — and only that lane does.
-        with_env(
-            &[
-                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert!(cfg.usb_direct_enabled);
-                assert!(!cfg.input_resampler_enabled);
-                assert!(
-                    cfg.lane_wants_resampler("usbsink"),
-                    "direct mode must imply a resampler on the usbsink lane"
-                );
-                assert!(
-                    !cfg.lane_wants_resampler("airplay"),
-                    "only the resampler lane label gets one"
-                );
-            },
-        );
+        // Direct capture has no aloop catch-up fallback, so its lane owns a
+        // resampler — and only that lane does.
+        with_env(&[("JASPER_FANIN_USB_DIRECT", Some("enabled"))], || {
+            let cfg = Config::from_env().unwrap();
+            assert!(cfg.usb_direct_enabled);
+            assert!(
+                cfg.lane_wants_resampler("usbsink"),
+                "direct mode must imply a resampler on the usbsink lane"
+            );
+            assert!(
+                !cfg.lane_wants_resampler("airplay"),
+                "only the resampler lane label gets one"
+            );
+        });
     }
 
     #[test]
-    fn input_resampler_alone_still_wants_resampler_on_its_lane() {
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
-                ("JASPER_FANIN_USB_DIRECT", None),
-            ],
-            || {
+    fn planned_lane_source_follows_the_resampler_predicate() {
+        use crate::mixer::{planned_lane_source, LaneSource};
+
+        // The three transports a lane can be planned with. Pinned here rather
+        // than in mixer.rs: the decision reads a `Config`, which only these
+        // env-backed tests can build.
+        for (direct, label, expected) in [
+            (None, "usbsink", LaneSource::Disabled),
+            (Some("enabled"), "usbsink", LaneSource::Direct),
+            (None, "airplay", LaneSource::Lane),
+            (Some("enabled"), "airplay", LaneSource::Lane),
+        ] {
+            with_env(&[("JASPER_FANIN_USB_DIRECT", direct)], || {
                 let cfg = Config::from_env().unwrap();
-                assert!(cfg.lane_wants_resampler("usbsink"));
-            },
-        );
+                assert_eq!(
+                    planned_lane_source(&cfg, label),
+                    expected,
+                    "lane {label} with JASPER_FANIN_USB_DIRECT={direct:?}"
+                );
+            });
+        }
     }
 
     #[test]
     fn input_resampler_knobs_parse_overrides() {
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                // The lane label picks WHICH label reads no aloop substream, so
+                // the roster moves with it.
+                ("JASPER_FANIN_INPUT_RENDERERS", Some("spotify|usbsink2")),
+                ("JASPER_FANIN_INPUT_PCMS", Some("hw:Loopback,1,0")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink2")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("768")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("300")),
@@ -1321,7 +1299,6 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("parses");
-                assert!(cfg.input_resampler_enabled);
                 assert_eq!(cfg.input_resampler_lane_label, "usbsink2");
                 assert_eq!(cfg.input_resampler_target_frames, 768);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 300);
@@ -2070,12 +2047,13 @@ mod tests {
 
     #[test]
     fn static_cushion_fails_loud_on_churny_lab_geometry_when_resampler_armed() {
-        // The lab geometry that produced the observed unlock churn: target 256 +
-        // cushion 256 = 512 held, period 256, max_ppm 500. min_safe = 274, so the
-        // required held is 274 + 256 + 32 = 562 > 512.
+        // The lab geometry that produced the observed unlock churn, in the mode
+        // that produced the evidence (USB DIRECT — the only mode that arms a
+        // resampler): target 256 + cushion 256 = 512 held, period 256, max_ppm
+        // 500. min_safe = 274, so the required held is 274 + 256 + 32 = 562 > 512.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
                 (
                     "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
@@ -2097,41 +2075,11 @@ mod tests {
     }
 
     #[test]
-    fn static_cushion_churn_guard_also_fires_in_usb_direct_mode() {
-        // The live churn was observed in USB DIRECT mode, which arms a resampler
-        // on the usbsink lane WITHOUT JASPER_FANIN_INPUT_RESAMPLER (see
-        // `lane_wants_resampler`), so gating on that flag alone would miss the
-        // configuration that produced the evidence.
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
-                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
-                (
-                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
-                    Some("256"),
-                ),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-            ],
-            || {
-                let err = Config::from_env()
-                    .expect_err("USB DIRECT with a churny held target must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("held target") && msg.contains("churn-by-construction"),
-                    "expected static-cushion churn error in direct mode, got: {msg}"
-                );
-            },
-        );
-    }
-
-    #[test]
     fn static_cushion_production_default_passes_the_churn_guard() {
         // The production default held target is 512 + 2048 = 2560.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
                 ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
@@ -2154,7 +2102,7 @@ mod tests {
         // + cushion 256 = 562 passes, and one under (cushion 255 → 561) fails.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("306")),
@@ -2173,7 +2121,7 @@ mod tests {
         );
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", Some("enabled")),
+                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("306")),
@@ -2195,11 +2143,10 @@ mod tests {
 
     #[test]
     fn static_cushion_churn_guard_ignored_when_resampler_off() {
-        // With neither flag armed no resampler is built, so no churn is possible
-        // and a churny cushion must not block boot.
+        // With direct off no resampler is built, so no churn is possible and a
+        // churny cushion must not block boot.
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_RESAMPLER", None),
                 ("JASPER_FANIN_USB_DIRECT", None),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("256")),
                 (
@@ -2210,7 +2157,6 @@ mod tests {
             || {
                 let cfg =
                     Config::from_env().expect("resampler-off box must ignore a churny cushion");
-                assert!(!cfg.input_resampler_enabled);
                 assert!(!cfg.usb_direct_enabled);
             },
         );

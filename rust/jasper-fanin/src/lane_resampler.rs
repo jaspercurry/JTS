@@ -50,9 +50,9 @@
 //! ## Default OFF
 //!
 //! The mixer constructs a [`LaneResampler`] only for the configured
-//! clock-crossing lane, and only when `JASPER_FANIN_INPUT_RESAMPLER=enabled`.
-//! When disabled the per-lane read path is the strict one-period read plus
-//! catch-up drain, which is deliberately kept as the fallback.
+//! clock-crossing lane, and only when `JASPER_FANIN_USB_DIRECT=enabled` — that
+//! lane reads the gadget capture, which has no catch-up-drain fallback. Every
+//! other lane's read path is the strict one-period read plus catch-up drain.
 
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;

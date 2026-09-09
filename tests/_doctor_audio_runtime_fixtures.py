@@ -84,7 +84,13 @@ def _fanin_status_payload(
             "output": output,
             "inputs": [
                 {"label": label, "pcm": pcm, "xrun_count": 0}
-                for label, pcm in audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS
+                for label, pcm in (
+                    *audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS,
+                    # The USB lane, as a live daemon reports it: the gadget
+                    # capture it reads directly, or "" with direct off. Not an
+                    # aloop lane either way.
+                    ("usbsink", ""),
+                )
             ],
             "tts": {
                 "enabled": True,

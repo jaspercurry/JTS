@@ -153,12 +153,13 @@ def _asound_pcm_block(text: str, name: str) -> str | None:
         return tail[:match.end() - match.start() + next_def.start()]
     return tail
 
-#: The `(label, pcm)` roster fan-in's STATUS should report.
+#: The `(label, pcm)` roster fan-in's STATUS should report for its snd-aloop
+#: lanes. The USB lane is not one of them: it reads `hw:UAC2Gadget` directly, or
+#: nothing at all with direct off, so it never names an aloop substream.
 _FANIN_EXPECTED_ALOOP_INPUTS = [
     ("spotify", "hw:Loopback,1,0"),
     ("airplay", "hw:Loopback,1,1"),
     ("bluealsa", "hw:Loopback,1,2"),
-    ("usbsink", "hw:Loopback,1,3"),
     ("correction", "hw:Loopback,1,4"),
 ]
 
@@ -263,9 +264,9 @@ def check_fanin_asound_wiring() -> CheckResult:
             reason=REASON_ASOUND_LEGACY_RENDERER_BLOCK,
         )
 
-    # No usbsink_substream write alias: USB audio is DIRECT-captured by
-    # jasper-fanin from hw:UAC2Gadget. fan-in still READS the pair-3 capture side
-    # as the usbsink lane's idle fallback, but nothing writes it.
+    # No usbsink_substream alias at all: USB audio is DIRECT-captured by
+    # jasper-fanin from hw:UAC2Gadget, so pair 3 has neither a writer nor a
+    # reader.
     expected_aliases = {
         "librespot_substream": "hw:Loopback,0,0",
         "shairport_substream": "hw:Loopback,0,1",
@@ -423,10 +424,16 @@ def check_fanin_service() -> CheckResult:
             "active but STATUS response missing inputs[]",
             reason=REASON_FANIN_STATUS_MISSING_INPUTS,
         )
+    # The ALOOP roster only. The USB lane reports the gadget capture it reads
+    # directly (or nothing, with direct off), so it takes no part in this
+    # compare — while an old daemon still reporting hw:Loopback,1,3 for it lands
+    # here as unexpected drift.
+    aloop_prefix = f"hw:{_ALOOP_CARD_ID},"
     actual_inputs = [
         (inp.get("label"), inp.get("pcm"))
         for inp in inputs
         if isinstance(inp, dict)
+        and str(inp.get("pcm") or "").startswith(aloop_prefix)
     ]
 
     progress_age = data.get("watchdog", {}).get(
@@ -964,14 +971,15 @@ def check_fanin_coupling() -> CheckResult:
 # the registered set is DERIVED — never restated — from the one place that
 # still owns a pair allocation:
 #
-#   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
+#   pairs 0-2, 4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
 #
 # Deriving rather than tabulating makes retirement MECHANICAL: a pair stops
 # being registered the moment its owning constant stops naming it.
 #
-# Pairs 5, 6 and 7 are absent because no owner names them: their PCM
-# definitions are gone, so an open pair in that range has resurrected a
-# deleted lane. That is the WARN — migration hygiene naming a pid, not a
+# Pairs 3, 5, 6 and 7 are absent because no owner names them: nothing writes
+# or reads them any more (pair 3 lost its last opener when the USB lane stopped
+# taking an aloop substream), so an open pair there has resurrected a deleted
+# lane. That is the WARN — migration hygiene naming a pid, not a
 # broken speaker. They stay reserved rather than reclaimed, per
 # deploy/modprobe.d/snd-aloop.conf: pcm_substreams stays 8 so no surviving
 # pair renumbers.
@@ -1155,10 +1163,11 @@ def check_aloop_registered_substreams() -> CheckResult:
             label,
             "warn",
             "snd-aloop substream(s) open with no registered purpose in this "
-            f"phase: {'; '.join(shown)}{suffix}. Only fan-in's five capture "
-            "lanes (pairs 0-4) are registered; pairs 5, 6 and 7 have no PCM "
-            "definitions left to open (ADR-0100 moved the content lane and the "
-            "summed music output to SHM rings). "
+            f"phase: {'; '.join(shown)}{suffix}. Only fan-in's four aloop "
+            "capture lanes (pairs 0-2 and 4) are registered; pairs 3, 5, 6 and "
+            "7 have no lane left to open (the USB lane reads the gadget capture "
+            "directly, and ADR-0100 moved the content lane and the summed music "
+            "output to SHM rings). "
             "A holder there means a rolled-back binary or a stale "
             "/etc/asound.conf resurrected a deleted lane. Identify the process "
             "above, stop it, and re-run `bash scripts/deploy-to-pi.sh` to "
