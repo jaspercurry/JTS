@@ -318,6 +318,44 @@ knobs · any browser or relay capture · an operator-less wizard.
 
 ## 9. Status log
 
+- 2026-09-09 16:45Z: **Row 3.3 opened as PR #4660** (`+3198/−1846`, 48 files,
+  11 commits, base `main`). The agent did not go quiet as an earlier entry
+  assumed — it ran ~2.7 h and reported in full. It needs
+  `/adversarial-review` and the owner's hardware pass (NN tier, DSP output
+  path); neither has run. Highlights a reviewer should check first:
+  - **The brief's premise that `_assert_bass_extension_safe` is unchanged is
+    false — it was re-plumbed**, but the safety logic is byte-identical (the
+    strict `LT → subsonic → limiter` index assertion and the limiter params);
+    the two hunks are the evidence source and `block["roles"][0]` →
+    `block["role"]`, the same value. The re-plumb derives authority from the
+    candidate's own field rather than from a summary of the block the emitter
+    just built — a strengthening.
+  - **A fail-closed behaviour change worth the adversarial pass:** where main
+    returned "no block" for a non-`sealed_v1` profile — silently emitting a
+    graph with none of the protection the profile described — an unemittable
+    field now raises and refuses the whole graph.
+  - **`/state.bass_extension` was superseded before it shipped, correctly.**
+    ADR-0270 (#4652, merged 16:00Z) caps `/state` at thirteen keys, so the
+    wiring was dropped and `control/state_aggregate.py` is 0 lines changed; the
+    fact stays in `setup_status.bass_extension_state`, its owning module.
+    **Verified independently: ADR-0270 is on main.**
+  - `jasper/bass_extension/apply_intent.py` deleted whole (168 lines) once the
+    dual-authority accommodation went; the `sealed_v1` tripwire replaced by an
+    emission-support contract (armed set == adapters whose alignment the field
+    reader recomputes, every other registered adapter refused behaviourally).
+  - Two tightenings beyond the brief: a transform declaring
+    `boost_headroom_db: 0.0` while carrying a real `LinkwitzTransform` is now
+    unpersistable (it would have slipped the protection stop), and the doctor
+    fails on an unreadable family instead of reporting "not commissioned / ok"
+    on a speaker whose graph the runtime proof is already blocking.
+  - `LADDER_INCOMPLETE` is deliberately kept with no producer today, with a
+    comment naming its removal condition. **Do not re-delete it on a
+    no-producer scan** — its producer is row 3.4b.
+  - A sixth container flake seen twice and not since:
+    `test_run_crossover_round.py::test_the_runner_never_claims_the_park_it_cannot_see`,
+    a 120 s-vs-90 s ssh-timeout race under parallel load; the file passes whole
+    and standalone on the branch and its base.
+
 - 2026-09-09 16:00Z: **B1 re-check verdict on #4643: the deviation is justified,
   the defect is NOT closed. The PR does not merge.** Two new blockers, and the
   orchestrator's 14:05Z ruling is formally superseded.

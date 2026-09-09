@@ -20,7 +20,7 @@ only unfinished lane and is mid-landing.**
 | 3.2 `bass-fit` view | **LANDED** — PR #4641 squash-merged at `4157a6030` |
 | 3.1 part 1 (bench seam) | **PR #4643 open, DO NOT MERGE on CI alone.** 4 must-fixes + 2 adversarial blockers; a fix agent was still pushing at handoff (its head moved five times in the last half hour, latest seen `af3e7a79a`, main merged in and the conflict resolved). **Read the current head — do not trust any SHA in this file for that branch** — and verify each finding in §3 against it |
 | 3.2b adapters honour the margin policy | **not started; gates 3.3** |
-| 3.3 candidate kind + emission | branch `claude/seat-w3-3-3-bass-candidate-kind` at `732cfd388`, 13 ahead, **no PR**, conflicted; see §1a. **NN** |
+| 3.3 candidate kind + emission | **PR #4660 open** on base `main`, `+3198/−1846` over 48 files, reported in full. Needs `/adversarial-review` + owner hardware pass; neither has run. **NN** |
 | 3.4a rung graph | unopened branch `claude/seat-w3-3-4a-rung-graph` (`628432b2b`); **NN** |
 | 3.4b ladder view | unopened branch `claude/seat-w3-3-4b-ladder-view` (`eda8ef1a5`) |
 | 3.1 part 2 (`--live` binding) | unopened branch `claude/seat-w3-3-1b-bench-field` (`a36c06172`) |
