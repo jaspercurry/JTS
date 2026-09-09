@@ -28,7 +28,7 @@ def _recording_popen(calls: list[list[str]]):
     """Build the minimal Popen double used by command-dispatch route tests."""
 
     class RecordingPopen:
-        def __init__(self, cmd):
+        def __init__(self, cmd, **_kwargs):
             calls.append(cmd)
 
     return RecordingPopen

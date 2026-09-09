@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -646,49 +646,6 @@ async def _outputd_io(stream, method: str, *args, on_accepted=None, **kwargs):
     if cancelled:
         raise asyncio.CancelledError
     return result
-
-
-async def wait_tts_drained_owned(
-    tts: Any,
-    *,
-    fallback_sec: float = 0.0,
-) -> None:
-    """Wait through the physical tail and defer repeated cancellation.
-
-    Cue and feedback callers use this once PCM may have been accepted. A
-    cancelled coroutine cannot revoke worker-thread socket writes, so the
-    caller retains duck/output ownership until the real drain waiter finishes,
-    then receives cancellation. ``fallback_sec`` supports legacy test/out-of-
-    tree playout objects that predate ``wait_drained``.
-    """
-
-    async def _wait() -> None:
-        wait_drained = getattr(tts, "wait_drained", None)
-        if callable(wait_drained):
-            await wait_drained()
-        elif fallback_sec > 0.0:
-            await asyncio.sleep(fallback_sec)
-
-    drain = asyncio.create_task(_wait(), name="tts-physical-drain")
-    deferred_cancel = False
-    current = asyncio.current_task()
-    while not drain.done():
-        try:
-            await asyncio.wait({drain})
-        except asyncio.CancelledError:
-            if current is None or current.cancelling() == 0:
-                break
-            deferred_cancel = True
-            current.uncancel()
-    if drain.cancelled():
-        raise asyncio.CancelledError
-    error = drain.exception()
-    if error is not None:
-        if deferred_cancel:
-            raise asyncio.CancelledError from None
-        raise error
-    if deferred_cancel:
-        raise asyncio.CancelledError
 
 
 def _outputd_segment_kind(kind: str) -> str:

@@ -426,12 +426,12 @@ impl OutputdState {
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
             content_bridge_mode: config.content_bridge_mode.as_str().to_string(),
             // PROTOTYPE SHM ring reader health.
-            shm_ring_path: config.shm_ring.as_ref().map(|r| r.path.clone()),
+            shm_ring_path: config.shm_ring.clone(),
             shm_ring_slots: AtomicU64::new(
                 config
                     .shm_ring
                     .as_ref()
-                    .map(|r| r.n_slots as u64)
+                    .map(|_| u64::from(jasper_ring::RING_SLOTS))
                     .unwrap_or(0),
             ),
             shm_ring_slot_frames: AtomicU64::new(
@@ -1184,6 +1184,8 @@ impl OutputdState {
                 push_kv_u64(&mut buf, "tts_clients", counters.tts_clients());
                 buf.push(',');
                 push_kv_u64(&mut buf, "frame_timeouts", counters.frame_timeouts());
+                buf.push(',');
+                push_kv_u64(&mut buf, "protocol_errors", counters.protocol_errors());
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,
@@ -2439,10 +2441,7 @@ mod tests {
         // composite answered differently would show up as a diff.
         let ring = |base: Config| Config {
             content_bridge_mode: ContentBridgeMode::ShmRing,
-            shm_ring: Some(crate::config::ShmRingConfig {
-                path: "/dev/shm/jts-ring/active.ring".to_string(),
-                n_slots: 2,
-            }),
+            shm_ring: Some("/dev/shm/jts-ring/active.ring".to_string()),
             ..base
         };
         let coherent = OutputdState::new(&ring(test_config()));
@@ -2572,10 +2571,7 @@ mod tests {
         // Enabled (flag armed): full daemon-truth block, content source flips.
         let cfg = Config {
             content_bridge_mode: ContentBridgeMode::ShmRing,
-            shm_ring: Some(crate::config::ShmRingConfig {
-                path: "/dev/shm/jts-ring/content.ring".to_string(),
-                n_slots: 2,
-            }),
+            shm_ring: Some("/dev/shm/jts-ring/content.ring".to_string()),
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
@@ -2681,10 +2677,7 @@ mod tests {
             content_bridge_mode: ContentBridgeMode::ShmRing,
             content_channels: 6,
             content_format: SampleFormat::S32Le,
-            shm_ring: Some(crate::config::ShmRingConfig {
-                path: "/dev/shm/jts-ring/content.ring".to_string(),
-                n_slots: 4,
-            }),
+            shm_ring: Some("/dev/shm/jts-ring/content.ring".to_string()),
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
@@ -2774,6 +2767,7 @@ mod tests {
             r#""connections_rejected":0"#,
             r#""tts_clients":0"#,
             r#""frame_timeouts":0"#,
+            r#""protocol_errors":0"#,
             r#""flushed_frames":7"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
