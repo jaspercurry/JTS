@@ -271,9 +271,14 @@ The room is measured on the seat cube, through the applied tune, ungated
    disclosed.
 5. `jasper-round-views room-median <round-dir>`: median, spread and
    per-position deviation below the ceiling; `room_median.json` is the input
-   the room candidate reads.
+   the room candidate reads. When several measurement sets are present, use
+   `--capture-id <take-id>` to select the set containing that capture. Repeat
+   takes count once per physical pose. The result names its source records,
+   missing identity fields and unusable takes; it uses only shared measured
+   frequency coverage. Use `--out <path>` to retain each candidate separately.
 6. `jasper-round-views room-persistence <round-dir>`: which peaks and dips
-   hold across the cube, and at what fraction of positions.
+   hold across the cube, and at what fraction of positions. Use the same
+   `--capture-id` selection as the median.
 7. `jasper-crossover-prescriber propose <round-dir> --prescription <doc>`
    judges a room prescription (`kind: jts_room_prescription`) against
    `room_median.json`; `compose --base <applied fingerprint>
@@ -285,7 +290,7 @@ The room is measured on the seat cube, through the applied tune, ungated
    round's numbers beside it; a regressed band is a disclosure, and restore
    is the doctrine's own path.
 
-Nothing above the ceiling changes on this evidence.
+These views do not authorize correction above the current ceiling.
 
 ## Evidence and recovery
 
