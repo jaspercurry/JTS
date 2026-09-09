@@ -27,9 +27,11 @@ Architecture:
 
 Module layout: this file owns the page render, the `_GET_ROUTES` /
 `_POST_ROUTES` tables and the request handler that dispatches them.
-The route bodies live in `correction_handlers`, and the session /
+The route bodies live in `correction_handlers`, the session /
 capture / microphone state both of them act on lives in
-`correction_capture`.
+`correction_capture`, and the loop bridge, CamillaController factory,
+JSON body reader and request exceptions all three use live in
+`correction_runtime`.
 
 Why a separate service from jasper-web (Spotify + voice settings):
 the correction flow eventually imports numpy/scipy through
@@ -67,15 +69,17 @@ from ._common import (
     send_html_response,
     send_json_response,
 )
-from . import correction_capture, correction_handlers
+from . import correction_capture, correction_handlers, correction_runtime
 from .correction_capture import (
-    BadRequest,
     MAX_SYNC_WAV_BODY_BYTES,
     REQUIRED_SAMPLE_RATE,
+    _FOLLOWER_DELEGATED_PAGE_PATHS,
+)
+from .correction_runtime import (
+    BadRequest,
+    CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
     RequestConflict,
     TuningSetupUnavailable,
-    _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
-    _FOLLOWER_DELEGATED_PAGE_PATHS,
     logger,
 )
 
@@ -266,7 +270,7 @@ def _dispatch_sync(handler: _Handler) -> None:
 
     def _schedule(coro):
         return asyncio.run_coroutine_threadsafe(
-            coro, correction_capture._ensure_loop())
+            coro, correction_runtime.ensure_loop())
 
     try:
         if path == "/sync/start":
@@ -284,7 +288,7 @@ def _dispatch_sync(handler: _Handler) -> None:
                 handler.hostname, _schedule)
         elif path == "/sync/play":
             payload, status = sync_flow.handle_play(
-                correction_capture._run_async, _schedule)
+                correction_runtime.run_async, _schedule)
         elif path == "/sync/analyze":
             try:
                 body = correction_handlers._read_wav_body(
@@ -565,7 +569,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
 
             if v2host.v2_volume_recovery_active():
                 succeeded, recovery = v2host.recover_session_volume(
-                    correction_capture._run_async, correction_capture._camilla
+                    correction_runtime.run_async, correction_runtime.camilla_controller
                 )
                 # A deferral is not a failure to recover, so it must
                 # not send the household after CamillaDSP: a live
@@ -607,7 +611,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
                     status=HTTPStatus.CONFLICT,
                 )
                 return
-            cam = correction_capture._camilla()
+            cam = correction_runtime.camilla_controller()
             from jasper.volume_owner import volume_owner
 
             recovery_owner = volume_owner()
@@ -651,19 +655,19 @@ def _dispatch_crossover(handler: _Handler) -> None:
                 return float(value)
 
             try:
-                recovery = correction_capture._run_async(
+                recovery = correction_runtime.run_async(
                     lease.recover_unresolved_volume_safety(
                         _set_recovery_volume,
                         _get_recovery_volume,
                     ),
-                    timeout=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                    timeout=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
                 )
             except concurrent.futures.TimeoutError:
                 log_event(
                     logger,
                     "correction.crossover_level_volume_safety_recovery_timeout",
                     level=logging.ERROR,
-                    timeout_s=_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
+                    timeout_s=CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S,
                 )
                 recovery = (
                     crossover_backend.UnresolvedVolumeRecoveryResult.FAILED
@@ -1296,9 +1300,9 @@ def _restore_capture_entry() -> None:
 
     from jasper.active_speaker import web_commissioning
 
-    correction_capture._run_async(
+    correction_runtime.run_async(
         web_commissioning.restore_pending_capture_entry_config(
-            camilla_factory=correction_capture._camilla,
+            camilla_factory=correction_runtime.camilla_controller,
         ),
         timeout=15.0,
     )
@@ -1328,7 +1332,7 @@ async def _restore_protected_neutral_program_graph() -> None:
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.dsp_apply import dsp_writer_lock
 
-    cam = correction_capture._camilla()
+    cam = correction_runtime.camilla_controller()
     async with dsp_writer_lock(
         DEFAULT_CAMILLA_CONFIG_DIR,
         source="crossover_v2_program_startup_recovery",
@@ -1377,9 +1381,9 @@ def _claim_crossover_state_owners() -> None:
         ),
         (
             "correction.room_startup_recovery_unavailable",
-            lambda: correction_capture._run_async(
+            lambda: correction_runtime.run_async(
                 correction_handlers.recover_room_startup_state(
-                    correction_capture._get_or_create_session(), correction_capture._camilla(),
+                    correction_capture._get_or_create_session(), correction_runtime.camilla_controller(),
                 ), timeout=15.0,
             ),
         ),
@@ -1397,7 +1401,7 @@ def _claim_crossover_state_owners() -> None:
     from jasper.camilla import CamillaUnavailable
 
     try:
-        correction_capture._run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
+        correction_runtime.run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
     except (OSError, RuntimeError, ValueError, CamillaUnavailable) as exc:
         log_event(
             logger,
@@ -1439,7 +1443,7 @@ def main(argv: list[str] | None = None) -> int:
     # tab, no requests for the threshold AND no work in flight) — the daemon's
     # last in-process chance to converge a capture sequence parked on the
     # all-muted anchor back to production before the process goes away. The
-    # hook is bounded (_run_async timeout) and exception-guarded by the
+    # hook is bounded (run_async timeout) and exception-guarded by the
     # tracker; on a deferred/failed restore the durable stash survives for the
     # next service-start claim boundary.
     return _wizard_cli.run_wizard_cli(

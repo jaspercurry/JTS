@@ -6,18 +6,18 @@
 
 The layer :mod:`jasper.web.correction_handlers` route bodies and
 :mod:`jasper.web.correction_setup`'s request handler both call: the
-measurement session and its lock, the single asyncio loop thread and the
-`_run_async` bridge onto it, the capture slot and its stop/position/retake
-signals, the volume and autolevel claims, and the household microphone /
-calibration / readiness readers.
+measurement session and its lock, the capture slot and its
+stop/position/retake signals, the volume and autolevel claims, and the
+household microphone / calibration / readiness readers. The loop bridge it
+schedules onto lives one layer down, in
+:mod:`jasper.web.correction_runtime`.
 
 Split out of ``correction_setup`` unchanged; it imports nothing from its two
-callers, which is what keeps the three modules acyclic.
+callers, which is what keeps the modules acyclic.
 """
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import hashlib
 import logging
 import math
@@ -29,7 +29,6 @@ from contextlib import (
     ExitStack,
 )
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -39,16 +38,8 @@ from ..audio_measurement import household_mic
 from ..log_event import log_event
 from ..transition_log import TransitionLog
 
-from ._common import (
-    JsonBodyError,
-    read_json_object,
-)
-
-
-#: One logger for this wizard's three modules (correction_setup,
-#: correction_handlers, correction_capture) so every event= line keeps
-#: the journal name operators already grep.
-logger = logging.getLogger("jasper.web.correction_setup")
+from . import correction_runtime
+from .correction_runtime import logger
 
 # When the writer boundary proceeds on an UNREADABLE receipt whose binding did
 # not match (a disclosed fail-open), surface it once per transition rather than
@@ -61,8 +52,6 @@ _AUTHORITY_UNCONFIRMED_DISCLOSURE = TransitionLog(reminder_sec=3600.0)
 # we refuse the upload rather than silently resampling (silent
 # resampling would produce a working but wrong correction).
 REQUIRED_SAMPLE_RATE = 48000
-MAX_JSON_BODY_BYTES = 64 * 1024
-MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
 # Browser captures are mono 16-bit PCM at 48 kHz. A normal 10 s sweep
 # upload is ~1 MB; 32 MB leaves generous room for measurement-window
 # setup latency while still avoiding unbounded reads in the Pi web
@@ -73,26 +62,11 @@ MAX_DEVICE_FIELD_CHARS = 160
 _FOLLOWER_DELEGATED_PAGE_PATHS = frozenset({"/", "/sync"})
 
 
-class BadRequest(ValueError):
-    """Client supplied an invalid request body."""
-
-
-class RequestConflict(RuntimeError):
-    """Client request conflicts with the current correction session state."""
-
-
-class TuningSetupUnavailable(RequestConflict):
-    """The optional tuning assistant has no configured model credential."""
-
-
-# Module-level session + bridge to the async loop. Lazy-init on
-# first use so importing this module is cheap (lets `python -m
-# jasper.web.correction_setup --help` work without spinning up a
-# loop).
+# Module-level session. Lazy-init on first use so importing this module is
+# cheap (lets `python -m jasper.web.correction_setup --help` work without
+# spinning up a session).
 _session_lock = threading.Lock()
 _session = None  # type: ignore[var-annotated]
-_loop: asyncio.AbstractEventLoop | None = None
-_loop_thread: threading.Thread | None = None
 
 # The measurement capture in flight, surfaced in /status, or None. Claimed by
 # the route that opens a session and updated by its background runner. Guarded
@@ -117,10 +91,6 @@ _capture_complete_request: Callable[[], None] | None = None
 _capture_retake_request: Callable[[], None] | None = None
 _CAPTURE_STOPPABLE_STATUSES = frozenset({"starting", "awaiting_capture"})
 _CAPTURE_IN_FLIGHT_STATUSES = _CAPTURE_STOPPABLE_STATUSES | {"stopping"}
-# Exact set/readback plus the emergency set/readback each use Camilla's bounded
-# reconnect contract. Keep the HTTP owner alive for the complete sequence.
-_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
-_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S = _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S
 
 
 #: The level-match session-measurement claim: taken by the ramp's first write,
@@ -329,7 +299,9 @@ def _enforce_session_volume_ceiling(v2host: Any) -> None:
     and a gate sampling on its own 1.5 s re-post cadence would race that drain.
     Detection therefore has ONE owner, which is this call.
     """
-    if not v2host.enforce_session_volume_ceiling_if_stale(_run_async, _camilla):
+    if not v2host.enforce_session_volume_ceiling_if_stale(
+        correction_runtime.run_async, correction_runtime.camilla_controller
+    ):
         return
     with _session_lock:
         gate = _capture_position_gate
@@ -610,7 +582,7 @@ def _run_capture(
 
         waiting = _publish_capture_waiting(kind.label)
         session_hold.enter_context(idle_hold(f"capture:{kind.label}"))
-        asyncio.run_coroutine_threadsafe(_run(), _ensure_loop())
+        asyncio.run_coroutine_threadsafe(_run(), correction_runtime.ensure_loop())
         spawned = True
         return {"status": waiting["status"]}
     finally:
@@ -710,75 +682,6 @@ def _clear_start_slot() -> None:
         _start_in_progress = False
 
 
-def _ensure_loop() -> asyncio.AbstractEventLoop:
-    """Start (or reuse) a single background asyncio loop. The HTTP
-    handlers schedule coroutines onto it via
-    `run_coroutine_threadsafe`."""
-    global _loop, _loop_thread
-    with _session_lock:
-        if _loop is None or not _loop.is_running():
-            _loop = asyncio.new_event_loop()
-            _loop_thread = threading.Thread(
-                target=_loop.run_forever,
-                name="jasper-correction-loop",
-                daemon=True,
-            )
-            _loop_thread.start()
-    return _loop
-
-
-def _run_async(coro, *, timeout: float | None = 60.0):
-    """Run a coroutine on the background loop and return its result.
-
-    Long timeout default (60 s) covers sweep playback (10 s) + setup
-    margin. Endpoints that should be fast (status / apply / reset)
-    pass shorter timeouts.
-    """
-    drained = threading.Event()
-
-    async def _tracked():
-        try:
-            return await coro
-        finally:
-            drained.set()
-
-    fut = asyncio.run_coroutine_threadsafe(_tracked(), _ensure_loop())
-    try:
-        return fut.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        # A timed-out HTTP/poll thread no longer owns a useful result. Cancel
-        # the loop task so delayed measurement audio cannot start after the
-        # caller has already reported failure. Owning coroutines retain their
-        # bounded/shielded rollback in ``finally`` blocks.
-        fut.cancel()
-        if not drained.wait(_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S):
-            log_event(
-                logger,
-                "correction.async_cancel_drain_timeout",
-                level=logging.CRITICAL,
-                timeout_s=_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S,
-            )
-            # A terminal response must never release measurement ownership
-            # while its graph/volume finalizer can still mutate the speaker.
-            # The threshold above is an observability alarm, not permission to
-            # abandon cleanup; fail closed until the owner actually drains.
-            drained.wait()
-        raise
-
-
-def _run_graph_mutation(coro):
-    """Wait for one Room-owned graph mutation to reach a terminal result.
-
-    CamillaController bounds and drains each transport attempt. Shared writer-
-    lock admission is currently blocking and remains a Shared-owned bounded-
-    admission gap. Once admitted, adding a second outer deadline here could
-    cancel between graph load and rollback/state persistence, so Room waits for
-    the transaction's terminal result.
-    """
-
-    return _run_async(coro, timeout=None)
-
-
 def _get_or_create_session():
     """Single global session. Reset by /reset (which transitions
     APPLIED → IDLE) or by an explicit /start (which creates a fresh
@@ -816,29 +719,6 @@ def _replace_session(
             repeat_main_position=repeat_main_position,
         )
         return _session
-
-
-def _read_json_body(
-    handler: BaseHTTPRequestHandler,
-    *,
-    max_bytes: int = MAX_JSON_BODY_BYTES,
-) -> dict[str, Any]:
-    """Parse JSON body. Empty body → {}."""
-    try:
-        return read_json_object(handler, max_bytes=max_bytes)
-    except JsonBodyError as exc:
-        if exc.code == "invalid_content_length":
-            raise BadRequest("invalid Content-Length") from exc
-        raise BadRequest(str(exc)) from exc
-
-
-def _camilla() -> "Any":
-    """Construct a CamillaController against the configured host/port.
-    Factored so tests can monkeypatch a single seam — and so the
-    /start reset path doesn't drift from the /apply + /reset paths.
-    """
-    from jasper.camilla import primary_controller
-    return primary_controller()
 
 
 def _save_household_mic(record: Any, *, serial: str | None = None) -> None:
@@ -1031,9 +911,9 @@ def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None
 
     asyncio.run_coroutine_threadsafe(
         _run_session_background_audio(sess, _run_sweep),
-        _ensure_loop(),
+        correction_runtime.ensure_loop(),
     )
-    _run_async(sess.state_changed_from(from_state), timeout=6.0)
+    correction_runtime.run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
 
@@ -1058,9 +938,9 @@ def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
 
     asyncio.run_coroutine_threadsafe(
         _run_session_background_audio(sess, _run_sweep),
-        _ensure_loop(),
+        correction_runtime.ensure_loop(),
     )
-    _run_async(sess.state_changed_from(from_state), timeout=6.0)
+    correction_runtime.run_async(sess.state_changed_from(from_state), timeout=6.0)
 
 
 def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
@@ -1209,8 +1089,8 @@ async def _classify_live_bass_extension_graph(cam: Any):
 def _room_correction_readiness() -> dict[str, Any]:
     """Synchronous web-handler bridge for Active's fresh decision."""
 
-    return _run_async(
-        _read_room_correction_readiness(_camilla()),
+    return correction_runtime.run_async(
+        _read_room_correction_readiness(correction_runtime.camilla_controller()),
         timeout=2.0,
     )
 

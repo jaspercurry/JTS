@@ -41,6 +41,7 @@ from pathlib import Path
 from jasper.web import (
     correction_capture,
     correction_handlers,
+    correction_runtime,
     correction_setup,
     correction_tuning,
 )
@@ -374,7 +375,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
 
-    monkeypatch.setattr(correction_capture, "_read_json_body", lambda _h: {})
+    monkeypatch.setattr(correction_runtime, "read_json_body", lambda _h: {})
     monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
@@ -456,7 +457,7 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
         seen["kind"] = kind
         return {"status": "awaiting_capture"}
 
-    monkeypatch.setattr(correction_capture, "_read_json_body", lambda _h: {})
+    monkeypatch.setattr(correction_runtime, "read_json_body", lambda _h: {})
     monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
     monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
@@ -534,7 +535,7 @@ def test_run_async_timeout_waits_for_coroutine_cleanup():
 
     def invoke():
         try:
-            correction_capture._run_async(operation(), timeout=0.05)
+            correction_runtime.run_async(operation(), timeout=0.05)
         except concurrent.futures.TimeoutError:
             pass
         except (OSError, RuntimeError, ValueError) as exc:
@@ -567,12 +568,12 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
             await asyncio.to_thread(release_cleanup.wait)
 
     monkeypatch.setattr(
-        correction_capture,
-        "_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S",
+        correction_runtime,
+        "RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S",
         0.01,
     )
     monkeypatch.setattr(
-        correction_capture,
+        correction_runtime,
         "log_event",
         lambda _logger, event, **_fields: (
             drain_alarm.set()
@@ -583,7 +584,7 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
 
     def invoke():
         try:
-            correction_capture._run_async(operation(), timeout=0.01)
+            correction_runtime.run_async(operation(), timeout=0.01)
         except concurrent.futures.TimeoutError:
             pass
         finally:
@@ -641,8 +642,8 @@ def test_read_json_body_rejects_invalid_content_length():
         headers = {"Content-Length": "not-a-number"}
         rfile = io.BytesIO()
 
-    with pytest.raises(correction_capture.BadRequest, match="Content-Length"):
-        correction_capture._read_json_body(Handler())
+    with pytest.raises(correction_runtime.BadRequest, match="Content-Length"):
+        correction_runtime.read_json_body(Handler())
 
 
 def test_local_capture_setup_rejects_a_stale_session_before_binding(monkeypatch):
@@ -662,7 +663,7 @@ def test_local_capture_setup_rejects_a_stale_session_before_binding(monkeypatch)
     )
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_capture.RequestConflict, match="no longer current"):
+    with pytest.raises(correction_runtime.RequestConflict, match="no longer current"):
         correction_handlers._handle_local_capture_setup(handler)
 
 
@@ -721,7 +722,7 @@ def test_local_noise_upload_rejects_unbound_setup_before_reading_body(monkeypatc
     )
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_capture.RequestConflict, match="bind the local"):
+    with pytest.raises(correction_runtime.RequestConflict, match="bind the local"):
         correction_handlers._handle_upload_noise(handler)
 
     assert handler.rfile.tell() == 0
@@ -750,7 +751,7 @@ def test_local_noise_upload_requires_completed_level_lock_before_body(
     )
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_capture.RequestConflict, match="lock the measurement"):
+    with pytest.raises(correction_runtime.RequestConflict, match="lock the measurement"):
         correction_handlers._handle_upload_noise(handler)
 
     assert handler.rfile.tell() == 0
@@ -797,8 +798,8 @@ def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
         lambda _handler: events.append("body-read") or b"WAVE",
     )
     monkeypatch.setattr(
-        correction_capture,
-        "_run_async",
+        correction_runtime,
+        "run_async",
         lambda coro, timeout: asyncio.run(coro),
     )
     monkeypatch.setattr(
@@ -806,7 +807,7 @@ def test_local_noise_upload_rearms_watchdog_on_async_loop_before_body(
         "_schedule_measurement_sweep",
         lambda *_args, **_kwargs: events.append("sweep-scheduled"),
     )
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: object())
 
     correction_handlers._handle_upload_noise(SimpleNamespace())
 
@@ -829,7 +830,7 @@ def test_local_autolevel_rejects_unbound_setup_before_audio_side_effects(
     )
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_capture.RequestConflict, match="must be complete"):
+    with pytest.raises(correction_runtime.RequestConflict, match="must be complete"):
         correction_handlers._handle_autolevel_start(SimpleNamespace())
 
 
@@ -847,7 +848,7 @@ def test_local_autolevel_rejects_stale_restart_after_lock(monkeypatch):
     )
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
 
-    with pytest.raises(correction_capture.RequestConflict, match="already locked"):
+    with pytest.raises(correction_runtime.RequestConflict, match="already locked"):
         correction_handlers._handle_autolevel_start(SimpleNamespace())
 
 
@@ -903,7 +904,7 @@ def test_read_wav_body_rejects_invalid_content_length():
         headers = {"Content-Length": "not-a-number"}
         rfile = io.BytesIO()
 
-    with pytest.raises(correction_capture.BadRequest, match="Content-Length"):
+    with pytest.raises(correction_runtime.BadRequest, match="Content-Length"):
         correction_handlers._read_wav_body(Handler())
 
 
@@ -912,14 +913,14 @@ def test_read_wav_body_rejects_large_or_incomplete_body():
         headers = {"Content-Length": "5"}
         rfile = io.BytesIO(b"12345")
 
-    with pytest.raises(correction_capture.BadRequest, match="too large"):
+    with pytest.raises(correction_runtime.BadRequest, match="too large"):
         correction_handlers._read_wav_body(TooLarge(), max_bytes=4)
 
     class Incomplete:
         headers = {"Content-Length": "5"}
         rfile = io.BytesIO(b"123")
 
-    with pytest.raises(correction_capture.BadRequest, match="incomplete"):
+    with pytest.raises(correction_runtime.BadRequest, match="incomplete"):
         correction_handlers._read_wav_body(Incomplete())
 
 
@@ -1264,7 +1265,7 @@ def test_e2e_apply_reaches_the_dsp_despite_failed_measurement_evidence(monkeypat
         raise RuntimeError("stop here — the DSP itself is not this test's subject")
 
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(correction_capture, "_camilla", _reached_dsp)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", _reached_dsp)
     server, base = _start_server()
     try:
         request_with_csrf(
@@ -2165,10 +2166,10 @@ def test_e2e_local_setup_and_noise_conflicts_are_client_errors(monkeypatch):
         raise FileNotFoundError("unknown microphone calibration")
 
     def unbound_noise(_handler):
-        raise correction_capture.RequestConflict("bind the local microphone first")
+        raise correction_runtime.RequestConflict("bind the local microphone first")
 
     def unbound_level(_handler):
-        raise correction_capture.RequestConflict("bind before level matching")
+        raise correction_runtime.RequestConflict("bind before level matching")
 
     monkeypatch.setattr(
         correction_handlers,
@@ -2865,7 +2866,7 @@ def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     sess = _locked_autolevel_session("apply", original=-20.0)
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_capture, "_camilla", lambda: _volume_recording_cam(restored)
+        correction_runtime, "camilla_controller", lambda: _volume_recording_cam(restored)
     )
     async def authority_current(_cam, _expected):
         return None
@@ -3099,7 +3100,7 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
         }
 
     monkeypatch.setattr(correction_capture, "_get_or_create_session", Session)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: object())
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: object())
     async def changed_authority_with_graph(cam):
         return await changed_authority(cam), GraphSafety(
             classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -3139,7 +3140,7 @@ def test_reset_restores_listening_volume_when_reset_raises(monkeypatch, tmp_path
     )
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_capture, "_camilla", lambda: _volume_recording_cam(restored)
+        correction_runtime, "camilla_controller", lambda: _volume_recording_cam(restored)
     )
 
     with pytest.raises(RuntimeError):
@@ -3187,7 +3188,7 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(
     sess = _FakeSession()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_capture, "_camilla", lambda: _volume_recording_cam([])
+        correction_runtime, "camilla_controller", lambda: _volume_recording_cam([])
     )
     async def resolve(*_args):
         order.append("resolve")
@@ -3358,7 +3359,7 @@ def test_reset_releases_intent_when_audio_quiescence_fails(monkeypatch):
     sess = _FakeSession()
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
-        correction_capture, "_camilla", lambda: _volume_recording_cam([])
+        correction_runtime, "camilla_controller", lambda: _volume_recording_cam([])
     )
 
     with pytest.raises(RuntimeError, match="audio cleanup failed"):
@@ -3539,7 +3540,7 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
     fader = Fader()
     owner = VolumeOwner(set_fader_db=fader.set, get_fader_db=fader.get_volume_db)
     install_volume_owner(owner)
-    run = correction_capture._run_async
+    run = correction_runtime.run_async
     fader.writes = -1
     run(owner.declare_household_level_db(-18.0))
     sess = make_measurement_session(tmp_path)
@@ -3563,7 +3564,7 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
             stopped.set()
 
     monkeypatch.setattr(correction_capture, "_get_or_create_session", lambda: sess)
-    monkeypatch.setattr(correction_capture, "_camilla", lambda: fader)
+    monkeypatch.setattr(correction_runtime, "camilla_controller", lambda: fader)
     monkeypatch.setattr(window_module, "measurement_window", lambda: nullcontext())
     monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_kwargs: tmp_path / "tone.wav")
     monkeypatch.setattr(playback, "TonePlayer", Player)
@@ -3587,7 +3588,7 @@ def test_room_terminal_cleanup_releases_real_owner_and_retries(
     if interrupted_write:
         wait_until_sync(write_started.is_set)
         assert scheduled[-1].cancel()
-        correction_capture._ensure_loop().call_soon_threadsafe(allow_write.set)
+        correction_runtime.ensure_loop().call_soon_threadsafe(allow_write.set)
     wait_until_sync(lambda: not sess.autolevel_run_in_progress)
     assert stopped.is_set()
 
@@ -3814,7 +3815,7 @@ async def test_fresh_room_session_recovers_only_its_active_predecessor(
         assert cam.current == baseline
         return
     if recovery in {"missing_snapshot", "legacy_wrong_hash"}:
-        with pytest.raises(correction_capture.RequestConflict):
+        with pytest.raises(correction_runtime.RequestConflict):
             await correction_handlers._run_locked_room_reset(fresh, cam)
         assert cam.current == baseline
         return

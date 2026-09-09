@@ -187,7 +187,7 @@ def check_correction_idle_exit_holds() -> CheckResult:
     ``platform/systemd.py`` escalates its "idle-exit deferred" line to WARNING past
     ``HOLD_LEAK_WARN_AFTER_SEC``; this reads that escalation back. Read-only:
     nothing may release a hold out from under a possibly-still-mutating
-    measurement (``correction_capture._run_async``'s fail-closed invariant).
+    measurement (``correction_runtime.run_async``'s fail-closed invariant).
 
     Scoped to ``jasper-correction-web.service``, the only wizard that threads a
     real hold — the others pass ``_systemd.no_hold`` at every call site. See

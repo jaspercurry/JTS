@@ -101,7 +101,7 @@ def _isolated_state(tmp_path, monkeypatch):
 
 
 def _bg_run_async(coro, *, timeout=None):
-    """Mimic correction_capture._run_async for the host recovery helpers: run the
+    """Mimic correction_runtime.run_async for the host recovery helpers: run the
     coroutine to completion and return its result (each on a fresh loop — the
     session-volume drains are self-contained, no cross-loop context manager)."""
     return asyncio.run(coro)
