@@ -15,10 +15,11 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 
 _LAYOUT_JSON = Path(__file__).resolve().parents[1] / "rust" / "jasper-ring" / "layout.json"
 
 
 @lru_cache(maxsize=1)
-def ring_abi() -> dict:
-    return json.loads(_LAYOUT_JSON.read_text(encoding="utf-8"))
+def ring_abi() -> MappingProxyType:
+    return MappingProxyType(json.loads(_LAYOUT_JSON.read_text(encoding="utf-8")))

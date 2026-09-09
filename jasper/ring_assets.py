@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING
 
 from jasper.audio_hardware.dac import latency_floor_for
 from jasper.fanin_coupling import (
-    DEFAULT_FANIN_RING_SLOTS,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_SLOT_FRAMES,
     RingWire,
@@ -123,16 +122,15 @@ RING_CONF_DEFAULT_FORMAT = "S16_LE"
 RING_CONF_DEFAULT_CHANNELS = 2
 
 # The depth :func:`render_ring_conf_wire` writes into the outputd-read blocks
-# (:data:`RING_CONF_N_SLOTS_PCMS`) — the central rings' ping-pong floor,
-# ``jasper_ring::RING_SLOTS`` (``rust/jasper-ring/layout.json``, which
-# ``tests/test_ring_assets`` pins this against). outputd's Ring B reader takes
-# it from the crate rather than an env, so rendering it there is what stops a
-# hand-edited conf.d from declaring a depth outputd never builds. Ring A
-# (``jts_ring_capture``) still takes its depth from fan-in's own
-# ``JASPER_FANIN_RING_SLOTS`` env (``rust/jasper-fanin/src/config.rs``) — this
-# constant happens to equal that env's default today, which is why the two
-# have not yet visibly diverged.
-RING_CONF_N_SLOTS = DEFAULT_FANIN_RING_SLOTS
+# (:data:`RING_CONF_N_SLOTS_PCMS`): ``jasper_ring::RING_SLOTS``, spelled as a
+# literal because the Pi cannot read ``rust/jasper-ring/layout.json``;
+# ``tests/test_ring_assets`` pins the two equal. outputd takes the depth from
+# the crate rather than an env, so rendering it here is what stops a
+# hand-edited conf.d from declaring a depth outputd never builds. The render
+# only runs on a box with a declared latency floor (:func:`ring_conf_wire_report`
+# skips ``no_declared_floor`` first); elsewhere the backstop is outputd's
+# fail-loud attach.
+RING_CONF_N_SLOTS = 2
 
 # The blocks :func:`render_ring_conf_wire` writes :data:`RING_CONF_N_SLOTS`
 # into: the two whose READER is jasper-outputd, which takes the ring depth
