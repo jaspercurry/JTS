@@ -35,6 +35,10 @@ from jasper.fanin_coupling import (
 )
 
 
+# A ring readiness gate returns (ok, detail) and fails CLOSED.
+RingGate = Callable[[], tuple[bool, str]]
+
+
 @dataclass(frozen=True)
 class _EnvSnapshot:
     path: Path
@@ -1411,16 +1415,12 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
 
     Unreadable-topology policy is caller-selectable:
 
-    - ``strict_unreadable=True``: fail-CLOSED. Both the unattended ``--auto``
-      pass AND the explicit operator arm use this. For the auto pass: an
-      unattended default that armed on an unreadable topology would
-      arm→rollback on every boot/deploy the file is transiently corrupt. For
-      the OPERATOR arm: outputd's own guard is not a sufficient backstop by
-      itself — it fails open on that same error (the topology read failure
-      clears the active-lane marker, so the stereo predicate then admits the
-      ring) — so the operator arm stays fail-CLOSED too: a human is present to
-      fix an unreadable topology, and refusing costs them a rerun where
-      admitting costs a park.
+    - ``strict_unreadable=True``: fail-CLOSED, for a caller deciding whether to
+      MOVE a graph. An arm decision taken on an unreadable topology would
+      arm→rollback on every boot/deploy the file is transiently corrupt, and
+      outputd's own guard is not a sufficient backstop by itself — it fails open
+      on that same error (the topology read failure clears the active-lane
+      marker, so the stereo predicate then admits the ring).
     - ``strict_unreadable=False``: fail-OPEN, kept for callers that only want the
       topology's OPINION rather than an arm decision.
     """

@@ -376,7 +376,7 @@ def active_emit_devices(
     The CHANNEL axis is deliberately absent: the ACTIVE ring's width is
     structural (the pipeline's output count, from the same saved topology the
     resolver reads), so there is nothing for a device helper to adopt.
-    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready`` proves the two ends
+    ``jasper.fanin.ring_readiness.ring_edge_width_ready`` proves the two ends
     agree per ring at the arm.
     """
     from jasper.fanin_coupling import (

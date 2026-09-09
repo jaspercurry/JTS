@@ -813,7 +813,7 @@ def test_a_ring_device_under_an_off_ring_plan_is_reported_not_ignored():
     assert stereo.notes == (), stereo
 
     active = transport_coherence_report(
-        outputd_env={},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
         camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
     )
     assert active.errors == (), active
@@ -2607,14 +2607,14 @@ def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
         for err in armed
     ), armed
 
-    # CONTROL 1 — the mid-arm WAYPOINT is not an error. The graph has moved onto
-    # the active ring while the endpoint marker has not yet been derived from it;
-    # that is the state step 1 exists to create, and calling it an error
-    # deadlocks the ladder from the capture side exactly as the playback side
-    # deadlocked it before #2329.
+    # CONTROL 1 — the mid-arm WAYPOINT is not an error. Both halves have moved
+    # while outputd's bridge is still off the ring; that is the state step 1
+    # exists to create, and calling it an error deadlocks the ladder from the
+    # capture side exactly as the playback side deadlocked it before #2329.
     assert _coherence_errors(
         capture=RING_CAPTURE_DEVICE,
         playback=RING_ACTIVE_PLAYBACK_DEVICE,
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
     ) == ()
 
     # CONTROL 2 — the fully armed ring pair is clean, on both capture halves a
@@ -2715,13 +2715,9 @@ def _run_validate_outputd_env(
         ),
         encoding="utf-8",
     )
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text("", encoding="utf-8")
-
     ok, lines = validate_outputd_env(
         base_env=str(base_env),
         outputd_env=str(outputd_env),
-        fanin_env=str(fanin_env),
         camilla_statefile=str(statefile),
         camilla2_statefile=str(tmp_path / "crossover-statefile.yml"),
         output_topology=str(topology_path),
@@ -2778,12 +2774,14 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     wire = resolve_ring_wire(topology)
     assert f"    format: {wire.sample_format}" in ring_graph
 
-    # --- ARM-1: marker absent. The state step 1 leaves behind. -------------
+    # --- ARM-1: marker absent, outputd still off the ring bridge. The state
+    # step 1 leaves behind on a box the coupling reconciler has not converged.
     rc, out = _run_validate_outputd_env(
         tmp_path,
         graph_yaml=ring_graph,
         topology=topology,
         marker=None,
+        content_bridge="direct",
     )
     assert rc == 0, out
     assert out.startswith("ok note="), out

@@ -51,13 +51,17 @@ its own name (:mod:`jasper.control.transport_park`).
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from jasper.log_event import log_event
+
+if TYPE_CHECKING:  # lazy: ring_readiness is heavy and only the annotation needs it
+    from jasper.fanin.ring_readiness import RingGate
 
 logger = logging.getLogger(__name__)
 
 
-def _ring_gates() -> "tuple[tuple[str, object], ...]":
+def _ring_gates() -> "tuple[tuple[str, RingGate], ...]":
     """The ring-readiness proofs a graph move must pass, in ONE order.
 
     ORDER IS A DIAGNOSTIC DECISION, not cost: the coarser roleful-admission

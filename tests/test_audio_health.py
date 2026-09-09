@@ -1329,7 +1329,7 @@ def test_the_arm_waypoint_is_published_as_a_note_and_never_as_parked(
 
     register_passive_only_dac(monkeypatch)
     state = audio_health._transport_state(
-        outputd_env={},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
         camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
         topology=_no_lane_active_two_way(),
     )

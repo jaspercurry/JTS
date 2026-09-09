@@ -3493,8 +3493,8 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
             _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE
         ),
         topology=_active_topology("mono", "active_2_way"),
-        coupling="loopback",
         marker=None,
+        content_bridge="direct",
     )
 
     assert rc == 0, out

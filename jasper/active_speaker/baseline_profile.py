@@ -3051,7 +3051,7 @@ def applied_baseline_hardware_match(
     :func:`recompose_applied_baseline_yaml` has always asked these four questions
     inline before emitting; it still asks them, through here. The new caller is
     the unattended roleful gate
-    (``jasper.fanin.coupling_reconcile.ring_roleful_unattended_ready``), which
+    (``jasper.fanin.ring_readiness.ring_roleful_unattended_ready``), which
     must answer "does this box HAVE a hardware-matched applied baseline?" without
     emitting anything. Re-deriving the compare there would put the definition of
     "matches the hardware" in two places — the failure mode where one site is

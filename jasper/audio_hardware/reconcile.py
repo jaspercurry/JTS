@@ -585,7 +585,6 @@ class Pass:
                 base_env=self.env_file,
                 outputd_env=stage,
                 outputd_label=self.outputd_env_file,
-                fanin_env=self.fanin_env_file,
                 camilla_statefile=self.camilla_statefile,
                 camilla2_statefile=self.camilla2_statefile,
                 output_topology=self.output_topology_path,

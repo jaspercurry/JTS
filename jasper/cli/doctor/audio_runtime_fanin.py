@@ -828,11 +828,9 @@ def check_fanin_coupling() -> CheckResult:
     Snapcast pipe a bonded LEADER feeds instead of any local ring.
 
     KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``: a
-    running fan-in is on the ring whatever that file says, and a healthy box's
-    key may not be written yet (coupling-auto runs
-    ``After=jasper-fanin.service``). The file's own legacy-token question
-    belongs to :func:`check_fanin_coupling_value`, and whether outputd consumes
-    what this graph writes to :func:`check_content_transport_coherence`.
+    running fan-in is on the ring whatever that file says. Whether outputd
+    consumes what this graph writes belongs to
+    :func:`check_content_transport_coherence`.
     """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,

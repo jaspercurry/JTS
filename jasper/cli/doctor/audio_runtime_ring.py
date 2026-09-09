@@ -549,7 +549,7 @@ def _resolved_ring_wire():
     """The ring wire an arm would render into the conf.d, or ``None``.
 
     The same two calls the arm's own capability gate makes
-    (:func:`jasper.fanin.coupling_reconcile.ring_wire_caps_ready`). ``None`` when
+    (:func:`jasper.fanin.ring_readiness.ring_wire_caps_ready`). ``None`` when
     the box declares a wire neither language recognizes; that refusal is
     ``resolve_wire_for_gate``'s to report.
     """

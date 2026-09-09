@@ -436,7 +436,6 @@ function commissionIssueReason(codes) {
   // something the household cannot fix by retrying. Each names the state and
   // where to look WITHOUT the operator's shell command — those remedies live on
   // the CLI and journal surfaces, never here (#2344, #2412).
-  //
   if (codes.indexOf('commissioning_active_endpoint_unarmed') >= 0) {
     return 'This speaker’s output path isn’t finished setting up, so driver ' +
       'tests can’t run yet. Open System status.';

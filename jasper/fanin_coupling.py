@@ -617,7 +617,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
 # set a caller tests membership against when it has a device name in hand and
 # needs to know "is this end of the graph a ring end?" — the emitter side
 # (``jasper.active_speaker.camilla_yaml.active_emit_devices``) and the arm gate
-# (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) both read it, so
+# (``jasper.fanin.ring_readiness.ring_edge_width_ready``) both read it, so
 # neither carries its own list of the three names.
 RING_PCM_DEVICES = (
     RING_CAPTURE_DEVICE,

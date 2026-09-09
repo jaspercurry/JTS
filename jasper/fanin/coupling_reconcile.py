@@ -119,8 +119,6 @@ ENTRY_LOCK_POLL_SECONDS = 0.2
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]
-# A ring preflight gate returns the same (ok, detail).
-RingGate = Callable[[], tuple[bool, str]]
 
 
 @dataclass(frozen=True)
@@ -782,6 +780,12 @@ def _converge_ring(
     # file content under its own per-file lock (ADR-0235 G8) rather than
     # replaying this stale pre-lock text, so a concurrent bash writer's key
     # to the same file is preserved rather than clobbered.
+    #
+    # NOTHING IS ROLLED BACK (ADR-0100), so the failure path reports what
+    # actually reached the disk: the fanin write can succeed and the outputd one
+    # fail, and a `changed=False` there would tell the caller the filesystem did
+    # not move when it did.
+    wrote = False
     if changed:
         try:
             if fanin_changed:
@@ -791,20 +795,23 @@ def _converge_ring(
                         RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
                     ),
                 )
+                wrote = True
             if outputd_changed:
                 outputd_new_text, _ = _write_env_actions(
                     outputd_snapshot.path, _outputd_actions
                 )
+                wrote = True
         except OSError as e:
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
                 result="write_failed",
                 reason=reason,
+                changed=wrote,
                 error=e,
                 level=logging.ERROR,
             )
-            return CouplingResult(ok=False, changed=False, detail=str(e))
+            return CouplingResult(ok=False, changed=wrote, detail=str(e))
 
     if ring_path_converged:
         log_event(

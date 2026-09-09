@@ -995,7 +995,7 @@ def _flat_output_terminally_muted(
 
     The three-fact proof itself was PROMOTED to ``graph_safety`` when a second
     caller appeared — the ring arm's anchor acceptance
-    (``jasper.fanin.coupling_reconcile._anchor_is_all_muted``) needs the same
+    (``jasper.fanin.ring_readiness._anchor_is_all_muted``) needs the same
     three facts about the same shape of graph, and a mirrored copy would be a
     drift site on a hearing-safety path. What stays here is the binding this
     module owns: the flat graph's commission-mute NAME for ``index`` and the
