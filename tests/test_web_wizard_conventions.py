@@ -769,10 +769,62 @@ def test_untabled_wizard_dispatchers_guard_reads_and_guard_before_work(path):
     )
 
 
+def test_bespoke_csrf_scheme_guards_the_host_before_the_token_compare():
+    """The sanctioned bespoke scheme is exempt from the shared
+    double-submit chokepoint, not from the Host/Origin allowlist axis
+    `guard_mutating_request` also applies."""
+    for file_name in _BESPOKE_CSRF_WIZARDS:
+        path = next(p for p in WEB_PY_FILES if p.name == file_name)
+        source = path.read_text()
+        check_csrf_defs = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
+        ]
+        assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
+        csrf_calls = [
+            node for node in ast.walk(check_csrf_defs[0])
+            if isinstance(node, ast.Call)
+        ]
+        # AST-walk for a real Call node, not a regex over the source
+        # text — a docstring/comment reading "guard_mutating_host(handler)"
+        # must not satisfy this.
+        guard_calls = [
+            c for c in csrf_calls if _call_target_name(c) == "guard_mutating_host"
+        ]
+        assert guard_calls, (
+            f"{path}::_check_csrf must call guard_mutating_host() first — "
+            "the shared Host/Origin allowlist axis is not part of the "
+            "bespoke-CSRF-scheme exception"
+        )
+        compare_calls = [
+            c for c in csrf_calls if _call_target_name(c) == "compare_digest"
+        ]
+        assert compare_calls, (
+            f"{path}::_check_csrf must compare the token with "
+            "secrets.compare_digest()"
+        )
+        # Ordering invariant guard_mutating_request's docstring documents
+        # (_common.py): the host/Origin guard runs before the token
+        # compare. AST line positions, not string indexes.
+        assert (
+            min(c.lineno for c in guard_calls)
+            < min(c.lineno for c in compare_calls)
+        ), (
+            f"{path}::_check_csrf must call guard_mutating_host() before "
+            "the compare_digest() token compare"
+        )
+
+
+# The chokepoint reach a do_POST may have: the guard called in the
+# dispatcher, the shared `dispatch_post` seam that calls it there, or
+# wake_corpus_setup's sanctioned bespoke scheme (pinned above).
+_CHOKEPOINT_CALLS = ("guard_mutating_request", "dispatch_post", "_check_csrf")
+
+
 def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
     """A form wizard's guard lives in the route body — it must read the
     body to find the token — so it is pinned behaviourally above instead.
-    Every other do_POST still calls the chokepoint itself."""
+    Every other do_POST still reaches the chokepoint itself."""
     handlers = list(_mutating_handlers())
     assert handlers, "expected wizard do_POST handlers to scan"
     body_guarded = {
@@ -792,81 +844,39 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
                 "guard_mutating_request() itself"
             )
             continue
-        if path.name in _BESPOKE_CSRF_WIZARDS:
-            # Call syntax, not just a docstring/comment mention: match the
-            # invocation shape, same as _CSRF_GUARD_CALL_RE above.
-            assert re.search(r"\b_check_csrf\s*\(", seg), (
-                f"{path}::{name} lost its bespoke _check_csrf() call"
-            )
-            source = path.read_text()
-            check_csrf_defs = [
-                node for node in ast.walk(ast.parse(source))
-                if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
-            ]
-            assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
-            csrf_def = check_csrf_defs[0]
-            csrf_calls = [
-                node for node in ast.walk(csrf_def) if isinstance(node, ast.Call)
-            ]
-            # AST-walk for a real Call node, not a regex over the source
-            # text — a docstring/comment reading "guard_mutating_host(handler)"
-            # must not satisfy this.
-            guard_calls = [
-                c for c in csrf_calls
-                if _call_target_name(c) == "guard_mutating_host"
-            ]
-            assert guard_calls, (
-                f"{path}::_check_csrf must call guard_mutating_host() first — "
-                "the shared Host/Origin allowlist axis is not part of the "
-                "bespoke-CSRF-scheme exception"
-            )
-            compare_calls = [
-                c for c in csrf_calls if _call_target_name(c) == "compare_digest"
-            ]
-            assert compare_calls, (
-                f"{path}::_check_csrf must compare the token with "
-                "secrets.compare_digest()"
-            )
-            # Ordering invariant guard_mutating_request's docstring documents
-            # (_common.py): the host/Origin guard runs before the token
-            # compare. AST line positions, not string indexes.
-            assert (
-                min(c.lineno for c in guard_calls)
-                < min(c.lineno for c in compare_calls)
-            ), (
-                f"{path}::_check_csrf must call guard_mutating_host() before "
-                "the compare_digest() token compare"
-            )
-            continue
         # AST Call, not a substring — a comment naming the guard must not
-        # satisfy the chokepoint, same rule as the bespoke branch above.
+        # satisfy the chokepoint.
         handler_fn = ast.parse(textwrap.dedent(seg)).body[0]
         if not any(
             isinstance(node, ast.Call)
-            and _call_target_name(node) == "guard_mutating_request"
+            and _call_target_name(node) in _CHOKEPOINT_CALLS
             for node in ast.walk(handler_fn)
         ):
             offenders.append(f"{path}::{name}")
     assert offenders == [], (
-        "wizard mutating handlers that never call guard_mutating_request() "
+        "wizard mutating handlers that never reach guard_mutating_request() "
         "(the shared Host/Origin + CSRF chokepoint in jasper/web/_common.py):\n"
         + "\n".join(offenders)
     )
 
 
 def test_mutating_handlers_route_check_before_csrf_guard():
-    """The first conditional in a do_POST/do_DELETE must be routing, never
-    the CSRF guard: 'Route-check unknown POST paths before
+    """The first conditional in a hand-rolled do_POST/do_DELETE must be
+    routing, never the CSRF guard: 'Route-check unknown POST paths before
     guard_mutating_request() so bogus paths return 404 without revealing
     CSRF state' (AGENTS.md / jasper/web/_common.py). In every compliant
     handler the first `if` tests the request path or a route-table lookup
     of it; a handler whose first branch is the guard 403s on bogus paths
-    instead."""
+    instead. A dispatcher on the shared `dispatch_post` seam has no branch
+    of its own — the seam looks the route up first, pinned behaviourally by
+    test_tabled_wizard_unknown_post_path_404s_with_or_without_a_token."""
     branch_re = re.compile(r"^\s*(?:if|elif)\b")
     offenders = []
     for path, name, seg in _mutating_handlers():
         if path.name == "__main__.py":
             continue  # pure delegator, asserted above
+        if "dispatch_post(" in seg:
+            continue  # on the seam; ordering is the seam's, pinned there
         for line in seg.splitlines():
             if not branch_re.match(line):
                 continue

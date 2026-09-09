@@ -13,26 +13,26 @@ What's NOT shared: per-wizard route handlers, page layouts, form bodies.
 ## Conventions for new wizards
 
 A wizard is two route tables of bare `handler_fn(handler)` callables and a
-dispatcher that routes, guards, and calls — nothing else:
+dispatcher that hands them to the shared seam — nothing else:
 
     _GET_ROUTES = {"/": _get_index, "/state": _get_state}
     _POST_ROUTES = {"/save": _post_save, "/clear": _post_clear}
 
-    def do_POST(self):
-        # Unknown paths 404 before any guard, never revealing CSRF state.
-        handler_fn = _POST_ROUTES.get(route_path(self.path))
-        if handler_fn is None:
-            self.send_error(HTTPStatus.NOT_FOUND); return
-        if not guard_mutating_request(self):
-            reject_csrf(self); return
-        handler_fn(self)
+    def do_GET(self):
+        dispatch_get(self, _GET_ROUTES)
 
-`do_GET` is the same shape with `guard_read_request(self)`. `route_path`
-makes `/save`, `/save/` and `/save?x=1` one key. Dispatcher-guarded POST
-bodies wear `@json_body`. A wizard whose guard varies per route guards no
-POST in `do_POST`; each body declares its own — `@form_guarded` (token in
-the form body), `@header_guarded` (token in the header), `@read_guarded`
-(read-only probe: no token, cross-site navigations refused).
+    def do_POST(self):
+        dispatch_post(self, _POST_ROUTES, guard="header")
+
+Unknown paths 404 before any guard, never revealing CSRF state. `route_path`
+makes `/save`, `/save/` and `/save?x=1` one key; a prefix family such as
+`/layer/<name>` passes `resolve=`, a `path -> callable or None` hook.
+`guard="header"` runs `guard_mutating_request` in the dispatcher, ahead of
+any body read, and those POST bodies wear `@json_body`. A wizard whose
+guard varies per route passes `guard="per-body"` and each body declares its
+own — `@form_guarded` (token in the form body), `@header_guarded` (token in
+the header), `@read_guarded` (read-only probe: no token, cross-site
+navigations refused).
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
@@ -73,10 +73,10 @@ import re
 import secrets
 import subprocess
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
-from typing import Any
+from typing import Any, Literal
 
 from ..atomic_io import atomic_write_text
 from ..platform import control_client as control
@@ -916,6 +916,55 @@ def json_body(fn: Callable[[Any, dict[str, Any]], None]) -> Callable[[Any], None
         fn(handler, body)
     route.reads_json_body = True  # type: ignore[attr-defined]
     return route
+
+
+# The handler is `Any`: a table typed against `BaseHTTPRequestHandler` fails
+# contravariance against each wizard's own narrower `_Handler`.
+RouteFn = Callable[[Any], None]
+RouteTable = Mapping[str, RouteFn]
+Resolver = Callable[[str], RouteFn | None]
+
+
+def _route_for(
+    handler: Any, table: RouteTable, resolve: Resolver | None,
+) -> RouteFn | None:
+    """Table lookup then the prefix-family hook; sends the 404 itself."""
+    path = route_path(handler.path)
+    route = table.get(path)
+    if route is None and resolve is not None:
+        route = resolve(path)
+    if route is None:
+        handler.send_error(http.HTTPStatus.NOT_FOUND)
+    return route
+
+
+def dispatch_get(
+    handler: Any, table: RouteTable, *, resolve: Resolver | None = None,
+) -> None:
+    """Route a wizard GET. Unknown paths 404 before the read guard runs."""
+    route = _route_for(handler, table, resolve)
+    if route is not None and guard_read_request(handler):
+        route(handler)
+
+
+def dispatch_post(
+    handler: Any,
+    table: RouteTable,
+    *,
+    guard: Literal["header", "per-body"] = "header",
+    resolve: Resolver | None = None,
+) -> None:
+    """Route a wizard POST. Unknown paths 404 before any guard, never
+    revealing CSRF state. `guard="header"` runs the mutating chokepoint
+    here, ahead of any body read; `guard="per-body"` guards nothing — each
+    route body wears `@form_guarded` / `@header_guarded` / `@read_guarded`."""
+    route = _route_for(handler, table, resolve)
+    if route is None:
+        return
+    if guard == "header" and not guard_mutating_request(handler):
+        reject_csrf(handler)
+        return
+    route(handler)
 
 
 # ---------------------------------------------------------------------------
