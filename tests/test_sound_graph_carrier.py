@@ -1298,24 +1298,23 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
 
 
 @pytest.mark.parametrize("wire", ["S32_LE", "S16_LE"])
-def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
+def test_solo_reemit_carries_the_ring_geometry(tmp_path, wire):
     """The COMMISSIONED stereo box's devices block, end to end.
 
-    jts.local (Apple dongle, solo) runs chunk 256 / target 1536 over the ring:
-    its DacProfile floor, which already fits the ring's capacity and so is
-    passed through, NOT the certified 128/128 an end-to-end ring graph carries.
-    Moving an ordinary stereo graph onto that pair is a retune, so this pins the
-    whole block rather than one field. BOTH halves of the coupling cross on a
-    solo box, so the emitted formats follow the declared wire — the narrow
-    rollback pin included — never the emitter's own default.
+    jts.local (Apple dongle, solo) has BOTH ends on the ring, so its re-emit
+    carries the certified ring pairing — the same geometry the flat boot graph
+    and the ACTIVE ring graph pass explicitly, not a per-DAC number. That is the
+    whole point of pinning the block rather than one field. BOTH halves of the
+    coupling cross on a solo box, so the emitted formats follow the declared
+    wire — the narrow rollback pin included — never the emitter's own default.
     """
-    from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
     from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.fanin_coupling import (
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_QUEUELIMIT,
+        RING_CAMILLA_TARGET_LEVEL,
+    )
     from jasper.multiroom.member_config import member_camilla_kwargs
-
-    from .doctor_test_support import record_active_dac
-
-    record_active_dac(APPLE_USB_C_DONGLE_ID)
 
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
@@ -1328,9 +1327,9 @@ def test_solo_reemit_carries_the_boxs_own_floor_over_the_ring(tmp_path, wire):
     ).yaml
 
     expected = {
-        "chunksize": 256,
-        "target_level": 1536,
-        "queuelimit": 4,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
         "enable_rate_adjust": False,
         "capture_device": RING_CAPTURE_DEVICE,
         "playback_device": RING_PLAYBACK_DEVICE,

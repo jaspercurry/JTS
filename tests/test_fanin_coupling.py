@@ -165,9 +165,8 @@ def test_ring_kwargs_emit_ring_capture_device_s32le():
     # token now, not what an armed-but-undeclared box emits.
     assert RING_WIRE_FORMAT_WIDE == "S32_LE"
     # The coupling carries DEVICES, not geometry: this emit resolves its own
-    # chunk through resolve_camilla_latency_for_devices, which clamps a ring end
-    # to what the transport can negotiate. The VALUE is the box's floor and
-    # varies; the bound does not.
+    # chunk through resolve_camilla_latency_for_devices, which answers a ring
+    # end with what the transport can negotiate.
     devices = parse_camilla_devices_config(cfg)
     assert devices["chunksize"] <= ring_capacity_frames()
 

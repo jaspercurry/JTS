@@ -81,15 +81,6 @@ def ring_capacity_frames() -> int:
     THIS FUNCTION IS ISSUE #2147's SEAM: landing it makes the slot size derive
     from the DAC floor across all four components (fan-in, the ioplug, the
     conf.d render, the Camilla emitter) instead of the constant product below.
-    It does not remove the clamp in
-    ``camilla_latency.resolve_camilla_latency_for_devices`` — it makes
-    the clamp stop biting, because a board that earns a bigger ring would then
-    report one here and its floor would fit.
-
-    The two are the same defect on different axes: #2147 is the PERIOD axis
-    (a DAC's declared ``outputd_period_frames`` cannot reach the ring), and the
-    clamp is the CHUNK axis (a DAC's declared ``camilla_chunksize`` reached the
-    ring when it could not fit).
     """
 
     return RING_SLOT_FRAMES * DEFAULT_FANIN_RING_SLOTS
@@ -110,16 +101,13 @@ class RingCamillaGeometry(TypedDict):
     enable_rate_adjust: bool
 
 
-# The geometry a graph built END-TO-END on the ring passes EXPLICITLY: the
-# ACTIVE ring's per-driver graph (``active_emit_devices``) and the flat boot
-# graph (``emit_flat_outputd_cutover_config``). Certified together — chunk 128
-# is one ring slot and queuelimit 1 makes the slot handshake blocking, which is
-# also why rate_adjust is off (nothing for the rate controller to steer).
-#
-# NOT the fallback for an ordinary sound/correction graph. Those carry the box's
-# own floor clamped to the ring's capacity
-# (``camilla_latency.resolve_camilla_latency_for_devices``), so moving
-# them onto this pair is a retune with a listening test, not a refactor.
+# The one geometry of every ring-ended graph: passed explicitly by the ACTIVE
+# ring's per-driver graph (``active_emit_devices``) and the flat boot graph
+# (``emit_flat_outputd_cutover_config``), resolved for every other graph by
+# ``camilla_latency.resolve_camilla_latency_for_devices``. Certified together —
+# chunk 128 is one ring slot and queuelimit 1 makes the slot handshake
+# blocking, which is also why rate_adjust is off (nothing for the rate
+# controller to steer).
 #
 # ``MappingProxyType`` so a caller cannot retune every ring box by mutating it;
 # the cast is what keeps ``**RING_CAMILLA_GEOMETRY`` per-key typed at the two
@@ -932,12 +920,10 @@ def capture_kwargs_for_coupling() -> dict[str, object]:
     NO topology — the shipped geometry — because nothing this function emits is
     per-topology: the devices are fixed and the format is one per box.
 
-    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is not a fact about the
-    transport devices: it is resolved per graph by
-    ``camilla_latency.resolve_camilla_latency_for_devices`` (the box's
-    floor, clamped to :func:`ring_capacity_frames` at a ring end), and only a
-    graph built end-to-end on the ring passes :data:`RING_CAMILLA_GEOMETRY`
-    instead.
+    THE DEVICE AXIS ONLY. CamillaDSP's latency geometry is resolved per graph
+    by ``camilla_latency.resolve_camilla_latency_for_devices`` (a ring end
+    takes :data:`RING_CAMILLA_GEOMETRY`); the two graphs built end-to-end on
+    the ring pass it explicitly.
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its
