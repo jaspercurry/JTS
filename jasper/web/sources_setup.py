@@ -153,7 +153,7 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
         "</div>"
     )
     state_error = (
-        '<div class="info-card" id="sources-state-error" '
+        '<div class="banner banner--danger" id="sources-state-error" '
         'hidden role="alert">Source settings could not be read. '
         "Controls are paused to avoid showing a false state. Run jasper-doctor "
         "or re-run install.sh, then retry.</div>"
