@@ -350,7 +350,7 @@ def test_concurrent_weather_save_and_transit_seed_dont_lose_keys(tmp_path):
 
     def weather_save():
         # Owned-key replace that must preserve in-lock non-owned keys, exactly
-        # like weather_setup._handle_save's transform.
+        # like weather_setup._post_save's transform.
         def transform(cur):
             result = {k: v for k, v in cur.items() if k not in owned}
             result.update(london)

@@ -108,8 +108,8 @@ ExecStart=/opt/jasper/bin/jasper-fanin
 # Host-slaved USB clock cleanup. With JASPER_FANIN_USB_DIRECT=enabled and
 # JASPER_FANIN_HOST_CLOCK=enabled the `fanin-host-clock` thread owns the
 # gadget's "Capture Pitch 1000000" ctl and resets it on every clean exit — but
-# SIGKILL / OOM-kill / watchdog abort skip that, and a host must never stay
-# slaved to a daemon that is no longer running.
+# SIGKILL / OOM-kill / watchdog abort / panic abort skip that, and a host must
+# never stay slaved to a daemon that is no longer running.
 #
 # The helper re-derives the gate (BOTH flags, case-insensitively, matching the
 # config parser) and the card (from JASPER_FANIN_USB_DIRECT_DEVICE, default

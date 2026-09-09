@@ -731,6 +731,7 @@ impl Drop for TtsClientSlot {
 pub struct TtsServerCounters {
     slots: TtsClientSlots,
     frame_timeouts: Arc<AtomicU64>,
+    protocol_errors: Arc<AtomicU64>,
     dropped_commands: Arc<AtomicU64>,
     dropped_audio_frames: Arc<AtomicU64>,
     /// Milliseconds after `epoch` at the last dropped AUDIO command, or
@@ -746,6 +747,7 @@ impl Default for TtsServerCounters {
         Self {
             slots: TtsClientSlots::new(TTS_MAX_CLIENTS),
             frame_timeouts: Arc::new(AtomicU64::new(0)),
+            protocol_errors: Arc::new(AtomicU64::new(0)),
             dropped_commands: Arc::new(AtomicU64::new(0)),
             dropped_audio_frames: Arc::new(AtomicU64::new(0)),
             last_drop_ms: Arc::new(AtomicU64::new(NEVER_MS)),
@@ -774,6 +776,11 @@ impl TtsServerCounters {
         self.frame_timeouts.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// One connection dropped because the client broke the wire protocol.
+    pub fn mark_protocol_error(&self) {
+        self.protocol_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn connections_rejected(&self) -> u64 {
         self.slots.rejected()
     }
@@ -784,6 +791,10 @@ impl TtsServerCounters {
 
     pub fn frame_timeouts(&self) -> u64 {
         self.frame_timeouts.load(Ordering::Relaxed)
+    }
+
+    pub fn protocol_errors(&self) -> u64 {
+        self.protocol_errors.load(Ordering::Relaxed)
     }
 
     pub fn dropped_commands(&self) -> u64 {
@@ -896,6 +907,71 @@ where
 pub struct QueuedTtsCommand {
     pub epoch: u64,
     pub command: TtsCommand,
+}
+
+/// Where one TTS server's reader threads hand what they read: the daemon's
+/// playout queue, the flush epoch they stamp commands with, the socket
+/// counters they bump, and the daemon name its `event=` lines carry.
+#[derive(Clone)]
+pub struct TtsCommandSink {
+    pub daemon: &'static str,
+    pub tx: SyncSender<QueuedTtsCommand>,
+    pub epoch: Arc<AtomicU64>,
+    pub counters: TtsServerCounters,
+}
+
+/// Read one admitted client until it closes, stalls mid-frame, breaks the
+/// protocol, or loses its consumer — the loop both TTS servers run.
+///
+/// Only `FLUSH_SYNC` differs between them (the ack and its bookkeeping belong
+/// to whichever daemon owns the consumer), so `flush` performs one, returning
+/// false to close the connection. `on_command` is the daemon's own tally of
+/// accepted commands, kept where a daemon publishes one.
+pub fn serve_client(
+    sink: &TtsCommandSink,
+    stream: UnixStream,
+    frame_deadline: Duration,
+    log: impl Fn(String),
+    on_command: impl Fn(),
+    flush: impl Fn(&mut BufReader<UnixStream>) -> bool,
+) {
+    let daemon = sink.daemon;
+    let mut reader = BufReader::new(stream);
+    loop {
+        match read_command_deadlined(&mut reader, frame_deadline) {
+            Ok(Some(TtsCommand::Close)) | Ok(None) => return,
+            Ok(Some(TtsCommand::FlushSync)) => {
+                if !flush(&mut reader) {
+                    return;
+                }
+            }
+            Ok(Some(command)) => {
+                on_command();
+                let queued = QueuedTtsCommand {
+                    epoch: sink.epoch.load(Ordering::SeqCst),
+                    command,
+                };
+                if !try_enqueue_command(daemon, &sink.tx, queued, &sink.counters, &log) {
+                    return;
+                }
+            }
+            Err(e) if is_frame_timeout(&e) => {
+                sink.counters.mark_frame_timeout();
+                log(format!(
+                    "event={daemon}.tts_socket.frame_timeout deadline_s={}",
+                    frame_deadline.as_secs()
+                ));
+                return;
+            }
+            Err(e) => {
+                sink.counters.mark_protocol_error();
+                log(format!(
+                    "event={daemon}.tts_socket.protocol_error detail={e}"
+                ));
+                return;
+            }
+        }
+    }
 }
 
 /// Hand one command to a daemon's playout queue.
@@ -1464,6 +1540,57 @@ mod tests {
         assert_eq!(counters.connections_rejected(), 1);
         drop(held);
         assert_eq!(counters.tts_clients(), 0);
+    }
+
+    /// Drive one client through [`serve_client`]: write `payload`, then go
+    /// quiet and wait for the reader thread to end. That join is the "drops
+    /// the client" half of the pins below.
+    fn serve_client_payload(payload: &[u8]) -> TtsServerCounters {
+        let counters = TtsServerCounters::default();
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        let sink = TtsCommandSink {
+            daemon: "test",
+            tx,
+            epoch: Arc::new(AtomicU64::new(0)),
+            counters: counters.clone(),
+        };
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let handle = thread::spawn(move || {
+            serve_client(
+                &sink,
+                server,
+                Duration::from_millis(20),
+                |_| {},
+                || {},
+                |_| true,
+            );
+        });
+
+        client.write_all(payload).unwrap();
+        client.flush().unwrap();
+        handle.join().unwrap();
+        drop(client);
+        counters
+    }
+
+    /// A client that breaks the wire is dropped, and the break reaches the
+    /// counters both daemons publish from.
+    #[test]
+    fn serve_client_counts_a_protocol_error_and_drops_the_client() {
+        let counters = serve_client_payload(b"NOT_A_COMMAND\n");
+
+        assert_eq!(counters.protocol_errors(), 1);
+        assert_eq!(counters.frame_timeouts(), 0);
+    }
+
+    /// A client that announces a payload and then stops writing is dropped on
+    /// the frame deadline, so its reader thread cannot park forever.
+    #[test]
+    fn serve_client_counts_a_frame_timeout_and_drops_the_client() {
+        let counters = serve_client_payload(b"AUDIO 1000\n");
+
+        assert_eq!(counters.frame_timeouts(), 1);
+        assert_eq!(counters.protocol_errors(), 0);
     }
 
     /// [`serve`] creates its socket's parent, hands every admitted connection

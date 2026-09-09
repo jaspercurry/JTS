@@ -682,9 +682,10 @@ def test_airplay_renderer_torn_ring_conf_falls_back_to_default(tmp_path: Path):
 
 def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
     """Ring A's live tier: fanin STATUS output.ring.occupancy (live
-    write_seq-read_seq depth) times output.period_frames. It is the only
-    live Ring A evidence there is — ADR-0100 left fan-in no playback PCM to
-    sample, and ADR-0266 deleted the ALSA-delay field that once led here.
+    write_seq-read_seq depth, a SLOT count) times the ring's slot size,
+    RING_SLOT_FRAMES=128. It is the only live Ring A evidence there is —
+    ADR-0100 left fan-in no playback PCM to sample, and ADR-0266 deleted the
+    ALSA-delay field that once led here.
     """
     fanin_socket = JsonStatusSocket(
         {"output": {"period_frames": 100, "ring": {"occupancy": 3}}},
@@ -695,15 +696,15 @@ def test_airplay_renderer_prefers_live_ring_a_occupancy(tmp_path: Path):
             tmp_path, _PARSED_TIER_CAMILLA, fanin_status_socket=fanin_status
         )
 
-    # Labeled values, not just the tier name: occupancy*period is commutative,
-    # so an accidental occupancy<->period_frames swap at the call site would
-    # still land on the same 300 and pass an unlabeled assertion here.
-    assert (
-        "ring_a tier=live-status occupancy=3 period_frames=100" in result.stderr
+    # Labeled values, not just the tier name: the payload carries a decoy
+    # output.period_frames (fan-in's render period, NOT the slot size), so a
+    # regression that multiplies by it again lands on 300 rather than 384.
+    assert "ring_a tier=live-status occupancy=3 slot_frames=128 frames=384" in (
+        result.stderr
     )
-    # Ring A live 3*100=300 + Camilla 2048 + Ring B default 128 + outputd
-    # DAC default 3072 = 5548 / 48000.
-    assert "audio_backend_latency_offset_in_seconds = -0.115583;" in rendered
+    # Ring A live 3*128=384 + Camilla 2048 + Ring B default 128 + outputd
+    # DAC default 3072 = 5632 / 48000.
+    assert "audio_backend_latency_offset_in_seconds = -0.117333;" in rendered
     # One STATUS connect: fanin serves both of Ring A's candidate fields in
     # one reply, never a round-trip per dotted field.
     assert len(fanin_socket.requests) == 1

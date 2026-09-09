@@ -292,16 +292,31 @@ def test_check_correction_state_dirs_warns_when_locked_out_by_mode(
     assert r.reason == correction.REASON_STATE_DIRS_NOT_WRITABLE
 
 
-def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
+def test_check_correction_state_dirs_flags_uploaded_calibrations_needing_review(
     monkeypatch,
     tmp_path,
 ):
     """Vendor records are repaired automatically on deploy; an UPLOADED
     record's convention is the household's own declaration, so the doctor
-    surfaces it for review instead of anyone flipping it silently."""
+    surfaces it for review instead of anyone flipping it silently. This
+    advisory rides the state-dirs row (both inspect the correction root) and
+    only shows once the dirs themselves are healthy."""
     from jasper.audio_measurement import calibration as cal
 
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    _pretend_group_is_jasper(monkeypatch)
+    root = tmp_path / "correction"
+    root.mkdir()
+    os.chmod(root, 0o2770)
+    for name in ("calibration_mics", "tones"):
+        d = root / name
+        d.mkdir()
+        os.chmod(d, 0o2770)
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(root))
+    cal_dir = tmp_path / "calibrations"
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(cal_dir))
+
+    assert correction.check_correction_state_dirs().reason == ""
+
     cal.store_calibration(
         text="20 -1\n1000 0\n20000 2\n",
         provider="manual_upload",
@@ -309,7 +324,7 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         label="Lab mic",
         source="uploaded:lab.txt",
         sign_convention="correction",
-        root=tmp_path,
+        root=cal_dir,
     )
     cal.store_calibration(  # a vendor record: not this check's business
         text="20 -1\n1000 0\n20000 2\n",
@@ -319,15 +334,16 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         source="vendor_lookup",
         serial="810-8494",
         sign_convention="correction",
-        root=tmp_path,
+        root=cal_dir,
     )
 
-    r = correction.check_correction_uploaded_calibration_sign()
+    r = correction.check_correction_state_dirs()
     assert r.status == "ok"
     assert r.reason == correction.REASON_UPLOADED_CALIBRATION_SIGN_REVIEW
 
     # An upload that already declares the response convention is clean, and
     # the check never fails the doctor either way.
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "clean"))
     cal.store_calibration(
         text="20 -3\n1000 0\n20000 4\n",
         provider="manual_upload",
@@ -335,12 +351,9 @@ def test_check_correction_uploaded_calibration_sign_flags_only_uploads(
         label="Other mic",
         source="uploaded:other.txt",
         sign_convention="response",
-        root=tmp_path,
+        root=tmp_path / "clean",
     )
-    assert correction.check_correction_uploaded_calibration_sign().status == "ok"
-
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path / "empty"))
-    clean = correction.check_correction_uploaded_calibration_sign()
+    clean = correction.check_correction_state_dirs()
     assert clean.status == "ok"
     assert clean.reason == ""
 
@@ -482,6 +495,9 @@ def test_check_correction_current_config_warns_on_an_unreadable_statefile(
     assert r.reason == correction.REASON_CAMILLA_STATEFILE_UNREADABLE
 
 
+# ---------- crossover v2 cloud pipeline (+ folded-in applied-grade finding)
+
+
 def _patch_v2_state(monkeypatch, state):
     from jasper.web import correction_crossover_v2 as v2host
 
@@ -509,59 +525,6 @@ def _cloud_group_unavailable(*, reason, locked=True):
         "geometry": {"locked": locked},
         "pipeline": {"available": False, "reason": reason},
     }
-
-
-@pytest.mark.parametrize(
-    "state, status, reason",
-    [
-        (None, "ok", correction.REASON_CLOUD_NOT_RUN),
-        ({"cloud": {}}, "ok", correction.REASON_CLOUD_NOT_RUN),
-        # Only cloud_verify (the post-apply, household-actionable grade) gates
-        # the warn: cloud_measure is the uncorrected pre-apply baseline, and
-        # gating on it warns forever on a perfectly corrected speaker.
-        (
-            {"cloud": {
-                "cloud_measure": _cloud_group(passed=True, locked=True,
-                                              excluded=[[8000.0, 9000.0]]),
-                "cloud_verify": _cloud_group(passed=False),
-            }},
-            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
-        ),
-        (
-            {"cloud": {
-                "cloud_measure": _cloud_group(passed=False,
-                                              excluded=[[8000.0, 9000.0]]),
-                "cloud_verify": _cloud_group(passed=True),
-            }},
-            "ok", "",
-        ),
-        ({"cloud": {"cloud_measure": _cloud_group(passed=True)}}, "ok", ""),
-        # A closed group whose pipeline never became available is not itself a
-        # spec failure.
-        (
-            {"cloud": {
-                "cloud_measure": _cloud_group_unavailable(reason="combine_failed"),
-            }},
-            "ok", "",
-        ),
-    ],
-    ids=[
-        "never-run", "no-groups", "verify-failed", "pre-apply-failed-only",
-        "all-passing", "pipeline-unavailable",
-    ],
-)
-def test_check_crossover_v2_cloud_pipeline_verdicts(
-    monkeypatch, state, status, reason
-):
-    _patch_v2_state(monkeypatch, state)
-
-    r = correction.check_crossover_v2_cloud_pipeline()
-
-    assert r.status == status
-    assert r.reason == reason
-
-
-# ---------- crossover v2: is the applied profile graded?
 
 
 def _v2_applied_state(**overrides):
@@ -593,97 +556,142 @@ def _verify_cloud(*, passed, flatness):
 
 
 @pytest.mark.parametrize(
-    "overrides, status, reason",
+    "state, status, reason",
     [
-        # Nothing applied: never a manufactured finding.
+        # ---- no correction applied: the row is the cloud-only verdict.
         pytest.param(
-            {"applied": False}, "ok",
-            correction.REASON_APPLIED_GRADE_NOT_APPLIED, id="not-applied",
-        ),
-        # Applied with no post-apply group and no VERIFY outcome — the silence
-        # `check_crossover_v2_cloud_pipeline` structurally cannot see.
-        pytest.param(
-            {}, "ok", correction.REASON_APPLIED_GRADE_NEVER_GRADED,
-            id="never-graded",
-        ),
-        # Express tier omits the post-apply position group, so a passing VERIFY
-        # outcome is the whole grade and satisfies the check on its own.
-        pytest.param(
-            {"verify": {"outcome": "pass"}}, "ok", "", id="verify-alone",
+            None, "ok", correction.REASON_CLOUD_NOT_RUN, id="never-run",
         ),
         pytest.param(
-            {"verify": {"outcome": "inconclusive"}}, "ok",
+            {"cloud": {}}, "ok", correction.REASON_CLOUD_NOT_RUN, id="no-groups",
+        ),
+        # Only cloud_verify (the post-apply, household-actionable grade) gates
+        # the warn: cloud_measure is the uncorrected pre-apply baseline, and
+        # gating on it warns forever on a perfectly corrected speaker.
+        pytest.param(
+            {"cloud": {
+                "cloud_measure": _cloud_group(passed=True, locked=True,
+                                              excluded=[[8000.0, 9000.0]]),
+                "cloud_verify": _cloud_group(passed=False),
+            }},
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
+            id="verify-failed",
+        ),
+        pytest.param(
+            {"cloud": {
+                "cloud_measure": _cloud_group(passed=False,
+                                              excluded=[[8000.0, 9000.0]]),
+                "cloud_verify": _cloud_group(passed=True),
+            }},
+            "ok", "", id="pre-apply-failed-only",
+        ),
+        pytest.param(
+            {"cloud": {"cloud_measure": _cloud_group(passed=True)}}, "ok", "",
+            id="all-passing",
+        ),
+        # A closed group whose pipeline never became available is not itself a
+        # spec failure.
+        pytest.param(
+            {"cloud": {
+                "cloud_measure": _cloud_group_unavailable(reason="combine_failed"),
+            }},
+            "ok", "", id="pipeline-unavailable",
+        ),
+        # ---- applied: the folded-in grade finding takes the row's reason —
+        # an un-warned cloud spec cannot see a correction that never got
+        # graded, so this is exactly the gap the fold-in closes (#2160).
+        # Nothing applied yet: the grade finding is not itself a finding, so
+        # it never competes with the cloud verdict's own reason.
+        pytest.param(
+            _v2_applied_state(applied=False), "ok",
+            correction.REASON_CLOUD_NOT_RUN, id="not-applied",
+        ),
+        # Applied with no post-apply group and no VERIFY outcome — the
+        # silence the cloud verdict alone structurally cannot see.
+        pytest.param(
+            _v2_applied_state(), "ok",
+            correction.REASON_APPLIED_GRADE_NEVER_GRADED, id="never-graded",
+        ),
+        # Express tier omits the post-apply position group, so a passing
+        # VERIFY outcome is the whole grade and satisfies the finding on its
+        # own — no cloud session either, so the cloud reason shows through.
+        pytest.param(
+            _v2_applied_state(verify={"outcome": "pass"}), "ok",
+            correction.REASON_CLOUD_NOT_RUN, id="verify-alone",
+        ),
+        pytest.param(
+            _v2_applied_state(verify={"outcome": "inconclusive"}), "ok",
             correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
             id="verify-inconclusive",
         ),
         # #2160: a grade that EXISTS is not a grade that PASSED. This printed
-        # "applied and graded" beside a cloud line reading spec=fail.
+        # "applied and graded" beside a cloud line reading spec=fail. The
+        # cloud_verify failure here also gates the row's own status, and its
+        # reason wins the row's reason on a WARN; the spatial-failed grade
+        # detail still rides the detail text.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": _verify_cloud(passed=False, flatness=_FAILED_GAUGE),
-            },
-            "ok", correction.REASON_APPLIED_GRADE_SPATIAL_FAILED,
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
+            ),
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-failed",
         ),
         # passed=False with evaluable=False means "could not be measured", not
         # "failed" — SpecFlatness.passed's own read-it-with-evaluable rule.
+        # The cloud reason still wins the row's reason on this WARN.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": _verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
-            },
-            "ok", correction.REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud=_verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
+            ),
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="spatial-unmeasurable",
         ),
         # #2098: a Full session verified only at the mark is not the claim Full
         # promised.
         pytest.param(
-            {"tier": "full", "verify": {"outcome": "pass"}}, "ok",
+            _v2_applied_state(tier="full", verify={"outcome": "pass"}), "ok",
             correction.REASON_APPLIED_GRADE_MARK_ONLY, id="full-mark-only",
         ),
         # A group that closed but could not combine reaches the same arm — the
         # wording claims delivered evidence only, never "never closed".
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": {
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud={
                     "cloud_verify": _cloud_group_unavailable(
                         reason="combine_failed"
                     ),
                 },
-            },
+            ),
             "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY,
             id="full-closed-but-unavailable",
         ),
         # The mark IS express's whole promise; a finding here would fire on
         # every express session ever run.
         pytest.param(
-            {"tier": "express", "verify": {"outcome": "pass"}}, "ok", "",
-            id="express-mark",
+            _v2_applied_state(tier="express", verify={"outcome": "pass"}),
+            "ok", correction.REASON_CLOUD_NOT_RUN, id="express-mark",
         ),
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "pass"},
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+            _v2_applied_state(
+                tier="full", verify={"outcome": "pass"},
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", "", id="spatial-passed",
         ),
         # #2464: a failed mark-VERIFY names verify_failed whatever the
         # spatial group says.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {
+            _v2_applied_state(
+                tier="full",
+                verify={
                     "outcome": "fail",
                     "claims": {"integration": {"status": "fail", "max_db": 4.2}},
                 },
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="verify-failed-behind-a-passing-group",
         ),
@@ -691,43 +699,45 @@ def _verify_cloud(*, passed, flatness):
         # tolerance: verify.outcome grades capture health alone, so the claims
         # record is what sees it.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {
+            _v2_applied_state(
+                tier="full",
+                verify={
                     "outcome": "pass",
                     "claims": {
                         "integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "fail", "max_db": 4.31},
                     },
                 },
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
         ),
+        # The cloud spec failure wins the row's reason on a WARN — it is why
+        # the row warned, and the mark-VERIFY finding must not hide that
+        # cause even though it also found something.
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {"outcome": "inconclusive"},
-                "cloud": _verify_cloud(passed=False, flatness=_FAILED_GAUGE),
-            },
-            "ok", correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
+            _v2_applied_state(
+                tier="full", verify={"outcome": "inconclusive"},
+                cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
+            ),
+            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
             id="inconclusive-behind-a-closed-group",
         ),
         # The result code is DISCLOSED beside the grade and never gates it:
-        # this check grades the CHECKING, which passed completely here, while
-        # the household badge honestly reads "Keep the previous sound."
+        # the finding grades the CHECKING, which passed completely here,
+        # while the household badge honestly reads "Keep the previous sound."
         pytest.param(
-            {
-                "tier": "full",
-                "verify": {
+            _v2_applied_state(
+                tier="full",
+                verify={
                     "outcome": "pass",
                     "claims": {
                         "integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "pass", "max_db": 0.8},
                     },
                 },
-                "verify_priors": {
+                verify_priors={
                     "predicted_spec": {
                         "comparison": {
                             "reason": "not_an_improvement",
@@ -736,8 +746,8 @@ def _verify_cloud(*, passed, flatness):
                         },
                     },
                 },
-                "cloud": _verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            },
+                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
+            ),
             "ok", "", id="keep-previous-result-does-not-gate",
         ),
         # The same posture one tier over: every instrument that grades the
@@ -745,9 +755,9 @@ def _verify_cloud(*, passed, flatness):
         # the crossover region carried no spec tolerance for an absolute
         # verdict. A finding here would fire on a healthy commission.
         pytest.param(
-            {
-                "tier": "express",
-                "verify": {
+            _v2_applied_state(
+                tier="express",
+                verify={
                     "outcome": "pass",
                     "claims": {
                         "integration": {"status": "pass", "max_db": 0.7},
@@ -757,17 +767,18 @@ def _verify_cloud(*, passed, flatness):
                         },
                     },
                 },
-            },
-            "ok", "", id="express-inconclusive-result-does-not-gate",
+            ),
+            "ok", correction.REASON_CLOUD_NOT_RUN,
+            id="express-inconclusive-result-does-not-gate",
         ),
     ],
 )
-def test_check_crossover_v2_applied_is_graded_verdicts(
-    monkeypatch, overrides, status, reason
+def test_check_crossover_v2_cloud_pipeline_verdicts(
+    monkeypatch, state, status, reason
 ):
-    _patch_v2_state(monkeypatch, _v2_applied_state(**overrides))
+    _patch_v2_state(monkeypatch, state)
 
-    r = correction.check_crossover_v2_applied_is_graded()
+    r = correction.check_crossover_v2_cloud_pipeline()
 
     assert r.status == status
     assert r.reason == reason
@@ -797,7 +808,7 @@ def test_an_unknown_spatial_word_from_a_later_build_is_disclosed(monkeypatch):
         },
     )
 
-    r = correction.check_crossover_v2_applied_is_graded()
+    r = correction.check_crossover_v2_cloud_pipeline()
 
     assert r.status == "ok"
     assert r.reason == correction.REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED
@@ -813,9 +824,9 @@ def test_grade_spatial_and_scope_member_sets_are_pinned_for_their_consumers():
     until someone teaches each dispatch site the new word by hand.
 
     If this fails because you added a member: teach
-    ``check_crossover_v2_applied_is_graded`` and the done-screen branches the
-    new word (or confirm the existing fallthrough is what you want), then
-    extend the pinned sets below.
+    ``_applied_grade_finding`` and the done-screen branches the new word (or
+    confirm the existing fallthrough is what you want), then extend the
+    pinned sets below.
     """
     from jasper.web import correction_crossover_v2 as v2host
 

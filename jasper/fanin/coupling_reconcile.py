@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import fcntl
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import os
 import sys
 import time
@@ -56,7 +56,7 @@ from jasper.atomic_io import (
 )
 from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
-from jasper.env_file import read_value, remove, upsert
+from jasper.env_file import env_value, read_value, remove, upsert
 from jasper.fanin.coupling_auto import (
     combo_is_armed,
     read_usb_gadget_available,
@@ -1796,16 +1796,16 @@ def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
     return remove(text, action.key)
 
 
-def outputd_ring_path_for(outputd_text: str) -> str:
+def outputd_ring_path_for(outputd_env: str | Mapping[str, str]) -> str:
     """The ring file outputd must read, derived from the endpoint marker.
 
     ONE writer for the path half of outputd's ring-path/marker biconditional.
     Armed -> the ACTIVE ring's file; unarmed -> the operator's custom Ring B
     path if they set one, else the canonical Ring B default.
 
-    The marker is read from the outputd.env TEXT the caller is reconciling
-    rather than from the file on disk, so the path written and the marker
-    written come from one snapshot; a second file read could straddle a
+    The marker is read from ONE already-read snapshot of outputd.env — raw
+    text or an equivalent parsed mapping — rather than from the file on disk,
+    so the path derived and the marker it derives from cannot straddle a
     concurrent hardware reconcile and emit a crossed pair.
 
     The asymmetry is deliberate: an operator's custom path is honoured on the
@@ -1833,8 +1833,8 @@ def outputd_ring_path_for(outputd_text: str) -> str:
 
     armed = ring_active_endpoint_armed(
         {
-            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: read_value(
-                outputd_text, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
+            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: env_value(
+                outputd_env, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
             )
             or ""
         }
@@ -1842,7 +1842,7 @@ def outputd_ring_path_for(outputd_text: str) -> str:
     if armed:
         return DEFAULT_OUTPUTD_ACTIVE_RING_PATH
     carried = resolve_outputd_ring_path(
-        read_value(outputd_text, OUTPUTD_RING_PATH_ENV_VAR)
+        env_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
     )
     if carried == DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
         return DEFAULT_OUTPUTD_RING_PATH

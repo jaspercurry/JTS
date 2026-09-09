@@ -6,19 +6,17 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
+import time
 import types
-import urllib.request
-from http.server import ThreadingHTTPServer
 
 import pytest
+
 
 import jasper.control.airplay_health as airplay_health
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
 )
-from jasper.control.server import _make_handler
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -27,7 +25,6 @@ def _fanin_status(
     airplay_frames: int = 0,
     airplay_xruns: int = 0,
     output_frames: int = 0,
-    output_xruns: int = 0,
     input_buffer_frames: int = 4096,
     progress_age_ms: int = 0,
     selected_input: str | None = None,
@@ -49,7 +46,6 @@ def _fanin_status(
             "sample_rate": 48000,
             "period_frames": 256,
             "frames_written": output_frames,
-            "xrun_count": output_xruns,
         },
         "watchdog": {
             "pings_sent": 10,
@@ -216,15 +212,14 @@ def test_offset_too_short_warning_moves_status_verdict_end_to_end() -> None:
         frames[0] += 480000  # keep the rate above the 1000 floor
         return _fanin_status(airplay_frames=frames[0])
 
-    def journal(unit: str, _since: float, _now: float) -> list[str]:
-        if unit == "shairport-sync":
-            return [
-                "The stream latency (0.300000 seconds) is too short to accommodate "
-                "an audio backend latency offset of 1.050000 seconds and a backend "
-                "buffer of 0.500000 seconds. The audio_backend_latency_offset has "
-                "been set to zero."
-            ]
-        return []
+    def journal(_units, _since: float, _now: float) -> list[tuple[str, str]]:
+        return [(
+            "shairport-sync",
+            "The stream latency (0.300000 seconds) is too short to accommodate "
+            "an audio backend latency offset of 1.050000 seconds and a backend "
+            "buffer of 0.500000 seconds. The audio_backend_latency_offset has "
+            "been set to zero.",
+        )]
 
     sampler = _sampler(
         fanin_probe=fanin_probe,
@@ -274,13 +269,11 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
             airplay_frames=0,
             airplay_xruns=7,
             output_frames=0,
-            output_xruns=1,
         ),
         _fanin_status(
             airplay_frames=240000,
             airplay_xruns=8,
             output_frames=240000,
-            output_xruns=1,
         ),
     ]
 
@@ -299,7 +292,6 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
     snap = sampler.snapshot()
     assert snap["status"] == "issue"
     assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
-    assert snap["summary_5m"]["fanin_output_xruns"] == 0
     assert snap["current"]["fanin"]["airplay"]["frames_per_sec"] == 48000.0
     assert snap["events"][-1]["type"] == "fanin_airplay_xrun"
 
@@ -323,13 +315,11 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
             output_frames=1680000,
         ),
     ]
-    journal_calls: list[tuple[str, float, float]] = []
+    journal_calls: list[tuple[tuple[str, ...], float, float]] = []
 
-    def journal(unit: str, since: float, until: float) -> list[str]:
-        journal_calls.append((unit, since, until))
-        if unit == "shairport-sync":
-            return ["recovering from a previous underrun"]
-        return []
+    def journal(units, since: float, until: float) -> list[tuple[str, str]]:
+        journal_calls.append((units, since, until))
+        return [("shairport-sync", "recovering from a previous underrun")]
 
     sampler = AirPlayHealthSampler(
         fanin_probe=lambda: statuses.pop(0),
@@ -364,10 +354,8 @@ def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
     assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
     assert snap["summary_5m"]["shairport_underruns"] == 1
     assert snap["events"][-1]["type"] == "shairport_underrun"
-    shairport_calls = [
-        call for call in journal_calls if call[0] == "shairport-sync"
-    ]
-    assert shairport_calls[0][1] == 1005.0
+    assert "shairport-sync" in journal_calls[0][0]
+    assert journal_calls[0][1] == 1005.0
 
 
 def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
@@ -376,13 +364,11 @@ def test_camilla_short_reads_are_watch_while_actively_streaming() -> None:
     now = [2000.0]
     frames = [0, 240000]
 
-    def journal(unit: str, _since: float, _now: float) -> list[str]:
-        if unit == "jasper-camilla":
-            return [
-                "Capture read 768 frames instead of the requested 1024",
-                "Capture read 960 frames instead of the requested 1024",
-            ]
-        return []
+    def journal(_units, _since: float, _now: float) -> list[tuple[str, str]]:
+        return [
+            ("jasper-camilla", "Capture read 768 frames instead of the requested 1024"),
+            ("jasper-camilla", "Capture read 960 frames instead of the requested 1024"),
+        ]
 
     sampler = _sampler(
         fanin_probe=lambda: _fanin_status(airplay_frames=frames.pop(0)),
@@ -427,16 +413,76 @@ def test_idle_silence_at_full_rate_reads_inactive_not_ok() -> None:
     assert snap["reason"] == "AirPlay not currently streaming"
 
 
+def test_fanin_output_ring_and_tts_reach_the_composer() -> None:
+    """The shaped fan-in observation carries the output ring, its per-second
+    rates and the TTS lane; absent blocks stay None."""
+    now = [3000.0]
+    statuses = [
+        {
+            **_fanin_status(output_frames=0),
+            "tts": {"enabled": True, "pending_frames": 0, "budget_frames": 96000},
+        },
+        {
+            **_fanin_status(output_frames=480000),
+            "tts": {"enabled": True, "pending_frames": 0, "budget_frames": 96000},
+        },
+    ]
+    for status in statuses:
+        started = status["output"]["frames_written"] != 0
+        status["output"]["ring"] = {
+            "occupancy": 2,
+            "slots": 2,
+            "stall_active": False,
+            "full_waits": 810 if started else 0,
+            "stuck_reader_drops": 1 if started else 0,
+            "drop_no_reader": 1 if started else 0,
+        }
+
+    sampler = _sampler(
+        fanin_probe=lambda: statuses.pop(0),
+        journal_reader=lambda _u, _s, _n: [],
+        mpris_probe=lambda: {"playing": True},
+        camilla_probe=lambda: None,
+        time_fn=lambda: now[0],
+    )
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+    output = sampler.snapshot()["current"]["fanin"]["output"]
+
+    assert output["ring"]["occupancy"] == 2
+    assert output["ring"]["full_waits_per_sec"] == 162.0
+    assert output["ring"]["drops_per_sec"] == 0.4
+    assert sampler.snapshot()["current"]["fanin"]["tts"]["enabled"] is True
+
+
+def test_fanin_ring_and_tts_absent_stay_none() -> None:
+    sampler = _sampler(
+        fanin_probe=lambda: _fanin_status(),
+        journal_reader=lambda _u, _s, _n: [],
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        time_fn=lambda: 3000.0,
+    )
+    sampler._tick()
+    fanin = sampler.snapshot()["current"]["fanin"]
+
+    assert fanin["output"]["ring"] is None
+    assert fanin["inputs"]["airplay"]["xruns_per_sec"] is None
+    assert fanin["tts"] is None
+
+
 def test_idle_camilla_short_reads_do_not_escalate_to_watch() -> None:
     # Benign Camilla short reads can occur on the idle (silence) pipeline.
     # With AirPlay not streaming they must read "inactive", never "watch" —
     # but they are still RECORDED for history/diagnostics.
     now = [5000.0]
 
-    def journal(unit: str, _since: float, _now: float) -> list[str]:
-        if unit == "jasper-camilla":
-            return ["Capture read 586 frames instead of the requested 1024"]
-        return []
+    def journal(_units, _since: float, _now: float) -> list[tuple[str, str]]:
+        return [(
+            "jasper-camilla",
+            "Capture read 586 frames instead of the requested 1024",
+        )]
 
     sampler = _sampler(
         fanin_probe=lambda: _fanin_status(airplay_frames=240000),
@@ -557,21 +603,53 @@ def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
 
     def fake_run(args, **_kwargs):
         calls.append(args)
-        return types.SimpleNamespace(returncode=0, stdout="one\ntwo\n")
+        return types.SimpleNamespace(returncode=0, stdout="\n".join([
+            json.dumps({"_SYSTEMD_UNIT": "shairport-sync.service", "MESSAGE": "one"}),
+            json.dumps({"_SYSTEMD_UNIT": "librespot.service", "MESSAGE": "two"}),
+            json.dumps({"_SYSTEMD_UNIT": "sshd.service", "MESSAGE": "not scanned"}),
+            json.dumps({"_SYSTEMD_UNIT": "librespot.service", "MESSAGE": [1, 2]}),
+            "not json",
+        ]) + "\n")
 
     monkeypatch.setattr(airplay_health.subprocess, "run", fake_run)
 
     lines = AirPlayHealthSampler._read_journal_lines(
-        "shairport-sync",
+        ("shairport-sync", "librespot"),
         10.1234,
         40.5678,
     )
 
-    assert lines == ["one", "two"]
+    assert lines == [("shairport-sync", "one"), ("librespot", "two")]
     assert calls
     args = calls[0]
+    assert args.count("-u") == 2
     assert args[args.index("--since") + 1] == "@10.123"
     assert args[args.index("--until") + 1] == "@40.568"
+
+
+def test_seconds_since_camilla_restart_reads_the_shared_unit_state_reader(
+    monkeypatch,
+) -> None:
+    # Fixed rather than the host's real CLOCK_MONOTONIC: a container whose
+    # own uptime is under 600s would otherwise see a negative timestamp.
+    now_us = 10_000.0 * 1e6
+    started_us = int(now_us - 600.0 * 1e6)
+    monkeypatch.setattr(
+        time, "clock_gettime", lambda _clock: now_us / 1e6,
+    )
+    monkeypatch.setattr(
+        airplay_health,
+        "read_unit_states",
+        lambda units, **_kw: {
+            airplay_health.CAMILLA_UNIT_FULL: {
+                "active_enter_timestamp_monotonic": started_us,
+            },
+        },
+    )
+
+    age = airplay_health._seconds_since_camilla_restart()
+
+    assert age == pytest.approx(600.0, abs=1.0)
 
 
 def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
@@ -591,66 +669,6 @@ def test_default_fanin_status_timeout_allows_state_server_poll_delay() -> None:
     assert server.requests == [b"STATUS\n"]
 
 
-def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:
-    class FakeAirPlay:
-        def snapshot(self) -> dict:
-            return {"status": "ok", "reason": "clean"}
-
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        sampler=None,
-        airplay_health_sampler=FakeAirPlay(),
-        ha_status_cache=_FakeHaStatus(),
-    )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        base = f"http://127.0.0.1:{server.server_port}"
-        with urllib.request.urlopen(f"{base}/system/snapshot", timeout=2) as r:
-            assert r.status == 200
-            body = json.loads(r.read().decode("utf-8"))
-        assert body["metrics"] is None
-        assert body["airplay_health"] == {"status": "ok", "reason": "clean"}
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def test_system_snapshot_endpoint_fails_soft_when_airplay_snapshot_raises(
-    monkeypatch,
-) -> None:
-    class BrokenAirPlay:
-        def snapshot(self) -> dict:
-            raise RuntimeError("boom")
-
-    handler = _make_handler(
-        "127.0.0.1",
-        1234,
-        "/nonexistent.sock",
-        sampler=None,
-        airplay_health_sampler=BrokenAirPlay(),
-        ha_status_cache=_FakeHaStatus(),
-    )
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        base = f"http://127.0.0.1:{server.server_port}"
-        with urllib.request.urlopen(f"{base}/system/snapshot", timeout=2) as r:
-            assert r.status == 200
-            body = json.loads(r.read().decode("utf-8"))
-        assert body["airplay_health"]["status"] == "unknown"
-        assert "failed" in body["airplay_health"]["reason"]
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
 def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
     # A reboot's content-xrun + AirPlay-resync settling must NOT flip the
     # dashboard straight to "issue: recent audio-path recovery event"
@@ -667,10 +685,9 @@ def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
     ]
     sampler = AirPlayHealthSampler(
         fanin_probe=lambda: statuses.pop(0),
-        journal_reader=lambda u, _s, _n: (
-            ["recovering from a previous underrun"]
-            if u == "shairport-sync" else []
-        ),
+        journal_reader=lambda _u, _s, _n: [
+            ("shairport-sync", "recovering from a previous underrun"),
+        ],
         mpris_probe=lambda: {"playing": False},
         camilla_probe=lambda: None,
         maintenance_suppress_path=None,
@@ -716,11 +733,13 @@ def test_airplay_connect_grace_suppresses_session_establish() -> None:
         return _fanin_status(airplay_frames=frames[0])
 
     mpris = {"playing": False}
-    journal = {"shairport-sync": []}
+    journal: dict[str, list[str]] = {"shairport-sync": []}
 
     sampler = AirPlayHealthSampler(
         fanin_probe=fanin_probe,
-        journal_reader=lambda u, _s, _n: list(journal.get(u, [])),
+        journal_reader=lambda _u, _s, _n: [
+            (unit, line) for unit, lines in journal.items() for line in lines
+        ],
         mpris_probe=lambda: dict(mpris),
         camilla_probe=lambda: None,
         maintenance_suppress_path=None,
@@ -785,8 +804,10 @@ def _storm_sampler(now, *, reader, tmp_dir, **kw) -> AirPlayHealthSampler:
 
 
 def _camilla_reader(pending):
-    def reader(unit, _since, _until):
-        return pending["lines"] if unit == airplay_health.CAMILLA_UNIT else []
+    def reader(_units, _since, _until):
+        return [
+            (airplay_health.CAMILLA_UNIT, line) for line in pending["lines"]
+        ]
     return reader
 
 
@@ -932,34 +953,6 @@ def test_storm_capture_is_failsoft_when_artifact_dir_unwritable(
         sampler._tick()
     assert sampler.snapshot()["storm"]["active"] is False
     assert "artifact=null" in caplog.text  # no artifact, rendered as null
-
-
-@pytest.mark.parametrize(
-    ("elapsed", "expected_sleep"),
-    [
-        (0.0, 5.0),
-        (4.5, 1.0),
-        (60.0, 1.0),
-    ],
-)
-def test_run_sleep_floor_bounds_the_tick_rate(
-    monkeypatch, elapsed: float, expected_sleep: float,
-) -> None:
-    sampler = AirPlayHealthSampler(sample_interval_sec=5.0, time_fn=lambda: 1000.0)
-    monkeypatch.setattr(sampler, "_tick", lambda: None)
-    monotonic_values = iter([0.0, elapsed])
-    monkeypatch.setattr(
-        airplay_health.time, "monotonic", lambda: next(monotonic_values),
-    )
-    captured: list[float] = []
-
-    def fake_sleep(seconds: float) -> None:
-        captured.append(seconds)
-        sampler._stopped = True
-
-    monkeypatch.setattr(airplay_health.time, "sleep", fake_sleep)
-    sampler._run()
-    assert captured == [expected_sleep]
 
 
 def _ring(**overrides) -> dict:
