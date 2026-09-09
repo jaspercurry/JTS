@@ -151,7 +151,7 @@ def test_bridge_stats_reference_input_block_is_bounded_and_additive() -> None:
     stats = _BridgeStats(aec_bridge._STATS_IDENTITY)
     snapshot = stats.snapshot()
 
-    assert snapshot["schema_version"] == 4
+    assert snapshot["schema_version"] == 5
     assert set(snapshot["reference_input"]) == {
         "source",
         "endpoint",
@@ -670,14 +670,12 @@ def test_aec_loop_chip_aec_mode_defaults_to_primary_only(monkeypatch):
 def test_chip_rms_window_reports_the_raw_capture_level(
     monkeypatch, caplog, raw0_supplied,
 ):
-    """The chip RMS line's `near`/`primary` legs are both chip-cancelled, so
-    doctor's near-end gate needs the uncancelled capture channel. A window
-    that drained no raw0 frames must omit the token rather than report zero,
-    so the gate falls back to `near` instead of reading a silent mic.
-    Renders the real format string and reads it back through the real
-    doctor parser."""
+    """The chip RMS window's `near`/`primary` legs are both chip-cancelled,
+    so doctor's near-end gate needs the uncancelled capture channel. A window
+    that drained no raw0 frames must publish `near` rather than zero, so the
+    gate never reads a silent mic. Drives the real loop and reads back the
+    published snapshot window."""
     import socket as real_socket
-    from jasper.cli.doctor import aec
     from jasper.mics import xvf3800
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
@@ -711,11 +709,12 @@ def test_chip_rms_window_reports_the_raw_capture_level(
     )
 
     rms_lines = [m for m in caplog.messages if m.startswith("chip_aec rms")]
-    windows = [w for w in map(aec._parse_rms_window, rms_lines) if w]
+    window = aec_bridge._bridge_stats.snapshot()["rms"]["windows"][-1]
 
-    assert len(windows) == len(rms_lines) > 0, caplog.messages
-    assert windows[0].chip
-    assert windows[0].mic == (raw0 if raw0_supplied else near)
+    assert rms_lines, caplog.messages
+    assert window["chip"] is True
+    assert window["level_db"] is None
+    assert window["mic"] == (raw0 if raw0_supplied else near)
     assert raw0_supplied == all("raw0=" in m for m in rms_lines)
 
 
