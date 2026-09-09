@@ -784,6 +784,8 @@ async def test_play_refuses_bytes_rendered_under_the_authorized_peak(
         # tweeter is being driven, not protected, and no cap was evaluated
         # for it.
         ({"crossover_fc_hz": 300.0}, True),
+        # At the corner itself the pair above is only 6 dB down.
+        ({"crossover_fc_hz": 400.0}, True),
         # A local subwoofer sits BELOW the woofer the stimulus is admitted
         # for and takes the whole band through its own low-pass.
         ({"sub_index": 4}, True),
