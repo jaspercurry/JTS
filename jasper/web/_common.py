@@ -36,7 +36,10 @@ only inspect the path string — no I/O, no state lookup — because it runs
 ahead of every guard on a request that has proved nothing. Wear
 `@resolve_samples({"/layer/raw": _post_layer})` on that hook: the generic
 route pins drive one sample path per prefix family exactly as they drive a
-table key, so a family that names no sample is pinned by nothing.
+table key, so a family that names no sample is pinned by nothing. A family
+shaped `prefix + <param> + suffix` is `prefix_route("/pair/", "/stream",
+_get_pair_stream)` rather than a hand-rolled hook, and several of them
+compose with `first_match(...)`.
 `guard="header"` runs `guard_mutating_request` in the dispatcher, ahead of
 any body read, and those POST bodies wear `@json_body`. A wizard whose
 guard varies per route passes `guard="per-body"` and each body declares its
@@ -508,7 +511,10 @@ def route_path(request_path: str) -> str:
     """Normalise a request line into the key a wizard route table uses:
     query string dropped, trailing slashes trimmed, "" mapped to "/".
     Every wizard dispatcher looks its route up by this, so `/save`,
-    `/save/` and `/save?x=1` are one route."""
+    `/save/` and `/save?x=1` are one route. Lenient by design: `;params`
+    and an absolute-form request line are normalised away before lookup,
+    so those reach the guarded route body rather than a 404 — every guard
+    still runs."""
     return urllib.parse.urlparse(request_path).path.rstrip("/") or "/"
 
 
@@ -953,10 +959,29 @@ def resolve_samples(samples: RouteTable) -> Callable[[Resolver], Resolver]:
     return mark
 
 
+def prefix_route(prefix: str, suffix: str, fn: RouteFn) -> Resolver:
+    """One prefix family as data: `/pair/<mac>/stream` is
+    `prefix_route("/pair/", "/stream", _get_pair_stream)`. The body
+    re-derives its own path parameter and rejects a malformed one, which is
+    where a bad id belongs — the hook itself only inspects the string."""
+    def resolve(path: str) -> RouteFn | None:
+        return fn if path.startswith(prefix) and path.endswith(suffix) else None
+    return resolve
+
+
+def first_match(*resolvers: Resolver) -> Resolver:
+    """The first of several families to claim the path, else None."""
+    def resolve(path: str) -> RouteFn | None:
+        return next((r for r in (h(path) for h in resolvers) if r is not None), None)
+    return resolve
+
+
 def _route_for(
     handler: Any, table: RouteTable, resolve: Resolver | None,
-) -> RouteFn | None:
+) -> tuple[RouteFn | None, str]:
     """Table lookup then the prefix-family hook; sends the 404 itself.
+    Returns the route (None once it has answered) and the normalised path
+    it routed on, so a caller needing the path does not parse it twice.
 
     `resolve` runs before every guard, on a request that has proved
     nothing, so it may only inspect the path string — no I/O, no state
@@ -968,14 +993,14 @@ def _route_for(
         route = resolve(path)
     if route is None:
         handler.send_error(http.HTTPStatus.NOT_FOUND)
-    return route
+    return route, path
 
 
 def dispatch_get(
     handler: Any, table: RouteTable, *, resolve: Resolver | None = None,
 ) -> None:
     """Route a wizard GET. Unknown paths 404 before the read guard runs."""
-    route = _route_for(handler, table, resolve)
+    route, _ = _route_for(handler, table, resolve)
     if route is not None and guard_read_request(handler):
         route(handler)
 
@@ -996,15 +1021,20 @@ def dispatch_post(
     `run=` is the guarded-call hook for a dispatcher that owns a policy no
     route body can (correction_setup blocks content DSP on a bonded
     follower and nets a whole path family's exceptions): it is handed
-    `(handler, route, path)` after the guard and calls the route itself."""
-    route = _route_for(handler, table, resolve)
+    `(handler, route, path)` after the header guard and calls the route
+    itself. It pairs with `guard="header"` only — under `guard="per-body"`
+    there is no dispatcher guard for it to run behind, so the pairing is
+    refused rather than silently unguarded."""
+    if run is not None and guard != "header":
+        raise ValueError('run= requires guard="header"')
+    route, path = _route_for(handler, table, resolve)
     if route is None:
         return
     if guard == "header" and not guard_mutating_request(handler):
         reject_csrf(handler)
         return
     if run is not None:
-        run(handler, route, route_path(handler.path))
+        run(handler, route, path)
         return
     route(handler)
 

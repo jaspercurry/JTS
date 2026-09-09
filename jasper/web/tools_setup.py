@@ -73,6 +73,7 @@ from ._common import (
     json_body,
     read_active_provider,
     read_json_object,
+    resolve_samples,
     restart_voice_daemon,
     send_html_response,
     send_proxy_json,
@@ -242,10 +243,18 @@ def _get_detail(handler: BaseHTTPRequestHandler, pack_id: str) -> None:
     send_html_response(handler, _detail_html(pack_id, ctx["csrf_token"]))
 
 
+@resolve_samples({
+    "/pack/sample": functools.partial(_get_detail, pack_id="sample"),
+    "/tool/sample": functools.partial(_get_detail, pack_id="tool:sample"),
+})
 def _detail_route(path: str) -> Callable[[BaseHTTPRequestHandler], None] | None:
     """Bind /pack/<id> — and the old /tool/<name> links, which render the same
     page — to a route callable, so do_GET resolves before it guards. None when
-    `path` is neither."""
+    `path` is neither.
+
+    Hand-rolled rather than `prefix_route`: the id is a path segment this
+    hook extracts and binds into the route, and a nested `/pack/a/b` is not
+    this family at all."""
     pack_id = _pack_id_from_path(path)
     if pack_id is None:
         name = _tool_name_from_path(path)

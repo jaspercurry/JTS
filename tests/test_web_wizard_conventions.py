@@ -495,7 +495,6 @@ _HEADER_CSRF_WIZARDS = frozenset({
     "sources_setup",
     "system_setup",
     "tools_setup",
-    "wake_corpus_setup",
     "wifi_setup",
 })
 

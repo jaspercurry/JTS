@@ -51,14 +51,16 @@ from ..bluetooth.availability import (
 )
 from ._common import (
     JsonBodyError,
-    RouteFn,
     begin_request,
     bonded_follower_active,
     bonded_follower_park_reason,
     close_awaitable,
     dispatch_get,
     dispatch_post,
+    first_match,
+    prefix_route,
     read_json_object,
+    resolve_samples,
     route_path,
     send_html_response,
     send_json_response,
@@ -645,12 +647,13 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
             return
         handler._stream_device_action(mutation_id)
 
-    def _resolve_stream(path: str) -> RouteFn | None:
-        if path.startswith("/pair/") and path.endswith("/stream"):
-            return _get_pair_stream
-        if path.startswith("/actions/") and path.endswith("/stream"):
-            return _get_action_stream
-        return None
+    _resolve_stream = resolve_samples({
+        "/pair/AA:BB:CC:DD:EE:FF/stream": _get_pair_stream,
+        "/actions/00000000-0000-0000-0000-0000/stream": _get_action_stream,
+    })(first_match(
+        prefix_route("/pair/", "/stream", _get_pair_stream),
+        prefix_route("/actions/", "/stream", _get_action_stream),
+    ))
 
     _GET_ROUTES = {
         "/": _get_index,

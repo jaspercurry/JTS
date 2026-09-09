@@ -215,7 +215,9 @@ from jasper.web._common import (
     dispatch_post,
     guard_mutating_host,
     json_body,
+    prefix_route,
     read_json_object,
+    resolve_samples,
     route_path,
     send_json_response,
 )
@@ -993,12 +995,12 @@ def _get_clip_wav(handler: _Handler) -> None:
     handler._serve_wav(route_path(handler.path), urlparse(handler.path))
 
 
-def _resolve_clip_wav(path: str) -> RouteFn | None:
-    """`/api/clip/<id>/wav` carries a path parameter, so it rides the seam's
-    resolve hook rather than an exact table key."""
-    if path.startswith("/api/clip/") and path.endswith("/wav"):
-        return _get_clip_wav
-    return None
+# `/api/clip/<id>/wav` carries a path parameter, so it rides the seam's
+# resolve hook rather than an exact table key; `_serve_wav` rejects a
+# malformed id.
+_resolve_clip_wav = resolve_samples({"/api/clip/sample/wav": _get_clip_wav})(
+    prefix_route("/api/clip/", "/wav", _get_clip_wav),
+)
 
 
 def _csrf_guarded(fn: RouteFn) -> RouteFn:
@@ -1010,6 +1012,7 @@ def _csrf_guarded(fn: RouteFn) -> RouteFn:
         if not handler._check_csrf():
             return
         fn(handler)
+    setattr(route, "csrf_mode", "header")
     return route
 
 
