@@ -67,12 +67,11 @@ from ._common import (
     begin_request,
     csrf_field_html,
     flash_error,
-    guard_mutating_request,
+    form_guarded,
     guard_read_request,
     read_env_file,
-    read_form,
-    reject_csrf,
     restart_voice_daemon,
+    route_path,
     send_html_response,
     send_see_other,
     write_env_file,
@@ -747,298 +746,294 @@ def _fetch_userinfo(access_token: str) -> dict[str, Any]:
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     """Returns a request handler class closed over the config dict."""
 
+    # The route tables live in this closure so the bodies can read `cfg`.
+    def _render_index(
+        handler: BaseHTTPRequestHandler,
+        csrf_token: str = "",
+        *,
+        status_msg: str = "",
+        back_href: str = "/assistant/",
+    ) -> None:
+        client_id, client_secret = _creds(cfg)
+        if not (client_id and client_secret):
+            send_html_response(handler, _setup_wizard_html(
+                cfg["redirect_uri"], csrf_token,
+                status_msg=status_msg, back_href=back_href,
+            ))
+            return
+        registry = GoogleRegistry.load(cfg["registry_path"])
+        if not registry.accounts:
+            send_html_response(handler, _redirect_uri_page_html(
+                cfg["redirect_uri"], client_id, csrf_token,
+                status_msg=status_msg, back_href=back_href,
+            ))
+            return
+        send_html_response(handler, _management_html(
+            registry, cfg["redirect_uri"], client_id, csrf_token,
+            status_msg=status_msg, back_href=back_href,
+        ))
+
+    def _get_index(handler: BaseHTTPRequestHandler) -> None:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        ctx = begin_request(handler)
+        _render_index(
+            handler, ctx["csrf_token"], status_msg=ctx["flash"],
+            back_href=safe_back_href((qs.get("return_to") or [""])[0], default="/assistant/"),
+        )
+
+    def _get_callback(handler: BaseHTTPRequestHandler) -> None:
+        # Google bounces the browser here as a cross-site top-level
+        # navigation. `guard_read_request`'s default already allows that
+        # (and still refuses a cross-site fetch read), which is why this
+        # route needs no guard of its own.
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+        code = qs.get("code", [""])[0]
+        state = qs.get("state", [""])[0]  # CSRF nonce
+        err = qs.get("error", [""])[0]
+        if err:
+            # Google's own text, unbounded — cap/redact like every
+            # other flash so a long ?error= can't balloon the cookie.
+            flash_error(handler, "Google returned error", err)
+            return
+        if not (code and state):
+            send_see_other(handler, "./", flash="Missing code or state from Google")
+            return
+        creds = _creds(cfg)
+        if not all(creds):
+            send_see_other(
+                handler, "./",
+                flash="Credentials were cleared mid-flow. Start over.",
+            )
+            return
+        # Validate the CSRF nonce: pop-once, and reject an unknown
+        # or expired one so a forged callback can't link an
+        # attacker's account under a guessed label.
+        _gc_pending()
+        entry = _PENDING_FLOWS.pop(state, None)
+        if entry is None:
+            send_see_other(
+                handler, "./",
+                flash=(
+                    "That authorization expired or wasn't started"
+                    " from this speaker. Start over."
+                ),
+            )
+            return
+        account_name, verifier, _created = entry
+        try:
+            _exchange_code(account_name, code, verifier, creds)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "oauth exchange failed: %s", redact_secrets(str(e))
+            )
+            flash_error(handler, "Auth exchange failed", e)
+            return
+        _restart_voice_daemon()
+        # No account name / token in the line — personal data + secret.
+        log_event(logger, "google.link", client=handler.address_string())
+        send_see_other(handler, "./", flash=f"Linked {account_name} successfully")
+
+    @form_guarded
+    def _post_setup_credentials(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        client_id = form.get("client_id", "").strip()
+        client_secret = form.get("client_secret", "").strip()
+        if not (client_id and client_secret):
+            send_see_other(handler, "./", flash="Both Client ID and Client Secret are required.")
+            return
+        if not _CLIENT_ID_RE.fullmatch(client_id):
+            send_see_other(
+                handler, "./",
+                flash=(
+                    "Client ID should end in .apps.googleusercontent.com"
+                    " - double-check the value from Google Cloud Console."
+                ),
+            )
+            return
+        try:
+            _write_creds_file(client_id, client_secret, path=cfg["creds_path"])
+        except (OSError, ValueError) as e:
+            # ValueError: a pasted secret with a newline, which
+            # `write_env_file` refuses rather than split in two.
+            logger.exception("could not write credentials file")
+            flash_error(handler, "Could not save credentials", e)
+            return
+        _restart_voice_daemon()
+        # Action + requester only — never the client_id/secret.
+        log_event(logger, "google.credentials", client=handler.address_string())
+        send_see_other(handler, "./", flash="Credentials saved. Now add the redirect URL to your OAuth client.")
+
+    @form_guarded
+    def _post_reset_credentials(
+        handler: BaseHTTPRequestHandler, _form: dict[str, str],
+    ) -> None:
+        try:
+            _delete_creds_file(cfg["creds_path"])
+        except OSError as e:
+            logger.exception("could not delete credentials file")
+            flash_error(handler, "Could not clear credentials", e)
+            return
+        _restart_voice_daemon()
+        log_event(logger, "google.reset", client=handler.address_string())
+        send_see_other(handler, "./", flash="Credentials cleared.")
+
+    @form_guarded
+    def _post_start(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        creds = _creds(cfg)
+        if not all(creds):
+            send_see_other(handler, "./", flash="Set up Google credentials first.")
+            return
+        name = form.get("name", "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+            send_see_other(handler, "./", flash="Invalid name (letters/digits/_- only)")
+            return
+        registry = GoogleRegistry.load(cfg["registry_path"])
+        token_path = default_token_path_for(name)
+        registry.add_or_update(GoogleAccount(name=name, token_path=token_path))
+        registry.save()
+        # Generate a CSRF nonce; it's Google's `state` and the callback
+        # looks it up to recover the account name + PKCE verifier.
+        _gc_pending()
+        nonce = _new_nonce()
+        try:
+            flow = _build_flow(cfg, creds, state=nonce)
+            # `prompt='consent'` forces Google to issue a refresh
+            # token even if the user has already consented — the
+            # one we get on first consent is the only one we'll
+            # ever see otherwise, and a re-link would silently
+            # fail.
+            auth_url, _state = flow.authorization_url(
+                access_type="offline",
+                prompt="consent",
+                include_granted_scopes="true",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "authorize-url build failed: %s", redact_secrets(str(e))
+            )
+            flash_error(handler, "Could not start OAuth", e)
+            return
+        # google-auth-oauthlib defaults autogenerate_code_verifier=True,
+        # so authorization_url() generated a PKCE verifier and stored
+        # it on this Flow instance. The /callback handler builds a
+        # fresh Flow (no shared state across requests), so the verifier
+        # has to ride along, keyed by the nonce Google round-trips back.
+        _PENDING_FLOWS[nonce] = (name, flow.code_verifier, time.monotonic())
+        send_see_other(handler, auth_url)
+
+    @form_guarded
+    def _post_remove(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        name = form.get("name", "")
+        registry = GoogleRegistry.load(cfg["registry_path"])
+        token_path = ""
+        a = registry.get(name)
+        if a is not None:
+            token_path = a.token_path
+        if registry.remove(name):
+            registry.save()
+            if token_path and os.path.isfile(token_path):
+                try:
+                    os.unlink(token_path)
+                except OSError:
+                    pass
+            _restart_voice_daemon()
+            log_event(logger, "google.unlink", client=handler.address_string())
+            send_see_other(handler, "./", flash=f"Removed {name}")
+        else:
+            send_see_other(handler, "./", flash="Account not found")
+
+    @form_guarded
+    def _post_default(
+        handler: BaseHTTPRequestHandler, form: dict[str, str],
+    ) -> None:
+        name = form.get("name", "")
+        registry = GoogleRegistry.load(cfg["registry_path"])
+        if registry.get(name) is not None:
+            registry.default_name = name
+            registry.save()
+            # Account-identity config — symmetric with spotify.default.
+            # (No restart here: Google's default is read lazily, but the
+            # config change is still worth the audit line.)
+            log_event(logger, "google.default", client=handler.address_string())
+            send_see_other(handler, "./", flash=f"Default set to {name}")
+        else:
+            send_see_other(handler, "./", flash="Account not found")
+
+    def _exchange_code(
+        account_name: str, code: str, verifier: str | None,
+        creds: tuple[str, str],
+    ) -> None:
+        registry = GoogleRegistry.load(cfg["registry_path"])
+        account = registry.get(account_name)
+        if account is None:
+            raise RuntimeError(f"unknown account: {account_name}")
+        flow = _build_flow(cfg, creds, state=account_name)
+        # Restore the PKCE verifier that /start stashed under the nonce
+        # (the callback already popped the pending entry, so a redo
+        # can't reuse it — the next /start creates a fresh nonce).
+        if verifier is not None:
+            flow.code_verifier = verifier
+        flow.fetch_token(code=code)
+        granted = flow.credentials
+        if not granted.refresh_token:
+            # `prompt='consent'` should always produce one. If we
+            # get here Google probably rate-limited the consent
+            # screen for this user — the user can retry.
+            raise RuntimeError(
+                "Google did not return a refresh token. Try again "
+                "in a moment, or revoke this app at "
+                "myaccount.google.com/permissions and re-link."
+            )
+        save_token(
+            account.token_path,
+            refresh_token=granted.refresh_token,
+            scopes=list(granted.scopes or GOOGLE_SCOPES),
+            token_uri=granted.token_uri or _TOKEN_URI,
+        )
+        # Best-effort identity lookup so the management page can
+        # show "jasper@gmail.com" next to the label. Failure here
+        # is non-fatal — the account still works for tools.
+        info = _fetch_userinfo(granted.token or "")
+        email = (info.get("email") or "").strip()
+        display = (info.get("name") or "").strip()
+        if email or display:
+            account.email = email
+            account.display_name = display
+            registry.save()
+
+    _GET_ROUTES = {"/": _get_index, "/callback": _get_callback}
+    _POST_ROUTES = {
+        "/setup-credentials": _post_setup_credentials,
+        "/reset-credentials": _post_reset_credentials,
+        "/start": _post_start,
+        "/remove": _post_remove,
+        "/default": _post_default,
+    }
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            send_html_response(self, body, status=status)
-
-        # --- routes ---
-
         def do_GET(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
-
-            if path == "/":
-                if not guard_read_request(self):
-                    return
-                ctx = begin_request(self)
-                self._render_index(
-                    ctx["csrf_token"], status_msg=ctx["flash"],
-                    back_href=safe_back_href((qs.get("return_to") or [""])[0], default="/assistant/"),
-                )
-                return
-
-            if path == "/callback":
-                if not guard_read_request(self, allow_cross_site_navigation=True):
-                    return
-                code = qs.get("code", [""])[0]
-                state = qs.get("state", [""])[0]  # CSRF nonce
-                err = qs.get("error", [""])[0]
-                if err:
-                    # Google's own text, unbounded — cap/redact like every
-                    # other flash so a long ?error= can't balloon the cookie.
-                    flash_error(self, "Google returned error", err)
-                    return
-                if not (code and state):
-                    send_see_other(self, "./", flash="Missing code or state from Google")
-                    return
-                creds = _creds(cfg)
-                if not all(creds):
-                    send_see_other(
-                        self, "./",
-                        flash="Credentials were cleared mid-flow. Start over.",
-                    )
-                    return
-                # Validate the CSRF nonce: pop-once, and reject an unknown
-                # or expired one so a forged callback can't link an
-                # attacker's account under a guessed label.
-                _gc_pending()
-                entry = _PENDING_FLOWS.pop(state, None)
-                if entry is None:
-                    send_see_other(
-                        self, "./",
-                        flash=(
-                            "That authorization expired or wasn't started"
-                            " from this speaker. Start over."
-                        ),
-                    )
-                    return
-                account_name, verifier, _created = entry
-                try:
-                    self._exchange_code(account_name, code, verifier, creds)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "oauth exchange failed: %s", redact_secrets(str(e))
-                    )
-                    flash_error(self, "Auth exchange failed", e)
-                    return
-                _restart_voice_daemon()
-                # No account name / token in the line — personal data + secret.
-                log_event(logger, "google.link", client=self.address_string())
-                send_see_other(self, "./", flash=f"Linked {account_name} successfully")
-                return
-
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-        def do_POST(self) -> None:  # noqa: N802
-            url = urllib.parse.urlparse(self.path)
-            path = url.path.rstrip("/") or "/"
-            CSRF_POST_ROUTES = (
-                "/setup-credentials", "/reset-credentials",
-                "/start", "/remove", "/default",
-            )
-            if path not in CSRF_POST_ROUTES:
+            handler_fn = _GET_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            form = read_form(self)
-            if not guard_mutating_request(self, form):
-                reject_csrf(self)
+            if not guard_read_request(self):
                 return
+            handler_fn(self)
 
-            if path == "/setup-credentials":
-                self._handle_setup_credentials(form)
+        def do_POST(self) -> None:  # noqa: N802
+            handler_fn = _POST_ROUTES.get(route_path(self.path))
+            if handler_fn is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            if path == "/reset-credentials":
-                self._handle_reset_credentials()
-                return
-            if path == "/start":
-                self._handle_start(form)
-                return
-            if path == "/remove":
-                self._handle_remove(form)
-                return
-            if path == "/default":
-                self._handle_default(form)
-                return
-
-        # --- route bodies ---
-
-        def _render_index(
-            self,
-            csrf_token: str = "",
-            *,
-            status_msg: str = "",
-            back_href: str = "/assistant/",
-        ) -> None:
-            client_id, client_secret = _creds(cfg)
-            if not (client_id and client_secret):
-                self._send_html(_setup_wizard_html(
-                    cfg["redirect_uri"], csrf_token,
-                    status_msg=status_msg, back_href=back_href,
-                ))
-                return
-            registry = GoogleRegistry.load(cfg["registry_path"])
-            if not registry.accounts:
-                self._send_html(_redirect_uri_page_html(
-                    cfg["redirect_uri"], client_id, csrf_token,
-                    status_msg=status_msg, back_href=back_href,
-                ))
-                return
-            self._send_html(_management_html(
-                registry, cfg["redirect_uri"], client_id, csrf_token,
-                status_msg=status_msg, back_href=back_href,
-            ))
-
-        def _handle_setup_credentials(self, form: dict[str, str]) -> None:
-            client_id = form.get("client_id", "").strip()
-            client_secret = form.get("client_secret", "").strip()
-            if not (client_id and client_secret):
-                send_see_other(self, "./", flash="Both Client ID and Client Secret are required.")
-                return
-            if not _CLIENT_ID_RE.fullmatch(client_id):
-                send_see_other(
-                    self, "./",
-                    flash=(
-                        "Client ID should end in .apps.googleusercontent.com"
-                        " - double-check the value from Google Cloud Console."
-                    ),
-                )
-                return
-            try:
-                _write_creds_file(client_id, client_secret, path=cfg["creds_path"])
-            except (OSError, ValueError) as e:
-                # ValueError: a pasted secret with a newline, which
-                # `write_env_file` refuses rather than split in two.
-                logger.exception("could not write credentials file")
-                flash_error(self, "Could not save credentials", e)
-                return
-            _restart_voice_daemon()
-            # Action + requester only — never the client_id/secret.
-            log_event(logger, "google.credentials", client=self.address_string())
-            send_see_other(self, "./", flash="Credentials saved. Now add the redirect URL to your OAuth client.")
-
-        def _handle_reset_credentials(self) -> None:
-            try:
-                _delete_creds_file(cfg["creds_path"])
-            except OSError as e:
-                logger.exception("could not delete credentials file")
-                flash_error(self, "Could not clear credentials", e)
-                return
-            _restart_voice_daemon()
-            log_event(logger, "google.reset", client=self.address_string())
-            send_see_other(self, "./", flash="Credentials cleared.")
-
-        def _handle_start(self, form: dict[str, str]) -> None:
-            creds = _creds(cfg)
-            if not all(creds):
-                send_see_other(self, "./", flash="Set up Google credentials first.")
-                return
-            name = form.get("name", "").strip()
-            if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
-                send_see_other(self, "./", flash="Invalid name (letters/digits/_- only)")
-                return
-            registry = GoogleRegistry.load(cfg["registry_path"])
-            token_path = default_token_path_for(name)
-            registry.add_or_update(GoogleAccount(name=name, token_path=token_path))
-            registry.save()
-            # Generate a CSRF nonce; it's Google's `state` and the callback
-            # looks it up to recover the account name + PKCE verifier.
-            _gc_pending()
-            nonce = _new_nonce()
-            try:
-                flow = _build_flow(cfg, creds, state=nonce)
-                # `prompt='consent'` forces Google to issue a refresh
-                # token even if the user has already consented — the
-                # one we get on first consent is the only one we'll
-                # ever see otherwise, and a re-link would silently
-                # fail.
-                auth_url, _state = flow.authorization_url(
-                    access_type="offline",
-                    prompt="consent",
-                    include_granted_scopes="true",
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "authorize-url build failed: %s", redact_secrets(str(e))
-                )
-                flash_error(self, "Could not start OAuth", e)
-                return
-            # google-auth-oauthlib defaults autogenerate_code_verifier=True,
-            # so authorization_url() generated a PKCE verifier and stored
-            # it on this Flow instance. The /callback handler builds a
-            # fresh Flow (no shared state across requests), so the verifier
-            # has to ride along, keyed by the nonce Google round-trips back.
-            _PENDING_FLOWS[nonce] = (name, flow.code_verifier, time.monotonic())
-            send_see_other(self, auth_url)
-
-        def _handle_remove(self, form: dict[str, str]) -> None:
-            name = form.get("name", "")
-            registry = GoogleRegistry.load(cfg["registry_path"])
-            token_path = ""
-            a = registry.get(name)
-            if a is not None:
-                token_path = a.token_path
-            if registry.remove(name):
-                registry.save()
-                if token_path and os.path.isfile(token_path):
-                    try:
-                        os.unlink(token_path)
-                    except OSError:
-                        pass
-                _restart_voice_daemon()
-                log_event(logger, "google.unlink", client=self.address_string())
-                send_see_other(self, "./", flash=f"Removed {name}")
-            else:
-                send_see_other(self, "./", flash="Account not found")
-
-        def _handle_default(self, form: dict[str, str]) -> None:
-            name = form.get("name", "")
-            registry = GoogleRegistry.load(cfg["registry_path"])
-            if registry.get(name) is not None:
-                registry.default_name = name
-                registry.save()
-                # Account-identity config — symmetric with spotify.default.
-                # (No restart here: Google's default is read lazily, but the
-                # config change is still worth the audit line.)
-                log_event(logger, "google.default", client=self.address_string())
-                send_see_other(self, "./", flash=f"Default set to {name}")
-            else:
-                send_see_other(self, "./", flash="Account not found")
-
-        def _exchange_code(
-            self, account_name: str, code: str, verifier: str | None,
-            creds: tuple[str, str],
-        ) -> None:
-            registry = GoogleRegistry.load(cfg["registry_path"])
-            account = registry.get(account_name)
-            if account is None:
-                raise RuntimeError(f"unknown account: {account_name}")
-            flow = _build_flow(cfg, creds, state=account_name)
-            # Restore the PKCE verifier that /start stashed under the nonce
-            # (the callback already popped the pending entry, so a redo
-            # can't reuse it — the next /start creates a fresh nonce).
-            if verifier is not None:
-                flow.code_verifier = verifier
-            flow.fetch_token(code=code)
-            granted = flow.credentials
-            if not granted.refresh_token:
-                # `prompt='consent'` should always produce one. If we
-                # get here Google probably rate-limited the consent
-                # screen for this user — the user can retry.
-                raise RuntimeError(
-                    "Google did not return a refresh token. Try again "
-                    "in a moment, or revoke this app at "
-                    "myaccount.google.com/permissions and re-link."
-                )
-            save_token(
-                account.token_path,
-                refresh_token=granted.refresh_token,
-                scopes=list(granted.scopes or GOOGLE_SCOPES),
-                token_uri=granted.token_uri or _TOKEN_URI,
-            )
-            # Best-effort identity lookup so the management page can
-            # show "jasper@gmail.com" next to the label. Failure here
-            # is non-fatal — the account still works for tools.
-            info = _fetch_userinfo(granted.token or "")
-            email = (info.get("email") or "").strip()
-            display = (info.get("name") or "").strip()
-            if email or display:
-                account.email = email
-                account.display_name = display
-                registry.save()
+            handler_fn(self)
 
     return Handler
 
