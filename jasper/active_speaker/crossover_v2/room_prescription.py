@@ -375,6 +375,7 @@ class RoomPrescription:
     rationale: str = ""
     rationale_dropped_chars: int | None = None
     coverage_hz: tuple[float, float] | None = None
+    measured_basis: Mapping[str, Any] | None = None
 
     @property
     def filters(self) -> list[dict[str, Any]]:
@@ -864,6 +865,7 @@ def read_room_prescription(
         prescription_class=prescription_class,
         room_median_sha256=echoed,
         coverage_hz=median.coverage_hz,
+        measured_basis=(median.evidence or {}).get("basis"),
         prescriber_model=model,
         prescriber_operator=operator,
         ceiling_hz=median.ceiling_hz,

@@ -210,6 +210,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
             phase=PHASE_CHECK,
             artifact=artifact,
             volume_plan=_FakePlan(measurement_volume_db=-20.0),
+            speaker_candidate_id="speaker-candidate-fp",
         )
     )
 
@@ -222,6 +223,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert block["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
     assert block["graph"]["config_path"] == ANCHOR_PATH
     assert block["graph"]["fingerprint"]
+    assert block["graph"]["speaker_candidate_id"] == "speaker-candidate-fp"
     assert json_fingerprint(block["graph"]["config"]) == block["graph"]["fingerprint"]
     assert block["graph"]["config"]["pipeline"] == [{"type": "Mixer", "name": "program_routing"}]
     assert cam.reads.count("active_raw") == 1
@@ -485,6 +487,13 @@ def _drive_one_capture(
             return "capture.wav"
 
     graph, records = Graph(), FakeRecords()
+    monkeypatch.setattr(
+        v2host,
+        "load_applied_baseline_profile_state",
+        lambda: {
+            "source": {"measured_candidate_fingerprint": "speaker-candidate-fp"}
+        },
+    )
     monkeypatch.setattr(door, "bind_measurement_graph", lambda *a, **kw: graph)
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _FakeWindow(cam))
     monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
@@ -504,7 +513,12 @@ def _drive_one_capture(
     )
     spec = MeasureSpec(
         kind="verify" if phase == PHASE_VERIFY else "candidate",
-        graph_scope=scope, candidate_id="candidate-fp" if scope == "candidate" else "",
+        graph_scope=scope,
+        candidate_id=(
+            "candidate-fp"
+            if scope in {"candidate", "room_candidate"}
+            else ""
+        ),
         program_phase=phase,
     )
     session = TuningSession(
@@ -671,7 +685,9 @@ def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
     assert carry.take() is None
 
 
-@pytest.mark.parametrize("scope", ["drivers", "base", "speaker_tune", "candidate"])
+@pytest.mark.parametrize(
+    "scope", ["drivers", "base", "speaker_tune", "candidate", "room_candidate"]
+)
 def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_path, scope):
     phase = PHASE_CHECK if scope == "drivers" else PHASE_CLOUD_VERIFY
     cam, plan = _FakeCam(volume_db=-20.0), _FakePlan()
@@ -681,5 +697,9 @@ def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_
     assert carried is not None
     assert carried["main_volume_db"] == -20.0
     assert carried["stimulus"]["phase"] == phase
+    if scope in {"speaker_tune", "room_candidate"}:
+        assert carried["graph"]["speaker_candidate_id"] == "speaker-candidate-fp"
+    else:
+        assert "speaker_candidate_id" not in carried["graph"]
     assert plan.holds == [f"capture:{phase}"]
     assert cam.volume_writes == []

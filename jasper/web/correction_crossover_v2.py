@@ -73,7 +73,9 @@ from typing import (
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.measured_crossover_candidate import candidate_trial_scope
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 # The stage-capability vocabulary this module publishes and binds (#2291 Phase
 # 4). EAGER, unlike every other ``jasper.active_speaker`` import here, because
 # these are module-level NAMES rather than call-time dependencies — a lazy
@@ -2067,8 +2069,10 @@ def _take_staged_angle_walk(
         )
     candidate_ids = tuple(stop.candidate_id for stop in request.stops)
     try:
-        for candidate_id in sorted(set(candidate_ids) - {""}):
-            find_banked_candidate(candidate_id)
+        candidate_scopes = {
+            candidate_id: candidate_trial_scope(find_banked_candidate(candidate_id).candidate)
+            for candidate_id in sorted(set(candidate_ids) - {""})
+        }
         if any(stop.regime in (REGIME_SUMMED, REGIME_BRANCHES) for stop in request.stops) and (
             request.level_matched or request.inverted_role or request.delayed_role
         ):
@@ -2110,7 +2114,7 @@ def _take_staged_angle_walk(
                 pose_prompts=(prompt.text,), candidate_id=stop.candidate_id,
                 graph_scope=(
                     "candidate_branches" if stop.regime == REGIME_BRANCHES
-                    else "candidate" if stop.candidate_id
+                    else candidate_scopes[stop.candidate_id] if stop.candidate_id
                     else "speaker_tune" if through_tune else "base"
                 ),
             )
@@ -2538,46 +2542,9 @@ def _add_capture_block(
 
 
 def _capture_evidence_blocks(result: Any, analysis: Any) -> dict[str, Any]:
-    """The three blocks a banked take carries about the capture it IS.
+    """Retain recorder counters separately from the analysis verdict.
 
-    ``diagnostic`` is
-    :func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`
-    — the flat numeric account that makes a banked take self-describing
-    without replaying the analysis. ``capture_integrity`` is the RECORDER's
-    own per-take counters (the wired chain's
-    ``build_capture_integrity_report``), written
-    verbatim so a reader sees the counts as the recorder reported them.
-    ``frame_ledger`` is the reconciliation of those counters against the
-    frames that actually arrived — the one thing that names WHICH hop lost a
-    quantum.
-
-    **``capture_integrity`` names two different things in one record, and they
-    are not the same fact.** This block is the recorder's RAW counters, off the
-    capture result. The ``integrity_*`` fields inside ``diagnostic`` are the
-    analysis's own evaluated ``CaptureIntegrity`` verdict — computed during the
-    capture, on the signal. A reader comparing the two is comparing a report
-    against a judgement, not one number against itself.
-
-    Written only when there is something to write: an absent block is a
-    capture that reported none, never a clean take claimed on its behalf.
-
-    **NOT total, and guarded because of it.** The summary is defensive at its
-    top level but its nested reads are bare once a sub-object exists
-    (``drift.epsilon_ppm``, ``alignment.confidence``,
-    ``candidate.predicted_ripple_db``, and a ``math.isfinite`` over a pilot's
-    ``snr_db`` that raises ``TypeError`` on a non-number), and
-    ``ledger.to_dict()`` is a method call rather than a ``getattr`` default.
-    A half-populated analysis reaches every one of those. So each block is
-    built through :func:`_add_capture_block`, which trades the block for the
-    capture and never the other way round.
-
-    One hazard this does NOT cover, stated so a future analysis change knows
-    the contract: a non-native number (a ``numpy`` scalar, an array) raises
-    inside the STORE's canonical JSON, past this guard, and the retention
-    seam's fail-soft would drop the whole record. Every field on today's three
-    blocks is Python-native — the summary ``round(float(...))``s its own, the
-    ledger's are ``int``, and the page's arrive through ``json.loads`` — so
-    this is a contract to keep, not a live defect.
+    A malformed optional block must not discard an otherwise bankable take.
     """
     from jasper.audio_measurement import program_analysis as _pa
 
@@ -2699,11 +2666,14 @@ def bind_production_analyze(
                 setup_mode=setup_mode,
                 setup_calibration_id=setup_calibration_id,
             )
+        capture_calibration = {
+            "applied": curve is not None,
+            "calibration_id": getattr(record, "calibration_id", None),
+        }
+        if curve is not None:
+            capture_calibration["curve_fingerprint"] = json_fingerprint(curve.to_dict())
         if meta is not None:
-            meta.setdefault("calibration", {})[phase] = {
-                "applied": curve is not None,
-                "calibration_id": getattr(record, "calibration_id", None),
-            }
+            meta.setdefault("calibration", {})[phase] = capture_calibration
         # Layer-1a linearization gate input (#1668 PR-C): resolve the
         # measurement mic's correction-envelope trust tier from the SAME
         # resolved calibration record this binding already computed above —
@@ -2763,7 +2733,10 @@ def bind_production_analyze(
             # No drain-first, unlike the carry above: this block set is never
             # empty, so a refused capture's blocks are overwritten here rather
             # than stranded for the next accepted take to drain.
-            evidence.record(_capture_evidence_blocks(result, analysis))
+            evidence.record({
+                **_capture_evidence_blocks(result, analysis),
+                "capture_calibration": capture_calibration,
+            })
         return analysis
 
     return _analyze
@@ -3374,12 +3347,14 @@ def bind_production_play(
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
     resolved_config_dir = config_dir or str(DEFAULT_CAMILLA_CONFIG_DIR)
+    applied_profile = load_applied_baseline_profile_state() or {}
+    speaker_candidate_id = (applied_profile.get("source") or {}).get("measured_candidate_fingerprint")
     session_graph = bind_measurement_graph(
         MeasurementGraphProfile(
             preset=preset, topology=topology, role_channels=role_channels,
             playback_device=playback_device,
             protection_sections_by_role=protection_sections_by_role,
-            applied_profile=load_applied_baseline_profile_state(),
+            applied_profile=applied_profile,
         ), camilla_factory=camilla_factory, config_dir=resolved_config_dir,
     )
 
@@ -3393,7 +3368,7 @@ def bind_production_play(
             phase = PHASE_CLOUD_MEASURE
         return program_for_phase(phase)
 
-    async def _before_play(program: Any, artifact: Any, phase: str) -> None:
+    async def _before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         await session_volume_plan().hold_measurement_volume(
             _session_volume_read(camilla_factory), context=f"capture:{phase}",
         )
@@ -3402,6 +3377,9 @@ def bind_production_play(
             graph_kind="tuning_measurement", program=program,
             phase=phase, artifact=artifact,
             read_volume_plan=session_volume_plan,
+            speaker_candidate_id=(
+                speaker_candidate_id if spec.graph_scope in {"speaker_tune", "room_candidate"} else None
+            ),
         )
 
     compose = bind_program_composer(

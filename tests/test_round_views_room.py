@@ -98,6 +98,7 @@ def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, caps
     {"graph_scope": "room"},
     {"side": "right"},
     {"capture_setup": {"calibration": {"calibration_id": "other-mic"}}},
+    {"capture_calibration": {"applied": True, "calibration_id": "same-mic", "curve_fingerprint": "changed-curve"}},
     {"capture_device": {"card": "other-card"}},
     {"provenance": {"stimulus": {"wav_sha256": "other-program"}}},
     {"level_db": -35.0},
