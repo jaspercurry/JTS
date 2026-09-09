@@ -518,8 +518,13 @@ def store_calibration(
     dest_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
     raw_path = dest_dir / f"{calibration_id}.txt"
     metadata_path = dest_dir / f"{calibration_id}.json"
-    raw_path.write_text(text)
-    raw_path.chmod(0o600)
+    # 0640 + the parent directory's group. The registry root is installed
+    # `2770 -g jasper` and the writer (`jasper-mic-calibration`) runs under
+    # sudo, so a root-owned 0600 file is unreadable to every daemon that
+    # resolves a calibration -- silently, since both resolvers skip what they
+    # cannot read. The curve carries no secrets: the serial is stored only as
+    # a one-way hash.
+    atomic_write_text(raw_path, text, mode=0o640)
 
     record = CalibrationRecord(
         calibration_id=calibration_id,
@@ -537,8 +542,9 @@ def store_calibration(
         point_count=len(curve.freqs_hz),
         curve=curve,
     )
-    metadata_path.write_text(json.dumps(record.to_dict(), indent=2))
-    metadata_path.chmod(0o600)
+    atomic_write_text(
+        metadata_path, json.dumps(record.to_dict(), indent=2), mode=0o640,
+    )
     return record
 
 

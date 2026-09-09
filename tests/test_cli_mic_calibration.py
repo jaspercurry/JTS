@@ -12,6 +12,7 @@ the function boundary, so no test here reaches the network.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -79,31 +80,68 @@ def test_fetch_stores_the_vendor_calibration_and_remembers_the_mic(
 
 
 @pytest.mark.parametrize(
-    ("error", "reason"),
+    ("error", "code", "reason"),
     [
-        (calibration.CalibrationNotFoundError, mic_calibration.REFUSE_VENDOR_NOT_FOUND),
+        (
+            calibration.CalibrationNotFoundError,
+            _refusal.EXIT_REFUSED,
+            mic_calibration.REFUSE_VENDOR_NOT_FOUND,
+        ),
         (
             calibration.CalibrationUpstreamError,
+            _refusal.EXIT_REFUSED,
             mic_calibration.REFUSE_VENDOR_UNREACHABLE,
         ),
-        (ValueError, mic_calibration.REFUSE_LOOKUP_INVALID),
+        # What the fetch raises as ValueError past the argument check below is
+        # the vendor's own file failing to parse, which is the FILE's failure.
+        (
+            ValueError,
+            _refusal.EXIT_UNREADABLE,
+            mic_calibration.REASON_FILE_UNREADABLE,
+        ),
     ],
 )
 def test_a_failed_vendor_lookup_refuses_by_name_and_writes_nothing(
-    store: Path, monkeypatch, capsys, error, reason,
+    store: Path, monkeypatch, capsys, error, code, reason,
 ):
     def fake_fetch(**_kwargs):
         raise error("the vendor said no")
 
     monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
 
-    code, document = _run(
+    exit_code, document = _run(
         ["fetch", "--model", "dayton_imm6", "--serial", "700-1234"], capsys
     )
 
-    assert code == _refusal.EXIT_REFUSED
+    assert exit_code == code
     assert document["reason"] == reason
-    assert document["status"] == "refused"
+    assert document["status"] == _refusal.STATUS_BY_CODE[code]
+    assert not store.exists()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["fetch", "--model", "no-such-mic", "--serial", "700-1234"],
+        ["fetch", "--model", "dayton_imm6", "--serial", "  "],
+    ],
+)
+def test_an_impossible_lookup_refuses_before_the_vendor_is_reached(
+    store: Path, monkeypatch, capsys, argv,
+):
+    """A model nothing registers and an empty serial name no lookup, so they
+    are answered without a fetch -- which is what leaves the ValueError above
+    to mean the vendor's file."""
+
+    def never(**_kwargs):  # pragma: no cover - the point is that it is not called
+        raise AssertionError("the fetcher was reached")
+
+    monkeypatch.setattr(calibration, "fetch_vendor_calibration", never)
+
+    code, document = _run(argv, capsys)
+
+    assert code == _refusal.EXIT_REFUSED
+    assert document["reason"] == mic_calibration.REFUSE_LOOKUP_INVALID
     assert not store.exists()
 
 
@@ -134,6 +172,42 @@ def test_upload_of_something_that_is_not_a_calibration_is_unreadable(
 
     assert code == _refusal.EXIT_UNREADABLE
     assert document["reason"] == mic_calibration.REASON_FILE_UNREADABLE
+    assert not store.exists()
+
+
+def test_an_upload_past_the_size_cap_is_refused_unread(
+    store: Path, tmp_path, capsys,
+):
+    """The head of the file is a valid curve, so only the cap can refuse it:
+    without one, this would parse and be stored."""
+    path = tmp_path / "huge.txt"
+    path.write_text(SAMPLE_CAL)
+    os.truncate(path, mic_calibration.MAX_UPLOAD_BYTES + 1)
+
+    code, document = _run(["upload", str(path)], capsys)
+
+    assert code == _refusal.EXIT_UNREADABLE
+    assert document["reason"] == mic_calibration.REASON_FILE_UNREADABLE
+    assert not store.exists()
+
+
+def test_an_upload_that_cannot_be_filed_is_unwritable_not_unreadable(
+    store: Path, tmp_path, monkeypatch, capsys,
+):
+    """The Pi's calibration root is root-owned, so a run without sudo lands
+    here; a non-directory in the root's place reaches the same refusal as any
+    user."""
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("")
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(blocked))
+    path = tmp_path / "lab.txt"
+    path.write_text(SAMPLE_CAL)
+
+    code, document = _run(["upload", str(path)], capsys)
+
+    assert code == _refusal.EXIT_WRITE_FAILED
+    assert document["reason"] == mic_calibration.REASON_STORE_UNWRITABLE
+    assert document["status"] == "unwritable"
     assert not store.exists()
 
 

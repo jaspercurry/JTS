@@ -12,8 +12,9 @@ calibration context from that record, so a box with no record measures
 uncalibrated.
 
 ``fetch`` is the one verb that reaches the network. Both writing verbs file
-their result under ``configured_calibration_root()``, a root-owned state
-directory, so they run under sudo.
+their result under ``configured_calibration_root()``, installed root-owned
+and group ``jasper`` (``install -d -m 2770 -g jasper``, deploy/install.sh);
+the login account is in neither, so they run under ``sudo``.
 """
 from __future__ import annotations
 
@@ -65,6 +66,10 @@ REASON_FILE_UNREADABLE = "mic_calibration_file_unreadable"
 #: The calibration parsed and could not be filed under the calibration root.
 REASON_STORE_UNWRITABLE = "mic_calibration_store_unwritable"
 
+#: A calibration curve is a few thousand text rows; anything past 1 MiB is
+#: refused unread, because this runs on a 1 GB Pi.
+MAX_UPLOAD_BYTES = 1024 * 1024
+
 
 def _calibration_root() -> Path:
     from jasper.audio_measurement.calibration import (  # lazy: numpy
@@ -75,8 +80,8 @@ def _calibration_root() -> Path:
 
 
 def _store_detail(exc: OSError) -> str:
-    # The calibration root is a root-owned StateDirectory, so the login
-    # account cannot write it without sudo.
+    # The calibration root is root-owned, group `jasper`; the login account is
+    # in neither, so writing it needs sudo.
     hint = " — run with sudo" if isinstance(exc, PermissionError) else ""
     return f"{_calibration_root()}: {exc}{hint}"
 
@@ -120,6 +125,18 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         fetch_vendor_calibration,
     )
 
+    # The lookup arguments are judged HERE so the ValueError left below is the
+    # vendor file failing to parse (store_calibration's, raised inside the
+    # fetch) and not an argument this could have named itself.
+    if args.model not in SUPPORTED_MODELS:
+        return failed(
+            EXIT_REFUSED, REFUSE_LOOKUP_INVALID,
+            f"unsupported calibration model: {args.model}",
+        )
+    if not args.serial.strip():
+        return failed(
+            EXIT_REFUSED, REFUSE_LOOKUP_INVALID, "serial number is required",
+        )
     try:
         record = fetch_vendor_calibration(
             model_key=args.model,
@@ -132,7 +149,10 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
     except CalibrationUpstreamError as exc:
         return failed(EXIT_REFUSED, REFUSE_VENDOR_UNREACHABLE, str(exc))
     except ValueError as exc:
-        return failed(EXIT_REFUSED, REFUSE_LOOKUP_INVALID, str(exc))
+        return failed(
+            EXIT_UNREADABLE, REASON_FILE_UNREADABLE,
+            f"the vendor file holds no calibration curve: {exc}",
+        )
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, REASON_STORE_UNWRITABLE, _store_detail(exc))
     return _established(record, serial=args.serial)
@@ -142,6 +162,12 @@ def _cmd_upload(args: argparse.Namespace) -> int:
     from jasper.audio_measurement.calibration import store_calibration  # lazy: numpy
 
     try:
+        size = args.path.stat().st_size
+        if size > MAX_UPLOAD_BYTES:
+            return failed(
+                EXIT_UNREADABLE, REASON_FILE_UNREADABLE,
+                f"{args.path}: {size} bytes is past the {MAX_UPLOAD_BYTES}-byte cap",
+            )
         text = args.path.read_text()
     except OSError as exc:
         return failed(EXIT_UNREADABLE, REASON_FILE_UNREADABLE, f"{args.path}: {exc}")
@@ -220,7 +246,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     upload.add_argument("path", type=Path, help="the calibration file to store")
     upload.add_argument(
-        "--model", default="other", help="a model key from `models` (default: other)",
+        "--model", default="other",
+        help=(
+            "a model key from `models`, or `other` for a mic that registry does "
+            "not name (default: %(default)s)"
+        ),
     )
     upload.add_argument("--serial", default=None, help="the serial printed on the mic")
     upload.add_argument("--label", default=None, help="how this mic is named in reports")

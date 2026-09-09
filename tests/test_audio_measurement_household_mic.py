@@ -333,3 +333,24 @@ def test_household_mic_write_failure_never_blocks_the_calibration(
     assert not household_path.exists()
     assert "event=correction.household_mic_write_failed" in caplog.text
     assert "reason=OSError" in caplog.text
+
+
+def test_an_unusable_stored_calibration_is_journalled_not_silent(
+    tmp_path, caplog,
+):
+    """The resolver stays fail-soft, and says so: a metadata file it cannot
+    use (unreadable under the Pi's root-owned registry, or corrupt) otherwise
+    degrades every take to uncalibrated with nothing in the journal."""
+    root = tmp_path / "calibrations"
+    record = _store(tmp_path)
+    Path(record.metadata_path).write_text("{not json")
+    caplog.set_level(logging.WARNING, logger=hm.logger.name)
+
+    resolved = hm.resolve_household_mic_calibration(
+        hm.household_mic_from_calibration(record), root=root,
+    )
+
+    assert resolved is None
+    assert "event=correction.calibration_unresolvable" in caplog.text
+    assert f"reason={json.JSONDecodeError.__name__}" in caplog.text
+    assert f"path={root}" in caplog.text

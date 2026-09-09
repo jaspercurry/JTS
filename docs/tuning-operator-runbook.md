@@ -38,11 +38,13 @@ Choose the order from the evidence and the next question.
    inherited corrections. For a comparison, name the candidate fingerprints
    and required poses. `jasper-angle-capture plan` previews the program and
    human effort without staging it.
-3. **Stage and measure.** Register the wired measurement mic once with
-   `jasper-mic-calibration fetch --model <key> --serial <serial>` (or `upload
-   <file>`); `show` prints the household record every take's calibration
-   context resolves from, and a box without one measures uncalibrated. Stage
-   the chosen program, then use
+3. **Stage and measure.** Register the wired measurement mic once. Its record
+   and its calibration files live under a root-owned, group-`jasper` state
+   directory the login account is outside, so on the speaker every verb runs as
+   `sudo /opt/jasper/.venv/bin/jasper-mic-calibration <verb>`:
+   `fetch --model <key> --serial <serial>`, or `upload <file>`. `show` prints
+   the household record every take's calibration context resolves from, and a
+   box without one measures uncalibrated. Stage the chosen program, then use
    `jasper-round open --tier express` (or the chosen tier) and `jasper-round wait`.
    Give the human the returned `handoff_url` and the next placement/start action.
    `scripts/run-crossover-round.py` is the laptop adapter for one round.

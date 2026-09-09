@@ -326,14 +326,26 @@ def resolve_household_mic_calibration(
     calibration_root = root if root is not None else DEFAULT_CALIBRATION_DIR
     try:
         return load_calibration_record(record.calibration_id, root=calibration_root)
-    except (FileNotFoundError, OSError, ValueError, KeyError, TypeError):
-        # OSError/ValueError: unreadable or malformed metadata file.
-        # KeyError/TypeError: a corrupt file missing/mistyping a required
-        # field (CalibrationRecord.from_dict indexes required keys
-        # directly). Any of these means "can't use this ID" — fall through
-        # to the content-hash lookup rather than raising into a caller that
-        # documented this function as fail-soft.
+    except FileNotFoundError:
+        # Nothing filed under that ID: the ordinary miss the content-hash
+        # lookup below answers.
         pass
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # OSError/ValueError: a metadata file that EXISTS and cannot be used —
+        # unreadable (a root-written 0600 file under a group-readable root) or
+        # malformed. KeyError/TypeError: a corrupt file missing/mistyping a
+        # required field (CalibrationRecord.from_dict indexes required keys
+        # directly). Any of these means "can't use this ID" — fall through to
+        # the content-hash lookup rather than raising into a caller that
+        # documented this function as fail-soft, and journal one line, because
+        # the alternative is measuring uncalibrated with no trace.
+        log_event(
+            logger,
+            "correction.calibration_unresolvable",
+            level=logging.WARNING,
+            path=str(getattr(exc, "filename", None) or calibration_root),
+            reason=type(exc).__name__,
+        )
     return find_stored_calibration_by_content_hash(
         file_sha256=record.file_sha256, root=calibration_root,
     )
