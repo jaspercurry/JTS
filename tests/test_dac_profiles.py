@@ -11,7 +11,6 @@ import pytest
 
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.hat_eeprom import HatEeprom, read_hat_eeprom
-from jasper.camilla_config_contract import CamillaFloor
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
@@ -750,47 +749,35 @@ def test_latency_floor_rejects_nonpositive_values() -> None:
 
 
 def test_apple_dongle_declares_the_measured_floors() -> None:
-    # The codified floors must match the measured Apple-dongle floors. The exact
-    # 4x Camilla target (1024) and outputd 64/128 were too tight on jts.local.
+    # The codified floor must match the measured Apple-dongle floor; outputd
+    # 64/128 was too tight on jts.local.
     assert APPLE_USB_C_DONGLE.latency_floor == LatencyFloor(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
-    )
-    assert APPLE_USB_C_DONGLE.camilla_floor == CamillaFloor(
-        chunksize=256, target_level=1536,
     )
 
 
 def test_floor_accessors_round_trip_by_profile_id() -> None:
     floor = dac.latency_floor_for(APPLE_USB_C_DONGLE_ID)
-    camilla = dac.camilla_floor_for(APPLE_USB_C_DONGLE_ID)
-    assert floor is not None and camilla is not None
+    assert floor is not None
     assert (floor.outputd_period_frames, floor.outputd_dac_buffer_frames) == (128, 256)
-    assert (camilla.chunksize, camilla.target_level) == (256, 1536)
 
 
 def test_floor_accessors_are_none_for_undeclared_and_unknown() -> None:
     # A DAC that declares no floor keeps the shipped default — None is the
     # non-breaking signal the reconciler and the emitters read as "use default".
     assert dac.latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
-    assert dac.camilla_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
     assert dac.latency_floor_for("no_such_dac") is None
-    assert dac.camilla_floor_for("no_such_dac") is None
 
 
-def test_innomaker_declares_the_jts4_outputd_and_camilla_floors() -> None:
+def test_innomaker_declares_the_jts4_outputd_floor() -> None:
     # jts4 (Pi Zero 2 W + InnoMaker HiFi AMP Pro): period 128 / dac_buffer 256 —
     # the pair both other declaring profiles use — took 1 DAC xrun in 5 minutes
     # here, and 512 took zero in 5 minutes plus zero in a 3-minute run through
-    # the armed ring. CamillaDSP's pair is the ring-clamped 256/1024 the ring
-    # clamp (#3542) scaled this board's former 1024/4096 down to; jts4 has run
-    # it since, CamillaDSP-validated.
+    # the armed ring.
     assert INNOMAKER_HIFI_AMP_PRO.latency_floor == LatencyFloor(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=512,
-    )
-    assert INNOMAKER_HIFI_AMP_PRO.camilla_floor == CamillaFloor(
-        chunksize=256, target_level=1024,
     )
 
 
@@ -825,9 +812,6 @@ def test_dac8x_declares_the_soak_validated_floors() -> None:
     assert HIFIBERRY_DAC8X.latency_floor == LatencyFloor(
         outputd_period_frames=128,
         outputd_dac_buffer_frames=256,
-    )
-    assert HIFIBERRY_DAC8X.camilla_floor == CamillaFloor(
-        chunksize=256, target_level=1536,
     )
 
 

@@ -20,7 +20,6 @@ from ...camilla_config_contract import (
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
 )
-from ...camilla_latency import resolve_camilla_chunksize
 from ...config import Config
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ... import ring_assets
@@ -111,7 +110,7 @@ REASON_VOLUME_LIMIT_ABSENT = "volume_limit_absent"
 REASON_VOLUME_LIMIT_ABOVE_CEILING = "volume_limit_above_ceiling"
 
 REASON_RING_CHUNK_NOT_APPLICABLE = "ring_chunk_not_applicable"
-REASON_RING_CHUNK_CLAMPED = "ring_chunk_clamped"
+REASON_RING_TARGET_LEVEL_ABOVE_CAPACITY = "ring_target_level_above_capacity"
 REASON_RING_TARGET_LEVEL_ABOVE_CEILING = "ring_target_level_above_ceiling"
 REASON_RING_CHUNK_ABOVE_CAPACITY = "ring_chunk_above_capacity"
 
@@ -1079,13 +1078,13 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
     CamillaDSP sets ``avail_min`` to its chunksize and ALSA refuses an
     ``avail_min`` above the device's buffer, so a ring config with a chunk over
     the ring's capacity does not degrade: CamillaDSP exits at open, systemd
-    restart-loops it, and the speaker emits nothing. The emitters clamp the
-    resolved chunk (``resolve_camilla_latency_for_devices``), so this covers the
-    one case the clamp cannot reach — a config written by an OLDER build and
-    still on disk.
+    restart-loops it, and the speaker emits nothing. A ring-ended graph takes
+    the whole certified ring geometry now
+    (``resolve_camilla_latency_for_devices``), so this covers the one case that
+    owner cannot reach — a config written by an OLDER build and still on disk.
 
     Removal condition: delete this check once no supported upgrade path can
-    still carry a pre-clamp config onto a box.
+    still carry a pre-ring-geometry config onto a box.
     """
     label = "camilla ring chunk"
     config_path = evidence.camilla_config_path()
@@ -1151,19 +1150,26 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
             speaker_silent=True,
             reason=REASON_RING_CHUNK_ABOVE_CAPACITY,
         )
-    # Say so when the clamp is what put this number here; otherwise the box runs
-    # a chunk its own DacProfile does not declare with no on-box explanation.
-    # Asked of the SAME resolver the emitters fall back to, never of a second
-    # derivation of "which DAC is active".
-    fits = (
-        f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
-        f"({'/'.join(ring_ends)})"
-    )
-    unclamped = resolve_camilla_chunksize()
-    if unclamped > capacity:
+    # target_level is the playback-buffer fill CamillaDSP steers towards, so
+    # it is judged against the ring only when the ring IS the playback end. A
+    # target the ring cannot hold is a graph emitted before the ring geometry
+    # owned it (a DAC floor's 1536 against a 256-frame ring): it plays, with
+    # rate_adjust off, but is stale — regenerate it.
+    if (
+        devices.get("playback_device") in RING_PCM_DEVICES
+        and target_level is not None
+        and int(target_level) > capacity
+    ):
         return CheckResult(
-            label, "ok",
-            f"{fits}, clamped from the {unclamped} this box resolves to",
-            reason=REASON_RING_CHUNK_CLAMPED,
+            label, "warn",
+            f"{config_path} sets devices.target_level={target_level} on "
+            f"{devices.get('playback_device')}, above the ring's {capacity}-frame "
+            "capacity: a graph emitted before the ring owned its geometry. "
+            "Regenerate the config: `sudo jasper-sound reconcile-current-dsp`.",
+            reason=REASON_RING_TARGET_LEVEL_ABOVE_CAPACITY,
         )
-    return CheckResult(label, "ok", fits)
+    return CheckResult(
+        label, "ok",
+        f"chunksize={chunksize} fits the ring's {capacity}-frame capacity "
+        f"({'/'.join(ring_ends)})",
+    )

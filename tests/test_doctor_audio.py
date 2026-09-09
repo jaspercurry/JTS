@@ -1140,23 +1140,28 @@ def test_check_camilla_ring_chunk_fails_a_target_over_camillas_ceiling(
     assert r.speaker_silent is True
 
 
-def test_check_camilla_ring_chunk_discloses_the_clamp(monkeypatch, tmp_path):
-    """A clamped box says so, so the running chunk is never unexplained.
+def test_check_camilla_ring_chunk_fails_a_target_over_the_ring_capacity(
+    monkeypatch, tmp_path
+):
+    """A target the whole ring cannot hold is a fill the graph never reaches.
 
-    A floorless HiFiBerry DAC8x Studio resolves the 1024 default and runs 256.
-    Not the InnoMaker: since #3542 it declares the already-clamped 256/1024
-    outright, so it no longer takes this path.
+    The shape a pre-ring-geometry config on disk carries: a DAC floor's 1536
+    against a 256-frame ring. It clears CamillaDSP's own chunk x (queuelimit+4)
+    ceiling, so only the transport bound catches it.
     """
     from jasper.fanin_coupling import ring_capacity_frames
 
-    record_active_dac("hifiberry_dac8x_studio")
-    monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
-    _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames())
+    capacity = ring_capacity_frames()
+    _stage_ring_config(
+        tmp_path, monkeypatch, capacity,
+        extra=f"  queuelimit: 4\n  target_level: {capacity * 2}\n",
+    )
 
     r = audio.check_camilla_ring_chunk_fits()
 
-    assert r.status == "ok"
-    assert r.reason == audio.REASON_RING_CHUNK_CLAMPED
+    assert r.status == "warn"
+    assert r.reason == audio.REASON_RING_TARGET_LEVEL_ABOVE_CAPACITY
+    assert r.speaker_silent is False
 
 
 def test_check_camilla_ring_chunk_not_applicable_off_the_ring(monkeypatch, tmp_path):

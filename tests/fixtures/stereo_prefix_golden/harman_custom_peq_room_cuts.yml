@@ -12,9 +12,9 @@
 
 devices:
   samplerate: 48000
-  chunksize: 256
-  queuelimit: 4
-  target_level: 512
+  chunksize: 128
+  queuelimit: 1
+  target_level: 128
   volume_limit: 0.0
   enable_rate_adjust: false
   capture:

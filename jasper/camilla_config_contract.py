@@ -25,7 +25,6 @@ from jasper.fanin_coupling import (
     RING_CAPTURE_DEVICE,
     RING_PCM_DEVICES,
     RING_PLAYBACK_DEVICE,
-    ring_capacity_frames,
 )
 
 
@@ -118,44 +117,11 @@ def outputd_capture_device_for_playback(playback_device: object) -> str | None:
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
+#: CamillaDSP frames queued ahead of an ordinary (non-ring) ALSA sink. A
+#: ring-ended graph takes ``fanin_coupling.RING_CAMILLA_QUEUELIMIT`` instead.
+DEFAULT_QUEUELIMIT = 4
 #: camilla#1's websocket port with nothing overriding it.
 DEFAULT_CAMILLA_PORT = 1234
-
-
-@dataclass(frozen=True)
-class CamillaFloor:
-    """The lowest CamillaDSP ``(chunksize, target_level)`` a box runs xrun-free.
-
-    Declared per DacProfile because a box is identified by its DAC, but the
-    numbers are CamillaDSP's own buffering, not the DAC's: since ADR-0100 the
-    chunk crosses the SHM ring, whose capacity is a transport constant, so a
-    chunk the ring cannot open is refused at declaration rather than clamped at
-    emit time. ``target_level`` is the resampler's steady-state fill: it must be
-    >= 4x ``chunksize`` so the adjuster has headroom, and the ring's capacity
-    does not bound it.
-    """
-
-    chunksize: int
-    target_level: int
-
-    def __post_init__(self) -> None:
-        for name, value in (
-            ("chunksize", self.chunksize),
-            ("target_level", self.target_level),
-        ):
-            if value <= 0:
-                raise ValueError(f"{name} must be > 0, got {value}")
-        if self.target_level < 4 * self.chunksize:
-            raise ValueError(
-                f"target_level must be >= 4 x chunksize ({4 * self.chunksize}), "
-                f"got {self.target_level}"
-            )
-        capacity = ring_capacity_frames()
-        if self.chunksize > capacity:
-            raise ValueError(
-                f"chunksize {self.chunksize} exceeds the ring's {capacity}-frame "
-                "capacity; CamillaDSP could not open the ring with it"
-            )
 
 
 def resolve_enable_rate_adjust(playback_device: str | None) -> bool:

@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence, Typ
 from jasper.audio_hardware.dac import by_id as dac_profile_by_id
 from jasper.audio_hardware.dac import (
     active_outputd_lane_channels_for,
-    camilla_floor_for,
     latency_floor_for,
 )
 from jasper.audio_runtime_overrides import (
@@ -327,10 +326,10 @@ class EmittedCamillaGeometry:
     """What the LOADED CamillaDSP config declares — read, never derived.
 
     A DIFFERENT fact from the plan's ``JASPER_CAMILLA_*`` settings, which answer
-    what an emitter's fallback WOULD resolve. The two legitimately differ: a
-    graph built end-to-end on the ring passes
-    :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` explicitly, and an
-    ordinary graph's chunk is clamped to the ring's capacity by
+    what an emitter's fallback WOULD resolve. The two legitimately differ: any
+    graph with a ring end carries
+    :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` instead, whether it
+    passes it explicitly or resolves it through
     ``resolve_camilla_latency_for_devices``. A surface that reports only the
     settings therefore names a geometry no config on the box need carry.
     """
@@ -1336,13 +1335,12 @@ def build_audio_runtime_plan(
     profile_id = (profile_id or "").strip()
     profile = dac_profile_by_id(profile_id) if profile_id else None
     floor = latency_floor_for(profile_id) if profile_id else None
-    camilla_floor = camilla_floor_for(profile_id) if profile_id else None
     route_profile = resolve_audio_route_profile(base_values)
 
     camilla_chunksize_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_CHUNKSIZE",
         default=DEFAULT_CHUNKSIZE,
-        floor_value=camilla_floor.chunksize if camilla_floor else None,
+        floor_value=None,
         base_env=base_values,
         override_env=override_values,
         generated_env=outputd_values,
@@ -1362,7 +1360,7 @@ def build_audio_runtime_plan(
     camilla_target_setting = _resolve_profile_floor_int(
         key="JASPER_CAMILLA_TARGET_LEVEL",
         default=DEFAULT_TARGET_LEVEL,
-        floor_value=camilla_floor.target_level if camilla_floor else None,
+        floor_value=None,
         base_env=base_values,
         override_env=override_values,
         generated_env=outputd_values,
