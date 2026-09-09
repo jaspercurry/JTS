@@ -34,14 +34,16 @@ from ...camilla_config_contract import (
 )
 from ...config import Config
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
-from .correction import (
+from ._evidence import evidence
+from ._registry import doctor_check
+from ._shared import (
+    CheckResult,
     REASON_CAMILLA_CONFIG_MISSING,
     REASON_CAMILLA_CONFIG_UNREADABLE,
     REASON_CAMILLA_STATEFILE_UNREADABLE,
+    _group_writable_dir,
+    _service_state_failure,
 )
-from ._evidence import evidence
-from ._registry import doctor_check
-from ._shared import CheckResult, _group_writable_dir, _service_state_failure
 
 REASON_CAMILLA_UNIT_MISSING = "camilla_unit_missing"
 REASON_CAMILLA_UNIT_NOT_ENABLED = "camilla_unit_not_enabled"

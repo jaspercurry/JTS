@@ -18,6 +18,9 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
+    REASON_CAMILLA_CONFIG_MISSING,  # noqa: F401 — re-exported, see below
+    REASON_CAMILLA_CONFIG_UNREADABLE,  # noqa: F401 — re-exported, see below
+    REASON_CAMILLA_STATEFILE_UNREADABLE,  # noqa: F401 — re-exported, see below
     _group_writable_dir,
     _run,
     _systemctl_unavailable_result,
@@ -422,17 +425,6 @@ def check_correction_uploaded_calibration_sign() -> CheckResult:
         "REW ecosystem (miniDSP, Dayton, Cross-Spectrum) are response curves",
         reason=REASON_UPLOADED_CALIBRATION_SIGN_REVIEW,
     )
-
-# The three ways `_active_camilla_config_path` below leaves a caller with no
-# config to read. Homed here, beside the reader, and imported by every doctor
-# module that calls it (ADR-0233 rule 1).
-# STATEFILE_UNREADABLE stays `warn`: `read_camilla_statefile_config_path`
-# returns the same None for an unreadable statefile and for a readable one
-# missing its `config_path:` line.
-REASON_CAMILLA_STATEFILE_UNREADABLE = "camilla_statefile_unreadable"
-REASON_CAMILLA_CONFIG_MISSING = "camilla_config_missing"
-REASON_CAMILLA_CONFIG_UNREADABLE = "camilla_config_unreadable"
-
 
 def _active_camilla_config_path() -> tuple[Path, str | None]:
     """Which statefile this box means, and the config it names (or ``None``).
