@@ -996,6 +996,70 @@ def test_bass_extension_recompose_reproves_missing_woofer_lowpass(
     assert exc.value.reason_code == "bass_extension_recompose_unavailable"
 
 
+@pytest.mark.parametrize("named", [True, False])
+def test_bass_extension_recompose_proves_the_rung_it_was_asked_for(
+    tmp_path,
+    named,
+) -> None:
+    """The rung travels to BOTH ends of this seam: the emitter composes it and
+    the whole-graph proof is re-run against ITS authority. Naming nothing
+    proves the same bytes against the natural summary, which refuses — which is
+    what keeps a deeper rung from reaching a graph unannounced."""
+
+    from tests.test_bass_extension_candidate_field import bass_extension_field
+
+    from jasper.sound.graph_carrier import (
+        recompose_active_baseline_for_bass_extension,
+    )
+
+    topology = _active_topology("mono", "active_2_way")
+    applied = _applied_baseline()
+    field = bass_extension_field(
+        boosted=True, owner={"role": "woofer", "channels": [0]}
+    )
+    target_id = field["rungs"][0]["target"]["target_id"]
+    emitted = _active_baseline_yaml(
+        "mono", 2, bass_extension=field, bass_target_id=target_id
+    )
+    selected = tmp_path / "selected.yml"
+    selected.write_text(emitted, encoding="utf-8")
+    preference_path = tmp_path / "sound-profile.json"
+    preference_path.write_text(
+        json.dumps(SoundProfile(enabled=False).to_dict()), encoding="utf-8"
+    )
+    settings_path = tmp_path / "sound-settings.json"
+    settings_path.write_text("{}\n", encoding="utf-8")
+
+    def _recompose(
+        tmp_path=tmp_path,
+        target_id=target_id if named else None,
+    ):
+        return recompose_active_baseline_for_bass_extension(
+            topology,
+            applied_profile=applied,
+            desired_profile=field,
+            current_config_path=selected,
+            bass_target_id=target_id,
+            preference_profile_path=preference_path,
+            sound_settings_path=settings_path,
+        )
+
+    with mock.patch(
+        "jasper.active_speaker.baseline_profile.recompose_applied_baseline_yaml",
+        return_value=(emitted, []),
+    ) as recompose:
+        if named:
+            assert _recompose() == emitted
+        else:
+            with pytest.raises(CarrierCannotHostEq) as exc:
+                _recompose()
+            assert exc.value.reason_code == "bass_extension_recompose_unavailable"
+
+    assert recompose.call_args.kwargs["bass_target_id"] == (
+        target_id if named else None
+    )
+
+
 @pytest.mark.parametrize("profile_kind", ["missing", "empty"])
 def test_bass_extension_recompose_proves_no_block_predecessors(
     tmp_path,

@@ -608,22 +608,27 @@ def recompose_active_baseline_for_bass_extension(
     applied_profile,
     desired_profile,
     current_config_path: str | Path,
+    bass_target_id: str | None = None,
     preference_profile_path: str | Path | None = None,
     sound_settings_path: str | Path | None = None,
 ) -> str:
     """Rebuild the selected solo baseline with every persisted program overlay.
 
-    This is the narrow Wave-3 carrier seam. Room PEQs are extracted through the
-    existing canonical reader; preference EQ and output trim are rebuilt from
-    their own persisted models. The loaded YAML is never spliced.
+    This is the narrow Wave-3 carrier seam and the ONE composer of a graph
+    carrying a bass rung: room PEQs are extracted through the existing
+    canonical reader; preference EQ and output trim are rebuilt from their own
+    persisted models. The loaded YAML is never spliced.
 
     ``desired_profile`` is the bass candidate field to emit, or ``None`` for the
-    un-extended graph. Its only caller,
-    :func:`jasper.bass_extension.apply_bass_extension` (lane A), still hands it a
-    ``BassExtensionProfile`` record, which the recompose refuses as a type error,
-    so this seam fails closed with ``bass_extension_recompose_unavailable`` until
-    that applier retires. The parameter keeps its record-era name only because
-    that caller binds it by keyword.
+    un-extended graph; a ``BassExtensionProfile`` record (lane A's retired
+    applier) is refused as a type error. The parameter keeps its record-era
+    name because that caller binds it by keyword.
+
+    ``bass_target_id`` names which rung of that field to emit — ``None`` is the
+    natural one, the only rung a saved profile carries. The limiter-evidence
+    bench (:mod:`jasper.bass_extension.bench.plan`) is what names a deeper one:
+    the rung plays only under that campaign's protection, and the whole-graph
+    proof below is re-run against THAT rung's authority summary.
     """
 
     from jasper.active_speaker.baseline_profile import (
@@ -704,6 +709,7 @@ def recompose_active_baseline_for_bass_extension(
             out_path=None,
             playback_device=live_endpoint,
             bass_extension=desired_profile,
+            bass_target_id=bass_target_id,
         )
     except ActiveSpeakerConfigError as exc:
         raise CarrierCannotHostEq(
@@ -729,6 +735,7 @@ def recompose_active_baseline_for_bass_extension(
             graph_text=yaml,
             applied_baseline_state=applied_profile,
             desired_bass_extension=desired_profile,
+            bass_target_id=bass_target_id,
         )
         if proof.allowed:
             return yaml

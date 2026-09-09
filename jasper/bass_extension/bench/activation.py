@@ -100,9 +100,16 @@ def _graph_fingerprint(config: Mapping[str, Any]) -> str:
     return json_fingerprint(config, field_name="active graph")
 
 
-def _read_configured_clip_limit(
+def read_configured_clip_limit(
     config: Mapping[str, Any], limiter_name: str
 ) -> float:
+    """The limiter's configured ``clip_limit`` in one parsed graph, or refuse.
+
+    The one reader of that number: the read-back proof below and the campaign's
+    per-rung baseline (:mod:`~jasper.bass_extension.bench.plan`) must agree
+    about what the graph configures.
+    """
+
     filters = config.get("filters")
     spec = filters.get(limiter_name) if isinstance(filters, Mapping) else None
     params = spec.get("parameters") if isinstance(spec, Mapping) else None
@@ -159,7 +166,7 @@ def _prove_active_graph(
     ):
         raise ActivationError("read-back owner chain is out of order")
 
-    return _read_configured_clip_limit(config, proof.limiter_name)
+    return read_configured_clip_limit(config, proof.limiter_name)
 
 
 async def snapshot_predecessor(controller: Any) -> PredecessorSnapshot:

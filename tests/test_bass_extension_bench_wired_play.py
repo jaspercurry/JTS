@@ -33,7 +33,10 @@ from jasper.active_speaker.crossover_v2.volume_claim import (
     OwnerVolumeDoor,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.active_speaker.program_admission import readmit_program_from_wav
+from jasper.active_speaker.program_admission import (
+    CHANNEL_PEAK_TOLERANCE_DB,
+    readmit_program_from_wav,
+)
 from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 from jasper.active_speaker.volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from jasper.audio_measurement.frame_ledger import REPORT_KEY_RENDER_GAPS
@@ -545,8 +548,15 @@ def test_described_program_is_admitted_from_the_padded_wav(tmp_path: Path) -> No
         commanded_main_volume_db=LEVEL_DB,
     )
 
-    # ProgramSegment's vocabulary: the digital peak the request authorized,
-    # plus the fader the play commands.
+    # ONE reading of the authorized peak (manifest.py's module docstring): the
+    # generator writes the artifact AT it, the segment declares that same
+    # number as its digital peak, and the level that reaches the driver — what
+    # the ceilings judge — is it plus the fader this play commands. Bounded by
+    # admission's own tolerance, which is what refuses a drift between them.
+    assert wav.peak_dbfs(0) == pytest.approx(
+        request.requested_stimulus_effective_peak_dbfs,
+        abs=CHANNEL_PEAK_TOLERANCE_DB,
+    )
     segment = next(iter(program.stimulus_segments()))
     assert segment.gain_db == pytest.approx(
         request.requested_stimulus_effective_peak_dbfs

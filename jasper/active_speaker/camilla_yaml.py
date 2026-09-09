@@ -526,6 +526,18 @@ def bass_owner_channels(preset: ActiveSpeakerPreset, role: str) -> tuple[int, ..
     return channels
 
 
+def bass_owner_limiter_name(role: str) -> str:
+    """The baseline limiter the bass owner's chain ends in.
+
+    The same split :func:`bass_owner_channels` makes: the local sub's lane
+    carries the sub limiter, every other owner its own driver role's.
+    """
+
+    if role == "subwoofer":
+        return _sub_baseline_limiter_name()
+    return _driver_baseline_limiter_name(role)
+
+
 def _bass_extension_emission(
     preset: ActiveSpeakerPreset,
     bass_extension: Mapping[str, Any] | None,
@@ -649,10 +661,7 @@ def _assert_bass_extension_safe(
     limiter_ok = True
     if block is not None:
         channels = frozenset(block["channels"])
-        if block["kind"] == "local_sub":
-            limiter_name = _sub_baseline_limiter_name()
-        else:
-            limiter_name = _driver_baseline_limiter_name(block["role"])
+        limiter_name = bass_owner_limiter_name(block["role"])
         limiter_ok = filter_param_matches(
             view,
             limiter_name,

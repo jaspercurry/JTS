@@ -18,6 +18,17 @@ the sustain hold from the selected ``MarginPolicy.sustain_duration_s`` is the
 operator's authored choice made *before* calling here, not a default applied
 inside this module.
 
+``requested_stimulus_effective_peak_dbfs`` is the DIGITAL sample peak the
+operator authorizes for the stimulus ARTIFACT, in dBFS re unity full scale.
+That is the one reading, and every consumer takes it: the executor generates
+the role's WAV at exactly this peak, ``wired_play`` declares it as the
+segment's ``gain_db`` so a fresh admission compares the rendered bytes against
+what was asked for, and the level that reaches the driver — the segment's
+``effective_peak_dbfs``, which the ceilings are evaluated against and which the
+bundle records — is this value plus
+``requested_commanded_main_volume_db`` (the main fader precedes the owner
+limiter for the pinned build; see ``derivation.py``'s R4(b) citation).
+
 The tap-realization amendment's "Receipts are bundle files, not schema fields"
 section authorizes exactly one mechanism for R9's render bounds and R10's live
 cross-check parameters to ride the campaign manifest: extending this module's

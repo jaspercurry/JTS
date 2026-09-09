@@ -29,7 +29,8 @@ from .context import (
     BUNDLE_SCHEMA_VERSION,
 )
 
-_RETAINED_FACT_NAMES: tuple[str, ...] = (
+#: The six Wave-4 prerequisite facts every bundle replaces with fresh evidence.
+RETAINED_FACT_NAMES: tuple[str, ...] = (
     "sweep",
     "sustain",
     "commanded_level",
@@ -270,12 +271,12 @@ def build_bundle(
     schema (this revision does not accept self-asserted reuse).
     """
 
-    missing = set(_RETAINED_FACT_NAMES) - set(retained_facts)
+    missing = set(RETAINED_FACT_NAMES) - set(retained_facts)
     if missing:
         raise ValueError(f"retained_facts missing: {sorted(missing)}")
     facts = {
         name: {"status": "replaced", "artifact": _id(retained_facts[name])}
-        for name in _RETAINED_FACT_NAMES
+        for name in RETAINED_FACT_NAMES
     }
     root: dict[str, object] = {
         "kind": BUNDLE_KIND,

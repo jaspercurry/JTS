@@ -3961,6 +3961,7 @@ def classify_bass_extension_graph(
     desired_profile: "BassExtensionProfile | None | object" = (
         _BASS_PROFILE_EVIDENCE_OMITTED
     ),
+    bass_target_id: str | None = None,
 ) -> GraphSafety:
     """Canonical synchronous graph/evidence boundary.
 
@@ -3968,6 +3969,12 @@ def classify_bass_extension_graph(
     only desired evidence a production caller passes. ``desired_profile`` is
     the legacy record, retired with ``apply_bass_extension`` (lane A); naming
     both is a refusal, since one graph has one authority.
+
+    ``bass_target_id`` names WHICH rung of that field the desired graph
+    carries (``None``: the natural one, the only rung a persisted graph ever
+    holds). It is meaningful only for desired evidence — a persisted snapshot
+    is proved against the family's own emitted rung, so naming one there is a
+    refusal.
     """
 
     if evidence_source == "desired":
@@ -3983,6 +3990,7 @@ def classify_bass_extension_graph(
                 profile_path, intent_path, staged_metadata_path,
             ))
             or candidate_kind is not None
+            or (bass_target_id is not None and not field_given)
             or not isinstance(graph_text, str)
             or not isinstance(applied_baseline_state, Mapping)
             or field_given == record_given
@@ -3991,7 +3999,8 @@ def classify_bass_extension_graph(
             return _unsafe_boundary("bass_extension_source_invalid", "desired evidence is incomplete")
         if field_given:
             bass_summary: Mapping[str, Any] = graph_summary(
-                desired if isinstance(desired, Mapping) else None
+                desired if isinstance(desired, Mapping) else None,
+                target_id=bass_target_id,
             )
         else:
             bass_summary = _evaluated_profile_summary(
@@ -4016,6 +4025,7 @@ def classify_bass_extension_graph(
     if (
         graph_text is not None
         or applied_baseline_state is not None
+        or bass_target_id is not None
         or desired_bass_extension is not _BASS_PROFILE_EVIDENCE_OMITTED
         or desired_profile is not _BASS_PROFILE_EVIDENCE_OMITTED
         or applied_baseline_path is None

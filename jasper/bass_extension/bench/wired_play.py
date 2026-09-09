@@ -152,6 +152,26 @@ _LEAD_OUT_SEGMENT_ID = "bench_lead_out"
 _INT16_FULL_SCALE = 32767.0
 
 
+def controller_fader_reader(controller: Any) -> GetMainVolumeDb:
+    """The reader every bench collaborator proves the fader level through.
+
+    ``volume_latch.FADER_IO_ERRORS`` cannot name ``CamillaUnavailable`` (that
+    leaf may not import :mod:`jasper.camilla`), so it is translated here — the
+    same translation ``web.correction_crossover_v2``'s own session-volume
+    reader makes — and the unreadable fader lands on the fader refusal instead
+    of escaping as a traceback. The floor control, the volume door and the play
+    seam all read through this one function.
+    """
+
+    async def read() -> float | None:
+        try:
+            return await controller.get_volume_db(best_effort=False)
+        except CamillaUnavailable as exc:
+            raise RuntimeError("CamillaDSP is unavailable") from exc
+
+    return read
+
+
 class ClaimFloorControl:
     """:class:`~jasper.bass_extension.bench.runner.FloorControl` over the
     process :class:`~jasper.volume_owner.VolumeOwner`.
@@ -513,6 +533,7 @@ class WiredPlayAndCapture:
     ) -> None:
         self._sink = sink
         self._controller = controller
+        self._read_fader_db = controller_fader_reader(controller)
         self._mic = mic
         self._plan = plan
         self._floor = floor
@@ -613,21 +634,6 @@ class WiredPlayAndCapture:
                 () if reading is None else tuple(float(value) for value in reading)
             )
         return samples
-
-    async def _read_fader_db(self) -> float | None:
-        """The reader ``hold_measurement_volume`` proves the level through.
-
-        ``volume_latch.FADER_IO_ERRORS`` cannot name ``CamillaUnavailable``
-        (that leaf may not import :mod:`jasper.camilla`), so it is translated
-        here — the same translation ``web.correction_crossover_v2``'s own
-        session-volume reader makes — and the unreadable fader lands on the
-        fader refusal instead of escaping as a traceback.
-        """
-
-        try:
-            return await self._controller.get_volume_db(best_effort=False)
-        except CamillaUnavailable as exc:
-            raise RuntimeError("CamillaDSP is unavailable") from exc
 
     async def _hold_fader(self, role: str) -> None:
         try:

@@ -2,7 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator CLI preflight: dry-run authors + validates, a gap refuses."""
+"""Operator CLI preflight: the dry run composes what the live run activates.
+
+The box state (topology, applied snapshot, selected graph) and the ONE composer
+are stubbed; everything between them — the manifest authoring, the real
+per-rung plans, and the refusal exits — is this CLI's own.
+"""
 
 from __future__ import annotations
 
@@ -13,8 +18,15 @@ from typing import Any
 
 import pytest
 
+from jasper.bass_extension.bench import plan as plan_module
 from jasper.bass_extension.bench.manifest import STIMULUS_ROLES
+from jasper.bass_extension.bench.runner import BenchRefused
 from jasper.cli import bass_extension_bench
+from tests.test_bass_extension_bench_plan import (
+    BOOSTED_ID,
+    applied_profile,
+    graph_text,
+)
 
 
 def _sha(label: str) -> str:
@@ -45,6 +57,7 @@ def _inputs(*target_ids: str) -> dict[str, Any]:
         "driver_safety_fingerprint": _sha("ds"),
         "margin_policy_name": "conservative",
         "margin_policy_fingerprint": _sha("mp"),
+        "measurement_policy": {"min_snr_db": 25.0, "max_tracking_rms_db": 1.0},
         "requests": {tid: {role: _request() for role in STIMULUS_ROLES} for tid in target_ids},
     }
 
@@ -55,15 +68,40 @@ def _write(tmp_path: Path, inputs: dict[str, Any]) -> Path:
     return path
 
 
-def test_dry_run_authors_and_prints_the_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    path = _write(tmp_path, _inputs("deep", "natural"))
+@pytest.fixture
+def box(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A commissioned box: a family to bench and a graph to compose onto."""
+
+    state: dict[str, Any] = {"applied": applied_profile()}
+    monkeypatch.setattr(
+        bass_extension_bench,
+        "_box_state",
+        lambda: (object(), state["applied"], Path("/var/lib/camilladsp/selected.yml")),
+    )
+    monkeypatch.setattr(
+        plan_module,
+        "recompose_active_baseline_for_bass_extension",
+        lambda topology, **kwargs: graph_text(target_id=str(kwargs["bass_target_id"])),
+    )
+    return state
+
+
+def test_dry_run_authors_the_manifest_and_composes_every_rung(
+    tmp_path: Path, box: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _write(tmp_path, _inputs(BOOSTED_ID, "natural"))
     rc = bass_extension_bench.main([str(path), "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "margin=conservative" in out
-    assert "deep, natural" in out
+    assert f"{BOOSTED_ID}, natural" in out
     assert "jts_bass_extension_limiter_evidence" in out
     assert "[-120.0, 0.0] dBFS" in out
+    # The composed plans, target by target: what the live run would activate.
+    assert "composed 2 rung graph(s)" in out
+    assert "as_woofer_baseline_limiter at -12 dBFS" in out
+    assert "owner channels [0, 1]" in out
+    assert "dry run: no device opened" in out
 
 
 def test_missing_input_refuses_with_exit_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -85,53 +123,36 @@ def test_unknown_margin_is_rejected(tmp_path: Path) -> None:
         bass_extension_bench.main([str(path), "--dry-run"])
 
 
-def test_no_flags_defaults_to_the_safe_dry_run_posture(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("argv", [[], ["--dry-run", "--live"]])
+def test_the_safe_dry_run_posture_is_the_default_and_wins(
+    tmp_path: Path,
+    box: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
 ) -> None:
-    """Dry-run is the DEFAULT posture: omitting both --dry-run and --live
-    must never attempt live execution."""
-
-    path = _write(tmp_path, _inputs("deep"))
-    rc = bass_extension_bench.main([str(path)])
+    path = _write(tmp_path, _inputs("natural"))
+    rc = bass_extension_bench.main([str(path), *argv])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "dry run: no device opened" in out
+    assert "dry run: no device opened" in capsys.readouterr().out
 
 
-def test_dry_run_wins_even_when_live_is_also_passed(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_a_box_with_no_applied_family_refuses_before_any_device(
+    tmp_path: Path, box: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = _write(tmp_path, _inputs("deep"))
-    rc = bass_extension_bench.main([str(path), "--dry-run", "--live"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "dry run: no device opened" in out
+    """The campaign is composed from what the box APPLIED; without a family
+    there is no rung to play, and nothing is opened to find that out."""
 
+    box["applied"] = {}
+    path = _write(tmp_path, _inputs("natural"))
 
-def test_live_run_fails_closed_without_the_on_device_bindings(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from jasper.bass_extension.bench.render import BinaryIdentity
+    rc = bass_extension_bench.main([str(path), "--live"])
 
-    fake_binary = BinaryIdentity(
-        path="/opt/camilladsp/camilladsp",
-        version_output="CamillaDSP 4.1.3",
-        sha256="0" * 64,
-        camilladsp_build_id="camilladsp-v4.1.3-000000000000",
-    )
-    monkeypatch.setattr(
-        bass_extension_bench, "resolve_render_binary", lambda: fake_binary
-    )
-    path = _write(tmp_path, _inputs("deep"))
-    with pytest.raises(SystemExit) as excinfo:
-        bass_extension_bench.main([str(path), "--live"])
-    assert "on-device" in str(excinfo.value)
-    assert "TargetPlan" in str(excinfo.value)
-    assert "PlayAndCapture" in str(excinfo.value)
+    assert rc == 2
+    assert "bench_no_applied_family" in capsys.readouterr().err
 
 
 def test_live_run_refuses_when_the_render_binary_cannot_be_resolved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, box: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from jasper.bass_extension.bench.render import RenderError
 
@@ -139,6 +160,100 @@ def test_live_run_refuses_when_the_render_binary_cannot_be_resolved(
         raise RenderError("no jasper-camilla.service on this host")
 
     monkeypatch.setattr(bass_extension_bench, "resolve_render_binary", _raise)
-    path = _write(tmp_path, _inputs("deep"))
+    path = _write(tmp_path, _inputs("natural"))
+    assert bass_extension_bench.main([str(path), "--live"]) == 2
+
+
+def test_live_run_refuses_unauthorized_measurement_bounds_before_any_device(
+    tmp_path: Path,
+    box: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The SNR floor and the transparency bound are operator-authorized inputs
+    the analysis refuses to invent, and the bundle binds them by fingerprint."""
+
+    from jasper.bass_extension.bench.render import BinaryIdentity
+
+    monkeypatch.setattr(
+        bass_extension_bench,
+        "resolve_render_binary",
+        lambda: BinaryIdentity(
+            path="/opt/camilladsp/camilladsp",
+            version_output="CamillaDSP 4.1.3",
+            sha256="0" * 64,
+            camilladsp_build_id="camilladsp-v4.1.3-000000000000",
+        ),
+    )
+    inputs = _inputs("natural")
+    del inputs["measurement_policy"]["min_snr_db"]
+    path = _write(tmp_path, inputs)
+
     rc = bass_extension_bench.main([str(path), "--live"])
+
     assert rc == 2
+    assert "bench_measurement_policy_missing" in capsys.readouterr().err
+
+
+def test_a_campaign_commanding_two_levels_is_refused(tmp_path: Path) -> None:
+    """One campaign opens one session volume: the play seam proves every
+    request against it, so two commanded levels can never both be played."""
+
+    from jasper.bass_extension.bench.manifest import author_campaign_manifest
+
+    inputs = _inputs("natural")
+    inputs["requests"]["natural"]["sustain_stress"][
+        "requested_commanded_main_volume_db"
+    ] = -20.0
+    manifest = author_campaign_manifest(inputs, target_ids=("natural",))
+
+    with pytest.raises(BenchRefused) as raised:
+        bass_extension_bench._commanded_level_db(manifest)
+
+    assert raised.value.reason == "bench_commanded_volume_mismatch"
+
+
+async def test_a_live_pass_failure_ends_that_target_as_the_benchs_refusal() -> None:
+    """A proof / derivation / render failure is the runner's ``refused`` arm —
+    the campaign keeps the target's partials and runs the next one — never a
+    traceback out of the whole campaign."""
+
+    from jasper.bass_extension.bench.derivation import DerivationError
+    from jasper.bass_extension.bench.runner import TargetPlan
+
+    class _Executor:
+        def __init__(self, raises: Exception | None) -> None:
+            self.raises = raises
+            self.seen: list[str] = []
+
+        async def run_discovery(self, *, target: TargetPlan, **kwargs: Any) -> str:
+            self.seen.append(target.target_id)
+            if self.raises is not None:
+                raise self.raises
+            return "ran"
+
+    def _plan(target_id: str) -> TargetPlan:
+        return TargetPlan(
+            target_id=target_id,
+            target_fingerprint="f" * 64,
+            graph_raw_text="",
+            limiter_name="l",
+            owner_channels=(0,),
+            profile_summary={},
+            baseline_clip_limit_dbfs=-12.0,
+            boost_headroom_db=0.0,
+        )
+
+    good, bad = _Executor(None), _Executor(DerivationError("no owner step"))
+    dispatch = bass_extension_bench._CampaignExecutor(
+        {"natural": good, BOOSTED_ID: bad}
+    )
+
+    assert await dispatch.run_discovery(target=_plan("natural"), sink=None) == "ran"
+    assert good.seen == ["natural"] and bad.seen == []
+
+    with pytest.raises(BenchRefused) as raised:
+        await dispatch.run_discovery(target=_plan(BOOSTED_ID), sink=None)
+
+    assert raised.value.reason == "bench_live_pass_failed"
+    assert "DerivationError" in raised.value.detail

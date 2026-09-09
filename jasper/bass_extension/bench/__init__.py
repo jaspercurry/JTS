@@ -19,8 +19,6 @@ Module map:
   limiter-domain builder (bound to the emitter's validated clip_limit range).
 * :mod:`~jasper.bass_extension.bench.manifest` — operator-authored
   ``campaign_manifest`` (refuses on a missing operator input; never defaults).
-* :mod:`~jasper.bass_extension.bench.excitation` — the bass-owner
-  ``ExcitationLimits`` + ``ProtectionEvidence`` derivation for admission.
 * :mod:`~jasper.bass_extension.bench.activation` — the fail-closed
   temporary-graph-activation lifecycle (addendum
   ``limiter-bench-runner-activation.md``): mutate the *running* config only,

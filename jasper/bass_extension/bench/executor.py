@@ -91,6 +91,23 @@ class ExecutorError(RuntimeError):
     """A live-pass proof, render, or cross-check failed during execution."""
 
 
+#: Every typed failure one target's pass can end on, named once, here, where
+#: this module's collaborators are already imported. The campaign's caller
+#: translates these into the bench's own refusal so a failed pass ends THAT
+#: target through the refused arm with its partial artifacts kept — never as a
+#: traceback that abandons the targets behind it.
+LIVE_PASS_FAILURES: tuple[type[Exception], ...] = (
+    ExecutorError,
+    cross_check.CrossCheckError,
+    cross_check.OwnerChannelsInadmissible,
+    derivation.DerivationError,
+    live_proof.FaderDriftError,
+    live_proof.IngressProofError,
+    render.RenderError,
+    stimulus.StimulusAssemblyError,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PlayedStimulus:
     """One admitted stimulus role's complete on-device playback evidence.

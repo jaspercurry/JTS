@@ -274,6 +274,7 @@ def _active_baseline_yaml(
     preference_filters: tuple[FilterSpec, ...] = (),
     output_trim_db: float = 0.0,
     bass_extension=None,
+    bass_target_id=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return emit_active_speaker_baseline_config(
@@ -284,6 +285,7 @@ def _active_baseline_yaml(
         output_trim_db=output_trim_db,
         baseline_id=f"baseline-{layout}-{way}way",
         bass_extension=bass_extension,
+        bass_target_id=bass_target_id,
     )
 
 
